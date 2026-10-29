@@ -73,7 +73,9 @@ If your Claude subscription runs out of usage mid-turn, the thread shows which
 limit was reached and the remaining wait when Claude provides a reset time.
 Claude Code holds the turn until that window reopens, so it can keep showing as
 working. Wait for the reset, or stop the turn and continue later. The warning's
-timestamp shows when the displayed wait started.
+timestamp shows when the displayed wait started. With a second Claude account,
+[account switching](./thread-sidebar.md#inspect-agent-work) moves
+threads that Claude stops on a limit; a turn it is still holding stays put.
 
 ## Skills
 

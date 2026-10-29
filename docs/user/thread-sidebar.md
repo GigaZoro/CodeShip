@@ -250,6 +250,14 @@ the snooze. Enable **Snooze until limits reset** in thread behavior settings to
 snooze limit stops by default. Providers without a reset time offer manual
 retry and the normal snooze choices.
 
+With two or more accounts for one provider, turn on **Switch accounts at usage
+limits** in **Settings → Providers** and arrange the account order there. When
+an account stops a turn on a limit with a reset time, the thread continues on
+the first other signed-in account of that provider, in that order, that still
+has usage left. An account that hit a limit is skipped until it resets. If none
+is free, the thread waits as above. Some providers' terms forbid using extra
+accounts to get around limits.
+
 On web and desktop, use **Agents** to follow work delegated to subagents.
 On mobile, open a subagent from its conversation card or **Agents**. On iOS
 layouts with an inspector, its thread opens beside the parent. Maximize it to

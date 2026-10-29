@@ -171,6 +171,9 @@ export type ProjectionRecoveryKind =
 export type ProjectionLimitRecoveryCandidate = Pick<
   OrchestrationV2ThreadShell,
   | "id"
+  | "projectId"
+  | "providerInstanceId"
+  | "modelSelection"
   | "status"
   | "lastErrorClass"
   | "latestRunId"
@@ -182,7 +185,10 @@ export type ProjectionLimitRecoveryCandidate = Pick<
   | "updatedAt"
   | "limitRecovery"
   | "snoozedUntil"
->;
+> & {
+  /** The account the limited run used; the thread may point elsewhere since. */
+  readonly latestRunProviderInstanceId?: ProviderInstanceId | null;
+};
 
 export type ProjectionThreadPullRequests = Pick<
   OrchestrationV2AppThread,
@@ -479,7 +485,12 @@ export interface ProjectionStoreV2Shape {
     readonly now: DateTime.Utc;
     readonly autoResume: boolean;
     readonly snooze: boolean;
+    readonly failover?: boolean;
   }) => Effect.Effect<ReadonlyArray<ProjectionLimitRecoveryCandidate>, ProjectionStoreV2Error>;
+  /** Accounts with a usage-limit failure whose reported reset is still ahead. */
+  readonly getUsageLimitedProviderInstanceIds: (
+    now: DateTime.Utc,
+  ) => Effect.Effect<ReadonlySet<ProviderInstanceId>, ProjectionStoreV2Error>;
   readonly getSettlementCandidates: (
     threadId?: ThreadId,
   ) => Effect.Effect<ReadonlyArray<ProjectionSettlementCandidate>, ProjectionStoreV2Error>;
@@ -3736,8 +3747,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           readonly completed_at: string | null;
           readonly failure_payload_json: string;
           readonly last_error: string | null;
+          readonly provider_instance_id: string | null;
         }>`
-          SELECT t.payload_json, r.run_id, r.completed_at,
+          SELECT t.payload_json, r.run_id, r.completed_at, r.provider_instance_id,
             item.payload_json AS failure_payload_json,
             (
               SELECT json_extract(session.payload_json, '$.lastError')
@@ -3804,7 +3816,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 )
                 AND (
                   ${booleanInt(options.autoResume)}
-                  OR (${booleanInt(options.snooze)} AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(options.now)}))
+                  OR (
+                    (${booleanInt(options.snooze)} OR ${booleanInt(options.failover === true)})
+                    AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(options.now)})
+                  )
                 )
               )
             )
@@ -3825,6 +3840,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           if (summary.lastErrorClass !== "usage_limit") continue;
           candidates.push({
             id: thread.id,
+            projectId: thread.projectId,
+            providerInstanceId: thread.providerInstanceId,
+            modelSelection: thread.modelSelection,
+            latestRunProviderInstanceId:
+              row.provider_instance_id === null
+                ? null
+                : ProviderInstanceId.make(row.provider_instance_id),
             status: "failed",
             lastErrorClass: summary.lastErrorClass,
             usageLimitResetAt: summary.usageLimitResetAt,
@@ -3840,6 +3862,25 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           });
         }
         return candidates;
+      },
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
+    const getUsageLimitedProviderInstanceIds = Effect.fn(
+      "ProjectionStore.getUsageLimitedProviderInstanceIds",
+    )(
+      function* (now: DateTime.Utc) {
+        // Every failure counts, so an account that refused one thread is skipped for all of them.
+        const rows = yield* sql<{ readonly provider_instance_id: string }>`
+          SELECT DISTINCT r.provider_instance_id
+          FROM orchestration_v2_projection_turn_items failure
+          INNER JOIN orchestration_v2_projection_runs r ON r.run_id = failure.run_id
+          WHERE failure.type = 'error' AND failure.status = 'failed'
+            AND r.provider_instance_id IS NOT NULL
+            AND json_extract(failure.payload_json, '$.failure.class') = 'usage_limit'
+            AND julianday(json_extract(failure.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(now)})
+        `;
+        return new Set(rows.map((row) => ProviderInstanceId.make(row.provider_instance_id)));
       },
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
@@ -6801,6 +6842,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getPlan: readOnReader(getPlan),
       getProviderControlContext: readOnReader(getProviderControlContext),
       getLimitRecoveryCandidates: readOnReader(getLimitRecoveryCandidates),
+      getUsageLimitedProviderInstanceIds: readOnReader(getUsageLimitedProviderInstanceIds),
       getRecoveryThreadIds: readOnReader(getRecoveryThreadIds),
       getUnreadableThreadIds: readOnReader(getUnreadableThreadIds),
       getThreadSnapshot: readOnReader(getThreadSnapshot),

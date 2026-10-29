@@ -775,6 +775,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
+    id: "account-failover",
+    title: "Account switching",
+    to: "/settings/providers",
+    searchTerms: [
+      "switch accounts failover usage limit quota rate limit multiple accounts order priority second account continue",
+    ],
+    providerSettingsOnly: true,
+  },
+  {
     id: "usage-providers",
     title: "Usage providers",
     to: "/settings/providers",

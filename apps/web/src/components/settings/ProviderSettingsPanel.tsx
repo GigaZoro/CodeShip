@@ -98,6 +98,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import { ExpandableText } from "./ExpandableText";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
+import { AccountFailoverSettings } from "./AccountFailoverSettings";
 import { UsageProviderSettings } from "./UsageProviderSettings";
 import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
 import { ProviderAuthenticationSection } from "./ProviderAuthenticationSection";
@@ -554,6 +555,10 @@ export function EnvironmentProviderSettings({
   const toggleModelFavorite = useToggleEnvironmentModelFavorite(environmentId);
   const persistProviderInstance = usePersistEnvironmentProviderInstanceMutation(environmentId);
   const serverProviders = useAtomValue(providersIgnoringCheckedAtAtom(environmentId));
+  const serverSupportsAccountFailover = useAtomValue(
+    serverEnvironment.configValueAtom(environmentId),
+    (config) => config?.environment.capabilities.usageLimitAccountFailover === true,
+  );
   // Hide overrides on older servers that silently ignore providerInstances patches.
   const supportsProjectProviderOverrides = useAtomValue(
     serverEnvironment.configValueAtom(environmentId),
@@ -1068,6 +1073,15 @@ export function EnvironmentProviderSettings({
           </div>
         </SettingsGroup>
       </SettingsSection>
+
+      {serverSupportsAccountFailover ? (
+        <AccountFailoverSettings
+          environmentId={environmentId}
+          settings={settings}
+          providers={serverProviders}
+          readOnly={readOnly || !canWriteSettings}
+        />
+      ) : null}
 
       <UsageProviderSettings
         key={environmentId}

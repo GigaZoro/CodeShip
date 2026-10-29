@@ -101,6 +101,24 @@ export function fallbackTextGenerationModelSelection(
   };
 }
 
+/** Registry instances are different agents, not accounts of one provider. */
+export const supportsAccountFailover = (driver: ProviderDriverKind): boolean =>
+  driver !== "acpRegistry";
+
+/** Saved failover order first, then the instances it does not list in their given order. */
+export function orderProviderInstancesForFailover<
+  T extends { readonly instanceId: ProviderInstanceId },
+>(order: ReadonlyArray<ProviderInstanceId>, instances: ReadonlyArray<T>): ReadonlyArray<T> {
+  const rank = new Map(order.map((instanceId, index) => [instanceId, index]));
+  return instances
+    .map((instance, index) => ({
+      instance,
+      rank: rank.get(instance.instanceId) ?? order.length + index,
+    }))
+    .sort((left, right) => left.rank - right.rank)
+    .map(({ instance }) => instance);
+}
+
 export function resolveSourceControlWriterModelSelection(
   settings: ServerSettings,
   providers: ReadonlyArray<ServerProvider> | undefined,

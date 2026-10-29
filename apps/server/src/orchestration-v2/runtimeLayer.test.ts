@@ -1,5 +1,5 @@
 import { SourceControlProviderKind } from "@t3tools/contracts";
-import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
+import { limitFailoverCommand, limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -11,6 +11,7 @@ import {
   CheckpointRef,
   CommandId,
   ContextTransferId,
+  DEFAULT_SERVER_SETTINGS,
   EventId,
   MessageId,
   NodeId,
@@ -30,6 +31,7 @@ import {
   ProviderTurnId,
   RunId,
   ScheduledTaskId,
+  type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -6492,6 +6494,138 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         }
         assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 3);
       }),
+  );
+
+  it.effect("continues a usage-limited run on the next account of its driver", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const events = yield* EventSink.EventSinkV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = ThreadId.make("limit-failover");
+      const projectId = ProjectId.make("limit-failover:project");
+      const now = yield* DateTime.now;
+      yield* seedProject({
+        projectId,
+        title: "Failover project",
+        workspaceRoot: process.cwd(),
+        defaultModelSelection: modelSelection,
+        createdAt: DateTime.formatIso(now),
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("limit-failover:create"),
+        threadId,
+        projectId,
+        title: "Limited thread",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("limit-failover:start"),
+        threadId,
+        messageId: MessageId.make("limit-failover:start"),
+        text: "Start work.",
+        attachments: [],
+        dispatchMode: { type: "defer_start" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const [source] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
+        OrchestrationV2Run,
+      ];
+      yield* events.write({
+        events: [
+          {
+            id: EventId.make("limit-failover:stop"),
+            type: "run.updated",
+            threadId,
+            occurredAt: now,
+            payload: { ...source, status: "failed", completedAt: now },
+          },
+          {
+            id: EventId.make("limit-failover:error"),
+            type: "turn-item.updated",
+            threadId,
+            occurredAt: now,
+            payload: {
+              id: TurnItemId.make("limit-failover:error"),
+              type: "error",
+              threadId,
+              runId: source.id,
+              nodeId: source.rootNodeId,
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 2,
+              status: "failed",
+              title: "Usage limit reached",
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+              failure: {
+                class: "usage_limit",
+                message: "Plan limit reached.",
+                code: "usageLimitExceeded",
+                retryable: null,
+                resetAt: DateTime.formatIso(DateTime.add(now, { days: 1 })),
+              },
+            },
+          },
+        ],
+      });
+      const sweep = { now, autoResume: false, snooze: false, failover: true };
+      const candidate = (yield* projections.getLimitRecoveryCandidates(sweep)).find(
+        (row) => row.id === threadId,
+      )!;
+      const failover = limitFailoverCommand({
+        thread: candidate,
+        settings: {
+          ...DEFAULT_SERVER_SETTINGS,
+          providerInstances: { [alternateInstanceId]: { driver } },
+        },
+        providers: [modelSelection.instanceId, alternateInstanceId].map(
+          (instanceId): ServerProvider => ({
+            instanceId,
+            driver,
+            enabled: true,
+            installed: true,
+            version: null,
+            status: "ready",
+            auth: { status: "authenticated" },
+            checkedAt: DateTime.formatIso(now),
+            models: [
+              { slug: modelSelection.model, name: "GPT", isCustom: false, capabilities: null },
+            ],
+            slashCommands: [],
+            skills: [],
+          }),
+        ),
+        limitedInstanceIds: yield* projections.getUsageLimitedProviderInstanceIds(now),
+        nowMs: DateTime.toEpochMillis(now),
+      });
+      assert.isNotNull(failover);
+      yield* orchestrator.dispatch(failover!);
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(threadId)).runs.map((run) => [
+          run.providerInstanceId,
+          run.status,
+        ]),
+        [
+          [modelSelection.instanceId, "failed"],
+          [alternateInstanceId, "starting"],
+        ],
+      );
+      assert.isUndefined(
+        (yield* projections.getLimitRecoveryCandidates(sweep)).find((row) => row.id === threadId),
+      );
+    }),
   );
 
   it.effect.each([
