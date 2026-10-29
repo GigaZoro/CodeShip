@@ -192,7 +192,6 @@ class TerminalClipboardReadError extends Schema.TaggedError<TerminalClipboardRea
 type TerminalToolbarAction =
   | { readonly kind: "send"; readonly key: string; readonly label: string; readonly data: string }
   | { readonly kind: "clear"; readonly key: string; readonly label: string }
-  | { readonly kind: "paste"; readonly key: string; readonly label: string }
   | {
       readonly kind: "modifier";
       readonly key: string;
@@ -577,7 +576,6 @@ function ThreadTerminal(props: {
       { kind: "send", key: "esc", label: "esc", data: "\u001b" },
       ...modifierActions,
       { kind: "send", key: "tab", label: "tab", data: "\t" },
-      { kind: "paste", key: "paste", label: "paste" },
       { kind: "clear", key: "clear", label: "clear" },
       { kind: "send", key: "tilde", label: "~", data: "~" },
       { kind: "send", key: "pipe", label: "|", data: "|" },
@@ -773,13 +771,12 @@ function ThreadTerminal(props: {
       return;
     }
 
-    if (action.kind === "paste") {
-      setPendingModifier(null);
-      void pasteFromClipboard();
-      return;
-    }
-
     writeModifiedInput(action.data);
+  };
+
+  const handlePaste = () => {
+    setPendingModifier(null);
+    void pasteFromClipboard();
   };
 
   const handleDismissKeyboard = () => {
@@ -1022,6 +1019,12 @@ function ThreadTerminal(props: {
                           );
                         })}
                       </ComposerToolbarScroller>
+                      <ComposerToolbarButton
+                        accessibilityLabel="Paste"
+                        icon={{ ios: "doc.on.clipboard", android: "content_paste" }}
+                        onPress={handlePaste}
+                        showChevron={false}
+                      />
                       <ComposerToolbarButton
                         accessibilityLabel="Dismiss keyboard"
                         icon={{ ios: "keyboard.chevron.compact.down", android: "keyboard_hide" }}
