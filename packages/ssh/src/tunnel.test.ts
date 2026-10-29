@@ -1,11 +1,14 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
 import * as Sink from "effect/Sink";
@@ -363,6 +366,152 @@ describe("ssh tunnel scripts", () => {
       }),
   );
 });
+
+// On Linux a thread ID passes kill -0 like a PID, and kill <tid> signals its
+// whole process, but ps knows only thread-group leaders. A stale pid file can
+// name such a thread after the host restarts.
+describe.runIf(HostProcess.Platform.defaultValue() === "linux")(
+  "stale thread ID in pid file",
+  () => {
+    const FAKE_SERVER = `const fs = require("node:fs");
+const http = require("node:http");
+const path = require("node:path");
+const args = process.argv.slice(2);
+const flag = (name) => args[args.indexOf(name) + 1];
+const server = http.createServer((_request, response) => response.end("ok"));
+server.listen(Number(flag("--port") ?? 0), "127.0.0.1", () => {
+  const port = server.address().port;
+  const base = flag("--base-dir");
+  if (base) {
+    fs.mkdirSync(path.join(base, "userdata"), { recursive: true });
+    fs.writeFileSync(
+      path.join(base, "userdata", "server-runtime.json"),
+      JSON.stringify({ version: 1, pid: process.pid, port, origin: "http://127.0.0.1:" + port }),
+    );
+  }
+  console.log(port);
+});
+`;
+    const target = { alias: "devbox", hostname: "devbox", username: null, port: null } as const;
+
+    const isRunning = (pid: number) =>
+      Effect.flatMap(FileSystem.FileSystem, (fs) => fs.readFileString(`/proc/${pid}/stat`)).pipe(
+        Effect.map((stat) => !/^\d+ \(.*\) Z/u.test(stat)),
+        Effect.orElseSucceed(() => false),
+      );
+
+    const prepare = Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const realSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-stale-tid-" });
+      const home = `${root}/home`;
+      const fakeServer = `${root}/fake-t3.cjs`;
+      yield* fs.makeDirectory(home, { recursive: true });
+      yield* fs.writeFileString(fakeServer, FAKE_SERVER);
+      // Runs the remote command locally with the temp home as HOME. setsid keeps the
+      // launched server alive when the command's process group is cleaned up, as sshd would.
+      const sshAsLocalShell = ChildProcessSpawner.make((command) => {
+        if (command._tag !== "StandardCommand" || command.command !== "ssh") {
+          return realSpawner.spawn(command);
+        }
+        const remoteArgs = command.args.slice(command.args.indexOf("--") + 2);
+        return realSpawner.spawn(
+          ChildProcess.make("setsid", ["-w", ...remoteArgs], {
+            ...command.options,
+            env: { PATH: process.env.PATH ?? "", HOME: home },
+            extendEnv: false,
+          }),
+        );
+      });
+      // An unrelated process; one of its threads, not its leader, stands in for the PID.
+      const holder = yield* realSpawner.spawn(ChildProcess.make("node", [fakeServer]));
+      const holderPort = Number(
+        Option.getOrThrow(
+          yield* holder.stdout.pipe(Stream.decodeText(), Stream.splitLines, Stream.runHead),
+        ),
+      );
+      const tid = Number(
+        (yield* fs.readDirectory(`/proc/${holder.pid}/task`)).find(
+          (task) => task !== `${holder.pid}`,
+        ),
+      );
+      assert.isTrue(Number.isInteger(tid) && tid !== holder.pid);
+      return { fs, home, fakeServer, holder, holderPort, tid, sshAsLocalShell };
+    });
+
+    it.live("launches a fresh server instead of trusting a thread ID left in the pid file", () =>
+      Effect.gen(function* () {
+        const { fs, home, fakeServer, holderPort, tid, sshAsLocalShell } = yield* prepare;
+        const runner = { nodeScriptPath: fakeServer };
+        const launch = SshTunnel.launchOrReuseRemoteServer(target, undefined, runner).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, sshAsLocalShell),
+        );
+        yield* launch;
+        const [key] = yield* fs.readDirectory(`${home}/.t3/ssh-launch`);
+        const stateDir = `${home}/.t3/ssh-launch/${key}`;
+        const readPid = fs
+          .readFileString(`${stateDir}/pid`)
+          .pipe(Effect.map((pid) => Number(pid.trim())));
+        const launchedPids = [yield* readPid];
+        yield* Effect.addFinalizer(() =>
+          readPid.pipe(
+            Effect.orElseSucceed(() => tid),
+            Effect.flatMap((pid) =>
+              Effect.forEach([...launchedPids, pid], (launched) =>
+                isRunning(launched).pipe(
+                  Effect.map((running) => {
+                    if (launched !== tid && running) process.kill(launched, "SIGKILL");
+                  }),
+                ),
+              ),
+            ),
+          ),
+        );
+
+        // The host restarted: the managed server is gone, its PID now names a
+        // thread of an unrelated process, and that process holds the old port.
+        process.kill(launchedPids[0]!, "SIGKILL");
+        yield* fs.remove(`${home}/.t3/userdata/server-runtime.json`);
+        yield* fs.writeFileString(`${stateDir}/pid`, `${tid}\n`);
+        yield* fs.writeFileString(`${stateDir}/port`, `${holderPort}\n`);
+
+        const relaunched = yield* launch;
+        const pid = yield* readPid;
+        assert.notEqual(pid, tid, "the launcher kept a thread ID as its running server");
+        assert.notEqual(
+          relaunched.remotePort,
+          holderPort,
+          "the launcher reused the port of the process that owns the stale thread ID",
+        );
+        assert.isTrue(yield* isRunning(pid));
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    it.live("stop does not signal the process that owns a thread ID left in the pid file", () =>
+      Effect.gen(function* () {
+        const { fs, home, holder, tid } = yield* prepare;
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const stateDir = `${home}/.t3/ssh-launch/test-state`;
+        yield* fs.makeDirectory(stateDir, { recursive: true });
+        yield* fs.writeFileString(`${stateDir}/pid`, `${tid}\n`);
+        yield* fs.writeFileString(`${stateDir}/managed`, "managed\n");
+        yield* fs.writeFileString(`${home}/stop.sh`, SshTunnel.buildRemoteStopScript("test-state"));
+
+        const stop = yield* spawner.spawn(
+          ChildProcess.make("sh", [`${home}/stop.sh`], {
+            env: { PATH: process.env.PATH ?? "", HOME: home },
+            extendEnv: false,
+          }),
+        );
+        yield* stop.exitCode;
+        assert.isTrue(
+          yield* isRunning(holder.pid),
+          `stop signalled process ${holder.pid} through its thread ID ${tid}`,
+        );
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+  },
+);
 
 // On macOS, Node can bind 127.0.0.1:<port> while another process (such as the
 // desktop app with network access on) listens on *:<port>. Linux refuses that
