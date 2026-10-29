@@ -83,7 +83,12 @@ describe("ssh command", () => {
             { preHostArgs: ["-F", "/dev/null", "-G"] },
           );
           const resolved = parseSshResolveOutput(alias, stdout);
-          assert.deepEqual(resolved, { alias, hostname, username: "developer+ops%", port });
+          // OpenSSH 10 prints a link-local host without its zone; connections still use the alias.
+          assert.include([hostname, hostname.replace(/%.*$/u, "")], resolved.hostname);
+          assert.deepEqual(
+            { ...resolved, hostname },
+            { alias, hostname, username: "developer+ops%", port },
+          );
           assert.equal(yield* buildSshHostSpecEffect(resolved), `developer+ops%@${hostname}`);
 
           const rerun = yield* runSshCommand(resolved, {
