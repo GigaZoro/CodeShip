@@ -25,10 +25,43 @@ import {
   deriveRunlessWorkStartedAt,
   deriveThreadActivityRun,
   deriveThreadRuntime,
+  presentProviderGoal,
   threadRuntimeHasInterruptibleRun,
 } from "./threadExecution.ts";
 
 const now = DateTime.makeUnsafe("2026-07-28T10:00:00.000Z");
+
+describe("provider goal usage", () => {
+  it("labels goal tokens as excluding cache and identifies the active duration", () => {
+    expect(
+      presentProviderGoal(
+        {
+          objective: "keep going",
+          status: "active",
+          tokensUsed: 30_072_613,
+          timeUsedSeconds: 230_271,
+        },
+        true,
+      ).usage,
+    ).toBe("30.1m uncached tokens · 63h 57m 51s active");
+  });
+
+  it("uses the same token accounting label for a goal budget", () => {
+    expect(
+      presentProviderGoal(
+        { objective: "Ship it", status: "paused", tokensUsed: 12_000, tokenBudget: 50_000 },
+        false,
+      ).usage,
+    ).toBe("12k / 50k uncached tokens");
+  });
+
+  it("keeps Claude checks and goals without usage independent of token accounting", () => {
+    expect(
+      presentProviderGoal({ objective: "Ship it", status: "active", checks: 2 }, true).usage,
+    ).toBe("2 checks");
+    expect(presentProviderGoal({ objective: "Ship it", status: "active" }, false).usage).toBeNull();
+  });
+});
 
 function run(id: string, ordinal: number, status: OrchestrationV2RunStatus) {
   return {
