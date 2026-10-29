@@ -1372,7 +1372,7 @@ export function createServerEnvironmentAtoms<R, E>(
     updateProvider: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:update-provider",
       tag: WS_METHODS.serverUpdateProvider,
-      scheduler: configScheduler,
+      scheduler: updateScheduler,
       concurrency: configConcurrency,
     }),
     updateServer,
