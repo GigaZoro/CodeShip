@@ -166,6 +166,66 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
     );
 
     it.effect.skipIf(!symlinksSupported)(
+      "keeps a shadow home's own cloud config bundle cache",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shadowHome = yield* makeTempDir("t3code-codex-shadow-");
+          const shadowCache = path.join(shadowHome, "cloud-config-bundle-cache.json");
+
+          yield* writeTextFile(
+            path.join(sharedHome, "cloud-config-bundle-cache.json"),
+            '{"account_id":"shared"}\n',
+          );
+          yield* writeTextFile(shadowCache, '{"account_id":"shadow"}\n');
+          const layout = yield* resolveCodexHomeLayout(
+            decodeCodexSettings({ homePath: sharedHome, shadowHomePath: shadowHome }),
+          );
+
+          yield* materializeCodexShadowHome(layout);
+
+          expect(yield* fileSystem.readFileString(shadowCache)).toBe('{"account_id":"shadow"}\n');
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "does not share the cloud config bundle cache with shadow homes",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const freshShadowHome = yield* makeTempDir("t3code-codex-shadow-");
+          const linkedShadowHome = yield* makeTempDir("t3code-codex-shadow-");
+          const sharedCache = path.join(sharedHome, "cloud-config-bundle-cache.json");
+
+          yield* writeTextFile(sharedCache, '{"account_id":"shared"}\n');
+          yield* fileSystem.symlink(
+            sharedCache,
+            path.join(linkedShadowHome, "cloud-config-bundle-cache.json"),
+          );
+
+          for (const shadowHome of [freshShadowHome, linkedShadowHome]) {
+            yield* materializeCodexShadowHome(
+              yield* resolveCodexHomeLayout(
+                decodeCodexSettings({ homePath: sharedHome, shadowHomePath: shadowHome }),
+              ),
+            );
+          }
+
+          expect(
+            yield* fileSystem.exists(path.join(freshShadowHome, "cloud-config-bundle-cache.json")),
+          ).toBe(false);
+          expect(
+            yield* fileSystem.exists(path.join(linkedShadowHome, "cloud-config-bundle-cache.json")),
+          ).toBe(false);
+          expect(yield* fileSystem.readFileString(sharedCache)).toBe('{"account_id":"shared"}\n');
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
       "replaces a Codex-created local sqlite maintenance lock with the shared lock",
       () =>
         Effect.gen(function* () {
