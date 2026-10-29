@@ -129,6 +129,7 @@ import { useNowMinute } from "../hooks/useNowMinute";
 import {
   useEnvironmentIdentities,
   useConnectedEnvironmentIds,
+  useEnvironmentConnectionSummaries,
   useEnvironmentMachines,
   usePrimaryEnvironmentId,
 } from "../state/environments";
@@ -175,6 +176,8 @@ import {
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
   firstValidTimestampMs,
+  belongsInSidebarWorkingShelf,
+  isSidebarEnvironmentDisconnected,
   isSidebarNestedLinkClick,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
@@ -339,6 +342,8 @@ interface SidebarThreadPartitionInput {
   readonly workingShelfEnabled: boolean;
   /** Boring mode: folders list active threads by the user's latest message. */
   readonly sortActiveBySend: boolean;
+  /** Environments not answering; their threads' cached run states are stale. */
+  readonly disconnectedEnvironmentIds: ReadonlySet<EnvironmentId>;
   // Snooze wakes, the queued-turn grace and the Working shelf's exit grace depend
   // on the clock, so the minute tick, the precise snooze-wake tick and the inbox
   // tracker's expiry version are inputs: a new key repartitions.
@@ -418,6 +423,12 @@ function useSidebarThreads(input: {
   // Folders already separate the work, so boring mode has no Working shelf.
   const workingShelfEnabled =
     useClientSettings((s) => s.sidebarWorkingShelfEnabled) && folderGroups === null;
+  const environmentConnections = useEnvironmentConnectionSummaries();
+  const disconnectedEnvironmentIds = new Set(
+    environmentConnections
+      .filter((environment) => isSidebarEnvironmentDisconnected(environment.connectionState))
+      .map((environment) => environment.environmentId),
+  );
   const inboxReturnsVersion = useSyncExternalStore(
     inboxReturns.subscribe,
     inboxReturns.getSnapshot,
@@ -461,6 +472,7 @@ function useSidebarThreads(input: {
     optimisticDrop,
     workingShelfEnabled,
     sortActiveBySend: folderGroups !== null,
+    disconnectedEnvironmentIds,
     clockKey: `${nowMinute}:${snoozeWakeClock}:${inboxReturnsVersion}`,
   });
 
@@ -596,6 +608,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     optimisticDrop,
     workingShelfEnabled,
     sortActiveBySend,
+    disconnectedEnvironmentIds,
   } = input;
   const preciseNow = new Date().toISOString();
   const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys, delegatedUnderParent);
@@ -604,8 +617,11 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   const active: EnvironmentThreadShell[] = [];
   const working: EnvironmentThreadShell[] = [];
   const inbox = (thread: EnvironmentThreadShell, manuallyMoved = false) =>
-    workingShelfEnabled &&
-    (manuallyMoved ? isThreadWorking(thread) : inboxObservation.isWorking(thread))
+    belongsInSidebarWorkingShelf(thread, {
+      enabled: workingShelfEnabled,
+      disconnectedEnvironmentIds,
+      isWorking: manuallyMoved ? isThreadWorking : inboxObservation.isWorking,
+    })
       ? working
       : active;
   const snoozed: EnvironmentThreadShell[] = [];

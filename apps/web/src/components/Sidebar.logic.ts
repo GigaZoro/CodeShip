@@ -14,6 +14,7 @@ import {
   type ThreadSearchShell,
 } from "@t3tools/client-runtime/state/thread-search";
 import { foldSearchQuery, rankSearchItems, scoreThreadSearch } from "@t3tools/shared/paletteSearch";
+import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import type { ContextMenuItem, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import type { AsyncResult } from "effect/reactivity";
@@ -175,6 +176,30 @@ export function resolveSidebarThreadSection(input: {
   if (input.settled) return "settled";
   if (input.pinned) return "pinned";
   return "active";
+}
+
+/**
+ * Past a first connection attempt the environment is not answering, so its threads' last run
+ * states are stale. Matches mobile's `threadRouteIsHydrating`.
+ */
+export function isSidebarEnvironmentDisconnected(phase: EnvironmentConnectionPhase): boolean {
+  return phase !== "connected" && phase !== "connecting";
+}
+
+/** A collapsed shelf must not hide a thread whose environment stopped answering. */
+export function belongsInSidebarWorkingShelf<T extends { readonly environmentId: EnvironmentId }>(
+  thread: T,
+  input: {
+    readonly enabled: boolean;
+    readonly disconnectedEnvironmentIds: ReadonlySet<EnvironmentId>;
+    readonly isWorking: (thread: T) => boolean;
+  },
+): boolean {
+  return (
+    input.enabled &&
+    !input.disconnectedEnvironmentIds.has(thread.environmentId) &&
+    input.isWorking(thread)
+  );
 }
 
 const SIDEBAR_MARKER_PREFIX = "sidebar-marker-";
