@@ -1122,7 +1122,7 @@ it.effect.each([
             creationSource: "web",
           });
         }
-        const steering = yield* worker.runOnce.pipe(Effect.forkScoped);
+        const steering = yield* worker.runOnce().pipe(Effect.forkScoped);
         yield* Deferred.await(steerEntered);
         yield* orchestrator.dispatch({
           type: "run.interrupt",
