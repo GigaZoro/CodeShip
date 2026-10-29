@@ -545,6 +545,24 @@ describe("resolveComposerProviderSelection", () => {
     },
   );
 
+  it.each(["missing", "disabled", "unavailable"] as const)(
+    "does not replace an explicitly selected provider when it is %s",
+    (state) => {
+      const selected = entry("claudeAgent", "claude_work", {
+        enabled: state !== "disabled",
+        availability: state === "unavailable" ? "unavailable" : "available",
+      });
+      const selection = resolveComposerProviderSelection({
+        entries: state === "missing" ? [entry("codex")] : [entry("codex"), selected],
+        candidateInstanceIds: [selected.instanceId],
+        lockedProvider: null,
+        lockedInstanceId: null,
+      });
+      expect(selection.selectedProviderEntry).toBeUndefined();
+      expect(selection.unavailableProviderInstanceId).toBe(selected.instanceId);
+    },
+  );
+
   it("keeps a signed-out selection instead of silently switching providers", () => {
     const signedOutEntry = entry("antigravity", "google_work", {
       status: "error",

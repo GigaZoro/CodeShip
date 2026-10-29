@@ -513,19 +513,23 @@ export function resolveComposerProviderSelection(input: {
       (!lockedContinuationGroupKey || entry.continuationGroupKey === lockedContinuationGroupKey) &&
       (!requiresExactInstance || entry.instanceId === input.lockedInstanceId),
   );
+  const candidateInstanceIds = input.lockedProvider
+    ? input.candidateInstanceIds
+    : [requestedInstanceId];
   const selectedProviderEntry =
-    input.candidateInstanceIds
+    candidateInstanceIds
       .map((candidate) =>
         compatibleEntries.find(
           (entry) => entry.instanceId === candidate && entry.enabled && entry.isAvailable,
         ),
       )
       .find((entry) => entry !== undefined) ??
-    resolveSelectableProviderInstanceEntry(
-      compatibleEntries.filter((entry) => entry.driverKind === requestedDriverKind),
-      undefined,
-    ) ??
-    resolveSelectableProviderInstanceEntry(compatibleEntries, undefined);
+    (input.lockedProvider || requestedInstanceId === undefined
+      ? (resolveSelectableProviderInstanceEntry(
+          compatibleEntries.filter((entry) => entry.driverKind === requestedDriverKind),
+          undefined,
+        ) ?? resolveSelectableProviderInstanceEntry(compatibleEntries, undefined))
+      : undefined);
   const unavailableProviderInstanceId = selectedProviderEntry
     ? undefined
     : input.lockedProvider

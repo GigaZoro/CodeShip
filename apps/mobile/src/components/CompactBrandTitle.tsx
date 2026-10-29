@@ -5,10 +5,10 @@ import { useState } from "react";
 import { Platform, View } from "react-native";
 
 import { AppText as Text } from "./ui/AppText";
-import { T3Wordmark } from "./T3Wordmark";
 import { IPAD_HOME_TITLE_OFFSET } from "../lib/layoutMetrics";
 import { resolveMobileStageLabel } from "../lib/mobileBranding";
 import { useAndroidControlSizing } from "./ui/useAndroidControlSizing";
+import { CodeShipMark } from "./CodeShipMark";
 
 const BRAND_MAX_FONT_SCALE = 1.4;
 
@@ -40,29 +40,31 @@ export function CompactBrandTitle(
         props.fit && showStage ? (event) => setFullWidth(event.nativeEvent.layout.width) : undefined
       }
       aria-level={1}
-      accessibilityLabel={props.accessibilityLabel ?? "T3 Code, Threads"}
+      accessibilityLabel={props.accessibilityLabel ?? "CodeShip, Threads"}
       accessible
       role="heading"
       className="flex-row items-center gap-1.5"
       style={[
         { marginLeft: titleOffset },
         Platform.OS === "android" && { gap: 5.25 * scale },
-        props.fit && { flexShrink: 0 },
+        props.fit && { flexShrink: showStage ? 0 : 1, minWidth: 0 },
       ]}
     >
-      <T3Wordmark colorClassName="accent-icon" height={Math.round(15 * scale)} />
-      {/* A logo beside a fixed-size wordmark: it may grow with Dynamic Type, not crowd the bar. */}
+      <View className="shrink-0">
+        <CodeShipMark height={22 * scale} colorClassName="foreground" />
+      </View>
       <Text
         allowFontScaling={props.allowFontScaling}
         maxFontSizeMultiplier={BRAND_MAX_FONT_SCALE}
-        className="font-t3-medium text-foreground-muted"
+        className="min-w-0 shrink font-t3-bold text-foreground"
+        numberOfLines={1}
         style={{ fontSize: 21 * scale, letterSpacing: -0.5 * scale }}
       >
-        Code
+        CodeShip
       </Text>
       {showStage ? (
         <View
-          className="rounded-full bg-subtle px-1.5 py-0.5"
+          className="shrink-0 rounded-full bg-subtle px-1.5 py-0.5"
           style={
             Platform.OS === "android"
               ? { paddingHorizontal: 5.25 * scale, paddingVertical: 1.75 * scale }

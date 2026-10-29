@@ -34,7 +34,7 @@ function member(id: string, environmentId: EnvironmentId): SidebarProjectGroupMe
   return {
     id: ProjectId.make(id),
     environmentId,
-    title: "T3 Code",
+    title: "CodeShip",
     workspaceRoot: `/repos/${id}`,
     physicalProjectKey: `${environmentId}:/repos/${id}`,
     environmentLabel:
@@ -307,7 +307,7 @@ describe("scheduled task model defaults", () => {
       resolve({ ...config, settings: { ...config.settings, defaultModelSelection: null } }, null),
     ).toEqual({ instanceId, model: "catalog-default" });
   });
-  it("falls back to the environment default when the project provider is unavailable", () => {
+  it("keeps the explicit project default when its provider is unavailable", () => {
     expect(
       resolve(config, {
         id: projectId,
@@ -316,7 +316,7 @@ describe("scheduled task model defaults", () => {
           model: "missing",
         },
       }),
-    ).toEqual(environmentSelection);
+    ).toEqual({ instanceId: "unavailable", model: "missing" });
   });
 });
 

@@ -10,6 +10,7 @@ import { isElectron } from "../env";
 import { isLocalEnvironmentDisabled } from "../localEnvironment";
 import { useRelayEnvironmentDiscovery } from "../state/environments";
 import { CommandBlock } from "./CommandBlock";
+import { CodeShipMark } from "./CodeShipMark";
 import { useT3ConnectAuthPrompt } from "./clerk/useT3ConnectAuthPrompt";
 import { CloudEnvironmentConnectRows } from "./cloud/CloudEnvironmentConnectList";
 import { Button } from "./ui/button";
@@ -27,7 +28,8 @@ export function HostedEmptyState() {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
         <WorkspacePageHeader electron={isElectron} className="border-b border-border">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-foreground md:text-muted-foreground/60">
+            <CodeShipMark className="size-5 shrink-0 text-primary" />
+            <span className="text-sm font-semibold tracking-tight text-foreground">
               {APP_DISPLAY_NAME}
             </span>
           </div>
@@ -43,7 +45,7 @@ export function HostedEmptyState() {
                 ? "Turn it back on, or connect a different computer."
                 : cloudEnabled
                   ? "Your agents run on your computer."
-                  : "Your agents run on your computer. Start T3 Code there first."}
+                  : "Your agents run on your computer. Start CodeShip there first."}
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>

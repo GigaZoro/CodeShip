@@ -158,7 +158,7 @@ describe("scheduled task model defaults", () => {
       resolve({ ...config, settings: { ...config.settings, defaultModelSelection: null } }, null),
     ).toEqual({ instanceId, model: "catalog-default" });
   });
-  it("falls back to the environment default when the project provider is unavailable", () => {
+  it("keeps the explicit project default when its provider is unavailable", () => {
     expect(
       resolve(config, {
         id: projectId,
@@ -167,7 +167,7 @@ describe("scheduled task model defaults", () => {
           model: "missing",
         },
       }),
-    ).toEqual(environmentSelection);
+    ).toEqual({ instanceId: "unavailable", model: "missing" });
   });
   it("does not choose an implicit model on a disabled provider", () => {
     expect(
@@ -176,6 +176,7 @@ describe("scheduled task model defaults", () => {
           ...config,
           settings: {
             ...config.settings,
+            defaultModelSelection: null,
             providerInstances: {
               [instanceId]: { driver: ProviderDriverKind.make("codex"), enabled: false },
             },

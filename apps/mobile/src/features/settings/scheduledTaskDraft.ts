@@ -21,22 +21,15 @@ import {
   resolveProjectSettings,
   type LegacyProjectSettingsFields,
 } from "@t3tools/shared/projectSettings";
-import {
-  buildModelOptions,
-  resolveDefaultableModelSelection,
-  resolveNewTaskModelSelection,
-} from "../../lib/modelOptions";
+import { buildModelOptions, resolveNewTaskModelSelection } from "../../lib/modelOptions";
 
 export function scheduledTaskDefaultModel(
   config: ServerConfig | null,
   project: (LegacyProjectSettingsFields & { readonly id: ProjectId }) | null,
 ): ModelSelection | null {
   const settings = config?.settings ?? DEFAULT_SERVER_SETTINGS;
-  const configured = resolveProjectSettings(settings, project?.id ?? null, project).settings
-    .defaultModelSelection;
-  const projectDefaultSelection =
-    resolveDefaultableModelSelection(config, configured, project?.id ?? null) ??
-    resolveDefaultableModelSelection(config, settings.defaultModelSelection, project?.id ?? null);
+  const projectDefaultSelection = resolveProjectSettings(settings, project?.id ?? null, project)
+    .settings.defaultModelSelection;
   return resolveNewTaskModelSelection({
     draftSelection: null,
     projectDefaultSelection,

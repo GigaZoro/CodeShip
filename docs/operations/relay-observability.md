@@ -1,6 +1,6 @@
 # Relay observability
 
-> For maintainers. Using T3 Code? See [docs/user](../user/).
+> For maintainers. Using CodeShip? See [docs/user](../user/).
 
 The relay Alchemy stack owns a shared Axiom trace setup:
 
@@ -203,12 +203,12 @@ request, as they do on the next launch. Leave it out to count real native crashe
 ```
 
 Native crash stacks (`expo.error.source == 'nativeCrash'`) are not symbolicated. On iOS, app frames
-read like `main (T3Code + 19476)`: the offset into the app binary. The build hook uploads that
+read like `main (CodeShip + 19476)`: the offset into the app binary. The build hook uploads that
 build's dSYMs to `ios/dsym/<easBuildId>.zip`; download it with an account R2 token, then:
 
 ```sh
 unzip <easBuildId>.zip
-atos -arch arm64 -o T3Code.app.dSYM/Contents/Resources/DWARF/T3Code -l 0x100000000 \
+atos -arch arm64 -o CodeShip.app.dSYM/Contents/Resources/DWARF/CodeShip -l 0x100000000 \
   $(printf '0x%x' $((0x100000000 + 19476)))
 ```
 

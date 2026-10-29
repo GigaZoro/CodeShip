@@ -45,7 +45,13 @@ export interface ProviderInstanceEntry {
 
 /** Disabled instances may retain ready status until reconciliation. */
 export function isProviderInstancePickerReady(entry: ProviderInstanceEntry): boolean {
-  return entry.enabled && entry.isAvailable && entry.status === "ready";
+  return (
+    entry.enabled &&
+    entry.isAvailable &&
+    entry.installed &&
+    entry.status === "ready" &&
+    entry.snapshot.auth.status !== "unauthenticated"
+  );
 }
 
 export function isProviderInstancePickerVisible(entry: ProviderInstanceEntry): boolean {
@@ -216,10 +222,7 @@ export function resolveSelectableProviderInstanceEntry(
       return requested;
     }
   }
-  return (
-    entries.find(isProviderInstancePickerReady) ??
-    entries.find((entry) => isSelectableProviderInstanceEntry(entry) && entry.status !== "error")
-  );
+  return entries.find(isProviderInstancePickerReady);
 }
 
 export function resolveSelectableProviderInstance(
@@ -234,9 +237,9 @@ export function resolveDefaultProviderModelSelection(
   providers: ReadonlyArray<ServerProvider>,
   selection: ModelSelection | null | undefined,
 ): ModelSelection | null {
-  const instanceId = resolveSelectableProviderInstance(providers, selection?.instanceId);
+  if (selection) return selection;
+  const instanceId = resolveSelectableProviderInstance(providers, undefined);
   if (instanceId === undefined) return null;
-  if (selection?.instanceId === instanceId) return selection;
   const model = getDefaultProviderInstanceModel(providers, instanceId);
   return model ? { instanceId, model } : null;
 }

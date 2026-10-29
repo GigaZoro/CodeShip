@@ -483,11 +483,7 @@ export function NewTaskFlowProvider(
     selectedProjectDraft.modelSelection ?? null,
     selectedProject?.id ?? null,
   );
-  const projectDefaultModelSelection = resolveDefaultableModelSelection(
-    selectedEnvironmentServerConfig,
-    projectSettings.settings.defaultModelSelection,
-    selectedProject?.id ?? null,
-  );
+  const projectDefaultModelSelection = projectSettings.settings.defaultModelSelection;
   const storedStickyModelSelection = useStickyComposerModelSelection();
   const stickyModelSelection = resolveDefaultableModelSelection(
     selectedEnvironmentServerConfig,

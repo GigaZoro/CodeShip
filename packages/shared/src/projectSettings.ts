@@ -136,7 +136,7 @@ function resolveProjectOverrides(
     // Forward-compatible decoding can leave a present undefined, which is not an override.
     if (value === undefined) continue;
     if (
-      (key === "textGenerationModelSelection" || key === "defaultModelSelection") &&
+      key === "textGenerationModelSelection" &&
       value !== undefined &&
       value !== null &&
       !resolveProjectProviderInstanceEnabled(

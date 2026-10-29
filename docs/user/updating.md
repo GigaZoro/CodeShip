@@ -1,4 +1,4 @@
-# Updating T3 Code
+# Updating CodeShip
 
 The app you use and the server running your agents can be on different machines.
 When a server is behind your web or desktop app, the update button at the bottom
@@ -27,7 +27,7 @@ desktop apps do not wait for npm. The confirmation lists each machine it skips
 and why, such as a machine that is offline or needs a manual update. Use
 **Settings → Environments** for those.
 
-If a desktop app restarts on its old version, T3 Code tells you the update did
+If a desktop app restarts on its old version, CodeShip tells you the update did
 not apply. It does not install that version again on its own, even when another
 device asks. Use the update button on that machine to retry.
 
@@ -45,7 +45,7 @@ It resumes supported active threads after an update, crash, or machine
 restart. Changes are saved to connected environments that support this setting;
 update older servers first. If a supported environment was offline or has a
 different value, use **Apply to all** in Settings after it connects.
-T3 Code must start again on that machine;
+CodeShip must start again on that machine;
 the setting does not enable automatic startup. Terminal commands may still be
 interrupted, and threads without saved provider resume state need a new message.
 A thread that finished its turn to wait on a subagent, a background task, or a
@@ -57,7 +57,7 @@ while it is archived, snoozed, or settled. After three automatic resumes in a ro
 the thread waits for your next message.
 
 Updates from the previous orchestration system preserve conversation transcripts but cannot carry
-every kind of runtime history forward. Read [Threads from older T3 Code versions](./thread-migration.md)
+every kind of runtime history forward. Read [Threads from older CodeShip versions](./thread-migration.md)
 before continuing an important older thread.
 
 ## When versions don't match
@@ -66,7 +66,7 @@ A client and server must speak the same orchestration protocol. If they do not, 
 refused rather than running half-upgraded:
 
 - An app newer than the server is blocked before connecting, with a notice telling you to update
-  T3 Code on the machine named in the notice.
+  CodeShip on the machine named in the notice.
 - A server newer than your app refuses the connection with an update message.
 
 Update the side the notice names, then reconnect.
@@ -113,7 +113,7 @@ directory and pair with the running server.
 
 ## If the desktop app does not start
 
-If the desktop app's server keeps failing at startup, T3 Code shows a "T3 Code
+If the desktop app's server keeps failing at startup, CodeShip shows a "CodeShip
 could not start" window instead of the app. If a newer version is available,
 choose **Update** to install it. If not, the window links to the last version
 that started on your computer. Download and install it to go back. Use **Copy
@@ -126,10 +126,10 @@ details** to include the error in a bug report.
 at once. Hover it to see which providers it will update. Providers that only
 offer a manual update command are not included.
 
-After a successful provider CLI update, T3 Code refreshes model discovery for
+After a successful provider CLI update, CodeShip refreshes model discovery for
 every enabled instance of that provider using its own configuration. Connected
 clients receive the refreshed catalogs automatically. Provider update checks
-must be enabled to download the latest T3 Code model catalog.
+must be enabled to download the latest CodeShip model catalog.
 
 Provider updates do not restart running chats. An existing session can keep
 using the previous CLI until it ends. If discovery fails, check the provider
@@ -148,7 +148,7 @@ These controls require a connected environment and permission to operate it.
 Provider update checks and restart continuation preferences are in
 **Settings → Maintenance**. If provider update checks are disabled, enable them
 there before refreshing to find newer versions. The same setting controls whether
-T3 Code downloads model catalog updates, so with it off new models may not appear
+CodeShip downloads model catalog updates, so with it off new models may not appear
 until you enable it and refresh provider status.
 
 Install App Store or Google Play releases as usual. The mobile app can also

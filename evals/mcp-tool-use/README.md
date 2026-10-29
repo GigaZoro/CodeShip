@@ -1,8 +1,8 @@
 # MCP tool use
 
-Replays small fake threads on Claude and Codex models and checks how they use T3's MCP tools: delegation, PR linking, previews, scheduling, and more. Each case reproduces a real mistake an agent made in T3 Code.
+Replays small fake threads on Claude and Codex models and checks how they use T3's MCP tools: delegation, PR linking, previews, scheduling, and more. Each case reproduces a real mistake an agent made in CodeShip.
 
-The model sees what it sees in T3 Code. A trimmed capture of a real harness turn supplies the harness prompt and native tools. T3's instructions, tool descriptions, and schemas come from this checkout. A cheap model plays the shell, so nothing runs on your machine.
+The model sees what it sees in CodeShip. A trimmed capture of a real harness turn supplies the harness prompt and native tools. T3's instructions, tool descriptions, and schemas come from this checkout. A cheap model plays the shell, so nothing runs on your machine.
 
 ## Run
 
@@ -12,11 +12,14 @@ pnpm mcp-tool-use --case review-round-uses-thread-send --samples 1 --out runs/ch
 pnpm mcp-tool-use --model claude-opus-5-5 --out runs/opus
 ```
 
-- `ANTHROPIC_API_KEY` in the repo root `.env` pays for Claude models and the Haiku shell simulator.
-- Codex models (`gpt-*` in `MODELS` in `run.ts`) go through a CLIProxyAPI server, set up as the `vibeproxy` model provider in `~/.codex/config.toml`. Keep the proxy under about 12 samples in flight across all runs.
-- Flags: `--case <ids>`, `--cases <file.ndjson>`, `--samples <n>` (default 2, and a 3rd when the first 2 disagree), `--concurrency <n>` (samples in flight, default 8), `--max-steps <n>`, `--effort <level>`, `--dry-run` (prints request bodies, no model calls), and `--context` (prints the size of T3's text and schemas, no key needed).
+- With one available provider, the runner selects it automatically. OpenAI uses `OPENAI_API_KEY` or your existing `codex login`; Anthropic uses `ANTHROPIC_API_KEY`.
+- With both available, choose `--provider openai` or `--provider anthropic`. Set `CODESHIP_EVAL_PROVIDER=openai` (or `anthropic`) in the repo root's gitignored `.env` to save your default. An explicit `--provider` or `--model` overrides it; an unavailable explicit choice fails without switching providers.
+- Both the agent and shell simulator use the selected provider. OpenAI defaults to Luna for both; Anthropic defaults to Sonnet and Haiku. `--model` and `--shell-model` select models within that provider.
+- Existing CLIProxyAPI setups can opt in with `--provider openai --proxy`; this uses the `vibeproxy` entry in `~/.codex/config.toml`. The proxy must serve the selected OpenAI agent and simulator models.
+- Codex credentials are refreshed by its app-server and held in memory. Model-produced tool calls still run only against the simulated machine.
+- Flags: `--case <ids>`, `--cases <file.ndjson>`, `--samples <n>` (default 2, and a 3rd when the first 2 disagree), `--concurrency <n>` (samples in flight, default 8), `--max-steps <n>`, `--effort <level>`, `--dry-run` (prints request bodies, no model calls), and `--context` (prints the size of CodeShip's text and schemas, no key needed). Offline runs default to OpenAI; use `--provider anthropic` to inspect Claude cases.
 - `--baseline <results.jsonl> --stop-on-regression` stops as soon as a case that passed every baseline sample fails. Use it to test one copy change against a baseline run.
-- Cost: a full Sonnet run is about $9, and a full Opus run about $17. Codex models through the proxy cost only the shell simulator.
+- Cost: a full Sonnet run is about $9, and a full Opus run about $17. OpenAI usage follows your API key or Codex subscription; the report records tokens without estimating its price.
 
 ## Add a case
 
@@ -41,7 +44,7 @@ Check that the case builds with `--dry-run --case <id>`. Then run it on the text
 
 `templates/` holds one trimmed capture per harness. Refresh them when a harness changes its prompt or native tools:
 
-1. Capture one T3 Code turn through CLIProxyAPI, with T3's MCP server connected.
+1. Capture one CodeShip turn through CLIProxyAPI, with T3's MCP server connected.
 2. From `evals/`, run `pnpm mcp-tool-use:trim-capture <claude|codex> <capture.json> mcp-tool-use/templates/<claude|codex>.json.gz`. It keeps only what `run.ts` reads, and removes user instructions, the user's own skills and agents, account ids, and home paths.
 3. Read the output for user data before you commit it: `zcat <file> | less`.
 4. Run the full eval on the old and new templates, and compare.

@@ -22,6 +22,46 @@ import {
 } from "./modelOptions";
 
 describe("mobile model options", () => {
+  it.each([
+    { installed: false },
+    { auth: { status: "unauthenticated" as const } },
+    { availability: "unavailable" as const },
+    { status: "error" as const },
+    { status: "warning" as const },
+  ])("excludes unusable providers from automatic model choices: %j", (update) => {
+    const config = {
+      providers: [
+        {
+          instanceId: "claudeAgent",
+          driver: "claudeAgent",
+          enabled: true,
+          installed: true,
+          status: "ready",
+          auth: { status: "authenticated" },
+          models: [{ slug: "claude", name: "Claude", isDefault: true, capabilities: null }],
+          ...update,
+        },
+        {
+          instanceId: "codex",
+          driver: "codex",
+          enabled: true,
+          installed: true,
+          status: "ready",
+          auth: { status: "authenticated" },
+          models: [{ slug: "gpt", name: "GPT", isDefault: true, capabilities: null }],
+        },
+      ],
+    } as unknown as ServerConfig;
+    expect(
+      resolveNewTaskModelSelection({
+        draftSelection: null,
+        projectDefaultSelection: null,
+        stickySelection: null,
+        modelOptions: buildModelOptions(config, null, undefined, null),
+      }),
+    ).toEqual({ instanceId: "codex", model: "gpt" });
+  });
+
   it("distinguishes same-name OpenCode models without changing their routing", () => {
     const sources = [
       { id: "anthropic", label: "Anthropic" },

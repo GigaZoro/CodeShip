@@ -1,8 +1,11 @@
 import { assert, expect, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as HttpClient from "effect/http/HttpClient";
 import { ComposerContextId, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 
 import {
+  answerToolCall,
   buildBase,
   buildMessages,
   failedEarly,
@@ -194,7 +197,7 @@ const template = {
     {
       role: "system",
       content:
-        "Main prompt.\n - Primary working directory: /home/alice/app\n\n<runtime_info>old</runtime_info>\n\n## T3 Code orchestration\nold text",
+        "Main prompt.\n - Primary working directory: /home/alice/app\n\n<runtime_info>old</runtime_info>\n\n## CodeShip orchestration\nold text",
     },
     {
       role: "system",
@@ -412,3 +415,32 @@ it("stops a sample only once a must-not check has failed", () => {
   assert.isTrue(failedEarly(expect, run("watch_pull_request")));
   assert.isTrue(failedEarly({ textMustNot: ["paste"] }, run("Bash", "paste it here")));
 });
+
+it.effect(
+  "returns a tool validation error for an empty thread id instead of crashing the eval",
+  () =>
+    Effect.gen(function* () {
+      const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
+      const sample = makeSample(childCase, base);
+      const tool = base.t3.find((tool) => tool.name === "mcp__t3-code__t3_thread_read")!;
+      sample.tools.push(tool);
+      const result = yield* answerToolCall(
+        sample,
+        {
+          apiKey: "",
+          model: "claude-sonnet-5-5",
+          shellModel: "claude-haiku-5-5",
+          effort: "low",
+          maxSteps: 1,
+        },
+        { type: "tool_use", id: "call-1", name: tool.name, input: { threadId: "" } },
+      );
+      assert.equal(result.is_error, true);
+      assert.include(String(result.content), "InputValidationError");
+    }).pipe(
+      Effect.provideService(
+        HttpClient.HttpClient,
+        HttpClient.make(() => Effect.die("Unexpected model request")),
+      ),
+    ),
+);

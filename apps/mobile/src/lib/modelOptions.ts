@@ -153,12 +153,14 @@ export function isModelSelectionUnavailable(
   const driver =
     provider?.driver ?? config.settings?.providerInstances[selection.instanceId]?.driver;
   return (
-    driver === "antigravity" &&
-    (!provider ||
-      !provider.installed ||
-      provider.auth.status === "unauthenticated" ||
-      provider.availability === "unavailable" ||
-      !provider.models.some((model) => model.slug === selection.model))
+    (provider !== undefined &&
+      (!provider.installed ||
+        provider.auth.status === "unauthenticated" ||
+        provider.availability === "unavailable" ||
+        provider.status === "error" ||
+        provider.status === "warning")) ||
+    (driver === "antigravity" &&
+      (!provider || !provider.models.some((model) => model.slug === selection.model)))
   );
 }
 
@@ -176,8 +178,8 @@ export function describeUnavailableModelSelection(
         detail: "Turn it back on from web or desktop, or choose another model.",
       }
     : {
-        title: "Antigravity model unavailable",
-        detail: "Set up Antigravity on web or desktop, or choose another model.",
+        title: "Model unavailable",
+        detail: "Set up its provider on the environment, or choose another model.",
       };
 }
 
@@ -301,7 +303,7 @@ export function buildModelOptions(
       !isProviderEnabledForProject(config, provider, projectId) ||
       !provider.installed ||
       provider.auth.status === "unauthenticated" ||
-      (provider.driver === "antigravity" && provider.availability === "unavailable")
+      provider.availability === "unavailable"
     ) {
       continue;
     }
@@ -339,6 +341,9 @@ export function buildModelOptions(
         canHide: !model.isCustom,
         isDefault: model.isDefault === true,
         isLegacy: model.isLegacy === true,
+        ...(provider.status === "error" || provider.status === "warning"
+          ? { isUnavailable: true }
+          : {}),
         ...(updateRequired ? { providerUpdateRequired: updateRequired } : {}),
         capabilities: model.capabilities,
         selection: normalizeSelectionOptions(

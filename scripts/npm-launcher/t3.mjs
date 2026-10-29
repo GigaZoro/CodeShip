@@ -50,7 +50,7 @@ async function download(url, file) {
         shown = step;
         const percent = total ? ` ${step}%` : "";
         process.stderr.write(
-          `\r\x1b[2Kt3: downloading T3 Code ${version}${percent} (${(received / 1048576).toFixed(1)} MB)`,
+          `\r\x1b[2Kt3: downloading CodeShip ${version}${percent} (${(received / 1048576).toFixed(1)} MB)`,
         );
       }
     }
@@ -121,7 +121,7 @@ async function main() {
   const key = `${process.platform}-${process.arch}`;
   if (!SUPPORTED.includes(key)) {
     throw new Error(
-      `no T3 Code CLI build is available for ${key} (supported: ${SUPPORTED.join(", ")}).\n` +
+      `no CodeShip CLI build is available for ${key} (supported: ${SUPPORTED.join(", ")}).\n` +
         "The desktop app is at https://github.com/pingdotgg/t3code/releases",
     );
   }

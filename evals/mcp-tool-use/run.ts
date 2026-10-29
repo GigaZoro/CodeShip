@@ -55,6 +55,14 @@ import {
   CLAUDE_PROVIDER,
   makeClaudeQueryOptions,
 } from "../../apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import {
+  openAiConnection,
+  openAiShellRequest,
+  publicResponsesRequest,
+  readCodexConnection,
+  selectEvalProvider,
+  type OpenAiConnection,
+} from "./providers.ts";
 import { proxyConfig } from "../shared/proxy.ts";
 import { changeRequestsCreatedBy } from "../../apps/server/src/orchestration-v2/PullRequestSyncReactor.ts";
 /** Agent models by id, with the display name a harness gives them. */
@@ -63,9 +71,10 @@ const MODELS = {
   "claude-opus-5-5": "Opus 5.5",
   "gpt-6.1-sol": "GPT-6.1 Sol",
   "gpt-6-astra": "GPT-6 Astra",
+  "gpt-6-luna": "GPT-6 Luna",
 } as const;
 type Model = keyof typeof MODELS;
-/** GPT models replay a Codex capture through CLIProxyAPI, the rest a Claude Code capture. */
+/** GPT models replay a Codex capture, the rest a Claude Code capture. */
 const isCodex = (model: Model): model is Extract<Model, `gpt-${string}`> =>
   model.startsWith("gpt-");
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
@@ -312,6 +321,12 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   DeviceToolkit,
   HtmlToolkit,
 ].flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools));
+const decodeT3Input = new Map(
+  t3SourceTools.map((tool) => [
+    tool.name,
+    Schema.decodeUnknownOption(Schema.toType(tool.parametersSchema)),
+  ]),
+);
 const t3Tools: ReadonlyArray<ApiTool> = t3SourceTools.map((tool) => ({
   name: `${T3_PREFIX}${tool.name}`,
   description: Tool.getDescription(tool) ?? "",
@@ -1055,10 +1070,10 @@ export const mockOutput = (sample: Sample, command: string) =>
 type Config = {
   readonly apiKey: string;
   readonly model: Model;
-  readonly proxy?: { readonly url: string; readonly headers: Readonly<Record<string, string>> };
+  readonly proxy?: OpenAiConnection;
   readonly effort: string;
   readonly maxSteps: number;
-  readonly shellModel: PricedModel;
+  readonly shellModel: Model | PricedModel;
 };
 
 /** Output for a shell, file, or web tool: a matching shell mock, else the shell simulator. */
@@ -1071,11 +1086,9 @@ const simulate = Effect.fn("evaluateMcpToolUse.simulate")(function* (
   let output = typeof command === "string" ? mockOutput(sample, command) : undefined;
   if (output === undefined) {
     const body = shellRequest(sample, call, config.shellModel);
-    const response = yield* callModel(
-      config.apiKey,
-      body,
-      config.apiKey ? undefined : config.proxy,
-    );
+    const response = config.proxy
+      ? yield* callCodex(config, openAiShellRequest(body))
+      : yield* callModel(config.apiKey, body);
     addUsage(sample.shellUsage, response.usage);
     output = shellOutput(response.content);
   }
@@ -1087,7 +1100,7 @@ const simulate = Effect.fn("evaluateMcpToolUse.simulate")(function* (
 });
 
 /** The result for one tool call. */
-const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(function* (
+export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(function* (
   sample: Sample,
   config: Config,
   call: typeof ToolUse.Type,
@@ -1115,6 +1128,10 @@ const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(function* 
     const found = searchTools(base, valueText(input.query), max);
     if (found.length === 0) return toolResult(call.id, "No matching deferred tools found");
     return loadTools(tools, call.id, found);
+  }
+  const decodeInput = isT3Name(call.name) ? decodeT3Input.get(name) : undefined;
+  if (decodeInput && Option.isNone(decodeInput(input))) {
+    return failed(`InputValidationError: Invalid arguments for ${name}. Follow its input schema.`);
   }
   const mock = testCase.setup.mocks?.[name];
   if (mock !== undefined && mock !== "default")
@@ -1328,12 +1345,17 @@ const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unkno
 
 const callCodex = Effect.fn("evaluateMcpToolUse.callCodex")(function* (
   config: Config,
-  body: unknown,
+  body: { input: ReadonlyArray<Block> },
 ) {
-  const raw = yield* postModel("", body, config.proxy, true);
+  const raw = yield* postModel(
+    "",
+    config.proxy?.publicApi ? publicResponsesRequest(body) : body,
+    config.proxy,
+    true,
+  );
   const completed = raw
     .split("\n")
-    .filter((line) => line.startsWith("data: "))
+    .filter((line) => line.startsWith("data: ") && line.slice(6).trim() !== "[DONE]")
     .map((line) => JSON.parse(line.slice(6)) as Record<string, unknown>)
     .find((event) => event.type === "response.completed");
   if (!completed)
@@ -1386,10 +1408,13 @@ const postModel = Effect.fn("evaluateMcpToolUse.postModel")(function* (
     `${proxy?.url ?? "https://api.anthropic.com/v1"}/${responses ? "responses" : "messages"}`,
   ).pipe(
     HttpClientRequest.setHeaders({
-      ...(apiKey ? { "x-api-key": apiKey } : {}),
-      "anthropic-version": "2023-06-01",
-      // Claude Code sends this beta for `defer_loading` tools and `tool_reference` results.
-      "anthropic-beta": "advanced-tool-use-2025-11-20",
+      ...(!responses
+        ? {
+            ...(apiKey ? { "x-api-key": apiKey } : {}),
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": "advanced-tool-use-2025-11-20",
+          }
+        : {}),
       ...proxy?.headers,
     }),
     HttpClientRequest.bodyJson(body),
@@ -1562,7 +1587,11 @@ const spend = (usages: ReadonlyArray<Usage>, model: PricedModel | undefined) => 
 /** Markdown report. With a baseline, each case shows its earlier pass rate and the change. */
 const summarize = (
   rows: Array<ResultRow>,
-  options: { readonly header: string; readonly shellModel: PricedModel; readonly model: Model },
+  options: {
+    readonly header: string;
+    readonly shellModel: Model | PricedModel;
+    readonly model: Model;
+  },
   before?: Map<string, number>,
 ) => {
   const codex = isCodex(options.model);
@@ -1572,7 +1601,7 @@ const summarize = (
   );
   const shell = spend(
     rows.map((row) => row.shellUsage),
-    options.shellModel,
+    options.shellModel in PRICES ? (options.shellModel as PricedModel) : undefined,
   );
   const cost = agent.cost + shell.cost;
   const table = (title: string, key: (row: ResultRow) => string, compare = false) => [
@@ -1596,10 +1625,10 @@ const summarize = (
     `- ${options.header}`,
     `- Pass: ${percent(passRate(rows))} of ${rows.length} samples. Samples that failed to run count as failures.`,
     codex
-      ? "- Cost: not applicable (subscription through proxy)."
+      ? "- Cost: not estimated for OpenAI; usage follows the selected API key or Codex subscription."
       : `- Estimated cost $${cost.toFixed(2)}, $${(cost / rows.length).toFixed(3)} per sample.`,
     `- Agent tokens: ${agent.tokens}${codex ? "." : ` ($${agent.cost.toFixed(2)}).`}`,
-    `- Shell simulator (${options.shellModel}) tokens: ${shell.tokens} (API-price estimate $${shell.cost.toFixed(2)}).`,
+    `- Shell simulator (${options.shellModel}) tokens: ${shell.tokens} ${codex ? "(cost not estimated)" : `(API-price estimate $${shell.cost.toFixed(2)})`}.`,
     ...(codex
       ? [
           "- Code-mode tools use case mocks and a simulated machine. Native subagent prompts and asynchronous notifications are approximate.",
@@ -1620,6 +1649,7 @@ const PositiveIntOrZero = Schema.FiniteFromString.check(
 );
 const Flags = Schema.Struct({
   model: Schema.Literals(Object.keys(MODELS) as Array<Model>),
+  provider: Schema.Literals(["openai", "anthropic"]),
   template: Schema.String,
   cases: Schema.optional(Schema.Array(Schema.String)),
   out: Schema.optional(Schema.String),
@@ -1629,7 +1659,9 @@ const Flags = Schema.Struct({
   concurrency: PositiveInt,
   "max-steps": Schema.optional(PositiveInt),
   effort: Schema.optional(Schema.Literals(EFFORTS)),
-  "shell-model": Schema.Literals(Object.keys(PRICES) as Array<PricedModel>),
+  "shell-model": Schema.Literals([...Object.keys(PRICES), ...Object.keys(MODELS)] as Array<
+    Model | PricedModel
+  >),
   "user-instructions": Schema.Literals(["keep", "drop"]),
   "dry-run": Schema.Boolean,
   "stop-on-regression": Schema.Boolean,
@@ -1649,7 +1681,9 @@ const string = { type: "string" } as const;
 const main = Effect.gen(function* () {
   const { values } = NodeUtil.parseArgs({
     options: {
-      model: { ...string, default: "claude-sonnet-5-5" },
+      model: string,
+      provider: string,
+      proxy: { type: "boolean", default: false },
       template: string,
       cases: { ...string, multiple: true },
       out: string,
@@ -1662,7 +1696,7 @@ const main = Effect.gen(function* () {
       // Unset: 6 for Claude, 10 for Codex, whose code-mode cells take more steps.
       "max-steps": string,
       effort: string,
-      "shell-model": { ...string, default: "claude-haiku-5-5" },
+      "shell-model": string,
       // T3's text must work for every user, so the captured CLAUDE.md is dropped by default.
       "user-instructions": { ...string, default: "drop" },
       "dry-run": { type: "boolean", default: false },
@@ -1672,7 +1706,61 @@ const main = Effect.gen(function* () {
       context: { type: "boolean", default: false },
     },
   });
-  const flags = yield* decodeFlags({ template: "", ...values });
+  const offline = values["dry-run"] || values.context;
+  const requestedProvider =
+    values.provider ??
+    (values.model
+      ? values.model.startsWith("gpt-")
+        ? "openai"
+        : "anthropic"
+      : values.proxy
+        ? "openai"
+        : undefined);
+  const decodeProvider = Schema.decodeUnknownEffect(Schema.Literals(["openai", "anthropic"]));
+  const preferred = process.env.CODESHIP_EVAL_PROVIDER?.trim();
+  const requested =
+    requestedProvider === undefined ? undefined : yield* decodeProvider(requestedProvider);
+  const preference = preferred ? yield* decodeProvider(preferred) : undefined;
+  if (values.proxy && (requested ?? preference) === "anthropic")
+    return yield* Effect.die(new Error("--proxy requires the OpenAI provider."));
+  const apiKey = process.env.ANTHROPIC_API_KEY?.trim() ?? "";
+  const openAiKey = process.env.OPENAI_API_KEY?.trim();
+  const connection =
+    offline || (requested ?? preference) === "anthropic"
+      ? undefined
+      : values.proxy
+        ? { ...proxyConfig(), publicApi: false }
+        : openAiKey
+          ? openAiConnection({ authMethod: "apikey", authToken: openAiKey })
+          : yield* readCodexConnection().pipe(Effect.orElseSucceed(() => undefined));
+  const provider = offline
+    ? (requested ?? preference ?? "openai")
+    : selectEvalProvider({
+        available: [
+          ...(connection ? ["openai" as const] : []),
+          ...(apiKey ? ["anthropic" as const] : []),
+        ],
+        requested,
+        preferred: preference,
+      });
+  const flags = yield* decodeFlags({
+    template: "",
+    ...values,
+    provider,
+    model: values.model ?? (provider === "openai" ? "gpt-6-luna" : "claude-sonnet-5-5"),
+    effort:
+      values.effort ?? (provider === "openai" && values.model === undefined ? "low" : undefined),
+    "shell-model":
+      values["shell-model"] ?? (provider === "openai" ? "gpt-6-luna" : "claude-haiku-5-5"),
+  });
+  if (
+    (flags.model.startsWith("gpt-") ? "openai" : "anthropic") !== provider ||
+    (flags["shell-model"].startsWith("gpt-") ? "openai" : "anthropic") !== provider
+  ) {
+    return yield* Effect.die(
+      new Error("--model and --shell-model must belong to the selected --provider."),
+    );
+  }
   if (flags.context) {
     process.stdout.write(`${t3ContextReport(flags.model)}\n`);
     return;
@@ -1759,17 +1847,13 @@ const main = Effect.gen(function* () {
     }
     return;
   }
-  const apiKey = process.env.ANTHROPIC_API_KEY ?? "";
   const out = flags.out;
-  if ((!apiKey && !codex) || out === undefined) {
-    const message =
-      "Set ANTHROPIC_API_KEY and pass --out <directory>. ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL are never used.";
-    return yield* Effect.die(new Error(message));
-  }
+  if (out === undefined)
+    return yield* Effect.die(new Error("Pass --out <directory> to save the eval results."));
   const config: Config = {
     apiKey,
     model: flags.model,
-    ...(codex ? { proxy: proxyConfig() } : {}),
+    ...(connection && provider === "openai" ? { proxy: connection } : {}),
     effort,
     maxSteps: flags["max-steps"] ?? (codex ? 10 : 6),
     shellModel: flags["shell-model"],

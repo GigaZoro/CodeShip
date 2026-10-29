@@ -283,6 +283,15 @@ describe("resolveSelectableProviderInstance", () => {
     ];
 
     expect(resolveSelectableProviderInstance(providers, undefined)).toBe(ready);
+    for (const update of [
+      { installed: false },
+      { auth: { status: "unauthenticated" as const } },
+      { status: "warning" as const },
+    ]) {
+      const unusable = { ...providers[0]!, status: "ready" as const, ...update };
+      expect(resolveSelectableProviderInstance([unusable, providers[1]!], undefined)).toBe(ready);
+      expect(resolveSelectableProviderInstance([unusable], undefined)).toBeUndefined();
+    }
   });
 
   it("keeps a requested instance even when its probe errored", () => {
@@ -421,7 +430,7 @@ describe("resolveDefaultProviderModelSelection", () => {
     expect(resolveDefaultProviderModelSelection(providers, stored)).toBe(stored);
   });
 
-  it("replaces a stale stored instance with the first ready instance and its model", () => {
+  it("preserves an explicit default when its provider is no longer reported", () => {
     const providers = [
       provider({
         provider: ProviderDriverKind.make("codex"),
@@ -441,12 +450,12 @@ describe("resolveDefaultProviderModelSelection", () => {
         instanceId: ProviderInstanceId.make("removed-provider"),
         model: "stale-model",
       }),
-    ).toEqual({ instanceId: "claudeAgent", model: "claude-opus-4-8" });
+    ).toEqual({ instanceId: "removed-provider", model: "stale-model" });
   });
 
   // regression: #4117 users without Codex got a broken default provider
   it.each([{ enabled: false }, { availability: "unavailable" as const }])(
-    "replaces an unavailable stored instance deterministically",
+    "preserves an explicit default when its provider becomes unavailable",
     (requestedState) => {
       const providers = [
         provider({
@@ -467,7 +476,7 @@ describe("resolveDefaultProviderModelSelection", () => {
           instanceId: ProviderInstanceId.make("codex"),
           model: "gpt-5.6",
         }),
-      ).toEqual({ instanceId: "claudeAgent", model: "claude-opus-4-8" });
+      ).toEqual({ instanceId: "codex", model: "gpt-5.6" });
     },
   );
 

@@ -24,6 +24,7 @@ import {
   SettingsEnvironmentFilterHeader,
 } from "./components/SettingsEnvironmentFilterHeader";
 import { BranchNamingSettings } from "./components/BranchNamingSettings";
+import { DefaultModelSettings } from "./components/DefaultModelSettings";
 import { DatabaseStorageNotice } from "./components/DatabaseStorageNotice";
 import { ListChoiceRow as SettingsChoiceRow } from "../../components/ui/ListChoiceRow";
 import { SettingsSection } from "./components/SettingsSection";
@@ -54,6 +55,7 @@ const PAGE_TITLES: Record<SettingsPage, string> = {
 
 const PAGE_PROJECT_KEYS: Record<SettingsPage, readonly ProjectScopedServerSettingKey[]> = {
   threads: [
+    "defaultModelSelection",
     "defaultThreadEnvMode",
     "defaultRuntimeMode",
     "responseStreamingMode",
@@ -302,6 +304,11 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
               ) : null}
               {props.page === "threads" ? (
                 <>
+                  <DefaultModelSettings
+                    targets={displayTargets}
+                    disabled={disabledFor("defaultModelSelection")}
+                    onChange={write}
+                  />
                   <SettingsSection
                     title="Default workspace"
                     trailing={

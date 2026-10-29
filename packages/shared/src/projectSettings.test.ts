@@ -103,7 +103,7 @@ describe("resolveProjectSettings", () => {
     expect(folded.sources.defaultModelSelection).toBe("environment");
   });
 
-  it("keeps the environment default model when the override's provider is disabled", () => {
+  it("preserves an explicit project default when its provider is disabled", () => {
     const disabledSelection = createModelSelection(ProviderInstanceId.make("claudeAgent"), "opus");
     const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
       providerInstances: {
@@ -115,8 +115,8 @@ describe("resolveProjectSettings", () => {
       projectSettingsOverrides: { [projectId]: { defaultModelSelection: disabledSelection } },
     });
     const resolved = resolveProjectSettings(settings, projectId);
-    expect(resolved.settings.defaultModelSelection).toBeNull();
-    expect(resolved.sources.defaultModelSelection).toBe("environment");
+    expect(resolved.settings.defaultModelSelection).toEqual(disabledSelection);
+    expect(resolved.sources.defaultModelSelection).toBe("project");
   });
 
   it("moves text generation off an instance the project turned off", () => {
