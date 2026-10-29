@@ -2526,8 +2526,38 @@ describe("OrchestratorMcpService provider resolution", () => {
             target: { providerInstanceId: peerId, options: { reasoningEffort: "max" } },
             expected: { instanceId: peerId, model: inherited.model, options: override },
           },
+          {
+            name: "old Ultracode effort level",
+            target: { model: "ultracode-model", options: { effort: "ultracode" } },
+            expected: {
+              instanceId: codexInstanceId,
+              model: "ultracode-model",
+              options: [
+                { id: "effort", value: "xhigh" },
+                { id: "ultracode", value: true },
+              ],
+            },
+          },
+          {
+            name: "effort override on an old Ultracode parent",
+            parent: {
+              instanceId: codexInstanceId,
+              model: "ultracode-model",
+              options: [{ id: "effort", value: "ultracode" }],
+            },
+            target: { options: { effort: "high" } },
+            expected: {
+              instanceId: codexInstanceId,
+              model: "ultracode-model",
+              options: [
+                { id: "effort", value: "high" },
+                { id: "ultracode", value: true },
+              ],
+            },
+          },
         ] as const;
         for (const testCase of cases) {
+          const parent = "parent" in testCase ? testCase.parent : inherited;
           const commands: Array<unknown> = [];
           const task = {
             id: taskId,
@@ -2547,7 +2577,7 @@ describe("OrchestratorMcpService provider resolution", () => {
               getThreadRecords: (threadId) =>
                 Effect.succeed(
                   threadId === parentThreadId
-                    ? parentProjection(commands.length > 0 ? [task] : [], inherited)
+                    ? parentProjection(commands.length > 0 ? [task] : [], parent)
                     : childProjection,
                 ),
               dispatch: (command) =>
@@ -2567,12 +2597,33 @@ describe("OrchestratorMcpService provider resolution", () => {
                   driver,
                   model: inherited.model,
                 }),
-                models: [inherited.model, "other-model"].map((model) => ({
-                  slug: model,
-                  name: model,
-                  isCustom: false,
-                  capabilities: null,
-                })),
+                models: [
+                  ...[inherited.model, "other-model"].map((model) => ({
+                    slug: model,
+                    name: model,
+                    isCustom: false,
+                    capabilities: null,
+                  })),
+                  {
+                    slug: "ultracode-model",
+                    name: "ultracode-model",
+                    isCustom: false,
+                    capabilities: {
+                      optionDescriptors: [
+                        {
+                          id: "effort",
+                          label: "Reasoning",
+                          type: "select",
+                          options: [
+                            { id: "high", label: "High" },
+                            { id: "xhigh", label: "Extra High" },
+                          ],
+                        },
+                        { id: "ultracode", label: "Ultracode", type: "boolean" },
+                      ],
+                    },
+                  },
+                ],
               },
               providerSnapshot({ instanceId: peerId, driver, model: inherited.model }),
             ]),
@@ -2585,7 +2636,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           yield* Effect.gen(function* () {
             const service = yield* OrchestratorMcpService.OrchestratorMcpService;
             const capabilities = yield* service.capabilities(scope);
-            assert.deepEqual(capabilities.inheritedOptions, inherited.options);
+            assert.deepEqual(capabilities.inheritedOptions, parent.options);
             yield* service.delegateTask(scope, {
               task: "Review the change.",
               target: yield* decodeTarget(testCase.target),
