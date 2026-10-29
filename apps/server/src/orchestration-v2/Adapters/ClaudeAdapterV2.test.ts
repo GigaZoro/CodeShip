@@ -10623,7 +10623,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
-  // Issue #16355: a nested subagent launched while the root was idle and
+  // A nested subagent launched while the root was idle and
   // finished during a later user turn stayed running after a sibling's wake.
   it.effect("keeps an idle-launched nested subagent completed through a sibling's wake", () =>
     Effect.scoped(

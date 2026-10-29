@@ -4201,7 +4201,7 @@ function claudeTaskString(value: unknown, key: string): string | undefined {
 }
 
 // A Claude Code mod can hold a tool call until the user acts in its terminal
-// pane. T3 cannot provide the requested pane interaction (#17531).
+// pane. CodeShip cannot provide the requested pane interaction.
 // Passive panes never request focus and keep working.
 function claudeFocusRequestedPanePlugin(message: SDKMessage): string | null {
   if (message.type !== "system" || claudeTaskField(message, "subtype") !== "ui_panes") return null;
@@ -8198,7 +8198,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               failure: makeProviderFailure({
                 class: "provider_error",
                 code: "claude_mod_ui_unsupported",
-                message: `The Claude Code mod "${focusedPlugin}" is waiting for input in its terminal pane, which T3 Code cannot show. Disable the mod for sessions run from T3 Code, or run the task in the Claude Code terminal.`,
+                message: `The Claude Code mod "${focusedPlugin}" is waiting for input in its terminal pane, which CodeShip cannot show. Disable the mod for sessions run from CodeShip, or run the task in the Claude Code terminal.`,
               }),
             });
             // Closing ends the CLI process and abandons the held tool call

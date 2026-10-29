@@ -183,7 +183,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chec
           } else {
             expect(code).not.toBe(0);
             expect(output).toContain("checksum mismatch");
-            expect(output).not.toContain("Installed T3 Code");
+            expect(output).not.toContain("Installed CodeShip");
             expect(await NodeFSP.readdir(versions)).toEqual([]);
           }
         } finally {

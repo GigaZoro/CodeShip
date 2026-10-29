@@ -105,7 +105,7 @@ const assertPairRejected = (baseDir: string) =>
     const rendered = String(
       typeof error === "object" && error !== null && "cause" in error ? error.cause : error,
     );
-    assert.include(rendered, "No running T3 Code server found.");
+    assert.include(rendered, "No running CodeShip server found.");
   });
 
 const withDescriptorServer = <A, E, R>(
@@ -566,7 +566,7 @@ describe("t3 pair", () => {
             const rendered = String(
               typeof error === "object" && error !== null && "cause" in error ? error.cause : error,
             );
-            assert.include(rendered, "No running T3 Code server found.");
+            assert.include(rendered, "No running CodeShip server found.");
           }),
         ),
       (server) =>

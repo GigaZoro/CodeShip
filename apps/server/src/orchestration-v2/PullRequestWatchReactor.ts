@@ -396,7 +396,7 @@ export const make = Effect.gen(function* () {
 
   const merged = (target: WatchTarget) =>
     record(target, null, {
-      text: `Pull request #${target.link.number} (${target.link.url}) was merged, so T3 Code stopped watching it.`,
+      text: `Pull request #${target.link.number} (${target.link.url}) was merged, so CodeShip stopped watching it.`,
       notification: {
         source: { kind: "monitor" },
         outcome: "updated",
