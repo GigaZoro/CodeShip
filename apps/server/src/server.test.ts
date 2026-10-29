@@ -7,6 +7,7 @@ import * as Layer from "effect/Layer";
 import { HttpServer, HttpServerError } from "effect/http";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as ServerConfig from "./config.ts";
 import { layerHttpServer } from "./server.ts";
@@ -28,6 +29,9 @@ const occupyNonLoopbackPort = Effect.acquireRelease(
   (blocker) => Effect.callback<void>((resume) => void blocker.close(() => resume(Effect.void))),
 );
 
+// macOS SO_REUSEADDR lets a wildcard bind share a port held on one address; Linux refuses it.
+const wildcardBindConflicts = HostProcess.Platform.defaultValue() === "linux";
+
 const httpServerWithConfig = (
   overrides: Pick<ServerConfig.ServerConfig["Service"], "host" | "port" | "privateNetworkOnly">,
 ) =>
@@ -43,40 +47,44 @@ const httpServerWithConfig = (
     Layer.provide(NodeServices.layer),
   );
 
-it.live("managed service falls back to loopback when its wildcard port is taken", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const { port } = yield* occupyNonLoopbackPort;
-      const { address, config } = yield* Effect.all({
-        address: Effect.map(HttpServer.HttpServer, (server) => server.address),
-        config: ServerConfig.ServerConfig,
-      }).pipe(
-        Effect.provide(httpServerWithConfig({ host: "0.0.0.0", port, privateNetworkOnly: true })),
-      );
-      assert.strictEqual(config.host, "127.0.0.1");
-      const listening =
-        address._tag === "InetAddressV4"
-          ? `${String(address.address)}:${address.port}`
-          : address._tag;
-      assert.strictEqual(listening, `127.0.0.1:${port}`);
-    }),
-  ),
+it.live.skipIf(!wildcardBindConflicts)(
+  "managed service falls back to loopback when its wildcard port is taken",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { port } = yield* occupyNonLoopbackPort;
+        const { address, config } = yield* Effect.all({
+          address: Effect.map(HttpServer.HttpServer, (server) => server.address),
+          config: ServerConfig.ServerConfig,
+        }).pipe(
+          Effect.provide(httpServerWithConfig({ host: "0.0.0.0", port, privateNetworkOnly: true })),
+        );
+        assert.strictEqual(config.host, "127.0.0.1");
+        const listening =
+          address._tag === "InetAddressV4"
+            ? `${String(address.address)}:${address.port}`
+            : address._tag;
+        assert.strictEqual(listening, `127.0.0.1:${port}`);
+      }),
+    ),
 );
 
-it.live("an explicit wildcard host still fails when its port is taken", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const { port } = yield* occupyNonLoopbackPort;
-      const exit = yield* HttpServer.HttpServer.pipe(
-        Effect.provide(
-          httpServerWithConfig({ host: "0.0.0.0", port, privateNetworkOnly: undefined }),
-        ),
-        Effect.exit,
-      );
-      assert.isTrue(Exit.isFailure(exit));
-      const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined;
-      assert.instanceOf(error, HttpServerError.ServeError);
-      assert.propertyVal(error.cause, "code", "EADDRINUSE");
-    }),
-  ),
+it.live.skipIf(!wildcardBindConflicts)(
+  "an explicit wildcard host still fails when its port is taken",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { port } = yield* occupyNonLoopbackPort;
+        const exit = yield* HttpServer.HttpServer.pipe(
+          Effect.provide(
+            httpServerWithConfig({ host: "0.0.0.0", port, privateNetworkOnly: undefined }),
+          ),
+          Effect.exit,
+        );
+        assert.isTrue(Exit.isFailure(exit));
+        const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined;
+        assert.instanceOf(error, HttpServerError.ServeError);
+        assert.propertyVal(error.cause, "code", "EADDRINUSE");
+      }),
+    ),
 );
