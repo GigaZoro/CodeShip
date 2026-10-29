@@ -2609,6 +2609,11 @@ describe("OrchestratorMcpService provider resolution", () => {
             expected: { ...inherited, options: [] },
           },
           {
+            name: "same model by alias",
+            target: { model: "GPT" },
+            expected: { ...inherited, model: "GPT" },
+          },
+          {
             name: "change model",
             target: { model: "other-model" },
             expected: { instanceId: codexInstanceId, model: "other-model" },
@@ -2695,6 +2700,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                     name: model,
                     isCustom: false,
                     capabilities: null,
+                    ...(model === inherited.model ? { aliases: ["gpt"] } : {}),
                   })),
                   {
                     slug: "ultracode-model",
@@ -2743,6 +2749,61 @@ describe("OrchestratorMcpService provider resolution", () => {
           }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
         }
       }),
+  );
+
+  it.effect("validates options against the model a target names by alias", () =>
+    Effect.gen(function* () {
+      const dependencies = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
+          assertProviderInstanceEnabled: () => Effect.void,
+          getThreadRecords: (threadId) =>
+            Effect.succeed(threadId === parentThreadId ? parentProjection([]) : childProjection),
+          dispatch: () => Effect.die("an invalid target must not dispatch"),
+        }),
+        ServerSettings.layerTest(),
+        providerRegistryLayer([
+          {
+            ...providerSnapshot({
+              instanceId: codexInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+            }),
+            models: [
+              {
+                slug: "gpt-5.4",
+                name: "gpt-5.4",
+                aliases: ["gpt"],
+                isCustom: false,
+                capabilities: {
+                  optionDescriptors: [{ id: "fastMode", label: "Fast", type: "boolean" }],
+                },
+              },
+            ],
+          },
+        ]),
+        adapterRegistryLayer([codexInstanceId]),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        for (const model of ["gpt-5.4", "GPT"]) {
+          const error = yield* service
+            .delegateTask(scope, {
+              task: "Review the change.",
+              target: yield* decodeTarget({ model, options: { bogus: "x" } }),
+              mode: "async",
+              clientRequestId: model,
+            })
+            .pipe(Effect.flip);
+          assert.equal(error.code, "invalid_request", model);
+          assert.include(error.message, "Unknown option bogus", model);
+        }
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
+    }),
   );
 
   describe("resolveRuntimeMode", () => {
