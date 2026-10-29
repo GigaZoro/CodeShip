@@ -49,6 +49,8 @@ import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as ManagedEndpointRuntime from "../cloud/ManagedEndpointRuntime.ts";
+import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
@@ -7604,10 +7606,13 @@ const layerProductionBrowserAccessTest = RuntimeLayer.layerProduction.pipe(
       Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
       Layer.mock(ProviderRegistry.ProviderRegistry)({}),
       Layer.mock(ServerSecretStore.ServerSecretStore)({
+        directory: undefined,
         getOrCreateRandom: (_name, bytes) => Effect.succeed(new Uint8Array(bytes)),
       }),
       Layer.mock(TextGeneration.TextGeneration)({}),
       Layer.mock(WorktreeSetupTracker.WorktreeSetupTracker)({}),
+      Layer.mock(ManagedEndpointRuntime.CloudManagedEndpointRuntime)({}),
+      Layer.mock(AnalyticsService.AnalyticsService)({}),
     ),
   ),
   Layer.provide(
