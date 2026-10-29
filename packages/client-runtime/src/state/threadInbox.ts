@@ -117,7 +117,8 @@ export const WORKING_EXIT_GRACE_MS = 2_000;
 /**
  * Keep one at module scope so placement survives routes that unmount the list. Call
  * `observe` when the shells or the snapshot version change, or with null while the beta
- * is off. Its result stays fixed, so a list built from it can be cached.
+ * is off. Its result stays fixed, so a list built from it can be cached. A memoized caller
+ * passes the version it read: the React Compiler keys memos only on values the callback reads.
  */
 export function createInboxReturnTracker() {
   const keyOf = (thread: ThreadKeyInput) => `${thread.environmentId}:${thread.id}`;
@@ -166,7 +167,10 @@ export function createInboxReturnTracker() {
       };
     },
     getSnapshot: () => version,
-    observe(threads: readonly TrackedInboxThread[] | null): {
+    observe(
+      threads: readonly TrackedInboxThread[] | null,
+      _version?: number,
+    ): {
       readonly isWorking: (thread: WorkingThreadInput & ThreadKeyInput) => boolean;
       readonly returnedAt: (thread: ThreadKeyInput) => number | undefined;
     } {

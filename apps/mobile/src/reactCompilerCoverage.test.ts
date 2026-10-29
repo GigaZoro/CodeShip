@@ -192,6 +192,32 @@ describe("React Compiler coverage", () => {
     ).toEqual([true]);
   });
 
+  // The compiler infers memo deps from the callback, so an unread version dep is dropped and
+  // an expired working grace never re-observes the Working shelf.
+  it("re-observes the inbox tracker when its version changes", () => {
+    const result = compileLikeMetro("src/features/threads/useThreadListV2.ts", [], { ast: true });
+    const cacheKeys: string[][] = [];
+    if (typeof result === "object" && result !== null && "ast" in result) {
+      walkAst(result.ast, (node, ancestors) => {
+        if (node.type !== "CallExpression" || !isAstNode(node.callee)) return;
+        const property = node.callee.property;
+        if (!isAstNode(property) || property.name !== "observe") return;
+        const guard = ancestors.findLast(
+          (ancestor, index) =>
+            ancestor.type === "IfStatement" && ancestors[index + 1] === ancestor.consequent,
+        );
+        const names: string[] = [];
+        walkAst(guard?.test, (child) => {
+          if (child.type === "Identifier" && typeof child.name === "string" && child.name !== "$")
+            names.push(child.name);
+        });
+        cacheKeys.push(names);
+      });
+    }
+    expect(cacheKeys).toHaveLength(1);
+    expect(cacheKeys[0]).toContain("inboxVersion");
+  });
+
   it("lists only files that exist", () => {
     expect(Object.keys(KNOWN_BAILOUTS).filter((file) => !sourceFiles.includes(file))).toEqual([]);
   });
