@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import { applyUsageLimitsUpdate } from "@t3tools/provider-core/server/usageLimits";
 
 import { claudeRateLimitEventToUpdate, claudeUsageResponseToLimits } from "./claudeUsageLimits.ts";
 
@@ -224,6 +225,118 @@ describe("claudeUsageResponseToLimits", () => {
 });
 
 describe("claudeRateLimitEventToUpdate", () => {
+  it.each([undefined, {}, { five_hour: { utilization: "unknown" } }])(
+    "recovers an unavailable OAuth account from a valid top-level window: %j",
+    (unifiedWindows) => {
+      const previous = claudeUsageResponseToLimits({
+        checkedAt,
+        allowStreamedLimits: true,
+        response: { rate_limits_available: false, rate_limits: null },
+      }).limits;
+      const update = claudeRateLimitEventToUpdate(
+        {
+          status: "allowed",
+          rateLimitType: "five_hour",
+          utilization: 0.2,
+          ...(unifiedWindows === undefined ? {} : { unifiedWindows }),
+        },
+        noNames,
+      );
+      expect(update).toBeDefined();
+      const recovered = applyUsageLimitsUpdate({ previous, checkedAt, update: update! });
+      expect(recovered?.unavailable).toBeUndefined();
+      expect(recovered?.windows).toEqual([
+        expect.objectContaining({ id: "five_hour", usedPercent: 20 }),
+      ]);
+    },
+  );
+
+  it.each([undefined, 1_792_760_400])(
+    "retains a unified reset unless the current event supplies one: %s",
+    (resetsAt) => {
+      const event = {
+        status: "allowed" as const,
+        rateLimitType: "five_hour" as const,
+        utilization: 0.7,
+        ...(resetsAt === undefined ? {} : { resetsAt }),
+        unifiedWindows: { five_hour: { utilization: 0.2, resetsAt: 1_792_759_800 } },
+      };
+      expect(claudeRateLimitEventToUpdate(event, noNames)?.windows).toEqual([
+        expect.objectContaining({
+          id: "five_hour",
+          usedPercent: 70,
+          resetsAt:
+            resetsAt === undefined ? "2026-10-23T12:50:00.000Z" : "2026-10-23T13:00:00.000Z",
+        }),
+      ]);
+    },
+  );
+
+  it("reads the unified windows emitted by setup-token sessions without top-level utilization", () => {
+    const event = {
+      status: "allowed" as const,
+      rateLimitType: "five_hour" as const,
+      unifiedWindows: {
+        five_hour: { utilization: 0.2, resetsAt: 1_792_759_800 },
+        seven_day: { utilization: 0.59, resetsAt: 1_792_760_400 },
+      },
+    };
+    expect(claudeRateLimitEventToUpdate(event, noNames)).toEqual({
+      available: true,
+      windows: [
+        {
+          id: "five_hour",
+          kind: "session",
+          label: "Session",
+          windowDurationMins: 300,
+          usedPercent: 20,
+          resetsAt: "2026-10-23T12:50:00.000Z",
+        },
+        {
+          id: "seven_day",
+          kind: "weekly",
+          label: "Weekly",
+          windowDurationMins: 10080,
+          usedPercent: 59,
+          resetsAt: "2026-10-23T13:00:00.000Z",
+        },
+      ],
+    });
+  });
+
+  it("does not make malformed or unknown unified windows available", () => {
+    for (const unifiedWindows of [
+      null,
+      [],
+      {},
+      { five_hour: { utilization: NaN } },
+      { five_hour: { utilization: -1 } },
+      { five_hour: { utilization: "0.2" } },
+      { unknown: { utilization: 0.2 } },
+    ]) {
+      const event = { status: "allowed" as const, unifiedWindows };
+      expect(claudeRateLimitEventToUpdate(event, noNames)).toBeUndefined();
+    }
+  });
+
+  it("takes the current top-level window over its unified snapshot while retaining other windows", () => {
+    const event = {
+      status: "allowed" as const,
+      rateLimitType: "five_hour" as const,
+      utilization: 0.7,
+      unifiedWindows: { five_hour: { utilization: 0.2 }, seven_day: { utilization: 0.3 } },
+    };
+    expect(
+      claudeRateLimitEventToUpdate(event, noNames)?.windows.map(({ id, usedPercent }) => ({
+        id,
+        usedPercent,
+      })),
+    ).toEqual([
+      { id: "seven_day", usedPercent: 30 },
+      { id: "five_hour", usedPercent: 70 },
+    ]);
+  });
+
   it("scales the 0–1 utilization and epoch-second reset onto the probe's window id", () => {
     expect(
       claudeRateLimitEventToUpdate(
@@ -236,6 +349,7 @@ describe("claudeRateLimitEventToUpdate", () => {
         noNames,
       ),
     ).toEqual({
+      available: true,
       windows: [
         {
           id: "seven_day",
@@ -257,6 +371,7 @@ describe("claudeRateLimitEventToUpdate", () => {
     } as const;
     expect(claudeRateLimitEventToUpdate(event, noNames)).toBeUndefined();
     expect(claudeRateLimitEventToUpdate(event, { overageIncluded: "Fable" })).toEqual({
+      available: true,
       windows: [
         {
           id: "seven_day_fable",

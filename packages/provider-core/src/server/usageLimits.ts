@@ -58,7 +58,7 @@ export function applyUsageLimitsUpdate(input: {
   }
   const merged = new Map(previous?.windows.map((window) => [window.id, window] as const));
   // Codex repeats unchanged limits on token ticks; avoid allocating snapshots for no-ops.
-  let changed = false;
+  let changed = update.available === true && previous?.unavailable !== undefined;
   for (const window of update.windows) {
     const existing = merged.get(window.id);
     const next: ServerProviderUsageWindow = {
@@ -79,8 +79,11 @@ export function applyUsageLimitsUpdate(input: {
   if (!changed && previous !== undefined) {
     return previous;
   }
-  const unavailable =
-    previous === undefined ? { reason: "probeFailed" as const } : previous.unavailable;
+  const unavailable = update.available
+    ? undefined
+    : previous === undefined
+      ? { reason: "probeFailed" as const }
+      : previous.unavailable;
   return {
     ...makeUsageLimits({ checkedAt: input.checkedAt, windows: merged.values() }),
     ...(previous?.resetCredits !== undefined ? { resetCredits: previous.resetCredits } : {}),

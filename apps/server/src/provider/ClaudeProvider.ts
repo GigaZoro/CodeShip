@@ -634,16 +634,35 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     apiProviderAuthMetadata(capabilities.apiProvider) ??
     (customApiEndpoint ? { type: "customEndpoint", label: "Custom API endpoint" } : undefined);
   const usageCheckedAt = capabilities.usageCheckedAt ?? checkedAt;
+  // A setup-token OAuth login can stream subscription windows without get_usage support.
+  // Do not reclassify API-key, custom-endpoint, or third-party backend accounts.
+  const allowStreamedLimits =
+    !customApiEndpoint &&
+    capabilities.apiProvider === "firstParty" &&
+    capabilities.apiKeySource === "none" &&
+    (capabilities.tokenSource === "oauth" ||
+      capabilities.tokenSource === "CLAUDE_CODE_OAUTH_TOKEN");
   const usageLimits = !capabilities.usage
-    ? makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed" })
+    ? makeUnavailableUsageLimits({
+        checkedAt,
+        reason: "probeFailed",
+        ...(allowStreamedLimits
+          ? {
+              message:
+                "This Claude login cannot probe limits. Limits will appear when a turn reports them.",
+            }
+          : {}),
+      })
     : scopedLimitNames
       ? yield* recordClaudeUsageResponse(scopedLimitNames, {
           response: capabilities.usage,
           checkedAt: usageCheckedAt,
+          allowStreamedLimits,
         })
       : claudeUsageResponseToLimits({
           response: capabilities.usage,
           checkedAt: usageCheckedAt,
+          allowStreamedLimits,
         }).limits;
   const resetCredits =
     resolveResetCredits &&

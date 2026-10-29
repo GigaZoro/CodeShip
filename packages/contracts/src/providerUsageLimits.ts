@@ -52,6 +52,8 @@ export type ServerProviderUsageLimits = typeof ServerProviderUsageLimits.Type;
 /** Partial updates merge windows by id; omitted windows remain unchanged. */
 export const ProviderUsageLimitsUpdate = Schema.Struct({
   windows: Schema.Array(ServerProviderUsageWindow),
+  /** The event contains usable limits independently of a successful background probe. */
+  available: Schema.optional(Schema.Literal(true)),
 });
 export type ProviderUsageLimitsUpdate = typeof ProviderUsageLimitsUpdate.Type;
 
