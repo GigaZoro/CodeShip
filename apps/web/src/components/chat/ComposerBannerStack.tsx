@@ -51,14 +51,20 @@ export function ComposerBannerStack({
 
 const SUBPIXEL_ROUNDING = 0.001;
 
+/**
+ * Text that grows an info button when it truncates. `slotClassName` styles the span holding both;
+ * give it a width that ignores its content when the button would otherwise reflow the row.
+ */
 export function NoticeText({
   children,
   className,
   detailsLabel,
+  slotClassName = "contents",
 }: {
   readonly children: ReactNode;
   readonly className: string;
   readonly detailsLabel: string;
+  readonly slotClassName?: string;
 }) {
   const textRef = useRef<HTMLSpanElement>(null);
   const detailsRef = useRef<HTMLButtonElement>(null);
@@ -100,7 +106,7 @@ export function NoticeText({
   }, []);
 
   return (
-    <span className="contents">
+    <span className={slotClassName}>
       <span ref={textRef} className={className}>
         {children}
       </span>
@@ -166,7 +172,10 @@ function NoticeCard({ item }: { readonly item: ComposerBannerStackItem }) {
                   ? `Show details: ${item.title}`
                   : "Show notice details"
               }
-              className="w-0 min-w-0 grow truncate text-muted-foreground @max-[400px]:sr-only"
+              // A fixed-minimum slot keeps the info button out of the row's wrap decision;
+              // otherwise showing it wraps the actions, the text fits, and it hides again.
+              slotClassName="flex w-0 min-w-7 grow items-center gap-1 sm:min-w-6"
+              className="min-w-0 truncate text-muted-foreground @max-[400px]:sr-only"
             >
               {item.description}
             </NoticeText>
