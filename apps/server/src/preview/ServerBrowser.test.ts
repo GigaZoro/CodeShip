@@ -1213,6 +1213,49 @@ it.live.each([false, true])(
     ).pipe(Effect.provide(layer)),
 );
 
+it.live("a tab showing a data: page reports its URL without the content", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const sibling = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        operation: "open",
+        input: { reuseExistingTab: false, show: false },
+      });
+      const manager = yield* Manager.PreviewManager;
+      const events = yield* manager.subscribeEvents;
+      yield* Effect.promise(() => contexts[0]!.page.goto("data:text/html,<p>SECRET-KEY</p>"));
+      let event = yield* PubSub.take(events);
+      while (
+        event.type !== "navigated" ||
+        event.tabId !== tabId ||
+        event.snapshot.navStatus._tag !== "Success"
+      ) {
+        event = yield* PubSub.take(events);
+      }
+      const status = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId,
+        operation: "status",
+        input: {},
+      });
+      const siblingStatus = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId: PreviewTabId.make(sibling.tabId!),
+        operation: "status",
+        input: {},
+      });
+      expect(event.snapshot.navStatus).toMatchObject({ url: "data:text/html,…" });
+      expect(status.url).toBe("data:text/html,…");
+      expect(siblingStatus.tabId).toBe(sibling.tabId);
+      expect(siblingStatus.tabs?.find((entry) => entry.tabId === tabId)?.url).toBe(
+        "data:text/html,…",
+      );
+      expect(JSON.stringify([event, status, siblingStatus])).not.toContain("SECRET-KEY");
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live.each(["save failed", "oversized"])(
   "a rejected download releases the original and keeps no saved copy (%s)",
   (outcome) =>
