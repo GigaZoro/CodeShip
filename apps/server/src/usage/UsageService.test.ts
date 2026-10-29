@@ -14,6 +14,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { mergeUsage } from "@t3tools/shared/usageMerge";
 import {
   EnvironmentId,
+  USAGE_CONTRACT_VERSION,
   ProviderDriverKind,
   ProviderInstanceId,
   UsageDay,
@@ -530,6 +531,40 @@ describe("UsageService", () => {
         Effect.scoped,
         Effect.provide(layerService({ prefix: "usage-compressed-codex", home, settings })),
       );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("reads a seven-day hourly window and rejects longer requests", () =>
+    Effect.gen(function* () {
+      const { home, settings, transcript } = yield* setup;
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(
+          transcript,
+          claudeLine(1, 42) +
+            claudeLine(2, 99).replace("2026-08-01T10:00:00Z", "2026-08-08T00:00:00Z"),
+        ),
+      );
+      const context = yield* Layer.build(layerService({ prefix: "week", home, settings }));
+      const service = yield* UsageService.make.pipe(Effect.provideContext(context));
+      const input: UsageSummaryInput = {
+        timeZone: "UTC",
+        sinceDay: UsageDay.make("2026-08-01"),
+        untilDay: UsageDay.make("2026-08-08"),
+        resolution: "hour",
+        sinceTime: "2026-08-01T00:00:00Z",
+        untilTime: "2026-08-08T00:00:00Z",
+      };
+      const summary = yield* service.readSummary(input);
+      assert.strictEqual(totalOutputTokens(summary), 42);
+      const merged = mergeUsage(
+        [{ environmentId: EnvironmentId.make("test"), label: "Test", summary }],
+        USAGE_CONTRACT_VERSION,
+      );
+      assert.strictEqual(merged.hourly[0]?.hourStart, "2026-08-01T10:00:00.000Z");
+      const error = yield* Effect.flip(
+        service.readSummary({ ...input, sinceTime: "2026-07-31T23:59:59Z" }),
+      );
+      assert.strictEqual(error.reason, "invalidWindow");
     }).pipe(Effect.scoped),
   );
 

@@ -50,7 +50,6 @@ import {
   formatCount,
   formatDateTimeShort,
   formatDayShort,
-  formatHourShort,
   formatPercent,
   formatTokens,
   formatUsageContractMismatch,
@@ -101,6 +100,7 @@ import {
 } from "./usageShortcuts";
 import { PROVIDER_ORDER, PROVIDER_PRESENTATION, providersWithUsage } from "./usageProviders";
 import {
+  usageResolution,
   readUsagePagePreferences,
   saveUsagePagePreferences,
   type UsagePagePreferences,
@@ -190,7 +190,7 @@ export function UsagePage() {
     window: makeWindow(
       preferences.windowDays,
       undefined,
-      preferences.windowDays === 1 ? "hour" : "day",
+      usageResolution(preferences.windowDays, preferences.weekResolution),
     ),
   }));
   const metric = preferences.metric;
@@ -203,7 +203,7 @@ export function UsagePage() {
     useState<ReadonlySet<EnvironmentId> | null>(null);
   const hiddenProviders = new Set(preferences.hiddenProviders);
   const { days: windowDays, window } = windowSelection;
-  const isPast24Hours = windowDays === 1;
+  const chartType = preferences.chartType ?? "area";
   const {
     merged: answeredUsage,
     environments,
@@ -242,9 +242,44 @@ export function UsagePage() {
     updatePreferences({ windowDays: days });
     setWindowSelection({
       days,
-      window: makeWindow(days, undefined, days === 1 ? "hour" : "day"),
+      window: makeWindow(days, undefined, usageResolution(days, preferences.weekResolution)),
     });
   };
+  const selectWeekResolution = (weekResolution: "day" | "hour") => {
+    updatePreferences({ weekResolution });
+    setWindowSelection({
+      days: windowDays,
+      window: makeWindow(windowDays, undefined, usageResolution(windowDays, weekResolution)),
+    });
+  };
+  const chartControls = (
+    <div className="flex flex-wrap items-center gap-2">
+      {windowDays === 7 ? (
+        <ToggleGroup
+          aria-label="Usage resolution"
+          value={[preferences.weekResolution ?? "day"]}
+          onValueChange={(next) => {
+            const value = next[0];
+            if (value === "day" || value === "hour") selectWeekResolution(value);
+          }}
+        >
+          <Toggle value="day">Daily</Toggle>
+          <Toggle value="hour">Hourly</Toggle>
+        </ToggleGroup>
+      ) : null}
+      <ToggleGroup
+        aria-label="Usage chart style"
+        value={[chartType]}
+        onValueChange={(next) => {
+          const value = next[0];
+          if (value === "area" || value === "bar") updatePreferences({ chartType: value });
+        }}
+      >
+        <Toggle value="area">Area</Toggle>
+        <Toggle value="bar">Stacked bars</Toggle>
+      </ToggleGroup>
+    </div>
+  );
   const selectMetric = (nextMetric: UsageMetric) => {
     if (nextMetric === "limits") setLimitsNow(Date.now());
     updatePreferences({ metric: nextMetric });
@@ -308,7 +343,11 @@ export function UsagePage() {
       });
       return;
     }
-    const nextWindow = makeWindow(windowDays, undefined, isPast24Hours ? "hour" : "day");
+    const nextWindow = makeWindow(
+      windowDays,
+      undefined,
+      usageResolution(windowDays, preferences.weekResolution),
+    );
     if (
       nextWindow.sinceDay !== window.sinceDay ||
       nextWindow.untilDay !== window.untilDay ||
@@ -552,6 +591,8 @@ export function UsagePage() {
                 merged={merged}
                 shownWindow={shownWindow}
                 hour12={hour12}
+                chartType={chartType}
+                chartControls={chartControls}
                 days={days}
                 hours={hours}
                 showingKept={showingKept}
@@ -577,6 +618,7 @@ export function UsagePage() {
           environments={selectedEnvironments}
           metric={metric === "tokens" ? "tokens" : "cost"}
           chartWindow={{
+            chartType,
             days,
             hours,
             resolution: shownHourly ? "hour" : "day",
@@ -608,6 +650,8 @@ function UsageOverview({
   days,
   hours,
   showingKept,
+  chartType,
+  chartControls,
   metric,
   selectedEnvironments,
   hiddenProviders,
@@ -618,6 +662,8 @@ function UsageOverview({
   onSelectModel,
 }: {
   readonly merged: MergedUsage;
+  readonly chartType: "area" | "bar";
+  readonly chartControls: React.ReactNode;
   readonly shownWindow: UsageSummaryInput;
   readonly hour12: boolean;
   readonly days: readonly string[];
@@ -819,10 +865,14 @@ function UsageOverview({
         </div>
 
         <div className="flex min-w-0 flex-col gap-3">
-          <h2 className="text-sm font-medium text-foreground">
-            {shownHourly ? "Hourly" : "Daily"} {metric === "tokens" ? "processed tokens" : "cost"}
-          </h2>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-medium text-foreground">
+              {shownHourly ? "Hourly" : "Daily"} {metric === "tokens" ? "processed tokens" : "cost"}
+            </h2>
+            {chartControls}
+          </div>
           <UsageProviderChart
+            chartType={chartType}
             providers={activeProviders}
             loadingProviders={chartLoadingProviders}
             days={days}
@@ -1039,7 +1089,7 @@ function UsageOverview({
                     >
                       <td className="py-2 text-foreground">
                         {"hourStart" in period
-                          ? formatHourShort(period.hourStart, shownWindow.timeZone, hour12)
+                          ? formatDateTimeShort(period.hourStart, shownWindow.timeZone, hour12)
                           : formatDayShort(period.day)}
                       </td>
                       {activeProviders.map((provider) => (
