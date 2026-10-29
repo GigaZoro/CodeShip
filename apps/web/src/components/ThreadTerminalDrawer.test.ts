@@ -96,7 +96,13 @@ it("retains visible output and selection until a replacement subscription receiv
 });
 
 it("reports an attach failure that leaves the output unchanged", () => {
-  const terminal = { resetAndWrite: vi.fn(), write: vi.fn(), clearSelection: vi.fn() };
+  const terminal = {
+    resetAndWrite: vi.fn(),
+    write: vi.fn(),
+    getSelection: vi.fn(() => ""),
+    getSelectionCellCount: vi.fn(() => 0),
+    clearSelection: vi.fn(),
+  };
   const previous = { ...EMPTY_TERMINAL_BUFFER_STATE, error: null };
   const failed = { ...previous, error: "Terminal attach failed" };
 

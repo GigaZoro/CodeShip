@@ -191,7 +191,10 @@ export function synchronizeTerminalOutput(
 
 /** Writes what changed between two session notifications: new output, then a new error. */
 export function synchronizeTerminalSession(
-  terminal: Pick<GhosttyTerminalSurface, "resetAndWrite" | "write" | "clearSelection">,
+  terminal: Pick<
+    GhosttyTerminalSurface,
+    "resetAndWrite" | "write" | "getSelection" | "getSelectionCellCount" | "clearSelection"
+  >,
   previous: Pick<TerminalSessionState, "output" | "version" | "error">,
   session: Pick<TerminalSessionState, "output" | "version" | "error">,
   cursor: TerminalOutputCursor,
