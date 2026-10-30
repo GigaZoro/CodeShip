@@ -4016,6 +4016,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       (answer) =>
         Effect.gen(function* () {
           const turn = yield* openPlanTurn("full-access");
+          // @effect-diagnostics-next-line abortControllerInEffect:off - The test aborts the SDK request signal itself to withdraw the approval.
           const controller = new AbortController();
           const decision = yield* Effect.promise(() =>
             turn.canUseTool(

@@ -408,27 +408,30 @@ describe("mobile model options", () => {
     ["an auth check timeout", { status: "warning", auth: { status: "unknown" } }, false],
     ["a missing CLI", { installed: false, status: "error" }, true],
     ["a signed-out account", { auth: { status: "unauthenticated" } }, true],
-  ] as const)("blocks a provider with %s only on a definitive status", (_state, update, unavailable) => {
-    const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" };
-    const config = {
-      providers: [
-        {
-          instanceId: selection.instanceId,
-          driver: "codex",
-          enabled: true,
-          installed: true,
-          status: "ready",
-          auth: { status: "authenticated" },
-          models: [
-            { slug: selection.model, name: "GPT-5.6 Sol", isCustom: false, capabilities: null },
-          ],
-          ...update,
-        },
-      ],
-    } as unknown as ServerConfig;
+  ] as const)(
+    "blocks a provider with %s only on a definitive status",
+    (_state, update, unavailable) => {
+      const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" };
+      const config = {
+        providers: [
+          {
+            instanceId: selection.instanceId,
+            driver: "codex",
+            enabled: true,
+            installed: true,
+            status: "ready",
+            auth: { status: "authenticated" },
+            models: [
+              { slug: selection.model, name: "GPT-5.6 Sol", isCustom: false, capabilities: null },
+            ],
+            ...update,
+          },
+        ],
+      } as unknown as ServerConfig;
 
-    expect(isModelSelectionUnavailable(config, selection, null)).toBe(unavailable);
-  });
+      expect(isModelSelectionUnavailable(config, selection, null)).toBe(unavailable);
+    },
+  );
 
   describe("Antigravity selections", () => {
     const selection = {
