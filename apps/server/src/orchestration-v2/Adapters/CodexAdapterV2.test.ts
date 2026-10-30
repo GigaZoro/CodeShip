@@ -575,7 +575,7 @@ function codexReplayPreamble(input: {
         id: 1,
         method: "initialize",
         params: {
-          clientInfo: { name: "CodeShip", title: "CodeShip", version: packageJson.version },
+          clientInfo: { name: "T3 Code", title: "CodeShip", version: packageJson.version },
           capabilities: {
             experimentalApi: true,
             optOutNotificationMethods: ["turn/diff/updated"],
