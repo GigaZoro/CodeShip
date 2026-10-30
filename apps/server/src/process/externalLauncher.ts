@@ -695,9 +695,7 @@ const decodeManagerEnvironment = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({ data: Schema.Array(Schema.String) })),
 );
 
-// A boot service starts before the desktop session and never receives the
-// variables a window needs, so an editor launched from it exits without one. The
-// systemd user manager learns them when the session starts; read them there.
+// Boot services miss the desktop environment imported later into the systemd user manager.
 const readGraphicalSessionEnv = Effect.fn("externalLauncher.readGraphicalSessionEnv")(
   function* () {
     const hostEnv = yield* HostProcess.Environment;
