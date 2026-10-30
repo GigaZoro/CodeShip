@@ -89,8 +89,9 @@ const WINDOW: UsageSummaryInput = {
 };
 
 const setup = Effect.gen(function* () {
+  // The service reports real paths; macOS tmpdir sits behind the /var -> /private/var link.
   const home = yield* Effect.promise(() =>
-    NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "usage-service-test-")),
+    NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "usage-service-test-")).then(NodeFSP.realpath),
   );
   yield* Effect.addFinalizer(() =>
     Effect.promise(() => NodeFSP.rm(home, { recursive: true, force: true })),
