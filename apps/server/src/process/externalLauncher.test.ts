@@ -562,7 +562,10 @@ it.effect("keeps the macOS VS Code Insiders bundle out of stable VS Code", () =>
       ),
     );
 
-    assert.notInclude(editors, "vscode");
+    // Discovery also scans the machine's real /Applications, where stable VS Code may be installed.
+    if (!(yield* fs.exists("/Applications/Visual Studio Code.app"))) {
+      assert.notInclude(editors, "vscode");
+    }
     assert.include(editors, "vscode-insiders");
     assert.equal(spawned?.command, path.join(bin, "code-insiders"));
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
