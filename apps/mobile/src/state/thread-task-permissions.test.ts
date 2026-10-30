@@ -183,7 +183,16 @@ beforeEach(() => {
   state.draft = { text: "Keep my draft", attachments: [], modelSelection: undefined };
   state.projection = null;
   state.serverConfig = {
-    providers: [{ instanceId: "codex", driver: "codex", enabled: true }],
+    providers: [
+      {
+        instanceId: "codex",
+        driver: "codex",
+        enabled: true,
+        installed: true,
+        status: "ready",
+        auth: { status: "authenticated" },
+      },
+    ],
     environment: { capabilities: {} },
   } as unknown as ServerConfig;
   state.pendingRequests = {
