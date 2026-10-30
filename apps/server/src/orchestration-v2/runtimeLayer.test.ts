@@ -7605,10 +7605,17 @@ const layerProductionBrowserAccessTest = RuntimeLayer.layerProduction.pipe(
     Layer.mergeAll(
       Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
       Layer.mock(ProviderRegistry.ProviderRegistry)({}),
-      Layer.mock(ServerSecretStore.ServerSecretStore)({
-        directory: undefined,
-        getOrCreateRandom: (_name, bytes) => Effect.succeed(new Uint8Array(bytes)),
-      }),
+      // A full service, not Layer.mock, so the store has no directory instead of a stub.
+      Layer.succeed(
+        ServerSecretStore.ServerSecretStore,
+        ServerSecretStore.ServerSecretStore.of({
+          get: () => Effect.die("unused"),
+          set: () => Effect.die("unused"),
+          create: () => Effect.die("unused"),
+          getOrCreateRandom: (_name, bytes) => Effect.succeed(new Uint8Array(bytes)),
+          remove: () => Effect.die("unused"),
+        }),
+      ),
       Layer.mock(TextGeneration.TextGeneration)({}),
       Layer.mock(WorktreeSetupTracker.WorktreeSetupTracker)({}),
       Layer.mock(ManagedEndpointRuntime.CloudManagedEndpointRuntime)({}),
