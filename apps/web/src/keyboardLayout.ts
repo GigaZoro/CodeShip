@@ -1,6 +1,9 @@
 import type { ShortcutKeyboardLayoutMap } from "@t3tools/shared/keybindings";
 
-interface KeyboardLayoutSource extends EventTarget {
+// Chromium implements getLayoutMap but not the spec's layoutchange event target.
+interface KeyboardLayoutSource extends Partial<
+  Pick<EventTarget, "addEventListener" | "removeEventListener">
+> {
   getLayoutMap(): Promise<ShortcutKeyboardLayoutMap>;
 }
 
@@ -27,10 +30,10 @@ export function trackKeyboardLayout(
     }
   };
   void refresh();
-  keyboard?.addEventListener("layoutchange", refresh);
+  keyboard?.addEventListener?.("layoutchange", refresh);
   return () => {
     revision++;
     keyboardLayoutMap = undefined;
-    keyboard?.removeEventListener("layoutchange", refresh);
+    keyboard?.removeEventListener?.("layoutchange", refresh);
   };
 }

@@ -41,6 +41,13 @@ it("records Option symbols using the current layout and updates after a layout c
   assert.strictEqual(getKeyboardLayoutMap(), undefined);
 });
 
+it("reads the layout from Chromium's keyboard, which has no layoutchange events", async () => {
+  const layout = Promise.resolve(new Map([["KeyQ", "a"]]));
+  stop = trackKeyboardLayout({ getLayoutMap: () => layout });
+  await layout;
+  assert.strictEqual(getKeyboardLayoutMap()?.get("KeyQ"), "a");
+});
+
 it("ignores an obsolete layout result and clears the map when access fails", async () => {
   const pending = pendingLayout();
   let result = pending.promise;
