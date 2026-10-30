@@ -23,6 +23,11 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
+// Pay-per-token instances bill every continued turn instead of drawing on another subscription.
+const METERED_AUTH_TYPES = new Set(["apiKey", "api-key", "bedrock"]);
+// A cooldown this short is cheaper to wait out than to move the thread to another account for good.
+const MIN_FAILOVER_WAIT_MS = 5 * 60_000;
+
 export function limitRecoveryCommand(
   thread: ProjectionStore.ProjectionLimitRecoveryCandidate,
   autoResume: boolean,
@@ -112,7 +117,7 @@ export function limitFailoverCommand(input: {
     !thread.latestRunId ||
     // Limited accounts are skipped only until their reported reset, so a stop without one
     // could bounce between two limited accounts. A passed reset is auto-resume's job.
-    !(resetMs > nowMs) ||
+    !(resetMs > nowMs + MIN_FAILOVER_WAIT_MS) ||
     thread.archivedAt !== null ||
     thread.settledOverride === "settled" ||
     thread.pendingRuntimeRequest !== null ||
@@ -134,6 +139,7 @@ export function limitFailoverCommand(input: {
       !provider.installed ||
       provider.status === "error" ||
       provider.auth.status === "unauthenticated" ||
+      (provider.auth.type !== undefined && METERED_AUTH_TYPES.has(provider.auth.type)) ||
       !isProviderAvailable(provider) ||
       input.limitedInstanceIds.has(provider.instanceId) ||
       usageExhausted(provider, nowMs) ||
@@ -152,7 +158,8 @@ export function limitFailoverCommand(input: {
     eligible,
   )[0];
   if (target === undefined) return null;
-  const identity = `${thread.id}:${thread.latestRunId}`;
+  // The target is part of the id so a refused switch does not block trying another account.
+  const identity = `${thread.id}:${thread.latestRunId}:${target.instanceId}`;
   return {
     type: "message.dispatch",
     commandId: CommandId.make(`limit-failover:${identity}`),
@@ -206,6 +213,10 @@ const makeSweep = Effect.gen(function* () {
         failoverCommand !== null &&
         (yield* threads.dispatch(failoverCommand).pipe(
           Effect.as(true),
+          // This exact switch was refused on an earlier tick; warning again every tick adds nothing.
+          Effect.catchTags({
+            OrchestratorCommandPreviouslyRejectedError: () => Effect.succeed(false),
+          }),
           Effect.catchCause((cause) =>
             Effect.logWarning("orchestration-v2.limit-failover.dispatch-failed", {
               threadId: thread.id,

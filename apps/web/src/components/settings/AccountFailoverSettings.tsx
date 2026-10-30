@@ -70,7 +70,7 @@ export function AccountFailoverSettings({
     <SettingsSection {...searchableSetting("account-failover")}>
       <SettingsRow
         title="Switch accounts at usage limits"
-        description="When an account hits its usage limit, the thread continues on the first signed-in account of the same provider that still has usage left. Some providers' terms forbid using extra accounts to get around limits."
+        description="When an account hits its usage limit, the thread continues on the first signed-in subscription account of the same provider that still has usage left. API-key and Bedrock accounts are never used. Some providers' terms forbid using extra accounts to get around limits."
         control={
           <Switch
             aria-label="Switch accounts at usage limits"
@@ -93,7 +93,7 @@ export function AccountFailoverSettings({
             <SettingsRow
               key={driver}
               title={`${providerName} account order`}
-              description="Top runs first. A limited thread moves down the list."
+              description="A limited thread continues on the highest account in this list that still has usage left."
             >
               <ol className="flex flex-col gap-1 pt-2 pb-2">
                 {accounts.map((account, index) => {

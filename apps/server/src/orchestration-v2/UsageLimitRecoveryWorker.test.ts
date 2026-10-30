@@ -121,8 +121,8 @@ describe("limitFailoverCommand", () => {
   it("continues on the first account of the same driver that can still run", () => {
     assert.deepEqual(failover(), {
       type: "message.dispatch",
-      commandId: CommandId.make("limit-failover:thread:failover:run:failover"),
-      messageId: MessageId.make("limit-failover:thread:failover:run:failover"),
+      commandId: CommandId.make("limit-failover:thread:failover:run:failover:claude_first"),
+      messageId: MessageId.make("limit-failover:thread:failover:run:failover:claude_first"),
       threadId: thread.id,
       manualContinuationOfRunId: runId,
       modelSelection: {
@@ -151,10 +151,26 @@ describe("limitFailoverCommand", () => {
       { limitRecovery: { runId, resetAt, autoResume: true } },
     ],
     ["the limit has reset", { usageLimitResetAt: "2026-10-29T11:00:00.000Z" }],
-    ["the thread moved to another account", { providerInstanceId: ProviderInstanceId.make("x") }],
+    [
+      "the thread moved to another account",
+      { latestRunProviderInstanceId: ProviderInstanceId.make("claude_first") },
+    ],
+    ["the limit resets within minutes", { usageLimitResetAt: "2026-10-29T12:04:00.000Z" }],
     ["the thread is snoozed", { snoozedUntil: DateTime.makeUnsafe(Date.parse(resetAt)) }],
   ] as const)("keeps the thread in place when %s", (_, overrides) => {
     assert.isNull(failover({ thread: { ...thread, ...overrides } }));
+  });
+
+  it.each(["apiKey", "bedrock"])("never continues on a %s account", (type) => {
+    assert.isNull(
+      failover({
+        providers: providers.map((candidate) =>
+          candidate.instanceId.startsWith("claude_")
+            ? { ...candidate, auth: { status: "authenticated", type } }
+            : candidate,
+        ),
+      }),
+    );
   });
 
   it("keeps the thread in place when every other account is out", () => {

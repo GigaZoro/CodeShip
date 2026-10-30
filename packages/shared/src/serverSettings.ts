@@ -101,9 +101,11 @@ export function fallbackTextGenerationModelSelection(
   };
 }
 
-/** Registry instances are different agents, not accounts of one provider. */
+// Only these drivers report a usage-limit reset time, which failover needs to skip limited accounts.
+const ACCOUNT_FAILOVER_DRIVERS: ReadonlySet<string> = new Set(["codex", "claudeAgent", "muse"]);
+
 export const supportsAccountFailover = (driver: ProviderDriverKind): boolean =>
-  driver !== "acpRegistry";
+  ACCOUNT_FAILOVER_DRIVERS.has(driver);
 
 /** Saved failover order first, then the instances it does not list in their given order. */
 export function orderProviderInstancesForFailover<

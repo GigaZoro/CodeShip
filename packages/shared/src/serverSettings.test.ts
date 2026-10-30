@@ -19,6 +19,7 @@ import {
   isModelSelectionProviderEnabled,
   parsePersistedServerObservabilitySettings,
   resolveSourceControlWriterModelSelection,
+  supportsAccountFailover,
 } from "./serverSettings.ts";
 
 const FOLDED_SERVER_SETTINGS = { ...DEFAULT_SERVER_SETTINGS, projectSettingsFolded: true };
@@ -727,6 +728,20 @@ describe("serverSettings helpers", () => {
         providerHealthRefreshInterval: Duration.minutes(4),
       },
     });
+  });
+});
+
+describe("supportsAccountFailover", () => {
+  it.each([
+    ["codex", true],
+    ["claudeAgent", true],
+    ["muse", true],
+    ["cursor", false],
+    ["grok", false],
+    ["opencode", false],
+    ["acpRegistry", false],
+  ])("%s -> %s", (driver, supported) => {
+    expect(supportsAccountFailover(ProviderDriverKind.make(driver))).toBe(supported);
   });
 });
 
