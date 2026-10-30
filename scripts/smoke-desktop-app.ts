@@ -66,6 +66,15 @@ try {
   try {
     step = `finding "${THREAD_TITLE}" in the sidebar`;
     const thread = page.locator("li[data-thread-item]", { hasText: THREAD_TITLE });
+    // The fixture's threads are older than the auto-settle window, so they can be under Settled.
+    const settledShelf = page.getByTestId("sidebar-settled-shelf-toggle");
+    await thread.or(settledShelf).first().waitFor({ timeout: STEP_TIMEOUT_MS });
+    if (
+      !(await thread.isVisible()) &&
+      (await settledShelf.getAttribute("aria-expanded")) === "false"
+    ) {
+      await settledShelf.click();
+    }
     await thread.waitFor({ timeout: STEP_TIMEOUT_MS });
     step = "opening the thread";
     await thread.click();
