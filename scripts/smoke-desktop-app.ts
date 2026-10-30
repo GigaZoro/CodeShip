@@ -7,7 +7,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeUtil from "node:util";
-import { _electron, type ElectronApplication } from "playwright-core";
+import { _electron, type ElectronApplication, type Page } from "playwright-core";
 
 // A snapshot from an older build on purpose: the packaged server must migrate it forward, as it
 // does for every upgrading user. It holds one project and two threads, nothing else.
@@ -34,6 +34,12 @@ NodeFS.copyFileSync(FIXTURE_DB, NodePath.join(t3Home, "userdata/statev2.sqlite")
 
 let step = "launching the app";
 let app: ElectronApplication | undefined;
+// A renderer that fails to boot shows only "failed to start"; its error reaches only the console.
+const rendererConsole: string[] = [];
+const recordRendererConsole = (page: Page) => {
+  page.on("console", (message) => rendererConsole.push(`[${message.type()}] ${message.text()}`));
+  page.on("pageerror", (error) => rendererConsole.push(`[pageerror] ${error.stack ?? error}`));
+};
 try {
   app = await _electron.launch({
     executablePath: executable,
@@ -51,6 +57,8 @@ try {
     },
     timeout: STEP_TIMEOUT_MS,
   });
+  app.windows().forEach(recordRendererConsole);
+  app.on("window", recordRendererConsole);
   // A backend that never starts leaves no window, or only the "could not start" window, so the
   // thread wait below fails either way and its screenshot shows the startup error.
   step = "waiting for the first window";
@@ -74,6 +82,14 @@ try {
   console.error(`Desktop launch check failed while ${step}.`);
   NodeFS.mkdirSync(artifactsDir, { recursive: true });
   console.error(error instanceof Error ? error.message : error);
+  if (rendererConsole.length > 0) {
+    NodeFS.writeFileSync(
+      NodePath.join(artifactsDir, "renderer-console.log"),
+      `${rendererConsole.join("\n")}\n`,
+    );
+    console.error("\nLast renderer console output:");
+    console.error(rendererConsole.slice(-20).join("\n"));
+  }
   const logs = NodePath.join(t3Home, "userdata/logs");
   if (NodeFS.existsSync(logs)) {
     NodeFS.cpSync(logs, NodePath.join(artifactsDir, "logs"), { recursive: true });
