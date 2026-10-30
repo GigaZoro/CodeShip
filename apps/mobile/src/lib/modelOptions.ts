@@ -154,11 +154,11 @@ export function isModelSelectionUnavailable(
     provider?.driver ?? config.settings?.providerInstances[selection.instanceId]?.driver;
   return (
     (provider !== undefined &&
-      (!provider.installed ||
-        provider.auth.status === "unauthenticated" ||
+      (provider.auth.status === "unauthenticated" ||
         provider.availability === "unavailable" ||
         provider.status === "error" ||
-        provider.status === "warning")) ||
+        // Warning covers a check still pending or timed out (reported as not installed), not a verdict.
+        (!provider.installed && provider.status !== "warning"))) ||
     (driver === "antigravity" &&
       (!provider || !provider.models.some((model) => model.slug === selection.model)))
   );
