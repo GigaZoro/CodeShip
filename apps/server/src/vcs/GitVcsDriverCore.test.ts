@@ -3612,7 +3612,10 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         const pathService = yield* Path.Path;
         const cwd = yield* makeTmpDir();
         const { initialBranch } = yield* initRepoWithCommit(cwd);
-        const worktreesDirectory = yield* makeTmpDir("custom-worktrees-");
+        // git lists real paths; macOS tmpdir sits behind /var -> /private/var.
+        const worktreesDirectory = NodeFS.realpathSync.native(
+          yield* makeTmpDir("custom-worktrees-"),
+        );
         const driver = yield* GitVcsDriver.GitVcsDriver;
         const folders = new Set<string>();
         const branches = [
