@@ -14,6 +14,12 @@ const publicConfigDefine = {
   __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: JSON.stringify(
     repoEnv.T3CODE_CLERK_PUBLISHABLE_KEY?.trim() ?? "",
   ),
+  // Same source as the web client's release links and the packaged update feed.
+  __T3CODE_BUILD_UPDATE_REPOSITORY__: JSON.stringify(
+    process.env.T3CODE_DESKTOP_UPDATE_REPOSITORY?.trim() ||
+      process.env.GITHUB_REPOSITORY?.trim() ||
+      "",
+  ),
 };
 
 export default defineConfig({

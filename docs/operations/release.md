@@ -58,6 +58,53 @@ the version.
   - nightly releases are aliased to the `nightly` hosted app channel
 - Signing is optional and auto-detected per platform from secrets.
 
+## Releasing from a fork
+
+`release.yml` only runs in `pingdotgg/t3code`. A fork ships its own installers with
+`.github/workflows/release-fork.yml`, run by hand from the default branch (**Actions → Release
+(fork) → Run workflow**). It packages macOS arm64 (DMG) and Windows x64 (NSIS) through the same
+`release-desktop.yml` on GitHub-hosted runners, then publishes a GitHub Release marked latest, with
+the updater manifests. A Linux x64 job also runs, because the Windows app embeds its CLI archive as
+the WSL runtime, but its installers are not published. Desktop apps built by that workflow check
+the fork's releases, so the update button offers each new release. Builds use the public T3
+Connect identifiers in `.env.example`.
+
+- **One-time setup.** Forks start with Actions disabled; enable them in the fork's Actions tab.
+  Most other workflows ask for upstream's Blacksmith runners, which a fork does not have, so their
+  jobs wait in the queue until GitHub cancels them. Disable the ones that run on push or pull
+  request (such as CI) in the Actions tab.
+- **Versions.** An empty `version` input releases `<year>.<MMDD>.<n>`, such as `2026.1030.1`. Clones
+  of a fork also fetch upstream's `v0.x` tags, and a fork tag with the same name as one of them
+  makes every later fetch fail with "would clobber existing tag". An explicit version must be
+  higher than the installed one, or the update button never offers it.
+- **Windows signing.** Windows builds are unsigned unless the fork has the Azure Trusted Signing
+  secrets described below. SmartScreen warns on the first install (**More info → Run anyway**);
+  updates install without it.
+- **macOS signing.** An ad hoc signed app cannot apply an update, because Squirrel.Mac only accepts
+  a new version whose signature satisfies the running app's designated requirement, and an ad hoc
+  requirement is that one build's hash. The workflow stops in preflight without a signing identity.
+  Without a Developer ID, use a self-signed one: every build signed with one certificate shares a
+  requirement. Create it once, keep the folder, and add the base64 text and the password as the
+  `MACOS_SELF_SIGNED_CERTIFICATE` and `MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD` repository
+  secrets. Losing it means installing the next build by hand.
+
+  ```bash
+  mkdir -m 700 codeship-signing && cd codeship-signing
+  openssl rand -hex 16 > password.txt
+  openssl req -x509 -newkey rsa:2048 -nodes -days 7300 -subj "/CN=CodeShip Self-Signed" \
+    -addext "keyUsage=critical,digitalSignature" -addext "extendedKeyUsage=critical,codeSigning" \
+    -keyout signing.key -out signing.crt
+  openssl pkcs12 -export -inkey signing.key -in signing.crt -name "CodeShip Self-Signed" \
+    -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 \
+    -passout file:password.txt -out signing.p12
+  rm signing.key && base64 -i signing.p12 > signing.p12.base64.txt
+  ```
+
+  Self-signed builds are not notarized. The first time a Mac opens a downloaded build, macOS
+  blocks it: open it from **System Settings → Privacy & Security → Open Anyway**. A Mac running an
+  ad hoc build installs the first self-signed one by hand; later releases update in place, and
+  keychain and privacy permissions carry over between them.
+
 ## Pull request macOS previews
 
 Labeling a PR `preview:mac` publishes a signed, notarized Apple Silicon DMG with T3 Connect enabled

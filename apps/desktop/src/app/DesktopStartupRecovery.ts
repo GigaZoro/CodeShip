@@ -18,7 +18,13 @@ import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopObservability from "./DesktopObservability.ts";
 import * as DesktopState from "./DesktopState.ts";
 
-const RELEASES_URL = "https://github.com/pingdotgg/t3code/releases";
+declare const __T3CODE_BUILD_UPDATE_REPOSITORY__: string | undefined;
+
+const RELEASES_URL = `https://github.com/${
+  (typeof __T3CODE_BUILD_UPDATE_REPOSITORY__ === "undefined"
+    ? ""
+    : __T3CODE_BUILD_UPDATE_REPOSITORY__) || "pingdotgg/t3code"
+}/releases`;
 const LAST_STARTED_VERSION_FILE = "desktop-last-started-version";
 // Buttons are plain links to this host; will-navigate cancels them and runs the action.
 const ACTION_ORIGIN = "https://startup-recovery.invalid";

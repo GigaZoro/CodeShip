@@ -2818,6 +2818,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "mac") {
     const path = yield* Path.Path;
     const repoRoot = yield* RepoRoot;
+    const selfSignIdentity = yield* Config.String("T3CODE_MACOS_SELF_SIGN_IDENTITY").pipe(
+      Config.withDefault(""),
+    );
+    const selfSigned = !signed && selfSignIdentity.trim() !== "";
     buildConfig.mac = {
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
@@ -2855,7 +2859,17 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
           role: "Viewer",
         },
       ],
-      ...(signed ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") } : {}),
+      ...(signed || selfSigned ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") } : {}),
+      // A self-signed certificate keeps one designated requirement across releases, which
+      // Squirrel.Mac needs to accept an update. electron-builder calls the sign hook for the
+      // ad hoc identity, and the hook signs with the certificate instead.
+      ...(selfSigned
+        ? {
+            identity: "-",
+            // Library validation rejects Electron's frameworks when no Apple Team ID signed them.
+            hardenedRuntime: false,
+          }
+        : {}),
       ...(macPasskeySigning
         ? {
             entitlements: macPasskeySigning.entitlementsPath,

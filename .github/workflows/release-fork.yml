@@ -1,0 +1,286 @@
+name: Release (fork)
+
+# Publishes macOS and Windows installers from a fork, where release.yml cannot
+# run: it needs the upstream Blacksmith runners, relay state, and npm and
+# signing credentials. This builds macOS arm64 and Windows x64 on GitHub-hosted
+# runners through the same release-desktop.yml, and publishes a GitHub Release
+# with the updater manifests, so installed apps offer it through their update
+# button. See "Releasing from a fork" in docs/operations/release.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version, for example 2026.1030.1. Empty uses today's date."
+        required: false
+        type: string
+
+concurrency:
+  group: release-fork
+  cancel-in-progress: false
+
+permissions:
+  # The Windows job reads this run's artifact list to wait for the Linux CLI
+  # archive it embeds as the WSL runtime (see release-desktop.yml).
+  actions: read
+  contents: read
+
+jobs:
+  preflight:
+    name: Preflight
+    if: github.repository != 'pingdotgg/t3code'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      clerk_publishable_key: ${{ steps.public_config.outputs.clerk_publishable_key }}
+      clerk_jwt_template: ${{ steps.public_config.outputs.clerk_jwt_template }}
+      clerk_cli_oauth_client_id: ${{ steps.public_config.outputs.clerk_cli_oauth_client_id }}
+      relay_url: ${{ steps.public_config.outputs.relay_url }}
+    steps:
+      - name: Require the default branch
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ "$REF_NAME" != "$DEFAULT_BRANCH" ]]; then
+            echo "::error::Releases build $DEFAULT_BRANCH. Run this workflow from $DEFAULT_BRANCH, not $REF_NAME."
+            exit 1
+          fi
+
+      # An ad hoc signed Mac app cannot apply an update, so a release without a
+      # signing identity would offer installed Macs one that always fails.
+      - name: Require a macOS signing identity
+        env:
+          MACOS_SELF_SIGNED_CERTIFICATE: ${{ secrets.MACOS_SELF_SIGNED_CERTIFICATE }}
+          MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          if [[ ( -z "$MACOS_SELF_SIGNED_CERTIFICATE" || -z "$MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD" ) && ( -z "$CSC_LINK" || -z "$APPLE_API_KEY" ) ]]; then
+            echo "::error::Add the MACOS_SELF_SIGNED_CERTIFICATE and MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD secrets (see docs/operations/release.md)."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: .env.example
+          sparse-checkout-cone-mode: false
+
+      # Calendar versions (YEAR.MMDD.N) stay clear of upstream's 0.x tags, which
+      # clones of a fork also fetch: a fork tag with an upstream tag's name makes
+      # every later fetch fail with "would clobber existing tag".
+      - id: version
+        name: Resolve release version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${REQUESTED_VERSION#v}"
+          if [[ -z "$version" ]]; then
+            prefix="$(date -u +%Y).$((10#$(date -u +%m%d)))"
+            last="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v$prefix." \
+              --jq "[.[].ref | ltrimstr(\"refs/tags/v$prefix.\") | tonumber?] | max // 0")"
+            version="$prefix.$((last + 1))"
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version must look like 2026.1030.1, got '$version'."
+            exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$version" --silent 2>/dev/null; then
+            echo "::error::Tag v$version already exists."
+            exit 1
+          fi
+          echo "Releasing $version."
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # The same public T3 Connect identifiers development builds read. A fork
+      # without them builds without T3 Connect.
+      - id: public_config
+        name: Read public T3 Connect configuration
+        run: |
+          set -euo pipefail
+          for key in clerk_publishable_key:T3CODE_CLERK_PUBLISHABLE_KEY clerk_jwt_template:T3CODE_CLERK_JWT_TEMPLATE clerk_cli_oauth_client_id:T3CODE_CLERK_CLI_OAUTH_CLIENT_ID relay_url:T3CODE_RELAY_URL; do
+            output="${key%%:*}"
+            name="${key##*:}"
+            value="$(sed -n "s/^${name}=//p" .env.example | head -n 1)"
+            if [[ -n "$value" && ! "$value" =~ ^[A-Za-z0-9._:/-]+$ ]]; then
+              echo "::error::$name is malformed in .env.example."
+              exit 1
+            fi
+            echo "${output}=${value}" >> "$GITHUB_OUTPUT"
+          done
+
+  # The server bundle, web client, and Electron main, built once and packaged
+  # by each platform job, as release.yml's build_bundle does.
+  bundle:
+    name: Build JS bundle
+    needs: [preflight]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      T3CODE_CLERK_PUBLISHABLE_KEY: ${{ needs.preflight.outputs.clerk_publishable_key }}
+      T3CODE_CLERK_JWT_TEMPLATE: ${{ needs.preflight.outputs.clerk_jwt_template }}
+      T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: ${{ needs.preflight.outputs.clerk_cli_oauth_client_id }}
+      T3CODE_RELAY_URL: ${{ needs.preflight.outputs.relay_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+
+      - name: Align package versions to release version
+        run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
+
+      - uses: ./.github/actions/setup-apt-mirrors
+
+      - name: Install browser secret helper build libraries
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+
+      - name: Build JS bundle
+        run: vp run build:desktop
+
+      - name: Upload JS bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: js-bundle
+          path: |
+            apps/server/dist
+            apps/desktop/dist-electron
+          if-no-files-found: error
+          retention-days: 1
+
+  # Runs only for the Linux CLI archive the Windows app embeds as its WSL
+  # runtime; the Windows job waits for a job named "Build Linux x64". Its Linux
+  # installers are not published, so the release does not wait on them.
+  desktop_linux_x64:
+    name: Desktop Linux x64
+    needs: [preflight, bundle]
+    uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+      ref: ${{ github.sha }}
+      release_channel: stable
+      relay_client_tracing: false
+      clerk_publishable_key: ${{ needs.preflight.outputs.clerk_publishable_key }}
+      clerk_jwt_template: ${{ needs.preflight.outputs.clerk_jwt_template }}
+      clerk_cli_oauth_client_id: ${{ needs.preflight.outputs.clerk_cli_oauth_client_id }}
+      relay_url: ${{ needs.preflight.outputs.relay_url }}
+      label: Linux x64
+      runner: ubuntu-24.04
+      platform: linux
+      target: AppImage
+      arch: x64
+      rust_target: x86_64-unknown-linux-gnu
+      resource_key: linux-x64
+      cli_archive: true
+      timeout_minutes: 60
+
+  desktop_win_x64:
+    name: Desktop Windows x64
+    needs: [preflight, bundle]
+    uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+      ref: ${{ github.sha }}
+      release_channel: stable
+      relay_client_tracing: false
+      clerk_publishable_key: ${{ needs.preflight.outputs.clerk_publishable_key }}
+      clerk_jwt_template: ${{ needs.preflight.outputs.clerk_jwt_template }}
+      clerk_cli_oauth_client_id: ${{ needs.preflight.outputs.clerk_cli_oauth_client_id }}
+      relay_url: ${{ needs.preflight.outputs.relay_url }}
+      label: Windows x64
+      runner: ubuntu-24.04
+      verify_runner: windows-2025
+      platform: win
+      target: nsis
+      arch: x64
+      rust_target: x86_64-pc-windows-msvc
+      resource_key: win32-x64
+      timeout_minutes: 100
+
+  desktop_mac_arm64:
+    name: Desktop macOS arm64
+    needs: [preflight, bundle]
+    uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+      ref: ${{ github.sha }}
+      release_channel: stable
+      relay_client_tracing: false
+      clerk_publishable_key: ${{ needs.preflight.outputs.clerk_publishable_key }}
+      clerk_jwt_template: ${{ needs.preflight.outputs.clerk_jwt_template }}
+      clerk_cli_oauth_client_id: ${{ needs.preflight.outputs.clerk_cli_oauth_client_id }}
+      relay_url: ${{ needs.preflight.outputs.relay_url }}
+      label: macOS arm64
+      runner: macos-15
+      platform: mac
+      target: dmg
+      arch: arm64
+      rust_target: aarch64-apple-darwin
+      resource_key: darwin-arm64
+      launch_check: true
+      timeout_minutes: 60
+
+  release:
+    name: Publish GitHub Release
+    needs: [preflight, desktop_win_x64, desktop_mac_arm64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: desktop-win-x64
+          path: release-assets
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: desktop-mac-arm64
+          path: release-assets
+
+      # release-desktop.yml suffixes the Windows manifest with its arch so two
+      # Windows arches cannot collide; electron-updater reads plain latest.yml.
+      # builder-debug.yml is electron-builder's config dump, not a feed.
+      - name: Prepare updater manifests
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          rm -f release-assets/builder-debug.yml
+          for manifest in release-assets/*-win-x64.yml; do
+            mv "$manifest" "${manifest%-win-x64.yml}.yml"
+          done
+          ls -la release-assets
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ needs.preflight.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: CodeShip v${{ needs.preflight.outputs.version }}
+          generate_release_notes: true
+          make_latest: true
+          files: |
+            release-assets/*.exe
+            release-assets/*.dmg
+            release-assets/*.zip
+            release-assets/*.blockmap
+            release-assets/*.yml
+          fail_on_unmatched_files: true
+          token: ${{ github.token }}
