@@ -8,7 +8,12 @@
       <stop stop-color="#2dd4bf"/>
       <stop offset="1" stop-color="#0d9488"/>
     </linearGradient>
+    <radialGradient id="glow" cx="64" cy="64" r="44" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2dd4bf" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#2dd4bf" stop-opacity="0"/>
+    </radialGradient>
   </defs>
   <rect x="1" y="1" width="126" height="126" rx="29" fill="url(#surface)" stroke="#304255" stroke-width="2"/>
-  <path d="M10 7 1 16l9 9 2-3-6-6 6-6Zm12 0-2 3 6 6-6 6 2 3 9-9ZM19 4h-3l-4 24h3Z" transform="translate(16 16) scale(3)" fill="url(#mark)"/>
+  <circle cx="64" cy="64" r="44" fill="url(#glow)"/>
+  <path d="M14 3v6l-6 6l6 3v4l-12 -6zM18 3l12 13l-12 6v-4l6 -3l-6 -6zM3 25h26l-4 4h-18z" transform="translate(20.8 20.8) scale(2.7)" fill="url(#mark)"/>
 </svg>

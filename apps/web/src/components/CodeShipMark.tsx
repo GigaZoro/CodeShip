@@ -10,7 +10,7 @@ export function CodeShipMark(props: SVGProps<SVGSVGElement>) {
       xmlns="http://www.w3.org/2000/svg"
     >
       <path
-        d="M10 7 1 16l9 9 2-3-6-6 6-6Zm12 0-2 3 6 6-6 6 2 3 9-9ZM19 4h-3l-4 24h3Z"
+        d="M14 3v6l-6 6l6 3v4l-12 -6zM18 3l12 13l-12 6v-4l6 -3l-6 -6zM3 25h26l-4 4h-18z"
         fill="currentColor"
       />
     </svg>
