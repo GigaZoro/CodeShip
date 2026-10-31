@@ -17,6 +17,8 @@ import {
   type ClientSettings,
   DEFAULT_CLIENT_SETTINGS,
   type EnvironmentIdentificationMode,
+  resolveSidebarGroupBy,
+  type SidebarGroupBy,
   type UnifiedSettings,
 } from "@t3tools/contracts/settings";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
@@ -415,11 +417,8 @@ export function useEnvironmentIdentificationMode(): EnvironmentIdentificationMod
   });
 }
 
-/** Legacy sidebar opt-ins still count, so those users land in the boring sidebar. */
-export function useBoringSidebarEnabled(): boolean {
-  return useClientSettings(
-    (settings) => settings.boringSidebarEnabled || settings.legacySidebarEnabled,
-  );
+export function useSidebarGroupBy(): SidebarGroupBy {
+  return useClientSettings(resolveSidebarGroupBy);
 }
 
 export async function prepareModelPreferencesPatch(

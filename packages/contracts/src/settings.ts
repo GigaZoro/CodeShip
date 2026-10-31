@@ -72,6 +72,8 @@ export const SidebarProjectGroupingMode = Schema.Literals([
 ]);
 export type SidebarProjectGroupingMode = typeof SidebarProjectGroupingMode.Type;
 const DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE: SidebarProjectGroupingMode = "repository";
+export const SidebarGroupBy = Schema.Literals(["none", "project", "machine"]);
+export type SidebarGroupBy = typeof SidebarGroupBy.Type;
 export const MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS = 1;
 export const MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS = 90;
 export const SidebarAutoSettleAfterDays = Schema.Number.check(
@@ -473,6 +475,11 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   proactivePanelsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   showSkillsInSlashMenu: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // Null until the user picks a grouping; `resolveSidebarGroupBy` then reads the older opt-ins.
+  sidebarGroupBy: Schema.NullOr(SidebarGroupBy).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  // Opt-in for the retired Labs "boring sidebar" switch, read as project grouping.
   boringSidebarEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   boringSidebarMultilineRows: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
@@ -484,8 +491,7 @@ export const ClientSettingsSchema = Schema.Struct({
   threadDetailsItems: Schema.Record(Schema.String, Schema.Boolean).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
-  // Opt-in for the removed legacy sidebar. Still read so those users land in
-  // the boring sidebar; the boring sidebar toggle clears it.
+  // Opt-in for the removed legacy sidebar, also read as project grouping.
   legacySidebarEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   sidebarWorkingShelfEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   sidebarProjectGroupingMode: SidebarProjectGroupingMode.pipe(
@@ -525,6 +531,15 @@ export const ClientSettingsSchema = Schema.Struct({
 export type ClientSettings = typeof ClientSettingsSchema.Type;
 
 export const DEFAULT_CLIENT_SETTINGS: ClientSettings = Schema.decodeSync(ClientSettingsSchema)({});
+
+export const resolveSidebarGroupBy = (
+  settings: Pick<
+    ClientSettings,
+    "sidebarGroupBy" | "boringSidebarEnabled" | "legacySidebarEnabled"
+  >,
+): SidebarGroupBy =>
+  settings.sidebarGroupBy ??
+  (settings.boringSidebarEnabled || settings.legacySidebarEnabled ? "project" : "none");
 
 const UsageModelTokenPrice = Schema.Number.check(
   Schema.isFinite(),
@@ -1830,11 +1845,10 @@ export const ClientSettingsPatch = Schema.Struct({
   followUpBehavior: Schema.optionalKey(Schema.Literals(["queue", "steer"])),
   proactivePanelsEnabled: Schema.optionalKey(Schema.Boolean),
   showSkillsInSlashMenu: Schema.optionalKey(Schema.Boolean),
-  boringSidebarEnabled: Schema.optionalKey(Schema.Boolean),
+  sidebarGroupBy: Schema.optionalKey(SidebarGroupBy),
   boringSidebarMultilineRows: Schema.optionalKey(Schema.Boolean),
   threadDetailsUsageEnabled: Schema.optionalKey(Schema.Boolean),
   threadDetailsItems: Schema.optionalKey(Schema.Record(Schema.String, Schema.Boolean)),
-  legacySidebarEnabled: Schema.optionalKey(Schema.Boolean),
   sidebarWorkingShelfEnabled: Schema.optionalKey(Schema.Boolean),
   sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
   sidebarProjectGroupingOverrides: Schema.optionalKey(

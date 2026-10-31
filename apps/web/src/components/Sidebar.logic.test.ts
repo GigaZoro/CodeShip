@@ -34,9 +34,12 @@ import {
   type SidebarListMarker,
   type SidebarSection,
   resolveSidebarDropVerb,
+  groupSidebarThreadsByMachine,
   groupSidebarThreadsByProject,
   resolveSidebarFolderDot,
+  resolveSidebarScopedProjectKeys,
   sidebarFolderExpansionKeys,
+  sortSidebarMachines,
 } from "./Sidebar.logic";
 import { resolveProjectExpanded } from "../uiStateStore";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
@@ -1437,6 +1440,74 @@ describe("groupSidebarThreadsByProject", () => {
       { projectKey: "fleet", threads: [] },
     ]);
     expect(summarize(false)).toEqual([{ projectKey: "t3code", threads: ["a", "b"] }]);
+  });
+});
+
+describe("groupSidebarThreadsByMachine", () => {
+  it("lists this machine first and offline ones last, dropping empty machines unless kept", () => {
+    const machine = (id: string, label: string, disconnected = false) => ({
+      environmentId: EnvironmentId.make(id),
+      label,
+      disconnected,
+    });
+    const machines = [
+      machine("cloud", "Cloud sandbox", true),
+      machine("vps", "Hetzner VPS"),
+      machine("idle", "Build box"),
+      machine("environment-local", "MacBook Pro"),
+    ];
+    const threads = [
+      { id: "a", environmentId: EnvironmentId.make("vps") },
+      { id: "b", environmentId: localEnvironmentId },
+      { id: "c", environmentId: EnvironmentId.make("cloud") },
+      { id: "d", environmentId: EnvironmentId.make("vps") },
+    ];
+    const summarize = (keep: readonly string[]) =>
+      groupSidebarThreadsByMachine(
+        sortSidebarMachines(machines, localEnvironmentId),
+        threads,
+        new Set(keep.map((id) => EnvironmentId.make(id))),
+      ).map((folder) => [folder.machine.label, folder.threads.map((entry) => entry.id)]);
+
+    expect(summarize([])).toEqual([
+      ["MacBook Pro", ["b"]],
+      ["Hetzner VPS", ["a", "d"]],
+      ["Cloud sandbox", ["c"]],
+    ]);
+    expect(summarize(["idle"])).toEqual([
+      ["MacBook Pro", ["b"]],
+      ["Build box", []],
+      ["Hetzner VPS", ["a", "d"]],
+      ["Cloud sandbox", ["c"]],
+    ]);
+  });
+});
+
+describe("resolveSidebarScopedProjectKeys", () => {
+  it("narrows the chosen projects, or every project, to the chosen machines", () => {
+    const remoteEnvironmentId = EnvironmentId.make("environment-remote");
+    const t3code = {
+      memberProjectRefs: [
+        { environmentId: localEnvironmentId, projectId: "t3code" },
+        { environmentId: remoteEnvironmentId, projectId: "t3code-remote" },
+      ],
+    };
+    const fleet = {
+      memberProjectRefs: [{ environmentId: localEnvironmentId, projectId: "fleet" }],
+    };
+    const resolve = (chosenProjectGroups: (typeof t3code)[], machines: EnvironmentId[]) => {
+      const keys = resolveSidebarScopedProjectKeys({
+        projectGroups: [t3code, fleet],
+        chosenProjectGroups,
+        chosenEnvironmentIds: new Set(machines),
+      });
+      return keys === null ? null : [...keys];
+    };
+
+    expect(resolve([], [])).toBeNull();
+    expect(resolve([], [remoteEnvironmentId])).toEqual(["environment-remote:t3code-remote"]);
+    expect(resolve([t3code], [localEnvironmentId])).toEqual(["environment-local:t3code"]);
+    expect(resolve([fleet], [remoteEnvironmentId])).toEqual([]);
   });
 });
 

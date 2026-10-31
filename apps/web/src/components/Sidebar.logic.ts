@@ -925,7 +925,7 @@ export function resolveSidebarFolderDot(
 
 /**
  * Keys the old per-project sidebar saved folder open state under, most
- * specific first, for `resolveProjectExpanded`. Boring folders read and write
+ * specific first, for `resolveProjectExpanded`. Project folders read and write
  * the same keys, so a legacy user's closed folders stay closed after regrouping.
  */
 export function sidebarFolderExpansionKeys(group: {
@@ -942,18 +942,20 @@ export function sidebarFolderExpansionKeys(group: {
   ];
 }
 
+interface SidebarProjectGroupRefs {
+  readonly memberProjectRefs: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly projectId: string;
+  }>;
+}
+
 /**
- * Boring sidebar folders. Folders follow `groups` order and threads keep their
+ * Project folders. Folders follow `groups` order and threads keep their
  * input order. A project with no threads gets a folder only with `keepEmpty`.
  * A thread whose project is in no group has no folder and is left out.
  */
 export function groupSidebarThreadsByProject<
-  TGroup extends {
-    readonly memberProjectRefs: ReadonlyArray<{
-      readonly environmentId: EnvironmentId;
-      readonly projectId: string;
-    }>;
-  },
+  TGroup extends SidebarProjectGroupRefs,
   TThread extends Pick<SidebarThreadSummary, "environmentId" | "projectId">,
 >(
   groups: readonly TGroup[],
@@ -971,6 +973,83 @@ export function groupSidebarThreadsByProject<
     folderByProject.get(`${thread.environmentId}:${thread.projectId}`)?.threads.push(thread);
   }
   return keepEmpty ? folders : folders.filter((folder) => folder.threads.length > 0);
+}
+
+/** Shares the folder open-state map with project folders, outside their key space. */
+export function sidebarMachineFolderKey(environmentId: EnvironmentId): string {
+  return `machine:${environmentId}`;
+}
+
+/** An offline machine starts closed, since its threads cannot change until it is back. */
+export function resolveSidebarMachineFolderExpanded(
+  folderExpandedByKey: Readonly<Record<string, boolean>>,
+  machine: { readonly environmentId: EnvironmentId; readonly disconnected: boolean },
+): boolean {
+  return (
+    folderExpandedByKey[sidebarMachineFolderKey(machine.environmentId)] ?? !machine.disconnected
+  );
+}
+
+/** This machine first, then the others by name, offline ones last. */
+export function sortSidebarMachines<
+  TMachine extends {
+    readonly environmentId: EnvironmentId;
+    readonly label: string;
+    readonly disconnected: boolean;
+  },
+>(machines: readonly TMachine[], primaryEnvironmentId: EnvironmentId | null): TMachine[] {
+  const rank = (machine: TMachine) =>
+    machine.environmentId === primaryEnvironmentId ? 0 : machine.disconnected ? 2 : 1;
+  return machines.toSorted(
+    (left, right) => rank(left) - rank(right) || left.label.localeCompare(right.label),
+  );
+}
+
+/**
+ * Machine folders, in `machines` order. Threads keep their input order. A machine
+ * with no threads gets a folder only when `keepEnvironmentIds` has it.
+ */
+export function groupSidebarThreadsByMachine<
+  TMachine extends { readonly environmentId: EnvironmentId },
+  TThread extends Pick<SidebarThreadSummary, "environmentId">,
+>(
+  machines: readonly TMachine[],
+  threads: readonly TThread[],
+  keepEnvironmentIds: ReadonlySet<EnvironmentId>,
+): Array<{ machine: TMachine; threads: TThread[] }> {
+  const folders = machines.map((machine) => ({ machine, threads: [] as TThread[] }));
+  const folderByEnvironment = new Map(
+    folders.map((folder) => [folder.machine.environmentId, folder] as const),
+  );
+  for (const thread of threads) {
+    folderByEnvironment.get(thread.environmentId)?.threads.push(thread);
+  }
+  return folders.filter(
+    (folder) => folder.threads.length > 0 || keepEnvironmentIds.has(folder.machine.environmentId),
+  );
+}
+
+/**
+ * The `environmentId:projectId` keys the sidebar lists: the chosen projects, or
+ * every project, narrowed to the chosen machines. Null when nothing is chosen.
+ */
+export function resolveSidebarScopedProjectKeys(input: {
+  readonly projectGroups: ReadonlyArray<SidebarProjectGroupRefs>;
+  readonly chosenProjectGroups: ReadonlyArray<SidebarProjectGroupRefs>;
+  readonly chosenEnvironmentIds: ReadonlySet<EnvironmentId>;
+}): ReadonlySet<string> | null {
+  const { chosenProjectGroups, chosenEnvironmentIds } = input;
+  if (chosenProjectGroups.length === 0 && chosenEnvironmentIds.size === 0) return null;
+  const groups = chosenProjectGroups.length === 0 ? input.projectGroups : chosenProjectGroups;
+  return new Set(
+    groups.flatMap((group) =>
+      group.memberProjectRefs.flatMap((ref) =>
+        chosenEnvironmentIds.size === 0 || chosenEnvironmentIds.has(ref.environmentId)
+          ? [`${ref.environmentId}:${ref.projectId}`]
+          : [],
+      ),
+    ),
+  );
 }
 
 export type SidebarV2TopStatusKind =

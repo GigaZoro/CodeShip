@@ -14,6 +14,7 @@ import {
   resolveIdleCompaction,
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
+  resolveSidebarGroupBy,
   ServerSettings,
   ServerSettingsPatch,
   withIdleCompaction,
@@ -257,6 +258,18 @@ describe("ClientSettings quit confirmation", () => {
 
     expect(settings.confirmQuit).toBe(mode);
     expect(encodeClientSettings(settings).confirmQuit).toBe(mode);
+  });
+});
+
+describe("resolveSidebarGroupBy", () => {
+  it.each([
+    [{}, "none"],
+    [{ boringSidebarEnabled: true }, "project"],
+    [{ legacySidebarEnabled: true }, "project"],
+    [{ boringSidebarEnabled: true, sidebarGroupBy: "none" }, "none"],
+    [{ legacySidebarEnabled: true, sidebarGroupBy: "machine" }, "machine"],
+  ] as const)("reads %j as %s", (stored, groupBy) => {
+    expect(resolveSidebarGroupBy(decodeClientSettings(stored))).toBe(groupBy);
   });
 });
 

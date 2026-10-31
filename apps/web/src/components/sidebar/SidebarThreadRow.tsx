@@ -535,9 +535,11 @@ function TopStatusIcon(props: { icon: keyof typeof TOP_STATUS_ICONS; className: 
 
 type SidebarThreadRowProps = {
   thread: SidebarThreadSummary;
-  // "folder" is a one-line row inside a boring sidebar project folder;
+  // "folder" is a one-line row inside a sidebar folder;
   // "folder-multiline" adds the card's branch and PR line under it.
   variant: "card" | "slim" | "folder" | "folder-multiline";
+  // A machine folder names the machine, so its rows show their project instead.
+  inMachineFolder: boolean;
   navigationParent?: string | undefined;
   variantAction: SidebarSweepAction;
   settlementSupported: boolean;
@@ -1136,7 +1138,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     !showsScratchMachine &&
     prBadge === null &&
     diff === null &&
-    !isRemote &&
+    (!isRemote || props.inMachineFolder) &&
     runningTerminalIds.length === 0;
   const metaLine = metaLineEmpty ? null : (
     <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-secondary-label text-xs">
@@ -1171,7 +1173,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         aria-hidden
         className="pointer-events-none ml-auto inline-flex shrink-0 items-center gap-1"
       >
-        {isRemote && !showsScratchMachine ? (
+        {isRemote && !showsScratchMachine && !props.inMachineFolder ? (
           <span className="inline-flex shrink-0 items-center text-sidebar-muted-foreground/70">
             <EnvironmentMachineIcon
               aria-hidden
@@ -1241,7 +1243,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             {/* `contents` keeps one-line rows a single flex row. */}
             <div className={multiline ? "flex h-6 min-w-0 items-center gap-2.5" : "contents"}>
               {accessibleTitle}
-              {inFolder ? null : (
+              {inFolder && !props.inMachineFolder ? null : (
                 <span
                   className={cn(
                     "flex shrink-0 items-center transition-opacity",
@@ -1258,6 +1260,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {title}
               {multiline ? titleLineProviderStack : null}
               {pinIndicator}
+              {inFolder && !multiline && isRemote && !props.inMachineFolder ? (
+                <EnvironmentMachineIcon
+                  aria-hidden
+                  kind={props.environmentMachine}
+                  className="size-3.5 shrink-0 text-sidebar-muted-foreground/70"
+                />
+              ) : null}
               {multiline ? null : terminalStatusIcon}
               {isRegeneratingTitle ? (
                 <span role="status" className="sr-only">

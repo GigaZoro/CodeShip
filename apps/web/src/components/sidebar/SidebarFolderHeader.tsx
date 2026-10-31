@@ -1,15 +1,28 @@
+import type { EnvironmentId, EnvironmentMachineKind } from "@t3tools/contracts";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { ChevronDownIcon, SquarePenIcon } from "lucide-react";
-import { memo } from "react";
+import { memo, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 import type { SidebarProjectSnapshot } from "../../sidebarProjectGrouping";
 import { useUiStateStore } from "../../uiStateStore";
-import { resolveSidebarFolderDot, resolveThreadLastVisitedAt } from "../Sidebar.logic";
+import {
+  resolveSidebarFolderDot,
+  resolveThreadLastVisitedAt,
+  sidebarMachineFolderKey,
+} from "../Sidebar.logic";
+import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+
+export interface SidebarMachine {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+  readonly machineKind: EnvironmentMachineKind;
+  readonly disconnected: boolean;
+}
 
 const FOLDER_DOT_CLASS_NAME = {
   attention: "bg-warning",
@@ -26,15 +39,10 @@ const FOLDER_DOT_LABEL = {
 } as const;
 
 /** The folder's sidebar tree row; its thread rows name it as their parent. */
-export function sidebarFolderRowId(projectKey: string) {
-  return `folder:${projectKey}`;
+export function sidebarFolderRowId(folderKey: string) {
+  return `folder:${folderKey}`;
 }
 
-/**
- * A project folder in the boring sidebar. It reads like a shelf header: a trailing
- * count and chevron, with the count and a status dot only while it is closed, so a
- * closed folder still says when a hidden thread needs you.
- */
 export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHeader(props: {
   group: SidebarProjectSnapshot;
   collapsed: boolean;
@@ -43,8 +51,74 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
   onNewThread: (group: SidebarProjectSnapshot) => void;
   onContextMenu: (group: SidebarProjectSnapshot, position: { x: number; y: number }) => void;
 }) {
-  const { group, collapsed, hiddenThreads } = props;
-  const rowId = sidebarFolderRowId(group.projectKey);
+  const { group } = props;
+  return (
+    <SidebarFolderHeader
+      rowId={sidebarFolderRowId(group.projectKey)}
+      icon={<ProjectFavicon project={group} className="size-4 shrink-0" />}
+      label={group.displayName}
+      newThreadLabel={`New thread in ${group.displayName}`}
+      collapsed={props.collapsed}
+      hiddenThreads={props.hiddenThreads}
+      onToggle={() => props.onToggle(group)}
+      onNewThread={() => props.onNewThread(group)}
+      onContextMenu={(position) => props.onContextMenu(group, position)}
+    />
+  );
+});
+
+export const SidebarMachineFolderHeader = memo(function SidebarMachineFolderHeader(props: {
+  machine: SidebarMachine;
+  collapsed: boolean;
+  hiddenThreads: readonly EnvironmentThreadShell[];
+  onToggle: (machine: SidebarMachine) => void;
+  onNewThread: (machine: SidebarMachine, position: { x: number; y: number }) => void;
+}) {
+  const { machine } = props;
+  return (
+    <SidebarFolderHeader
+      rowId={sidebarFolderRowId(sidebarMachineFolderKey(machine.environmentId))}
+      icon={
+        <EnvironmentMachineIcon
+          aria-hidden
+          kind={machine.machineKind}
+          className="size-4 shrink-0 text-sidebar-muted-foreground"
+        />
+      }
+      label={machine.label}
+      status={
+        machine.disconnected ? (
+          <span className="shrink-0 text-xs text-sidebar-muted-foreground">Offline</span>
+        ) : null
+      }
+      newThreadLabel={`New thread on ${machine.label}`}
+      collapsed={props.collapsed}
+      hiddenThreads={props.hiddenThreads}
+      onToggle={() => props.onToggle(machine)}
+      onNewThread={(position) => props.onNewThread(machine, position)}
+      onContextMenu={(position) => props.onNewThread(machine, position)}
+    />
+  );
+});
+
+/**
+ * A sidebar folder. It reads like a shelf header: a trailing count and chevron,
+ * with the count and a status dot only while it is closed, so a closed folder
+ * still says when a hidden thread needs you.
+ */
+function SidebarFolderHeader(props: {
+  rowId: string;
+  icon: ReactNode;
+  label: string;
+  status?: ReactNode;
+  newThreadLabel: string;
+  collapsed: boolean;
+  hiddenThreads: readonly EnvironmentThreadShell[];
+  onToggle: () => void;
+  onNewThread: (position: { x: number; y: number }) => void;
+  onContextMenu: (position: { x: number; y: number }) => void;
+}) {
+  const { rowId, collapsed, hiddenThreads } = props;
   const localLastVisitedAtById = useUiStateStore((state) => state.threadLastVisitedAtById);
   const dot = collapsed
     ? resolveSidebarFolderDot(
@@ -70,17 +144,18 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
         tabIndex={-1}
         data-sidebar-row={rowId}
         aria-expanded={!collapsed}
-        onClick={() => props.onToggle(group)}
+        onClick={props.onToggle}
         onContextMenu={(event) => {
           event.preventDefault();
-          props.onContextMenu(group, { x: event.clientX, y: event.clientY });
+          props.onContextMenu({ x: event.clientX, y: event.clientY });
         }}
         className="flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-(--control-radius) px-(--sidebar-row-content-inset) text-left outline-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
-        <ProjectFavicon project={group} className="size-4 shrink-0" />
+        {props.icon}
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-sidebar-foreground/90">
-          {group.displayName}
+          {props.label}
         </span>
+        {props.status}
         {dot ? (
           <span className={cn("size-1.5 shrink-0 rounded-full", FOLDER_DOT_CLASS_NAME[dot])}>
             <span className="sr-only">{FOLDER_DOT_LABEL[dot]}</span>
@@ -108,16 +183,19 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
                 data-sidebar-action-for={rowId}
                 size="icon-xs"
                 variant="ghost-muted"
-                aria-label={`New thread in ${group.displayName}`}
-                onClick={() => props.onNewThread(group)}
+                aria-label={props.newThreadLabel}
+                onClick={(event) => {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  props.onNewThread({ x: rect.left, y: rect.bottom });
+                }}
               />
             }
           >
             <SquarePenIcon aria-hidden />
           </TooltipTrigger>
-          <TooltipPopup>New thread in {group.displayName}</TooltipPopup>
+          <TooltipPopup>{props.newThreadLabel}</TooltipPopup>
         </Tooltip>
       </span>
     </li>
   );
-});
+}

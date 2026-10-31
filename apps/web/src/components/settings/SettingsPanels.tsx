@@ -19,6 +19,8 @@ import {
   MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   type ResponseStreamingMode,
   type QuitConfirmationMode,
+  resolveSidebarGroupBy,
+  SidebarGroupBy,
   SidebarProjectSortOrder,
 } from "@t3tools/contracts/settings";
 import { desktopUpdateChannelOf } from "@t3tools/shared/cliRelease";
@@ -122,6 +124,13 @@ const SIDEBAR_PROJECT_SORT_ORDER_LABELS: Record<SidebarProjectSortOrder, string>
   manual: "Manual",
 };
 const isSidebarProjectSortOrder = Schema.is(SidebarProjectSortOrder);
+
+const SIDEBAR_GROUP_BY_LABELS: Record<SidebarGroupBy, string> = {
+  none: "None",
+  project: "By project",
+  machine: "By machine",
+};
+const isSidebarGroupBy = Schema.is(SidebarGroupBy);
 
 const TIMESTAMP_FORMAT_LABELS = {
   locale: "System default",
@@ -759,6 +768,7 @@ export function LegacyFeaturesSection() {
 export function GeneralSettingsPanel() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
+  const sidebarGroupBy = resolveSidebarGroupBy(settings);
   const lastEnabledProjectGroupingMode = useRef<SidebarProjectGroupingMode>(
     readLastEnabledProjectGroupingMode(),
   );
@@ -781,6 +791,37 @@ export function GeneralSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection id="sidebar" title="Sidebar">
+        <SettingsRow
+          {...searchableSetting("sidebar-grouping")}
+          description="Put active threads in a folder for each project or each machine. Pinned, Working, Snoozed, and Settled stay shared across them."
+          resetAction={
+            sidebarGroupBy !== "none" ? (
+              <SettingResetButton
+                label="thread grouping"
+                onClick={() => updateSettings({ sidebarGroupBy: "none" })}
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={sidebarGroupBy}
+              onValueChange={(value) => {
+                if (isSidebarGroupBy(value)) updateSettings({ sidebarGroupBy: value });
+              }}
+            >
+              <SelectTrigger size="sm" className="w-full sm:w-44" aria-label="Group threads">
+                <SelectValue>{SIDEBAR_GROUP_BY_LABELS[sidebarGroupBy]}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {SidebarGroupBy.literals.map((groupBy) => (
+                  <SelectItem hideIndicator key={groupBy} value={groupBy}>
+                    {SIDEBAR_GROUP_BY_LABELS[groupBy]}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
         <SettingsRow
           {...searchableSetting("project-grouping")}
           description="Combine matching repositories across environments."
@@ -858,7 +899,7 @@ export function GeneralSettingsPanel() {
         />
         <SettingsRow
           {...searchableSetting("working-shelf")}
-          description="Fold working and monitoring threads into a Working section. They return to the top of the inbox when they need you. The boring sidebar in Labs has no Working section."
+          description="Fold working and monitoring threads into a Working section. They return to the top of the inbox when they need you."
           resetAction={
             settings.sidebarWorkingShelfEnabled !==
             DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled ? (

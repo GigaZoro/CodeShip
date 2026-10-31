@@ -1,4 +1,5 @@
 import { AuthPreviewOperateScope, type EnvironmentId } from "@t3tools/contracts";
+import { resolveSidebarGroupBy } from "@t3tools/contracts/settings";
 import type { AnyRouter } from "@tanstack/react-router";
 
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
@@ -117,10 +118,9 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
         void scratch.startScratchThread(environmentId);
       },
       "chat.new": (event) => {
-        // The boring sidebar's folders already show the context, so it starts in
+        // Sidebar folders already show the context, so a grouped sidebar starts in
         // the current project like the legacy sidebar did.
-        const { boringSidebarEnabled, legacySidebarEnabled } = getClientSettings();
-        if (!boringSidebarEnabled && !legacySidebarEnabled && readProjectGroupCount() > 1) {
+        if (resolveSidebarGroupBy(getClientSettings()) === "none" && readProjectGroupCount() > 1) {
           claim(event);
           openCommandPalette({ open: "new-thread-in" });
           return;

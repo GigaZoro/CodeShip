@@ -145,15 +145,25 @@ choice.
 While this is on, the active list is ordered by when each thread last came back to you, so you
 cannot drag or move threads within it. Your saved order returns when you turn it off.
 
-### Group threads by project (beta)
+### Group threads by project or machine
 
-Turn on **Settings → Labs → Boring sidebar (group by project)** on web and desktop to put active
-threads in a folder for each project. A project with no active threads has no folder until you
-pick it in the project filter. Click a folder to open or close it. A closed folder shows how
-many threads it holds, and a dot when one of them needs you. Use the pen button on a folder, or
-right-click it, to start a thread in that project. Pinned threads stay above the folders, and
-Snoozed and Settled stay below them. In this mode you can drag a thread onto the composer to
-mention it, but not within the sidebar, and the Working section is off. Each device keeps its own choice.
+On web and desktop, open the filter button next to the sidebar search and pick **Group by**
+**Project** or **Machine**, or set **Settings → General → Group threads**. Active threads then
+sit in a folder for each project, or for each machine they run on. Pinned threads stay above the
+folders, and Working, Snoozed, and Settled stay below them, shared across every folder. Each
+device keeps its own choice.
+
+Click a folder to open or close it. A closed folder shows how many threads it holds, and a dot
+when one of them needs you. Use the pen button on a project folder, or right-click it, to start
+a thread in that project. On a machine folder, the pen button lists that machine's projects to
+start in. A machine that is offline shows **Offline** and starts closed. In project folders,
+threads on another machine show that machine's icon. While threads are grouped, you can drag a
+thread onto the composer to mention it, but not within the sidebar.
+
+The same menu filters the sidebar. Click a machine or project to show only its threads, or
+shift-click to add more. Machines appear when you have more than one. Choosing both a machine
+and a project shows that project's threads on that machine. A project or machine you filter to
+keeps its folder even with no active threads, so you can start one there.
 
 ## Settle finished work
 
