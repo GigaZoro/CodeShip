@@ -72,7 +72,7 @@ const CODEX_CATALOG_REFRESH_TIMEOUT_MS = 3_000;
 const CODEX_CONFIG_PROBE_TIMEOUT_MS = 3_000;
 const CODEX_CATALOG_REFRESH_POLL = "100 millis" as const;
 // OpenAI tailors the Codex model catalog to known originators; an unknown one gets the plain-CLI list.
-const CODEX_ORIGINATOR = "T3 Code";
+export const CODEX_ORIGINATOR = "T3 Code";
 const CODEX_CLIENT_TITLE = "CodeShip";
 // Handshake plus account/models/skills requests can exceed the shared 10s probe budget.
 const CODEX_AUTH_PROBE_TIMEOUT_MS = 20_000;

@@ -28,6 +28,8 @@ const decodeSettings = Schema.decodeSync(CodexSettings);
 const decodeCommand = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.Array(Schema.String)])),
 );
+const decodeJsonString = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.String));
+const decodeCatalog = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 it.live.each(
   (["managed", "local"] as const).flatMap((source) =>
     (["primary", "additional"] as const).map((account) => ({ source, account })),
@@ -143,7 +145,6 @@ it.live.each(
             arg.startsWith("model_providers.openai_token_sharing="),
           )!;
           assert.include(provider, 'base_url="https://api.openai.com/v1"');
-          assert.include(provider, 'model_catalog_url="https://api.openai.com/v1/models"');
           assert.notInclude(provider, "env_key");
           assert.include(provider, "refresh_interval_ms=0");
           // regression: #16132 Codex fetches each token through this helper, so a running
@@ -194,10 +195,21 @@ it.live.each(
             assert.equal(refused.stdout, "");
             assert.isFalse(yield* fs.exists(ambient.T3CODE_HOME));
           }
-          assert.include(args, "features.api_key_model_discovery=true");
           assert.include(args, "features.multi_agent=false");
           assert.include(args, "features.multi_agent_v2=false");
-          assert.notInclude(effective.config.launchArgs, "model_catalog_json");
+          // regression: the catalog's multi_agent_version overrides those features, and
+          // ChatGPT sharing rejects the agent_message items Codex subagents send.
+          const catalogArg = args.find((arg) => arg.startsWith("model_catalog_json="))!;
+          assert.deepEqual(
+            decodeCatalog(
+              yield* fs.readFileString(
+                decodeJsonString(catalogArg.slice("model_catalog_json=".length)),
+              ),
+            ),
+            {
+              models: [{ slug: "gpt-6-astra", context_window: 272000, multi_agent_version: null }],
+            },
+          );
           assert.notInclude(effective.config.launchArgs, "x-openai-chatpass-test");
           assert.include(provider, "supports_websockets=false");
           assert.include(provider, "requires_openai_auth=false");
@@ -235,8 +247,18 @@ it.live.each(
                   "https://auth.openai.com/.well-known/openid-configuration",
                   "https://auth.openai.com/revoke",
                   "https://auth.openai.com/api/accounts/oauth/token",
+                  "https://api.openai.com/v1/models",
                 ].includes(request.url),
               );
+              if (request.url.endsWith("/models"))
+                return HttpClientResponse.fromWeb(
+                  request,
+                  Response.json({
+                    models: [
+                      { slug: "gpt-6-astra", context_window: 272000, multi_agent_version: "v2" },
+                    ],
+                  }),
+                );
               if (request.url.endsWith("/token")) {
                 renewals++;
                 return HttpClientResponse.fromWeb(

@@ -12,6 +12,9 @@ import * as CodexInstallation from "./CodexInstallation.ts";
 import { makeCodexChatGptAuth } from "./CodexChatGptAuth.ts";
 import { COMMAND_TIMEOUT_MS } from "./CodexManagedTokenProtocol.ts";
 import { materializeCodexShadowHome } from "./Drivers/CodexHomeLayout.ts";
+import { chatGptCodexCatalog } from "./CodexChatGptModels.ts";
+import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
+import { HttpClient } from "effect/http";
 
 export interface CodexEffectiveRuntime {
   readonly config: CodexSettings;
@@ -19,12 +22,17 @@ export interface CodexEffectiveRuntime {
   readonly revision: string;
 }
 const decodeSettings = Schema.decodeSync(CodexSettings);
-const managedCodexLaunchArgs = (command: string, args: ReadonlyArray<string>) =>
+const encodeCatalog = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const managedCodexLaunchArgs = (
+  command: string,
+  args: ReadonlyArray<string>,
+  catalogPath: string,
+) =>
   [
     'model_provider="openai_token_sharing"',
     // Codex persists this provider ID in rollouts and needs it unchanged to resume.
-    `model_providers.openai_token_sharing={name="OpenAI Token Sharing",base_url="https://api.openai.com/v1",model_catalog_url="https://api.openai.com/v1/models",wire_api="responses",requires_openai_auth=false,supports_websockets=false,auth={command=${JSON.stringify(command)},args=${JSON.stringify(args)},timeout_ms=${COMMAND_TIMEOUT_MS},refresh_interval_ms=0}}`,
-    "features.api_key_model_discovery=true",
+    `model_providers.openai_token_sharing={name="OpenAI Token Sharing",base_url="https://api.openai.com/v1",wire_api="responses",requires_openai_auth=false,supports_websockets=false,auth={command=${JSON.stringify(command)},args=${JSON.stringify(args)},timeout_ms=${COMMAND_TIMEOUT_MS},refresh_interval_ms=0}}`,
+    `model_catalog_json=${JSON.stringify(catalogPath)}`,
     "features.multi_agent=false",
     "features.multi_agent_v2=false",
   ]
@@ -42,6 +50,7 @@ export const makeCodexManagedRuntime = Effect.fn("makeCodexManagedRuntime")(func
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const broker = yield* CodexManagedTokenBroker.CodexManagedTokenBroker;
+  const http = yield* HttpClient.HttpClient;
   const environmentIdentity = yield* ServerEnvironment.ServerEnvironmentIdentity;
   const environmentId = yield* environmentIdentity.getEnvironmentId;
   const invocation = yield* resolveSelfInvocation();
@@ -58,6 +67,13 @@ export const makeCodexManagedRuntime = Effect.fn("makeCodexManagedRuntime")(func
     options.config,
   );
   const homePath = homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath;
+  const catalogPath = path.join(
+    config.stateDir,
+    "providers",
+    "codex",
+    options.instanceId,
+    "model-catalog.json",
+  );
   const resolve = Effect.gen(function* () {
     // Establish renewal availability before auth.access can consume a refresh token.
     const endpoint = yield* broker.endpoint.pipe(
@@ -83,6 +99,36 @@ export const makeCodexManagedRuntime = Effect.fn("makeCodexManagedRuntime")(func
       ),
     );
     const credentials = yield* auth.access;
+    const catalog = yield* chatGptCodexCatalog(credentials.accessToken, executable.version).pipe(
+      Effect.provideService(HttpClient.HttpClient, http),
+      Effect.mapError(
+        () =>
+          new ProviderSetupError({
+            instanceId: options.instanceId,
+            operation: "models",
+            detail: "Could not load your ChatGPT models. Check your connection and retry.",
+          }),
+      ),
+    );
+    // The catalog's multi_agent_version enables Codex subagents whatever `features.*` says,
+    // and ChatGPT sharing rejects the agent_message items they exchange.
+    yield* writeFileStringAtomically({
+      filePath: catalogPath,
+      contents: encodeCatalog({
+        models: catalog.models.map((model) => ({ ...model, multi_agent_version: null })),
+      }),
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, path),
+      Effect.mapError(
+        () =>
+          new ProviderSetupError({
+            instanceId: options.instanceId,
+            operation: "runtime",
+            detail: "Could not prepare the managed Codex runtime.",
+          }),
+      ),
+    );
     const profileKey = yield* auth.profileKey(credentials);
     const authArgs = selfInvocationArgs(invocation, [
       "__managed-chatgpt-token",
@@ -128,7 +174,7 @@ export const makeCodexManagedRuntime = Effect.fn("makeCodexManagedRuntime")(func
         setupMode: "managed",
         binaryPath: executable.executablePath,
         homePath,
-        launchArgs: managedCodexLaunchArgs(invocation.command, authArgs),
+        launchArgs: managedCodexLaunchArgs(invocation.command, authArgs, catalogPath),
       }),
       environment,
       revision: profileKey,

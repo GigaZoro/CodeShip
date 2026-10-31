@@ -9,8 +9,9 @@ select that environment first. CodeShip handles Codex installation; sign in on
 OpenAI and allow sharing of your ChatGPT plan.
 
 Manage shared usage and credits in ChatGPT through **Manage usage** in CodeShip.
-If a request uses a feature that ChatGPT sharing does not support, use another
-provider for that request.
+Codex's built-in subagents are unavailable with ChatGPT sharing. If a request uses
+another feature that ChatGPT sharing does not support, use another provider for
+that request.
 
 When reconnecting, choose the same account in CodeShip and on OpenAI's sign-in
 page. Disconnecting stops running threads but keeps their history and lets you
