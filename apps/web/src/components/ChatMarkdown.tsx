@@ -74,6 +74,7 @@ import React, {
   Suspense,
   type ComponentProps,
   type ClipboardEvent as ReactClipboardEvent,
+  type MouseEvent as ReactMouseEvent,
   use,
   memo,
   useLayoutEffect,
@@ -803,20 +804,17 @@ function useChatMarkdownState({
     return local._tag === "Success" && (local.value.entries[0] ?? null) !== null;
   };
   const openOnLocalMachine = async (targetPath: string) => {
-    try {
-      const result = await openInLocalEditor(targetPath);
-      if (result._tag === "Success" || isAtomCommandInterrupted(result)) return;
-      throw squashAtomCommandFailure(result);
-    } catch (cause) {
-      reportMarkdownActionFailure({ operation: "open-file-in-editor", target: targetPath }, cause);
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Unable to open file",
-          description: cause instanceof Error ? cause.message : "An error occurred.",
-        }),
-      );
-    }
+    const result = await openInLocalEditor(targetPath);
+    if (result._tag === "Success" || isAtomCommandInterrupted(result)) return;
+    const cause = squashAtomCommandFailure(result);
+    reportMarkdownActionFailure({ operation: "open-file-in-editor", target: targetPath }, cause);
+    toastManager.add(
+      stackedThreadToast({
+        type: "error",
+        title: "Unable to open file",
+        description: cause instanceof Error ? cause.message : "An error occurred.",
+      }),
+    );
   };
   const openFileInPanel = (fileLinkMeta: MarkdownFileLinkMeta, panelPath: string) => {
     if (!threadRef) return;
@@ -989,6 +987,11 @@ function markdownHeadingRenderer(level: 1 | 2 | 3 | 4 | 5 | 6) {
       />
     );
   };
+}
+
+// Native word selection stops at hyphens and dots, so a double-click takes the whole span.
+function selectInlineCode(event: ReactMouseEvent<HTMLElement>) {
+  window.getSelection()?.selectAllChildren(event.currentTarget);
 }
 
 const CHAT_MARKDOWN_COMPONENTS = {
@@ -1383,6 +1386,11 @@ const CHAT_MARKDOWN_COMPONENTS = {
           inlineCodeFilePathCandidate(codeText) ?? codeText.trim(),
         );
       }
+      return (
+        <code {...props} className={className} onDoubleClick={selectInlineCode}>
+          {children}
+        </code>
+      );
     }
     return (
       <code {...props} className={className}>

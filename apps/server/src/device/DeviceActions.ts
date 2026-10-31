@@ -11,6 +11,7 @@ import {
   type DeviceTextSize,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import type { DeviceHostReady } from "./DeviceHost.ts";
@@ -342,13 +343,9 @@ const serveSimPermissions = Effect.fn("DeviceActions.serveSimPermissions")(funct
 const adb = (run: Runner, serial: string, args: ReadonlyArray<string>, operation: string) =>
   run("adb", ["-s", serial, ...args]).pipe(Effect.flatMap(ok(operation)));
 
-// `adb shell` joins its arguments with spaces and hands the result to the device's `sh -c`
-// without escaping, so URLs and app ids must be quoted to arrive as single words.
+// adb shell joins arguments without escaping before the device's shell parses them.
 const androidShellWord = (value: string) =>
   /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
-
-const adbShell = (run: Runner, serial: string, args: ReadonlyArray<string>, operation: string) =>
-  adb(run, serial, ["shell", ...args.map(androidShellWord)], operation);
 
 const runAndroid = Effect.fn("DeviceActions.runAndroid")(function* (
   run: Runner,
@@ -356,7 +353,7 @@ const runAndroid = Effect.fn("DeviceActions.runAndroid")(function* (
 ) {
   const serial = input.deviceId;
   const shell = (args: ReadonlyArray<string>, operation: string) =>
-    adbShell(run, serial, args, operation);
+    adb(run, serial, ["shell", ...args.map(androidShellWord)], operation);
   switch (input.type) {
     case "setAppearance":
       yield* shell(["cmd", "uimode", "night", input.value === "dark" ? "yes" : "no"], "appearance");
@@ -436,9 +433,13 @@ const runAndroid = Effect.fn("DeviceActions.runAndroid")(function* (
         });
       }
       const verb = input.decision === "grant" ? "grant" : "revoke";
-      for (const permission of permissions) {
-        yield* shell(["pm", verb, input.appId, permission], "permission").pipe(Effect.ignore);
-      }
+      // `pm` rejects a permission the app or system image does not declare, and Photos lists both
+      // the Android 13 and the older storage permission, so fail only when none of them applied.
+      const results = yield* Effect.forEach(permissions, (permission) =>
+        shell(["pm", verb, input.appId, permission], "permission").pipe(Effect.result),
+      );
+      const failure = results.find(Result.isFailure);
+      if (failure && !results.some(Result.isSuccess)) return yield* failure.failure;
       return;
     }
     case "openUrl":
@@ -540,7 +541,9 @@ const isColorFilter = (value: unknown): value is DeviceSettings["colorFilter"] &
 
 const readAndroid = Effect.fn("DeviceActions.readAndroid")(function* (run: Runner, serial: string) {
   const shell = (args: ReadonlyArray<string>) =>
-    quiet(adbShell(run, serial, args, args[0] ?? "shell").pipe(Effect.map((s) => s.trim())));
+    quiet(
+      adb(run, serial, ["shell", ...args], args[0] ?? "shell").pipe(Effect.map((s) => s.trim())),
+    );
   const [night, fontScale, animator, wifi, focus] = yield* Effect.all(
     [
       shell(["cmd", "uimode", "night"]),

@@ -1,9 +1,9 @@
-// @effect-diagnostics-next-line nodeBuiltinImport:off - Runs a real shell to reproduce adb joining arguments before Android executes them.
-import * as NodeChildProcess from "node:child_process";
-
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
+import * as ChildProcess from "effect/process/ChildProcess";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { readDeviceDetail, runDeviceAction } from "./DeviceActions.ts";
 import type { DeviceHostReady } from "./DeviceHost.ts";
@@ -47,7 +47,7 @@ const makeReady = (
 const udid = "SIM-1";
 
 describe("runDeviceAction", () => {
-  it.effect.each([
+  it.live.each([
     "https://example.com/callback?code=1&state=2",
     "https://example.com/it's?a=1&b=2",
     "https://example.com/a b?key=value",
@@ -63,26 +63,24 @@ describe("runDeviceAction", () => {
       });
       const args = calls[0]!.args;
       expect(args.slice(0, 3)).toEqual(["-s", "emulator-5554", "shell"]);
-      // adb joins its shell arguments without escaping before the device runs sh -c.
-      const result = NodeChildProcess.spawnSync(
-        "/bin/sh",
-        [
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      // adb joins arguments verbatim before the Android shell parses them.
+      const stdout = yield* spawner.string(
+        ChildProcess.make("/bin/sh", [
           "-c",
-          `am() { printf '%s\\0' "$@"; }
-${args.slice(3).join(" ")}`,
-        ],
-        { encoding: "utf8" },
+          `am() { printf '%s\\0' "$@"; }\n${args.slice(3).join(" ")}`,
+        ]),
       );
-      expect(result.status).toBe(0);
-      expect(result.stdout.split("\0").slice(0, -1)).toEqual([
+      expect(stdout.split("\0").slice(0, -1)).toEqual([
         "start",
         "-a",
         "android.intent.action.VIEW",
         "-d",
         url,
       ]);
-    }),
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
+
   it.effect.each([
     ["emulator-5554", "Physical size: 2560x1600", "portrait", "-9.81:0:0"],
     ["emulator-5554", "Physical size: 2560x1600", "landscape_left", "0:9.81:0"],
@@ -98,6 +96,60 @@ ${args.slice(3).join(" ")}`,
         );
         yield* runDeviceAction(ready, "android", { type: "setOrientation", deviceId, value });
         expect(calls.at(-1)?.args.at(-1)).toBe(expected);
+      }),
+  );
+
+  it.effect.each([
+    ["camera", "grant", "android.permission.CAMERA"],
+    ["photos", "revoke", "android.permission.READ_MEDIA_IMAGES"],
+  ] as const)(
+    "reports an Android %s %s that no pm command applied",
+    ([permission, decision, firstPermission]) =>
+      Effect.gen(function* () {
+        const { ready } = makeReady((call) => ({
+          code: 1,
+          stderr: `Unknown package: ${call.args.at(-1)}`,
+        }));
+        const error = yield* Effect.flip(
+          runDeviceAction(ready, "android", {
+            type: "setPermission",
+            deviceId: "emulator-5554",
+            appId: "com.example.missing",
+            permission,
+            decision,
+          }),
+        );
+        expect(error._tag).toBe("DeviceOperationError");
+        expect(error.operation).toBe("permission");
+        expect(error._tag === "DeviceOperationError" && error.cause).toMatchObject({
+          stderr: `Unknown package: ${firstPermission}`,
+        });
+      }),
+  );
+
+  it.effect.each([
+    [
+      "photos",
+      ["android.permission.READ_MEDIA_IMAGES", "android.permission.READ_EXTERNAL_STORAGE"],
+      1,
+    ],
+    ["contacts", ["android.permission.READ_CONTACTS", "android.permission.WRITE_CONTACTS"], 0],
+  ] as const)(
+    "keeps a partially applied %s permission change",
+    ([permission, permissions, success]) =>
+      Effect.gen(function* () {
+        const { ready, calls } = makeReady((call) => ({
+          code: call.args.at(-1) === permissions[success] ? 0 : 1,
+        }));
+        const result = yield* runDeviceAction(ready, "android", {
+          type: "setPermission",
+          deviceId: "emulator-5554",
+          appId: "com.example.app",
+          permission,
+          decision: "grant",
+        });
+        expect(result).toBeUndefined();
+        expect(calls.map((call) => call.args.at(-1))).toEqual(permissions);
       }),
   );
 });

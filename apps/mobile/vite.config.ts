@@ -7,6 +7,7 @@ const reactTests = [
   "src/features/files/SourceFileSurface.test.tsx",
   "src/features/threads/new-task-flow-provider.test.tsx",
   "src/features/threads/use-visible-working-duration-label.test.tsx",
+  "src/features/threads/git/GitBranchesSheet.occupancy.test.tsx",
   "src/features/files/useFileTreeEntries.test.tsx",
   "src/features/projects/AddProjectScreen.test.ts",
   "src/lib/useMediaVideoPlayback.test.tsx",

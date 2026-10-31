@@ -117,6 +117,9 @@ export function renderBootServiceUnit(plan: BootServicePlan): string {
     // Reclaim takes the agents' unprotected pages first. The kernel caps this at the
     // protection of user.slice and user@.service, which only root can grant.
     "MemoryLow=1536M",
+    // A user manager's own score, the lowest it may set: below its other services (200) and agents (800).
+    // `t3 service protect` lowers it further through a drop-in.
+    "OOMScoreAdjust=100",
     `StandardOutput=append:${escapeSystemdSpecifiers(plan.logPath)}`,
     `StandardError=append:${escapeSystemdSpecifiers(plan.logPath)}`,
     "",
