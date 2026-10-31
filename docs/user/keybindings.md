@@ -44,6 +44,11 @@ on macOS and Ctrl on Windows and Linux, including GNOME, KDE Plasma, Niri, and
 Hyprland. If a custom desktop shortcut takes the same keys, choose another binding
 in Settings.
 
+## Side chat
+
+`mod+;` starts a [side chat](./composer.md#side-chat) about the current thread in the right panel.
+Change it under **Thread: Side Chat** in Keybindings.
+
 ## Copy pull request references
 
 With a PR open in the right panel or on the Pull requests page, use `mod+shift+c`

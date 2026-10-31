@@ -265,6 +265,19 @@ its progress.
   stop the turn only when it is working on the goal. Other goal commands wait for
   the turn to end.
 
+## Side chat
+
+Ask a quick question about a thread without adding it to the thread. On web and desktop, press
+`mod+;`, choose **Side chat** from the right panel's **+** menu, or run **Start side chat** from
+the command palette. The side chat opens in the right panel with the thread's context up to its
+latest finished reply, so you can ask while the thread is still working.
+
+A side chat is a fork, and it starts in plan mode on providers that have one. Plan mode doesn't
+block every edit on Codex, so ask it not to change files when that matters. Choose **Open as thread**
+to continue it full size, or to answer an approval it asks for. Side chats are listed with your
+other threads as `Side chat: <thread title>`, on every device, so you can settle one or continue it
+on mobile.
+
 ## Context in your message
 
 Context you attach lands where your cursor is, as a chip inside your text: a terminal excerpt,

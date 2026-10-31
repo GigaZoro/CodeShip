@@ -258,6 +258,7 @@ import { useEnvironmentShellHasSnapshot } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialogHost, openExpandedImagePreview } from "./chat/ExpandedImageDialog";
+import { useOpenSideChatAsThread, useStartSideChat } from "./chat/sideChat";
 import {
   BranchRestoreConfirmHost,
   DeviceSetupDialogHost,
@@ -2299,6 +2300,8 @@ export default function ChatView(props: ChatViewProps) {
         branchPullRequest: activeThreadShell?.branchPullRequest ?? activeThread.branchPullRequest,
       })
     : null;
+  const sideChat = useStartSideChat(activeThreadRef);
+  const openSideChatAsThread = useOpenSideChatAsThread(activeThreadRef);
   const {
     activateRightPanelSurfaceStable,
     addDeviceSurfaceStable,
@@ -2661,6 +2664,10 @@ export default function ChatView(props: ChatViewProps) {
       ...threadLifecycleShortcuts,
       "thread.copyReference": ({ event }) => {
         if (!event.repeat) copyActiveThreadReference();
+      },
+      "thread.sideChat": ({ event }) => {
+        if (!sideChat.available) return false;
+        if (!event.repeat) sideChat.start();
       },
       "chat.find": () => {
         if (!isServerThread || serverConfig?.threadFind !== true || activeThreadKey === null)
@@ -3111,6 +3118,7 @@ export default function ChatView(props: ChatViewProps) {
       getShortcutContext={getShortcutContextStable}
       onSendAnnotation={sendPreviewAnnotationStable}
       onCloseSurface={closeRightPanelSurface}
+      sideChat={{ onOpenAsThread: openSideChatAsThread, onOpenThread: onOpenRelatedThreadStable }}
       terminal={{
         launchContext: activeTerminalLaunchContext ?? null,
         keybindings,
@@ -3862,6 +3870,7 @@ export default function ChatView(props: ChatViewProps) {
           onAddPullRequest={addPullRequestSurfaceStable}
           onAddPullRequests={addPullRequestsSurfaceStable}
           onAddDevice={addDeviceSurfaceStable}
+          onAddSideChat={sideChat.start}
           browserAvailable={canOperatePreview && browserAvailable}
           terminalAvailable={activeProject !== null && canOperateTerminal}
           diffAvailable={isServerThread && isGitRepo}
@@ -3869,6 +3878,7 @@ export default function ChatView(props: ChatViewProps) {
           pullRequestAvailable={pullRequestSurfaceAvailable}
           pullRequestsAvailable={pullRequestsSurfaceAvailable}
           deviceAvailable={activeThreadRef !== null}
+          sideChatAvailable={sideChat.available}
         >
           {rightPanelContent}
         </ChatRightPanel>

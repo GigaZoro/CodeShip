@@ -524,6 +524,25 @@ describe("rightPanelStore", () => {
     });
   });
 
+  it("keeps a saved side chat only when its id names its thread", () => {
+    const sideChat = { id: "side-chat:thread-S", kind: "side-chat", threadId: "thread-S" };
+    expect(
+      migratePersistedRightPanelState({
+        byThreadKey: {
+          "env-1:thread-A": {
+            isOpen: true,
+            activeSurfaceId: sideChat.id,
+            surfaces: [
+              sideChat,
+              { id: "side-chat:thread-T", kind: "side-chat", threadId: "thread-S" },
+              { id: "side-chat:thread-U", kind: "side-chat" },
+            ],
+          },
+        },
+      }).byThreadKey["env-1:thread-A"]?.surfaces,
+    ).toEqual([sideChat]);
+  });
+
   it("upgrades saved single-session terminal surfaces to split-capable surfaces", () => {
     expect(
       migratePersistedRightPanelState({

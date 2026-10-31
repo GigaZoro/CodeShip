@@ -180,6 +180,19 @@ export function deriveThreadQueueWorkflowState(projection: Projection): ThreadQu
   };
 }
 
+/** The newest finished run, so a side chat can start while a later run is still working. */
+export function sideChatSourceRunId(
+  runs: ReadonlyArray<Pick<Run, "id" | "ordinal" | "status">>,
+): Run["id"] | null {
+  let latest: Pick<Run, "id" | "ordinal"> | null = null;
+  for (const run of runs) {
+    if (run.status === "completed" && (latest === null || run.ordinal > latest.ordinal)) {
+      latest = run;
+    }
+  }
+  return latest?.id ?? null;
+}
+
 export function canForkProjectedAssistantItem(input: {
   readonly projectedItem: OrchestrationV2ProjectedTurnItem;
   readonly capabilities?: OrchestrationV2ProviderCapabilities | undefined;

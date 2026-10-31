@@ -65,6 +65,7 @@ import {
   MessageSquareDashedIcon,
   LinkIcon,
   MessageSquareIcon,
+  MessagesSquareIcon,
   PaletteIcon,
   RotateCcwIcon,
   SettingsIcon,
@@ -241,6 +242,7 @@ import { buildSidebarProjectPickerEntries } from "../sidebarProjectGrouping";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { readPullRequestListPreferences } from "~/components/pullRequest/pullRequestListPreferences";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
+import { useStartSideChat } from "./chat/sideChat";
 import { threadRecentUse } from "@t3tools/shared/paletteSearch";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
@@ -460,6 +462,9 @@ function OpenCommandPaletteDialog(props: {
         ? scopeThreadRef(activeThread.environmentId, activeThread.id)
         : null;
   const openPanelPullRequestUrl = useOpenPanelPullRequestUrl(referenceThreadRef);
+  const sideChat = useStartSideChat(
+    activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null,
+  );
   const activeThreadServerConfig = useServerConfigs().get(
     activeThread?.environmentId ?? ("" as EnvironmentId),
   );
@@ -1390,6 +1395,22 @@ function OpenCommandPaletteDialog(props: {
       icon: <PullRequestGlyph.link className={ITEM_ICON_CLASS} />,
       run: async () => {
         useRightPanelStore.getState().open(threadRef, "pull-requests");
+      },
+    });
+  }
+
+  if (activeThread !== null) {
+    actionItems.push({
+      kind: "action",
+      value: "action:side-chat",
+      searchTerms: ["side chat", "ask", "question", "aside", "btw"],
+      title: "Start side chat",
+      description: "Ask about this thread without adding to it",
+      disabled: !sideChat.available,
+      icon: <MessagesSquareIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "thread.sideChat",
+      run: async () => {
+        sideChat.start();
       },
     });
   }
