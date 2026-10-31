@@ -176,6 +176,7 @@ type RawThreadFeedEntry =
       readonly createdAt: string;
       readonly runId: RunId | null;
       readonly render: HtmlRenderReference;
+      readonly replaced: boolean;
     }
   | {
       readonly type: "mcp-app";
@@ -1907,6 +1908,7 @@ interface ThreadFeedBuild {
   readonly checkpointSummaries: ReadonlyArray<ThreadCheckpointSummary> | undefined;
   readonly foldedAnswerMessageIds: ReadonlySet<string>;
   readonly delegatedChildrenByRun: ReadonlyMap<RunId, ReadonlySet<string>>;
+  readonly revisedHtmlRenderIds: ReadonlySet<string>;
   readonly feed: ReadonlyArray<ThreadFeedEntry>;
   /** Grouping is empty before `row`: the rows before it produced `feed.slice(0, feedLength)`. */
   readonly restarts: ReadonlyArray<{ readonly row: number; readonly feedLength: number }>;
@@ -2010,7 +2012,13 @@ export function buildThreadFeed(
   // is reused only while these match the build that produced it.
   const foldedAnswerMessageIds = new Set<string>();
   const delegatedChildrenByRun = new Map<RunId, Set<string>>();
+  const revisedHtmlRenderIds = new Set<string>();
   for (const { item } of visibleTurnItems) {
+    const revises =
+      item.type === "dynamic_tool" && item.status === "completed"
+        ? htmlRenderFromToolItem(item)?.revises
+        : undefined;
+    if (revises !== undefined) revisedHtmlRenderIds.add(revises);
     if (item.type === "user_input_request" && item.questionAnswer) {
       foldedAnswerMessageIds.add(`async-answer:${item.questionAnswer.requestId}`);
     } else if (item.type === "subagent" && item.origin === "app_owned" && item.runId !== null) {
@@ -2030,7 +2038,8 @@ export function buildThreadFeed(
     previous.nodes === options?.nodes &&
     checkpointSummariesEqual(previous.checkpointSummaries, options?.checkpointSummaries) &&
     setsEqual(previous.foldedAnswerMessageIds, foldedAnswerMessageIds) &&
-    setMapsEqual(previous.delegatedChildrenByRun, delegatedChildrenByRun)
+    setMapsEqual(previous.delegatedChildrenByRun, delegatedChildrenByRun) &&
+    setsEqual(previous.revisedHtmlRenderIds, revisedHtmlRenderIds)
   ) {
     const firstChanged = firstChangedIndex(previous.rows, visibleTurnItems);
     restartIndex = previous.restarts.length - 1;
@@ -2079,7 +2088,11 @@ export function buildThreadFeed(
     }
     const attemptId = resolveAttemptId(item);
     const cached = projectedEntriesCache.get(row);
-    if (cached?.attemptId === attemptId) {
+    if (
+      cached?.attemptId === attemptId &&
+      (cached.entry.type !== "html-render" ||
+        cached.entry.replaced === revisedHtmlRenderIds.has(cached.entry.render.attachmentId))
+    ) {
       entries.push(cached.entry);
       entryRows.push(index);
       continue;
@@ -2096,6 +2109,7 @@ export function buildThreadFeed(
         createdAt,
         runId: item.runId,
         render,
+        replaced: revisedHtmlRenderIds.has(render.attachmentId),
       };
       projectedEntriesCache.set(row, { attemptId, entry });
       entries.push(entry);
@@ -2239,6 +2253,7 @@ export function buildThreadFeed(
             checkpointSummaries: options?.checkpointSummaries,
             foldedAnswerMessageIds,
             delegatedChildrenByRun,
+            revisedHtmlRenderIds,
             feed,
             restarts,
           };

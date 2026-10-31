@@ -81,6 +81,12 @@ const HtmlRenderTool = Tool.make(HTML_RENDER_TOOL_NAME, {
     height: Schema.Int.annotate({
       description: `Frame height in CSS pixels, ${HTML_RENDER_MIN_HEIGHT} to ${HTML_RENDER_MAX_HEIGHT}. Use the contentHeight from html_preview.`,
     }),
+    revises: Schema.optional(
+      Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)).annotate({
+        description:
+          "When this page changes or fixes one shown earlier in this thread, that page's attachmentId. The earlier page collapses. Omit for a new page.",
+      }),
+    ),
   }),
   success: Schema.Struct({
     htmlRender: Schema.Struct({
@@ -88,6 +94,7 @@ const HtmlRenderTool = Tool.make(HTML_RENDER_TOOL_NAME, {
       title: Schema.String,
       height: Schema.Number,
       heights: Schema.optional(Schema.Array(Schema.Tuple([Schema.Int, Schema.Int]))),
+      revises: Schema.optional(Schema.String),
     }),
     message: Schema.String,
   }),

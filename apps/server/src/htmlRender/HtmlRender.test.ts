@@ -258,6 +258,38 @@ describe("HtmlRender", () => {
     }).pipe(Effect.provide(layerTest)),
   );
 
+  it.effect("publishes a new version only of a page that exists", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const config = yield* ServerConfig.ServerConfig;
+      const htmlRender = yield* HtmlRender.HtmlRender;
+      const threadId = ThreadId.make("thread-html-revision");
+      const page = { threadId, html: "<p>Revenue</p>", title: "Revenue", height: 200 };
+      const first = yield* htmlRender.publish(page);
+
+      const revision = yield* htmlRender.publish({ ...page, revises: first.attachmentId });
+      expect(revision).toEqual({
+        attachmentId: expect.any(String),
+        title: "Revenue",
+        height: 200,
+        revises: first.attachmentId,
+      });
+      expect(revision.attachmentId).not.toBe(first.attachmentId);
+
+      const before = yield* fileSystem.readDirectory(config.attachmentsDir);
+      for (const revises of [
+        first.attachmentId.replace(/-html$/, ""),
+        "thread-html-revision-00000000-0000-4000-8000-000000000000-html",
+        "att-1",
+        "../secret",
+      ]) {
+        const error = yield* htmlRender.publish({ ...page, revises }).pipe(Effect.flip);
+        expect(error).toBeInstanceOf(HtmlRender.HtmlRenderRevisedPageNotFoundError);
+      }
+      expect(yield* fileSystem.readDirectory(config.attachmentsDir)).toEqual(before);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
   it.effect("removes the page when publishing is interrupted", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread-html-cancel");

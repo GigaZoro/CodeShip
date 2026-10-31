@@ -227,7 +227,12 @@ import {
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
 import { resolveThreadFeedFixedItemSize } from "./thread-feed-item-size";
 import { htmlRenderFrameHeight } from "@t3tools/shared/htmlRender";
-import { htmlRenderRowHeight, ThreadHtmlRender } from "./HtmlRenderWebView";
+import {
+  htmlRenderRowHeight,
+  REPLACED_HTML_RENDER_ROW_HEIGHT,
+  ThreadHtmlRender,
+  ThreadReplacedHtmlRender,
+} from "./HtmlRenderWebView";
 import { ThreadMcpApp } from "./McpAppWebView";
 import { assetEnvironment, useAssetUrl, useRefreshAssetUrl } from "../../state/assets";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
@@ -1416,6 +1421,17 @@ function renderFeedEntry(
 
   if (entry.type === "thinking") {
     return <ThreadThinkingRow rowSizing={props.workRowSizing} iconSubtleColor={iconSubtleColor} />;
+  }
+
+  if (entry.type === "html-render" && entry.replaced) {
+    return (
+      <ThreadReplacedHtmlRender
+        environmentId={props.environmentId}
+        threadId={props.threadId}
+        render={entry.render}
+        iconColor={iconSubtleColor}
+      />
+    );
   }
 
   if (entry.type === "html-render") {
@@ -3129,7 +3145,9 @@ export const ThreadFeed = memo(function ThreadFeed({
   const getFixedItemSize = (entry: ThreadFeedRow) => {
     if (entry.type === "guest-pending") return undefined;
     if (entry.type === "html-render") {
-      return htmlRenderRowHeight(htmlRenderFrameHeight(entry.render, contentWidth));
+      return entry.replaced
+        ? REPLACED_HTML_RENDER_ROW_HEIGHT
+        : htmlRenderRowHeight(htmlRenderFrameHeight(entry.render, contentWidth));
     }
     if (workRowSizing.fixedRowHeight === undefined || entry.checkpointSummary) {
       return undefined;
@@ -3169,18 +3187,28 @@ export const ThreadFeed = memo(function ThreadFeed({
   // re-caches old sizes.
   const { textSizeKey } = workRowSizing;
   const hasHtmlRenders = presentedFeed.some((entry) => entry.type === "html-render");
-  const previousRowGeometry = useRef({ textSizeKey, contentWidth });
+  // A page replaced while off screen keeps its full cached height until cleared.
+  const replacedRenderKey = presentedFeed
+    .flatMap((entry) => (entry.type === "html-render" && entry.replaced ? [entry.id] : []))
+    .join(" ");
+  const previousRowGeometry = useRef({ textSizeKey, contentWidth, replacedRenderKey });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- clears LegendList size caches and starts a reflow after the commit that brings new row geometry
   useLayoutEffect(() => {
     const previous = previousRowGeometry.current;
-    if (previous.textSizeKey === textSizeKey && previous.contentWidth === contentWidth) return;
-    previousRowGeometry.current = { textSizeKey, contentWidth };
+    if (
+      previous.textSizeKey === textSizeKey &&
+      previous.contentWidth === contentWidth &&
+      previous.replacedRenderKey === replacedRenderKey
+    ) {
+      return;
+    }
+    previousRowGeometry.current = { textSizeKey, contentWidth, replacedRenderKey };
     // Rows re-rendered at this width are measured in the next commit, after this effect.
     if (previous.contentWidth !== contentWidth) beginReflow();
     if (previous.textSizeKey !== textSizeKey || hasHtmlRenders) {
       listRef.current?.clearCaches({ mode: "sizes" });
     }
-  }, [textSizeKey, contentWidth, hasHtmlRenders, beginReflow, listRef]);
+  }, [textSizeKey, contentWidth, replacedRenderKey, hasHtmlRenders, beginReflow, listRef]);
 
   const renderItem = (info: { item: ThreadFeedRow; index: number }) => (
     <Animated.View

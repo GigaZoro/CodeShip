@@ -19,7 +19,15 @@ export interface HtmlRenderReference {
   readonly title: string;
   readonly height: number;
   readonly heights?: ReadonlyArray<readonly [width: number, height: number]>;
+  readonly revises?: string;
 }
+
+const MAX_ATTACHMENT_ID_LENGTH = 256;
+
+const readAttachmentId = (value: unknown) =>
+  typeof value === "string" && value.length > 0 && value.length <= MAX_ATTACHMENT_ID_LENGTH
+    ? value
+    : undefined;
 
 export const HTML_RENDER_MEASURE_WIDTHS = [320, 375, 430, 520, 640, 728, 860, 1000, 1144] as const;
 
@@ -49,11 +57,11 @@ function readMeasuredHeights(value: unknown) {
 
 export function readHtmlRenderReference(value: unknown): HtmlRenderReference | undefined {
   if (typeof value !== "object" || value === null) return undefined;
-  const { attachmentId, title, height, heights } = value as Record<string, unknown>;
+  const record = value as Record<string, unknown>;
+  const attachmentId = readAttachmentId(record.attachmentId);
+  const { title, height, heights } = record;
   if (
-    typeof attachmentId !== "string" ||
-    attachmentId.length === 0 ||
-    attachmentId.length > 256 ||
+    attachmentId === undefined ||
     typeof title !== "string" ||
     typeof height !== "number" ||
     !Number.isFinite(height)
@@ -61,11 +69,13 @@ export function readHtmlRenderReference(value: unknown): HtmlRenderReference | u
     return undefined;
   }
   const measured = readMeasuredHeights(heights);
+  const revises = readAttachmentId(record.revises);
   return {
     attachmentId,
     title: title.trim().slice(0, HTML_RENDER_MAX_TITLE_LENGTH) || "HTML",
     height: clampHtmlRenderHeight(height),
     ...(measured === undefined ? {} : { heights: measured }),
+    ...(revises === undefined ? {} : { revises }),
   };
 }
 
@@ -74,6 +84,7 @@ export function htmlRenderReferencesEqual(left: HtmlRenderReference, right: Html
     left.attachmentId === right.attachmentId &&
     left.title === right.title &&
     left.height === right.height &&
+    left.revises === right.revises &&
     (left.heights ?? []).length === (right.heights ?? []).length &&
     (left.heights ?? []).every(
       ([width, height], index) =>

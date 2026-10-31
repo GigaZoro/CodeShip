@@ -622,6 +622,7 @@ type MessagesTimelineRowContent =
       id: string;
       createdAt: string;
       htmlRender: HtmlRenderReference;
+      replaced: boolean;
     }
   | {
       kind: "mcp-app";
@@ -1429,6 +1430,13 @@ export function deriveMessagesTimelineRows(input: {
   const failedRunIds = failedTimelineRunIds(timelineEntries, input.latestRun ?? null);
   const itemizedRunIds = itemizedFailedRunIds(timelineEntries, failedRunIds);
   const liveSubagentEntryIds = liveSubagentCardEntryIds(timelineEntries);
+  const revisedHtmlRenderIds = new Set(
+    timelineEntries.flatMap((entry) =>
+      entry.kind === "html-render" && entry.htmlRender.revises !== undefined
+        ? [entry.htmlRender.revises]
+        : [],
+    ),
+  );
   const completeSupersededReplyIds = completeSupersededReplyEntryIds(timelineEntries);
   const supersededFoldsByAnchorEntryId = deriveSupersededAttemptFolds(
     timelineEntries,
@@ -1947,6 +1955,7 @@ export function deriveMessagesTimelineRows(input: {
         id: timelineEntry.id,
         createdAt: timelineEntry.createdAt,
         htmlRender: timelineEntry.htmlRender,
+        replaced: revisedHtmlRenderIds.has(timelineEntry.htmlRender.attachmentId),
       });
       continue;
     }
@@ -2412,7 +2421,11 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "html-render": {
       // Tool updates rebuild entries; preserve frames for unchanged pages.
       const bh = b as typeof a;
-      return a.createdAt === bh.createdAt && htmlRenderReferencesEqual(a.htmlRender, bh.htmlRender);
+      return (
+        a.createdAt === bh.createdAt &&
+        a.replaced === bh.replaced &&
+        htmlRenderReferencesEqual(a.htmlRender, bh.htmlRender)
+      );
     }
 
     case "mcp-app": {

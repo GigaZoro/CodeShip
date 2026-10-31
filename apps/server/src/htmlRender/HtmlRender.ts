@@ -29,7 +29,7 @@ import * as Stream from "effect/Stream";
 import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { resolveAttachmentRelativePath } from "../attachmentPaths.ts";
-import { createAttachmentId } from "../attachmentStore.ts";
+import { createAttachmentId, parseAttachmentFileExtension } from "../attachmentStore.ts";
 import { resolveRootCliCommand } from "../cli/invocation.ts";
 import * as ServerConfig from "../config.ts";
 import * as HeadlessChrome from "./headlessChrome.ts";
@@ -93,6 +93,15 @@ const rejectViewportHeight = (html: string) => {
   return Effect.void;
 };
 
+export class HtmlRenderRevisedPageNotFoundError extends Schema.TaggedError<HtmlRenderRevisedPageNotFoundError>()(
+  "HtmlRenderRevisedPageNotFoundError",
+  { revises: Schema.String },
+) {
+  override get message(): string {
+    return `No page has the attachmentId ${this.revises}. Pass the attachmentId that html_render returned for the page you are replacing, or omit revises for a new page.`;
+  }
+}
+
 export class HtmlRenderStoreError extends Schema.TaggedError<HtmlRenderStoreError>()(
   "HtmlRenderStoreError",
   { cause: Schema.Defect() },
@@ -126,7 +135,11 @@ export class HtmlRender extends Context.Service<
       readonly html: string;
       readonly title: string;
       readonly height: number;
-    }) => Effect.Effect<HtmlRenderReference, HtmlRenderPrepareError | HtmlRenderStoreError>;
+      readonly revises?: string | undefined;
+    }) => Effect.Effect<
+      HtmlRenderReference,
+      HtmlRenderPrepareError | HtmlRenderRevisedPageNotFoundError | HtmlRenderStoreError
+    >;
     readonly preview: (input: {
       readonly html: string;
       readonly width?: number | undefined;
@@ -409,12 +422,28 @@ const make = Effect.gen(function* () {
     return inlined.html;
   });
 
+  const requirePage = Effect.fn("HtmlRender.requirePage")(function* (attachmentId: string) {
+    const filePath =
+      parseAttachmentFileExtension(attachmentId) === "html"
+        ? resolveAttachmentRelativePath({
+            attachmentsDir: config.attachmentsDir,
+            relativePath: `${attachmentId}.html`,
+          })
+        : null;
+    const exists =
+      filePath !== null &&
+      (yield* fileSystem.exists(filePath).pipe(Effect.orElseSucceed(() => false)));
+    if (!exists) return yield* new HtmlRenderRevisedPageNotFoundError({ revises: attachmentId });
+  });
+
   const publish = Effect.fn("HtmlRender.publish")(function* (input: {
     readonly threadId: ThreadId;
     readonly html: string;
     readonly title: string;
     readonly height: number;
+    readonly revises?: string | undefined;
   }) {
+    if (input.revises !== undefined) yield* requirePage(input.revises);
     const html = yield* prepare(input.html);
     // The `-html` id suffix makes the asset route serve it as a sandboxed text/html document.
     const attachmentId = createAttachmentId(input.threadId, "html");
@@ -432,6 +461,7 @@ const make = Effect.gen(function* () {
       attachmentId,
       title: input.title.trim().slice(0, HTML_RENDER_MAX_TITLE_LENGTH) || "HTML",
       height: clampHtmlRenderHeight(input.height),
+      ...(input.revises === undefined ? {} : { revises: input.revises }),
     };
     return yield* fileSystem.writeFileString(filePath, html).pipe(
       Effect.mapError((cause) => new HtmlRenderStoreError({ cause })),

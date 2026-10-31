@@ -130,5 +130,19 @@ describe("htmlRenderFromToolItem", () => {
     ] as const) {
       expect(htmlRenderFromToolItem({ toolName, output })).toEqual(reference);
     }
+    const revision = {
+      ...reference,
+      attachmentId: "thread-abc-456.html",
+      revises: "thread-abc-123.html",
+    };
+    expect(
+      htmlRenderFromToolItem({ toolName: "html_render", output: { htmlRender: revision } }),
+    ).toEqual(revision);
+    expect(
+      htmlRenderFromToolItem({
+        toolName: "html_render",
+        output: { htmlRender: { ...revision, revises: "" } },
+      }),
+    ).toEqual({ ...reference, attachmentId: "thread-abc-456.html" });
   });
 });

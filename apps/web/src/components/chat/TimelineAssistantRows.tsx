@@ -5,6 +5,8 @@ import { memo, use, useState } from "react";
 import { type ChatMessage, type TurnDiffSummary } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
 import { GitForkIcon } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide";
+import { MorphIcon } from "~/components/MorphIcon";
 import { Button } from "../ui/button";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { HtmlRenderFrame } from "./HtmlRenderFrame";
@@ -245,14 +247,13 @@ export function HtmlRenderTimelineRow({
   row: Extract<TimelineRow, { kind: "html-render" }>;
 }) {
   const ctx = use(TimelineRowCtx);
+  const [shown, setShown] = useState(false);
   const { onAppFullscreenChange } = ctx;
   const onFullscreenChange = (fullscreen: boolean) => onAppFullscreenChange(row.id, fullscreen);
-
-  if (ctx.renderHtmlRender) {
-    return <div className="min-w-0 px-1">{ctx.renderHtmlRender(row)}</div>;
-  }
-  return (
-    <div className="min-w-0 px-1">
+  const page =
+    row.replaced && !shown ? null : ctx.renderHtmlRender ? (
+      ctx.renderHtmlRender(row)
+    ) : (
       <HtmlRenderFrame
         key={row.htmlRender.attachmentId}
         environmentId={ctx.activeThreadEnvironmentId}
@@ -260,6 +261,23 @@ export function HtmlRenderTimelineRow({
         threadRef={ctx.threadRef ?? undefined}
         onFullscreenChange={onFullscreenChange}
       />
+    );
+
+  return (
+    <div className="min-w-0 px-1">
+      {row.replaced ? (
+        <button
+          type="button"
+          aria-expanded={shown}
+          data-scroll-anchor-ignore
+          onClick={() => setShown((current) => !current)}
+          className="flex min-w-0 max-w-full cursor-pointer select-none items-center gap-1 rounded-md px-1 text-sm leading-relaxed text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+        >
+          <span className="truncate">{row.htmlRender.title} · Replaced by a newer version</span>
+          <MorphIcon className="size-3.5 shrink-0" icon={shown ? ChevronDown : ChevronRight} />
+        </button>
+      ) : null}
+      {row.replaced && page !== null ? <div className="mt-1">{page}</div> : page}
     </div>
   );
 }

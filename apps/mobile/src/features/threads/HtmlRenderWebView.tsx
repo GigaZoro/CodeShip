@@ -19,6 +19,7 @@ import { mobileHtmlRenderTheme } from "../../lib/htmlRenderTheme";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useAssetUrlState, useRefreshAssetUrl } from "../../state/assets";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
+import type { AttachmentFileRouteParams } from "../files/AttachmentFileScreen";
 
 const ROW_BOTTOM_MARGIN = 8;
 const ACTION_ROW_HEIGHT = 32;
@@ -27,6 +28,22 @@ const FULL_SCREEN_GUTTER = 16;
 export function htmlRenderRowHeight(frameHeight: number) {
   return ACTION_ROW_HEIGHT + frameHeight + ROW_BOTTOM_MARGIN;
 }
+
+export const REPLACED_HTML_RENDER_ROW_HEIGHT = ACTION_ROW_HEIGHT + ROW_BOTTOM_MARGIN;
+
+const attachmentRoute = (input: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly render: HtmlRenderReference;
+}): AttachmentFileRouteParams => ({
+  environmentId: String(input.environmentId),
+  threadId: String(input.threadId),
+  attachmentId: input.render.attachmentId,
+  name: htmlRenderFileName(input.render.title),
+  mimeType: "text/html",
+  sizeBytes: "0",
+  htmlRender: "1",
+});
 
 function useHtmlRenderTheme() {
   const { themeId, themeAppearance, themeVariables, systemColorsActive } =
@@ -218,17 +235,7 @@ export function ThreadHtmlRender(props: {
             accessibilityLabel={`Open ${title}`}
             hitSlop={8}
             className="h-7 w-7 items-center justify-center rounded-full border border-border/60 bg-card/80"
-            onPress={() =>
-              navigation.navigate("ThreadAttachment", {
-                environmentId: String(props.environmentId),
-                threadId: String(props.threadId),
-                attachmentId,
-                name: fileName,
-                mimeType: "text/html",
-                sizeBytes: "0",
-                htmlRender: "1",
-              })
-            }
+            onPress={() => navigation.navigate("ThreadAttachment", attachmentRoute(props))}
           >
             <SymbolView
               name="arrow.up.left.and.arrow.down.right"
@@ -268,5 +275,36 @@ export function ThreadHtmlRender(props: {
         )}
       </View>
     </View>
+  );
+}
+
+export function ThreadReplacedHtmlRender(props: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly render: HtmlRenderReference;
+  readonly iconColor: ColorValue;
+}) {
+  const navigation = useNavigation();
+  const { title } = props.render;
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Open ${title}, replaced by a newer version`}
+      hitSlop={{ top: 6, bottom: 6 }}
+      style={{ height: ACTION_ROW_HEIGHT, marginBottom: ROW_BOTTOM_MARGIN }}
+      className="flex-row items-center gap-2"
+      onPress={() => navigation.navigate("ThreadAttachment", attachmentRoute(props))}
+    >
+      <Text className="min-w-0 flex-1 text-sm text-foreground-muted" numberOfLines={1}>
+        {title} · Replaced by a newer version
+      </Text>
+      <SymbolView
+        name="arrow.up.left.and.arrow.down.right"
+        size={12}
+        tintColor={props.iconColor}
+        type="monochrome"
+      />
+    </Pressable>
   );
 }

@@ -1288,6 +1288,43 @@ describe("HTML renders in the timeline", () => {
     ]);
   });
 
+  it("collapses a page once a later page revises it", () => {
+    const entries = turn(
+      renderCall("completed", { structuredContent: { htmlRender }, content: [] }),
+    );
+    const revision = {
+      attachmentId: "render-thread-chart-v2.html",
+      title: "Chart",
+      height: 420,
+      revises: htmlRender.attachmentId,
+    };
+    const replacedByRender = (timelineEntries: TimelineEntry[]) =>
+      deriveMessagesTimelineRows({
+        timelineEntries,
+        isWorking: false,
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
+      }).flatMap((row) =>
+        row.kind === "html-render" ? [[row.htmlRender.attachmentId, row.replaced]] : [],
+      );
+    expect(replacedByRender(entries)).toEqual([[htmlRender.attachmentId, false]]);
+    expect(
+      replacedByRender([
+        ...entries,
+        {
+          id: "render-v2",
+          kind: "html-render",
+          createdAt: DateTime.formatIso(at(6)),
+          runId: null,
+          htmlRender: revision,
+        },
+      ]),
+    ).toEqual([
+      [htmlRender.attachmentId, true],
+      [revision.attachmentId, false],
+    ]);
+  });
+
   it("hosts a captured MCP app in place, from any provider's tool", () => {
     const mcpApp = {
       attachmentId: "render-thread-app-html",

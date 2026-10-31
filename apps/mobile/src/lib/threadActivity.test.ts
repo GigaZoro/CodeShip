@@ -56,6 +56,38 @@ it("shows a captured MCP app for a failed deferred write", () => {
   expect(buildThreadFeed([projected(item, 0)])).toMatchObject([{ type: "mcp-app", app: mcpApp }]);
 });
 
+it("collapses a cached page once a later page revises it", () => {
+  const render = (id: string, ordinal: number, htmlRender: Record<string, unknown>) =>
+    projected(
+      {
+        ...base(id, "2026-08-29T00:00:00.000Z", ordinal),
+        type: "dynamic_tool",
+        toolName: "mcp__t3-code__html_render",
+        input: {},
+        output: { structuredContent: { htmlRender }, content: [] },
+      },
+      ordinal,
+    );
+  const first = render("page", 0, {
+    attachmentId: "thread-1-page-html",
+    title: "Chart",
+    height: 300,
+  });
+  const revision = render("page-v2", 1, {
+    attachmentId: "thread-1-page-v2-html",
+    title: "Chart",
+    height: 300,
+    revises: "thread-1-page-html",
+  });
+  const replaced = (feed: ThreadFeedEntry[]) =>
+    feed.flatMap((entry) => (entry.type === "html-render" ? [entry.replaced] : []));
+  const cache = createThreadFeedCache();
+
+  expect(replaced(buildThreadFeed([first], { cache }))).toEqual([false]);
+  expect(replaced(buildThreadFeed([first, revision], { cache }))).toEqual([true, false]);
+  expect(replaced(buildThreadFeed([first], { cache }))).toEqual([false]);
+});
+
 it("keeps historical plan detail accessible from its paged turn item", () => {
   const item = {
     ...base("historical-plan", "2026-08-29T00:00:00.000Z", 1),
