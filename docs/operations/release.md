@@ -104,7 +104,9 @@ Builds use the public T3 Connect identifiers in `.env.example`.
   Self-signed builds are not notarized. The first time a Mac opens a downloaded build, macOS
   blocks it: open it from **System Settings → Privacy & Security → Open Anyway**. A Mac running an
   ad hoc build installs the first self-signed one by hand; later releases update in place, and
-  keychain and privacy permissions carry over between them.
+  privacy permissions carry over between them. Keychain access does not, because macOS tracks it
+  by Apple Team ID, so builds without one save the T3 account sign-in unencrypted, in a file only
+  the user can read.
 
 ## Pull request macOS previews
 

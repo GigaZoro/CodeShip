@@ -60,6 +60,8 @@ const layerDesktopClerk = (
   const environment = DesktopEnvironment.DesktopEnvironment.of({
     stateDir: "/tmp/t3-state",
     isDevelopment,
+    isPackaged: !isDevelopment,
+    appRoot: "/tmp/app",
     appDataDirectory: "/tmp/app-data",
     platform,
   } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]);
@@ -251,6 +253,29 @@ describe("DesktopClerk", () => {
       ),
     );
   });
+
+  it.effect.each([
+    { name: "without a Team ID", metadata: { t3codeAppleTeamSigned: false }, keychain: false },
+    { name: "with a Team ID", metadata: { t3codeAppleTeamSigned: true }, keychain: true },
+    { name: "from before the marker", metadata: {}, keychain: true },
+  ])("stores Clerk tokens for packaged macOS builds $name", ({ metadata, keychain }) =>
+    Effect.gen(function* () {
+      storageMock.mockReturnValue(storageAdapter);
+      createClerkBridgeMock.mockReturnValue({ cleanup: vi.fn(), isPrimaryInstance: true });
+      const fileSystemLayer = FileSystem.layerNoop({
+        exists: () => Effect.succeed(false),
+        readFileString: (path) =>
+          path === "/tmp/app/package.json"
+            ? Effect.succeed(JSON.stringify(metadata))
+            : Effect.die(`unexpected read of ${path}`),
+      });
+
+      yield* Effect.scoped(Layer.build(layerDesktopClerk(false, [], "darwin", fileSystemLayer)));
+
+      const usedKeychain = createClerkBridgeMock.mock.calls[0]?.[0].storage === storageAdapter;
+      assert.equal(usedKeychain, keychain);
+    }),
+  );
 
   it.effect.each(["darwin", "win32", "linux"] as const)(
     "quits a second launch before initializing Clerk or the application runtime on %s",

@@ -1,10 +1,12 @@
-import { createClerkBridge } from "@clerk/electron";
+import { createClerkBridge, type TokenStorage } from "@clerk/electron";
 import * as NodeURL from "node:url";
 import { storage } from "@clerk/electron/storage";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
@@ -19,6 +21,7 @@ import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/rela
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
+import * as DesktopClerkTokenFile from "./DesktopClerkTokenFile.ts";
 import * as DesktopUserData from "./DesktopUserData.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopWebLinks from "./DesktopWebLinks.ts";
@@ -84,9 +87,14 @@ export const desktopClerkFrontendApiHostname = resolveDesktopClerkFrontendApiHos
     : __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__,
 );
 
-function createDesktopClerkBridge(stateDir: string, isDevelopment: boolean) {
+const AppPackageMetadata = Schema.Struct({
+  t3codeAppleTeamSigned: Schema.optional(Schema.Boolean),
+});
+const decodeAppPackageMetadata = Schema.decodeEffect(Schema.fromJsonString(AppPackageMetadata));
+
+function createDesktopClerkBridge(tokenStorage: TokenStorage, isDevelopment: boolean) {
   return createClerkBridge({
-    storage: storage({ path: stateDir }),
+    storage: tokenStorage,
     manageSingleInstanceLock: false,
     passkeys: true,
     renderer: {
@@ -129,9 +137,28 @@ export const make = Effect.gen(function* () {
     if (handleOpenUrl(url)) event.preventDefault();
   });
 
+  // The Keychain recognizes an app across updates only by its Apple Team ID. Without one, each
+  // update loses the key to the encrypted token and signs the user out on every launch.
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const keychainForgetsUpdates =
+    environment.platform === "darwin" && environment.isPackaged
+      ? yield* fileSystem.readFileString(path.join(environment.appRoot, "package.json")).pipe(
+          Effect.flatMap(decodeAppPackageMetadata),
+          Effect.map((metadata) => metadata.t3codeAppleTeamSigned === false),
+          Effect.orElseSucceed(() => false),
+        )
+      : false;
+
   yield* Effect.acquireRelease(
     Effect.try({
-      try: () => createDesktopClerkBridge(environment.stateDir, environment.isDevelopment),
+      try: () =>
+        createDesktopClerkBridge(
+          keychainForgetsUpdates
+            ? DesktopClerkTokenFile.make(environment.stateDir)
+            : storage({ path: environment.stateDir }),
+          environment.isDevelopment,
+        ),
       catch: (cause) =>
         new DesktopClerkBridgeInitializationError({
           stateDir: environment.stateDir,
