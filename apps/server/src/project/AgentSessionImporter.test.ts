@@ -169,6 +169,7 @@ const makeImporter = Effect.fn(function* (
   const events = yield* EventStore.EventStoreV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const published: Array<ApplicationStoredEvent> = [];
+  const ownedSessions: Array<ReadonlySet<string> | undefined> = [];
   const withTransaction: typeof sql.withTransaction = (effect) =>
     beforeTransaction.pipe(Effect.andThen(sql.withTransaction(effect)));
   const importSql = new Proxy(sql, {
@@ -205,7 +206,10 @@ const makeImporter = Effect.fn(function* (
             yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository,
           ),
           Layer.mock(AgentSessionScanner.AgentSessionScanner)({
-            recentThreads: () => Stream.fromIterable(candidates),
+            recentThreads: (_root, _completed, options) => {
+              ownedSessions.push(options?.ownedSessions);
+              return Stream.fromIterable(candidates);
+            },
           }),
           Layer.mock(ProjectService.ProjectService)({
             getById: () =>
@@ -235,7 +239,7 @@ const makeImporter = Effect.fn(function* (
     ),
   );
   const importer = Context.get(context, AgentSessionImporter.AgentSessionImporter);
-  return { run: importer.importRecentAgentThreads({ projectId }), published };
+  return { run: importer.importRecentAgentThreads({ projectId }), published, ownedSessions };
 });
 
 it.effect(
@@ -269,6 +273,16 @@ it.effect(
       const importer = yield* makeImporter([active, archived, deleted, otherInstance, unowned]);
 
       expect(yield* importer.run).toEqual({ importedCount: 2, skippedCount: 0 });
+      expect(importer.ownedSessions[0]).toEqual(
+        new Set(
+          [active, archived, deleted].map(({ source }) =>
+            AgentSessionScanner.ownedSessionKey(
+              source.providerInstanceId,
+              source.providerSessionId,
+            ),
+          ),
+        ),
+      );
       for (const source of [active, archived, deleted]) {
         const threadId = importId(source);
         expect(yield* Effect.option(projections.getThread(threadId))).toEqual(Option.none());
@@ -371,6 +385,8 @@ it.effect(
       yield* sql`DROP TRIGGER fail_runtime`;
 
       expect(yield* importer.run).toEqual({ importedCount: 1, skippedCount: 0 });
+      // The committed import owns its session, but must stay readable to finish its runtime.
+      expect(importer.ownedSessions.at(-1)).toEqual(new Set());
       expect(yield* importer.run).toEqual({ importedCount: 1, skippedCount: 0 });
       expect(yield* events.read({ threadId }).pipe(Stream.runCollect)).toEqual(committed);
       expect(importer.published).toHaveLength(6);

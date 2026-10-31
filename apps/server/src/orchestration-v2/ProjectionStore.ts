@@ -466,6 +466,15 @@ export interface ProjectionStoreV2Shape {
     ReadonlyArray<ThreadId>,
     ProjectionStoreV2Error
   >;
+  /** Claude and Codex sessions owned by this project's threads, deleted ones included. */
+  readonly listProjectNativeSessions: (projectId: ProjectId) => Effect.Effect<
+    ReadonlyArray<{
+      readonly threadId: ThreadId;
+      readonly providerInstanceId: ProviderInstanceId;
+      readonly nativeId: string;
+    }>,
+    ProjectionStoreV2Error
+  >;
   /** Threads that are not deleted, archived ones included. */
   readonly countThreads: () => Effect.Effect<number, ProjectionStoreV2Error>;
   /** Every active thread, in shell order. */
@@ -6690,6 +6699,34 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       Effect.mapError(shellSnapshotReadError),
     );
 
+    const listProjectNativeSessions = Effect.fn("ProjectionStore.listProjectNativeSessions")(
+      function* (projectId: ProjectId) {
+        const rows = yield* sql<{
+          readonly thread_id: string;
+          readonly provider_instance_id: string;
+          readonly native_id: string;
+        }>`
+        SELECT
+          threads.thread_id,
+          provider_threads.provider_instance_id,
+          json_extract(provider_threads.payload_json, '$.nativeThreadRef.nativeId') AS native_id
+        FROM orchestration_v2_projection_threads AS threads
+        INNER JOIN orchestration_v2_projection_provider_threads AS provider_threads
+          ON provider_threads.thread_id = threads.thread_id
+        WHERE threads.project_id = ${projectId}
+          AND provider_threads.driver IN ('claudeAgent', 'codex')
+          AND provider_threads.provider_instance_id IS NOT NULL
+          AND native_id IS NOT NULL
+      `;
+        return rows.map((row) => ({
+          threadId: ThreadId.make(row.thread_id),
+          providerInstanceId: ProviderInstanceId.make(row.provider_instance_id),
+          nativeId: row.native_id,
+        }));
+      },
+      Effect.mapError(shellSnapshotReadError),
+    );
+
     const countThreads = Effect.fn("ProjectionStore.countThreads")(function* () {
       const rows = yield* sql<{ readonly count: number }>`
         SELECT COUNT(*) AS count FROM orchestration_v2_projection_threads WHERE deleted_at IS NULL
@@ -6936,6 +6973,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       apply,
       getShellSnapshot: readOnReader(getShellSnapshot),
       listActiveSubagentThreadIds: readOnReader(listActiveSubagentThreadIds),
+      listProjectNativeSessions: readOnReader(listProjectNativeSessions),
       countThreads: readOnReader(countThreads),
       listActiveShellIndex: readOnReader(listActiveShellIndex),
       readShellSnapshot: readOnReader(readShellSnapshot),

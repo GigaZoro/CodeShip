@@ -646,6 +646,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["base directory folder browser path home"],
   },
   {
+    id: "import-agent-conversations",
+    title: "Import conversations",
+    to: "/settings/threads",
+    scope: "project-defaults",
+    searchTerms: [
+      "claude code codex history sessions transcripts sync existing past old chats bring in",
+    ],
+  },
+  {
     id: "ghq-clone-layout",
     title: "Clone into host folders",
     to: "/settings/threads",

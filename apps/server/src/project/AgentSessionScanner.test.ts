@@ -110,16 +110,21 @@ const runScan = (input: ScannerTestInput) =>
     return yield* scanner.scan;
   }).pipe(Effect.provide(layerScannerTest(input)));
 
-const runRecentThreadOutcomes = (input: ScannerTestInput & { readonly workspaceRoot: string }) =>
+const runRecentThreadOutcomes = (
+  input: ScannerTestInput & {
+    readonly workspaceRoot: string;
+    readonly options?: AgentSessionScanner.AgentSessionThreadOptions;
+  },
+) =>
   Effect.gen(function* () {
     const scanner = yield* AgentSessionScanner.AgentSessionScanner;
-    return yield* scanner.recentThreads(input.workspaceRoot).pipe(
+    return yield* scanner.recentThreads(input.workspaceRoot, [], input.options).pipe(
       Stream.runCollect,
       Effect.map((outcomes) => Array.from(outcomes)),
     );
   }).pipe(Effect.provide(layerScannerTest(input)));
 
-const runRecentThreads = (input: ScannerTestInput & { readonly workspaceRoot: string }) =>
+const runRecentThreads = (input: Parameters<typeof runRecentThreadOutcomes>[0]) =>
   runRecentThreadOutcomes(input).pipe(
     Effect.map((outcomes) =>
       outcomes.flatMap((outcome) => (outcome._tag === "Importable" ? [outcome.thread] : [])),
@@ -1095,6 +1100,112 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
           ["Review this code", "Looks good"],
           ["Fix the project", "Done"],
         ]);
+      }),
+    );
+
+    it.effect("full history includes old sessions and skips sessions other threads own", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const nowMs = Date.parse("2026-08-24T12:00:00.000Z");
+        yield* TestClock.setTime(nowMs);
+        const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+        const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+        const workspace = yield* makeTempDir("t3code-workspace-");
+        const oldClaude = "8f0c2b7e-4c1a-4f55-9d3e-0a1b2c3d4e5f";
+        const ownedClaude = "1d2e3f40-5a6b-4c7d-8e9f-a0b1c2d3e4f5";
+        const ownedCodex = "019a0000-0000-7000-8000-000000000001";
+        for (const [sessionId, ageMs] of [
+          [oldClaude, 90 * 24 * 60 * 60 * 1000],
+          [ownedClaude, 60 * 60 * 1000],
+        ] as const) {
+          yield* writeTranscript({
+            filePath: path.join(claudeHomePath, "projects", "-selected", `${sessionId}.jsonl`),
+            contents: `${JSON.stringify({
+              type: "user",
+              cwd: workspace,
+              sessionId,
+              message: { role: "user", content: "Fix the project" },
+            })}\n`,
+            mtimeMs: nowMs - ageMs,
+          });
+        }
+        yield* writeTranscript({
+          filePath: path.join(
+            codexHomePath,
+            "sessions",
+            "2026",
+            "08",
+            "24",
+            `rollout-2026-08-24T10-00-00-${ownedCodex}.jsonl`,
+          ),
+          contents: [
+            encodeTranscriptRecord({
+              type: "session_meta",
+              payload: { id: ownedCodex, cwd: workspace },
+            }),
+            encodeTranscriptRecord({
+              type: "event_msg",
+              payload: { type: "user_message", message: "Review this code" },
+            }),
+          ].join("\n"),
+          mtimeMs: nowMs - 60 * 60 * 1000,
+        });
+
+        const threads = yield* runRecentThreads({
+          claudeHomePath,
+          codexHomePath,
+          workspaceRoot: workspace,
+          options: {
+            history: "all",
+            ownedSessions: new Set([
+              AgentSessionScanner.ownedSessionKey("claudeAgent", ownedClaude),
+              AgentSessionScanner.ownedSessionKey("codex", ownedCodex),
+            ]),
+          },
+        });
+
+        expect(threads.map((thread) => thread.providerSessionId)).toEqual([oldClaude]);
+      }),
+    );
+
+    it.effect("refresh finds transcripts written after the last scan", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const nowMs = Date.parse("2026-08-24T12:00:00.000Z");
+        yield* TestClock.setTime(nowMs);
+        const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+        const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+        const workspace = yield* makeTempDir("t3code-workspace-");
+        const writeSession = (sessionId: string) =>
+          writeTranscript({
+            filePath: path.join(claudeHomePath, "projects", "-selected", `${sessionId}.jsonl`),
+            contents: `${JSON.stringify({
+              type: "user",
+              cwd: workspace,
+              sessionId,
+              message: { role: "user", content: "Fix the project" },
+            })}\n`,
+            mtimeMs: nowMs,
+          });
+        const sessionIds = Effect.gen(function* () {
+          const scanner = yield* AgentSessionScanner.AgentSessionScanner;
+          const outcomes = yield* scanner
+            .recentThreads(workspace, [], { history: "all" })
+            .pipe(Stream.runCollect);
+          return Array.from(outcomes).flatMap((outcome) =>
+            outcome._tag === "Importable" ? [outcome.thread.providerSessionId] : [],
+          );
+        });
+
+        yield* Effect.gen(function* () {
+          const scanner = yield* AgentSessionScanner.AgentSessionScanner;
+          yield* writeSession("first");
+          expect(yield* sessionIds).toEqual(["first"]);
+          yield* writeSession("second");
+          expect(yield* sessionIds).toEqual(["first"]);
+          yield* scanner.refresh;
+          expect((yield* sessionIds).toSorted()).toEqual(["first", "second"]);
+        }).pipe(Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath })));
       }),
     );
 

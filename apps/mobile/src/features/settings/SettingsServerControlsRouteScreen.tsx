@@ -60,6 +60,7 @@ const PAGE_PROJECT_KEYS: Record<SettingsPage, readonly ProjectScopedServerSettin
     "defaultRuntimeMode",
     "responseStreamingMode",
     "enableAgentBrowserAccess",
+    "importAgentConversations",
     "sidebarAutoSettleOnMerge",
     "sidebarAutoSettleAfterDays",
   ],
@@ -382,6 +383,23 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       value={uniform("enableAgentBrowserAccess")}
                       disabled={disabledFor("enableAgentBrowserAccess")}
                       onValueChange={(value) => write({ enableAgentBrowserAccess: value })}
+                    />
+                  </SettingsSection>
+                  <SettingsSection
+                    title="Claude Code and Codex"
+                    footer={
+                      projectSelected
+                        ? undefined
+                        : "Only folders added as projects are imported. Add a project to CodeShip to manage all of its conversations."
+                    }
+                  >
+                    <SettingsSwitchRow
+                      icon="bubble.left.and.bubble.right"
+                      label="Import conversations"
+                      subtitle="Bring past and new conversations into CodeShip, including ones from while it was closed."
+                      value={uniform("importAgentConversations")}
+                      disabled={disabledFor("importAgentConversations")}
+                      onValueChange={(value) => write({ importAgentConversations: value })}
                     />
                   </SettingsSection>
                   <AutoSettleSettingsRows write={write} pending={pendingWrites > 0} />

@@ -54,6 +54,9 @@ const MAX_METADATA_OPERATIONS_PER_SOURCE = MAX_TRANSCRIPTS_PER_SOURCE * 4;
 const MAX_METADATA_RECORDS_PER_SOURCE = 100_000;
 const MAX_METADATA_RECORDS_PER_TRANSCRIPT = 1_000;
 const RECENT_THREAD_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+// Claude names transcripts `<session>.jsonl`; Codex names them `rollout-<time>-<thread>.jsonl`.
+const TRANSCRIPT_SESSION_ID_PATTERN =
+  /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
 // Screenshot-heavy transcripts can reach GiB; select fields while streaming to avoid allocating payloads.
 const MAX_IMPORTED_TRANSCRIPT_BYTES = 4 * 1024 * 1024 * 1024;
 const MAX_IMPORTED_MESSAGES = 200;
@@ -152,13 +155,26 @@ export type AgentSessionRecentThread =
   | { readonly _tag: "Duplicate"; readonly source: AgentSessionImportSource }
   | { readonly _tag: "Skipped" };
 
+export interface AgentSessionThreadOptions {
+  /** "recent" is the onboarding window and per-call budget; "all" reads every transcript on disk. */
+  readonly history?: "recent" | "all";
+  /** `${providerInstanceId}\0${nativeId}` of sessions that threads already own; they are not read. */
+  readonly ownedSessions?: ReadonlySet<string>;
+}
+
+export const ownedSessionKey = (providerInstanceId: string, nativeId: string) =>
+  `${providerInstanceId}\0${nativeId}`;
+
 export class AgentSessionScanner extends Context.Service<
   AgentSessionScanner,
   {
     readonly scan: Effect.Effect<AgentSessionScanResult, AgentSessionScanError>;
+    /** Rediscovers transcripts so later `recentThreads` calls see files written since the last scan. */
+    readonly refresh: Effect.Effect<void, AgentSessionScanError>;
     readonly recentThreads: (
       workspaceRoot: string,
       completedSources?: ReadonlyArray<AgentSessionImportSource>,
+      options?: AgentSessionThreadOptions,
     ) => Stream.Stream<AgentSessionRecentThread, AgentSessionScanError>;
   }
 >()("t3/project/AgentSessionScanner") {}
@@ -627,6 +643,17 @@ function sameTranscriptIdentity(left: TranscriptIdentity, right: TranscriptIdent
   );
 }
 
+type CachedCwd = TranscriptIdentity & { readonly cwd: string };
+
+function sameTranscriptFile(left: TranscriptIdentity, right: TranscriptIdentity): boolean {
+  return (
+    left.filePath === right.filePath &&
+    left.device === right.device &&
+    fileIdKey(left.inode) === fileIdKey(right.inode) &&
+    left.birthtimeMs === right.birthtimeMs
+  );
+}
+
 /** @public */
 export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -1046,6 +1073,10 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  // A transcript's cwd comes from its first records, so appends never change it. Keeping it lets
+  // periodic syncs skip prefix reads of transcripts outside every project.
+  let cwdCache = new Map<string, CachedCwd>();
+
   const groupTranscriptsByCwd = Effect.fn("AgentSessionScanner.groupTranscriptsByCwd")(function* (
     source: AgentSessionSource,
     transcripts: ReadonlyArray<TranscriptCandidate>,
@@ -1054,6 +1085,7 @@ export const make = Effect.gen(function* () {
       string,
       ReadonlyArray<{ readonly cwd: string; readonly source: AgentSessionImportSource }>
     >,
+    nextCwdCache: Map<string, CachedCwd>,
   ) {
     const byOwnerAndCwd = new Map<
       string,
@@ -1066,16 +1098,24 @@ export const make = Effect.gen(function* () {
     >();
 
     for (const transcript of transcripts) {
+      const fileKey = `${transcript.providerInstanceId}\0${transcript.filePath}`;
+      const cached = cwdCache.get(fileKey);
       // Unchanged imported transcripts keep their import cwd, so they never spend the read budget.
       const cwd =
         importedByFile
-          .get(`${transcript.providerInstanceId}\0${transcript.filePath}`)
+          .get(fileKey)
           ?.find(
             (imported) =>
               imported.source.provider === source &&
               sameTranscriptIdentity(imported.source, transcript.identity),
-          )?.cwd ?? (yield* readCwd(source, transcript, budget));
+          )?.cwd ??
+        (cached !== undefined && sameTranscriptFile(cached, transcript.identity)
+          ? cached.cwd
+          : yield* readCwd(source, transcript, budget));
       if (cwd === null || cwd === false) continue;
+      if (transcript.identity.inode !== null) {
+        nextCwdCache.set(fileKey, { ...transcript.identity, cwd });
+      }
       const key = `${transcript.providerInstanceId}\0${cwd}`;
       const existing = byOwnerAndCwd.get(key);
       if (existing) {
@@ -1125,6 +1165,7 @@ export const make = Effect.gen(function* () {
     const raw: Array<RawCandidate> = [];
     let truncated = false;
     let metadataTruncated = false;
+    const nextCwdCache = new Map<string, CachedCwd>();
 
     for (const source of ["claudeAgent", "codex"] as const) {
       const instances: Array<{
@@ -1225,15 +1266,23 @@ export const make = Effect.gen(function* () {
           selectedTranscripts,
           metadataBudget,
           importedByFile,
+          nextCwdCache,
         )),
       );
       metadataTruncated ||= metadataBudget.truncated;
     }
 
+    cwdCache = nextCwdCache;
     return { candidates: raw, truncated: truncated || metadataTruncated, metadataTruncated };
   });
 
   let cachedCandidates: Effect.Success<ReturnType<typeof collectCandidates>> | null = null;
+
+  const refresh: AgentSessionScanner["Service"]["refresh"] = Effect.suspend(collectCandidates).pipe(
+    Effect.map((collected) => {
+      cachedCandidates = collected;
+    }),
+  );
 
   const scan: AgentSessionScanner["Service"]["scan"] = Effect.gen(function* () {
     cachedCandidates = yield* collectCandidates();
@@ -1357,13 +1406,15 @@ export const make = Effect.gen(function* () {
   const prepareRecentThreads = Effect.fn("AgentSessionScanner.prepareRecentThreads")(function* (
     workspaceRoot: string,
     completedSources: ReadonlyArray<AgentSessionImportSource>,
+    options: AgentSessionThreadOptions,
   ) {
+    const allHistory = options.history === "all";
     const root = path.resolve(expandHomePath(workspaceRoot, homeDir));
     const realRoot = yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root));
     if (isExcludedProjectPath(root) || isExcludedProjectPath(realRoot)) return Stream.empty;
     const rootIdentity = yield* directoryIdentity(root);
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-    const cutoffMs = nowMs - RECENT_THREAD_WINDOW_MS;
+    const cutoffMs = allHistory ? Number.NEGATIVE_INFINITY : nowMs - RECENT_THREAD_WINDOW_MS;
 
     // Imports recorded since a budget-truncated collection can free budget for transcripts it cut off.
     if (cachedCandidates === null || cachedCandidates.metadataTruncated) {
@@ -1408,16 +1459,27 @@ export const make = Effect.gen(function* () {
       (source) => `${source.providerInstanceId}\0${source.filePath}`,
     );
     const importedSessions = new Set<string>();
-    let bytesRemaining = MAX_IMPORT_BYTES;
-    let transcriptsRemaining = MAX_IMPORT_TRANSCRIPTS;
+    // A full-history sync runs in the background and reads one transcript at a time, so it is
+    // bounded by the discovered transcripts rather than a per-request budget.
+    let bytesRemaining = allHistory ? Number.POSITIVE_INFINITY : MAX_IMPORT_BYTES;
+    let transcriptsRemaining = allHistory ? Number.POSITIVE_INFINITY : MAX_IMPORT_TRANSCRIPTS;
     return Stream.fromIteratorSucceed(eligibleTranscripts.values(), 1).pipe(
       Stream.mapEffect(({ candidate, transcript }) =>
         Effect.gen(function* () {
           const completed = completedByFile.get(
             `${candidate.providerInstanceId}\0${transcript.filePath}`,
           );
-          if (completed === undefined && (transcriptsRemaining === 0 || bytesRemaining === 0)) {
-            return Option.some<AgentSessionRecentThread>({ _tag: "Skipped" });
+          const fileSessionId = TRANSCRIPT_SESSION_ID_PATTERN.exec(transcript.filePath)?.[1];
+          const owned =
+            fileSessionId !== undefined &&
+            options.ownedSessions?.has(
+              ownedSessionKey(candidate.providerInstanceId, fileSessionId),
+            ) === true;
+          if (completed === undefined) {
+            if (owned) return Option.none<AgentSessionRecentThread>();
+            if (transcriptsRemaining === 0 || bytesRemaining === 0) {
+              return Option.some<AgentSessionRecentThread>({ _tag: "Skipped" });
+            }
           }
           const stats = yield* statOption(transcript.filePath);
           if (Option.isNone(stats) || stats.value.type !== "File") {
@@ -1437,6 +1499,8 @@ export const make = Effect.gen(function* () {
               source: completedSource,
             });
           }
+          // Another thread already owns this session, so it can never become a new import.
+          if (owned) return Option.none<AgentSessionRecentThread>();
           if (
             transcriptsRemaining === 0 ||
             identity.size > MAX_IMPORTED_TRANSCRIPT_BYTES ||
@@ -1502,9 +1566,10 @@ export const make = Effect.gen(function* () {
   const recentThreads: AgentSessionScanner["Service"]["recentThreads"] = (
     workspaceRoot,
     completedSources = [],
-  ) => Stream.unwrap(prepareRecentThreads(workspaceRoot, completedSources));
+    options = {},
+  ) => Stream.unwrap(prepareRecentThreads(workspaceRoot, completedSources, options));
 
-  return AgentSessionScanner.of({ scan, recentThreads });
+  return AgentSessionScanner.of({ scan, refresh, recentThreads });
 });
 
 export const layer = Layer.effect(AgentSessionScanner, make);
