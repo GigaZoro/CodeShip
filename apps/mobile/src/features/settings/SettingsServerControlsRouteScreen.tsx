@@ -537,6 +537,20 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                     />
                     <View className="border-t border-border-subtle">
                       <SettingsSwitchRow
+                        icon="arrow.down.circle"
+                        label="Update providers automatically"
+                        subtitle={
+                          projectSelected
+                            ? "Environment-wide setting. Select All projects to change it."
+                            : "Update provider CLIs that are behind the latest version when the server starts."
+                        }
+                        value={uniform("autoUpdateProviders")}
+                        disabled={disabledFor("autoUpdateProviders")}
+                        onValueChange={(value) => write({ autoUpdateProviders: value })}
+                      />
+                    </View>
+                    <View className="border-t border-border-subtle">
+                      <SettingsSwitchRow
                         icon="arrow.uturn.forward"
                         label="Continue after restart"
                         subtitle="Resume interrupted threads after an update or restart."

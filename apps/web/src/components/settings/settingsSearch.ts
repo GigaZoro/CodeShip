@@ -600,6 +600,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "environment-defaults",
   },
   {
+    id: "auto-update-providers",
+    title: "Update providers automatically",
+    to: "/settings/maintenance",
+    searchTerms: ["auto update provider cli launch startup install latest version"],
+    scope: "environment-defaults",
+  },
+  {
     id: "continue-threads-after-server-update",
     title: "Continue threads after restarts",
     to: "/settings/maintenance",
