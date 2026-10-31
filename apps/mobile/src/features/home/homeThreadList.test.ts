@@ -5,7 +5,11 @@ import type {
 import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildHomeProjectScopes, findHomeProjectScope } from "./homeThreadList";
+import {
+  buildHomeProjectScopes,
+  buildHomeThreadListGrouping,
+  findHomeProjectScope,
+} from "./homeThreadList";
 import { makeThreadShellFixture } from "../../test-fixtures";
 import { buildThreadListV2Items } from "../threads/threadListV2";
 
@@ -221,5 +225,35 @@ describe("home project scopes", () => {
     expect(findHomeProjectScope(scopes, "environment-local:project-target")).toBe(targetScope);
     expect(findHomeProjectScope(scopes, "environment-local:missing")).toBeNull();
     expect(findHomeProjectScope(scopes, null)).toBeNull();
+  });
+});
+
+describe("home thread list grouping", () => {
+  it("orders machines by name with offline ones last, closed until the user opens one", () => {
+    const machine = (id: string, label: string, offline: boolean) => ({
+      environmentId: EnvironmentId.make(id),
+      label,
+      offline,
+    });
+    const grouping = buildHomeThreadListGrouping({
+      groupBy: "machine",
+      folderExpanded: { "machine:studio": true },
+      projectScopes: [],
+      environments: [
+        machine("laptop", "Laptop", true),
+        machine("vps", "VPS", false),
+        machine("studio", "Studio", true),
+        machine("desk", "Desk", false),
+      ],
+    });
+
+    expect(
+      grouping?.folders.map((folder) => [folder.label, folder.expanded, folder.expandedByDefault]),
+    ).toEqual([
+      ["Desk", true, true],
+      ["VPS", true, true],
+      ["Laptop", false, false],
+      ["Studio", true, false],
+    ]);
   });
 });

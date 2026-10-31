@@ -57,11 +57,13 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
       rowId={sidebarFolderRowId(group.projectKey)}
       icon={<ProjectFavicon project={group} className="size-4 shrink-0" />}
       label={group.displayName}
-      newThreadLabel={`New thread in ${group.displayName}`}
       collapsed={props.collapsed}
       hiddenThreads={props.hiddenThreads}
       onToggle={() => props.onToggle(group)}
-      onNewThread={() => props.onNewThread(group)}
+      newThread={{
+        label: `New thread in ${group.displayName}`,
+        onClick: () => props.onNewThread(group),
+      }}
       onContextMenu={(position) => props.onContextMenu(group, position)}
     />
   );
@@ -72,7 +74,7 @@ export const SidebarMachineFolderHeader = memo(function SidebarMachineFolderHead
   collapsed: boolean;
   hiddenThreads: readonly EnvironmentThreadShell[];
   onToggle: (machine: SidebarMachine) => void;
-  onNewThread: (machine: SidebarMachine, position: { x: number; y: number }) => void;
+  onNewThread: (machine: SidebarMachine) => void;
 }) {
   const { machine } = props;
   return (
@@ -91,12 +93,15 @@ export const SidebarMachineFolderHeader = memo(function SidebarMachineFolderHead
           <span className="shrink-0 text-xs text-sidebar-muted-foreground">Offline</span>
         ) : null
       }
-      newThreadLabel={`New thread on ${machine.label}`}
       collapsed={props.collapsed}
       hiddenThreads={props.hiddenThreads}
       onToggle={() => props.onToggle(machine)}
-      onNewThread={(position) => props.onNewThread(machine, position)}
-      onContextMenu={(position) => props.onNewThread(machine, position)}
+      // An offline machine cannot start a thread until it is back.
+      newThread={
+        machine.disconnected
+          ? null
+          : { label: `New thread on ${machine.label}`, onClick: () => props.onNewThread(machine) }
+      }
     />
   );
 });
@@ -111,13 +116,13 @@ function SidebarFolderHeader(props: {
   icon: ReactNode;
   label: string;
   status?: ReactNode;
-  newThreadLabel: string;
+  newThread: { readonly label: string; readonly onClick: () => void } | null;
   collapsed: boolean;
   hiddenThreads: readonly EnvironmentThreadShell[];
   onToggle: () => void;
-  onNewThread: (position: { x: number; y: number }) => void;
-  onContextMenu: (position: { x: number; y: number }) => void;
+  onContextMenu?: (position: { x: number; y: number }) => void;
 }) {
+  const { onContextMenu, newThread } = props;
   const { rowId, collapsed, hiddenThreads } = props;
   const localLastVisitedAtById = useUiStateStore((state) => state.threadLastVisitedAtById);
   const dot = collapsed
@@ -145,10 +150,14 @@ function SidebarFolderHeader(props: {
         data-sidebar-row={rowId}
         aria-expanded={!collapsed}
         onClick={props.onToggle}
-        onContextMenu={(event) => {
-          event.preventDefault();
-          props.onContextMenu({ x: event.clientX, y: event.clientY });
-        }}
+        onContextMenu={
+          onContextMenu
+            ? (event) => {
+                event.preventDefault();
+                onContextMenu({ x: event.clientX, y: event.clientY });
+              }
+            : undefined
+        }
         className="flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-(--control-radius) px-(--sidebar-row-content-inset) text-left outline-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
         {props.icon}
@@ -174,28 +183,27 @@ function SidebarFolderHeader(props: {
           )}
         />
       </button>
-      {/* Sits over the count, which hides on hover, and left of the chevron. */}
-      <span className="absolute inset-y-0 right-6 flex items-center opacity-0 focus-within:opacity-100 group-hover/project-folder:opacity-100 pointer-coarse:opacity-100">
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                data-sidebar-action-for={rowId}
-                size="icon-xs"
-                variant="ghost-muted"
-                aria-label={props.newThreadLabel}
-                onClick={(event) => {
-                  const rect = event.currentTarget.getBoundingClientRect();
-                  props.onNewThread({ x: rect.left, y: rect.bottom });
-                }}
-              />
-            }
-          >
-            <SquarePenIcon aria-hidden />
-          </TooltipTrigger>
-          <TooltipPopup>{props.newThreadLabel}</TooltipPopup>
-        </Tooltip>
-      </span>
+      {newThread ? (
+        // Sits over the count, which hides on hover, and left of the chevron.
+        <span className="absolute inset-y-0 right-6 flex items-center opacity-0 focus-within:opacity-100 group-hover/project-folder:opacity-100 pointer-coarse:opacity-100">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  data-sidebar-action-for={rowId}
+                  size="icon-xs"
+                  variant="ghost-muted"
+                  aria-label={newThread.label}
+                  onClick={newThread.onClick}
+                />
+              }
+            >
+              <SquarePenIcon aria-hidden />
+            </TooltipTrigger>
+            <TooltipPopup>{newThread.label}</TooltipPopup>
+          </Tooltip>
+        </span>
+      ) : null}
     </li>
   );
 }

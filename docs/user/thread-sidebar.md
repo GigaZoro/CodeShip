@@ -148,17 +148,24 @@ cannot drag or move threads within it. Your saved order returns when you turn it
 ### Group threads by project or machine
 
 On web and desktop, open the filter button next to the sidebar search and pick **Group by**
-**Project** or **Machine**, or set **Settings → General → Group threads**. Active threads then
-sit in a folder for each project, or for each machine they run on. Pinned threads stay above the
-folders, and Working, Snoozed, and Settled stay below them, shared across every folder. Each
-device keeps its own choice.
+**Project** or **Machine**, or set **Settings → General → Group threads**. On mobile, use the
+**Group** filter above the thread list or **Group by** in its filter menu, or set **Settings →
+General → Group threads**. Active threads then sit in a folder for each project, or for each
+machine they run on. Pinned threads stay above the folders, and Working, Snoozed, and Settled
+stay below them, shared across every folder. **Machine** is offered once you have more than one
+machine. Each device keeps its own choice.
 
-Click a folder to open or close it. A closed folder shows how many threads it holds, and a dot
-when one of them needs you. Use the pen button on a project folder, or right-click it, to start
-a thread in that project. On a machine folder, the pen button lists that machine's projects to
-start in. A machine that is offline shows **Offline** and starts closed. In project folders,
-threads on another machine show that machine's icon. While threads are grouped, you can drag a
-thread onto the composer to mention it, but not within the sidebar.
+Click or tap a folder to open or close it. A closed folder shows how many threads it holds, and a
+dot when one of them needs you. A machine that is offline shows **Offline** and starts closed.
+While threads are grouped, active threads are ordered by their latest message, so you cannot move
+them by hand.
+
+On web and desktop, use the pen button on a project folder, or right-click it, to start a thread
+in that project. The pen button on a machine folder opens **New thread in...** with only that
+machine's projects. **New thread** and its shortcut start in the current project when folders are
+by project, and ask which project otherwise. In project folders, threads on another machine show
+that machine's icon. You can drag a grouped thread onto the composer to mention it, but not
+within the sidebar.
 
 The same menu filters the sidebar. Click a machine or project to show only its threads, or
 shift-click to add more. Machines appear when you have more than one. Choosing both a machine

@@ -13,11 +13,13 @@ import type {
   SidebarProjectGroupingMode,
   SidebarProjectSortOrder,
 } from "@t3tools/contracts";
+import type { SidebarGroupBy } from "@t3tools/contracts/settings";
 import * as Arr from "effect/Array";
 import * as Order from "effect/Order";
 
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
+import type { ThreadListV2Folder, ThreadListV2Grouping } from "../threads/threadListV2";
 
 export type HomeProjectSortOrder = Exclude<SidebarProjectSortOrder, "manual">;
 
@@ -142,4 +144,72 @@ export function sortHomeProjectScopes(input: {
       }),
     ),
   );
+}
+
+/**
+ * Folders for the thread list: project scopes in the order given, or machines by name with
+ * offline ones last. An offline machine starts closed, since its threads cannot change.
+ */
+export function buildHomeThreadListGrouping(input: {
+  readonly groupBy: SidebarGroupBy;
+  readonly folderExpanded: Readonly<Record<string, boolean>> | undefined;
+  readonly projectScopes: ReadonlyArray<HomeProjectScope>;
+  readonly environments: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly label: string;
+    readonly offline: boolean;
+  }>;
+}): ThreadListV2Grouping | null {
+  const expanded = (key: string, byDefault: boolean) => input.folderExpanded?.[key] ?? byDefault;
+  switch (input.groupBy) {
+    case "none":
+      return null;
+    case "project": {
+      const scopeKeyByProjectKey = new Map(
+        input.projectScopes.flatMap((scope) =>
+          scope.projectRefs.map(
+            (ref) => [scopedProjectKey(ref.environmentId, ref.projectId), scope.key] as const,
+          ),
+        ),
+      );
+      return {
+        folders: input.projectScopes.map((scope): ThreadListV2Folder => ({
+          kind: "project",
+          key: scope.key,
+          label: scope.title,
+          projectKey: scopedProjectKey(scope.representative.environmentId, scope.representative.id),
+          expandedByDefault: true,
+          expanded: expanded(scope.key, true),
+        })),
+        folderKeyOf: (thread) =>
+          scopeKeyByProjectKey.get(scopedProjectKey(thread.environmentId, thread.projectId)) ?? "",
+      };
+    }
+    case "machine":
+      return {
+        folders: [...input.environments]
+          .sort(
+            (left, right) =>
+              Number(left.offline) - Number(right.offline) || left.label.localeCompare(right.label),
+          )
+          .map((environment): ThreadListV2Folder => {
+            const key = homeMachineFolderKey(environment.environmentId);
+            return {
+              kind: "machine",
+              key,
+              label: environment.label,
+              environmentId: environment.environmentId,
+              offline: environment.offline,
+              expandedByDefault: !environment.offline,
+              expanded: expanded(key, !environment.offline),
+            };
+          }),
+        folderKeyOf: (thread) => homeMachineFolderKey(thread.environmentId),
+      };
+  }
+}
+
+/** Shares the folder state map with project folders, outside their key space. */
+function homeMachineFolderKey(environmentId: EnvironmentId): string {
+  return `machine:${environmentId}`;
 }

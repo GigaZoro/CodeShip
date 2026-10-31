@@ -13,7 +13,7 @@ import { useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
 import * as Schema from "effect/Schema";
-import { SidebarGroupBy } from "@t3tools/contracts/settings";
+import { availableSidebarGroupBy, SidebarGroupBy } from "@t3tools/contracts/settings";
 import {
   DndContext,
   useSensor,
@@ -128,7 +128,6 @@ import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { registerSettleAndAdvance } from "../settleAndAdvance";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { updateClientSettings, useClientSettings, useSidebarGroupBy } from "../hooks/useSettings";
-import { useScratchProject } from "../hooks/useScratchProject";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useNowMinute } from "../hooks/useNowMinute";
@@ -201,7 +200,7 @@ import {
   resolveSidebarDropVerb,
   resolveSidebarThreadSection,
   searchSidebarThreads,
-  shouldCreateNewThreadInCurrentProject,
+  newThreadAsksForProject,
   shouldNavigateAfterThreadPark,
   sidebarListItemId,
   sidebarThreadKeyAtY,
@@ -1066,7 +1065,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   });
   const groupBy = useSidebarGroupBy();
   const machines = useSidebarMachines();
-  const { startScratchThread } = useScratchProject();
   const folderRowsMultiline = useClientSettings((settings) => settings.boringSidebarMultilineRows);
   const newThreadContext = useHandleNewThread();
   // Row callbacks capture only the handler; the rest of the context changes with the route.
@@ -1346,59 +1344,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     if (isMobile) setOpenMobile(false);
     void handleNewThread(scopeProjectRef(group.environmentId, group.id));
   });
-  // Opens at the folder's pen button: a machine holds many projects, so the user picks one.
-  const startThreadOnMachine = useStableCallback(
-    (machine: SidebarMachine, position: { x: number; y: number }) => {
-      const api = readLocalApi();
-      if (!api) return;
-      const members = projectGroups.flatMap((group) =>
-        group.isScratch
-          ? []
-          : group.memberProjects
-              .filter((member) => member.environmentId === machine.environmentId)
-              .map((member, _index, onMachine) => ({
-                id: member.id,
-                // Two checkouts of one repository on a machine share a folder name.
-                label:
-                  onMachine.length > 1
-                    ? `${group.displayName} · ${member.workspaceRoot}`
-                    : group.displayName,
-              })),
-      );
-      void (async () => {
-        const clicked = await settlePromise(() =>
-          api.contextMenu.show(
-            [
-              ...members.map((member) => ({
-                id: `project:${member.id}`,
-                label: member.label,
-                disabled: machine.disconnected,
-              })),
-              {
-                id: "no-project",
-                label: "No project",
-                disabled: machine.disconnected,
-                separatorBefore: members.length > 0,
-              },
-            ],
-            position,
-          ),
-        );
-        if (clicked._tag === "Failure" || clicked.value === null) return;
-        if (isMobile) setOpenMobile(false);
-        if (clicked.value === "no-project") {
-          void startScratchThread(machine.environmentId);
-          return;
-        }
-        void handleNewThread(
-          scopeProjectRef(
-            machine.environmentId,
-            ProjectId.make(clicked.value.slice("project:".length)),
-          ),
-        );
-      })();
-    },
-  );
+  // A machine holds many projects, so the user picks one.
+  const startThreadOnMachine = useStableCallback((machine: SidebarMachine) => {
+    if (isMobile) setOpenMobile(false);
+    openCommandPalette({ open: "new-thread-in", environmentId: machine.environmentId });
+  });
   const handleProjectFolderContextMenu = useStableCallback(
     (group: SidebarProjectSnapshot, position: { x: number; y: number }) => {
       const api = readLocalApi();
@@ -3071,10 +3021,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const showJumpHints = useThreadJumpHintsVisible(shouldShowJumpHintsNow);
 
   const handleNewThreadClick = (event?: ReactMouseEvent) => {
-    if (
-      groupBy !== "none" ||
-      shouldCreateNewThreadInCurrentProject(event?.shiftKey ?? false, projectGroups.length)
-    ) {
+    if (event?.shiftKey === true || !newThreadAsksForProject(groupBy, projectGroups.length)) {
       if (isMobile) setOpenMobile(false);
       void startNewThreadFromContext({
         activeDraftThread: newThreadContext.activeDraftThread,
@@ -3198,7 +3145,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             updateClientSettings({ sidebarGroupBy: value });
                         }}
                       >
-                        {SidebarGroupBy.literals.map((value) => (
+                        {availableSidebarGroupBy(machines.length, groupBy).map((value) => (
                           <Toggle key={value} value={value}>
                             {SIDEBAR_GROUP_BY_LABELS[value]}
                           </Toggle>
@@ -3334,7 +3281,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               newThreadDisabled={projects.length === 0}
               newThreadShortcutLabel={newThreadShortcutLabel}
               newThreadInProjectShortcutLabel={newThreadInProjectShortcutLabel}
-              showNewThreadInProjectHint={groupBy === "none" && projectGroups.length > 1}
+              showNewThreadInProjectHint={newThreadAsksForProject(groupBy, projectGroups.length)}
               searchInputRef={threadSearchInputRef}
               searchQuery={threadSearchQuery}
               onSearchQueryChange={(value) => {

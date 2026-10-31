@@ -48,8 +48,16 @@ import { useThreadJumpShortcuts } from "../keyboard/threadKeyboardShortcuts";
 import { requestThreadMessageJump } from "./threadMessageJump";
 import { useThreadListSearchMatches } from "./useThreadListSearchMatches";
 import { useHomeListOptions } from "../home/home-list-options";
-import { buildHomeListFilterMenu } from "../home/home-list-filter-menu";
-import { buildHomeProjectScopes } from "../home/homeThreadList";
+import {
+  buildGroupByMenuAction,
+  buildHomeListFilterMenu,
+  parseGroupByMenuEvent,
+} from "../home/home-list-filter-menu";
+import {
+  buildHomeProjectScopes,
+  buildHomeThreadListGrouping,
+  sortHomeProjectScopes,
+} from "../home/homeThreadList";
 import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "../home/thread-swipe-actions";
 import { usePendingTaskListActions } from "../home/usePendingTaskListActions";
 import { useThreadListActions } from "../home/useThreadListActions";
@@ -65,6 +73,7 @@ import { SidebarFilterButton } from "./sidebar-filter-button";
 import { createSidebarHeaderItems } from "./sidebar-native-header-items";
 import { SidebarNavigationShell } from "./sidebar-navigation-shell";
 import {
+  ThreadListV2FolderHeader,
   ThreadListV2PendingRow,
   ThreadListV2Row,
   ThreadListV2SettledShelfHeader,
@@ -79,6 +88,7 @@ import {
   threadListV2ListItemsAreEqual,
   THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
+  type ThreadListV2Folder,
   type ThreadListV2ListItem,
 } from "./threadListV2";
 import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
@@ -270,10 +280,47 @@ function ThreadNavigationSidebarPane(
     snoozedShelfExpanded,
     workingShelfEnabled,
     workingShelfExpanded,
+    groupBy,
+    folderExpanded,
+    setGroupBy,
+    toggleFolder,
     toggleSettledShelf,
     toggleSnoozedShelf,
     toggleWorkingShelf,
   } = useThreadListV2ShelfPreferences();
+  const connectionStateByEnvironmentId = new Map(
+    workspaceEnvironments.map(
+      (environment) => [environment.environmentId, environment.connectionState] as const,
+    ),
+  );
+  const grouping = buildHomeThreadListGrouping({
+    groupBy,
+    folderExpanded,
+    projectScopes:
+      groupBy === "project"
+        ? sortHomeProjectScopes({
+            scopes: projectScopes,
+            threads,
+            pendingTasks,
+            projectSortOrder: options.projectSortOrder,
+          })
+        : projectScopes,
+    environments: environments
+      .filter(
+        (environment) =>
+          options.selectedEnvironmentId === null ||
+          environment.environmentId === options.selectedEnvironmentId,
+      )
+      .map((environment) => {
+        const connectionState = connectionStateByEnvironmentId.get(environment.environmentId);
+        return {
+          ...environment,
+          offline: connectionState !== "connected" && connectionState !== "connecting",
+        };
+      }),
+  });
+  const toggleThreadListFolder = (folder: ThreadListV2Folder) =>
+    toggleFolder(folder.key, folder.expandedByDefault);
   const now = useThreadListNow(threads);
   const listEnvironments = useAtomValue(threadListEnvironmentsAtom);
   const {
@@ -316,6 +363,7 @@ function ThreadNavigationSidebarPane(
     snoozedShelfExpanded,
     settledShelfExpanded,
     selectedThreadKey: props.selectedThreadKey ?? null,
+    grouping,
   });
   const listItems: readonly SidebarListItem[] =
     settledShelfExpanded && threadListV2Layout.hiddenSettledCount > 0
@@ -375,6 +423,7 @@ function ThreadNavigationSidebarPane(
             ],
           },
         ] satisfies MenuAction[])),
+    buildGroupByMenuAction(groupBy, environments.length),
   ] satisfies MenuAction[];
   const handleListMenuAction = ({
     nativeEvent,
@@ -382,6 +431,11 @@ function ThreadNavigationSidebarPane(
     readonly nativeEvent: { readonly event: string };
   }) => {
     const event = nativeEvent.event;
+    const nextGroupBy = parseGroupByMenuEvent(event);
+    if (nextGroupBy !== null) {
+      setGroupBy(nextGroupBy);
+      return;
+    }
     if (event === "environment:all") {
       setSelectedEnvironmentId(null);
       return;
@@ -469,6 +523,7 @@ function ThreadNavigationSidebarPane(
     listEnvironments,
     threadSearchMatchByKey,
     workingShelfEnabled,
+    groupBy,
   };
   useThreadJumpShortcuts(listItems, handleSelectThread);
   const sidebarItemsAreEqual = (previous: SidebarListItem, item: SidebarListItem): boolean => {
@@ -595,7 +650,9 @@ function ThreadNavigationSidebarPane(
             reorderSupported={
               item.item.pinned
                 ? pinReorderEnvironmentIds.has(thread.environmentId)
-                : !workingShelfEnabled && activeReorderEnvironmentIds.has(thread.environmentId)
+                : !workingShelfEnabled &&
+                  grouping === null &&
+                  activeReorderEnvironmentIds.has(thread.environmentId)
             }
             canMoveUp={item.canMoveUp}
             canMoveDown={item.canMoveDown}
@@ -612,6 +669,26 @@ function ThreadNavigationSidebarPane(
           />
         );
       }
+      case "v2-folder":
+        return (
+          <ThreadListV2FolderHeader
+            folder={item.folder}
+            project={
+              item.folder.kind === "project"
+                ? (projectByKey.get(item.folder.projectKey) ?? null)
+                : null
+            }
+            machine={
+              item.folder.kind === "machine"
+                ? machineByEnvironmentId.get(item.folder.environmentId)
+                : undefined
+            }
+            hiddenCount={item.hiddenCount}
+            hiddenNeedsAttention={item.hiddenNeedsAttention}
+            pane="sidebar"
+            onToggle={toggleThreadListFolder}
+          />
+        );
       case "v2-working-shelf":
         return (
           <ThreadListV2WorkingShelfHeader
@@ -665,8 +742,10 @@ function ThreadNavigationSidebarPane(
     projects: projectFilterOptions,
     selectedEnvironmentId: options.selectedEnvironmentId,
     selectedProjectKey,
+    groupBy,
     onEnvironmentChange: setSelectedEnvironmentId,
     onProjectChange: setSelectedProjectKey,
+    onGroupByChange: setGroupBy,
   });
   const nativeHeaderItems = createSidebarHeaderItems({
     filterIcon,

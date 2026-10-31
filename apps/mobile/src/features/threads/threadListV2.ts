@@ -168,6 +168,13 @@ export function nextSnoozeWakeAfter(
   return next;
 }
 
+/** Statuses that hold up a thread until the user answers. */
+const THREAD_LIST_V2_ATTENTION_STATUSES: ReadonlySet<ThreadListV2Status> = new Set([
+  "approval",
+  "input",
+  "request",
+]);
+
 export const THREAD_LIST_V2_SETTLED_INITIAL_COUNT = 10;
 export const THREAD_LIST_V2_SETTLED_PAGE_COUNT = 25;
 
@@ -302,8 +309,45 @@ export interface ThreadListV2Item {
   readonly isLast: boolean;
 }
 
+interface ThreadListV2FolderBase {
+  readonly key: string;
+  readonly label: string;
+  readonly expanded: boolean;
+  /** What the folder shows until the user opens or closes it. */
+  readonly expandedByDefault: boolean;
+}
+
+export type ThreadListV2Folder =
+  | (ThreadListV2FolderBase & {
+      readonly kind: "project";
+      /** The scoped key of the project whose favicon the folder shows. */
+      readonly projectKey: string;
+    })
+  | (ThreadListV2FolderBase & {
+      readonly kind: "machine";
+      readonly environmentId: EnvironmentId;
+      readonly offline: boolean;
+    });
+
+/** Active threads go in folders; pinned threads and the shelves stay shared. */
+export interface ThreadListV2Grouping {
+  /** In display order. A folder with no active threads is left out. */
+  readonly folders: ReadonlyArray<ThreadListV2Folder>;
+  readonly folderKeyOf: (thread: EnvironmentThreadShell) => string;
+}
+
+export interface ThreadListV2FolderHeader {
+  /** Where the folder's rows start in the layout's items. */
+  readonly index: number;
+  readonly folder: ThreadListV2Folder;
+  readonly hiddenCount: number;
+  /** A thread the closed folder hides is waiting on the user. */
+  readonly hiddenNeedsAttention: boolean;
+}
+
 export interface ThreadListV2Layout {
   readonly items: ThreadListV2Item[];
+  readonly folderHeaders: ReadonlyArray<ThreadListV2FolderHeader>;
   readonly hiddenSettledCount: number;
   /** The settled rows the shelf may list, before its visible limit. */
   readonly listedSettledThreads: ReadonlyArray<EnvironmentThreadShell>;
@@ -358,6 +402,14 @@ export interface ThreadListV2SnoozedShelfListItem {
   readonly disabled: boolean;
 }
 
+export interface ThreadListV2FolderListItem {
+  readonly type: "v2-folder";
+  readonly key: string;
+  readonly folder: ThreadListV2Folder;
+  readonly hiddenCount: number;
+  readonly hiddenNeedsAttention: boolean;
+}
+
 export interface ThreadListV2SettledShelfListItem {
   readonly type: "v2-settled-shelf";
   readonly key: "v2-settled-shelf";
@@ -369,6 +421,7 @@ export interface ThreadListV2SettledShelfListItem {
 export type ThreadListV2ListItem =
   | ThreadListV2ThreadListItem
   | ThreadListV2PendingListItem
+  | ThreadListV2FolderListItem
   | ThreadListV2WorkingShelfListItem
   | ThreadListV2SnoozedShelfListItem
   | ThreadListV2SettledShelfListItem;
@@ -379,6 +432,7 @@ export function isThreadListV2ListItem(value: {
   return (
     value.type === "v2-thread" ||
     value.type === "v2-pending" ||
+    value.type === "v2-folder" ||
     value.type === "v2-working-shelf" ||
     value.type === "v2-snoozed-shelf" ||
     value.type === "v2-settled-shelf"
@@ -416,6 +470,14 @@ export function threadListV2ListItemsAreEqual(
         previous.showPendingDivider === item.showPendingDivider &&
         previous.showTrailingDivider === item.showTrailingDivider
       );
+    case "v2-folder":
+      return (
+        previous.type === "v2-folder" &&
+        previous.key === item.key &&
+        previous.hiddenCount === item.hiddenCount &&
+        previous.hiddenNeedsAttention === item.hiddenNeedsAttention &&
+        threadListV2FoldersAreEqual(previous.folder, item.folder)
+      );
     case "v2-working-shelf":
       return (
         previous.type === "v2-working-shelf" &&
@@ -438,6 +500,25 @@ export function threadListV2ListItemsAreEqual(
         previous.disabled === item.disabled
       );
   }
+}
+
+function threadListV2FoldersAreEqual(
+  previous: ThreadListV2Folder,
+  folder: ThreadListV2Folder,
+): boolean {
+  if (
+    previous.key !== folder.key ||
+    previous.label !== folder.label ||
+    previous.expanded !== folder.expanded ||
+    previous.expandedByDefault !== folder.expandedByDefault
+  ) {
+    return false;
+  }
+  return previous.kind === "project"
+    ? folder.kind === "project" && previous.projectKey === folder.projectKey
+    : folder.kind === "machine" &&
+        previous.environmentId === folder.environmentId &&
+        previous.offline === folder.offline;
 }
 
 function resolveThreadListV2ItemTimeLabel(
@@ -463,6 +544,7 @@ function resolveThreadListV2ItemTimeLabel(
 export function buildThreadListV2ListItems(input: {
   readonly items: ReadonlyArray<ThreadListV2Item>;
   readonly pendingTasks: ReadonlyArray<PendingNewTask>;
+  readonly folderHeaders?: ReadonlyArray<ThreadListV2FolderHeader>;
   readonly workingCount?: number;
   readonly workingShelfExpanded?: boolean;
   readonly workingShelfHeaderIndex?: number | null;
@@ -526,7 +608,26 @@ export function buildThreadListV2ListItems(input: {
   const snoozedEnd = settledShelfHeaderIndex ?? threadItems.length;
   const workingEnd = snoozedShelfHeaderIndex ?? snoozedEnd;
   const activeEnd = workingShelfHeaderIndex ?? workingEnd;
-  const result: ThreadListV2ListItem[] = [...pendingItems, ...threadItems.slice(0, activeEnd)];
+  const result: ThreadListV2ListItem[] = [...pendingItems];
+  const folderHeaders = input.folderHeaders ?? [];
+  let folderHeaderIndex = 0;
+  // A closed folder can end the active rows, so its header sits at `activeEnd`.
+  for (let index = 0; index <= activeEnd; index += 1) {
+    let header = folderHeaders[folderHeaderIndex];
+    while (header !== undefined && header.index === index) {
+      result.push({
+        type: "v2-folder",
+        key: `v2-folder:${header.folder.key}`,
+        folder: header.folder,
+        hiddenCount: header.hiddenCount,
+        hiddenNeedsAttention: header.hiddenNeedsAttention,
+      });
+      folderHeaderIndex += 1;
+      header = folderHeaders[folderHeaderIndex];
+    }
+    const threadItem = index < activeEnd ? threadItems[index] : undefined;
+    if (threadItem !== undefined) result.push(threadItem);
+  }
   const shelfDisabled = input.shelfPreferencesLoading === true;
   if (workingShelfHeaderIndex !== null && workingCount > 0) {
     result.push({
@@ -617,6 +718,7 @@ export function buildThreadListV2Items(input: {
   readonly isListedSettled?: (thread: EnvironmentThreadShell) => boolean;
   /** Settled threads in scope that are not local (older settled threads not loaded). */
   readonly unloadedSettledCount?: number;
+  readonly grouping?: ThreadListV2Grouping | null;
 }): ThreadListV2Layout {
   const now = input.now;
   const pending =
@@ -720,6 +822,7 @@ export function buildThreadListV2Items(input: {
     });
     const results = [...rankedMatches, ...contentOnly];
     return {
+      folderHeaders: [],
       items: results.map((thread, index) => ({
         thread,
         variant: slim.has(thread) ? "slim" : "card",
@@ -741,9 +844,14 @@ export function buildThreadListV2Items(input: {
     };
   }
 
-  const orderedActive = workingShelfEnabled
-    ? sortInboxThreadsByReturn(active, input.inboxReturnAt)
-    : applyPendingThreadOrder(sortThreadsForListV2(active), "active", pending);
+  const grouping = input.grouping ?? null;
+  // Folders order by the latest message, as on web; one manual order cannot span folders.
+  const orderedActive =
+    grouping !== null
+      ? sortWorkingThreadsBySend(active)
+      : workingShelfEnabled
+        ? sortInboxThreadsByReturn(active, input.inboxReturnAt)
+        : applyPendingThreadOrder(sortThreadsForListV2(active), "active", pending);
   const orderedWorking = sortWorkingThreadsBySend(working);
   const orderedSnoozed = [...snoozed].sort(
     (left, right) =>
@@ -802,7 +910,7 @@ export function buildThreadListV2Items(input: {
       isLast: false,
     });
   }
-  for (const thread of orderedActive) {
+  const pushActive = (thread: EnvironmentThreadShell) =>
     items.push({
       thread,
       variant: "card",
@@ -811,6 +919,39 @@ export function buildThreadListV2Items(input: {
       wokeAt: resolveThreadListV2WokeAt(thread, { now }),
       isLast: false,
     });
+  const folderHeaders: ThreadListV2FolderHeader[] = [];
+  if (grouping === null) {
+    for (const thread of orderedActive) pushActive(thread);
+  } else {
+    const threadsByFolder = new Map<string, EnvironmentThreadShell[]>();
+    for (const thread of orderedActive) {
+      const key = grouping.folderKeyOf(thread);
+      const folderThreads = threadsByFolder.get(key);
+      if (folderThreads === undefined) threadsByFolder.set(key, [thread]);
+      else folderThreads.push(thread);
+    }
+    for (const folder of grouping.folders) {
+      const folderThreads = threadsByFolder.get(folder.key);
+      if (folderThreads === undefined) continue;
+      // A closed folder still lists the open thread.
+      const visible = folder.expanded
+        ? folderThreads
+        : folderThreads.filter(
+            (thread) => `${thread.environmentId}:${thread.id}` === selectedThreadKey,
+          );
+      const hidden = folder.expanded
+        ? []
+        : folderThreads.filter((thread) => !visible.includes(thread));
+      folderHeaders.push({
+        index: items.length,
+        folder,
+        hiddenCount: hidden.length,
+        hiddenNeedsAttention: hidden.some((thread) =>
+          THREAD_LIST_V2_ATTENTION_STATUSES.has(resolveThreadListV2Status(thread)),
+        ),
+      });
+      for (const thread of visible) pushActive(thread);
+    }
   }
   const workingShelfHeaderIndex = orderedWorking.length > 0 ? items.length : null;
   for (const thread of visibleWorking) {
@@ -851,6 +992,7 @@ export function buildThreadListV2Items(input: {
   }
   return {
     items,
+    folderHeaders,
     hiddenSettledCount: Math.max(0, settledTotal - pagedSettled.length),
     listedSettledThreads: listedSettled,
     workingCount: orderedWorking.length,

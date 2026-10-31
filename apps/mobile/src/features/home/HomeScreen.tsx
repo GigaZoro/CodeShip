@@ -57,6 +57,7 @@ import { threadListEnvironmentsAtom } from "../../state/server";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useQueuedThreadKeys } from "../../state/use-thread-outbox";
 import {
+  ThreadListV2FolderHeader,
   ThreadListV2PendingRow,
   ThreadListV2Row,
   ThreadListV2SettledShelfHeader,
@@ -71,13 +72,16 @@ import {
   threadListV2ListItemsAreEqual,
   THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
+  type ThreadListV2Folder,
   type ThreadListV2ListItem,
 } from "../threads/threadListV2";
 import { useThreadListV2ShelfPreferences } from "../threads/use-thread-list-v2-shelf-preferences";
 import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
 import {
   buildHomeProjectScopes,
+  buildHomeThreadListGrouping,
   findHomeProjectScope,
+  sortHomeProjectScopes,
   type HomeProjectSortOrder,
 } from "./homeThreadList";
 import { createSwipeRowActivation } from "./swipe-row-activation";
@@ -421,10 +425,42 @@ export function HomeScreen(props: HomeScreenProps) {
     snoozedShelfExpanded,
     workingShelfEnabled,
     workingShelfExpanded,
+    groupBy,
+    folderExpanded,
+    setGroupBy,
+    toggleFolder,
     toggleSettledShelf,
     toggleSnoozedShelf,
     toggleWorkingShelf,
   } = useThreadListV2ShelfPreferences();
+  const grouping = buildHomeThreadListGrouping({
+    groupBy,
+    folderExpanded,
+    projectScopes:
+      groupBy === "project"
+        ? sortHomeProjectScopes({
+            scopes: projectScopes,
+            threads: props.threads,
+            pendingTasks: props.pendingTasks,
+            projectSortOrder: props.projectSortOrder,
+          })
+        : projectScopes,
+    environments: props.environments
+      .filter(
+        (environment) =>
+          props.selectedEnvironmentId === null ||
+          environment.environmentId === props.selectedEnvironmentId,
+      )
+      .map((environment) => ({
+        environmentId: environment.environmentId,
+        label: environment.label,
+        offline:
+          environment.connectionState !== "connected" &&
+          environment.connectionState !== "connecting",
+      })),
+  });
+  const toggleThreadListFolder = (folder: ThreadListV2Folder) =>
+    toggleFolder(folder.key, folder.expandedByDefault);
   const now = useThreadListNow(props.threads);
   const listEnvironments = useAtomValue(threadListEnvironmentsAtom);
   const {
@@ -467,6 +503,7 @@ export function HomeScreen(props: HomeScreenProps) {
     snoozedShelfExpanded,
     settledShelfExpanded,
     selectedThreadKey,
+    grouping,
   });
   // Called as `props.onSelectThread(...)`, the compiler would cache this handler on the whole
   // props object, which is new on every render of Home's parent.
@@ -523,6 +560,27 @@ export function HomeScreen(props: HomeScreenProps) {
           onSwipeableWillOpen={handleSwipeableWillOpen}
           simultaneousSwipeGesture={homeScrollGesture}
           activationKey={item.key}
+        />
+      );
+    }
+    if (item.type === "v2-folder") {
+      return (
+        <ThreadListV2FolderHeader
+          folder={item.folder}
+          project={
+            item.folder.kind === "project"
+              ? (projectByKey.get(item.folder.projectKey) ?? null)
+              : null
+          }
+          machine={
+            item.folder.kind === "machine"
+              ? machineByEnvironmentId.get(item.folder.environmentId)
+              : undefined
+          }
+          hiddenCount={item.hiddenCount}
+          hiddenNeedsAttention={item.hiddenNeedsAttention}
+          pane={primaryColumn ? "sidebar" : "screen"}
+          onToggle={toggleThreadListFolder}
         />
       );
     }
@@ -609,7 +667,9 @@ export function HomeScreen(props: HomeScreenProps) {
         reorderSupported={
           item.item.pinned
             ? pinReorderEnvironmentIds.has(thread.environmentId)
-            : !workingShelfEnabled && activeReorderEnvironmentIds.has(thread.environmentId)
+            : !workingShelfEnabled &&
+              grouping === null &&
+              activeReorderEnvironmentIds.has(thread.environmentId)
         }
         canMoveUp={item.canMoveUp}
         canMoveDown={item.canMoveDown}
@@ -640,6 +700,7 @@ export function HomeScreen(props: HomeScreenProps) {
     selectedThreadKey,
     threadSearchMatchByKey,
     workingShelfEnabled,
+    groupBy,
   };
 
   const hasAnyThreads =
@@ -714,8 +775,10 @@ export function HomeScreen(props: HomeScreenProps) {
           projects={projectScopes.map((scope) => ({ key: scope.key, label: scope.title }))}
           selectedEnvironmentId={props.selectedEnvironmentId}
           selectedProjectKey={props.selectedProjectKey}
+          groupBy={groupBy}
           onEnvironmentChange={props.onEnvironmentChange}
           onProjectChange={props.onProjectChange}
+          onGroupByChange={setGroupBy}
         />
       ) : null}
     </>

@@ -72,6 +72,7 @@ import {
   resolveThreadListV2Status,
   resolveThreadListV2ProviderDrivers,
   resolveThreadListV2SwipeActions,
+  type ThreadListV2Folder,
   type ThreadListV2Status,
 } from "./threadListV2";
 import { QueuedMessageIcon } from "./queued-message-icon";
@@ -292,6 +293,83 @@ export const ThreadListV2SettledShelfHeader = memo(function ThreadListV2SettledS
   props: ThreadListV2ShelfHeaderProps,
 ) {
   return <ThreadListV2ShelfHeader {...props} kind="settled" />;
+});
+
+/** A folder of active threads. Closed, it counts what it hides and flags one that needs you. */
+export const ThreadListV2FolderHeader = memo(function ThreadListV2FolderHeader(props: {
+  readonly folder: ThreadListV2Folder;
+  readonly project: EnvironmentProject | null;
+  readonly machine: EnvironmentMachineKind | undefined;
+  readonly hiddenCount: number;
+  readonly hiddenNeedsAttention: boolean;
+  readonly pane?: "screen" | "sidebar";
+  readonly onToggle: (folder: ThreadListV2Folder) => void;
+}) {
+  const { folder } = props;
+  const sidebarPane = props.pane === "sidebar";
+  const mutedText = sidebarPane ? "text-drawer-foreground-muted" : "text-foreground-muted";
+  const mutedTint = sidebarPane ? "accent-drawer-foreground-muted" : "accent-foreground-muted";
+  const offline = folder.kind === "machine" && folder.offline;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={[
+        folder.label,
+        offline ? "offline" : null,
+        props.hiddenCount > 0
+          ? `${props.hiddenCount} hidden ${props.hiddenCount === 1 ? "thread" : "threads"}`
+          : null,
+        props.hiddenNeedsAttention ? "needs you" : null,
+      ]
+        .filter(Boolean)
+        .join(", ")}
+      accessibilityHint={`${folder.expanded ? "Collapses" : "Expands"} the folder.`}
+      accessibilityState={{ expanded: folder.expanded }}
+      className={cn("mt-3 min-h-11 flex-row items-center gap-2.5", sidebarPane ? "px-3" : "px-5")}
+      onPress={() => props.onToggle(folder)}
+      style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+    >
+      {folder.kind === "project" ? (
+        props.project ? (
+          <ProjectFavicon
+            environmentId={props.project.environmentId}
+            faviconPath={props.project.faviconPath}
+            projectIcon={props.project.projectIcon}
+            size={16}
+            projectTitle={props.project.title}
+            workspaceRoot={props.project.workspaceRoot}
+          />
+        ) : null
+      ) : (
+        <EnvironmentMachineSymbol
+          kind={props.machine ?? "server"}
+          size={14}
+          tintColorClassName={mutedTint}
+        />
+      )}
+      <Text
+        numberOfLines={1}
+        className={cn(
+          "min-w-0 flex-1 text-sm font-t3-medium",
+          sidebarPane ? "text-drawer-foreground" : "text-foreground",
+        )}
+      >
+        {folder.label}
+      </Text>
+      {offline ? <Text className={cn("text-xs", mutedText)}>Offline</Text> : null}
+      {props.hiddenNeedsAttention ? <View className="size-1.5 rounded-full bg-warning" /> : null}
+      {props.hiddenCount > 0 ? (
+        <Text className={cn("text-xs tabular-nums", mutedText)}>{props.hiddenCount}</Text>
+      ) : null}
+      <SymbolView
+        name="chevron.down"
+        size={10}
+        tintColorClassName={mutedTint}
+        type="monochrome"
+        style={{ transform: [{ rotate: folder.expanded ? "0deg" : "-90deg" }] }}
+      />
+    </Pressable>
+  );
 });
 
 export const ThreadListV2ShowMoreRow = memo(function ThreadListV2ShowMoreRow(props: {

@@ -19,6 +19,7 @@ import {
   MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   type ResponseStreamingMode,
   type QuitConfirmationMode,
+  availableSidebarGroupBy,
   resolveSidebarGroupBy,
   SidebarGroupBy,
   SidebarProjectSortOrder,
@@ -778,6 +779,7 @@ export function GeneralSettingsPanel() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const sidebarGroupBy = resolveSidebarGroupBy(settings);
+  const machineCount = useEnvironments().environments.length;
   const lastEnabledProjectGroupingMode = useRef<SidebarProjectGroupingMode>(
     readLastEnabledProjectGroupingMode(),
   );
@@ -822,7 +824,7 @@ export function GeneralSettingsPanel() {
                 <SelectValue>{SIDEBAR_GROUP_BY_LABELS[sidebarGroupBy]}</SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
-                {SidebarGroupBy.literals.map((groupBy) => (
+                {availableSidebarGroupBy(machineCount, sidebarGroupBy).map((groupBy) => (
                   <SelectItem hideIndicator key={groupBy} value={groupBy}>
                     {SIDEBAR_GROUP_BY_LABELS[groupBy]}
                   </SelectItem>

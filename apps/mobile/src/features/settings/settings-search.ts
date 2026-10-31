@@ -35,6 +35,9 @@ const SETTINGS_SEARCH_TERMS = {
   SettingsOrganization: [
     "project grouping",
     "group projects",
+    "group threads",
+    "folders",
+    "by machine",
     "organization",
     "sidebar",
     "working section",

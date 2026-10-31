@@ -14,6 +14,7 @@ import {
   type PullRequestMergeMethod,
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
+import { SidebarGroupBy } from "@t3tools/contracts/settings";
 import type { AndroidNavigationStyle } from "../lib/androidNavigationStyle";
 import type { ComposerEnterBehavior } from "../lib/composerEnterBehavior";
 import type { FollowUpBehavior } from "../lib/followUpBehavior";
@@ -80,6 +81,8 @@ const WorkspaceSelections = Schema.Struct({
 export type WorkspaceSelections = typeof WorkspaceSelections.Type;
 
 const isThreadListFilters = Schema.is(ThreadListFilters);
+const isSidebarGroupBy = Schema.is(SidebarGroupBy);
+const isFolderExpanded = Schema.is(Schema.Record(Schema.String, Schema.Boolean));
 const isWorkspaceSelections = Schema.is(WorkspaceSelections);
 const isPullRequestListPreferences = Schema.is(PullRequestListPreferences);
 const ThreadProject = Schema.Struct({
@@ -127,6 +130,10 @@ export interface Preferences {
   readonly threadListSettledShelfExpanded?: boolean;
   readonly threadListSnoozedShelfExpanded?: boolean;
   readonly threadListWorkingShelfExpanded?: boolean;
+  /** Device-local counterpart of the web `sidebarGroupBy` client setting. */
+  readonly threadListGroupBy?: SidebarGroupBy;
+  /** Folders the user opened or closed, by folder key; the rest keep their default. */
+  readonly threadListFolderExpanded?: Readonly<Record<string, boolean>>;
   readonly threadListFilters?: ThreadListFilters;
   readonly pullRequestListFilters?: PullRequestListPreferences;
   readonly workspaceSelections?: WorkspaceSelections;
@@ -204,6 +211,8 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     threadListSettledShelfExpanded?: boolean;
     threadListSnoozedShelfExpanded?: boolean;
     threadListWorkingShelfExpanded?: boolean;
+    threadListGroupBy?: SidebarGroupBy;
+    threadListFolderExpanded?: Readonly<Record<string, boolean>>;
     threadListFilters?: ThreadListFilters;
     pullRequestListFilters?: PullRequestListPreferences;
     workspaceSelections?: WorkspaceSelections;
@@ -351,6 +360,12 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (typeof parsed.threadListWorkingShelfExpanded === "boolean") {
     preferences.threadListWorkingShelfExpanded = parsed.threadListWorkingShelfExpanded;
+  }
+  if (isSidebarGroupBy(parsed.threadListGroupBy)) {
+    preferences.threadListGroupBy = parsed.threadListGroupBy;
+  }
+  if (isFolderExpanded(parsed.threadListFolderExpanded)) {
+    preferences.threadListFolderExpanded = parsed.threadListFolderExpanded;
   }
   if (isThreadListFilters(parsed.threadListFilters)) {
     preferences.threadListFilters = parsed.threadListFilters;

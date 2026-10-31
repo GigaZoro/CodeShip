@@ -7,6 +7,7 @@ import { isPreviewAvailableFor } from "../browser/previewRuntime";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { dispatchPreviewAction, type PreviewAction } from "../components/preview/previewActionBus";
+import { newThreadAsksForProject } from "../components/Sidebar.logic";
 import { isAppModalPage } from "../components/sidebar/mainAppLocation";
 import { createNewThreadHandler, resolveDefaultProjectRef } from "../hooks/useHandleNewThread";
 import { createScratchProjectActions } from "../hooks/useScratchProject";
@@ -118,9 +119,12 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
         void scratch.startScratchThread(environmentId);
       },
       "chat.new": (event) => {
-        // Sidebar folders already show the context, so a grouped sidebar starts in
-        // the current project like the legacy sidebar did.
-        if (resolveSidebarGroupBy(getClientSettings()) === "none" && readProjectGroupCount() > 1) {
+        if (
+          newThreadAsksForProject(
+            resolveSidebarGroupBy(getClientSettings()),
+            readProjectGroupCount(),
+          )
+        ) {
           claim(event);
           openCommandPalette({ open: "new-thread-in" });
           return;

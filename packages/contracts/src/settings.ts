@@ -541,6 +541,15 @@ export const resolveSidebarGroupBy = (
   settings.sidebarGroupBy ??
   (settings.boringSidebarEnabled || settings.legacySidebarEnabled ? "project" : "none");
 
+/** One machine would make one folder, so "machine" is offered from two, or while chosen. */
+export const availableSidebarGroupBy = (
+  machineCount: number,
+  current: SidebarGroupBy,
+): ReadonlyArray<SidebarGroupBy> =>
+  SidebarGroupBy.literals.filter(
+    (groupBy) => groupBy !== "machine" || machineCount > 1 || current === "machine",
+  );
+
 const UsageModelTokenPrice = Schema.Number.check(
   Schema.isFinite(),
   Schema.isGreaterThanOrEqualTo(0),

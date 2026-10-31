@@ -16,7 +16,11 @@ import {
 import { foldSearchQuery, rankSearchItems, scoreThreadSearch } from "@t3tools/shared/paletteSearch";
 import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import type { ContextMenuItem, EnvironmentId, ThreadId } from "@t3tools/contracts";
-import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
+import type {
+  SidebarGroupBy,
+  SidebarProjectSortOrder,
+  SidebarThreadSortOrder,
+} from "@t3tools/contracts/settings";
 import type { AsyncResult } from "effect/reactivity";
 import {
   effectiveSnoozed,
@@ -753,11 +757,12 @@ export function isSidebarNestedLinkClick(target: EventTarget | null): boolean {
   return nodeClosest(parent, "a[href]") !== null;
 }
 
-export function shouldCreateNewThreadInCurrentProject(
-  shiftKey: boolean,
+/** Project folders already show where a new thread lands; any other list asks which project. */
+export function newThreadAsksForProject(
+  groupBy: SidebarGroupBy,
   projectGroupCount: number,
 ): boolean {
-  return shiftKey || projectGroupCount <= 1;
+  return groupBy !== "project" && projectGroupCount > 1;
 }
 
 export function orderItemsByPreferredIds<TItem, TId>(input: {

@@ -30,6 +30,7 @@ import { useAtomValueWhileVisible, useHomeRouteVisible } from "./home-route-visi
 import { buildHomeProjectScopes } from "./homeThreadList";
 import { usePendingTaskListActions } from "./usePendingTaskListActions";
 import { useThreadListActions } from "./useThreadListActions";
+import { useThreadListV2ShelfPreferences } from "../threads/use-thread-list-v2-shelf-preferences";
 import { getConnectionAwareBrandHeaderOptions } from "./WorkspaceConnectionTitle";
 import { useWorkspaceTabs } from "../workspace/WorkspaceTabsContext";
 import { openSettings } from "../settings/settings-navigation";
@@ -101,6 +102,7 @@ export function HomeRouteScreen() {
     unsettleThread,
   } = useThreadListActions();
   const pendingTasks = usePendingNewTasks();
+  const { groupBy, setGroupBy } = useThreadListV2ShelfPreferences();
   const { openPendingTask, confirmDeletePendingTask } =
     usePendingTaskListActions(selectThreadRoute);
   const connectionStateByEnvironmentId = new Map(
@@ -221,6 +223,8 @@ export function HomeRouteScreen() {
           searchQuery={searchQuery}
           selectedEnvironmentId={selectedEnvironmentId}
           selectedProjectKey={selectedProjectKey}
+          groupBy={groupBy}
+          onGroupByChange={setGroupBy}
           onEnvironmentChange={setSelectedEnvironmentId}
           onProjectChange={setSelectedProjectKey}
           onOpenEnvironments={() => openSettings(navigation, "SettingsEnvironments")}

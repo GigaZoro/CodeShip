@@ -15,6 +15,7 @@ import {
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
   resolveSidebarGroupBy,
+  availableSidebarGroupBy,
   ServerSettings,
   ServerSettingsPatch,
   withIdleCompaction,
@@ -271,6 +272,17 @@ describe("resolveSidebarGroupBy", () => {
   ] as const)("reads %j as %s", (stored, groupBy) => {
     expect(resolveSidebarGroupBy(decodeClientSettings(stored))).toBe(groupBy);
   });
+
+  it.each([
+    [1, "none", ["none", "project"]],
+    [1, "machine", ["none", "project", "machine"]],
+    [2, "none", ["none", "project", "machine"]],
+  ] as const)(
+    "offers groupings for %i machine(s) while %s is chosen",
+    (count, current, offered) => {
+      expect(availableSidebarGroupBy(count, current)).toEqual(offered);
+    },
+  );
 });
 
 describe("provider enabled defaults", () => {

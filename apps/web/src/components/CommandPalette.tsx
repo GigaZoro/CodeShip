@@ -246,6 +246,8 @@ import { threadRecentUse } from "@t3tools/shared/paletteSearch";
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 const ADD_PROJECT_ENTRY_GROUP = "add-project";
 const NEW_THREAD_IN_GROUP = "projects";
+// Its own view, so going Back and choosing "New thread in..." lists every machine again.
+const NEW_THREAD_ON_MACHINE_GROUP_PREFIX = "projects-on:";
 
 /** The submenu an open intent starts in; its groups resolve while rendering. */
 function openIntentView(intent: CommandPaletteOpenIntent | null): CommandPaletteView | null {
@@ -258,7 +260,16 @@ function openIntentView(intent: CommandPaletteOpenIntent | null): CommandPalette
     case "new-thread-in":
       return {
         addonIcon: <SquarePenIcon className={ADDON_ICON_CLASS} />,
-        groups: [{ value: NEW_THREAD_IN_GROUP, label: "Projects", items: [] }],
+        groups: [
+          {
+            value:
+              intent.environmentId === undefined
+                ? NEW_THREAD_IN_GROUP
+                : `${NEW_THREAD_ON_MACHINE_GROUP_PREFIX}${intent.environmentId}`,
+            label: "Projects",
+            items: [],
+          },
+        ],
       };
     case "change-theme":
       return {
@@ -389,6 +400,9 @@ function OpenCommandPaletteDialog(props: {
   );
   const linkedThreadSearch = initialSearch.linkedThreadSearch;
   const [opensOnRecentThreads] = useState(() => props.openIntent?.kind === "recent-threads");
+  const [newThreadMachineId] = useState(() =>
+    props.openIntent?.kind === "new-thread-in" ? (props.openIntent.environmentId ?? null) : null,
+  );
   const [searchState, dispatchSearch] = useReducer(reduceCommandPaletteSearchState, null, () => {
     const view = props.initialContext ? null : openIntentView(props.openIntent);
     return view
@@ -807,6 +821,54 @@ function OpenCommandPaletteDialog(props: {
       },
       ...projectItems.slice(noProjectIndex),
     ];
+  })();
+
+  // Every checkout on the machine, since a group may hold several of them there.
+  const machineThreadGroup = (() => {
+    if (newThreadMachineId === null) return null;
+    const entries = projectGroups.flatMap((group) =>
+      group.memberProjects
+        .filter(
+          (member) =>
+            member.environmentId === newThreadMachineId &&
+            !isScratchProject(member, scratchWorkspaceRootFor(newThreadMachineId)),
+        )
+        .map((member) => ({ group, project: { ...member, displayName: group.displayName } })),
+    );
+    const projectItems = enumerateCommandPaletteItems(
+      buildNewThreadInProjectItems({
+        projects: entries.map((entry) => entry.project),
+        projectGroupByTargetKey: new Map(
+          entries.map((entry) => [
+            `${entry.project.environmentId}:${entry.project.id}`,
+            entry.group,
+          ]),
+        ),
+        locationByEnvironmentId: projectEnvironmentLocationById,
+        runProject: async (project) => {
+          await handleNewThread(scopeProjectRef(project.environmentId, project.id));
+        },
+      }),
+    );
+    const machineLabel = environmentLabelById.get(newThreadMachineId);
+    return {
+      value: `${NEW_THREAD_ON_MACHINE_GROUP_PREFIX}${newThreadMachineId}`,
+      label: machineLabel ? `Projects on ${machineLabel}` : "Projects",
+      items:
+        scratchWorkspaceRootFor(newThreadMachineId) === null
+          ? projectItems
+          : [
+              ...projectItems,
+              {
+                kind: "action" as const,
+                value: "new-thread-in:no-project",
+                searchTerms: ["no project", "without project", "none"],
+                title: "No project",
+                icon: <MessageSquareDashedIcon className={ITEM_ICON_CLASS} />,
+                run: () => startScratchThread(newThreadMachineId),
+              },
+            ],
+    };
   })();
 
   const {
@@ -1612,14 +1674,17 @@ function OpenCommandPaletteDialog(props: {
         ? addProjectEntryGroups()
         : currentView?.groups[0]?.value === NEW_THREAD_IN_GROUP
           ? [{ value: NEW_THREAD_IN_GROUP, label: "Projects", items: projectThreadItems }]
-          : currentView?.groups[0]?.value === "themes"
-            ? changeThemeItem.groups
-            : currentView?.groups[0]?.value === "appearance"
-              ? changeAppearanceItem.groups
-              : (currentView?.groups ??
-                (opensOnRecentThreads && deferredQuery === "" && recentThreadItems.length > 0
-                  ? rootGroups.filter((group) => group.value === RECENT_THREADS_GROUP)
-                  : rootGroups));
+          : machineThreadGroup !== null &&
+              currentView?.groups[0]?.value === machineThreadGroup.value
+            ? [machineThreadGroup]
+            : currentView?.groups[0]?.value === "themes"
+              ? changeThemeItem.groups
+              : currentView?.groups[0]?.value === "appearance"
+                ? changeAppearanceItem.groups
+                : (currentView?.groups ??
+                  (opensOnRecentThreads && deferredQuery === "" && recentThreadItems.length > 0
+                    ? rootGroups.filter((group) => group.value === RECENT_THREADS_GROUP)
+                    : rootGroups));
 
   const isLinkedThreadSearch =
     linkedThreadSearch?.linkedThreads !== undefined && deferredQuery === linkedThreadSearch.query;

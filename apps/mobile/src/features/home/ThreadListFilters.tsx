@@ -1,7 +1,9 @@
+import { availableSidebarGroupBy } from "@t3tools/contracts/settings";
 import { Pressable, ScrollView } from "react-native";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { ListFilterMenu } from "../workspace/ListFilterMenu";
 import type { HomeHeaderProps } from "./HomeHeader.types";
+import { THREAD_LIST_GROUP_BY_LABELS } from "./home-list-filter-menu";
 
 export function ThreadListFilters(
   props: Pick<
@@ -12,6 +14,8 @@ export function ThreadListFilters(
     | "selectedProjectKey"
     | "onEnvironmentChange"
     | "onProjectChange"
+    | "groupBy"
+    | "onGroupByChange"
   > & {
     /** List padding the scroller bleeds through so pills start where row content does. */
     readonly gutter: number;
@@ -83,6 +87,28 @@ export function ThreadListFilters(
             );
             if (project) props.onProjectChange(project.key);
           }
+        }}
+      />
+      <ListFilterMenu
+        label={
+          props.groupBy === "none"
+            ? "Group"
+            : `By ${THREAD_LIST_GROUP_BY_LABELS[props.groupBy].toLowerCase()}`
+        }
+        accessibilityLabel="Group threads"
+        active={props.groupBy !== "none"}
+        actions={availableSidebarGroupBy(props.environments.length, props.groupBy).map(
+          (groupBy) => ({
+            id: groupBy,
+            title: THREAD_LIST_GROUP_BY_LABELS[groupBy],
+            state: groupBy === props.groupBy ? ("on" as const) : ("off" as const),
+          }),
+        )}
+        onSelect={(id) => {
+          const groupBy = availableSidebarGroupBy(props.environments.length, props.groupBy).find(
+            (candidate) => candidate === id,
+          );
+          if (groupBy) props.onGroupByChange(groupBy);
         }}
       />
       {props.selectedEnvironmentId !== null || props.selectedProjectKey !== null ? (

@@ -1,4 +1,35 @@
 import type { EnvironmentId } from "@t3tools/contracts";
+import { availableSidebarGroupBy, SidebarGroupBy } from "@t3tools/contracts/settings";
+import type { MenuAction } from "@react-native-menu/menu";
+import * as Schema from "effect/Schema";
+
+export const THREAD_LIST_GROUP_BY_LABELS: Record<SidebarGroupBy, string> = {
+  none: "None",
+  project: "Project",
+  machine: "Machine",
+};
+
+const GROUP_BY_EVENT_PREFIX = "group-by:";
+const isSidebarGroupBy = Schema.is(SidebarGroupBy);
+
+/** The "Group by" submenu of the thread list's native filter menus. */
+export function buildGroupByMenuAction(groupBy: SidebarGroupBy, machineCount: number) {
+  return {
+    id: "group-by",
+    title: "Group by",
+    subactions: availableSidebarGroupBy(machineCount, groupBy).map((value) => ({
+      id: `${GROUP_BY_EVENT_PREFIX}${value}`,
+      title: THREAD_LIST_GROUP_BY_LABELS[value],
+      state: value === groupBy ? ("on" as const) : ("off" as const),
+    })),
+  } satisfies MenuAction;
+}
+
+export function parseGroupByMenuEvent(event: string): SidebarGroupBy | null {
+  if (!event.startsWith(GROUP_BY_EVENT_PREFIX)) return null;
+  const value = event.slice(GROUP_BY_EVENT_PREFIX.length);
+  return isSidebarGroupBy(value) ? value : null;
+}
 
 export interface HomeListFilterMenuEnvironment {
   readonly environmentId: EnvironmentId;
@@ -34,8 +65,10 @@ export function buildHomeListFilterMenu(props: {
   readonly projects: ReadonlyArray<HomeListFilterMenuProject>;
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
+  readonly groupBy: SidebarGroupBy;
   readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
   readonly onProjectChange: (projectKey: string | null) => void;
+  readonly onGroupByChange: (groupBy: SidebarGroupBy) => void;
 }): HomeListFilterMenu {
   const items: Array<HomeListFilterMenuAction | HomeListFilterMenuSubmenu> = [];
 
@@ -83,6 +116,17 @@ export function buildHomeListFilterMenu(props: {
       ],
     });
   }
+
+  items.push({
+    type: "submenu",
+    title: "Group by",
+    items: availableSidebarGroupBy(props.environments.length, props.groupBy).map((groupBy) => ({
+      type: "action" as const,
+      title: THREAD_LIST_GROUP_BY_LABELS[groupBy],
+      state: props.groupBy === groupBy ? ("on" as const) : ("off" as const),
+      onPress: () => props.onGroupByChange(groupBy),
+    })),
+  });
 
   return {
     title: "Thread list options",

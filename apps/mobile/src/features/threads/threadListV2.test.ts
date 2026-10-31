@@ -41,6 +41,8 @@ import {
   sortThreadsForListV2,
   threadListV2ListItemsAreEqual,
   threadHasUnseenCompletion,
+  type ThreadListV2Folder,
+  type ThreadListV2Grouping,
   type ThreadListV2ListItem,
 } from "./threadListV2";
 
@@ -723,6 +725,138 @@ function makePendingTask(id: string): PendingNewTask {
     creation,
   };
 }
+
+describe("thread list folders", () => {
+  const projectA = ProjectId.make("project-a");
+  const projectB = ProjectId.make("project-b");
+  const folder = (key: string, expanded: boolean): ThreadListV2Folder => ({
+    kind: "project",
+    key,
+    label: key,
+    projectKey: `${environmentId}:${key}`,
+    expandedByDefault: true,
+    expanded,
+  });
+  const grouping = (folders: ReadonlyArray<ThreadListV2Folder>): ThreadListV2Grouping => ({
+    folders,
+    folderKeyOf: (thread) => thread.projectId,
+  });
+
+  it("files active threads by their latest message and keeps pinned and settled shared", () => {
+    const layout = buildThreadListV2Items({
+      threads: [
+        makeThread({
+          id: ThreadId.make("pinned"),
+          title: "Pinned",
+          projectId: projectA,
+          pinnedAt: NOW,
+        }),
+        makeThread({
+          id: ThreadId.make("a-old"),
+          title: "A old",
+          projectId: projectA,
+          createdAt: "2026-06-01T01:00:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("b"),
+          title: "B",
+          projectId: projectB,
+          createdAt: "2026-06-01T02:00:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("a-new"),
+          title: "A new",
+          projectId: projectA,
+          createdAt: "2026-06-01T03:00:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("settled"),
+          title: "Settled",
+          projectId: projectA,
+          settledOverride: "settled",
+          settledAt: NOW,
+        }),
+      ],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      grouping: grouping([folder(projectB, true), folder(projectA, true)]),
+    });
+
+    expect(layout.items.map((item) => item.thread.id)).toEqual([
+      "pinned",
+      "b",
+      "a-new",
+      "a-old",
+      "settled",
+    ]);
+    expect(layout.folderHeaders.map((header) => [header.folder.key, header.index])).toEqual([
+      [projectB, 1],
+      [projectA, 2],
+    ]);
+  });
+
+  it("closes a folder down to the open thread and flags a hidden one that needs you", () => {
+    const layout = buildThreadListV2Items({
+      threads: [
+        makeThread({ id: ThreadId.make("open"), title: "Open", projectId: projectA }),
+        makeThread({
+          id: ThreadId.make("approval"),
+          title: "Approval",
+          projectId: projectA,
+          hasPendingApprovals: true,
+        }),
+        makeThread({ id: ThreadId.make("quiet"), title: "Quiet", projectId: projectA }),
+      ],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      selectedThreadKey: `${environmentId}:open`,
+      grouping: grouping([folder(projectA, false)]),
+    });
+
+    expect(layout.items.map((item) => item.thread.id)).toEqual(["open"]);
+    expect(layout.folderHeaders).toMatchObject([{ hiddenCount: 2, hiddenNeedsAttention: true }]);
+  });
+
+  it("lists folder headers among active rows, a closed one before the Working shelf", () => {
+    const working = makeThread({
+      id: ThreadId.make("working"),
+      title: "Working",
+      projectId: projectA,
+    });
+    const layout = buildThreadListV2Items({
+      threads: [
+        makeThread({ id: ThreadId.make("a"), title: "A", projectId: projectA }),
+        makeThread({ id: ThreadId.make("b"), title: "B", projectId: projectB }),
+        working,
+      ],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      workingShelfEnabled: true,
+      isWorking: (thread) => thread === working,
+      grouping: grouping([folder(projectA, true), folder(projectB, false)]),
+    });
+    const items = buildThreadListV2ListItems({
+      items: layout.items,
+      pendingTasks: [],
+      folderHeaders: layout.folderHeaders,
+      workingCount: layout.workingCount,
+      workingShelfHeaderIndex: layout.workingShelfHeaderIndex,
+    });
+
+    expect(
+      items.map((item) =>
+        item.type === "v2-folder"
+          ? `folder:${item.folder.key}`
+          : item.type === "v2-thread"
+            ? item.item.thread.id
+            : item.type,
+      ),
+    ).toEqual([`folder:${projectA}`, "a", `folder:${projectB}`, "v2-working-shelf"]);
+  });
+});
 
 describe("buildThreadListV2ListItems", () => {
   const layout = buildThreadListV2Items({

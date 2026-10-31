@@ -10,6 +10,7 @@ import {
   buildThreadListV2ListItems,
   getThreadListV2OrderedSection,
   threadListInboxReturns,
+  type ThreadListV2Grouping,
 } from "./threadListV2";
 import { computeThreadMoveAvailability } from "./threadOrder";
 
@@ -54,8 +55,9 @@ export function useThreadListV2(input: {
   readonly snoozedShelfExpanded: boolean;
   readonly settledShelfExpanded: boolean;
   readonly selectedThreadKey: string | null;
+  readonly grouping: ThreadListV2Grouping | null;
 }) {
-  const { threads, workingShelfEnabled } = input;
+  const { threads, workingShelfEnabled, grouping } = input;
   // A thread can stop working when the threads change, or when its exit grace expires.
   const inboxVersion = useSyncExternalStore(
     threadListInboxReturns.subscribe,
@@ -87,7 +89,7 @@ export function useThreadListV2(input: {
     });
   const moveAvailability = new Map([
     ...sectionAvailability("pinned"),
-    ...(workingShelfEnabled ? [] : sectionAvailability("active")),
+    ...(workingShelfEnabled || grouping !== null ? [] : sectionAvailability("active")),
   ]);
   // Older settled threads load in pages; the shelf lists them only as far as they are loaded.
   const scopes = olderSettledScopes(input);
@@ -116,6 +118,7 @@ export function useThreadListV2(input: {
     snoozedShelfExpanded: input.snoozedShelfExpanded,
     settledShelfExpanded: input.settledShelfExpanded,
     selectedThreadKey: input.selectedThreadKey,
+    grouping,
     isListedSettled: olderSettledShelf.isListed,
     unloadedSettledCount: olderSettledShelf.unloadedCount(
       threads.filter(
@@ -148,6 +151,7 @@ export function useThreadListV2(input: {
   const items = buildThreadListV2ListItems({
     items: layout.items,
     pendingTasks,
+    folderHeaders: layout.folderHeaders,
     workingCount: layout.workingCount,
     workingShelfExpanded: input.workingShelfExpanded,
     workingShelfHeaderIndex: layout.workingShelfHeaderIndex,
