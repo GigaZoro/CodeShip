@@ -5,9 +5,12 @@ name: Release (fork)
 # signing credentials. This builds macOS arm64 and Windows x64 on GitHub-hosted
 # runners through the same release-desktop.yml, and publishes a GitHub Release
 # with the updater manifests, so installed apps offer it through their update
-# button. See "Releasing from a fork" in docs/operations/release.md.
+# button. Every push to main releases; a manual run can pick the version. See
+# "Releasing from a fork" in docs/operations/release.md.
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:
@@ -15,6 +18,8 @@ on:
         required: false
         type: string
 
+# A newer pending run replaces an older pending one, so a burst of pushes
+# releases only the latest main, and runs never overlap on the version number.
 concurrency:
   group: release-fork
   cancel-in-progress: false

@@ -62,13 +62,13 @@ the version.
 ## Releasing from a fork
 
 `release.yml` only runs in `pingdotgg/t3code`. A fork ships its own installers with
-`.github/workflows/release-fork.yml`, run by hand from the default branch (**Actions → Release
-(fork) → Run workflow**). It packages macOS arm64 (DMG) and Windows x64 (NSIS) through the same
-`release-desktop.yml` on GitHub-hosted runners, then publishes a GitHub Release marked latest, with
-the updater manifests. A Linux x64 job also runs, because the Windows app embeds its CLI archive as
-the WSL runtime, but its installers are not published. Desktop apps built by that workflow check
-the fork's releases, so the update button offers each new release. Builds use the public T3
-Connect identifiers in `.env.example`.
+`.github/workflows/release-fork.yml` on every push to `main`, or by hand from `main` to set a
+version (**Actions → Release (fork) → Run workflow**). It packages macOS arm64 (DMG) and Windows
+x64 (NSIS) through the same `release-desktop.yml` on GitHub-hosted runners, then publishes a GitHub
+Release marked latest, with the updater manifests. A Linux x64 job also runs, because the Windows
+app embeds its CLI archive as the WSL runtime, but its installers are not published. Desktop apps
+built by that workflow check the fork's releases, so the update button offers each new release.
+Builds use the public T3 Connect identifiers in `.env.example`.
 
 - **One-time setup.** Forks start with Actions disabled; enable them in the fork's Actions tab.
   Most other workflows ask for upstream's Blacksmith runners, which a fork does not have, so their
