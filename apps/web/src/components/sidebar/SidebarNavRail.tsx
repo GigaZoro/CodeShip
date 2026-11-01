@@ -26,6 +26,7 @@ import {
   useLimitPools,
 } from "../usage/UsageLimitsGlance";
 import { useNavigateToMainApp } from "./mainAppLocation";
+import { SidebarUpdatePill } from "./SidebarUpdatePill";
 
 type SidebarNavDestination = "threads" | "pull-requests" | "scheduled-tasks" | "usage" | "settings";
 
@@ -163,6 +164,7 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
         />
       </SidebarMenu>
       <SidebarMenu className="items-center">
+        <SidebarUpdatePill />
         <SidebarNavRailUsageItem
           isActive={active === "usage"}
           onClick={go(() => navigate({ to: "/usage" }))}

@@ -14,7 +14,7 @@ import { CodeShipBrand } from "../CodeShipBrand";
 import { SidebarFooter, SidebarMenu, SidebarTrigger } from "../ui/sidebar";
 import { SidebarThreadUndoNotice } from "./SidebarThreadUndoNotice";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
-import { SidebarUpdateArchitectureWarning, SidebarUpdatePill } from "./SidebarUpdatePill";
+import { SidebarUpdateArchitectureWarning, SidebarUpdateRunCapsule } from "./SidebarUpdatePill";
 import { observeResize } from "~/lib/observeResize";
 
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
@@ -112,13 +112,13 @@ function SidebarBrandMark({ onBackdrop }: { onBackdrop: boolean }) {
 
 export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   return (
-    <SidebarFooter>
+    // Takes no space while it has nothing to show, so the thread list runs to the bottom.
+    <SidebarFooter className="not-has-[>:not(:empty)]:hidden">
       <SidebarProviderUpdatePill />
       <SidebarUpdateArchitectureWarning />
-      {/* Keeps its height while empty, so an undo notice or update pill never moves the list. */}
-      <SidebarMenu className="min-h-8 flex-row items-center">
+      <SidebarMenu className="flex-row items-center empty:hidden">
         <SidebarThreadUndoNotice />
-        <SidebarUpdatePill />
+        <SidebarUpdateRunCapsule />
       </SidebarMenu>
     </SidebarFooter>
   );

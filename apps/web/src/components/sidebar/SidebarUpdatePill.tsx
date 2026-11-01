@@ -319,40 +319,8 @@ function SidebarUpdateControl() {
     />
   );
 
-  if (run !== null) {
-    const local: UpdateRunLocalState =
-      run.localVersion === null
-        ? null
-        : state?.status === "downloading"
-          ? { status: "downloading", percent: state.downloadPercent }
-          : { status: "waiting" };
-    return (
-      <SidebarMenuItem className="ml-auto flex min-w-0 flex-1">
-        <SidebarUpdateCapsule
-          run={run}
-          local={local}
-          icon={statusIcon}
-          {...(run.localVersion === null && action === "install" && window.desktopBridge
-            ? {
-                onRestart: async () => {
-                  saveUpdateEverythingResult({
-                    localVersion: localUpdateVersion,
-                    updatedServers: 0,
-                    updatedProviders: 0,
-                    failures: [],
-                    restarting: [],
-                  });
-                  if (!(await installLocalUpdate(window.desktopBridge!))) {
-                    clearSavedUpdateEverythingResult();
-                  }
-                },
-              }
-            : {})}
-        />
-        {confirmDialog}
-      </SidebarMenuItem>
-    );
-  }
+  // A run shows its progress in the sidebar footer, where the text fits.
+  if (run !== null) return confirmDialog;
 
   const updateButton = (
     <button
@@ -392,7 +360,7 @@ function SidebarUpdateControl() {
   );
 
   return (
-    <SidebarMenuItem className="ml-auto shrink-0">
+    <SidebarMenuItem>
       <Popover
         handle={releaseNotesPopoverHandle}
         open={releaseNotesOpen && showReleaseNotesPopover}
@@ -427,14 +395,13 @@ function SidebarUpdateControl() {
             }
           />
           {!showReleaseNotesPopover ? (
-            <TooltipPopup align="center" side="top" variant="glass">
+            <TooltipPopup side="right" variant="glass">
               <span className="whitespace-pre-line">{tooltip}</span>
             </TooltipPopup>
           ) : null}
         </Tooltip>
         {showReleaseNotesPopover && state ? (
           <PopoverPopup
-            align="center"
             aria-label="Update release notes"
             initialFocus={false}
             onKeyDownCapture={(event) => {
@@ -446,7 +413,7 @@ function SidebarUpdateControl() {
               }
             }}
             ref={releaseNotesPopupRef}
-            side="top"
+            side="right"
             tooltipStyle
           >
             <SidebarUpdateReleaseNotes
@@ -458,6 +425,61 @@ function SidebarUpdateControl() {
         ) : null}
       </Popover>
       {confirmDialog}
+    </SidebarMenuItem>
+  );
+}
+
+/** An Update everything run, in the sidebar footer so its progress text has room. */
+export function SidebarUpdateRunCapsule() {
+  const state = useDesktopUpdateState();
+  const run = useUpdateEverythingRun();
+  if (run === null) return null;
+
+  const action = state ? resolveDesktopUpdateButtonAction(state) : "none";
+  const pendingAction = resolveDesktopUpdatePendingAction(state);
+  const localUpdateVersion =
+    state && pendingAction !== "none" ? getDesktopUpdateDownloadedVersion(state) : null;
+  const { iconStatus } = resolveSidebarUpdatePresentation({
+    action: pendingAction,
+    showsEverything: false,
+    run,
+    isDownloading: state?.status === "downloading",
+  });
+  const local: UpdateRunLocalState =
+    run.localVersion === null
+      ? null
+      : state?.status === "downloading"
+        ? { status: "downloading", percent: state.downloadPercent }
+        : { status: "waiting" };
+
+  return (
+    <SidebarMenuItem className="ml-auto flex min-w-0 flex-1">
+      <SidebarUpdateCapsule
+        run={run}
+        local={local}
+        icon={
+          <DesktopUpdateStatusIcon
+            downloadPercent={state?.downloadPercent ?? null}
+            status={iconStatus}
+          />
+        }
+        {...(run.localVersion === null && action === "install" && window.desktopBridge
+          ? {
+              onRestart: async () => {
+                saveUpdateEverythingResult({
+                  localVersion: localUpdateVersion,
+                  updatedServers: 0,
+                  updatedProviders: 0,
+                  failures: [],
+                  restarting: [],
+                });
+                if (!(await installLocalUpdate(window.desktopBridge!))) {
+                  clearSavedUpdateEverythingResult();
+                }
+              },
+            }
+          : {})}
+      />
     </SidebarMenuItem>
   );
 }

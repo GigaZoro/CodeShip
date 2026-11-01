@@ -11,11 +11,11 @@ import { primaryServerKeybindingsAtom } from "../../state/server";
 import { InlineButton } from "../ui/button";
 import { SidebarMenuItem } from "../ui/sidebar";
 
-/** Fills the free space in the sidebar footer's utility row, so it never moves or covers the list. */
+/** Sits in the sidebar footer below the list's scroll area, so it never covers a thread. */
 export function SidebarThreadUndoNotice() {
   const notice = useThreadUndoNotice((state) => state.notice);
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
-  // Short enough to fit beside the update pill; screen readers hear the full summary.
+  // Short enough to fit beside an update run; screen readers hear the full summary.
   const summary = notice
     ? notice.count === 1
       ? notice.action
