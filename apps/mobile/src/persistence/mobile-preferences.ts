@@ -14,7 +14,6 @@ import {
   type PullRequestMergeMethod,
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
-import { SidebarGroupBy } from "@t3tools/contracts/settings";
 import type { AndroidNavigationStyle } from "../lib/androidNavigationStyle";
 import type { ComposerEnterBehavior } from "../lib/composerEnterBehavior";
 import type { FollowUpBehavior } from "../lib/followUpBehavior";
@@ -81,7 +80,6 @@ const WorkspaceSelections = Schema.Struct({
 export type WorkspaceSelections = typeof WorkspaceSelections.Type;
 
 const isThreadListFilters = Schema.is(ThreadListFilters);
-const isSidebarGroupBy = Schema.is(SidebarGroupBy);
 const isFolderExpanded = Schema.is(Schema.Record(Schema.String, Schema.Boolean));
 const isWorkspaceSelections = Schema.is(WorkspaceSelections);
 const isPullRequestListPreferences = Schema.is(PullRequestListPreferences);
@@ -130,8 +128,9 @@ export interface Preferences {
   readonly threadListSettledShelfExpanded?: boolean;
   readonly threadListSnoozedShelfExpanded?: boolean;
   readonly threadListWorkingShelfExpanded?: boolean;
-  /** Device-local counterpart of the web `sidebarGroupBy` client setting. */
-  readonly threadListGroupBy?: SidebarGroupBy;
+  /** Device-local counterparts of the web `sidebarGroupByProject` and `sidebarGroupByMachine`. */
+  readonly threadListGroupByProject?: boolean;
+  readonly threadListGroupByMachine?: boolean;
   /** Folders the user opened or closed, by folder key; the rest keep their default. */
   readonly threadListFolderExpanded?: Readonly<Record<string, boolean>>;
   readonly threadListFilters?: ThreadListFilters;
@@ -211,7 +210,8 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     threadListSettledShelfExpanded?: boolean;
     threadListSnoozedShelfExpanded?: boolean;
     threadListWorkingShelfExpanded?: boolean;
-    threadListGroupBy?: SidebarGroupBy;
+    threadListGroupByProject?: boolean;
+    threadListGroupByMachine?: boolean;
     threadListFolderExpanded?: Readonly<Record<string, boolean>>;
     threadListFilters?: ThreadListFilters;
     pullRequestListFilters?: PullRequestListPreferences;
@@ -361,8 +361,17 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   if (typeof parsed.threadListWorkingShelfExpanded === "boolean") {
     preferences.threadListWorkingShelfExpanded = parsed.threadListWorkingShelfExpanded;
   }
-  if (isSidebarGroupBy(parsed.threadListGroupBy)) {
-    preferences.threadListGroupBy = parsed.threadListGroupBy;
+  // `threadListGroupBy` held one grouping before project and machine folders could nest.
+  const legacyGroupBy = "threadListGroupBy" in parsed ? parsed.threadListGroupBy : undefined;
+  if (typeof parsed.threadListGroupByProject === "boolean") {
+    preferences.threadListGroupByProject = parsed.threadListGroupByProject;
+  } else if (legacyGroupBy === "project") {
+    preferences.threadListGroupByProject = true;
+  }
+  if (typeof parsed.threadListGroupByMachine === "boolean") {
+    preferences.threadListGroupByMachine = parsed.threadListGroupByMachine;
+  } else if (legacyGroupBy === "machine") {
+    preferences.threadListGroupByMachine = true;
   }
   if (isFolderExpanded(parsed.threadListFolderExpanded)) {
     preferences.threadListFolderExpanded = parsed.threadListFolderExpanded;

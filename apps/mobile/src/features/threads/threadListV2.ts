@@ -322,6 +322,8 @@ export type ThreadListV2Folder =
       readonly kind: "project";
       /** The scoped key of the project whose favicon the folder shows. */
       readonly projectKey: string;
+      /** Sits inside a machine folder. */
+      readonly nested: boolean;
     })
   | (ThreadListV2FolderBase & {
       readonly kind: "machine";
@@ -334,6 +336,11 @@ export interface ThreadListV2Grouping {
   /** In display order. A folder with no active threads is left out. */
   readonly folders: ReadonlyArray<ThreadListV2Folder>;
   readonly folderKeyOf: (thread: EnvironmentThreadShell) => string;
+  /** Folders inside each open outer folder, by its key. A thread outside them is left out. */
+  readonly inner: {
+    readonly foldersByKey: ReadonlyMap<string, ReadonlyArray<ThreadListV2Folder>>;
+    readonly folderKeyOf: (thread: EnvironmentThreadShell) => string;
+  } | null;
 }
 
 export interface ThreadListV2FolderHeader {
@@ -515,7 +522,9 @@ function threadListV2FoldersAreEqual(
     return false;
   }
   return previous.kind === "project"
-    ? folder.kind === "project" && previous.projectKey === folder.projectKey
+    ? folder.kind === "project" &&
+        previous.projectKey === folder.projectKey &&
+        previous.nested === folder.nested
     : folder.kind === "machine" &&
         previous.environmentId === folder.environmentId &&
         previous.offline === folder.offline;
@@ -920,37 +929,63 @@ export function buildThreadListV2Items(input: {
       isLast: false,
     });
   const folderHeaders: ThreadListV2FolderHeader[] = [];
-  if (grouping === null) {
-    for (const thread of orderedActive) pushActive(thread);
-  } else {
+  const groupThreads = (
+    threads: ReadonlyArray<EnvironmentThreadShell>,
+    keyOf: (thread: EnvironmentThreadShell) => string,
+  ) => {
     const threadsByFolder = new Map<string, EnvironmentThreadShell[]>();
-    for (const thread of orderedActive) {
-      const key = grouping.folderKeyOf(thread);
+    for (const thread of threads) {
+      const key = keyOf(thread);
       const folderThreads = threadsByFolder.get(key);
       if (folderThreads === undefined) threadsByFolder.set(key, [thread]);
       else folderThreads.push(thread);
     }
+    return threadsByFolder;
+  };
+  // A closed folder still lists the open thread.
+  const pushFolderHeader = (
+    folder: ThreadListV2Folder,
+    folderThreads: ReadonlyArray<EnvironmentThreadShell>,
+  ) => {
+    const visible = folder.expanded
+      ? folderThreads
+      : folderThreads.filter(
+          (thread) => `${thread.environmentId}:${thread.id}` === selectedThreadKey,
+        );
+    const hidden = folder.expanded
+      ? []
+      : folderThreads.filter((thread) => !visible.includes(thread));
+    folderHeaders.push({
+      index: items.length,
+      folder,
+      hiddenCount: hidden.length,
+      hiddenNeedsAttention: hidden.some((thread) =>
+        THREAD_LIST_V2_ATTENTION_STATUSES.has(resolveThreadListV2Status(thread)),
+      ),
+    });
+    return visible;
+  };
+  if (grouping === null) {
+    for (const thread of orderedActive) pushActive(thread);
+  } else {
+    const threadsByFolder = groupThreads(orderedActive, grouping.folderKeyOf);
     for (const folder of grouping.folders) {
       const folderThreads = threadsByFolder.get(folder.key);
       if (folderThreads === undefined) continue;
-      // A closed folder still lists the open thread.
-      const visible = folder.expanded
-        ? folderThreads
-        : folderThreads.filter(
-            (thread) => `${thread.environmentId}:${thread.id}` === selectedThreadKey,
-          );
-      const hidden = folder.expanded
-        ? []
-        : folderThreads.filter((thread) => !visible.includes(thread));
-      folderHeaders.push({
-        index: items.length,
-        folder,
-        hiddenCount: hidden.length,
-        hiddenNeedsAttention: hidden.some((thread) =>
-          THREAD_LIST_V2_ATTENTION_STATUSES.has(resolveThreadListV2Status(thread)),
-        ),
-      });
-      for (const thread of visible) pushActive(thread);
+      const visible = pushFolderHeader(folder, folderThreads);
+      const innerFolders = folder.expanded
+        ? grouping.inner?.foldersByKey.get(folder.key)
+        : undefined;
+      if (grouping.inner === null || innerFolders === undefined) {
+        for (const thread of visible) pushActive(thread);
+        continue;
+      }
+      const threadsByInnerFolder = groupThreads(folderThreads, grouping.inner.folderKeyOf);
+      for (const innerFolder of innerFolders) {
+        const innerThreads = threadsByInnerFolder.get(innerFolder.key);
+        if (innerThreads === undefined) continue;
+        for (const thread of pushFolderHeader(innerFolder, innerThreads)) pushActive(thread);
+      }
     }
   }
   const workingShelfHeaderIndex = orderedWorking.length > 0 ? items.length : null;

@@ -734,12 +734,14 @@ describe("thread list folders", () => {
     key,
     label: key,
     projectKey: `${environmentId}:${key}`,
+    nested: false,
     expandedByDefault: true,
     expanded,
   });
   const grouping = (folders: ReadonlyArray<ThreadListV2Folder>): ThreadListV2Grouping => ({
     folders,
     folderKeyOf: (thread) => thread.projectId,
+    inner: null,
   });
 
   it("files active threads by their latest message and keeps pinned and settled shared", () => {
@@ -817,6 +819,74 @@ describe("thread list folders", () => {
 
     expect(layout.items.map((item) => item.thread.id)).toEqual(["open"]);
     expect(layout.folderHeaders).toMatchObject([{ hiddenCount: 2, hiddenNeedsAttention: true }]);
+  });
+
+  it("nests project folders in an open machine folder, and a closed one lists the open thread", () => {
+    const remote = EnvironmentId.make("environment-remote");
+    const machine = (id: EnvironmentId, expanded: boolean): ThreadListV2Folder => ({
+      kind: "machine",
+      key: `machine:${id}`,
+      label: id,
+      environmentId: id,
+      offline: false,
+      expandedByDefault: true,
+      expanded,
+    });
+    const project = (id: EnvironmentId, projectId: string): ThreadListV2Folder => ({
+      kind: "project",
+      key: `machine:${id}:${projectId}`,
+      label: projectId,
+      projectKey: `${id}:${projectId}`,
+      nested: true,
+      expandedByDefault: true,
+      expanded: true,
+    });
+    const layout = buildThreadListV2Items({
+      threads: [
+        makeThread({ id: ThreadId.make("a"), title: "A", projectId: projectA }),
+        makeThread({ id: ThreadId.make("b"), title: "B", projectId: projectB }),
+        makeThread({
+          id: ThreadId.make("remote-open"),
+          title: "Remote open",
+          environmentId: remote,
+          projectId: projectA,
+        }),
+        makeThread({
+          id: ThreadId.make("remote-quiet"),
+          title: "Remote quiet",
+          environmentId: remote,
+          projectId: projectA,
+        }),
+      ],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      selectedThreadKey: `${remote}:remote-open`,
+      grouping: {
+        folders: [machine(environmentId, true), machine(remote, false)],
+        folderKeyOf: (thread) => `machine:${thread.environmentId}`,
+        inner: {
+          foldersByKey: new Map([
+            [
+              `machine:${environmentId}`,
+              [project(environmentId, projectB), project(environmentId, projectA)],
+            ],
+            [`machine:${remote}`, [project(remote, projectA)]],
+          ]),
+          folderKeyOf: (thread) => `machine:${thread.environmentId}:${thread.projectId}`,
+        },
+      },
+    });
+
+    expect(layout.items.map((item) => item.thread.id)).toEqual(["b", "a", "remote-open"]);
+    expect(
+      layout.folderHeaders.map((header) => [header.folder.key, header.index, header.hiddenCount]),
+    ).toEqual([
+      [`machine:${environmentId}`, 0, 0],
+      [`machine:${environmentId}:${projectB}`, 0, 0],
+      [`machine:${environmentId}:${projectA}`, 1, 0],
+      [`machine:${remote}`, 2, 1],
+    ]);
   });
 
   it("lists folder headers among active rows, a closed one before the Working shelf", () => {

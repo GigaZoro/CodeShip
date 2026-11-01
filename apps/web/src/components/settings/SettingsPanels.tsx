@@ -19,9 +19,8 @@ import {
   MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   type ResponseStreamingMode,
   type QuitConfirmationMode,
-  availableSidebarGroupBy,
-  resolveSidebarGroupBy,
-  SidebarGroupBy,
+  offeredSidebarGroupingKinds,
+  resolveSidebarGrouping,
   SidebarProjectSortOrder,
 } from "@t3tools/contracts/settings";
 import { desktopUpdateChannelOf } from "@t3tools/shared/cliRelease";
@@ -126,13 +125,6 @@ const SIDEBAR_PROJECT_SORT_ORDER_LABELS: Record<SidebarProjectSortOrder, string>
   manual: "Manual",
 };
 const isSidebarProjectSortOrder = Schema.is(SidebarProjectSortOrder);
-
-const SIDEBAR_GROUP_BY_LABELS: Record<SidebarGroupBy, string> = {
-  none: "None",
-  project: "By project",
-  machine: "By machine",
-};
-const isSidebarGroupBy = Schema.is(SidebarGroupBy);
 
 const TIMESTAMP_FORMAT_LABELS = {
   locale: "System default",
@@ -778,7 +770,7 @@ export function LegacyFeaturesSection() {
 export function GeneralSettingsPanel() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
-  const sidebarGroupBy = resolveSidebarGroupBy(settings);
+  const sidebarGrouping = resolveSidebarGrouping(settings);
   const machineCount = useEnvironments().environments.length;
   const lastEnabledProjectGroupingMode = useRef<SidebarProjectGroupingMode>(
     readLastEnabledProjectGroupingMode(),
@@ -803,36 +795,29 @@ export function GeneralSettingsPanel() {
 
       <SettingsSection id="sidebar" title="Sidebar">
         <SettingsRow
-          {...searchableSetting("sidebar-grouping")}
-          description="Put active threads in a folder for each project or each machine. Pinned, Working, Snoozed, and Settled stay shared across them."
-          resetAction={
-            sidebarGroupBy !== "none" ? (
-              <SettingResetButton
-                label="thread grouping"
-                onClick={() => updateSettings({ sidebarGroupBy: "none" })}
-              />
-            ) : null
-          }
+          {...searchableSetting("sidebar-group-by-project")}
+          description="Put active threads in a folder for each project. Pinned, Working, Snoozed, and Settled stay shared across them."
           control={
-            <Select
-              value={sidebarGroupBy}
-              onValueChange={(value) => {
-                if (isSidebarGroupBy(value)) updateSettings({ sidebarGroupBy: value });
-              }}
-            >
-              <SelectTrigger size="sm" className="w-full sm:w-44" aria-label="Group threads">
-                <SelectValue>{SIDEBAR_GROUP_BY_LABELS[sidebarGroupBy]}</SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {availableSidebarGroupBy(machineCount, sidebarGroupBy).map((groupBy) => (
-                  <SelectItem hideIndicator key={groupBy} value={groupBy}>
-                    {SIDEBAR_GROUP_BY_LABELS[groupBy]}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
+            <Switch
+              checked={sidebarGrouping.project}
+              onCheckedChange={(checked) => updateSettings({ sidebarGroupByProject: checked })}
+              aria-label="Group threads by project"
+            />
           }
         />
+        {offeredSidebarGroupingKinds(machineCount, sidebarGrouping).includes("machine") ? (
+          <SettingsRow
+            {...searchableSetting("sidebar-group-by-machine")}
+            description="Put active threads in a folder for each machine. With project grouping on, each machine's folder holds its project folders."
+            control={
+              <Switch
+                checked={sidebarGrouping.machine}
+                onCheckedChange={(checked) => updateSettings({ sidebarGroupByMachine: checked })}
+                aria-label="Group threads by machine"
+              />
+            }
+          />
+        ) : null}
         <SettingsRow
           {...searchableSetting("project-grouping")}
           description="Combine matching repositories across environments."

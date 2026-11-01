@@ -5,7 +5,10 @@ import { ChevronDownIcon, SquarePenIcon } from "lucide-react";
 import { memo, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
-import type { SidebarProjectSnapshot } from "../../sidebarProjectGrouping";
+import type {
+  SidebarProjectGroupMember,
+  SidebarProjectSnapshot,
+} from "../../sidebarProjectGrouping";
 import { useUiStateStore } from "../../uiStateStore";
 import {
   resolveSidebarFolderDot,
@@ -44,27 +47,37 @@ export function sidebarFolderRowId(folderKey: string) {
 }
 
 export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHeader(props: {
+  folderKey: string;
   group: SidebarProjectSnapshot;
+  /** The group's project on the machine folder this folder sits in. */
+  member: SidebarProjectGroupMember | null;
   collapsed: boolean;
   hiddenThreads: readonly EnvironmentThreadShell[];
-  onToggle: (group: SidebarProjectSnapshot) => void;
-  onNewThread: (group: SidebarProjectSnapshot) => void;
-  onContextMenu: (group: SidebarProjectSnapshot, position: { x: number; y: number }) => void;
+  onToggle: (folderKey: string) => void;
+  onNewThread: (group: SidebarProjectSnapshot, member: SidebarProjectGroupMember | null) => void;
+  onContextMenu: (
+    group: SidebarProjectSnapshot,
+    member: SidebarProjectGroupMember | null,
+    position: { x: number; y: number },
+  ) => void;
 }) {
-  const { group } = props;
+  const { folderKey, group, member } = props;
   return (
     <SidebarFolderHeader
-      rowId={sidebarFolderRowId(group.projectKey)}
+      rowId={sidebarFolderRowId(folderKey)}
+      parentRowId={
+        member ? sidebarFolderRowId(sidebarMachineFolderKey(member.environmentId)) : undefined
+      }
       icon={<ProjectFavicon project={group} className="size-4 shrink-0" />}
       label={group.displayName}
       collapsed={props.collapsed}
       hiddenThreads={props.hiddenThreads}
-      onToggle={() => props.onToggle(group)}
+      onToggle={() => props.onToggle(folderKey)}
       newThread={{
         label: `New thread in ${group.displayName}`,
-        onClick: () => props.onNewThread(group),
+        onClick: () => props.onNewThread(group, member),
       }}
-      onContextMenu={(position) => props.onContextMenu(group, position)}
+      onContextMenu={(position) => props.onContextMenu(group, member, position)}
     />
   );
 });
@@ -73,13 +86,14 @@ export const SidebarMachineFolderHeader = memo(function SidebarMachineFolderHead
   machine: SidebarMachine;
   collapsed: boolean;
   hiddenThreads: readonly EnvironmentThreadShell[];
-  onToggle: (machine: SidebarMachine) => void;
+  onToggle: (folderKey: string) => void;
   onNewThread: (machine: SidebarMachine) => void;
 }) {
   const { machine } = props;
+  const folderKey = sidebarMachineFolderKey(machine.environmentId);
   return (
     <SidebarFolderHeader
-      rowId={sidebarFolderRowId(sidebarMachineFolderKey(machine.environmentId))}
+      rowId={sidebarFolderRowId(folderKey)}
       icon={
         <EnvironmentMachineIcon
           aria-hidden
@@ -95,7 +109,7 @@ export const SidebarMachineFolderHeader = memo(function SidebarMachineFolderHead
       }
       collapsed={props.collapsed}
       hiddenThreads={props.hiddenThreads}
-      onToggle={() => props.onToggle(machine)}
+      onToggle={() => props.onToggle(folderKey)}
       // An offline machine cannot start a thread until it is back.
       newThread={
         machine.disconnected
@@ -113,6 +127,8 @@ export const SidebarMachineFolderHeader = memo(function SidebarMachineFolderHead
  */
 function SidebarFolderHeader(props: {
   rowId: string;
+  /** Set for a folder inside another, which indents under its parent's name. */
+  parentRowId?: string | undefined;
   icon: ReactNode;
   label: string;
   status?: ReactNode;
@@ -123,7 +139,7 @@ function SidebarFolderHeader(props: {
   onContextMenu?: (position: { x: number; y: number }) => void;
 }) {
   const { onContextMenu, newThread } = props;
-  const { rowId, collapsed, hiddenThreads } = props;
+  const { rowId, parentRowId, collapsed, hiddenThreads } = props;
   const localLastVisitedAtById = useUiStateStore((state) => state.threadLastVisitedAtById);
   const dot = collapsed
     ? resolveSidebarFolderDot(
@@ -141,13 +157,17 @@ function SidebarFolderHeader(props: {
   return (
     <li
       data-testid="sidebar-project-folder"
-      className="group/project-folder relative mt-2 list-none first:mt-0"
+      className={cn(
+        "group/project-folder relative list-none",
+        parentRowId ? "mt-0.5" : "mt-2 first:mt-0",
+      )}
     >
       <button
         type="button"
         role="treeitem"
         tabIndex={-1}
         data-sidebar-row={rowId}
+        data-sidebar-parent={parentRowId}
         aria-expanded={!collapsed}
         onClick={props.onToggle}
         onContextMenu={
@@ -158,7 +178,11 @@ function SidebarFolderHeader(props: {
               }
             : undefined
         }
-        className="flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-(--control-radius) px-(--sidebar-row-content-inset) text-left outline-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        className={cn(
+          "flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-(--control-radius) px-(--sidebar-row-content-inset) text-left outline-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+          // Lines the icon up with the parent folder's name.
+          parentRowId && "ps-9",
+        )}
       >
         {props.icon}
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-sidebar-foreground/90">

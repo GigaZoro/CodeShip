@@ -171,9 +171,9 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
   const pendingOrder = useAtomValue(pendingThreadOrderAtom);
   const dropBusy = useAtomValue(threadDropBusyAtom);
   const { moveThread } = useThreadListActions();
-  const { workingShelfEnabled, groupBy } = useThreadListV2ShelfPreferences();
+  const { workingShelfEnabled, grouping } = useThreadListV2ShelfPreferences();
   // Folders order active threads by their latest message, so the list has no manual order.
-  const grouped = groupBy !== "none";
+  const grouped = grouping.project || grouping.machine;
   const now = useThreadListNow(threads);
   const [expanded, setExpanded] = useState({ snoozed: false, settled: false });
   const [settledVisibleCount, setSettledVisibleCount] = useState(

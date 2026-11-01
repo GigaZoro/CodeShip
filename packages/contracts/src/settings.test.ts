@@ -14,8 +14,8 @@ import {
   resolveIdleCompaction,
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
-  resolveSidebarGroupBy,
-  availableSidebarGroupBy,
+  resolveSidebarGrouping,
+  offeredSidebarGroupingKinds,
   ServerSettings,
   ServerSettingsPatch,
   withIdleCompaction,
@@ -262,25 +262,39 @@ describe("ClientSettings quit confirmation", () => {
   });
 });
 
-describe("resolveSidebarGroupBy", () => {
+describe("resolveSidebarGrouping", () => {
   it.each([
-    [{}, "none"],
-    [{ boringSidebarEnabled: true }, "project"],
-    [{ legacySidebarEnabled: true }, "project"],
-    [{ boringSidebarEnabled: true, sidebarGroupBy: "none" }, "none"],
-    [{ legacySidebarEnabled: true, sidebarGroupBy: "machine" }, "machine"],
-  ] as const)("reads %j as %s", (stored, groupBy) => {
-    expect(resolveSidebarGroupBy(decodeClientSettings(stored))).toBe(groupBy);
+    [{}, { project: false, machine: false }],
+    [{ boringSidebarEnabled: true }, { project: true, machine: false }],
+    [{ legacySidebarEnabled: true }, { project: true, machine: false }],
+    [
+      { boringSidebarEnabled: true, sidebarGroupBy: "none" },
+      { project: false, machine: false },
+    ],
+    [
+      { legacySidebarEnabled: true, sidebarGroupBy: "machine" },
+      { project: false, machine: true },
+    ],
+    [
+      { sidebarGroupBy: "machine", sidebarGroupByProject: true },
+      { project: true, machine: true },
+    ],
+    [
+      { sidebarGroupBy: "project", sidebarGroupByMachine: true, sidebarGroupByProject: false },
+      { project: false, machine: true },
+    ],
+  ] as const)("reads %j as %j", (stored, grouping) => {
+    expect(resolveSidebarGrouping(decodeClientSettings(stored))).toEqual(grouping);
   });
 
   it.each([
-    [1, "none", ["none", "project"]],
-    [1, "machine", ["none", "project", "machine"]],
-    [2, "none", ["none", "project", "machine"]],
+    [1, false, ["project"]],
+    [1, true, ["project", "machine"]],
+    [2, false, ["project", "machine"]],
   ] as const)(
-    "offers groupings for %i machine(s) while %s is chosen",
-    (count, current, offered) => {
-      expect(availableSidebarGroupBy(count, current)).toEqual(offered);
+    "offers grouping kinds for %i machine(s) while machine grouping is %s",
+    (count, machine, offered) => {
+      expect(offeredSidebarGroupingKinds(count, { project: false, machine })).toEqual(offered);
     },
   );
 });

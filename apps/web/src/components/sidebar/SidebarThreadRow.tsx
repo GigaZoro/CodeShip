@@ -538,8 +538,9 @@ type SidebarThreadRowProps = {
   // "folder" is a one-line row inside a sidebar folder;
   // "folder-multiline" adds the card's branch and PR line under it.
   variant: "card" | "slim" | "folder" | "folder-multiline";
-  // A machine folder names the machine, so its rows show their project instead.
+  // The folders a row sits in name its machine or project, so the row leaves those out.
   inMachineFolder: boolean;
+  inProjectFolder: boolean;
   navigationParent?: string | undefined;
   variantAction: SidebarSweepAction;
   settlementSupported: boolean;
@@ -1231,7 +1232,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                     ? "flex flex-col justify-center px-2.5 py-1.5"
                     : "flex h-9 items-center gap-2.5 px-2.5",
                   // Lines titles up with the folder name, past its chevron and icon.
-                  inFolder && "ps-9",
+                  inFolder && (props.inMachineFolder && props.inProjectFolder ? "ps-15.5" : "ps-9"),
                 )}
                 onClick={handleClick}
                 onDoubleClick={handleDoubleClick}
@@ -1243,7 +1244,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             {/* `contents` keeps one-line rows a single flex row. */}
             <div className={multiline ? "flex h-6 min-w-0 items-center gap-2.5" : "contents"}>
               {accessibleTitle}
-              {inFolder && !props.inMachineFolder ? null : (
+              {props.inProjectFolder ? null : (
                 <span
                   className={cn(
                     "flex shrink-0 items-center transition-opacity",

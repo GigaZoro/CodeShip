@@ -444,12 +444,16 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["hide fold running monitoring threads inbox sidebar shelf"],
   },
   {
-    id: "sidebar-grouping",
-    title: "Group threads",
+    id: "sidebar-group-by-project",
+    title: "Group threads by project",
     to: "/settings/general",
-    searchTerms: [
-      "group by project machine device environment folders tree boring legacy classic sidebar",
-    ],
+    searchTerms: ["group by project folders tree boring legacy classic sidebar"],
+  },
+  {
+    id: "sidebar-group-by-machine",
+    title: "Group threads by machine",
+    to: "/settings/general",
+    searchTerms: ["group by machine device environment folders tree nested projects sidebar"],
   },
   {
     id: "boring-sidebar-multiline",

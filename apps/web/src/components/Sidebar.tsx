@@ -13,7 +13,7 @@ import { useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
 import * as Schema from "effect/Schema";
-import { availableSidebarGroupBy, SidebarGroupBy } from "@t3tools/contracts/settings";
+import { offeredSidebarGroupingKinds, SidebarGroupingKind } from "@t3tools/contracts/settings";
 import {
   DndContext,
   useSensor,
@@ -109,6 +109,7 @@ import {
   projectGroupsSpanEnvironments,
   resolveSidebarProjectScopeKeys,
   getSidebarProjectSettingsKey,
+  type SidebarProjectGroupMember,
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
 import { resolveProjectExpanded, useUiStateStore } from "../uiStateStore";
@@ -127,7 +128,7 @@ import { useTerminalFocus } from "../hooks/useTerminalFocus";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { registerSettleAndAdvance } from "../settleAndAdvance";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
-import { updateClientSettings, useClientSettings, useSidebarGroupBy } from "../hooks/useSettings";
+import { updateClientSettings, useClientSettings, useSidebarGrouping } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useNowMinute } from "../hooks/useNowMinute";
@@ -176,11 +177,13 @@ import {
   applySidebarThreadDrop,
   filterSidebarV2VisibleThreads,
   groupSidebarThreadsByMachine,
+  groupSidebarThreadsByMachineAndProject,
   groupSidebarThreadsByProject,
   resolveSidebarMachineFolderExpanded,
   resolveSidebarScopedProjectKeys,
   sidebarFolderExpansionKeys,
   sidebarMachineFolderKey,
+  sidebarMachineProjectFolderKey,
   sortSidebarMachines,
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
@@ -409,29 +412,42 @@ function routeThreadOnly(
   return routeThread === undefined ? EMPTY_THREADS : [routeThread];
 }
 
-type SidebarThreadGrouping =
-  | {
-      readonly kind: "project";
-      readonly groups: readonly SidebarProjectSnapshot[];
-      // Keeps folders with no active threads, so a project the user filtered to can start one.
-      readonly keepEmpty: boolean;
-    }
-  | {
-      readonly kind: "machine";
-      readonly machines: readonly SidebarMachine[];
-      readonly keepEnvironmentIds: ReadonlySet<EnvironmentId>;
-    };
+/** Machine folders hold project folders when both are set. */
+interface SidebarThreadGrouping {
+  readonly projects: {
+    readonly groups: readonly SidebarProjectSnapshot[];
+    // Keeps folders with no active threads, so a project the user filtered to can start one.
+    readonly keepEmpty: boolean;
+  } | null;
+  readonly machines: {
+    readonly machines: readonly SidebarMachine[];
+    readonly keepEnvironmentIds: ReadonlySet<EnvironmentId>;
+  } | null;
+}
 
 interface SidebarFolderContents {
   readonly key: string;
+  readonly expansionKeys: readonly string[];
   readonly collapsed: boolean;
   readonly threads: readonly EnvironmentThreadShell[];
   readonly hiddenThreads: readonly EnvironmentThreadShell[];
 }
 
-type SidebarFolder =
-  | (SidebarFolderContents & { readonly kind: "project"; readonly group: SidebarProjectSnapshot })
-  | (SidebarFolderContents & { readonly kind: "machine"; readonly machine: SidebarMachine });
+interface SidebarProjectFolder extends SidebarFolderContents {
+  readonly kind: "project";
+  readonly group: SidebarProjectSnapshot;
+  /** The group's project on the enclosing machine folder's machine. */
+  readonly member: SidebarProjectGroupMember | null;
+}
+
+interface SidebarMachineFolder extends SidebarFolderContents {
+  readonly kind: "machine";
+  readonly machine: SidebarMachine;
+  /** Empty while closed, when `threads` lists the open thread. */
+  readonly projects: readonly SidebarProjectFolder[];
+}
+
+type SidebarFolder = SidebarProjectFolder | SidebarMachineFolder;
 
 // Separate hooks cache maps independently of later Sidebar hooks and preserve dnd-kit inputs.
 function useSidebarThreads(input: {
@@ -442,7 +458,7 @@ function useSidebarThreads(input: {
   readonly threads: readonly EnvironmentThreadShell[];
   readonly delegatedUnderParent: ReadonlySet<string>;
   readonly routeRowThreadKey: string | null;
-  readonly grouping: SidebarThreadGrouping | null;
+  readonly grouping: SidebarThreadGrouping;
 }) {
   const {
     projectScopeKey,
@@ -503,7 +519,7 @@ function useSidebarThreads(input: {
     serverConfigs,
     optimisticDrop,
     workingShelfEnabled,
-    sortActiveBySend: grouping !== null,
+    sortActiveBySend: grouping.projects !== null || grouping.machines !== null,
     disconnectedEnvironmentIds,
     clockKey: `${nowMinute}:${snoozeWakeClock}:${inboxReturnsVersion}`,
   });
@@ -543,47 +559,103 @@ function useSidebarThreads(input: {
     ? workingThreads
     : routeThreadOnly(workingThreads, routeRowThreadKey);
   // A closed folder still shows the open thread, and hints at the rest.
-  const folderContents = (threads: readonly EnvironmentThreadShell[], collapsed: boolean) => ({
-    collapsed,
-    threads: collapsed ? routeThreadOnly(threads, routeRowThreadKey) : threads,
-    hiddenThreads: collapsed
-      ? threads.filter((thread) => threadShellKey(thread) !== routeRowThreadKey)
-      : EMPTY_THREADS,
+  const folderContents = (
+    key: string,
+    expansionKeys: readonly string[],
+    threads: readonly EnvironmentThreadShell[],
+    expanded: boolean,
+  ): SidebarFolderContents => ({
+    key,
+    expansionKeys,
+    collapsed: !expanded,
+    threads: expanded ? threads : routeThreadOnly(threads, routeRowThreadKey),
+    hiddenThreads: expanded
+      ? EMPTY_THREADS
+      : threads.filter((thread) => threadShellKey(thread) !== routeRowThreadKey),
   });
+  const projectFolder = (
+    group: SidebarProjectSnapshot,
+    member: SidebarProjectGroupMember | null,
+    threads: readonly EnvironmentThreadShell[],
+  ): SidebarProjectFolder => {
+    const key = member
+      ? sidebarMachineProjectFolderKey(member.environmentId, group.projectKey)
+      : group.projectKey;
+    const expansionKeys = member ? [key] : sidebarFolderExpansionKeys(group);
+    return {
+      kind: "project",
+      group,
+      member,
+      ...folderContents(
+        key,
+        expansionKeys,
+        threads,
+        resolveProjectExpanded(projectExpandedById, expansionKeys),
+      ),
+    };
+  };
+  const machineFolder = (
+    machine: SidebarMachine,
+    threads: readonly EnvironmentThreadShell[],
+    projects: ReadonlyArray<{
+      readonly group: SidebarProjectSnapshot;
+      readonly member: SidebarProjectGroupMember;
+      readonly threads: readonly EnvironmentThreadShell[];
+    }>,
+  ): SidebarMachineFolder => {
+    const key = sidebarMachineFolderKey(machine.environmentId);
+    const expanded = resolveSidebarMachineFolderExpanded(projectExpandedById, machine);
+    return {
+      kind: "machine",
+      machine,
+      // Open, the rows sit in the project folders instead.
+      ...folderContents(
+        key,
+        [key],
+        expanded && projects.length > 0 ? EMPTY_THREADS : threads,
+        expanded,
+      ),
+      projects: expanded
+        ? projects.map((project) => projectFolder(project.group, project.member, project.threads))
+        : [],
+    };
+  };
   const folders: SidebarFolder[] | null =
-    grouping === null
-      ? null
-      : grouping.kind === "project"
-        ? groupSidebarThreadsByProject(grouping.groups, activeThreads, grouping.keepEmpty).map(
-            (folder) => ({
-              kind: "project",
-              key: folder.group.projectKey,
-              group: folder.group,
-              ...folderContents(
-                folder.threads,
-                !resolveProjectExpanded(
-                  projectExpandedById,
-                  sidebarFolderExpansionKeys(folder.group),
-                ),
-              ),
-            }),
+    grouping.machines !== null
+      ? grouping.projects !== null
+        ? groupSidebarThreadsByMachineAndProject({
+            machines: grouping.machines.machines,
+            groups: grouping.projects.groups,
+            threads: activeThreads,
+            keepEnvironmentIds: grouping.machines.keepEnvironmentIds,
+            keepEmptyProjects: grouping.projects.keepEmpty,
+          }).map((folder) =>
+            machineFolder(
+              folder.machine,
+              folder.projects.flatMap((project) => project.threads),
+              folder.projects,
+            ),
           )
         : groupSidebarThreadsByMachine(
-            grouping.machines,
+            grouping.machines.machines,
             activeThreads,
-            grouping.keepEnvironmentIds,
-          ).map((folder) => ({
-            kind: "machine",
-            key: sidebarMachineFolderKey(folder.machine.environmentId),
-            machine: folder.machine,
-            ...folderContents(
-              folder.threads,
-              !resolveSidebarMachineFolderExpanded(projectExpandedById, folder.machine),
-            ),
-          }));
+            grouping.machines.keepEnvironmentIds,
+          ).map((folder) => machineFolder(folder.machine, folder.threads, []))
+      : grouping.projects !== null
+        ? groupSidebarThreadsByProject(
+            grouping.projects.groups,
+            activeThreads,
+            grouping.projects.keepEmpty,
+          ).map((folder) => projectFolder(folder.group, null, folder.threads))
+        : null;
+  // Every folder in list order, machine folders before the project folders they hold.
+  const folderList =
+    folders?.flatMap((folder) =>
+      folder.kind === "machine" ? [folder, ...folder.projects] : [folder],
+    ) ?? null;
   const orderedThreads = [
     ...pinnedThreads,
-    ...(folders === null ? activeThreads : folders.flatMap((folder) => folder.threads)),
+    ...(folderList === null ? activeThreads : folderList.flatMap((folder) => folder.threads)),
     ...visibleWorkingThreads,
     ...visibleSnoozedThreads,
     ...renderedSettledThreads,
@@ -625,15 +697,11 @@ function useSidebarThreads(input: {
     workingShelfExpanded,
     toggleWorkingShelf: () => setWorkingShelfExpanded((value) => !value),
     folders,
-    toggleProjectFolder: (group: SidebarProjectSnapshot) => {
-      const keys = sidebarFolderExpansionKeys(group);
-      setProjectExpanded(keys, !resolveProjectExpanded(projectExpandedById, keys));
+    folderList,
+    toggleFolder: (key: string) => {
+      const folder = folderList?.find((candidate) => candidate.key === key);
+      if (folder) setProjectExpanded(folder.expansionKeys, folder.collapsed);
     },
-    toggleMachineFolder: (machine: SidebarMachine) =>
-      setProjectExpanded(
-        sidebarMachineFolderKey(machine.environmentId),
-        !resolveSidebarMachineFolderExpanded(projectExpandedById, machine),
-      ),
     renderedSettledThreads,
     visibleSnoozedThreads,
     visibleWorkingThreads,
@@ -900,9 +968,9 @@ function machineScopeItem(machine: SidebarMachine): SidebarScopeItem {
   return { value: `\0machine:${machine.environmentId}`, label: machine.label, machine };
 }
 
-const isSidebarGroupBy = Schema.is(SidebarGroupBy);
+const isSidebarGroupingKind = Schema.is(SidebarGroupingKind);
 
-const SIDEBAR_GROUP_BY_LABELS = { none: "None", project: "Project", machine: "Machine" } as const;
+const SIDEBAR_GROUPING_LABELS = { project: "Project", machine: "Machine" } as const;
 
 function useSidebarMachines(): readonly SidebarMachine[] {
   const environments = useEnvironmentConnectionSummaries();
@@ -1063,7 +1131,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       );
     },
   });
-  const groupBy = useSidebarGroupBy();
+  const groupBy = useSidebarGrouping();
   const machines = useSidebarMachines();
   const folderRowsMultiline = useClientSettings((settings) => settings.boringSidebarMultilineRows);
   const newThreadContext = useHandleNewThread();
@@ -1340,17 +1408,24 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       openProjectSettings(projectGroup);
     },
   );
-  const startThreadInProjectFolder = useStableCallback((group: SidebarProjectSnapshot) => {
-    if (isMobile) setOpenMobile(false);
-    void handleNewThread(scopeProjectRef(group.environmentId, group.id));
-  });
+  const startThreadInProjectFolder = useStableCallback(
+    (group: SidebarProjectSnapshot, member: SidebarProjectGroupMember | null) => {
+      const project = member ?? group;
+      if (isMobile) setOpenMobile(false);
+      void handleNewThread(scopeProjectRef(project.environmentId, project.id));
+    },
+  );
   // A machine holds many projects, so the user picks one.
   const startThreadOnMachine = useStableCallback((machine: SidebarMachine) => {
     if (isMobile) setOpenMobile(false);
     openCommandPalette({ open: "new-thread-in", environmentId: machine.environmentId });
   });
   const handleProjectFolderContextMenu = useStableCallback(
-    (group: SidebarProjectSnapshot, position: { x: number; y: number }) => {
+    (
+      group: SidebarProjectSnapshot,
+      member: SidebarProjectGroupMember | null,
+      position: { x: number; y: number },
+    ) => {
       const api = readLocalApi();
       if (!api) return;
       void (async () => {
@@ -1367,13 +1442,18 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         if (clicked._tag === "Failure") return;
         switch (clicked.value) {
           case "new-thread":
-            startThreadInProjectFolder(group);
+            startThreadInProjectFolder(group, member);
             return;
-          case "copy-path":
-            copyPathToClipboard(group.workspaceRoot, { path: group.workspaceRoot });
+          case "copy-path": {
+            const { workspaceRoot } = member ?? group;
+            copyPathToClipboard(workspaceRoot, { path: workspaceRoot });
             return;
+          }
           case "project-settings":
-            openProjectSettings(group);
+            openProjectSettings(
+              group,
+              member ? scopeProjectRef(member.environmentId, member.id) : undefined,
+            );
             return;
         }
       })();
@@ -1403,8 +1483,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     workingShelfExpanded,
     toggleWorkingShelf,
     folders,
-    toggleProjectFolder,
-    toggleMachineFolder,
+    folderList,
+    toggleFolder,
     renderedSettledThreads,
     visibleSnoozedThreads,
     visibleWorkingThreads,
@@ -1425,20 +1505,20 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     threads,
     delegatedUnderParent,
     routeRowThreadKey,
-    grouping:
-      groupBy === "project"
+    grouping: {
+      projects: groupBy.project
         ? {
-            kind: "project",
             groups: scopedProjectGroups.length === 0 ? projectGroups : scopedProjectGroups,
             keepEmpty: scopedProjectGroups.length > 0,
           }
-        : groupBy === "machine"
-          ? {
-              kind: "machine",
-              machines: scopedMachines.length === 0 ? machines : scopedMachines,
-              keepEnvironmentIds: new Set(scopedMachineIds),
-            }
-          : null,
+        : null,
+      machines: groupBy.machine
+        ? {
+            machines: scopedMachines.length === 0 ? machines : scopedMachines,
+            keepEnvironmentIds: new Set(scopedMachineIds),
+          }
+        : null,
+    },
   });
 
   // Ranked across environments as the palette ranks them, so one
@@ -2069,7 +2149,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   // Only order, section, or draft changes need layout reads and motion.
   const listMotionLayoutKey = [
     sidebarListItemsKey,
-    folders?.map((folder) => `${folder.key}:${folder.threads.length}`).join("\n") ?? "",
+    folderList?.map((folder) => `${folder.key}:${folder.threads.length}`).join("\n") ?? "",
     visibleDraftSessionCount,
     routeDraftIdForRows ?? "",
   ].join("\0");
@@ -3138,16 +3218,19 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       <ToggleGroup
                         aria-label="Group threads"
                         className="flex-1 *:flex-1"
-                        value={[groupBy]}
+                        multiple
+                        value={SidebarGroupingKind.literals.filter((kind) => groupBy[kind])}
                         onValueChange={(next) => {
-                          const value = next[0];
-                          if (isSidebarGroupBy(value))
-                            updateClientSettings({ sidebarGroupBy: value });
+                          const pressed = next.filter(isSidebarGroupingKind);
+                          updateClientSettings({
+                            sidebarGroupByProject: pressed.includes("project"),
+                            sidebarGroupByMachine: pressed.includes("machine"),
+                          });
                         }}
                       >
-                        {availableSidebarGroupBy(machines.length, groupBy).map((value) => (
-                          <Toggle key={value} value={value}>
-                            {SIDEBAR_GROUP_BY_LABELS[value]}
+                        {offeredSidebarGroupingKinds(machines.length, groupBy).map((kind) => (
+                          <Toggle key={kind} value={kind}>
+                            {SIDEBAR_GROUPING_LABELS[kind]}
                           </Toggle>
                         ))}
                       </ToggleGroup>
@@ -3397,10 +3480,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       const renderThreadRow = (
                         thread: EnvironmentThreadShell,
                         section: SidebarSection,
-                        // The tree row of the folder this row sits in.
-                        folderRow?: string,
-                        inMachineFolder = false,
+                        folder?: SidebarFolder,
                       ) => {
+                        // The tree row of the folder this row sits in.
+                        const folderRow = folder ? sidebarFolderRowId(folder.key) : undefined;
+                        const inMachineFolder =
+                          folder !== undefined &&
+                          (folder.kind === "machine" || folder.member !== null);
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
                         );
@@ -3426,6 +3512,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             thread={thread}
                             variant={rowVariant}
                             inMachineFolder={inMachineFolder}
+                            inProjectFolder={folder?.kind === "project"}
                             navigationParent={
                               folderRow ??
                               (section === "working" ||
@@ -3537,39 +3624,43 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           continue;
                         }
                         if (folders !== null && item.marker === "active-placeholder") {
-                          for (const folder of folders) {
+                          const pushProjectFolder = (folder: SidebarProjectFolder) => {
                             items.push(
-                              folder.kind === "project" ? (
-                                <SidebarProjectFolderHeader
-                                  key={`project-folder:${folder.key}`}
-                                  group={folder.group}
-                                  collapsed={folder.collapsed}
-                                  hiddenThreads={folder.hiddenThreads}
-                                  onToggle={toggleProjectFolder}
-                                  onNewThread={startThreadInProjectFolder}
-                                  onContextMenu={handleProjectFolderContextMenu}
-                                />
-                              ) : (
-                                <SidebarMachineFolderHeader
-                                  key={`machine-folder:${folder.key}`}
-                                  machine={folder.machine}
-                                  collapsed={folder.collapsed}
-                                  hiddenThreads={folder.hiddenThreads}
-                                  onToggle={toggleMachineFolder}
-                                  onNewThread={startThreadOnMachine}
-                                />
-                              ),
+                              <SidebarProjectFolderHeader
+                                key={`project-folder:${folder.key}`}
+                                folderKey={folder.key}
+                                group={folder.group}
+                                member={folder.member}
+                                collapsed={folder.collapsed}
+                                hiddenThreads={folder.hiddenThreads}
+                                onToggle={toggleFolder}
+                                onNewThread={startThreadInProjectFolder}
+                                onContextMenu={handleProjectFolderContextMenu}
+                              />,
                             );
                             for (const thread of folder.threads) {
-                              items.push(
-                                renderThreadRow(
-                                  thread,
-                                  "active",
-                                  sidebarFolderRowId(folder.key),
-                                  folder.kind === "machine",
-                                ),
-                              );
+                              items.push(renderThreadRow(thread, "active", folder));
                             }
+                          };
+                          for (const folder of folders) {
+                            if (folder.kind === "project") {
+                              pushProjectFolder(folder);
+                              continue;
+                            }
+                            items.push(
+                              <SidebarMachineFolderHeader
+                                key={`machine-folder:${folder.key}`}
+                                machine={folder.machine}
+                                collapsed={folder.collapsed}
+                                hiddenThreads={folder.hiddenThreads}
+                                onToggle={toggleFolder}
+                                onNewThread={startThreadOnMachine}
+                              />,
+                            );
+                            for (const thread of folder.threads) {
+                              items.push(renderThreadRow(thread, "active", folder));
+                            }
+                            for (const project of folder.projects) pushProjectFolder(project);
                           }
                           continue;
                         }

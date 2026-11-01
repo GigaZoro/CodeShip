@@ -236,7 +236,7 @@ describe("home thread list grouping", () => {
       offline,
     });
     const grouping = buildHomeThreadListGrouping({
-      groupBy: "machine",
+      grouping: { project: false, machine: true },
       folderExpanded: { "machine:studio": true },
       projectScopes: [],
       environments: [
@@ -255,5 +255,56 @@ describe("home thread list grouping", () => {
       ["Laptop", false, false],
       ["Studio", true, false],
     ]);
+  });
+
+  it("gives each machine a folder for each of its projects, favicon from that machine", () => {
+    const laptop = EnvironmentId.make("laptop");
+    const vps = EnvironmentId.make("vps");
+    const project = (environmentId: EnvironmentId, id: string, title: string) =>
+      makeProject({
+        environmentId,
+        id: ProjectId.make(id),
+        title,
+        workspaceRoot: `/workspaces/${title}`,
+        repositoryIdentity: {
+          canonicalKey: `github.com/acme/${title}`,
+          locator: { source: "git-remote", remoteName: "origin", remoteUrl: title },
+        },
+      });
+    const scopes = buildHomeProjectScopes({
+      projects: [project(laptop, "app-laptop", "app"), project(vps, "app-vps", "app")],
+      environmentId: null,
+      projectGroupingMode: "repository",
+    });
+    const grouping = buildHomeThreadListGrouping({
+      grouping: { project: true, machine: true },
+      folderExpanded: undefined,
+      projectScopes: scopes,
+      environments: [
+        { environmentId: vps, label: "VPS", offline: false },
+        { environmentId: laptop, label: "Laptop", offline: false },
+      ],
+    });
+    const inner = (environmentId: EnvironmentId) =>
+      grouping?.inner?.foldersByKey
+        .get(`machine:${environmentId}`)
+        ?.map((folder) => [folder.label, folder.kind === "project" && folder.projectKey]);
+
+    expect(scopes).toHaveLength(1);
+    expect(grouping?.folders.map((folder) => folder.label)).toEqual(["Laptop", "VPS"]);
+    expect([inner(laptop), inner(vps)]).toEqual([
+      [["app", "laptop:app-laptop"]],
+      [["app", "vps:app-vps"]],
+    ]);
+    expect(
+      grouping?.inner?.folderKeyOf(
+        makeThread({
+          environmentId: vps,
+          projectId: ProjectId.make("app-vps"),
+          id: ThreadId.make("thread"),
+          title: "Thread",
+        }),
+      ),
+    ).toBe(grouping?.inner?.foldersByKey.get("machine:vps")?.[0]?.key);
   });
 });

@@ -1,7 +1,6 @@
 import { Button } from "../../components/ui/Button";
 import { AuthSettingsWriteScope, type ServerSettingsPatch } from "@t3tools/contracts";
-import { availableSidebarGroupBy, type SidebarGroupBy } from "@t3tools/contracts/settings";
-import { ListChoiceRow as SettingsChoiceRow } from "../../components/ui/ListChoiceRow";
+import { offeredSidebarGroupingKinds } from "@t3tools/contracts/settings";
 import { useThreadListV2ShelfPreferences } from "../threads/use-thread-list-v2-shelf-preferences";
 import { useEnvironmentsWithScope } from "../../state/session";
 import { AutoSettleDaysField } from "./components/AutoSettleDaysField";
@@ -172,36 +171,31 @@ export function AutoSettleSettingsRows(props: {
   );
 }
 
-const THREAD_GROUPING_OPTIONS: ReadonlyArray<{
-  readonly groupBy: SidebarGroupBy;
-  readonly label: string;
-  readonly description: string;
-}> = [
-  { groupBy: "none", label: "None", description: "List active threads together." },
-  { groupBy: "project", label: "By project", description: "A folder for each project." },
-  { groupBy: "machine", label: "By machine", description: "A folder for each machine." },
-];
-
 export function ThreadGroupingSettingsSection() {
-  const { loaded, groupBy, setGroupBy } = useThreadListV2ShelfPreferences();
-  const offered = availableSidebarGroupBy(useEnvironments().environments.length, groupBy);
+  const { loaded, grouping, toggleGrouping } = useThreadListV2ShelfPreferences();
+  const offered = offeredSidebarGroupingKinds(useEnvironments().environments.length, grouping);
 
   return (
     <View className="gap-3">
       <SettingsSection title="Group threads">
-        {THREAD_GROUPING_OPTIONS.filter((option) => offered.includes(option.groupBy)).map(
-          (option, index) => (
-            <SettingsChoiceRow
-              key={option.groupBy}
-              label={option.label}
-              description={option.description}
-              selected={groupBy === option.groupBy}
-              separated={index > 0}
-              disabled={!loaded}
-              onPress={() => setGroupBy(option.groupBy)}
-            />
-          ),
-        )}
+        <SettingsSwitchRow
+          icon="folder"
+          label="By project"
+          subtitle="A folder for each project."
+          value={grouping.project}
+          disabled={!loaded}
+          onValueChange={() => toggleGrouping("project")}
+        />
+        {offered.includes("machine") ? (
+          <SettingsSwitchRow
+            icon="desktopcomputer"
+            label="By machine"
+            subtitle="A folder for each machine, holding its project folders when both are on."
+            value={grouping.machine}
+            disabled={!loaded}
+            onValueChange={() => toggleGrouping("machine")}
+          />
+        ) : null}
       </SettingsSection>
       <Text className="px-2 text-sm text-foreground-muted">
         Pinned threads and the Working, Snoozed, and Settled sections stay shared across folders.

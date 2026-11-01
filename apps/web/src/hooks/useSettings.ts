@@ -17,8 +17,8 @@ import {
   type ClientSettings,
   DEFAULT_CLIENT_SETTINGS,
   type EnvironmentIdentificationMode,
-  resolveSidebarGroupBy,
-  type SidebarGroupBy,
+  resolveSidebarGrouping,
+  type SidebarGrouping,
   type UnifiedSettings,
 } from "@t3tools/contracts/settings";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
@@ -417,8 +417,8 @@ export function useEnvironmentIdentificationMode(): EnvironmentIdentificationMod
   });
 }
 
-export function useSidebarGroupBy(): SidebarGroupBy {
-  return useClientSettings(resolveSidebarGroupBy);
+export function useSidebarGrouping(): SidebarGrouping {
+  return useClientSettings(resolveSidebarGrouping);
 }
 
 export async function prepareModelPreferencesPatch(

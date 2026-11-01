@@ -13,7 +13,7 @@ import type {
   SidebarProjectGroupingMode,
   SidebarProjectSortOrder,
 } from "@t3tools/contracts";
-import type { SidebarGroupBy } from "@t3tools/contracts/settings";
+import type { SidebarGrouping } from "@t3tools/contracts/settings";
 import * as Arr from "effect/Array";
 import * as Order from "effect/Order";
 
@@ -148,10 +148,11 @@ export function sortHomeProjectScopes(input: {
 
 /**
  * Folders for the thread list: project scopes in the order given, or machines by name with
- * offline ones last. An offline machine starts closed, since its threads cannot change.
+ * offline ones last, holding a folder for each of their projects when both are on. An
+ * offline machine starts closed, since its threads cannot change.
  */
 export function buildHomeThreadListGrouping(input: {
-  readonly groupBy: SidebarGroupBy;
+  readonly grouping: SidebarGrouping;
   readonly folderExpanded: Readonly<Record<string, boolean>> | undefined;
   readonly projectScopes: ReadonlyArray<HomeProjectScope>;
   readonly environments: ReadonlyArray<{
@@ -161,52 +162,87 @@ export function buildHomeThreadListGrouping(input: {
   }>;
 }): ThreadListV2Grouping | null {
   const expanded = (key: string, byDefault: boolean) => input.folderExpanded?.[key] ?? byDefault;
-  switch (input.groupBy) {
-    case "none":
-      return null;
-    case "project": {
-      const scopeKeyByProjectKey = new Map(
-        input.projectScopes.flatMap((scope) =>
-          scope.projectRefs.map(
-            (ref) => [scopedProjectKey(ref.environmentId, ref.projectId), scope.key] as const,
+  const scopeKeyByProjectKey = new Map(
+    input.projectScopes.flatMap((scope) =>
+      scope.projectRefs.map(
+        (ref) => [scopedProjectKey(ref.environmentId, ref.projectId), scope.key] as const,
+      ),
+    ),
+  );
+  const scopeKeyOf = (thread: Pick<EnvironmentThreadShell, "environmentId" | "projectId">) =>
+    scopeKeyByProjectKey.get(scopedProjectKey(thread.environmentId, thread.projectId)) ?? "";
+  // A nested folder shows `project`, the scope's project on its machine.
+  const projectFolder = (
+    scope: HomeProjectScope,
+    project: EnvironmentProject,
+    nested: boolean,
+  ): ThreadListV2Folder => {
+    const key = nested ? homeMachineProjectFolderKey(project.environmentId, scope.key) : scope.key;
+    return {
+      kind: "project",
+      key,
+      label: scope.title,
+      projectKey: scopedProjectKey(project.environmentId, project.id),
+      nested,
+      expandedByDefault: true,
+      expanded: expanded(key, true),
+    };
+  };
+  if (!input.grouping.machine) {
+    return input.grouping.project
+      ? {
+          folders: input.projectScopes.map((scope) =>
+            projectFolder(scope, scope.representative, false),
           ),
-        ),
-      );
-      return {
-        folders: input.projectScopes.map((scope): ThreadListV2Folder => ({
-          kind: "project",
-          key: scope.key,
-          label: scope.title,
-          projectKey: scopedProjectKey(scope.representative.environmentId, scope.representative.id),
-          expandedByDefault: true,
-          expanded: expanded(scope.key, true),
-        })),
-        folderKeyOf: (thread) =>
-          scopeKeyByProjectKey.get(scopedProjectKey(thread.environmentId, thread.projectId)) ?? "",
-      };
-    }
-    case "machine":
-      return {
-        folders: [...input.environments]
-          .sort(
-            (left, right) =>
-              Number(left.offline) - Number(right.offline) || left.label.localeCompare(right.label),
-          )
-          .map((environment): ThreadListV2Folder => {
-            const key = homeMachineFolderKey(environment.environmentId);
-            return {
-              kind: "machine",
-              key,
-              label: environment.label,
-              environmentId: environment.environmentId,
-              offline: environment.offline,
-              expandedByDefault: !environment.offline,
-              expanded: expanded(key, !environment.offline),
-            };
-          }),
-        folderKeyOf: (thread) => homeMachineFolderKey(thread.environmentId),
-      };
+          folderKeyOf: scopeKeyOf,
+          inner: null,
+        }
+      : null;
   }
+  const environments = [...input.environments].sort(
+    (left, right) =>
+      Number(left.offline) - Number(right.offline) || left.label.localeCompare(right.label),
+  );
+  return {
+    folders: environments.map((environment): ThreadListV2Folder => {
+      const key = homeMachineFolderKey(environment.environmentId);
+      return {
+        kind: "machine",
+        key,
+        label: environment.label,
+        environmentId: environment.environmentId,
+        offline: environment.offline,
+        expandedByDefault: !environment.offline,
+        expanded: expanded(key, !environment.offline),
+      };
+    }),
+    folderKeyOf: (thread) => homeMachineFolderKey(thread.environmentId),
+    inner: input.grouping.project
+      ? {
+          foldersByKey: new Map(
+            environments.map((environment) => [
+              homeMachineFolderKey(environment.environmentId),
+              input.projectScopes.flatMap((scope) => {
+                const project =
+                  scope.representative.environmentId === environment.environmentId
+                    ? scope.representative
+                    : scope.projects.find(
+                        (candidate) => candidate.environmentId === environment.environmentId,
+                      );
+                return project ? [projectFolder(scope, project, true)] : [];
+              }),
+            ]),
+          ),
+          folderKeyOf: (thread) =>
+            homeMachineProjectFolderKey(thread.environmentId, scopeKeyOf(thread)),
+        }
+      : null,
+  };
+}
+
+/** A project folder inside a machine folder keeps its own open state. */
+function homeMachineProjectFolderKey(environmentId: EnvironmentId, scopeKey: string): string {
+  return `${homeMachineFolderKey(environmentId)}:project:${scopeKey}`;
 }
 
 /** Shares the folder state map with project folders, outside their key space. */

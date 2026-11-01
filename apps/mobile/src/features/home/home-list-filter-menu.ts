@@ -1,34 +1,45 @@
 import type { EnvironmentId } from "@t3tools/contracts";
-import { availableSidebarGroupBy, SidebarGroupBy } from "@t3tools/contracts/settings";
+import {
+  offeredSidebarGroupingKinds,
+  type SidebarGrouping,
+  SidebarGroupingKind,
+} from "@t3tools/contracts/settings";
 import type { MenuAction } from "@react-native-menu/menu";
 import * as Schema from "effect/Schema";
 
-export const THREAD_LIST_GROUP_BY_LABELS: Record<SidebarGroupBy, string> = {
-  none: "None",
+const THREAD_LIST_GROUPING_LABELS: Record<SidebarGroupingKind, string> = {
   project: "Project",
   machine: "Machine",
 };
 
-const GROUP_BY_EVENT_PREFIX = "group-by:";
-const isSidebarGroupBy = Schema.is(SidebarGroupBy);
+/** "Group" with nothing on, else what is on, outer folders first: "By machine, project". */
+export function threadListGroupingLabel(grouping: SidebarGrouping): string {
+  const kinds = (["machine", "project"] as const).filter((kind) => grouping[kind]);
+  return kinds.length === 0
+    ? "Group"
+    : `By ${kinds.map((kind) => THREAD_LIST_GROUPING_LABELS[kind].toLowerCase()).join(", ")}`;
+}
 
-/** The "Group by" submenu of the thread list's native filter menus. */
-export function buildGroupByMenuAction(groupBy: SidebarGroupBy, machineCount: number) {
+const GROUP_BY_EVENT_PREFIX = "group-by:";
+const isSidebarGroupingKind = Schema.is(SidebarGroupingKind);
+
+/** The "Group by" submenu of the thread list's native filter menus; each item toggles. */
+export function buildGroupByMenuAction(grouping: SidebarGrouping, machineCount: number) {
   return {
     id: "group-by",
     title: "Group by",
-    subactions: availableSidebarGroupBy(machineCount, groupBy).map((value) => ({
-      id: `${GROUP_BY_EVENT_PREFIX}${value}`,
-      title: THREAD_LIST_GROUP_BY_LABELS[value],
-      state: value === groupBy ? ("on" as const) : ("off" as const),
+    subactions: offeredSidebarGroupingKinds(machineCount, grouping).map((kind) => ({
+      id: `${GROUP_BY_EVENT_PREFIX}${kind}`,
+      title: THREAD_LIST_GROUPING_LABELS[kind],
+      state: grouping[kind] ? ("on" as const) : ("off" as const),
     })),
   } satisfies MenuAction;
 }
 
-export function parseGroupByMenuEvent(event: string): SidebarGroupBy | null {
+export function parseGroupByMenuEvent(event: string): SidebarGroupingKind | null {
   if (!event.startsWith(GROUP_BY_EVENT_PREFIX)) return null;
   const value = event.slice(GROUP_BY_EVENT_PREFIX.length);
-  return isSidebarGroupBy(value) ? value : null;
+  return isSidebarGroupingKind(value) ? value : null;
 }
 
 export interface HomeListFilterMenuEnvironment {
@@ -65,10 +76,10 @@ export function buildHomeListFilterMenu(props: {
   readonly projects: ReadonlyArray<HomeListFilterMenuProject>;
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
-  readonly groupBy: SidebarGroupBy;
+  readonly grouping: SidebarGrouping;
   readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
   readonly onProjectChange: (projectKey: string | null) => void;
-  readonly onGroupByChange: (groupBy: SidebarGroupBy) => void;
+  readonly onGroupingToggle: (kind: SidebarGroupingKind) => void;
 }): HomeListFilterMenu {
   const items: Array<HomeListFilterMenuAction | HomeListFilterMenuSubmenu> = [];
 
@@ -120,11 +131,11 @@ export function buildHomeListFilterMenu(props: {
   items.push({
     type: "submenu",
     title: "Group by",
-    items: availableSidebarGroupBy(props.environments.length, props.groupBy).map((groupBy) => ({
+    items: offeredSidebarGroupingKinds(props.environments.length, props.grouping).map((kind) => ({
       type: "action" as const,
-      title: THREAD_LIST_GROUP_BY_LABELS[groupBy],
-      state: props.groupBy === groupBy ? ("on" as const) : ("off" as const),
-      onPress: () => props.onGroupByChange(groupBy),
+      title: THREAD_LIST_GROUPING_LABELS[kind],
+      state: props.grouping[kind] ? ("on" as const) : ("off" as const),
+      onPress: () => props.onGroupingToggle(kind),
     })),
   });
 

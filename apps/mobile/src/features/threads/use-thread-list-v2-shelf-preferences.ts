@@ -1,5 +1,5 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import type { SidebarGroupBy } from "@t3tools/contracts/settings";
+import type { SidebarGrouping, SidebarGroupingKind } from "@t3tools/contracts/settings";
 import { AsyncResult } from "effect/reactivity";
 
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
@@ -15,9 +15,10 @@ export function useThreadListV2ShelfPreferences() {
   const workingShelfEnabled = loaded && preferencesResult.value.workingShelfEnabled !== false;
   const workingShelfExpanded =
     loaded && preferencesResult.value.threadListWorkingShelfExpanded === true;
-  const groupBy: SidebarGroupBy = loaded
-    ? (preferencesResult.value.threadListGroupBy ?? "none")
-    : "none";
+  const grouping: SidebarGrouping = {
+    project: loaded && preferencesResult.value.threadListGroupByProject === true,
+    machine: loaded && preferencesResult.value.threadListGroupByMachine === true,
+  };
   const folderExpanded = loaded ? preferencesResult.value.threadListFolderExpanded : undefined;
 
   // Transforms read optimistic state so same-frame presses toggle twice.
@@ -46,9 +47,14 @@ export function useThreadListV2ShelfPreferences() {
     });
   };
 
-  const setGroupBy = (value: SidebarGroupBy) => {
+  const toggleGrouping = (kind: SidebarGroupingKind) => {
     if (!loaded) return;
-    savePreferences({ threadListGroupBy: value });
+    savePreferences({
+      transform: (current) =>
+        kind === "project"
+          ? { threadListGroupByProject: current.threadListGroupByProject !== true }
+          : { threadListGroupByMachine: current.threadListGroupByMachine !== true },
+    });
   };
   // A folder's default depends on its kind, so the caller passes it.
   const toggleFolder = (key: string, expandedByDefault: boolean) => {
@@ -65,9 +71,9 @@ export function useThreadListV2ShelfPreferences() {
 
   return {
     loaded,
-    groupBy,
+    grouping,
     folderExpanded,
-    setGroupBy,
+    toggleGrouping,
     toggleFolder,
     settledShelfExpanded,
     snoozedShelfExpanded,

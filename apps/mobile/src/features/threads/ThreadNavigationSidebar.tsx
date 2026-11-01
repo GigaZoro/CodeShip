@@ -280,9 +280,9 @@ function ThreadNavigationSidebarPane(
     snoozedShelfExpanded,
     workingShelfEnabled,
     workingShelfExpanded,
-    groupBy,
+    grouping: groupBy,
     folderExpanded,
-    setGroupBy,
+    toggleGrouping,
     toggleFolder,
     toggleSettledShelf,
     toggleSnoozedShelf,
@@ -294,17 +294,16 @@ function ThreadNavigationSidebarPane(
     ),
   );
   const grouping = buildHomeThreadListGrouping({
-    groupBy,
+    grouping: groupBy,
     folderExpanded,
-    projectScopes:
-      groupBy === "project"
-        ? sortHomeProjectScopes({
-            scopes: projectScopes,
-            threads,
-            pendingTasks,
-            projectSortOrder: options.projectSortOrder,
-          })
-        : projectScopes,
+    projectScopes: groupBy.project
+      ? sortHomeProjectScopes({
+          scopes: projectScopes,
+          threads,
+          pendingTasks,
+          projectSortOrder: options.projectSortOrder,
+        })
+      : projectScopes,
     environments: environments
       .filter(
         (environment) =>
@@ -431,9 +430,9 @@ function ThreadNavigationSidebarPane(
     readonly nativeEvent: { readonly event: string };
   }) => {
     const event = nativeEvent.event;
-    const nextGroupBy = parseGroupByMenuEvent(event);
-    if (nextGroupBy !== null) {
-      setGroupBy(nextGroupBy);
+    const groupingKind = parseGroupByMenuEvent(event);
+    if (groupingKind !== null) {
+      toggleGrouping(groupingKind);
       return;
     }
     if (event === "environment:all") {
@@ -523,7 +522,8 @@ function ThreadNavigationSidebarPane(
     listEnvironments,
     threadSearchMatchByKey,
     workingShelfEnabled,
-    groupBy,
+    groupByProject: groupBy.project,
+    groupByMachine: groupBy.machine,
   };
   useThreadJumpShortcuts(listItems, handleSelectThread);
   const sidebarItemsAreEqual = (previous: SidebarListItem, item: SidebarListItem): boolean => {
@@ -742,10 +742,10 @@ function ThreadNavigationSidebarPane(
     projects: projectFilterOptions,
     selectedEnvironmentId: options.selectedEnvironmentId,
     selectedProjectKey,
-    groupBy,
+    grouping: groupBy,
     onEnvironmentChange: setSelectedEnvironmentId,
     onProjectChange: setSelectedProjectKey,
-    onGroupByChange: setGroupBy,
+    onGroupingToggle: toggleGrouping,
   });
   const nativeHeaderItems = createSidebarHeaderItems({
     filterIcon,

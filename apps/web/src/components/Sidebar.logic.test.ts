@@ -35,6 +35,7 @@ import {
   type SidebarSection,
   resolveSidebarDropVerb,
   groupSidebarThreadsByMachine,
+  groupSidebarThreadsByMachineAndProject,
   groupSidebarThreadsByProject,
   resolveSidebarFolderDot,
   resolveSidebarScopedProjectKeys,
@@ -1479,6 +1480,69 @@ describe("groupSidebarThreadsByMachine", () => {
       ["Build box", []],
       ["Hetzner VPS", ["a", "d"]],
       ["Cloud sandbox", ["c"]],
+    ]);
+  });
+});
+
+describe("groupSidebarThreadsByMachineAndProject", () => {
+  it("splits a project across machines and starts each folder's threads on its own machine", () => {
+    const remoteEnvironmentId = EnvironmentId.make("environment-remote");
+    const member = (environmentId: EnvironmentId, id: string) => ({
+      environmentId,
+      id,
+      projectId: ProjectId.make(id),
+    });
+    const t3codeLocal = member(localEnvironmentId, "t3code");
+    const t3codeRemote = member(remoteEnvironmentId, "t3code-remote");
+    const fleet = member(localEnvironmentId, "fleet");
+    const group = (projectKey: string, members: (typeof t3codeLocal)[]) => ({
+      projectKey,
+      environmentId: members[0]!.environmentId,
+      id: members[0]!.id,
+      memberProjects: members,
+      memberProjectRefs: members.map(({ environmentId, projectId }) => ({
+        environmentId,
+        projectId,
+      })),
+    });
+    const thread = (id: string, project: typeof t3codeLocal) => ({
+      id,
+      environmentId: project.environmentId,
+      projectId: project.projectId,
+    });
+    const summarize = (keepEmptyProjects: boolean) =>
+      groupSidebarThreadsByMachineAndProject({
+        machines: [
+          { environmentId: localEnvironmentId },
+          { environmentId: remoteEnvironmentId },
+          { environmentId: EnvironmentId.make("idle") },
+        ],
+        groups: [group("t3code", [t3codeLocal, t3codeRemote]), group("fleet", [fleet])],
+        threads: [thread("a", t3codeRemote), thread("b", t3codeLocal), thread("c", t3codeRemote)],
+        keepEnvironmentIds: new Set(),
+        keepEmptyProjects,
+      }).map((folder) => [
+        folder.machine.environmentId,
+        folder.projects.map((project) => [
+          project.group.projectKey,
+          project.member.id,
+          project.threads.map((entry) => entry.id),
+        ]),
+      ]);
+
+    expect(summarize(false)).toEqual([
+      [localEnvironmentId, [["t3code", "t3code", ["b"]]]],
+      [remoteEnvironmentId, [["t3code", "t3code-remote", ["a", "c"]]]],
+    ]);
+    expect(summarize(true)).toEqual([
+      [
+        localEnvironmentId,
+        [
+          ["t3code", "t3code", ["b"]],
+          ["fleet", "fleet", []],
+        ],
+      ],
+      [remoteEnvironmentId, [["t3code", "t3code-remote", ["a", "c"]]]],
     ]);
   });
 });

@@ -17,7 +17,7 @@ import { foldSearchQuery, rankSearchItems, scoreThreadSearch } from "@t3tools/sh
 import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import type { ContextMenuItem, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type {
-  SidebarGroupBy,
+  SidebarGrouping,
   SidebarProjectSortOrder,
   SidebarThreadSortOrder,
 } from "@t3tools/contracts/settings";
@@ -759,10 +759,10 @@ export function isSidebarNestedLinkClick(target: EventTarget | null): boolean {
 
 /** Project folders already show where a new thread lands; any other list asks which project. */
 export function newThreadAsksForProject(
-  groupBy: SidebarGroupBy,
+  grouping: SidebarGrouping,
   projectGroupCount: number,
 ): boolean {
-  return groupBy !== "project" && projectGroupCount > 1;
+  return !grouping.project && projectGroupCount > 1;
 }
 
 export function orderItemsByPreferredIds<TItem, TId>(input: {
@@ -1032,6 +1032,59 @@ export function groupSidebarThreadsByMachine<
   return folders.filter(
     (folder) => folder.threads.length > 0 || keepEnvironmentIds.has(folder.machine.environmentId),
   );
+}
+
+/** A project folder inside a machine folder keeps its own open state. */
+export function sidebarMachineProjectFolderKey(
+  environmentId: EnvironmentId,
+  projectKey: string,
+): string {
+  return `${sidebarMachineFolderKey(environmentId)}:project:${projectKey}`;
+}
+
+/**
+ * Machine folders holding project folders. A project on several machines gets a folder
+ * on each, with that machine's threads and `member`, its project there. A machine is
+ * left out when it has no project folder, unless `keepEnvironmentIds` has it.
+ */
+export function groupSidebarThreadsByMachineAndProject<
+  TMachine extends { readonly environmentId: EnvironmentId },
+  TGroup extends SidebarProjectGroupRefs & {
+    readonly id: string;
+    readonly memberProjects: ReadonlyArray<{
+      readonly environmentId: EnvironmentId;
+      readonly id: string;
+    }>;
+  },
+  TThread extends Pick<SidebarThreadSummary, "environmentId" | "projectId">,
+>(input: {
+  readonly machines: readonly TMachine[];
+  readonly groups: readonly TGroup[];
+  readonly threads: readonly TThread[];
+  readonly keepEnvironmentIds: ReadonlySet<EnvironmentId>;
+  readonly keepEmptyProjects: boolean;
+}): Array<{
+  machine: TMachine;
+  projects: Array<{ group: TGroup; member: TGroup["memberProjects"][number]; threads: TThread[] }>;
+}> {
+  return input.machines.flatMap((machine) => {
+    const memberByGroup = new Map<TGroup, TGroup["memberProjects"][number]>();
+    for (const group of input.groups) {
+      const members = group.memberProjects.filter(
+        (member) => member.environmentId === machine.environmentId,
+      );
+      const member = members.find((candidate) => candidate.id === group.id) ?? members[0];
+      if (member) memberByGroup.set(group, member);
+    }
+    const projects = groupSidebarThreadsByProject(
+      [...memberByGroup.keys()],
+      input.threads.filter((thread) => thread.environmentId === machine.environmentId),
+      input.keepEmptyProjects,
+    ).map((folder) => ({ ...folder, member: memberByGroup.get(folder.group)! }));
+    return projects.length > 0 || input.keepEnvironmentIds.has(machine.environmentId)
+      ? [{ machine, projects }]
+      : [];
+  });
 }
 
 /**

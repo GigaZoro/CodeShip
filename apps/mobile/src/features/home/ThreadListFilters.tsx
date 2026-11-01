@@ -1,9 +1,12 @@
-import { availableSidebarGroupBy } from "@t3tools/contracts/settings";
 import { Pressable, ScrollView } from "react-native";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { ListFilterMenu } from "../workspace/ListFilterMenu";
 import type { HomeHeaderProps } from "./HomeHeader.types";
-import { THREAD_LIST_GROUP_BY_LABELS } from "./home-list-filter-menu";
+import {
+  buildGroupByMenuAction,
+  parseGroupByMenuEvent,
+  threadListGroupingLabel,
+} from "./home-list-filter-menu";
 
 export function ThreadListFilters(
   props: Pick<
@@ -14,8 +17,8 @@ export function ThreadListFilters(
     | "selectedProjectKey"
     | "onEnvironmentChange"
     | "onProjectChange"
-    | "groupBy"
-    | "onGroupByChange"
+    | "grouping"
+    | "onGroupingToggle"
   > & {
     /** List padding the scroller bleeds through so pills start where row content does. */
     readonly gutter: number;
@@ -90,25 +93,13 @@ export function ThreadListFilters(
         }}
       />
       <ListFilterMenu
-        label={
-          props.groupBy === "none"
-            ? "Group"
-            : `By ${THREAD_LIST_GROUP_BY_LABELS[props.groupBy].toLowerCase()}`
-        }
+        label={threadListGroupingLabel(props.grouping)}
         accessibilityLabel="Group threads"
-        active={props.groupBy !== "none"}
-        actions={availableSidebarGroupBy(props.environments.length, props.groupBy).map(
-          (groupBy) => ({
-            id: groupBy,
-            title: THREAD_LIST_GROUP_BY_LABELS[groupBy],
-            state: groupBy === props.groupBy ? ("on" as const) : ("off" as const),
-          }),
-        )}
+        active={props.grouping.project || props.grouping.machine}
+        actions={buildGroupByMenuAction(props.grouping, props.environments.length).subactions}
         onSelect={(id) => {
-          const groupBy = availableSidebarGroupBy(props.environments.length, props.groupBy).find(
-            (candidate) => candidate === id,
-          );
-          if (groupBy) props.onGroupByChange(groupBy);
+          const kind = parseGroupByMenuEvent(id);
+          if (kind) props.onGroupingToggle(kind);
         }}
       />
       {props.selectedEnvironmentId !== null || props.selectedProjectKey !== null ? (

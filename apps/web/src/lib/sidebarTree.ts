@@ -86,12 +86,16 @@ export function installSidebarTree(root: HTMLElement) {
     tabStop = selected;
     setTabIndex(root, selected ? -1 : 0);
     const siblings = new Map<string, HTMLElement[]>();
+    // Parents precede their rows, so a parent's level is known when its rows arrive.
+    const levelById = new Map<string, number>();
     for (const row of rows) {
       const parent = row.dataset.sidebarParent ?? "";
       const group = siblings.get(parent) ?? [];
       group.push(row);
       siblings.set(parent, group);
-      setAttribute(row, "aria-level", parent ? "2" : "1");
+      const level = parent ? (levelById.get(parent) ?? 1) + 1 : 1;
+      if (row.dataset.sidebarRow) levelById.set(row.dataset.sidebarRow, level);
+      setAttribute(row, "aria-level", String(level));
       setTabIndex(row, row === selected ? 0 : -1);
     }
     const byId = new Map(rows.map((row) => [row.dataset.sidebarRow, row]));

@@ -310,6 +310,7 @@ export const ThreadListV2FolderHeader = memo(function ThreadListV2FolderHeader(p
   const mutedText = sidebarPane ? "text-drawer-foreground-muted" : "text-foreground-muted";
   const mutedTint = sidebarPane ? "accent-drawer-foreground-muted" : "accent-foreground-muted";
   const offline = folder.kind === "machine" && folder.offline;
+  const nested = folder.kind === "project" && folder.nested;
   return (
     <Pressable
       accessibilityRole="button"
@@ -325,7 +326,12 @@ export const ThreadListV2FolderHeader = memo(function ThreadListV2FolderHeader(p
         .join(", ")}
       accessibilityHint={`${folder.expanded ? "Collapses" : "Expands"} the folder.`}
       accessibilityState={{ expanded: folder.expanded }}
-      className={cn("mt-3 min-h-11 flex-row items-center gap-2.5", sidebarPane ? "px-3" : "px-5")}
+      className={cn(
+        "min-h-11 flex-row items-center gap-2.5",
+        sidebarPane ? "px-3" : "px-5",
+        // Lines the icon up with the machine folder's name.
+        nested ? (sidebarPane ? "pl-9" : "pl-11") : "mt-3",
+      )}
       onPress={() => props.onToggle(folder)}
       style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
     >

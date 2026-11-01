@@ -87,6 +87,19 @@ describe("sidebar keyboard navigation", () => {
     expect(group.getAttribute("aria-expanded")).toBe("false");
   });
 
+  it("levels rows by their depth under nested folders", () => {
+    using tree = setup();
+    const machine = tree.row("machine");
+    const project = tree.row("project", "machine");
+    const thread = tree.row("thread", "project");
+    tree.install();
+    expect([machine, project, thread].map((row) => row.getAttribute("aria-level"))).toEqual([
+      "1",
+      "2",
+      "3",
+    ]);
+  });
+
   it("opens the row menu on Shift+F10 release without moving focus", () => {
     using tree = setup();
     tree.row("first");

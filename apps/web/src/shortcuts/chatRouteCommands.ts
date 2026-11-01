@@ -1,5 +1,5 @@
 import { AuthPreviewOperateScope, type EnvironmentId } from "@t3tools/contracts";
-import { resolveSidebarGroupBy } from "@t3tools/contracts/settings";
+import { resolveSidebarGrouping } from "@t3tools/contracts/settings";
 import type { AnyRouter } from "@tanstack/react-router";
 
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
@@ -121,7 +121,7 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
       "chat.new": (event) => {
         if (
           newThreadAsksForProject(
-            resolveSidebarGroupBy(getClientSettings()),
+            resolveSidebarGrouping(getClientSettings()),
             readProjectGroupCount(),
           )
         ) {

@@ -50,13 +50,13 @@ export function HomeHeader(props: HomeHeaderProps) {
             ],
           },
         ] satisfies MenuAction[])),
-    buildGroupByMenuAction(props.groupBy, props.environments.length),
+    buildGroupByMenuAction(props.grouping, props.environments.length),
   ];
   const handleMenuAction = (event: { nativeEvent: { event: string } }) => {
     const id = event.nativeEvent.event;
-    const groupBy = parseGroupByMenuEvent(id);
-    if (groupBy !== null) {
-      props.onGroupByChange(groupBy);
+    const groupingKind = parseGroupByMenuEvent(id);
+    if (groupingKind !== null) {
+      props.onGroupingToggle(groupingKind);
       return;
     }
     if (id === "environment:all") {

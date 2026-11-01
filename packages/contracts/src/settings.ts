@@ -72,8 +72,10 @@ export const SidebarProjectGroupingMode = Schema.Literals([
 ]);
 export type SidebarProjectGroupingMode = typeof SidebarProjectGroupingMode.Type;
 const DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE: SidebarProjectGroupingMode = "repository";
-export const SidebarGroupBy = Schema.Literals(["none", "project", "machine"]);
-export type SidebarGroupBy = typeof SidebarGroupBy.Type;
+/** Folder kinds the sidebar can group active threads by. Machine folders hold project folders. */
+export const SidebarGroupingKind = Schema.Literals(["project", "machine"]);
+export type SidebarGroupingKind = typeof SidebarGroupingKind.Type;
+export type SidebarGrouping = Readonly<Record<SidebarGroupingKind, boolean>>;
 export const MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS = 1;
 export const MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS = 90;
 export const SidebarAutoSettleAfterDays = Schema.Number.check(
@@ -475,8 +477,15 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   proactivePanelsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   showSkillsInSlashMenu: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
-  // Null until the user picks a grouping; `resolveSidebarGroupBy` then reads the older opt-ins.
-  sidebarGroupBy: Schema.NullOr(SidebarGroupBy).pipe(
+  // Null until the user flips the toggle; `resolveSidebarGrouping` then reads the older opt-ins.
+  sidebarGroupByProject: Schema.NullOr(Schema.Boolean).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  sidebarGroupByMachine: Schema.NullOr(Schema.Boolean).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  // Retired single grouping choice, read by `resolveSidebarGrouping` until a toggle is set.
+  sidebarGroupBy: Schema.NullOr(Schema.Literals(["none", "project", "machine"])).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   // Opt-in for the retired Labs "boring sidebar" switch, read as project grouping.
@@ -532,22 +541,31 @@ export type ClientSettings = typeof ClientSettingsSchema.Type;
 
 export const DEFAULT_CLIENT_SETTINGS: ClientSettings = Schema.decodeSync(ClientSettingsSchema)({});
 
-export const resolveSidebarGroupBy = (
+export const resolveSidebarGrouping = (
   settings: Pick<
     ClientSettings,
-    "sidebarGroupBy" | "boringSidebarEnabled" | "legacySidebarEnabled"
+    | "sidebarGroupByProject"
+    | "sidebarGroupByMachine"
+    | "sidebarGroupBy"
+    | "boringSidebarEnabled"
+    | "legacySidebarEnabled"
   >,
-): SidebarGroupBy =>
-  settings.sidebarGroupBy ??
-  (settings.boringSidebarEnabled || settings.legacySidebarEnabled ? "project" : "none");
+): SidebarGrouping => ({
+  project:
+    settings.sidebarGroupByProject ??
+    (settings.sidebarGroupBy === null
+      ? settings.boringSidebarEnabled || settings.legacySidebarEnabled
+      : settings.sidebarGroupBy === "project"),
+  machine: settings.sidebarGroupByMachine ?? settings.sidebarGroupBy === "machine",
+});
 
-/** One machine would make one folder, so "machine" is offered from two, or while chosen. */
-export const availableSidebarGroupBy = (
+/** One machine would make one folder, so machine folders are offered from two, or while on. */
+export const offeredSidebarGroupingKinds = (
   machineCount: number,
-  current: SidebarGroupBy,
-): ReadonlyArray<SidebarGroupBy> =>
-  SidebarGroupBy.literals.filter(
-    (groupBy) => groupBy !== "machine" || machineCount > 1 || current === "machine",
+  grouping: SidebarGrouping,
+): ReadonlyArray<SidebarGroupingKind> =>
+  SidebarGroupingKind.literals.filter(
+    (kind) => kind !== "machine" || machineCount > 1 || grouping.machine,
   );
 
 const UsageModelTokenPrice = Schema.Number.check(
@@ -1861,7 +1879,8 @@ export const ClientSettingsPatch = Schema.Struct({
   followUpBehavior: Schema.optionalKey(Schema.Literals(["queue", "steer"])),
   proactivePanelsEnabled: Schema.optionalKey(Schema.Boolean),
   showSkillsInSlashMenu: Schema.optionalKey(Schema.Boolean),
-  sidebarGroupBy: Schema.optionalKey(SidebarGroupBy),
+  sidebarGroupByProject: Schema.optionalKey(Schema.Boolean),
+  sidebarGroupByMachine: Schema.optionalKey(Schema.Boolean),
   boringSidebarMultilineRows: Schema.optionalKey(Schema.Boolean),
   threadDetailsUsageEnabled: Schema.optionalKey(Schema.Boolean),
   threadDetailsItems: Schema.optionalKey(Schema.Record(Schema.String, Schema.Boolean)),

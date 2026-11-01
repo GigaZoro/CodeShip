@@ -425,26 +425,25 @@ export function HomeScreen(props: HomeScreenProps) {
     snoozedShelfExpanded,
     workingShelfEnabled,
     workingShelfExpanded,
-    groupBy,
+    grouping: groupBy,
     folderExpanded,
-    setGroupBy,
+    toggleGrouping,
     toggleFolder,
     toggleSettledShelf,
     toggleSnoozedShelf,
     toggleWorkingShelf,
   } = useThreadListV2ShelfPreferences();
   const grouping = buildHomeThreadListGrouping({
-    groupBy,
+    grouping: groupBy,
     folderExpanded,
-    projectScopes:
-      groupBy === "project"
-        ? sortHomeProjectScopes({
-            scopes: projectScopes,
-            threads: props.threads,
-            pendingTasks: props.pendingTasks,
-            projectSortOrder: props.projectSortOrder,
-          })
-        : projectScopes,
+    projectScopes: groupBy.project
+      ? sortHomeProjectScopes({
+          scopes: projectScopes,
+          threads: props.threads,
+          pendingTasks: props.pendingTasks,
+          projectSortOrder: props.projectSortOrder,
+        })
+      : projectScopes,
     environments: props.environments
       .filter(
         (environment) =>
@@ -700,7 +699,8 @@ export function HomeScreen(props: HomeScreenProps) {
     selectedThreadKey,
     threadSearchMatchByKey,
     workingShelfEnabled,
-    groupBy,
+    groupByProject: groupBy.project,
+    groupByMachine: groupBy.machine,
   };
 
   const hasAnyThreads =
@@ -775,10 +775,10 @@ export function HomeScreen(props: HomeScreenProps) {
           projects={projectScopes.map((scope) => ({ key: scope.key, label: scope.title }))}
           selectedEnvironmentId={props.selectedEnvironmentId}
           selectedProjectKey={props.selectedProjectKey}
-          groupBy={groupBy}
+          grouping={groupBy}
           onEnvironmentChange={props.onEnvironmentChange}
           onProjectChange={props.onProjectChange}
-          onGroupByChange={setGroupBy}
+          onGroupingToggle={toggleGrouping}
         />
       ) : null}
     </>
