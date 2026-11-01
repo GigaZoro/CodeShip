@@ -816,7 +816,11 @@ export function GeneralSettingsPanel() {
         ) : null}
         <SettingsRow
           {...searchableSetting("project-grouping")}
-          description="Show the same repository on different machines or paths as one project, in folders, filters, and the project picker."
+          description={
+            sidebarGrouping.machine
+              ? "Show the same repository as one project in filters and the project picker, and let new threads switch between its machines. Machine folders still list it under each machine."
+              : "Show the same repository on different machines or paths as one project, in folders, filters, and the project picker."
+          }
           resetAction={
             settings.sidebarProjectGroupingMode !==
             DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode ? (

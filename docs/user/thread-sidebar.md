@@ -160,7 +160,9 @@ once you have more than one machine. Each device keeps its own choice.
 
 **Combine matching projects**, in the same settings, decides what counts as one project: on, the
 same repository on different machines or paths is one project, with one folder and one filter
-entry; off, each checkout is its own project.
+entry; off, each checkout is its own project. Machine folders still list a project under each
+machine, so with them on, this mostly decides the filter and the project picker, and whether a new
+thread can switch to another machine that has the project.
 
 Click or tap a folder to open or close it. A closed folder shows how many threads it holds, and a
 dot when one of them needs you. A machine that is offline shows **Offline** and starts closed.

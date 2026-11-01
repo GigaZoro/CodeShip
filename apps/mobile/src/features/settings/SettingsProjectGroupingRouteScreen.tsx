@@ -48,6 +48,9 @@ export function SettingsProjectGroupingRouteScreen() {
   const selectedMode = AsyncResult.isSuccess(preferencesResult)
     ? resolveMobileProjectGroupingSettings(preferencesResult.value).sidebarProjectGroupingMode
     : null;
+  const groupedByMachine =
+    AsyncResult.isSuccess(preferencesResult) &&
+    preferencesResult.value.threadListGroupByMachine === true;
 
   return (
     <SettingsScreen title="General">
@@ -58,7 +61,14 @@ export function SettingsProjectGroupingRouteScreen() {
         contentContainerClassName="gap-3 px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
-        <SettingsSection title="Combine matching projects">
+        <SettingsSection
+          title="Combine matching projects"
+          footer={
+            groupedByMachine
+              ? "Machine folders still list a project under each machine it is on. This decides how it shows in filters and the project picker."
+              : undefined
+          }
+        >
           {GROUPING_OPTIONS.map((option, index) => (
             <SettingsChoiceRow
               key={option.mode}
