@@ -2,7 +2,9 @@
 
 The app you use and the server running your agents can be on different machines.
 When a server is behind your web or desktop app, the update button at the bottom
-of the sidebar and **Settings → Environments** offer to update it.
+of the sidebar and **Settings → Environments** offer to update it. The desktop
+app checks for new releases on its own, so the update button appears only when
+there is something to update.
 
 ## Update everything at once
 

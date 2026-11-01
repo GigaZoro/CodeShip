@@ -32,12 +32,12 @@ import { AboutVersionTitle } from "./AboutVersionTitle";
 import { CliCommandSettingsRow } from "./CliCommandSettingsRow";
 import { MobileAppSettingsRow } from "./MobileAppSettingsRow";
 import {
-  canCheckForUpdate,
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateDisabledReason,
   getDesktopUpdateInstallConfirmationMessage,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
+  resolveDesktopUpdatePendingAction,
 } from "../../components/desktopUpdate.logic";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
@@ -237,55 +237,25 @@ function AboutVersionSection() {
           );
         })
         .finally(() => setIsUpdateActionPending(false));
-      return;
     }
-
-    if (typeof bridge.checkForUpdate !== "function") return;
-    void bridge
-      .checkForUpdate()
-      .then((result) => {
-        if (!result.checked) {
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Could not check for updates",
-              description:
-                result.state.message ?? "Automatic updates are not available in this build.",
-            }),
-          );
-        }
-      })
-      .catch((error: unknown) => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not check for updates",
-            description: error instanceof Error ? error.message : "Update check failed.",
-          }),
-        );
-      });
   };
 
-  const action = updateState ? resolveDesktopUpdateButtonAction(updateState) : "none";
+  // Updates are checked automatically, so the button appears only for an update to act on.
+  const pendingAction = resolveDesktopUpdatePendingAction(updateState);
+  const isDownloading = updateState?.status === "downloading";
+  const showUpdateButton = pendingAction !== "none" || isDownloading;
   const buttonTooltip = updateState ? getDesktopUpdateButtonTooltip(updateState) : null;
+  // The updater holds a found update until its background recheck finishes.
   const buttonDisabled =
-    action === "none"
-      ? !canCheckForUpdate(updateState)
-      : isDesktopUpdateButtonDisabled(updateState);
-
-  const actionLabel: Record<string, string> = { download: "Download", install: "Install" };
-  const statusLabel: Record<string, string> = {
-    checking: "Checking…",
-    downloading: "Downloading…",
-    // Off its track, "up to date" only means no switch is pending; Review moves it.
-    ...(appOffTrack ? {} : { "up-to-date": "Up to Date" }),
-  };
-  const buttonLabel =
-    actionLabel[action] ?? statusLabel[updateState?.status ?? ""] ?? "Check for Updates";
-  const description =
-    action === "download" || action === "install"
-      ? "Update available."
-      : (getDesktopUpdateDisabledReason(updateState) ?? "Current version of the application.");
+    updateState?.status === "checking" || isDesktopUpdateButtonDisabled(updateState);
+  const buttonLabel = isDownloading
+    ? "Downloading…"
+    : pendingAction === "install"
+      ? "Install"
+      : "Download";
+  const description = showUpdateButton
+    ? "Update available."
+    : (getDesktopUpdateDisabledReason(updateState) ?? "Current version of the application.");
 
   return (
     <>
@@ -294,21 +264,23 @@ function AboutVersionSection() {
         title={<AboutVersionTitle />}
         description={description}
         control={
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={buttonDisabled || isUpdateActionPending}
-                  onClick={handleButtonClick}
-                >
-                  {buttonLabel}
-                </Button>
-              }
-            />
-            {buttonTooltip ? <TooltipPopup>{buttonTooltip}</TooltipPopup> : null}
-          </Tooltip>
+          showUpdateButton ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={buttonDisabled || isUpdateActionPending}
+                    onClick={handleButtonClick}
+                  >
+                    {buttonLabel}
+                  </Button>
+                }
+              />
+              {buttonTooltip ? <TooltipPopup>{buttonTooltip}</TooltipPopup> : null}
+            </Tooltip>
+          ) : undefined
         }
       />
       {hasDesktopBridge ? (

@@ -105,6 +105,19 @@ describe("SidebarUpdatePill release notes", () => {
   });
 });
 
+describe("SidebarUpdatePill visibility", () => {
+  it("shows no button until an update is found", async () => {
+    setup({ ...nightlyUpdate([]), status: "up-to-date", availableVersion: null });
+    await using screen = await render(<SidebarUpdatePill />);
+    expect(document.querySelector("button")).toBeNull();
+
+    await publish(nightlyUpdate([]));
+    await expect
+      .element(screen.getByRole("button", { name: "Update 0.0.50-nightly.2 ready to download" }))
+      .toBeVisible();
+  });
+});
+
 describe("SidebarUpdatePill update everything", () => {
   it("does not refocus the update button after a pointer cancel", async () => {
     setup(null, { hasUpdates: true });

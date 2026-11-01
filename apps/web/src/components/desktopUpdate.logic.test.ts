@@ -2,11 +2,11 @@ import { describe, expect, it } from "vite-plus/test";
 import type { DesktopUpdateState } from "@t3tools/contracts";
 
 import {
-  canCheckForUpdate,
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateReleaseHistoryUrl,
   getDesktopUpdateReleaseUrl,
   resolveDesktopUpdateButtonAction,
+  resolveDesktopUpdatePendingAction,
 } from "./desktopUpdate.logic";
 
 const baseState: DesktopUpdateState = {
@@ -64,6 +64,16 @@ describe("desktop update button state", () => {
   });
 });
 
+describe("resolveDesktopUpdatePendingAction", () => {
+  it.each([
+    ["a first check", { status: "checking" }, "none"],
+    ["a recheck after a download", { status: "checking", downloadedVersion: "1.1.0" }, "install"],
+    ["a recheck before a download", { status: "checking", availableVersion: "1.1.0" }, "download"],
+  ] as const)("shows %s as %s", (_name, patch, expected) => {
+    expect(resolveDesktopUpdatePendingAction({ ...baseState, ...patch })).toBe(expected);
+  });
+});
+
 describe("desktop update UI helpers", () => {
   it.each(["owner/repo/extra", "owner#notes/repo", "owner/repo?tab=notes"])(
     "falls back to upstream for an invalid configured repository: %s",
@@ -76,17 +86,4 @@ describe("desktop update UI helpers", () => {
       );
     },
   );
-});
-
-describe("canCheckForUpdate", () => {
-  it("returns true once an update has been downloaded so newer releases can be found", () => {
-    expect(
-      canCheckForUpdate({
-        ...baseState,
-        status: "downloaded",
-        availableVersion: "1.1.0",
-        downloadedVersion: "1.1.0",
-      }),
-    ).toBe(true);
-  });
 });

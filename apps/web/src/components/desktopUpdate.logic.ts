@@ -63,6 +63,19 @@ export function resolveDesktopUpdateButtonAction(
   return "none";
 }
 
+/**
+ * Updates are checked automatically, so update controls appear only for an update to act on.
+ * A background recheck briefly reports "checking"; an update it already found stays on screen.
+ */
+export function resolveDesktopUpdatePendingAction(
+  state: DesktopUpdateState | null,
+): DesktopUpdateButtonAction {
+  if (!state) return "none";
+  if (state.status !== "checking") return resolveDesktopUpdateButtonAction(state);
+  if (state.downloadedVersion) return "install";
+  return state.availableVersion ? "download" : "none";
+}
+
 export function shouldShowArm64IntelBuildWarning(state: DesktopUpdateState | null): boolean {
   return state?.hostArch === "arm64" && state.appArch === "x64";
 }
@@ -94,6 +107,7 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
   ) {
     return `Update ${state.notAppliedVersion} did not apply. Click to retry.`;
   }
+  if (state.status === "checking") return "Checking for updates…";
   if (state.status === "available") {
     return `Update ${state.availableVersion ?? "available"} ready to download`;
   }
@@ -138,25 +152,9 @@ export function shouldToastDesktopUpdateActionResult(result: DesktopUpdateAction
   return getDesktopUpdateActionError(result) !== null;
 }
 
-export function canCheckForUpdate(state: DesktopUpdateState | null): boolean {
-  if (!state || !state.enabled) return false;
-  return (
-    state.status !== "checking" && state.status !== "downloading" && state.status !== "disabled"
-  );
-}
-
 export function getDesktopUpdateDisabledReason(
   state: Pick<DesktopUpdateState, "enabled" | "status" | "message"> | null,
 ): string | null {
   if (!state || (state.enabled && state.status !== "disabled")) return null;
   return state.message?.trim() || "Automatic updates are not available in this build.";
-}
-
-export function getDesktopUpdateIdleTooltip(
-  state: Pick<DesktopUpdateState, "enabled" | "status" | "message"> | null,
-) {
-  const disabledReason = getDesktopUpdateDisabledReason(state);
-  return disabledReason
-    ? { title: "Updates unavailable", detail: disabledReason }
-    : { title: "Check for updates", detail: null };
 }
