@@ -443,11 +443,40 @@ export const draftPenClassName = "size-3 shrink-0 text-warning-foreground";
 export const SIDEBAR_SORTABLE_DRAG_DISABLED = { draggable: true } as const;
 const SIDEBAR_SORTABLE_DRAG_ENABLED = { draggable: false } as const;
 
+type ListThreadRowProps = Omit<SidebarThreadRowProps, "sortable" | "copy">;
+
 // Takes the row's props rather than a render function: a closure from the
 // sidebar body is new on every sidebar render, which rebuilt the bag and
 // re-rendered every memoized row with it.
+/** A null `sortableId` makes a copy, a second row for a thread whose own row drags. */
 export function SortableThreadRow(
-  props: Omit<SidebarThreadRowProps, "sortable"> & {
+  props: ListThreadRowProps & {
+    sortableId: string | null;
+    sortableDisabled: boolean;
+    contextDrag: boolean;
+  },
+) {
+  const { sortableId, sortableDisabled, contextDrag, ...rowProps } = props;
+  return sortableId === null ? (
+    <SidebarThreadRowCopy {...rowProps} />
+  ) : (
+    <DraggableThreadRow
+      {...rowProps}
+      sortableId={sortableId}
+      sortableDisabled={sortableDisabled}
+      contextDrag={contextDrag}
+    />
+  );
+}
+
+function SidebarThreadRowCopy(props: ListThreadRowProps) {
+  const thread =
+    useThreadShell(scopeThreadRef(props.thread.environmentId, props.thread.id)) ?? props.thread;
+  return <SidebarThreadRow key={props.variant} {...props} copy thread={thread} />;
+}
+
+function DraggableThreadRow(
+  props: ListThreadRowProps & {
     sortableId: string;
     sortableDisabled: boolean;
     contextDrag: boolean;
@@ -481,7 +510,15 @@ export function SortableThreadRow(
     useThreadShell(scopeThreadRef(rowProps.thread.environmentId, rowProps.thread.id)) ??
     rowProps.thread;
   // Keyed by variant so a card/slim switch remounts the row.
-  return <SidebarThreadRow key={rowProps.variant} {...rowProps} thread={thread} sortable={bag} />;
+  return (
+    <SidebarThreadRow
+      key={rowProps.variant}
+      {...rowProps}
+      copy={false}
+      thread={thread}
+      sortable={bag}
+    />
+  );
 }
 export type SidebarSweepAction = "settle" | "unsettle" | "unsnooze";
 const dropVerbBadge: Record<SidebarDropVerb, ReactNode> = {
@@ -541,6 +578,8 @@ type SidebarThreadRowProps = {
   // The folders a row sits in name its machine or project, so the row leaves those out.
   inMachineFolder: boolean;
   inProjectFolder: boolean;
+  // A second row for a thread listed elsewhere too; rename and focus stay on the row they began on.
+  copy: boolean;
   navigationParent?: string | undefined;
   variantAction: SidebarSweepAction;
   settlementSupported: boolean;
@@ -571,13 +610,17 @@ type SidebarThreadRowProps = {
   timestampFormat: TimestampFormat;
   onThreadClick: (event: ReactMouseEvent, threadRef: ScopedThreadRef) => void;
   onThreadActivate: (threadRef: ScopedThreadRef) => void;
-  onStartRename: (threadRef: ScopedThreadRef, title: string) => void;
+  onStartRename: (threadRef: ScopedThreadRef, title: string, copy: boolean) => void;
   onRenameTitleChange: (title: string) => void;
   onCommitRename: (threadRef: ScopedThreadRef, title: string, originalTitle: string) => void;
   onCancelRename: () => void;
   isRenaming: boolean;
   renamingTitle: string;
-  onContextMenu: (threadRef: ScopedThreadRef, position: { x: number; y: number }) => void;
+  onContextMenu: (
+    threadRef: ScopedThreadRef,
+    position: { x: number; y: number },
+    copy: boolean,
+  ) => void;
   onSettle: (threadRef: ScopedThreadRef) => void;
   onActionSweepStart: (
     threadRef: ScopedThreadRef,
@@ -635,6 +678,7 @@ function ThreadRenameInput(props: {
 
 const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowProps) {
   const {
+    copy,
     isRenaming,
     onCancelRename,
     onCommitRename,
@@ -659,6 +703,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   } = props;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   const threadKey = scopedThreadKey(threadRef);
+  const rowId = copy ? `copy:${threadKey}` : threadKey;
   const canOperateThread = useEnvironmentScope(thread.environmentId, AuthOrchestrationOperateScope);
   const { leaseLiveStatus, rowRef: leaseRowRef } = useSidebarRowSubscriptionLease(props.isActive);
   const { revealRef } = props;
@@ -835,7 +880,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   };
   const handleContextMenu = (event: ReactMouseEvent) => {
     event.preventDefault();
-    onContextMenu(threadRef, { x: event.clientX, y: event.clientY });
+    onContextMenu(threadRef, { x: event.clientX, y: event.clientY }, copy);
   };
   const handleKeyDown = (event: ReactKeyboardEvent) => {
     if (event.target !== event.currentTarget) return;
@@ -845,7 +890,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope)
     ) {
       event.preventDefault();
-      onStartRename(threadRef, thread.title);
+      onStartRename(threadRef, thread.title, copy);
       return;
     }
     if (event.key !== "Enter" && event.key !== " ") return;
@@ -865,7 +910,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     }
     if ((event.target as HTMLElement).closest("button, a, input")) return;
     event.preventDefault();
-    onStartRename(threadRef, thread.title);
+    onStartRename(threadRef, thread.title, copy);
   };
   const [isFileDragOver, setIsFileDragOver] = useState(false);
   const fileDropHandlers = onFileDropThreads
@@ -885,7 +930,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const handleActionPointerDown = (event: ReactPointerEvent) => {
     if (!event.isPrimary || event.button !== 0) return;
     event.stopPropagation();
-    onActionSweepStart(threadRef, variantAction, event.nativeEvent);
+    // Sweeps follow the list order, where a copy has no place of its own.
+    if (!copy) onActionSweepStart(threadRef, variantAction, event.nativeEvent);
   };
   const handleUnsettleClick = (event: ReactMouseEvent) => {
     event.preventDefault();
@@ -1204,7 +1250,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     const inFolder = variant === "folder" || multiline;
     return (
       <li
-        data-thread-item={threadKey}
+        data-thread-item={copy ? undefined : threadKey}
         {...sortableRootProps}
         {...(fileDropHandlers ?? {})}
         className={cn(
@@ -1220,7 +1266,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 ref={rowRef}
                 role="treeitem"
                 tabIndex={-1}
-                data-sidebar-row={threadKey}
+                data-sidebar-row={rowId}
                 data-sidebar-parent={props.navigationParent}
                 aria-label={accessibility.label}
                 aria-current={accessibility.current}
@@ -1406,7 +1452,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
 
   return (
     <li
-      data-thread-item={threadKey}
+      data-thread-item={copy ? undefined : threadKey}
       {...sortableRootProps}
       {...(fileDropHandlers ?? {})}
       className={cn(
@@ -1422,7 +1468,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               ref={rowRef}
               role="treeitem"
               tabIndex={-1}
-              data-sidebar-row={threadKey}
+              data-sidebar-row={rowId}
               data-sidebar-parent={props.navigationParent}
               aria-label={accessibility.label}
               aria-current={accessibility.current}

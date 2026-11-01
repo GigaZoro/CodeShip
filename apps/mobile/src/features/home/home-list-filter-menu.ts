@@ -1,45 +1,66 @@
 import type { EnvironmentId } from "@t3tools/contracts";
-import {
-  offeredSidebarGroupingKinds,
-  type SidebarGrouping,
-  SidebarGroupingKind,
-} from "@t3tools/contracts/settings";
+import { offersSidebarMachineGrouping, type SidebarGrouping } from "@t3tools/contracts/settings";
 import type { MenuAction } from "@react-native-menu/menu";
-import * as Schema from "effect/Schema";
 
-const THREAD_LIST_GROUPING_LABELS: Record<SidebarGroupingKind, string> = {
-  project: "Project",
-  machine: "Machine",
-};
+const PROJECT_GROUPING_LABELS = { none: "None", project: "Project" } as const;
 
 /** "Group" with nothing on, else what is on, outer folders first: "By machine, project". */
 export function threadListGroupingLabel(grouping: SidebarGrouping): string {
-  const kinds = (["machine", "project"] as const).filter((kind) => grouping[kind]);
-  return kinds.length === 0
-    ? "Group"
-    : `By ${kinds.map((kind) => THREAD_LIST_GROUPING_LABELS[kind].toLowerCase()).join(", ")}`;
+  const kinds = [grouping.machine ? "machine" : null, grouping.project ? "project" : null].filter(
+    (kind) => kind !== null,
+  );
+  return kinds.length === 0 ? "Group" : `By ${kinds.join(", ")}`;
 }
 
-const GROUP_BY_EVENT_PREFIX = "group-by:";
-const isSidebarGroupingKind = Schema.is(SidebarGroupingKind);
+const PROJECT_GROUPING_EVENT_PREFIX = "group-by:";
+const MACHINE_GROUPING_EVENT = "group-by-machine";
 
-/** The "Group by" submenu of the thread list's native filter menus; each item toggles. */
-export function buildGroupByMenuAction(grouping: SidebarGrouping, machineCount: number) {
+export interface ThreadListGroupingHandlers {
+  readonly onProjectGroupingChange: (value: boolean) => void;
+  readonly onMachineGroupingToggle: () => void;
+}
+
+/** None or Project; machine folders are a separate toggle. */
+export function projectGroupingMenuItems(grouping: SidebarGrouping) {
+  return (["none", "project"] as const).map((value) => ({
+    id: `${PROJECT_GROUPING_EVENT_PREFIX}${value}`,
+    title: PROJECT_GROUPING_LABELS[value],
+    state: grouping.project === (value === "project") ? ("on" as const) : ("off" as const),
+  }));
+}
+
+export function machineGroupingMenuItem(grouping: SidebarGrouping) {
   return {
-    id: "group-by",
-    title: "Group by",
-    subactions: offeredSidebarGroupingKinds(machineCount, grouping).map((kind) => ({
-      id: `${GROUP_BY_EVENT_PREFIX}${kind}`,
-      title: THREAD_LIST_GROUPING_LABELS[kind],
-      state: grouping[kind] ? ("on" as const) : ("off" as const),
-    })),
+    id: MACHINE_GROUPING_EVENT,
+    title: "Group by machine",
+    state: grouping.machine ? ("on" as const) : ("off" as const),
   } satisfies MenuAction;
 }
 
-export function parseGroupByMenuEvent(event: string): SidebarGroupingKind | null {
-  if (!event.startsWith(GROUP_BY_EVENT_PREFIX)) return null;
-  const value = event.slice(GROUP_BY_EVENT_PREFIX.length);
-  return isSidebarGroupingKind(value) ? value : null;
+/** The "Group by" submenu of the thread list's native filter menus, then the machine toggle. */
+export function buildGroupByMenuActions(
+  grouping: SidebarGrouping,
+  machineCount: number,
+): MenuAction[] {
+  return [
+    { id: "group-by", title: "Group by", subactions: projectGroupingMenuItems(grouping) },
+    ...(offersSidebarMachineGrouping(machineCount, grouping)
+      ? [machineGroupingMenuItem(grouping)]
+      : []),
+  ];
+}
+
+/** Applies a menu event from the items above; false when the event is not one of them. */
+export function handleGroupByMenuEvent(event: string, handlers: ThreadListGroupingHandlers) {
+  if (event === MACHINE_GROUPING_EVENT) {
+    handlers.onMachineGroupingToggle();
+    return true;
+  }
+  if (!event.startsWith(PROJECT_GROUPING_EVENT_PREFIX)) return false;
+  const value = event.slice(PROJECT_GROUPING_EVENT_PREFIX.length);
+  if (value !== "none" && value !== "project") return false;
+  handlers.onProjectGroupingChange(value === "project");
+  return true;
 }
 
 export interface HomeListFilterMenuEnvironment {
@@ -71,16 +92,17 @@ export interface HomeListFilterMenu {
   readonly items: Array<HomeListFilterMenuAction | HomeListFilterMenuSubmenu>;
 }
 
-export function buildHomeListFilterMenu(props: {
-  readonly environments: ReadonlyArray<HomeListFilterMenuEnvironment>;
-  readonly projects: ReadonlyArray<HomeListFilterMenuProject>;
-  readonly selectedEnvironmentId: EnvironmentId | null;
-  readonly selectedProjectKey: string | null;
-  readonly grouping: SidebarGrouping;
-  readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
-  readonly onProjectChange: (projectKey: string | null) => void;
-  readonly onGroupingToggle: (kind: SidebarGroupingKind) => void;
-}): HomeListFilterMenu {
+export function buildHomeListFilterMenu(
+  props: {
+    readonly environments: ReadonlyArray<HomeListFilterMenuEnvironment>;
+    readonly projects: ReadonlyArray<HomeListFilterMenuProject>;
+    readonly selectedEnvironmentId: EnvironmentId | null;
+    readonly selectedProjectKey: string | null;
+    readonly grouping: SidebarGrouping;
+    readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
+    readonly onProjectChange: (projectKey: string | null) => void;
+  } & ThreadListGroupingHandlers,
+): HomeListFilterMenu {
   const items: Array<HomeListFilterMenuAction | HomeListFilterMenuSubmenu> = [];
 
   items.push({
@@ -131,13 +153,21 @@ export function buildHomeListFilterMenu(props: {
   items.push({
     type: "submenu",
     title: "Group by",
-    items: offeredSidebarGroupingKinds(props.environments.length, props.grouping).map((kind) => ({
+    items: (["none", "project"] as const).map((value) => ({
       type: "action" as const,
-      title: THREAD_LIST_GROUPING_LABELS[kind],
-      state: props.grouping[kind] ? ("on" as const) : ("off" as const),
-      onPress: () => props.onGroupingToggle(kind),
+      title: PROJECT_GROUPING_LABELS[value],
+      state: props.grouping.project === (value === "project") ? ("on" as const) : ("off" as const),
+      onPress: () => props.onProjectGroupingChange(value === "project"),
     })),
   });
+  if (offersSidebarMachineGrouping(props.environments.length, props.grouping)) {
+    items.push({
+      type: "action",
+      title: "Group by machine",
+      state: props.grouping.machine ? "on" : "off",
+      onPress: props.onMachineGroupingToggle,
+    });
+  }
 
   return {
     title: "Thread list options",

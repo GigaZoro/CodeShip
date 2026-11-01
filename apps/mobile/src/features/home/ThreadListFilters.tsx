@@ -1,10 +1,12 @@
+import { offersSidebarMachineGrouping } from "@t3tools/contracts/settings";
 import { Pressable, ScrollView } from "react-native";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { ListFilterMenu } from "../workspace/ListFilterMenu";
 import type { HomeHeaderProps } from "./HomeHeader.types";
 import {
-  buildGroupByMenuAction,
-  parseGroupByMenuEvent,
+  handleGroupByMenuEvent,
+  machineGroupingMenuItem,
+  projectGroupingMenuItems,
   threadListGroupingLabel,
 } from "./home-list-filter-menu";
 
@@ -18,7 +20,8 @@ export function ThreadListFilters(
     | "onEnvironmentChange"
     | "onProjectChange"
     | "grouping"
-    | "onGroupingToggle"
+    | "onProjectGroupingChange"
+    | "onMachineGroupingToggle"
   > & {
     /** List padding the scroller bleeds through so pills start where row content does. */
     readonly gutter: number;
@@ -96,10 +99,21 @@ export function ThreadListFilters(
         label={threadListGroupingLabel(props.grouping)}
         accessibilityLabel="Group threads"
         active={props.grouping.project || props.grouping.machine}
-        actions={buildGroupByMenuAction(props.grouping, props.environments.length).subactions}
+        actions={[
+          ...projectGroupingMenuItems(props.grouping),
+          ...(offersSidebarMachineGrouping(props.environments.length, props.grouping)
+            ? [
+                {
+                  id: "machine-grouping",
+                  title: "",
+                  displayInline: true,
+                  subactions: [machineGroupingMenuItem(props.grouping)],
+                },
+              ]
+            : []),
+        ]}
         onSelect={(id) => {
-          const kind = parseGroupByMenuEvent(id);
-          if (kind) props.onGroupingToggle(kind);
+          handleGroupByMenuEvent(id, props);
         }}
       />
       {props.selectedEnvironmentId !== null || props.selectedProjectKey !== null ? (

@@ -72,10 +72,11 @@ export const SidebarProjectGroupingMode = Schema.Literals([
 ]);
 export type SidebarProjectGroupingMode = typeof SidebarProjectGroupingMode.Type;
 const DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE: SidebarProjectGroupingMode = "repository";
-/** Folder kinds the sidebar can group active threads by. Machine folders hold project folders. */
-export const SidebarGroupingKind = Schema.Literals(["project", "machine"]);
-export type SidebarGroupingKind = typeof SidebarGroupingKind.Type;
-export type SidebarGrouping = Readonly<Record<SidebarGroupingKind, boolean>>;
+/** Folders for active threads. With both on, machine folders hold project folders. */
+export interface SidebarGrouping {
+  readonly project: boolean;
+  readonly machine: boolean;
+}
 export const MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS = 1;
 export const MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS = 90;
 export const SidebarAutoSettleAfterDays = Schema.Number.check(
@@ -560,13 +561,8 @@ export const resolveSidebarGrouping = (
 });
 
 /** One machine would make one folder, so machine folders are offered from two, or while on. */
-export const offeredSidebarGroupingKinds = (
-  machineCount: number,
-  grouping: SidebarGrouping,
-): ReadonlyArray<SidebarGroupingKind> =>
-  SidebarGroupingKind.literals.filter(
-    (kind) => kind !== "machine" || machineCount > 1 || grouping.machine,
-  );
+export const offersSidebarMachineGrouping = (machineCount: number, grouping: SidebarGrouping) =>
+  machineCount > 1 || grouping.machine;
 
 const UsageModelTokenPrice = Schema.Number.check(
   Schema.isFinite(),

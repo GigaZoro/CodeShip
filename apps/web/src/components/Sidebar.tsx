@@ -13,7 +13,7 @@ import { useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
 import * as Schema from "effect/Schema";
-import { offeredSidebarGroupingKinds, SidebarGroupingKind } from "@t3tools/contracts/settings";
+import { offersSidebarMachineGrouping } from "@t3tools/contracts/settings";
 import {
   DndContext,
   useSensor,
@@ -271,6 +271,7 @@ import {
   sidebarFolderRowId,
   type SidebarMachine,
 } from "./sidebar/SidebarFolderHeader";
+import { Switch } from "./ui/switch";
 import { Toggle, ToggleGroup } from "./ui/toggle-group";
 import {
   SidebarDragBoundary,
@@ -620,13 +621,18 @@ function useSidebarThreads(input: {
         : [],
     };
   };
+  // Folders hold their working threads too, which the Working shelf also lists.
+  const folderThreads =
+    workingThreads.length === 0
+      ? activeThreads
+      : sortWorkingThreadsBySend([...activeThreads, ...workingThreads]);
   const folders: SidebarFolder[] | null =
     grouping.machines !== null
       ? grouping.projects !== null
         ? groupSidebarThreadsByMachineAndProject({
             machines: grouping.machines.machines,
             groups: grouping.projects.groups,
-            threads: activeThreads,
+            threads: folderThreads,
             keepEnvironmentIds: grouping.machines.keepEnvironmentIds,
             keepEmptyProjects: grouping.projects.keepEmpty,
           }).map((folder) =>
@@ -638,13 +644,13 @@ function useSidebarThreads(input: {
           )
         : groupSidebarThreadsByMachine(
             grouping.machines.machines,
-            activeThreads,
+            folderThreads,
             grouping.machines.keepEnvironmentIds,
           ).map((folder) => machineFolder(folder.machine, folder.threads, []))
       : grouping.projects !== null
         ? groupSidebarThreadsByProject(
             grouping.projects.groups,
-            activeThreads,
+            folderThreads,
             grouping.projects.keepEmpty,
           ).map((folder) => projectFolder(folder.group, null, folder.threads))
         : null;
@@ -653,10 +659,17 @@ function useSidebarThreads(input: {
     folders?.flatMap((folder) =>
       folder.kind === "machine" ? [folder, ...folder.projects] : [folder],
     ) ?? null;
+  const folderThreadKeys = new Set(
+    folderList?.flatMap((folder) => folder.threads.map(threadShellKey)) ?? [],
+  );
+  // A working thread keeps its row in its folder; its Working shelf row is a copy.
+  const workingCopyKeys = new Set(
+    visibleWorkingThreads.map(threadShellKey).filter((key) => folderThreadKeys.has(key)),
+  );
   const orderedThreads = [
     ...pinnedThreads,
     ...(folderList === null ? activeThreads : folderList.flatMap((folder) => folder.threads)),
-    ...visibleWorkingThreads,
+    ...visibleWorkingThreads.filter((thread) => !workingCopyKeys.has(threadShellKey(thread))),
     ...visibleSnoozedThreads,
     ...renderedSettledThreads,
   ];
@@ -705,6 +718,7 @@ function useSidebarThreads(input: {
     renderedSettledThreads,
     visibleSnoozedThreads,
     visibleWorkingThreads,
+    workingCopyKeys,
     orderedThreadKeys: orderedThreads.map(threadShellKey),
     threadByKey: new Map(orderedThreads.map((thread) => [threadShellKey(thread), thread] as const)),
     settledThreadKeys: new Set(settledThreads.map(threadShellKey)),
@@ -968,10 +982,6 @@ function machineScopeItem(machine: SidebarMachine): SidebarScopeItem {
   return { value: `\0machine:${machine.environmentId}`, label: machine.label, machine };
 }
 
-const isSidebarGroupingKind = Schema.is(SidebarGroupingKind);
-
-const SIDEBAR_GROUPING_LABELS = { project: "Project", machine: "Machine" } as const;
-
 function useSidebarMachines(): readonly SidebarMachine[] {
   const environments = useEnvironmentConnectionSummaries();
   const machineById = useEnvironmentMachines();
@@ -1173,6 +1183,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const queuePendingFileDrop = useSidebarPendingFileDropStore((s) => s.queuePendingFileDrop);
   const clearPendingFileDrop = useSidebarPendingFileDropStore((s) => s.clearPendingFileDrop);
   const [renamingThreadRef, setRenamingThreadRef] = useState<ScopedThreadRef | null>(null);
+  const [renamingCopy, setRenamingCopy] = useState(false);
   const canOperateRenamingThread = useEnvironmentScope(
     renamingThreadRef?.environmentId ?? null,
     AuthOrchestrationOperateScope,
@@ -1488,6 +1499,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     renderedSettledThreads,
     visibleSnoozedThreads,
     visibleWorkingThreads,
+    workingCopyKeys,
     orderedThreadKeys,
     threadByKey,
     settledThreadKeys,
@@ -1696,9 +1708,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     }
   };
 
-  const startThreadRename = (threadRef: ScopedThreadRef, title: string) => {
+  const startThreadRename = (threadRef: ScopedThreadRef, title: string, copy: boolean) => {
     if (!readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope)) return;
     setRenamingThreadRef(threadRef);
+    setRenamingCopy(copy);
     setRenamingTitle(title);
   };
   const cancelThreadRename = () => setRenamingThreadRef(null);
@@ -2735,7 +2748,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   );
 
   const handleThreadContextMenu = useStableCallback(
-    (threadRef: ScopedThreadRef, position: { x: number; y: number }) => {
+    (threadRef: ScopedThreadRef, position: { x: number; y: number }, copy: boolean) => {
       void (async () => {
         const api = readLocalApi();
         if (!api) return;
@@ -2916,7 +2929,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             return;
           }
           case "rename":
-            startThreadRename(threadRef, thread.title);
+            startThreadRename(threadRef, thread.title, copy);
             return;
           case "share-guest":
             openGuestShareDialog(threadRef);
@@ -3218,23 +3231,29 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       <ToggleGroup
                         aria-label="Group threads"
                         className="flex-1 *:flex-1"
-                        multiple
-                        value={SidebarGroupingKind.literals.filter((kind) => groupBy[kind])}
+                        value={[groupBy.project ? "project" : "none"]}
                         onValueChange={(next) => {
-                          const pressed = next.filter(isSidebarGroupingKind);
-                          updateClientSettings({
-                            sidebarGroupByProject: pressed.includes("project"),
-                            sidebarGroupByMachine: pressed.includes("machine"),
-                          });
+                          // Pressing the chosen item again reports no value; the choice stays.
+                          if (next[0] !== undefined)
+                            updateClientSettings({ sidebarGroupByProject: next[0] === "project" });
                         }}
                       >
-                        {offeredSidebarGroupingKinds(machines.length, groupBy).map((kind) => (
-                          <Toggle key={kind} value={kind}>
-                            {SIDEBAR_GROUPING_LABELS[kind]}
-                          </Toggle>
-                        ))}
+                        <Toggle value="none">None</Toggle>
+                        <Toggle value="project">Project</Toggle>
                       </ToggleGroup>
                     </div>
+                    {offersSidebarMachineGrouping(machines.length, groupBy) ? (
+                      <label className="flex items-center justify-between gap-2 px-2.5 pt-2 text-xs text-muted-foreground">
+                        Group by machine
+                        <Switch
+                          size="sm"
+                          checked={groupBy.machine}
+                          onCheckedChange={(checked) =>
+                            updateClientSettings({ sidebarGroupByMachine: checked })
+                          }
+                        />
+                      </label>
+                    ) : null}
                     <ComboboxSearchInput
                       aria-label={
                         machineScopeItems.length > 0
@@ -3490,6 +3509,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
                         );
+                        const copy = folder === undefined && workingCopyKeys.has(threadKey);
+                        // A rename begun on a copy stays there while the copy is listed.
+                        const isRenaming =
+                          renamingThreadKey === threadKey &&
+                          (copy ? renamingCopy : !renamingCopy || !workingCopyKeys.has(threadKey));
                         const isCard =
                           section === "active" || section === "pinned" || section === "working";
                         const rowVariant = folderRow
@@ -3501,8 +3525,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             : "slim";
                         return (
                           <SortableThreadRow
-                            key={threadKey}
-                            sortableId={threadKey}
+                            key={copy ? `copy:${threadKey}` : threadKey}
+                            sortableId={copy ? null : threadKey}
                             contextDrag={isContextDrag}
                             sortableDisabled={
                               renamingThreadKey === threadKey ||
@@ -3553,12 +3577,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             wokeAt={threadWokeAt(thread, { now: snoozeNow })}
                             isActive={routeRowThreadKey === threadKey}
                             revealRef={
-                              routeRowThreadKey === threadKey ? revealActiveRow : undefined
+                              routeRowThreadKey === threadKey && !copy ? revealActiveRow : undefined
                             }
                             isRouteThread={routeThreadKey === threadKey}
                             openPullRequestsInRightPanel={routeThreadRef !== null}
                             jumpLabel={
-                              showJumpHints ? (jumpLabelByKey.get(threadKey) ?? null) : null
+                              showJumpHints && !copy
+                                ? (jumpLabelByKey.get(threadKey) ?? null)
+                                : null
                             }
                             currentEnvironmentId={primaryEnvironmentId}
                             environmentLabel={
@@ -3590,8 +3616,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             onRenameTitleChange={setRenamingTitle}
                             onCommitRename={commitThreadRename}
                             onCancelRename={cancelThreadRename}
-                            isRenaming={renamingThreadKey === threadKey}
-                            renamingTitle={renamingThreadKey === threadKey ? renamingTitle : ""}
+                            isRenaming={isRenaming}
+                            renamingTitle={isRenaming ? renamingTitle : ""}
                             onContextMenu={handleThreadContextMenu}
                             onSettle={attemptSettle}
                             onActionSweepStart={startActionSweep}

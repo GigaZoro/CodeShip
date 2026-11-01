@@ -889,7 +889,7 @@ describe("thread list folders", () => {
     ]);
   });
 
-  it("lists folder headers among active rows, a closed one before the Working shelf", () => {
+  it("lists a working thread in its folder and again in the Working shelf, after a closed folder", () => {
     const working = makeThread({
       id: ThreadId.make("working"),
       title: "Working",
@@ -905,6 +905,7 @@ describe("thread list folders", () => {
       searchQuery: "",
       now: NOW,
       workingShelfEnabled: true,
+      workingShelfExpanded: true,
       isWorking: (thread) => thread === working,
       grouping: grouping([folder(projectA, true), folder(projectB, false)]),
     });
@@ -913,18 +914,20 @@ describe("thread list folders", () => {
       pendingTasks: [],
       folderHeaders: layout.folderHeaders,
       workingCount: layout.workingCount,
+      workingShelfExpanded: true,
       workingShelfHeaderIndex: layout.workingShelfHeaderIndex,
     });
 
     expect(
-      items.map((item) =>
-        item.type === "v2-folder"
-          ? `folder:${item.folder.key}`
-          : item.type === "v2-thread"
-            ? item.item.thread.id
-            : item.type,
-      ),
-    ).toEqual([`folder:${projectA}`, "a", `folder:${projectB}`, "v2-working-shelf"]);
+      items.map((item) => (item.type === "v2-folder" ? `folder:${item.folder.key}` : item.key)),
+    ).toEqual([
+      `folder:${projectA}`,
+      `v2-thread:${environmentId}:a`,
+      `v2-thread:${environmentId}:working`,
+      `folder:${projectB}`,
+      "v2-working-shelf",
+      `v2-thread:copy:${environmentId}:working`,
+    ]);
   });
 });
 

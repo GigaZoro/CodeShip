@@ -147,15 +147,20 @@ cannot drag or move threads within it. Your saved order returns when you turn it
 
 ### Group threads by project or machine
 
-On web and desktop, open the filter button next to the sidebar search and turn on **Project**,
-**Machine**, or both under **Group by**, or use **Settings → General → Group threads by project**
-and **Group threads by machine**. On mobile, use the **Group** filter above the thread list or
-**Group by** in its filter menu, or the switches under **Settings → General → Group threads**.
-Active threads then sit in a folder for each project, or for each machine they run on. With both
-on, each machine's folder holds a folder for each of its projects, so a project on two machines
-appears under each. Pinned threads stay above the folders, and Working, Snoozed, and Settled stay
-below them, shared across every folder. **Machine** is offered once you have more than one machine.
-Each device keeps its own choice.
+On web and desktop, open the filter button next to the sidebar search and pick **Group by**
+**Project**, or set **Settings → General → Group threads**. Turn on **Group by machine** in the
+same menu or under **Settings → General → Group threads by machine**. On mobile, use the **Group**
+filter above the thread list or its filter menu, or **Settings → General → Group threads**.
+Active threads then sit in a folder for each project, or for each machine they run on. With both,
+each machine's folder holds a folder for each of its projects, so a project on two machines
+appears under each. A working thread shows in its folder and in the Working section, so you can
+see what is running in one place and per project. Pinned threads stay above the folders, and
+Snoozed and Settled stay below them, shared across every folder. **Group by machine** is offered
+once you have more than one machine. Each device keeps its own choice.
+
+**Combine matching projects**, in the same settings, decides what counts as one project: on, the
+same repository on different machines or paths is one project, with one folder and one filter
+entry; off, each checkout is its own project.
 
 Click or tap a folder to open or close it. A closed folder shows how many threads it holds, and a
 dot when one of them needs you. A machine that is offline shows **Offline** and starts closed.

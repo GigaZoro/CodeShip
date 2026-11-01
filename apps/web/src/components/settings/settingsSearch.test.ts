@@ -211,7 +211,7 @@ describe("settings search targets", () => {
     for (const id of [
       "legacy-plan-mode",
       "legacy-context-window-indicator",
-      "sidebar-group-by-project",
+      "sidebar-grouping",
       "sidebar-group-by-machine",
     ]) {
       expect(getSettingsSearchTargetScope(id)!.scope).toBeNull();

@@ -427,7 +427,8 @@ export function HomeScreen(props: HomeScreenProps) {
     workingShelfExpanded,
     grouping: groupBy,
     folderExpanded,
-    toggleGrouping,
+    setProjectGrouping,
+    toggleMachineGrouping,
     toggleFolder,
     toggleSettledShelf,
     toggleSnoozedShelf,
@@ -778,7 +779,8 @@ export function HomeScreen(props: HomeScreenProps) {
           grouping={groupBy}
           onEnvironmentChange={props.onEnvironmentChange}
           onProjectChange={props.onProjectChange}
-          onGroupingToggle={toggleGrouping}
+          onProjectGroupingChange={setProjectGrouping}
+          onMachineGroupingToggle={toggleMachineGrouping}
         />
       ) : null}
     </>

@@ -1,5 +1,5 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import type { SidebarGrouping, SidebarGroupingKind } from "@t3tools/contracts/settings";
+import type { SidebarGrouping } from "@t3tools/contracts/settings";
 import { AsyncResult } from "effect/reactivity";
 
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
@@ -47,13 +47,16 @@ export function useThreadListV2ShelfPreferences() {
     });
   };
 
-  const toggleGrouping = (kind: SidebarGroupingKind) => {
+  const setProjectGrouping = (value: boolean) => {
+    if (!loaded) return;
+    savePreferences({ threadListGroupByProject: value });
+  };
+  const toggleMachineGrouping = () => {
     if (!loaded) return;
     savePreferences({
-      transform: (current) =>
-        kind === "project"
-          ? { threadListGroupByProject: current.threadListGroupByProject !== true }
-          : { threadListGroupByMachine: current.threadListGroupByMachine !== true },
+      transform: (current) => ({
+        threadListGroupByMachine: current.threadListGroupByMachine !== true,
+      }),
     });
   };
   // A folder's default depends on its kind, so the caller passes it.
@@ -73,7 +76,8 @@ export function useThreadListV2ShelfPreferences() {
     loaded,
     grouping,
     folderExpanded,
-    toggleGrouping,
+    setProjectGrouping,
+    toggleMachineGrouping,
     toggleFolder,
     settledShelfExpanded,
     snoozedShelfExpanded,

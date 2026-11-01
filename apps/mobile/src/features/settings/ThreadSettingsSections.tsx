@@ -1,6 +1,7 @@
 import { Button } from "../../components/ui/Button";
 import { AuthSettingsWriteScope, type ServerSettingsPatch } from "@t3tools/contracts";
-import { offeredSidebarGroupingKinds } from "@t3tools/contracts/settings";
+import { offersSidebarMachineGrouping } from "@t3tools/contracts/settings";
+import { ListChoiceRow as SettingsChoiceRow } from "../../components/ui/ListChoiceRow";
 import { useThreadListV2ShelfPreferences } from "../threads/use-thread-list-v2-shelf-preferences";
 import { useEnvironmentsWithScope } from "../../state/session";
 import { AutoSettleDaysField } from "./components/AutoSettleDaysField";
@@ -171,35 +172,50 @@ export function AutoSettleSettingsRows(props: {
   );
 }
 
+const PROJECT_GROUPING_OPTIONS = [
+  { project: false, label: "None", description: "List active threads together." },
+  { project: true, label: "By project", description: "A folder for each project." },
+] as const;
+
 export function ThreadGroupingSettingsSection() {
-  const { loaded, grouping, toggleGrouping } = useThreadListV2ShelfPreferences();
-  const offered = offeredSidebarGroupingKinds(useEnvironments().environments.length, grouping);
+  const { loaded, grouping, setProjectGrouping, toggleMachineGrouping } =
+    useThreadListV2ShelfPreferences();
+  const machineGroupingOffered = offersSidebarMachineGrouping(
+    useEnvironments().environments.length,
+    grouping,
+  );
 
   return (
     <View className="gap-3">
       <SettingsSection title="Group threads">
-        <SettingsSwitchRow
-          icon="folder"
-          label="By project"
-          subtitle="A folder for each project."
-          value={grouping.project}
-          disabled={!loaded}
-          onValueChange={() => toggleGrouping("project")}
-        />
-        {offered.includes("machine") ? (
+        {PROJECT_GROUPING_OPTIONS.map((option, index) => (
+          <SettingsChoiceRow
+            key={option.label}
+            label={option.label}
+            description={option.description}
+            selected={grouping.project === option.project}
+            separated={index > 0}
+            disabled={!loaded}
+            onPress={() => setProjectGrouping(option.project)}
+          />
+        ))}
+      </SettingsSection>
+      {machineGroupingOffered ? (
+        <SettingsSection>
           <SettingsSwitchRow
             icon="desktopcomputer"
-            label="By machine"
-            subtitle="A folder for each machine, holding its project folders when both are on."
+            label="Group by machine"
+            subtitle="A folder for each machine. Grouped by project too, it holds its project folders."
             value={grouping.machine}
             disabled={!loaded}
-            onValueChange={() => toggleGrouping("machine")}
+            onValueChange={toggleMachineGrouping}
           />
-        ) : null}
-      </SettingsSection>
+        </SettingsSection>
+      ) : null}
       <Text className="px-2 text-sm text-foreground-muted">
-        Pinned threads and the Working, Snoozed, and Settled sections stay shared across folders.
-        While threads are grouped, active threads are ordered by their latest message.
+        Working threads show in their folder and in the Working section. Pinned threads and the
+        Snoozed and Settled sections stay shared across folders. While threads are grouped, active
+        threads are ordered by their latest message.
       </Text>
     </View>
   );

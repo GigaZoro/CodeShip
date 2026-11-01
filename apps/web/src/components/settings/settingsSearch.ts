@@ -407,9 +407,11 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "project-grouping",
-    title: "Project grouping",
+    title: "Combine matching projects",
     to: "/settings/general",
-    searchTerms: ["combine matching repositories environments sidebar"],
+    searchTerms: [
+      "project grouping merge same repository machines environments paths monorepo sidebar",
+    ],
   },
   {
     id: "project-order",
@@ -444,8 +446,8 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["hide fold running monitoring threads inbox sidebar shelf"],
   },
   {
-    id: "sidebar-group-by-project",
-    title: "Group threads by project",
+    id: "sidebar-grouping",
+    title: "Group threads",
     to: "/settings/general",
     searchTerms: ["group by project folders tree boring legacy classic sidebar"],
   },

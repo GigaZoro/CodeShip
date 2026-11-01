@@ -102,7 +102,7 @@ export function HomeRouteScreen() {
     unsettleThread,
   } = useThreadListActions();
   const pendingTasks = usePendingNewTasks();
-  const { grouping, toggleGrouping } = useThreadListV2ShelfPreferences();
+  const { grouping, setProjectGrouping, toggleMachineGrouping } = useThreadListV2ShelfPreferences();
   const { openPendingTask, confirmDeletePendingTask } =
     usePendingTaskListActions(selectThreadRoute);
   const connectionStateByEnvironmentId = new Map(
@@ -224,7 +224,8 @@ export function HomeRouteScreen() {
           selectedEnvironmentId={selectedEnvironmentId}
           selectedProjectKey={selectedProjectKey}
           grouping={grouping}
-          onGroupingToggle={toggleGrouping}
+          onProjectGroupingChange={setProjectGrouping}
+          onMachineGroupingToggle={toggleMachineGrouping}
           onEnvironmentChange={setSelectedEnvironmentId}
           onProjectChange={setSelectedProjectKey}
           onOpenEnvironments={() => openSettings(navigation, "SettingsEnvironments")}

@@ -34,6 +34,7 @@ const SETTINGS_SEARCH_TERMS = {
   SettingsProjectOverview: ["project", "overview", "checkouts", "delete project"],
   SettingsOrganization: [
     "project grouping",
+    "combine matching projects",
     "group projects",
     "group threads",
     "folders",

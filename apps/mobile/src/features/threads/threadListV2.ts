@@ -307,6 +307,8 @@ export interface ThreadListV2Item {
   readonly pinned: boolean;
   readonly wokeAt: string | null;
   readonly isLast: boolean;
+  /** A Working shelf row for a thread its folder lists too. */
+  readonly copy?: boolean;
 }
 
 interface ThreadListV2FolderBase {
@@ -331,9 +333,9 @@ export type ThreadListV2Folder =
       readonly offline: boolean;
     });
 
-/** Active threads go in folders; pinned threads and the shelves stay shared. */
+/** Active and working threads go in folders; pinned threads and the shelves stay shared. */
 export interface ThreadListV2Grouping {
-  /** In display order. A folder with no active threads is left out. */
+  /** In display order. A folder with no active or working threads is left out. */
   readonly folders: ReadonlyArray<ThreadListV2Folder>;
   readonly folderKeyOf: (thread: EnvironmentThreadShell) => string;
   /** Folders inside each open outer folder, by its key. A thread outside them is left out. */
@@ -589,7 +591,7 @@ export function buildThreadListV2ListItems(input: {
         : undefined;
     return {
       type: "v2-thread",
-      key: `v2-thread:${item.thread.environmentId}:${item.thread.id}`,
+      key: `v2-thread:${item.copy === true ? "copy:" : ""}${item.thread.environmentId}:${item.thread.id}`,
       item,
       snoozeWakeLabelText,
       timeLabel: resolveThreadListV2ItemTimeLabel(item, snoozeWakeLabelText !== undefined),
@@ -855,9 +857,10 @@ export function buildThreadListV2Items(input: {
 
   const grouping = input.grouping ?? null;
   // Folders order by the latest message, as on web; one manual order cannot span folders.
+  // They hold working threads too, which the Working shelf also lists.
   const orderedActive =
     grouping !== null
-      ? sortWorkingThreadsBySend(active)
+      ? sortWorkingThreadsBySend([...active, ...working])
       : workingShelfEnabled
         ? sortInboxThreadsByReturn(active, input.inboxReturnAt)
         : applyPendingThreadOrder(sortThreadsForListV2(active), "active", pending);
@@ -965,6 +968,12 @@ export function buildThreadListV2Items(input: {
     });
     return visible;
   };
+  // The Working shelf row of a thread listed in a folder is a copy of that row.
+  const listedInFolder = new Set<EnvironmentThreadShell>();
+  const pushFolderThread = (thread: EnvironmentThreadShell) => {
+    listedInFolder.add(thread);
+    pushActive(thread);
+  };
   if (grouping === null) {
     for (const thread of orderedActive) pushActive(thread);
   } else {
@@ -977,14 +986,16 @@ export function buildThreadListV2Items(input: {
         ? grouping.inner?.foldersByKey.get(folder.key)
         : undefined;
       if (grouping.inner === null || innerFolders === undefined) {
-        for (const thread of visible) pushActive(thread);
+        for (const thread of visible) pushFolderThread(thread);
         continue;
       }
       const threadsByInnerFolder = groupThreads(folderThreads, grouping.inner.folderKeyOf);
       for (const innerFolder of innerFolders) {
         const innerThreads = threadsByInnerFolder.get(innerFolder.key);
         if (innerThreads === undefined) continue;
-        for (const thread of pushFolderHeader(innerFolder, innerThreads)) pushActive(thread);
+        for (const thread of pushFolderHeader(innerFolder, innerThreads)) {
+          pushFolderThread(thread);
+        }
       }
     }
   }
@@ -997,6 +1008,7 @@ export function buildThreadListV2Items(input: {
       pinned: false,
       wokeAt: resolveThreadListV2WokeAt(thread, { now }),
       isLast: false,
+      copy: listedInFolder.has(thread),
     });
   }
   const snoozedShelfHeaderIndex = orderedSnoozed.length > 0 ? items.length : null;

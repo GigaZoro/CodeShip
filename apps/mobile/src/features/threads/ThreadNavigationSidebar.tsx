@@ -49,9 +49,9 @@ import { requestThreadMessageJump } from "./threadMessageJump";
 import { useThreadListSearchMatches } from "./useThreadListSearchMatches";
 import { useHomeListOptions } from "../home/home-list-options";
 import {
-  buildGroupByMenuAction,
+  buildGroupByMenuActions,
   buildHomeListFilterMenu,
-  parseGroupByMenuEvent,
+  handleGroupByMenuEvent,
 } from "../home/home-list-filter-menu";
 import {
   buildHomeProjectScopes,
@@ -282,7 +282,8 @@ function ThreadNavigationSidebarPane(
     workingShelfExpanded,
     grouping: groupBy,
     folderExpanded,
-    toggleGrouping,
+    setProjectGrouping,
+    toggleMachineGrouping,
     toggleFolder,
     toggleSettledShelf,
     toggleSnoozedShelf,
@@ -422,7 +423,7 @@ function ThreadNavigationSidebarPane(
             ],
           },
         ] satisfies MenuAction[])),
-    buildGroupByMenuAction(groupBy, environments.length),
+    ...buildGroupByMenuActions(groupBy, environments.length),
   ] satisfies MenuAction[];
   const handleListMenuAction = ({
     nativeEvent,
@@ -430,11 +431,13 @@ function ThreadNavigationSidebarPane(
     readonly nativeEvent: { readonly event: string };
   }) => {
     const event = nativeEvent.event;
-    const groupingKind = parseGroupByMenuEvent(event);
-    if (groupingKind !== null) {
-      toggleGrouping(groupingKind);
+    if (
+      handleGroupByMenuEvent(event, {
+        onProjectGroupingChange: setProjectGrouping,
+        onMachineGroupingToggle: toggleMachineGrouping,
+      })
+    )
       return;
-    }
     if (event === "environment:all") {
       setSelectedEnvironmentId(null);
       return;
@@ -745,7 +748,8 @@ function ThreadNavigationSidebarPane(
     grouping: groupBy,
     onEnvironmentChange: setSelectedEnvironmentId,
     onProjectChange: setSelectedProjectKey,
-    onGroupingToggle: toggleGrouping,
+    onProjectGroupingChange: setProjectGrouping,
+    onMachineGroupingToggle: toggleMachineGrouping,
   });
   const nativeHeaderItems = createSidebarHeaderItems({
     filterIcon,

@@ -15,7 +15,7 @@ import {
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
   resolveSidebarGrouping,
-  offeredSidebarGroupingKinds,
+  offersSidebarMachineGrouping,
   ServerSettings,
   ServerSettingsPatch,
   withIdleCompaction,
@@ -288,13 +288,13 @@ describe("resolveSidebarGrouping", () => {
   });
 
   it.each([
-    [1, false, ["project"]],
-    [1, true, ["project", "machine"]],
-    [2, false, ["project", "machine"]],
+    [1, false, false],
+    [1, true, true],
+    [2, false, true],
   ] as const)(
-    "offers grouping kinds for %i machine(s) while machine grouping is %s",
+    "with %i machine(s) and machine grouping %s, offers machine grouping: %s",
     (count, machine, offered) => {
-      expect(offeredSidebarGroupingKinds(count, { project: false, machine })).toEqual(offered);
+      expect(offersSidebarMachineGrouping(count, { project: false, machine })).toBe(offered);
     },
   );
 });

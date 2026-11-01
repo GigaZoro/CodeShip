@@ -19,7 +19,7 @@ import {
   MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   type ResponseStreamingMode,
   type QuitConfirmationMode,
-  offeredSidebarGroupingKinds,
+  offersSidebarMachineGrouping,
   resolveSidebarGrouping,
   SidebarProjectSortOrder,
 } from "@t3tools/contracts/settings";
@@ -125,6 +125,8 @@ const SIDEBAR_PROJECT_SORT_ORDER_LABELS: Record<SidebarProjectSortOrder, string>
   manual: "Manual",
 };
 const isSidebarProjectSortOrder = Schema.is(SidebarProjectSortOrder);
+
+const SIDEBAR_PROJECT_GROUPING_LABELS = { none: "None", project: "By project" } as const;
 
 const TIMESTAMP_FORMAT_LABELS = {
   locale: "System default",
@@ -795,20 +797,42 @@ export function GeneralSettingsPanel() {
 
       <SettingsSection id="sidebar" title="Sidebar">
         <SettingsRow
-          {...searchableSetting("sidebar-group-by-project")}
-          description="Put active threads in a folder for each project. Pinned, Working, Snoozed, and Settled stay shared across them."
+          {...searchableSetting("sidebar-grouping")}
+          description="Put active threads in a folder for each project. Working threads show in their folder and in Working; Pinned, Snoozed, and Settled stay shared."
+          resetAction={
+            sidebarGrouping.project ? (
+              <SettingResetButton
+                label="thread grouping"
+                onClick={() => updateSettings({ sidebarGroupByProject: false })}
+              />
+            ) : null
+          }
           control={
-            <Switch
-              checked={sidebarGrouping.project}
-              onCheckedChange={(checked) => updateSettings({ sidebarGroupByProject: checked })}
-              aria-label="Group threads by project"
-            />
+            <Select
+              value={sidebarGrouping.project ? "project" : "none"}
+              onValueChange={(value) =>
+                updateSettings({ sidebarGroupByProject: value === "project" })
+              }
+            >
+              <SelectTrigger size="sm" className="w-full sm:w-44" aria-label="Group threads">
+                <SelectValue>
+                  {SIDEBAR_PROJECT_GROUPING_LABELS[sidebarGrouping.project ? "project" : "none"]}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {(["none", "project"] as const).map((value) => (
+                  <SelectItem hideIndicator key={value} value={value}>
+                    {SIDEBAR_PROJECT_GROUPING_LABELS[value]}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
           }
         />
-        {offeredSidebarGroupingKinds(machineCount, sidebarGrouping).includes("machine") ? (
+        {offersSidebarMachineGrouping(machineCount, sidebarGrouping) ? (
           <SettingsRow
             {...searchableSetting("sidebar-group-by-machine")}
-            description="Put active threads in a folder for each machine. With project grouping on, each machine's folder holds its project folders."
+            description="Put active threads in a folder for each machine. Grouped by project too, each machine's folder holds its project folders."
             control={
               <Switch
                 checked={sidebarGrouping.machine}
@@ -820,12 +844,12 @@ export function GeneralSettingsPanel() {
         ) : null}
         <SettingsRow
           {...searchableSetting("project-grouping")}
-          description="Combine matching repositories across environments."
+          description="Show the same repository on different machines or paths as one project, in folders, filters, and the project picker."
           resetAction={
             settings.sidebarProjectGroupingMode !==
             DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode ? (
               <SettingResetButton
-                label="project grouping"
+                label="combining matching projects"
                 onClick={() =>
                   updateSettings({
                     sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
@@ -849,7 +873,7 @@ export function GeneralSettingsPanel() {
                   ),
                 });
               }}
-              aria-label="Project grouping"
+              aria-label="Combine matching projects"
             />
           }
         />

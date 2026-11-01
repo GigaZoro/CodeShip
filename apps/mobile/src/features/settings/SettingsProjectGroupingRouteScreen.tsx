@@ -25,12 +25,12 @@ const GROUPING_OPTIONS: ReadonlyArray<{
 }> = [
   {
     mode: "repository",
-    label: "Group by repository",
-    description: "Matching repositories appear as one project.",
+    label: "Same repository",
+    description: "The same repository on any machine or path is one project.",
   },
   {
     mode: "repository_path",
-    label: "Group by repository path",
+    label: "Same repository and path",
     description: "Keep monorepo paths separate.",
   },
   {
@@ -58,7 +58,7 @@ export function SettingsProjectGroupingRouteScreen() {
         contentContainerClassName="gap-3 px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
-        <SettingsSection title="Project grouping">
+        <SettingsSection title="Combine matching projects">
           {GROUPING_OPTIONS.map((option, index) => (
             <SettingsChoiceRow
               key={option.mode}
