@@ -14,6 +14,7 @@ import type {
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { AnimatedLegendList } from "@legendapp/list/reanimated";
 import { THREAD_SIDEBAR_ROW_LAYOUT } from "./threadListAnimations";
+import { ThreadListPinnedTasks } from "./ThreadListPinnedTasks";
 import type { MenuAction } from "@react-native-menu/menu";
 import { useAtomValue } from "@effect/atom-react";
 import { useMemo, useRef, useState } from "react";
@@ -509,6 +510,16 @@ function ThreadNavigationSidebarPane(
     onSelectThread(thread);
     openSwipeableRef.current?.close();
   };
+  const pinnedTasksHeader = props.searchQuery.trim() ? null : (
+    <ThreadListPinnedTasks
+      environmentIdsKey={JSON.stringify([...settlementEnvironmentIds])}
+      environmentId={options.selectedEnvironmentId}
+      projectRefs={selectedProjectScope === null ? null : selectedProjectScope.projectRefs}
+      pane="sidebar"
+      selectedThreadKey={props.selectedThreadKey ?? null}
+      onSelectThread={handleSelectThread}
+    />
+  );
   const handleOpenThreadPullRequests = (
     thread: EnvironmentThreadShell,
     pr: ThreadPrPresentation,
@@ -853,6 +864,7 @@ function ThreadNavigationSidebarPane(
                 scrollEventThrottle={16}
                 showsVerticalScrollIndicator={false}
                 style={styles.threadList}
+                ListHeaderComponent={pinnedTasksHeader}
                 ListEmptyComponent={listEmpty}
               />
             </GestureDetector>
@@ -926,6 +938,7 @@ function ThreadNavigationSidebarPane(
                 scrollEventThrottle={16}
                 showsVerticalScrollIndicator={false}
                 style={styles.threadList}
+                ListHeaderComponent={pinnedTasksHeader}
                 ListEmptyComponent={listEmpty}
               />
             </GestureDetector>

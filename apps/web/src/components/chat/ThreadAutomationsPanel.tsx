@@ -1,7 +1,14 @@
 import { useAtomValue } from "@effect/atom-react";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { useNavigate } from "@tanstack/react-router";
-import { CalendarClockIcon, PencilIcon, PlayIcon, Settings2Icon } from "lucide-react";
+import {
+  CalendarClockIcon,
+  PencilIcon,
+  PinIcon,
+  PinOffIcon,
+  PlayIcon,
+  Settings2Icon,
+} from "lucide-react";
 import { useState } from "react";
 import {
   AuthOrchestrationOperateScope,
@@ -20,6 +27,10 @@ import { ScheduledRelativeLabel, scheduleLabel } from "../settings/ScheduledTask
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
+import {
+  supportsScheduledTaskPinning,
+  useSetScheduledTaskPinned,
+} from "../../hooks/useSetScheduledTaskPinned";
 
 import { readEnvironmentScope } from "../../state/session";
 import { Switch } from "../ui/switch";
@@ -55,6 +66,37 @@ function taskScheduleLine(task: ScheduledTask) {
   );
 }
 
+function PinToSidebarControl(props: {
+  readonly task: ScheduledTask;
+  readonly disabled: boolean;
+  readonly onToggle: (pinned: boolean) => void;
+}) {
+  const pinned = props.task.pinnedAt != null;
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <ThreadDetailsControl
+            size="icon-xs"
+            variant="ghost"
+            part="icon"
+            aria-label={
+              pinned
+                ? `Unpin ${props.task.title} from sidebar`
+                : `Pin ${props.task.title} to sidebar`
+            }
+            disabled={props.disabled}
+            onClick={() => props.onToggle(!pinned)}
+          >
+            {pinned ? <PinOffIcon className="size-3.5" /> : <PinIcon className="size-3.5" />}
+          </ThreadDetailsControl>
+        }
+      />
+      <TooltipPopup>{pinned ? "Unpin from sidebar" : "Pin to sidebar"}</TooltipPopup>
+    </Tooltip>
+  );
+}
+
 export function ThreadAutomationsPanel(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
@@ -71,6 +113,7 @@ export function ThreadAutomationsPanel(props: {
   const runTaskNow = useAtomCommand(serverEnvironment.runScheduledTaskNow, {
     label: "thread automation run now",
   });
+  const setPinned = useSetScheduledTaskPinned();
   const navigate = useNavigate();
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
 
@@ -184,6 +227,13 @@ export function ThreadAutomationsPanel(props: {
                 <p className="text-muted-foreground">{taskScheduleLine(task)}</p>
               </TooltipPopup>
             </Tooltip>
+            {supportsScheduledTaskPinning(task) ? (
+              <PinToSidebarControl
+                task={task}
+                disabled={!canOperate}
+                onToggle={(pinned) => void setPinned(props.environmentId, task, pinned)}
+              />
+            ) : null}
             <Tooltip>
               <TooltipTrigger
                 render={

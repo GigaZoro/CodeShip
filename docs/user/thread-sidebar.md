@@ -55,6 +55,19 @@ in a new thread's model picker to add or remove them. A regular click returns to
 single model. Choose a base branch and send. Each selection starts a separate thread
 and worktree while you stay in the new thread composer. This requires a Git project.
 
+## Pin scheduled tasks
+
+Pin a scheduled task to watch it from the thread list. On web and desktop, choose
+**Pin to sidebar** from the task's menu in **Settings → Scheduled tasks**, or use the pin
+button in a thread's **Automations** card. On mobile, choose **Pin to thread list** from the
+task's menu. Pins are saved on the environment, so every device connected to it shows them.
+
+A pinned task shows whether its latest run is still working or needs your input, and counts
+down to its next run. Tasks that repeat on an interval also show a bar for the time left.
+Select the task to open the thread its last run used, or its settings if it has not run yet.
+Right-click the row on web and desktop, or long-press it on mobile, to run the task now or
+unpin it.
+
 ## Pin and reorder threads
 
 Pin a thread from its menu to keep it above your active work.

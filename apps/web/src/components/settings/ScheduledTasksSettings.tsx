@@ -7,6 +7,8 @@ import {
   InboxIcon,
   MoreHorizontalIcon,
   PencilIcon,
+  PinIcon,
+  PinOffIcon,
   PlayIcon,
   PlusIcon,
   Trash2Icon,
@@ -54,6 +56,10 @@ import { webhookAddress } from "@t3tools/client-runtime/webhook-address";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useNowMinute } from "../../hooks/useNowMinute";
+import {
+  supportsScheduledTaskPinning,
+  useSetScheduledTaskPinned,
+} from "../../hooks/useSetScheduledTaskPinned";
 import {
   useEnvironment,
   useEnvironmentHttpBaseUrl,
@@ -711,6 +717,8 @@ function ScheduledTaskRow({
   const remove = useAtomCommand(serverEnvironment.deleteScheduledTask, {
     label: "scheduled task delete",
   });
+  const setPinned = useSetScheduledTaskPinned();
+  const isPinned = task.pinnedAt != null;
   const act = async (action: "toggle" | "run" | "delete") => {
     if (busy || !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
     setBusy(true);
@@ -794,6 +802,12 @@ function ScheduledTaskRow({
                   Run now
                 </MenuItem>
               )}
+              {supportsScheduledTaskPinning(task) ? (
+                <MenuItem onClick={() => void setPinned(environmentId, task, !isPinned)}>
+                  {isPinned ? <PinOffIcon /> : <PinIcon />}
+                  {isPinned ? "Unpin from sidebar" : "Pin to sidebar"}
+                </MenuItem>
+              ) : null}
               <MenuSeparator />
               <MenuItem onClick={() => void act("delete")}>
                 <Trash2Icon />

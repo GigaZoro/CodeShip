@@ -22,6 +22,7 @@ import {
   type ScheduledTaskRunNowInput,
   type ScheduledTaskRunNowResult,
   type ScheduledTaskSetEnabledInput,
+  type ScheduledTaskSetPinnedInput,
   type ScheduledTaskUpsertInput,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -205,6 +206,9 @@ interface ScheduledTaskRow {
   readonly run_count: number;
   readonly webhook_token: string | null;
   readonly webhook_secret: string | null;
+  /** From scheduled_task_sidebar; absent where a query does not join it. */
+  readonly pinned_at?: string | null;
+  readonly last_run_thread_id?: string | null;
 }
 
 interface WebhookDeliveryRow {
@@ -235,6 +239,9 @@ export class ScheduledTaskService extends Context.Service<
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
     readonly setEnabled: (
       input: ScheduledTaskSetEnabledInput,
+    ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
+    readonly setPinned: (
+      input: ScheduledTaskSetPinnedInput,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
     readonly delete: (
       input: ScheduledTaskDeleteInput,
@@ -349,6 +356,8 @@ const decodeRow = Effect.fnUntraced(
       lastRunError: row.last_run_error,
       runCount: row.run_count,
       ...(webhook === undefined ? {} : { webhook }),
+      ...(row.pinned_at === undefined ? {} : { pinnedAt: row.pinned_at }),
+      ...(row.last_run_thread_id === undefined ? {} : { lastRunThreadId: row.last_run_thread_id }),
     });
   },
   (effect, row, _origin?) =>
@@ -463,6 +472,16 @@ export const layer = Layer.effect(
       Effect.asVoid,
     );
 
+    // Not a numbered migration: this fork's ids would collide with upstream's, and an
+    // upstream rebuild of scheduled_tasks would drop fork-only columns.
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS scheduled_task_sidebar (
+        task_id TEXT PRIMARY KEY,
+        pinned_at TEXT,
+        last_run_thread_id TEXT
+      )
+    `;
+
     const selectAllRows = () =>
       sql<ScheduledTaskRow>`
       SELECT
@@ -487,7 +506,11 @@ export const layer = Layer.effect(
         last_run_error,
         run_count,
         webhook_token,
-        webhook_secret
+        webhook_secret,
+        (SELECT pinned_at FROM scheduled_task_sidebar s
+          WHERE s.task_id = scheduled_tasks.task_id) AS pinned_at,
+        (SELECT last_run_thread_id FROM scheduled_task_sidebar s
+          WHERE s.task_id = scheduled_tasks.task_id) AS last_run_thread_id
       FROM scheduled_tasks
       -- Not updated_at: toggles, runs and edits rewrite it, and clients render
       -- this order as-is, so rows would move under the pointer.
@@ -524,7 +547,11 @@ export const layer = Layer.effect(
         last_run_error,
         run_count,
         webhook_token,
-        webhook_secret
+        webhook_secret,
+        (SELECT pinned_at FROM scheduled_task_sidebar s
+          WHERE s.task_id = scheduled_tasks.task_id) AS pinned_at,
+        (SELECT last_run_thread_id FROM scheduled_task_sidebar s
+          WHERE s.task_id = scheduled_tasks.task_id) AS last_run_thread_id
       FROM scheduled_tasks
       WHERE task_id = ${id}
     `.pipe(NodeSqliteClient.readOnly);
@@ -667,6 +694,7 @@ export const layer = Layer.effect(
       sql
         .withTransaction(
           sql`DELETE FROM scheduled_task_webhook_deliveries WHERE task_id = ${id}`.pipe(
+            Effect.andThen(sql`DELETE FROM scheduled_task_sidebar WHERE task_id = ${id}`),
             Effect.andThen(sql`DELETE FROM scheduled_tasks WHERE task_id = ${id}`),
           ),
         )
@@ -716,6 +744,23 @@ export const layer = Layer.effect(
       `.pipe(
         Effect.mapError((cause) =>
           taskError("Could not record schedule task run.", { taskId: input.id, cause }),
+        ),
+      );
+
+    // Guarded like markCompleted, so a run cannot stamp a task recreated under its id.
+    // Sidebar bookkeeping only: failing it must not fail a run that already dispatched.
+    const recordRunThread = (id: ScheduledTaskId, threadId: ThreadId, startedAtIso: string) =>
+      sql`
+        INSERT INTO scheduled_task_sidebar (task_id, last_run_thread_id)
+        SELECT ${id}, ${threadId}
+        WHERE EXISTS (
+          SELECT 1 FROM scheduled_tasks
+          WHERE task_id = ${id} AND last_run_status = 'running' AND last_run_at = ${startedAtIso}
+        )
+        ON CONFLICT (task_id) DO UPDATE SET last_run_thread_id = excluded.last_run_thread_id
+      `.pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Could not record schedule task run thread", { taskId: id, cause }),
         ),
       );
 
@@ -933,8 +978,10 @@ export const layer = Layer.effect(
           lastRunStatus,
           lastRunError,
           runCount: scheduleSource.runCount + 1,
+          ...(threadId === null ? {} : { lastRunThreadId: threadId }),
         };
         if (current !== null) {
+          if (threadId !== null) yield* recordRunThread(task.id, threadId, startedAtIso);
           // startedAtIso in the guard ensures this writes only to the row this
           // run marked as running — a task deleted mid-run and recreated with
           // the same id (idempotent commandId replay) must not be stamped.
@@ -1283,6 +1330,30 @@ export const layer = Layer.effect(
       };
     });
 
+    const setPinned: ScheduledTaskService["Service"]["setPinned"] = Effect.fn(
+      "ScheduledTaskService.setPinned",
+    )(function* (input) {
+      const existing = yield* loadTask(input.id);
+      if ((existing.pinnedAt != null) === input.pinned) return { task: existing };
+      const pinnedAt = input.pinned ? iso(yield* localNow) : null;
+      const updated = yield* sql<{ task_id: string }>`
+        INSERT INTO scheduled_task_sidebar (task_id, pinned_at)
+        SELECT ${input.id}, ${pinnedAt}
+        WHERE EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${input.id})
+        ON CONFLICT (task_id) DO UPDATE SET pinned_at = excluded.pinned_at
+        RETURNING task_id
+      `.pipe(
+        Effect.mapError((cause) =>
+          taskError("Could not update schedule task.", { taskId: input.id, cause }),
+        ),
+      );
+      if (updated.length === 0) {
+        return yield* taskError("Schedule task not found.", { taskId: input.id });
+      }
+      yield* notifyChanged;
+      return { task: { ...existing, pinnedAt } };
+    });
+
     const forgetWebhookTask = (id: ScheduledTaskId) =>
       Effect.all(
         [
@@ -1332,6 +1403,10 @@ export const layer = Layer.effect(
           Effect.gen(function* () {
             yield* sql`
             DELETE FROM scheduled_task_webhook_deliveries
+            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
+          `;
+            yield* sql`
+            DELETE FROM scheduled_task_sidebar
             WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
           `;
             return yield* sql<{ task_id: ScheduledTaskId }>`
@@ -2251,6 +2326,7 @@ export const layer = Layer.effect(
       subscribeList,
       upsert,
       setEnabled,
+      setPinned,
       delete: deleteTask,
       deleteForThread,
       moveThreadTasks,

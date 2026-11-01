@@ -1,3 +1,5 @@
+import type { ScheduledTask } from "@t3tools/contracts";
+
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
@@ -54,4 +56,40 @@ export function formatNextScheduledTaskRun(nextRunAt: string, now: number): stri
     ...(next.getFullYear() !== current.getFullYear() ? { year: "numeric" as const } : {}),
   });
   return `Next run ${date} at ${time}`;
+}
+
+export const SCHEDULED_TASK_WEEKDAYS = [
+  { index: 1, label: "Mon" },
+  { index: 2, label: "Tue" },
+  { index: 3, label: "Wed" },
+  { index: 4, label: "Thu" },
+  { index: 5, label: "Fri" },
+  { index: 6, label: "Sat" },
+  { index: 0, label: "Sun" },
+] as const;
+
+export function describeSchedule(task: Pick<ScheduledTask, "schedule">): string {
+  if (task.schedule.type === "webhook") return "On webhook";
+  if (task.schedule.type === "interval") return formatScheduledTaskInterval(task.schedule.everyMs);
+  const days = task.schedule.weekdays?.length ? repeatLabel(task.schedule.weekdays) : "Every day";
+  return `${days} at ${formatScheduledTaskTime(task.schedule.timeOfDay)}`;
+}
+
+export function formatScheduledTaskTime(value: string): string {
+  const [hours, minutes] = value.split(":").map(Number);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return value;
+  const time = new Date();
+  time.setHours(hours ?? 9, minutes ?? 0, 0, 0);
+  return time.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+export function repeatLabel(weekdays: ReadonlyArray<number>): string {
+  const days = new Set(weekdays);
+  if (days.size === 7) return "Every day";
+  if (days.size === 5 && [1, 2, 3, 4, 5].every((day) => days.has(day))) return "Weekdays";
+  return (
+    SCHEDULED_TASK_WEEKDAYS.filter((day) => days.has(day.index))
+      .map((day) => day.label)
+      .join(", ") || "Choose days"
+  );
 }

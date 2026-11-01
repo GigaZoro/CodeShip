@@ -476,3 +476,67 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
+
+it.effect("a pin and the last run's thread survive edits and leave with the task", () =>
+  Effect.gen(function* () {
+    const runThreadId = ThreadId.make("thread:started-by-run");
+    const layer = ScheduledTaskService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+            launch: () => Effect.succeed({ threadId: runThreadId } as never),
+          }),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+            namedProjectsRoot: "/projects",
+            isScratchProject: () => Effect.succeed(false),
+          }),
+          NodeCrypto.layer,
+          Scheduler.layer,
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const upsert = (title: string) =>
+        service.upsert({
+          id: ScheduledTaskId.make("task:pinned"),
+          title,
+          prompt: "Check progress",
+          enabled: true,
+          schedule: { type: "interval", everyMs: 300_000 },
+          projectId: ProjectId.make("project:test"),
+          workspaceStrategy: { type: "root" },
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        });
+      const { task } = yield* upsert("Check CI");
+      const listed = () =>
+        service.list().pipe(Effect.map(({ tasks }) => tasks.find(({ id }) => id === task.id)));
+
+      const pinned = yield* service.setPinned({ id: task.id, pinned: true });
+      assert.isNotNull(pinned.task.pinnedAt ?? null);
+      const run = yield* service.runNow({ id: task.id });
+      assert.equal(run.threadId, runThreadId);
+      assert.equal(run.task.lastRunThreadId, runThreadId);
+
+      yield* upsert("Check CI and deploys");
+      const edited = yield* listed();
+      assert.equal(edited?.title, "Check CI and deploys");
+      assert.equal(edited?.pinnedAt, pinned.task.pinnedAt);
+      assert.equal(edited?.lastRunThreadId, runThreadId);
+
+      yield* service.setPinned({ id: task.id, pinned: false });
+      assert.isNull((yield* listed())?.pinnedAt ?? null);
+
+      yield* service.delete({ id: task.id });
+      const leftover = yield* sql`SELECT task_id FROM scheduled_task_sidebar`;
+      assert.lengthOf(leftover, 0);
+      const missing = yield* service.setPinned({ id: task.id, pinned: true }).pipe(Effect.flip);
+      assert.equal(missing.message, "Schedule task not found.");
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);

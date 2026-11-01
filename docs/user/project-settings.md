@@ -77,7 +77,8 @@ environment's time zone, which may differ from your phone's.
 Deleting a thread also deletes tasks that post into that thread. Tasks that start
 a new thread on each run survive deletion of their previous threads.
 
-You can edit, pause, resume, run immediately, or delete a task from the list.
+You can edit, pause, resume, run immediately, pin to the thread list, or delete a
+task from the list. See [Pin scheduled tasks](thread-sidebar.md#pin-scheduled-tasks).
 Webhook tasks only run when their URL is called, so they can't be run
 immediately.
 Leaving an edited form asks before discarding unsaved changes.

@@ -268,6 +268,7 @@ import {
   type SidebarSweepAction,
 } from "./sidebar/SidebarThreadRow";
 import { SidebarDraftBlock } from "./sidebar/SidebarDraftBlock";
+import { SidebarPinnedTasksBlock } from "./sidebar/SidebarPinnedTasks";
 import {
   SidebarMachineFolderHeader,
   SidebarProjectFolderHeader,
@@ -3648,6 +3649,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           routeDraftId={routeDraftIdForRows}
                           onNavigateToDraft={navigateToDraft}
                           onDraftContextMenu={handleDraftContextMenu}
+                        />,
+                        <SidebarPinnedTasksBlock
+                          key="pinned-tasks"
+                          environmentIdsKey={JSON.stringify([...serverConfigs.keys()])}
+                          scopedProjectKeys={scopedProjectKeys}
+                          projectDisplayNameByKey={projectDisplayNameByKey}
+                          routeThreadKey={routeThreadKey}
+                          onNavigateToThread={navigateToThread}
                         />,
                       ];
                       for (const item of sidebarListItems) {

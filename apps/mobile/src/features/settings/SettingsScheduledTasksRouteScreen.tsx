@@ -85,8 +85,11 @@ import {
 } from "./scheduled-task-editor-state";
 import { appAtomRegistry } from "../../state/atom-registry";
 import {
+  SCHEDULED_TASK_WEEKDAYS as DAYS,
+  describeSchedule,
   formatNextScheduledTaskRun,
-  formatScheduledTaskInterval,
+  formatScheduledTaskTime as formatTime,
+  repeatLabel,
 } from "./scheduledTaskPresentation";
 
 type ScheduledTaskRoutes = {
@@ -95,31 +98,6 @@ type ScheduledTaskRoutes = {
   SettingsScheduledTaskModel: undefined;
   SettingsScheduledTaskBranch: undefined;
 };
-
-const DAYS = [
-  { index: 1, label: "Mon" },
-  { index: 2, label: "Tue" },
-  { index: 3, label: "Wed" },
-  { index: 4, label: "Thu" },
-  { index: 5, label: "Fri" },
-  { index: 6, label: "Sat" },
-  { index: 0, label: "Sun" },
-] as const;
-
-function describeSchedule(task: ScheduledTask): string {
-  if (task.schedule.type === "webhook") return "On webhook";
-  if (task.schedule.type === "interval") return formatScheduledTaskInterval(task.schedule.everyMs);
-  const days = task.schedule.weekdays?.length ? repeatLabel(task.schedule.weekdays) : "Every day";
-  return `${days} at ${formatTime(task.schedule.timeOfDay)}`;
-}
-
-function formatTime(value: string): string {
-  const [hours, minutes] = value.split(":").map(Number);
-  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return value;
-  const time = new Date();
-  time.setHours(hours ?? 9, minutes ?? 0, 0, 0);
-  return time.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-}
 
 function timePickerValue(value: string): Date {
   const [hours, minutes] = value.split(":").map(Number);
@@ -131,17 +109,6 @@ function timePickerValue(value: string): Date {
     0,
   );
   return time;
-}
-
-function repeatLabel(weekdays: ReadonlyArray<number>): string {
-  const days = new Set(weekdays);
-  if (days.size === 7) return "Every day";
-  if (days.size === 5 && [1, 2, 3, 4, 5].every((day) => days.has(day))) return "Weekdays";
-  return (
-    DAYS.filter((day) => days.has(day.index))
-      .map((day) => day.label)
-      .join(", ") || "Choose days"
-  );
 }
 
 function FormField(props: {
@@ -1293,21 +1260,33 @@ function EnvironmentTasks({
     label: "scheduled task delete",
     reportFailure: false,
   });
+  const setPinned = useAtomCommand(serverEnvironment.setScheduledTaskPinned, {
+    label: "scheduled task pin",
+    reportFailure: false,
+  });
   const failure = (title: string, result: AtomCommandResult<unknown, unknown>) => {
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       Dialog.alert(title, String(squashAtomCommandFailure(result)));
     }
   };
 
-  const act = async (task: ScheduledTask, action: "run" | "toggle" | "delete") => {
+  const act = async (task: ScheduledTask, action: "run" | "toggle" | "pin" | "delete") => {
     if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
     const result =
       action === "run"
         ? await runNow({ environmentId, input: { id: task.id } })
         : action === "toggle"
           ? await setEnabled({ environmentId, input: { id: task.id, enabled: !task.enabled } })
-          : await remove({ environmentId, input: { id: task.id } });
-    failure(`Could not ${action === "toggle" ? "update" : action} task`, result);
+          : action === "pin"
+            ? await setPinned({
+                environmentId,
+                input: { id: task.id, pinned: task.pinnedAt == null },
+              })
+            : await remove({ environmentId, input: { id: task.id } });
+    failure(
+      `Could not ${action === "toggle" || action === "pin" ? "update" : action} task`,
+      result,
+    );
   };
 
   return (
@@ -1377,6 +1356,16 @@ function EnvironmentTasks({
                 ...(task.schedule.type === "webhook"
                   ? []
                   : [{ id: "run", title: "Run now", attributes: { disabled: !canOperate } }]),
+                // Servers without task pinning leave pinnedAt out of the task.
+                ...(task.pinnedAt === undefined
+                  ? []
+                  : [
+                      {
+                        id: "pin",
+                        title: task.pinnedAt === null ? "Pin to thread list" : "Unpin",
+                        attributes: { disabled: !canOperate },
+                      },
+                    ]),
                 {
                   id: "delete",
                   title: "Delete",
@@ -1396,7 +1385,7 @@ function EnvironmentTasks({
                       onPress: () => void act(task, "delete"),
                     },
                   ]);
-                } else if (action === "toggle" || action === "run") {
+                } else if (action === "toggle" || action === "run" || action === "pin") {
                   void act(task, action);
                 }
               }}

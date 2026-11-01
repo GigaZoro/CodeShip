@@ -216,6 +216,10 @@ export const ScheduledTask = Schema.Struct({
   lastRunError: Schema.NullOr(Schema.String),
   runCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   webhook: Schema.optional(ScheduledTaskWebhookEndpoint),
+  /** Pinned tasks show in the sidebar. Absent from servers without pinning. */
+  pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** The thread the last successful run used: the bound thread, or the one it started. */
+  lastRunThreadId: Schema.optional(Schema.NullOr(ThreadId)),
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
 
@@ -253,6 +257,12 @@ export const ScheduledTaskSetEnabledInput = Schema.Struct({
   enabled: Schema.Boolean,
 });
 export type ScheduledTaskSetEnabledInput = typeof ScheduledTaskSetEnabledInput.Type;
+
+export const ScheduledTaskSetPinnedInput = Schema.Struct({
+  id: ScheduledTaskId,
+  pinned: Schema.Boolean,
+});
+export type ScheduledTaskSetPinnedInput = typeof ScheduledTaskSetPinnedInput.Type;
 
 export const ScheduledTaskDeleteInput = Schema.Struct({
   id: ScheduledTaskId,
