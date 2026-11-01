@@ -3904,6 +3904,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     )(
       function* (now: DateTime.Utc) {
         // Every failure counts, so an account that refused one thread is skipped for all of them.
+        // A run on that account started after the refusal and completed lifts it early,
+        // as when the account's sign-in changed.
         const rows = yield* sql<{ readonly provider_instance_id: string }>`
           SELECT DISTINCT r.provider_instance_id
           FROM orchestration_v2_projection_turn_items failure
@@ -3912,6 +3914,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             AND r.provider_instance_id IS NOT NULL
             AND json_extract(failure.payload_json, '$.failure.class') = 'usage_limit'
             AND julianday(json_extract(failure.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(now)})
+            AND NOT EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_runs later
+              WHERE later.provider_instance_id = r.provider_instance_id
+                AND later.status = 'completed'
+                AND julianday(json_extract(later.payload_json, '$.startedAt'))
+                  > julianday(json_extract(failure.payload_json, '$.updatedAt'))
+            )
         `;
         return new Set(rows.map((row) => ProviderInstanceId.make(row.provider_instance_id)));
       },

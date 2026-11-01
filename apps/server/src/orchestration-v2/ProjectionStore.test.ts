@@ -4535,6 +4535,10 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         },
       });
       yield* assertSummary("Plan limit reached.", "usage_limit");
+      assert.deepEqual(
+        [...(yield* store.getUsageLimitedProviderInstanceIds(now))],
+        [providerInstanceId],
+      );
       const sql = yield* SqlClient.SqlClient;
       yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${aheadRunId}`;
       yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${queuedRunId}`;
@@ -4584,11 +4588,30 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           failover: true,
         })).find((row) => row.id === threadId),
       );
-      assert.deepEqual(
-        [...(yield* store.getUsageLimitedProviderInstanceIds(now))],
-        [providerInstanceId],
-      );
       assert.deepEqual([...(yield* store.getUsageLimitedProviderInstanceIds(reset))], []);
+      const afterRefusalRunId = RunId.make("run:limit-shell:after-refusal");
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:after-refusal"),
+        type: "run.created",
+        threadId,
+        runId: afterRefusalRunId,
+        nodeId: NodeId.make("node:limit-shell:after-refusal"),
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...original,
+          id: afterRefusalRunId,
+          ordinal: original.ordinal + 4,
+          rootNodeId: NodeId.make("node:limit-shell:after-refusal"),
+          userMessageId: MessageId.make("message:limit-shell:after-refusal"),
+          status: "completed",
+          startedAt: DateTime.add(now, { minutes: 1 }),
+          completedAt: DateTime.add(now, { minutes: 2 }),
+        },
+      });
+      assert.deepEqual([...(yield* store.getUsageLimitedProviderInstanceIds(now))], []);
+      yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${afterRefusalRunId}`;
       const recovery = {
         runId: original.id,
         resetAt: limitItem.failure.resetAt,
