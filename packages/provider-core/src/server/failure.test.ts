@@ -2,6 +2,8 @@ import { assert, it } from "@effect/vitest";
 import {
   NodeId,
   ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderSetupError,
   ProviderThreadId,
   ProviderTurnId,
   RunId,
@@ -83,8 +85,16 @@ it("does not expose arbitrary cause messages and preserves explicit messages", (
   }
 });
 
-it("preserves actionable handoff errors wrapped by turn startup", () => {
-  for (const error of [new ContextHandoffBudgetError(), new ContextHandoffBackgroundWorkError()]) {
+it("preserves CodeShip's own actionable errors wrapped by turn startup", () => {
+  for (const error of [
+    new ContextHandoffBudgetError(),
+    new ContextHandoffBackgroundWorkError(),
+    new ProviderSetupError({
+      instanceId: ProviderInstanceId.make("claudeAgent_personal"),
+      operation: "session",
+      detail: "Signed in to the same account as Claude. Sign in to a different account to use it.",
+    }),
+  ]) {
     const cause = new ProviderAdapter.ProviderAdapterTurnStartError({
       driver: ProviderDriverKind.make("codex"),
       threadId: ThreadId.make("thread:handoff-error"),

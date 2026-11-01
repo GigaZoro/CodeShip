@@ -1,4 +1,4 @@
-import { ClaudeSettings, ProviderDriverKind } from "@t3tools/contracts";
+import { ClaudeSettings, defaultInstanceIdForDriver, ProviderDriverKind } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";
@@ -8,6 +8,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
@@ -55,9 +56,12 @@ import {
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
 } from "@t3tools/provider-core/server/snapshotSettings";
+import { claudeAccountHomePath, materializeClaudeAccountHome } from "./ClaudeAccountHome.ts";
+import { makeClaudeAuth } from "./ClaudeAuth.ts";
 import {
   makeClaudeCapabilitiesCacheKey,
   makeClaudeContinuationGroupKey,
+  makeClaudeEnvironment,
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -139,10 +143,28 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       driverKind: DRIVER_KIND,
       instanceId,
     });
+    // An added account signs in to its own folder unless it names one; the rest of that folder
+    // links to the shared Claude folder, so every account keeps the same files and sessions.
+    const sharedHome = yield* resolveClaudeHomePath(config, processEnv);
+    const accountHome =
+      instanceId !== defaultInstanceIdForDriver(DRIVER_KIND) &&
+      config.homePath.trim().length === 0 &&
+      !environment.some((variable) => variable.name === "CLAUDE_CONFIG_DIR")
+        ? claudeAccountHomePath(path, stateDir, instanceId)
+        : undefined;
+    const prepareAccountHome =
+      accountHome === undefined
+        ? Effect.void
+        : materializeClaudeAccountHome({ sharedHome, accountHome }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+          );
+    yield* prepareAccountHome;
     const effectiveConfig = {
       ...config,
       enabled,
       binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
+      homePath: accountHome ?? config.homePath,
     } satisfies ClaudeSettings;
     const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
       resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
@@ -154,20 +176,37 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         Effect.provideService(Path.Path, path),
       ),
     );
-    const continuationGroupKey = yield* makeClaudeContinuationGroupKey(effectiveConfig, processEnv);
+    // Threads continue across accounts because every account shares the sessions folder.
+    const continuationGroupKey = yield* makeClaudeContinuationGroupKey(config, processEnv);
     const configDir = yield* resolveClaudeHomePath(effectiveConfig, processEnv);
     const accountConfigPath = yield* ClaudeResetCredits.claudeAccountConfigPath(
       effectiveConfig.homePath.trim() || processEnv.CLAUDE_CONFIG_DIR?.trim()
         ? configDir
         : undefined,
     );
-    const stampIdentity = withInstanceIdentity({
+    const auth = yield* makeClaudeAuth({
+      instanceId,
+      binaryPath: effectiveConfig.binaryPath,
+      cwd: stateDir,
+      environment: yield* makeClaudeEnvironment(effectiveConfig, processEnv),
+      configDir,
+      prepare: prepareAccountHome,
+      canLogout: accountHome !== undefined,
+    });
+    const stampBaseIdentity = withInstanceIdentity({
       instanceId,
       driverKind: DRIVER_KIND,
       displayName,
       accentColor,
       continuationGroupKey,
     });
+    const stampIdentity: typeof stampBaseIdentity = (draft) =>
+      stampBaseIdentity({
+        ...draft,
+        setup: { canInstall: false, ...draft.setup, canAuthenticate: auth.canAuthenticate },
+        // The first Claude provider uses the Claude CLI's own login, which other apps share.
+        auth: { ...draft.auth, canLogout: accountHome !== undefined },
+      });
 
     const scopedLimitNames = yield* makeClaudeScopedLimitNames;
     const orchestrationAdapter = yield* createClaudeAdapterV2(
@@ -177,7 +216,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         accentColor,
         environment,
         enabled,
-        config,
+        config: { ...config, homePath: effectiveConfig.homePath },
       },
       { scopedLimitNames, onUsageLimits: (update) => snapshot.applyUsageLimits(update) },
     ).pipe(
@@ -323,6 +362,17 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       ),
     );
 
+    yield* auth.controller.subscribe("claude-account-snapshot").pipe(
+      Stream.filter((state) => ["idle", "succeeded", "failed", "cancelled"].includes(state.phase)),
+      Stream.runForEach(() =>
+        Cache.invalidateAll(capabilitiesProbeCache).pipe(
+          Effect.andThen(snapshot.refresh),
+          Effect.ignoreCause({ log: true }),
+        ),
+      ),
+      Effect.forkScoped,
+    );
+
     // Same rules as Codex: serialised on the config directory that holds the
     // login, one request id kept until Claude answers (a cooldown or rate
     // limit is an answer), then a re-probe.
@@ -395,6 +445,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       displayName,
       accentColor,
       enabled,
+      auth: auth.controller,
       snapshot,
       invalidateCaches: Cache.invalidateAll(capabilitiesProbeCache),
       snapshotForCwd: (cwd: string) =>

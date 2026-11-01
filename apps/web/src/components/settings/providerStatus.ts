@@ -40,6 +40,7 @@ function isAntigravitySignInUnchecked(provider: ServerProvider): boolean {
 
 export function getProviderStatusKey(provider: ServerProvider | undefined): ProviderStatusKey {
   if (provider && !provider.enabled) return "disabled";
+  if (provider?.availability === "unavailable") return "error";
   if (provider && isAntigravitySignInUnchecked(provider)) return "neutral";
   return provider?.status ?? "warning";
 }
@@ -63,6 +64,9 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
       headline: "Not found",
       detail: provider.message ?? "CLI not detected on PATH.",
     };
+  }
+  if (provider.availability === "unavailable") {
+    return { headline: "Unavailable", detail: provider.unavailableReason ?? null };
   }
   if (provider.auth.status === "unauthenticated") {
     const authLabel = provider.auth.label ?? provider.auth.type;

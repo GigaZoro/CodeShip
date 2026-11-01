@@ -59,9 +59,13 @@ export function ProviderAuthenticationSection({
   const interaction = auth?.interaction;
   const active =
     auth?.phase === "starting" || auth?.phase === "waiting" || auth?.phase === "verifying";
+  // Another provider may already own this account; it then needs its own sign-in.
+  const unavailableReason =
+    provider.availability === "unavailable" ? provider.unavailableReason : undefined;
   const signedIn =
-    provider.auth.status === "authenticated" ||
-    (provider.auth.status === "unknown" && auth?.phase === "succeeded");
+    unavailableReason === undefined &&
+    (provider.auth.status === "authenticated" ||
+      (provider.auth.status === "unknown" && auth?.phase === "succeeded"));
   const isDiscovering =
     provider.driver === "acpRegistry" &&
     !active &&
@@ -89,7 +93,7 @@ export function ProviderAuthenticationSection({
         ? "Discovering sign-in methods…"
         : needsExternalSetup
           ? "No in-app sign-in advertised. Follow the provider's docs to finish setup."
-          : `Sign in on ${environmentLabel}.`;
+          : (unavailableReason ?? `Sign in on ${environmentLabel}.`);
   const statusMessage = auth?.phase === "failed" ? auth.message : null;
   const disabled = readOnly || pending || query.error !== null || isDiscovering;
   const draftId = `${auth?.flowId ?? ""}:${interaction?.id ?? ""}`;

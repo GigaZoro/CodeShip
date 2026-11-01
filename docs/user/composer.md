@@ -231,6 +231,14 @@ Type `/` for commands or `$` to add a skill from the selected environment and
 provider. On mobile, both are also available before starting a thread on
 **New task**.
 
+Put skills you want in every provider in `~/.agents/skills` on the environment's
+machine. Codex, Cursor, and fx read that folder themselves, and CodeShip adds it
+to Claude. Keep skills for one provider in its own folder, such as
+`~/.claude/skills` or `~/.codex/skills`. Keep each skill in only one of these
+folders, because Codex lists both copies of a duplicate. All accounts of a
+provider use the same folders, unless you gave an account its own config
+directory.
+
 The slash menu also includes skills unless you turn off **Settings → Chat →
 Show skills in slash menu**, under Advanced. Only skills enabled for the provider are listed.
 

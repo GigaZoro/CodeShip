@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
+import { findAccountOwner, sameAccountMessage } from "../provider/providerAccounts.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { ProviderAdapterDriverCreateError } from "@t3tools/provider-core/server/adapterDriver";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -75,11 +76,29 @@ export const layerFromProviderInstanceRegistry: Layer.Layer<
               return new ProviderAdapterRegistryLookupError({ instanceId });
             const adapter = instance.orchestrationAdapter;
             const auth = instance.auth;
-            if (!auth) return Effect.succeed(adapter);
             return Effect.succeed({
               ...adapter,
               openSession: (input) => {
                 const open = Effect.gen(function* () {
+                  const owner = findAccountOwner(
+                    yield* instance.snapshot.getSnapshot,
+                    yield* Effect.forEach(
+                      yield* instances.listInstances,
+                      (peer) => peer.snapshot.getSnapshot,
+                    ),
+                  );
+                  if (owner !== undefined)
+                    return yield* new ProviderAdapter.ProviderAdapterOpenSessionError({
+                      driver: adapter.driver,
+                      providerSessionId: input.providerSessionId,
+                      requiresSignIn: true,
+                      cause: new ProviderSetupError({
+                        instanceId,
+                        operation: "session",
+                        detail: sameAccountMessage(owner),
+                      }),
+                    });
+                  if (!auth) return yield* adapter.openSession(input);
                   const binding = auth.credentialBinding;
                   const related = binding
                     ? (yield* instances.listInstances).filter(

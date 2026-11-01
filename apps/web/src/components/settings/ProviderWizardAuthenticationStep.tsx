@@ -30,8 +30,9 @@ export function ProviderWizardAuthenticationStep({
   const active =
     auth?.phase === "starting" || auth?.phase === "waiting" || auth?.phase === "verifying";
   const signedIn =
-    provider?.auth.status === "authenticated" ||
-    (provider?.auth.status === "unknown" && auth?.phase === "succeeded");
+    provider?.availability !== "unavailable" &&
+    (provider?.auth.status === "authenticated" ||
+      (provider?.auth.status === "unknown" && auth?.phase === "succeeded"));
   const isDiscovering = !signedIn && !query.error && auth?.methods === undefined;
   const canAuthenticate = (auth?.methods?.length ?? 0) > 0;
 

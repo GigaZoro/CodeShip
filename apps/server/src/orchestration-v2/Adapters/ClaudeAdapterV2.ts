@@ -139,6 +139,7 @@ import {
 import {
   claudeLaunchArgDirectories,
   discoverClaudeSkills,
+  linkClaudeSharedSkills,
 } from "../../provider/Drivers/ClaudeSkills.ts";
 import {
   compileClaudeModelSelection,
@@ -1510,6 +1511,8 @@ export function makeClaudeQueryOptions(input: {
   readonly resumeSessionAt?: string;
   readonly cwd: string | null;
   readonly attachmentsDir?: string;
+  /** Added directory whose `.claude/skills` is the shared skills folder. */
+  readonly sharedSkillsDirectory?: string | undefined;
   readonly settings?: ClaudeSettings;
   readonly sdkSettings?: string | ClaudeSdkSettings;
   readonly environment?: NodeJS.ProcessEnv;
@@ -1652,6 +1655,7 @@ export function makeClaudeQueryOptions(input: {
     ...(input.cwd === null ? [] : [input.cwd]),
     ...(input.attachmentsDir === undefined ? [] : [input.attachmentsDir]),
     ...claudeLaunchArgDirectories(input.settings?.launchArgs),
+    ...(input.sharedSkillsDirectory === undefined ? [] : [input.sharedSkillsDirectory]),
   ];
   const withDirectories =
     additionalDirectories.length === 0 ? options : { ...options, additionalDirectories };
@@ -4425,6 +4429,8 @@ export interface ClaudeAdapterV2Options {
   readonly settings: ClaudeSettings;
   readonly environment: NodeJS.ProcessEnv;
   readonly attachmentsDir: string;
+  /** Where to link the shared skills folder; without it, Claude gets no shared skills. */
+  readonly sharedSkillsBridgeDirectory?: string;
   readonly fileSystem: FileSystem.FileSystem;
   readonly path: Path.Path;
   readonly crypto: Crypto.Crypto;
@@ -4590,6 +4596,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
       return claudeToolSearchOverride(adapterOptions.environment.ENABLE_TOOL_SEARCH);
     },
   );
+
+  // Checked every turn so a shared folder created later reaches running threads.
+  const sharedSkillsLock = yield* Semaphore.make(1);
+  const linkSharedSkills =
+    adapterOptions.sharedSkillsBridgeDirectory === undefined
+      ? Effect.undefined
+      : sharedSkillsLock.withPermits(1)(
+          linkClaudeSharedSkills(adapterOptions.sharedSkillsBridgeDirectory).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+          ),
+        );
 
   const userInvocableSkills = (cwd: string | null) =>
     discoverClaudeSkills(
@@ -10113,6 +10131,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
             cwd: turnInput.runtimePolicy.cwd,
             attachmentsDir,
+            sharedSkillsDirectory: yield* linkSharedSkills,
             settings: adapterOptions.settings,
             ...(launchArgSettings === undefined ? {} : { sdkSettings: launchArgSettings }),
             environment: claudeQueryEnvironment(
@@ -11413,6 +11432,13 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
       settings: { ...config, enabled, binaryPath },
       environment: claudeEnvironment,
       attachmentsDir: serverConfig.attachmentsDir,
+      sharedSkillsBridgeDirectory: path.join(
+        serverConfig.stateDir,
+        "providers",
+        "claudeAgent",
+        instanceId,
+        "shared",
+      ),
       fileSystem,
       path,
       crypto,

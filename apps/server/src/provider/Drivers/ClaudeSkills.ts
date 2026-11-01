@@ -11,6 +11,7 @@ import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import { parse as parseYamlDocument } from "yaml";
 
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
+import { linkPath } from "./ClaudeAccountHome.ts";
 
 type ClaudeSkillScope = "user" | "project";
 
@@ -447,6 +448,46 @@ export function claudeLaunchArgDirectories(launchArgs?: string): ReadonlyArray<s
   return directories;
 }
 
+/** Skills shared by every agent. Codex, Cursor and OpenCode read this folder themselves. */
+const sharedSkillsDirectory = (path: Path.Path, home: string) =>
+  path.join(home, ".agents", "skills");
+
+/**
+ * Claude reads no shared skills folder, but loads `.claude/skills` in an added directory.
+ * Links `bridgeDirectory/.claude/skills` to the shared folder and returns the directory to add,
+ * or undefined when there is no shared folder or it cannot be linked.
+ */
+export const linkClaudeSharedSkills = Effect.fn("linkClaudeSharedSkills")(function* (
+  bridgeDirectory: string,
+): Effect.fn.Return<string | undefined, never, FileSystem.FileSystem | Path.Path> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const platform = yield* HostProcess.Platform;
+  const target = sharedSkillsDirectory(path, yield* HostProcess.HomeDirectory);
+  const link = path.join(bridgeDirectory, ".claude", "skills");
+  const linked = Effect.all([fileSystem.realPath(link), fileSystem.realPath(target)]).pipe(
+    Effect.map(([actual, expected]) => actual === expected),
+    Effect.orElseSucceed(() => false),
+  );
+  return yield* Effect.gen(function* () {
+    if (!(yield* fileSystem.exists(target))) return undefined;
+    if (yield* linked) return bridgeDirectory;
+    // Missing, dangling, or pointing elsewhere. A non-recursive remove never empties a real folder.
+    yield* fileSystem
+      .remove(link)
+      .pipe(Effect.catchReason("PlatformError", "NotFound", () => Effect.void));
+    yield* fileSystem.makeDirectory(path.dirname(link), { recursive: true });
+    yield* linkPath(target, link, platform, true);
+    return bridgeDirectory;
+  }).pipe(
+    Effect.catch((error) =>
+      Effect.logWarning("Shared skills are not linked for Claude.", { link, target, error }).pipe(
+        Effect.as(undefined),
+      ),
+    ),
+  );
+});
+
 /** First name wins, matching Claude Code's precedence of user skills over project skills. */
 export const discoverClaudeSkills = Effect.fn("discoverClaudeSkills")(function* (
   config: Pick<ClaudeSettings, "homePath"> & Partial<Pick<ClaudeSettings, "launchArgs">>,
@@ -471,6 +512,7 @@ export const discoverClaudeSkills = Effect.fn("discoverClaudeSkills")(function* 
         directory: path.join(path.resolve(cwd ?? ".", directory), ".claude", "skills"),
         scope: "project" as const,
       })),
+    { directory: sharedSkillsDirectory(path, yield* HostProcess.HomeDirectory), scope: "user" },
     ...(yield* discoverPluginSkillRoots(
       configDirPath,
       cwd,

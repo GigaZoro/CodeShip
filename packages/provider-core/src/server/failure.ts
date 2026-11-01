@@ -102,6 +102,8 @@ function curatedCauseMessages(cause: unknown): {
             category: categoryMessage(),
           };
         case "AcpModelSelectionError":
+        // Setup errors carry text written for the user, never provider output.
+        case "ProviderSetupError":
         case "ClaudeBackgroundWorkBlocksQueryReplacementError":
         case "ClaudeAppendSystemPromptFileError":
         case "ClaudeAppendSystemPromptMissingValueError":

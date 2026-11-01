@@ -129,9 +129,13 @@ function ProviderAccount({
   const values = draft.id === draftId ? draft.values : {};
   const active =
     state?.phase === "starting" || state?.phase === "waiting" || state?.phase === "verifying";
+  // Another provider may already own this account; it then needs its own sign-in.
+  const unavailableReason =
+    provider.availability === "unavailable" ? provider.unavailableReason : undefined;
   const signedIn =
-    provider.auth.status === "authenticated" ||
-    (provider.auth.status === "unknown" && state?.phase === "succeeded");
+    unavailableReason === undefined &&
+    (provider.auth.status === "authenticated" ||
+      (provider.auth.status === "unknown" && state?.phase === "succeeded"));
   const isDiscovering =
     provider.driver === "acpRegistry" &&
     !active &&
@@ -217,7 +221,7 @@ function ProviderAccount({
               ? "No in-app sign-in advertised. Follow the provider's docs to finish setup."
               : !provider.installed
                 ? "Not installed"
-                : "Not signed in";
+                : (unavailableReason ?? "Not signed in");
   // A provider with several sign-in methods picks one from a menu on the same control.
   const methodActions: MenuAction[] = methods.map((method) => ({
     id: `method:${method.id}`,

@@ -35,6 +35,7 @@ import {
   resolveProviderStatusCachePath,
   writeProviderStatusCache,
 } from "./providerStatusCache.ts";
+import { withSameAccountMarks } from "./providerAccounts.ts";
 import type {
   ProviderInstance,
   ProviderWorkspaceSnapshot,
@@ -409,7 +410,9 @@ export const layer = Layer.effect(
         ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility,
       );
     const providersRef = yield* Ref.make<ReadonlyArray<ServerProvider>>(
-      cachedProviders.map((provider) => classifyCompatibility(provider, initialManifest)),
+      withSameAccountMarks(
+        cachedProviders.map((provider) => classifyCompatibility(provider, initialManifest)),
+      ),
     );
     const workspaceRefreshesRef = yield* Ref.make<
       ReadonlyMap<ProviderInstance, ReadonlyMap<string, Deferred.Deferred<void>>>
@@ -494,9 +497,11 @@ export const layer = Layer.effect(
             );
           }
 
-          const providers = orderProviderSnapshots(
-            [...mergedProviders.values()].map((provider) =>
-              classifyCompatibility(provider, manifest),
+          const providers = withSameAccountMarks(
+            orderProviderSnapshots(
+              [...mergedProviders.values()].map((provider) =>
+                classifyCompatibility(provider, manifest),
+              ),
             ),
           );
           const providersToPersist = providers.filter((provider) =>
@@ -824,9 +829,11 @@ export const layer = Layer.effect(
         const [previousProviders, providers] = yield* Ref.modify(
           providersRef,
           (previousProviders) => {
-            const providers = orderProviderSnapshots(
-              previousProviders.filter((provider) =>
-                knownInstanceIds.has(snapshotInstanceKey(provider)),
+            const providers = withSameAccountMarks(
+              orderProviderSnapshots(
+                previousProviders.filter((provider) =>
+                  knownInstanceIds.has(snapshotInstanceKey(provider)),
+                ),
               ),
             );
             return [[previousProviders, providers] as const, providers];

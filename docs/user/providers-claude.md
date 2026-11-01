@@ -6,33 +6,36 @@ shared provider settings.
 
 ## Separate accounts or configurations
 
-Use a separate Claude config directory for each account. This also works for named
-presets that need different Claude settings or a router connection.
+Each Claude provider is one account. To add another, add a Claude instance in
+**Settings > Providers** and choose **Sign in**. CodeShip runs `claude auth login`
+in a terminal on the environment's machine; sign in with the other account in your
+browser. Each provider then shows its account's email and plan.
 
-Keep your existing account in the default directory. On the environment's machine,
-create the second login:
+The first Claude provider uses the Claude CLI's own login. Every other Claude
+provider keeps its login in a folder CodeShip creates for it, and that folder links
+to everything else in `~/.claude`: CLAUDE.md, skills, settings, plugins, and past
+sessions, so threads can move between accounts. MCP servers you added with
+`claude mcp add --scope user` are saved with the login, so add them again for each
+account. **Sign out** signs that account out; sign the first provider out with
+`claude auth logout` in a terminal.
+
+A provider signed in to the same account as another provider is unavailable until
+you sign it in to a different account. A Claude provider signed in with a
+`CLAUDE_CODE_OAUTH_TOKEN` shows as **Claude token**, because a token cannot read the
+account's email or plan.
+
+To keep an account's settings and local conversation state separate too, give the
+instance its own **CLAUDE_CONFIG_DIR path** and sign that directory in on the
+environment's machine. CodeShip then leaves that directory as it is:
 
 ```bash
-mkdir -p ~/.claude_personal
 CLAUDE_CONFIG_DIR=~/.claude_personal claude auth login
 ```
 
-Add another Claude instance in **Settings > Providers**:
-
-| Instance        | Binary path | CLAUDE_CONFIG_DIR path |
-| --------------- | ----------- | ---------------------- |
-| Claude Work     | `claude`    | Leave empty            |
-| Claude Personal | `claude`    | `~/.claude_personal`   |
-
-An empty config-directory setting uses Claude Code's normal configuration. The
-custom setting changes `CLAUDE_CONFIG_DIR`, leaving `HOME` and the system keychain
-location intact. Use the same variable for the login command. Setting `HOME`
-instead can put credentials where this provider will not find them.
-
-Check the account reported in provider settings after signing in. Existing
-threads can switch only between Claude instances with the same config directory.
-Separate account directories stay isolated, including their local conversation
-state. Claude does not have Codex's shared-home and shadow-home arrangement.
+The custom setting changes `CLAUDE_CONFIG_DIR`, leaving `HOME` and the system keychain
+location intact. Setting `HOME` instead can put credentials where this provider will
+not find them. Threads on an instance with its own **CLAUDE_CONFIG_DIR path** can
+switch only to instances that use the same directory.
 
 For presets that differ only in API keys or endpoints, use the instance's
 **Environment variables**. Variable assignments do not belong in **Launch arguments**.
@@ -79,9 +82,11 @@ threads that Claude stops on a limit; a turn it is still holding stays put.
 
 ## Skills
 
-Claude skills come from the config directory's `skills` folder and the project's
-`.claude/skills` folder. If both define the same name, the config-directory copy
-wins. Skills disabled in Claude's settings do not appear in the composer.
+Claude skills come from the config directory's `skills` folder, the project's
+`.claude/skills` folder, and `~/.agents/skills`, the
+[folder every provider shares](./composer.md#commands-and-skills). If two define
+the same name, the config-directory copy wins, then the project's. Skills disabled
+in Claude's settings do not appear in the composer.
 
 Use `$` in the composer to select a skill. Enabled installed Claude plugins also
 contribute skills under names such as `plugin:review`. Skills marked `disable-model-invocation`

@@ -6,6 +6,7 @@ import {
   ProviderSessionId,
   ThreadId,
   ProviderSetupError,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -39,6 +40,7 @@ const makeAdapter = (
 const makeInstance = (
   instanceId: ProviderInstanceId,
   orchestrationAdapter: ProviderAdapter.ProviderAdapterV2["Service"],
+  email?: string,
 ): ProviderInstance => ({
   instanceId,
   driverKind: driver,
@@ -48,7 +50,22 @@ const makeInstance = (
   },
   displayName: String(instanceId),
   enabled: true,
-  snapshot: {} as ProviderInstance["snapshot"],
+  snapshot: {
+    getSnapshot: Effect.succeed<ServerProvider>({
+      instanceId,
+      driver,
+      displayName: String(instanceId),
+      enabled: true,
+      installed: true,
+      version: "1.0.0",
+      status: "ready",
+      auth: { status: "authenticated", ...(email === undefined ? {} : { email }) },
+      checkedAt: "2026-11-01T00:00:00.000Z",
+      models: [],
+      slashCommands: [],
+      skills: [],
+    }),
+  } as ProviderInstance["snapshot"],
   orchestrationAdapter,
   textGeneration: {} as ProviderInstance["textGeneration"],
 });
@@ -75,8 +92,8 @@ it.effect("routes two configured instances of the same driver independently", ()
   Effect.gen(function* () {
     const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
 
-    assert.strictEqual(yield* registry.get(personalId), personalAdapter);
-    assert.strictEqual(yield* registry.get(workId), workAdapter);
+    assert.strictEqual((yield* registry.get(personalId)).instanceId, personalId);
+    assert.strictEqual((yield* registry.get(workId)).instanceId, workId);
     assert.deepEqual(yield* registry.list(), [personalId, workId]);
   }).pipe(Effect.provide(layerTest)),
 );
@@ -194,4 +211,51 @@ it.effect("interrupts admitted session startup when a shared peer signs out", ()
     yield* Deferred.await(stopped);
     assert.isTrue(Exit.isFailure(yield* Fiber.await(startup)));
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("refuses a session for an instance signed in to another instance's account", () =>
+  Effect.gen(function* () {
+    const opened: Array<ProviderInstanceId> = [];
+    const open =
+      (
+        instanceId: ProviderInstanceId,
+      ): ProviderAdapter.ProviderAdapterV2["Service"]["openSession"] =>
+      () =>
+        Effect.sync(() => void opened.push(instanceId)).pipe(
+          Effect.andThen(Effect.die("session opened")),
+        );
+    const sameAccount = [
+      makeInstance(personalId, { ...personalAdapter, openSession: open(personalId) }, "a@b.co"),
+      makeInstance(workId, { ...workAdapter, openSession: open(workId) }, "A@B.co"),
+    ];
+    const registry = yield* Effect.service(ProviderAdapterRegistry.ProviderAdapterRegistryV2).pipe(
+      Effect.provide(
+        ProviderAdapterRegistry.layerFromProviderInstanceRegistry.pipe(
+          Layer.provide(
+            Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+              getInstance: (id) =>
+                Effect.succeed(sameAccount.find((instance) => instance.instanceId === id)),
+              listInstances: Effect.succeed(sameAccount),
+            }),
+          ),
+        ),
+      ),
+    );
+    const input = (instanceId: ProviderInstanceId) => ({
+      threadId: ThreadId.make(`thread:${instanceId}`),
+      providerSessionId: ProviderSessionId.make(`session:${instanceId}`),
+      modelSelection: { instanceId, model: "test-model" },
+      runtimePolicy: {
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        cwd: "/workspace",
+      },
+    });
+    const error = yield* (yield* registry.get(workId)).openSession(input(workId)).pipe(Effect.flip);
+    assert.instanceOf(error, ProviderAdapter.ProviderAdapterOpenSessionError);
+    assert.isTrue(error.requiresSignIn);
+    assert.include(String(error.cause), "same account as codex_personal");
+    yield* (yield* registry.get(personalId)).openSession(input(personalId)).pipe(Effect.exit);
+    assert.deepEqual(opened, [personalId]);
+  }),
 );

@@ -1,3 +1,6 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- a synchronous hash keeps the token out of the snapshot.
+import * as NodeCrypto from "node:crypto";
+
 import {
   type ClaudeSettings,
   type ModelCapabilities,
@@ -36,7 +39,11 @@ import {
   type ServerProviderDraft,
 } from "@t3tools/provider-core/server/snapshotProbe";
 import { resolveClaudeSdkExecutablePath } from "./Drivers/ClaudeExecutable.ts";
-import { hasClaudeManagedMcpConfig, makeClaudeEnvironment } from "./Drivers/ClaudeHome.ts";
+import {
+  hasClaudeManagedMcpConfig,
+  makeClaudeEnvironment,
+  resolveClaudeHomePath,
+} from "./Drivers/ClaudeHome.ts";
 import { discoverClaudeSkills } from "./Drivers/ClaudeSkills.ts";
 import type { ProviderWorkspaceSnapshot } from "@t3tools/provider-core/server/driver";
 import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageLimits";
@@ -157,6 +164,11 @@ function claudeAuthMetadata(input: {
       type: input.subscriptionType,
       label: formatClaudeSubscriptionAuthLabel(input.subscriptionType),
     };
+  }
+
+  // A long-lived token cannot read the account, so name the login instead of showing nothing.
+  if (input.authMethod === "CLAUDE_CODE_OAUTH_TOKEN") {
+    return { type: "oauthToken", label: "Claude token" };
   }
 
   return undefined;
@@ -450,6 +462,28 @@ export const probeClaudeWorkspaceSnapshot = Effect.fn("probeClaudeWorkspaceSnaps
   };
 });
 
+/**
+ * Names the login behind a Claude instance, so two instances on one login count as one account
+ * even when Claude reports no email: the CLI's saved login belongs to its config folder, and a
+ * `CLAUDE_CODE_OAUTH_TOKEN` is its own login. A saved login reports no token source.
+ */
+const claudeLoginProfileId = Effect.fn("claudeLoginProfileId")(function* (
+  claudeSettings: ClaudeSettings,
+  capabilities: ClaudeCapabilitiesProbe,
+  environment: NodeJS.ProcessEnv,
+): Effect.fn.Return<string | undefined, never, Path.Path> {
+  if ((capabilities.apiProvider ?? "firstParty") !== "firstParty") return undefined;
+  if ((capabilities.apiKeySource ?? "none") !== "none") return undefined;
+  const token = environment.CLAUDE_CODE_OAUTH_TOKEN?.trim();
+  if (capabilities.tokenSource === "CLAUDE_CODE_OAUTH_TOKEN" && token) {
+    return `oauth-token:${NodeCrypto.createHash("sha256").update(token).digest("hex").slice(0, 16)}`;
+  }
+  if (capabilities.tokenSource !== undefined && capabilities.tokenSource !== "claude.ai") {
+    return undefined;
+  }
+  return `claude.ai:${yield* resolveClaudeHomePath(claudeSettings, environment)}`;
+});
+
 export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(function* (
   claudeSettings: ClaudeSettings,
   resolveCapabilities?: (
@@ -664,6 +698,9 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
           checkedAt: usageCheckedAt,
           allowStreamedLimits,
         }).limits;
+  const loginProfileId = customApiEndpoint
+    ? undefined
+    : yield* claudeLoginProfileId(claudeSettings, capabilities, resolvedEnvironment);
   const resetCredits =
     resolveResetCredits &&
     capabilities.subscriptionType &&
@@ -686,6 +723,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       auth: {
         status: "authenticated",
         ...(capabilities.email ? { email: capabilities.email } : {}),
+        ...(loginProfileId ? { profileId: loginProfileId } : {}),
         ...(capabilities.workspaceId ? { workspaceId: capabilities.workspaceId } : {}),
         ...(authMetadata ? authMetadata : {}),
       },

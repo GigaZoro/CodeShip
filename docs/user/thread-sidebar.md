@@ -281,7 +281,9 @@ limits** in **Settings → Providers** and arrange the account order there. When
 an account stops a turn on a limit with a reset time, the thread continues on
 the first other signed-in account of that provider, in that order, that still
 has usage left. An account that hit a limit is skipped until it resets. If none
-is free, the thread waits as above. Some providers' terms forbid using extra
+is free, the thread waits as above. Each provider is one account: a provider
+signed in to an account another provider already uses is unavailable until you
+sign it in to a different account. Some providers' terms forbid using extra
 accounts to get around limits.
 
 On web and desktop, use **Agents** to follow work delegated to subagents.

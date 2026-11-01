@@ -77,5 +77,10 @@ export function classifyCodexManagedError(value: unknown) {
     }
     return { ...failure, code };
   }
+  // Codex can report the sharing limit as a stream disconnect that carries this sentence but no code.
+  if (text.includes("reached their Subscription Sharing usage limit")) {
+    const code = "subscription_sharing_usage_limit_exceeded";
+    return { ...failures[code], code };
+  }
   return undefined;
 }

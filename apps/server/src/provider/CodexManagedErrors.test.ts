@@ -22,6 +22,16 @@ it("maps streamed failures to safe actionable messages and reconnect decisions",
     classifyCodexManagedError("subscription_sharing_usage_limit_exceeded")!.code,
     "subscription_sharing_usage_limit_exceeded",
   );
+  // Codex 2026.10 reports the limit as a stream disconnect carrying only this sentence.
+  assert.equal(
+    classifyCodexManagedError({
+      message:
+        "stream disconnected before completion: The ChatGPT user has reached their Subscription Sharing usage limit. Ask the user to try again after their usage limit resets or use an API key instead.",
+      codexErrorInfo: "other",
+      additionalDetails: null,
+    })?.code,
+    "subscription_sharing_usage_limit_exceeded",
+  );
   assert.include(
     classifyCodexManagedError("subscription_sharing_unsupported_capability")!.message,
     "feature",

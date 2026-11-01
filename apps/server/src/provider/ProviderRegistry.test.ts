@@ -2540,6 +2540,53 @@ it.layer(
       ),
     );
 
+    it.effect("names the login behind each Claude account so one login counts once", () =>
+      Effect.gen(function* () {
+        const statusFor = (
+          account: Partial<TestClaudeCapabilities>,
+          environment: NodeJS.ProcessEnv,
+        ) =>
+          checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(account),
+            environment,
+          );
+        const firstParty = { apiProvider: "firstParty" } as const;
+        const token = { ...firstParty, tokenSource: "CLAUDE_CODE_OAUTH_TOKEN" };
+
+        const saved = yield* statusFor(
+          { ...firstParty, email: "ada@example.com" },
+          { CLAUDE_CONFIG_DIR: "/home/ada/.claude-work" },
+        );
+        assert.strictEqual(saved.auth.profileId, "claude.ai:/home/ada/.claude-work");
+
+        const tokenA = yield* statusFor(token, { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-ada" });
+        const tokenB = yield* statusFor(token, { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-bob" });
+        assert.match(tokenA.auth.profileId ?? "", /^oauth-token:[0-9a-f]{16}$/);
+        assert.notStrictEqual(tokenA.auth.profileId, tokenB.auth.profileId);
+        assert.strictEqual(tokenA.auth.label, "Claude token");
+
+        for (const [account, environment] of [
+          [
+            { ...firstParty, tokenSource: "claude.ai", apiKeySource: "ANTHROPIC_API_KEY" },
+            { ANTHROPIC_API_KEY: "sk-ant-api03-ada" },
+          ],
+          [{ ...firstParty, tokenSource: "ANTHROPIC_AUTH_TOKEN" }, { ANTHROPIC_AUTH_TOKEN: "ada" }],
+          [{ apiProvider: "bedrock" }, {}],
+        ] as const) {
+          assert.isUndefined((yield* statusFor(account, environment)).auth.profileId);
+        }
+      }).pipe(
+        Effect.provide(
+          layerMockSpawner((args) => {
+            const joined = args.join(" ");
+            if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+            throw new Error(`Unexpected args: ${joined}`);
+          }),
+        ),
+      ),
+    );
+
     it.effect("keeps a CLI that says nothing about its account authenticated", () =>
       Effect.gen(function* () {
         const status = yield* checkClaudeProviderStatus(

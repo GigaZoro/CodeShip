@@ -1,10 +1,12 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
-import { discoverClaudeSkills } from "./ClaudeSkills.ts";
+import { discoverClaudeSkills, linkClaudeSharedSkills } from "./ClaudeSkills.ts";
 import { planClaudeSkillDispatch } from "./ClaudeSkillDispatch.ts";
 
 const writeSkill = Effect.fn(function* (
@@ -19,7 +21,10 @@ const writeSkill = Effect.fn(function* (
   yield* fs.writeFileString(path.join(skillDir, "SKILL.md"), contents);
 });
 
-it.layer(NodeServices.layer)("discoverClaudeSkills", (it) => {
+// Keeps the developer's own ~/.agents/skills out of every case.
+const isolatedHome = Layer.succeed(HostProcess.HomeDirectory, "/nonexistent-t3-home");
+
+it.layer(Layer.mergeAll(NodeServices.layer, isolatedHome))("discoverClaudeSkills", (it) => {
   it.effect("discovers enabled plugin skills with manifest names and ignores skill overrides", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -402,41 +407,95 @@ it.layer(NodeServices.layer)("discoverClaudeSkills", (it) => {
     }),
   );
 
-  it.effect("prefers user skills on name collisions even with a stray .agents copy", () =>
+  it.effect(
+    "prefers Claude's own skills over shared ones, and ignores a project .agents copy",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-skills-" });
+        const configDir = path.join(tempDir, "claude-home");
+        const workspace = path.join(tempDir, "workspace");
+        const home = path.join(tempDir, "home");
+
+        yield* writeSkill(
+          path.join(configDir, "skills"),
+          "deploy",
+          ["---", "name: deploy", "description: User deploy.", "---"].join("\n"),
+        );
+        yield* writeSkill(
+          path.join(workspace, ".agents", "skills"),
+          "deploy",
+          ["---", "name: deploy", "description: Agents deploy.", "---"].join("\n"),
+        );
+        yield* writeSkill(
+          path.join(workspace, ".claude", "skills"),
+          "deploy",
+          ["---", "name: deploy", "description: Claude deploy.", "---"].join("\n"),
+        );
+        for (const name of ["deploy", "review"]) {
+          yield* writeSkill(
+            path.join(home, ".agents", "skills"),
+            name,
+            ["---", `name: ${name}`, "description: Shared.", "---"].join("\n"),
+          );
+        }
+
+        const skills = yield* discoverClaudeSkills({ homePath: configDir }, workspace).pipe(
+          Effect.provideService(HostProcess.HomeDirectory, home),
+        );
+
+        assert.deepEqual(skills, [
+          {
+            name: "deploy",
+            path: path.join(configDir, "skills", "deploy", "SKILL.md"),
+            enabled: true,
+            scope: "user",
+            description: "User deploy.",
+          },
+          {
+            name: "review",
+            path: path.join(home, ".agents", "skills", "review", "SKILL.md"),
+            enabled: true,
+            scope: "user",
+            description: "Shared.",
+          },
+        ]);
+      }),
+  );
+
+  it.effect("links the shared skills folder for Claude without touching a real folder", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-skills-" });
-      const configDir = path.join(tempDir, "claude-home");
-      const workspace = path.join(tempDir, "workspace");
-
-      yield* writeSkill(
-        path.join(configDir, "skills"),
-        "deploy",
-        ["---", "name: deploy", "description: User deploy.", "---"].join("\n"),
+      const tempDir = yield* fs.realPath(
+        yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-skills-" }),
       );
-      yield* writeSkill(
-        path.join(workspace, ".agents", "skills"),
-        "deploy",
-        ["---", "name: deploy", "description: Agents deploy.", "---"].join("\n"),
-      );
-      yield* writeSkill(
-        path.join(workspace, ".claude", "skills"),
-        "deploy",
-        ["---", "name: deploy", "description: Claude deploy.", "---"].join("\n"),
-      );
+      const home = path.join(tempDir, "home");
+      const bridge = path.join(tempDir, "bridge");
+      const link = path.join(bridge, ".claude", "skills");
+      const linkShared = (bridgeDirectory: string) =>
+        linkClaudeSharedSkills(bridgeDirectory).pipe(
+          Effect.provideService(HostProcess.HomeDirectory, home),
+        );
 
-      const skills = yield* discoverClaudeSkills({ homePath: configDir }, workspace);
+      assert.isUndefined(yield* linkShared(bridge));
+      assert.isFalse(yield* fs.exists(bridge));
 
-      assert.deepEqual(skills, [
-        {
-          name: "deploy",
-          path: path.join(configDir, "skills", "deploy", "SKILL.md"),
-          enabled: true,
-          scope: "user",
-          description: "User deploy.",
-        },
-      ]);
+      yield* writeSkill(path.join(home, ".agents", "skills"), "review", "---\n---");
+      const elsewhere = path.join(tempDir, "elsewhere");
+      yield* fs.makeDirectory(elsewhere);
+      yield* fs.makeDirectory(path.dirname(link), { recursive: true });
+      yield* fs.symlink(elsewhere, link);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        assert.equal(yield* linkShared(bridge), bridge);
+        assert.isTrue(yield* fs.exists(path.join(link, "review", "SKILL.md")));
+      }
+
+      const realFolder = path.join(tempDir, "real", ".claude", "skills");
+      yield* writeSkill(realFolder, "mine", "---\n---");
+      assert.isUndefined(yield* linkShared(path.join(tempDir, "real")));
+      assert.isTrue(yield* fs.exists(path.join(realFolder, "mine", "SKILL.md")));
     }),
   );
 
