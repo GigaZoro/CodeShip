@@ -22,7 +22,10 @@ account. **Sign out** signs that account out; sign the first provider out with
 A provider signed in to the same account as another provider is unavailable until
 you sign it in to a different account. A Claude provider signed in with a
 `CLAUDE_CODE_OAUTH_TOKEN` shows as **Claude token**, because a token cannot read the
-account's email or plan.
+account's email or plan. Claude uses a token ahead of a sign-in, so a
+`CLAUDE_CODE_OAUTH_TOKEN` set on the machine applies only to the first Claude
+provider. To give another provider a token, add it to that provider's
+**Environment variables**. Remove the token to sign that provider in instead.
 
 To keep an account's settings and local conversation state separate too, give the
 instance its own **CLAUDE_CONFIG_DIR path** and sign that directory in on the

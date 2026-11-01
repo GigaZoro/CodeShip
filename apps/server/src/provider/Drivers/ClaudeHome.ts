@@ -1,13 +1,42 @@
-import type { ClaudeSettings } from "@t3tools/contracts";
+import {
+  defaultInstanceIdForDriver,
+  ProviderDriverKind,
+  type ClaudeSettings,
+  type ProviderInstanceEnvironment,
+  type ProviderInstanceId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 const quotePath = Schema.encodeSync(Schema.fromJsonString(Schema.String));
+
+const DEFAULT_CLAUDE_INSTANCE_ID = defaultInstanceIdForDriver(
+  ProviderDriverKind.make("claudeAgent"),
+);
+
+/**
+ * A `CLAUDE_CODE_OAUTH_TOKEN` overrides Claude's saved login, so the machine's token belongs to
+ * the default provider only. Any other provider keeps its own sign-in unless its settings set one.
+ */
+export const mergeClaudeInstanceEnvironment = Effect.fn("mergeClaudeInstanceEnvironment")(
+  function* (
+    instanceId: ProviderInstanceId,
+    environment: ProviderInstanceEnvironment | undefined,
+    hostEnvironment: NodeJS.ProcessEnv,
+  ) {
+    const { CLAUDE_CODE_OAUTH_TOKEN: _machineToken, ...withoutToken } = hostEnvironment;
+    return yield* mergeProviderInstanceEnvironment(
+      environment,
+      instanceId === DEFAULT_CLAUDE_INSTANCE_ID ? hostEnvironment : withoutToken,
+    );
+  },
+);
 
 export const resolveClaudeHomePath = Effect.fn("resolveClaudeHomePath")(function* (
   config: Pick<ClaudeSettings, "homePath">,

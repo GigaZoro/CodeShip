@@ -2,6 +2,7 @@ import * as NodeOS from "node:os";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import { ProviderInstanceId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 
@@ -9,6 +10,7 @@ import {
   makeClaudeCapabilitiesCacheKey,
   makeClaudeContinuationGroupKey,
   makeClaudeEnvironment,
+  mergeClaudeInstanceEnvironment,
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
 
@@ -44,6 +46,31 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
         expect(yield* resolveClaudeHomePath({ homePath: "~/.claude-work" }, environment)).toBe(
           explicit,
         );
+      }),
+    );
+
+    it.effect("keeps the machine's Claude token for the default provider only", () =>
+      Effect.gen(function* () {
+        const machine = { PATH: "/bin", CLAUDE_CODE_OAUTH_TOKEN: "machine-token" };
+        const defaultEnv = yield* mergeClaudeInstanceEnvironment(
+          ProviderInstanceId.make("claudeAgent"),
+          [],
+          machine,
+        );
+        const addedEnv = yield* mergeClaudeInstanceEnvironment(
+          ProviderInstanceId.make("claudeAgent_personal"),
+          [],
+          machine,
+        );
+        const addedWithToken = yield* mergeClaudeInstanceEnvironment(
+          ProviderInstanceId.make("claudeAgent_work"),
+          [{ name: "CLAUDE_CODE_OAUTH_TOKEN", value: "work-token", sensitive: true }],
+          machine,
+        );
+
+        expect(defaultEnv.CLAUDE_CODE_OAUTH_TOKEN).toBe("machine-token");
+        expect(addedEnv).toEqual({ PATH: "/bin" });
+        expect(addedWithToken.CLAUDE_CODE_OAUTH_TOKEN).toBe("work-token");
       }),
     );
 

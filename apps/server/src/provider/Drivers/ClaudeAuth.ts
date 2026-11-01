@@ -122,15 +122,23 @@ export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: {
     }),
   );
 
+  // Claude uses this token ahead of its saved login, so a sign-in would not change the account.
+  const usesToken = Boolean(options.environment.CLAUDE_CODE_OAUTH_TOKEN?.trim());
+  const canAuthenticate = Option.isSome(pty) && !usesToken;
   const controller = yield* ProviderAuthFlow.make({
     instanceId: options.instanceId,
     // The Claude CLI owns the login, and every instance on this folder shares it.
     credentialBinding: { owner: "provider", key: `claude:home:${options.configDir}` },
-    methods: Effect.succeed(Option.isSome(pty) ? [LOGIN_METHOD] : []),
+    methods: usesToken
+      ? failure(
+          "start",
+          "This provider uses CLAUDE_CODE_OAUTH_TOKEN instead of a sign-in. Remove the token to sign in.",
+        )
+      : Effect.succeed(canAuthenticate ? [LOGIN_METHOD] : []),
     authenticate,
     logout: options.canLogout
       ? logout
       : failure("logout", "Sign out of the Claude CLI's own login in a terminal."),
   });
-  return { controller, canAuthenticate: Option.isSome(pty) };
+  return { controller, canAuthenticate };
 });

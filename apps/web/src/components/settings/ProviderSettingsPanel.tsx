@@ -1378,6 +1378,19 @@ function ProviderInstanceRow({
             title="Cursor account"
             description="Using CURSOR_API_KEY. Remove it from this provider's environment to use browser sign-in."
           />
+        ) : mode === "editor" &&
+          !readOnly &&
+          driver === "claudeAgent" &&
+          liveProvider?.setup?.canAuthenticate === false &&
+          liveProvider.auth.type === "oauthToken" ? (
+          <SettingsRow
+            title="Account"
+            description={
+              isDefault
+                ? "Using CLAUDE_CODE_OAUTH_TOKEN. Remove it from this provider's environment or the machine's to sign in."
+                : "Using CLAUDE_CODE_OAUTH_TOKEN. Remove it from this provider's environment to sign in."
+            }
+          />
         ) : null
       }
       onUpdate={(next) => actions.updateInstance(instanceId, instance, next)}

@@ -114,3 +114,25 @@ it.effect("signs the account's own folder out with claude auth logout", () =>
     assert.deepEqual(h.spawnedInputs[0]?.env, environment);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
+
+it.effect("offers no sign-in while CLAUDE_CODE_OAUTH_TOKEN overrides it", () =>
+  Effect.gen(function* () {
+    const auth = yield* makeClaudeAuth({
+      instanceId,
+      binaryPath: "claude",
+      cwd: "/state",
+      environment: { ...environment, CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-token" },
+      configDir: "/state/home",
+      prepare: Effect.void,
+      canLogout: true,
+    }).pipe(Effect.provideService(PtyAdapter.PtyAdapter, { spawn: () => Effect.die("spawned") }));
+    assert.isFalse(auth.canAuthenticate);
+    yield* auth.controller.start("owner");
+    const failed = yield* auth.controller.subscribe("owner").pipe(
+      Stream.filter((state) => state.phase === "failed"),
+      Stream.runHead,
+      Effect.map(Option.getOrThrow),
+    );
+    assert.include(failed.message, "CLAUDE_CODE_OAUTH_TOKEN");
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
