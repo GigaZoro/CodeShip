@@ -1,7 +1,8 @@
-import type {
-  ModelSelection,
-  ProviderDriverKind,
-  ProviderOptionDescriptor,
+import {
+  type ModelSelection,
+  type ProviderDriverKind,
+  type ProviderOptionDescriptor,
+  REASONING_EFFORT_OPTION_IDS,
 } from "@t3tools/contracts";
 import {
   applyClaudePromptEffortPrefix,
@@ -10,7 +11,6 @@ import {
   getProviderOptionCurrentValue,
   isClaudeUltrathinkPrompt,
 } from "@t3tools/shared/model";
-import { REASONING_EFFORT_OPTION_IDS } from "./state/threadExecution.ts";
 
 export const ULTRATHINK_PROMPT_PREFIX = "Ultrathink:\n";
 

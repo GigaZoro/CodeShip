@@ -51,6 +51,7 @@ import { TriageDraftHero } from "./TriageDraftHero";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { resolveProjectDefaultProviderModelSelection } from "../../providerInstances";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
+import { readInheritedDefaultModelSelection } from "../../state/inheritedDefaultModel";
 
 const ADD_PROJECT_VALUE = "add-project";
 
@@ -203,10 +204,12 @@ export function DraftHeroHeadline({
         (environment) => environment.environmentId === project.environmentId,
       )?.serverConfig;
       const environmentSettings = environmentConfig?.settings;
-      const defaultSelection = environmentSettings
-        ? resolveProjectSettings(environmentSettings, project.id, project).settings
-            .defaultModelSelection
-        : project.defaultModelSelection;
+      const defaultSelection =
+        (environmentSettings
+          ? resolveProjectSettings(environmentSettings, project.id, project).settings
+              .defaultModelSelection
+          : project.defaultModelSelection) ??
+        readInheritedDefaultModelSelection(project.environmentId, project.id);
       const fallbackResolution = resolveNewThreadModelSelection({
         defaultSelection:
           defaultSelection ??

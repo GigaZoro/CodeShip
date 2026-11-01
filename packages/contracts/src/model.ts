@@ -122,6 +122,15 @@ const PI_DRIVER_KIND = ProviderDriverKind.make("pi");
 const ACP_REGISTRY_DRIVER_KIND = ProviderDriverKind.make("acpRegistry");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 
+export const REASONING_EFFORT_OPTION_IDS: ReadonlyArray<string> = [
+  "reasoningEffort",
+  "effort",
+  "reasoning",
+  "variant",
+  "reasoning_effort",
+  "thinking_level",
+];
+
 export const DEFAULT_MODEL = "gpt-6-astra";
 
 /** First model present in model/list wins; otherwise use Codex's isDefault. */

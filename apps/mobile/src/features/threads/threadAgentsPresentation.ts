@@ -8,12 +8,12 @@ import {
   type RuntimeSubagent,
   type SubagentWorkflowGroup,
 } from "@t3tools/client-runtime/state/subagentRuntime";
-import { REASONING_EFFORT_OPTION_IDS } from "@t3tools/client-runtime/state/thread-execution";
-import type {
-  EnvironmentId,
-  OrchestrationV2Subagent,
-  ServerProvider,
-  ThreadId,
+import {
+  type EnvironmentId,
+  type OrchestrationV2Subagent,
+  REASONING_EFFORT_OPTION_IDS,
+  type ServerProvider,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { resolveSelectableModel } from "@t3tools/shared/model";
 

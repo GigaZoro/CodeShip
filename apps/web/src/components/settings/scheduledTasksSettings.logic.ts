@@ -258,9 +258,11 @@ export function scheduledTaskDefaultModel(
   settings: ServerSettings,
   project: (LegacyProjectSettingsFields & { readonly id: ProjectId }) | null,
   entries: readonly ProviderInstanceEntry[],
+  inherited: ModelSelection | null,
 ): ModelSelection | null {
-  const configured = resolveProjectSettings(settings, project?.id ?? null, project).settings
-    .defaultModelSelection;
+  const configured =
+    resolveProjectSettings(settings, project?.id ?? null, project).settings.defaultModelSelection ??
+    inherited;
   if (configured) return configured;
   const available = entries.filter(isProviderInstancePickerReady);
   const models = available.flatMap((entry) =>

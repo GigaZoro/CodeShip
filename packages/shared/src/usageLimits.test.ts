@@ -111,6 +111,49 @@ describe("new thread model fallback", () => {
       }).selection,
     ).toEqual(selection);
   });
+  it.each([
+    ["takes the default's effort", undefined, "xhigh", [{ id: "effort", value: "xhigh" }]],
+    [
+      "keeps its own effort",
+      [{ id: "effort", value: "low" }],
+      "xhigh",
+      [{ id: "effort", value: "low" }],
+    ],
+    ["skips an effort its model lacks", undefined, "ultra", undefined],
+  ] as const)("fallback %s", (_name, fallbackOptions, defaultEffort, expected) => {
+    const fallbackModel = {
+      slug: fallback.model,
+      name: "Fable",
+      isCustom: false,
+      capabilities: {
+        optionDescriptors: [
+          {
+            id: "effort",
+            label: "Effort",
+            type: "select" as const,
+            options: [
+              { id: "low", label: "Low" },
+              { id: "xhigh", label: "Extra high" },
+            ],
+          },
+        ],
+      },
+    };
+    expect(
+      resolveNewThreadModelSelection({
+        ...defaults,
+        defaultSelection: {
+          ...selection,
+          options: [{ id: "reasoningEffort", value: defaultEffort }],
+        },
+        fallbackSelection: {
+          ...fallback,
+          ...(fallbackOptions ? { options: fallbackOptions } : {}),
+        },
+        providers: [limited, { ...available, models: [fallbackModel] }],
+      }).selection?.options,
+    ).toEqual(expected);
+  });
   it.each([undefined, "invalid"])("treats an unknown reset as exhausted: %s", (resetsAt) => {
     expect(
       exhaustedUsageWindow(

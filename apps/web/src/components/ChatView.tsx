@@ -230,6 +230,7 @@ import {
   primaryServerKeybindingsAtom,
   serverEnvironment,
 } from "../state/server";
+import { useInheritedDefaultModelSelection } from "../state/inheritedDefaultModel";
 import { threadEnvironment, useThreadFamily } from "../state/threads";
 import { resolveProviderSkillsForCwd } from "@t3tools/client-runtime/providerSkills";
 import { vcsEnvironment } from "../state/vcs";
@@ -760,12 +761,16 @@ export default function ChatView(props: ChatViewProps) {
     }
   }
   const nowMinute = useNowMinute();
+  const inheritedDraftModelSelection = useInheritedDefaultModelSelection(
+    draftThread?.environmentId ?? null,
+    draftThread?.projectId ?? null,
+  );
   const draftDefaultModelSelection = draftThread
-    ? resolveProjectSettings(
+    ? (resolveProjectSettings(
         settings,
         fallbackDraftProject?.id ?? null,
         fallbackDraftProject ?? undefined,
-      ).settings.defaultModelSelection
+      ).settings.defaultModelSelection ?? inheritedDraftModelSelection)
     : null;
   const draftModelResolution = draftThread
     ? resolveNewThreadModelSelection({
@@ -1082,10 +1087,9 @@ export default function ChatView(props: ChatViewProps) {
   const activeProjectScripts = activeProject ? resolveProjectScripts(settings, activeProject) : [];
   const { projectCloneBannerItem, projectCloneSendBlockReason } =
     useProjectCloneBanner(activeProjectRef);
-  const activeProjectDefaultModelSelection =
-    !isServerThread && draftFallback
-      ? draftFallback.selection
-      : activeProjectSettings.settings.defaultModelSelection;
+  const activeProjectDefaultModelSelection = isServerThread
+    ? activeProjectSettings.settings.defaultModelSelection
+    : (draftFallback?.selection ?? draftDefaultModelSelection);
   const handleNewThreadInActiveProject = () => {
     startNewThreadForProject(activeProjectRef, handleNewThread);
   };

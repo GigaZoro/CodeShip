@@ -1,5 +1,7 @@
 import {
   DEFAULT_SERVER_SETTINGS,
+  EnvironmentId,
+  type ModelSelection,
   OnePasswordAccount,
   ProjectId,
   ProviderDriverKind,
@@ -24,6 +26,7 @@ import {
   resolveModelPreferences,
   isModelSelectionProviderEnabled,
   parsePersistedServerObservabilitySettings,
+  resolveInheritedDefaultModelSelection,
   resolveSourceControlWriterModelSelection,
   supportsAccountFailover,
 } from "./serverSettings.ts";
@@ -75,6 +78,91 @@ describe("fallbackTextGenerationModelSelection", () => {
       { includeConfiguredInstances: true },
     );
     expect(fallback?.instanceId).toBe(configured);
+  });
+});
+
+describe("resolveInheritedDefaultModelSelection", () => {
+  const mac = EnvironmentId.make("mac");
+  const pc = EnvironmentId.make("pc");
+  const cpc = EnvironmentId.make("cpc");
+  const opus: ModelSelection = {
+    instanceId: ProviderInstanceId.make("claudeAgent"),
+    model: "claude-opus-5-5",
+    options: [{ id: "effort", value: "xhigh" }],
+  };
+  const sonnet: ModelSelection = { instanceId: opus.instanceId, model: "claude-sonnet-5-5" };
+  const model = (slug: string) => ({ slug, name: slug, isCustom: false, capabilities: null });
+  const provider = (
+    instanceId: string,
+    overrides: Partial<ServerProvider> = {},
+  ): ServerProvider => ({
+    instanceId: ProviderInstanceId.make(instanceId),
+    driver: ProviderDriverKind.make("claudeAgent"),
+    enabled: true,
+    installed: true,
+    version: null,
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-11-01T00:00:00.000Z",
+    models: [model(opus.model), model(sonnet.model)],
+    slashCommands: [],
+    skills: [],
+    ...overrides,
+  });
+  const machine = (
+    defaultModelSelection: ModelSelection | null,
+    providers: ReadonlyArray<ServerProvider>,
+  ) => ({
+    settings: {
+      ...DEFAULT_SERVER_SETTINGS,
+      defaultModelSelection,
+      providerInstances: Object.fromEntries(
+        providers.map((entry) => [entry.instanceId, { driver: entry.driver, config: {} }]),
+      ),
+    },
+    providers,
+  });
+  const resolve = (
+    configs: ReadonlyArray<readonly [EnvironmentId, ReturnType<typeof machine>]>,
+    preferredEnvironmentId: EnvironmentId | null = null,
+  ) =>
+    resolveInheritedDefaultModelSelection({
+      configs: new Map(configs),
+      environmentId: pc,
+      projectId: null,
+      preferredEnvironmentId,
+    });
+
+  it.each([
+    ["the same instance", [provider("claudeAgent")], opus],
+    [
+      "another account of that provider",
+      [provider("claude_work")],
+      { ...opus, instanceId: ProviderInstanceId.make("claude_work") },
+    ],
+    ["no instance offering the model", [provider("claudeAgent", { models: [] })], null],
+    [
+      "a signed-out instance",
+      [provider("claudeAgent", { auth: { status: "unauthenticated" } })],
+      null,
+    ],
+  ] as const)("follows another machine's default onto %s", (_name, providers, expected) => {
+    expect(
+      resolve([
+        [mac, machine(opus, [provider("claudeAgent")])],
+        [pc, machine(null, providers)],
+      ]),
+    ).toEqual(expected);
+  });
+
+  it("lets the preferred machine win when machines disagree", () => {
+    const configs = [
+      [cpc, machine(sonnet, [provider("claudeAgent")])],
+      [mac, machine(opus, [provider("claudeAgent")])],
+      [pc, machine(null, [provider("claudeAgent")])],
+    ] as const;
+    expect(resolve(configs, mac)?.model).toBe(opus.model);
+    expect(resolve(configs)?.model).toBe(sonnet.model);
   });
 });
 

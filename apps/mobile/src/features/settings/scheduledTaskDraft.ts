@@ -26,10 +26,12 @@ import { buildModelOptions, resolveNewTaskModelSelection } from "../../lib/model
 export function scheduledTaskDefaultModel(
   config: ServerConfig | null,
   project: (LegacyProjectSettingsFields & { readonly id: ProjectId }) | null,
+  inherited: ModelSelection | null,
 ): ModelSelection | null {
   const settings = config?.settings ?? DEFAULT_SERVER_SETTINGS;
-  const projectDefaultSelection = resolveProjectSettings(settings, project?.id ?? null, project)
-    .settings.defaultModelSelection;
+  const projectDefaultSelection =
+    resolveProjectSettings(settings, project?.id ?? null, project).settings.defaultModelSelection ??
+    inherited;
   return resolveNewTaskModelSelection({
     draftSelection: null,
     projectDefaultSelection,

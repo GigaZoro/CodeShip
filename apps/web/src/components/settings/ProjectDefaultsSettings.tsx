@@ -16,6 +16,7 @@ import {
   resolveDefaultProviderModelSelection,
 } from "../../providerInstances";
 import { useEnvironmentProviders, useEnvironments } from "../../state/environments";
+import { useInheritedDefaultModelSelection } from "../../state/inheritedDefaultModel";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
 import { resolveEnvModeLabel, WORKTREE_SUBMODULES_LABELS } from "../BranchToolbar.logic";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
@@ -61,9 +62,13 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
     (representative?.serverConfig
       ? providersByEnvironment.get(representative.environmentId)
       : undefined) ?? EMPTY_SERVER_PROVIDERS;
+  const inheritedSelection = useInheritedDefaultModelSelection(
+    target?.environmentId ?? null,
+    target?.projectId ?? null,
+  );
   const storedSelection = resolveDefaultProviderModelSelection(
     providers,
-    settings.defaultModelSelection,
+    settings.defaultModelSelection ?? inheritedSelection,
   );
   const selection = storedSelection
     ? resolveEffectiveDefaultModelSelection(settings, providers, storedSelection)
@@ -123,7 +128,9 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
               !mixedModel &&
               modelSource !== "project" &&
               settings.defaultModelSelection === null
-            ? "Default model for new threads, selected automatically. Projects can override it."
+            ? inheritedSelection === null
+              ? "Default model for new threads, selected automatically. Projects can override it."
+              : "Default model for new threads, following the default saved on another machine. Projects can override it."
             : "Default model for new threads. Projects can override it."
       }
       resetAction={

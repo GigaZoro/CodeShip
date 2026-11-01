@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useMemo, useCallback, type Dispatch, type SetStateAction } from "react";
+import { resolveInheritedDefaultModelSelection } from "@t3tools/shared/serverSettings";
 
 import { useProjects, useServerConfigs } from "../../state/entities";
 import { createDraft, scheduledTaskDefaultModel } from "./scheduledTaskDraft";
@@ -40,7 +41,18 @@ export function useScheduledTaskEditor() {
         ) ?? environmentProjects[0];
       return createDraft(
         project?.id ?? null,
-        scheduledTaskDefaultModel(configs.get(environmentId) ?? null, project ?? null),
+        scheduledTaskDefaultModel(
+          configs.get(environmentId) ?? null,
+          project ?? null,
+          project
+            ? resolveInheritedDefaultModelSelection({
+                configs,
+                environmentId,
+                projectId: project.id,
+                preferredEnvironmentId: null,
+              })
+            : null,
+        ),
       );
     },
     [configs, projects, selectedGroup],

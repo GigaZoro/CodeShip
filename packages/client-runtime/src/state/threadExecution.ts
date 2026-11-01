@@ -16,6 +16,7 @@ import {
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2ThreadProjection,
   orchestrationV2RunWorkStartedAt,
+  REASONING_EFFORT_OPTION_IDS,
   type ThreadId,
 } from "@t3tools/contracts";
 import {
@@ -144,15 +145,6 @@ export function deriveReportedModelSelection(projection: ThreadStructure): Model
   );
   return providerThread?.nativeMetadata?.modelSelection ?? null;
 }
-
-export const REASONING_EFFORT_OPTION_IDS: ReadonlyArray<string> = [
-  "reasoningEffort",
-  "effort",
-  "reasoning",
-  "variant",
-  "reasoning_effort",
-  "thinking_level",
-];
 
 export function formatModelSelectionEffort(
   selection: ModelSelection,

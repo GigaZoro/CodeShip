@@ -47,10 +47,15 @@ targets disagree, a control shows **Mixed** until you choose one value. Appearan
 and other phone-only settings ignore the filter.
 
 Choose a provider and model for new threads in **Settings → Threads → Model** on web or desktop,
-or **Settings → Threads → Default model** on mobile. With no saved choice, CodeShip automatically
-uses an available provider. Reset the web or desktop model setting, or select **Automatic** on
-mobile, to restore that behavior. A saved choice stays selected if its provider becomes unavailable;
-set up that provider again or choose another model. New scheduled tasks use the same default.
+or **Settings → Threads → Default model** on mobile. A machine with no saved choice uses the
+default saved on another connected machine, with its effort level, when it has that provider;
+otherwise CodeShip automatically uses an available provider. Reset the web or desktop model
+setting, or select **Automatic** on mobile, to restore that behavior. A saved choice stays selected
+if its provider becomes unavailable; set up that provider again or choose another model. New
+scheduled tasks use the same default.
+
+When the default model's provider is out of usage, new threads start on the **Fallback model**
+instead, at the default model's effort level when the fallback model offers it.
 
 ## Worktree branch names
 

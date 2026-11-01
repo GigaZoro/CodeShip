@@ -1,17 +1,17 @@
-import type {
-  OrchestrationV2ThreadShell,
-  OrchestrationV2TurnItemStatus,
-  OrchestrationProjectShell,
-  ServerProvider,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  OrchestrationV2Subagent,
+import {
+  type OrchestrationV2ThreadShell,
+  type OrchestrationV2TurnItemStatus,
+  type OrchestrationProjectShell,
+  type ServerProvider,
+  type ProviderDriverKind,
+  type ProviderInstanceId,
+  type OrchestrationV2Subagent,
+  REASONING_EFFORT_OPTION_IDS,
 } from "@t3tools/contracts";
 import {
   resolveSubagentMetadata,
   subagentDetailPreview,
 } from "@t3tools/client-runtime/state/subagent-display";
-import { REASONING_EFFORT_OPTION_IDS } from "@t3tools/client-runtime/state/thread-execution";
 import { getModelSelectionStringOptionValue, resolveSelectableModel } from "@t3tools/shared/model";
 import { getTraitsSpeedDisplay, TraitsSpeedIcon } from "./TraitsSpeed";
 import type { ReactNode } from "react";

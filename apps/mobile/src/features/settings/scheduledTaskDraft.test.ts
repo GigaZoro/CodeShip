@@ -133,7 +133,8 @@ describe("scheduled task model defaults", () => {
       },
     ],
   } as unknown as ServerConfig;
-  const resolve = scheduledTaskDefaultModel;
+  const resolve = (value: ServerConfig, project: Parameters<typeof scheduledTaskDefaultModel>[1]) =>
+    scheduledTaskDefaultModel(value, project, null);
   it("prefers the project's configured model", () => {
     expect(resolve(config, { id: projectId, defaultModelSelection: projectSelection })).toEqual(
       projectSelection,

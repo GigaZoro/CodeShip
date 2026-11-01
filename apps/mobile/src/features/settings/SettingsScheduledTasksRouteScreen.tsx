@@ -55,7 +55,8 @@ import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { usePreparedConnection } from "../../state/session";
 import { buildModelOptions } from "../../lib/modelOptions";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
-import { useProjects, useEnvironmentServerConfig } from "../../state/entities";
+import { useProjects, useEnvironmentServerConfig, useServerConfigs } from "../../state/entities";
+import { resolveInheritedDefaultModelSelection } from "@t3tools/shared/serverSettings";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -634,6 +635,7 @@ function TaskForm({
   );
   const projects = useProjects().filter((project) => project.environmentId === environmentId);
   const config = useEnvironmentServerConfig(environmentId);
+  const serverConfigs = useServerConfigs();
   const modelOptions = buildModelOptions(config, null, undefined, draft.projectId);
   const canOperate = useAtomValue(
     serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
@@ -837,7 +839,16 @@ function TaskForm({
                 projectId: project.id,
                 modelSelection: keepsExplicitModel
                   ? draft.modelSelection
-                  : scheduledTaskDefaultModel(config, project),
+                  : scheduledTaskDefaultModel(
+                      config,
+                      project,
+                      resolveInheritedDefaultModelSelection({
+                        configs: serverConfigs,
+                        environmentId,
+                        projectId: project.id,
+                        preferredEnvironmentId: null,
+                      }),
+                    ),
                 modelSelectionIsExplicit: keepsExplicitModel,
               });
             }}

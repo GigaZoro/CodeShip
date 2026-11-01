@@ -238,6 +238,9 @@ vi.mock("../state/server", () => ({
   environmentServerConfigsAtom: {},
   primaryServerSettingsAtom: "primary-settings",
 }));
+vi.mock("../state/inheritedDefaultModel", () => ({
+  readInheritedDefaultModelSelection: () => null,
+}));
 vi.mock("../threadRoutes", () => ({
   resolveThreadRouteTarget: () => testState.openDraftRoute,
 }));

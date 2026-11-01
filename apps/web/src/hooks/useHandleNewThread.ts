@@ -39,6 +39,7 @@ import { readT3ProjectFile } from "../lib/t3ProjectFileDefaults";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentSummaries } from "../state/presentation";
 import { environmentServerConfigsAtom } from "../state/server";
+import { readInheritedDefaultModelSelection } from "../state/inheritedDefaultModel";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import { getClientSettings } from "./useSettings";
@@ -146,7 +147,9 @@ export function createNewThreadHandler(router: AnyRouter) {
       project?.id ?? null,
       project,
     );
-    const configuredDefaultModelSelection = projectSettings.settings.defaultModelSelection ?? null;
+    const configuredDefaultModelSelection =
+      projectSettings.settings.defaultModelSelection ??
+      readInheritedDefaultModelSelection(projectRef.environmentId, projectRef.projectId);
     const fallbackResolution = resolveNewThreadModelSelection({
       defaultSelection:
         configuredDefaultModelSelection ??

@@ -4,6 +4,7 @@ import {
   DEFAULT_TEXT_GENERATION_MODEL,
   DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
+  type EnvironmentId,
   globalIdleCompaction,
   type IdleCompactionMode,
   isProviderAvailable,
@@ -26,7 +27,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { deepMerge } from "./Struct.ts";
 import { fromLenientJson } from "./schemaJson.ts";
-import { createModelSelection, readCustomModelEntries } from "./model.ts";
+import { createModelSelection, readCustomModelEntries, resolveSelectableModel } from "./model.ts";
 import {
   getBackgroundActivityBaseProfile,
   normalizeBackgroundActivitySettings,
@@ -121,6 +122,57 @@ export function orderProviderInstancesForFailover<
     }))
     .sort((left, right) => left.rank - right.rank)
     .map(({ instance }) => instance);
+}
+
+/**
+ * A machine with no default model of its own runs the default saved on another machine,
+ * as long as it can run that model. `preferredEnvironmentId` wins when machines disagree.
+ */
+export function resolveInheritedDefaultModelSelection(input: {
+  readonly configs: ReadonlyMap<
+    EnvironmentId,
+    { readonly settings: ServerSettings; readonly providers: ReadonlyArray<ServerProvider> }
+  >;
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId | null;
+  readonly preferredEnvironmentId: EnvironmentId | null;
+}): ModelSelection | null {
+  const target = input.configs.get(input.environmentId);
+  if (target === undefined) return null;
+  const sources = [...input.configs]
+    .filter(([environmentId]) => environmentId !== input.environmentId)
+    .sort(
+      ([left], [right]) =>
+        Number(right === input.preferredEnvironmentId) -
+        Number(left === input.preferredEnvironmentId),
+    );
+  for (const [, source] of sources) {
+    const selection = source.settings.defaultModelSelection;
+    if (selection === null) continue;
+    const driver = source.providers.find(
+      (provider) => provider.instanceId === selection.instanceId,
+    )?.driver;
+    if (driver === undefined) continue;
+    const runnable = target.providers.flatMap((provider) => {
+      const ready =
+        provider.driver === driver &&
+        provider.enabled &&
+        provider.installed &&
+        provider.auth.status !== "unauthenticated" &&
+        isProviderAvailable(provider) &&
+        resolveProjectProviderInstanceEnabled(
+          target.settings,
+          input.projectId,
+          provider.instanceId,
+        );
+      const model = ready ? resolveSelectableModel(driver, selection.model, provider.models) : null;
+      return model === null ? [] : [{ instanceId: provider.instanceId, model }];
+    });
+    const match =
+      runnable.find((candidate) => candidate.instanceId === selection.instanceId) ?? runnable[0];
+    if (match) return { ...selection, ...match };
+  }
+  return null;
 }
 
 export function resolveSourceControlWriterModelSelection(

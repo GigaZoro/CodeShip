@@ -301,6 +301,7 @@ describe("scheduled task model defaults", () => {
       value.settings,
       project,
       deriveProviderInstanceEntries(value.providers),
+      null,
     );
   it("uses the advertised default instead of catalog order when no default is configured", () => {
     expect(

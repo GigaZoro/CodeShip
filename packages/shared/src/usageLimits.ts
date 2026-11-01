@@ -6,6 +6,7 @@ import {
   resolveProjectProviderInstanceEnabled,
   type UsageLimitsReport,
   type ProviderInstanceId,
+  REASONING_EFFORT_OPTION_IDS,
   type ProviderConsumeResetCreditInput,
   type ServerProviderSlashCommand,
   isProviderAvailable,
@@ -95,9 +96,33 @@ export function resolveNewThreadModelSelection(input: {
   )
     return unchanged;
   return {
-    selection: input.fallbackSelection,
+    selection: withEffortOf(input.fallbackSelection, selection, fallback),
     fallback: { provider, resetsAt: window.resetsAt ?? null },
   };
+}
+
+/** The fallback keeps the default's effort level when its own model offers that level. */
+function withEffortOf(
+  target: ModelSelection,
+  source: ModelSelection,
+  provider: ServerProvider,
+): ModelSelection {
+  const isEffort = (option: { readonly id: string }) =>
+    REASONING_EFFORT_OPTION_IDS.includes(option.id);
+  if (target.options?.some(isEffort)) return target;
+  const effort = source.options?.find(isEffort)?.value;
+  if (typeof effort !== "string") return target;
+  const descriptor = provider.models
+    .find((model) => model.slug === target.model)
+    ?.capabilities?.optionDescriptors?.find(
+      (candidate) =>
+        candidate.type === "select" &&
+        isEffort(candidate) &&
+        candidate.options.some((choice) => choice.id === effort),
+    );
+  return descriptor
+    ? { ...target, options: [...(target.options ?? []), { id: descriptor.id, value: effort }] }
+    : target;
 }
 
 export const CHATGPT_USAGE_URL = "https://chatgpt.com/#settings/Usage";

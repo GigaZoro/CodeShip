@@ -1,5 +1,6 @@
 import { ActiveNewTaskContext } from "../../state/active-new-task";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
+import { resolveInheritedDefaultModelSelection } from "@t3tools/shared/serverSettings";
 import { useNowMinuteMs } from "../../lib/clock";
 import * as Dialog from "../../components/ui/Dialog";
 import React, { useEffect, useRef, useState } from "react";
@@ -486,7 +487,17 @@ export function NewTaskFlowProvider(
     selectedProject?.id ?? null,
   );
   const modelSelectionNow = useNowMinuteMs();
-  const projectDefaultModelSelection = projectSettings.settings.defaultModelSelection;
+  // Mobile has no machine of its own, so no machine's default outranks another's here.
+  const projectDefaultModelSelection =
+    projectSettings.settings.defaultModelSelection ??
+    (selectedProject
+      ? resolveInheritedDefaultModelSelection({
+          configs: serverConfigs,
+          environmentId: selectedProject.environmentId,
+          projectId: selectedProject.id,
+          preferredEnvironmentId: null,
+        })
+      : null);
   const storedStickyModelSelection = useStickyComposerModelSelection();
   const stickyModelSelection = resolveDefaultableModelSelection(
     selectedEnvironmentServerConfig,

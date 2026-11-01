@@ -71,6 +71,7 @@ import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { environmentAtomList, environmentIdsKey } from "../../state/environmentAtomList";
 import { formatEnvironmentQueryError, useEnvironmentQuery } from "../../state/query";
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
+import { useInheritedDefaultModelSelection } from "../../state/inheritedDefaultModel";
 import { threadFamilies } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { WorktreeBaseBranchPicker } from "../WorktreeBaseBranchPicker";
@@ -1218,13 +1219,22 @@ function ScheduledTaskEditorForm({
     selectedProject?.id ?? null,
   );
 
+  const inheritedDefaultModel = useInheritedDefaultModelSelection(
+    environmentId,
+    selectedProject?.id ?? null,
+  );
   const firstInstance = instanceEntries[0];
   const draftSelection = draft.modelKey ? splitModelKey(draft.modelKey) : null;
   const activeSelection =
     draftSelection &&
     instanceEntries.some((entry) => entry.instanceId === draftSelection.instanceId && entry.enabled)
       ? draftSelection
-      : scheduledTaskDefaultModel(settings, selectedProject ?? null, instanceEntries);
+      : scheduledTaskDefaultModel(
+          settings,
+          selectedProject ?? null,
+          instanceEntries,
+          inheritedDefaultModel,
+        );
   const activeInstanceId =
     activeSelection?.instanceId ?? firstInstance?.instanceId ?? ("" as ProviderInstanceId);
   const activeModel = activeSelection?.model ?? "";
