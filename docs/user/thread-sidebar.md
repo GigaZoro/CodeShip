@@ -58,7 +58,7 @@ and worktree while you stay in the new thread composer. This requires a Git proj
 ## Pin scheduled tasks
 
 Pin a scheduled task to watch it from the thread list. On web and desktop, choose
-**Pin to sidebar** from the task's menu in **Settings → Scheduled tasks**, or use the pin
+**Pin to sidebar** from the task's menu on the **Scheduled tasks** page, or use the pin
 button in a thread's **Automations** card. On mobile, choose **Pin to thread list** from the
 task's menu. Pins are saved on the environment, so every device connected to it shows them.
 

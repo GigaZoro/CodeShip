@@ -10,6 +10,7 @@ import { SidebarInset } from "../components/ui/sidebar";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { SettingsBreadcrumb } from "../components/settings/SettingsBreadcrumb";
 import { SettingsSidebarNav } from "../components/settings/SettingsSidebarNav";
+import { useSettingsNavInSidebar } from "../components/sidebar/mainAppLocation";
 import {
   SettingsScopeProvider,
   useSettingsScope,
@@ -117,6 +118,7 @@ function SettingsContentLayout() {
       ? environment?.environmentId
       : JSON.stringify(search);
   const [restoreSignal, setRestoreSignal] = useState(0);
+  const settingsNavInSidebar = useSettingsNavInSidebar();
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
@@ -131,7 +133,7 @@ function SettingsContentLayout() {
         ) : null}
       </WorkspacePageHeader>
       <div className="relative flex min-h-0 flex-1">
-        <SettingsSidebarNav pathname={location.pathname} />
+        {settingsNavInSidebar ? null : <SettingsSidebarNav pathname={location.pathname} />}
         <div
           {...contentArea}
           key={`${contentScopeKey}:${restoreSignal}`}

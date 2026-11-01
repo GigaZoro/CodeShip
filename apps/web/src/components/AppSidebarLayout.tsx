@@ -41,7 +41,12 @@ import { BackgroundThreadAnnouncer } from "./BackgroundThreadAnnouncer";
 import ThreadSidebar from "./Sidebar";
 import { SidebarBrandWidthProbe, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { SidebarNavRail } from "./sidebar/SidebarNavRail";
-import { isSidebarSectionPage, readMainAppHref } from "./sidebar/mainAppLocation";
+import {
+  isSidebarSectionPage,
+  readMainAppHref,
+  useSettingsNavInSidebar,
+} from "./sidebar/mainAppLocation";
+import { SettingsSidebarNav } from "./settings/SettingsSidebarNav";
 import type { SidebarRouteReveal } from "./sidebar/routeReveal";
 import { useSidebarStageBackdropVariant } from "./SidebarStageBackdrop";
 import {
@@ -198,9 +203,9 @@ function registerWorkspaceFocusCommands(router: AnyRouter): () => void {
   };
 }
 
-// Escape leaves a sidebar section (Pull requests, Settings, Usage) for the last
-// thread when no scope (a selection, a dialog, a drag) claimed it, so it
-// observes after every other scope.
+// Escape leaves a sidebar section (Pull requests, Scheduled tasks, Usage,
+// Settings) for the last thread when no scope (a selection, a dialog, a drag)
+// claimed it, so it observes after every other scope.
 function registerSectionEscapeCommand(router: AnyRouter): () => void {
   return registerCommands(
     {},
@@ -395,7 +400,9 @@ function SidebarControl() {
 }
 
 export function AppSidebarLayout({ children }: { children: ReactNode }) {
-  const sidebarArea = workspaceAreaProps("sidebar", 0, "Threads");
+  const settingsNavInSidebar = useSettingsNavInSidebar();
+  const sidebarLabel = settingsNavInSidebar ? "Settings" : "Threads";
+  const sidebarArea = workspaceAreaProps("sidebar", 0, sidebarLabel);
   const [sidebarRouteReveal] = useState<SidebarRouteReveal>(() => ({
     observedKey: null,
     pendingKey: null,
@@ -451,7 +458,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
           data-app-sidebar=""
           {...sidebarArea}
           role="navigation"
-          aria-label="Threads"
+          aria-label={sidebarLabel}
           resizable={{
             maxWidth: sidebarMaximumWidth,
             minWidth: sidebarMinimumWidth,
@@ -466,7 +473,9 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
           <SidebarChromeHeader isElectron={isElectron} />
           <div className="flex min-h-0 flex-1">
             <SidebarNavRail />
-            <div className="flex min-w-0 flex-1 flex-col">
+            {settingsNavInSidebar ? <SettingsSidebarNav pathname={pathname} inSidebar /> : null}
+            {/* Hidden, not unmounted: it owns the thread shortcuts and keeps its scroll. */}
+            <div className={cn("flex min-w-0 flex-1 flex-col", settingsNavInSidebar && "hidden")}>
               <ThreadSidebar routeReveal={sidebarRouteReveal} />
             </div>
           </div>

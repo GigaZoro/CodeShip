@@ -26,6 +26,7 @@ import {
 import { isProviderInstancePickerReady, type ProviderInstanceEntry } from "../../providerInstances";
 
 import type { ResolvedSettingsScope } from "./settingsScope";
+import { validateSettingsRouteSearch } from "./settingsScopeNavigation";
 
 export function matchesScheduledTaskScope(
   scope: ResolvedSettingsScope,
@@ -43,6 +44,7 @@ export function matchesScheduledTaskScope(
 
 export function validateScheduledTasksSearch(raw: Record<string, unknown>) {
   return {
+    ...validateSettingsRouteSearch(raw),
     ...(typeof raw.environmentId === "string" && raw.environmentId.trim()
       ? { environmentId: EnvironmentId.make(raw.environmentId) }
       : {}),

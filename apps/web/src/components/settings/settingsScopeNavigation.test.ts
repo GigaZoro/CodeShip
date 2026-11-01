@@ -49,7 +49,7 @@ function createSettingsRouter(initialEntry = "/settings/general") {
     }),
   });
   const scheduledTasks = createRoute({
-    getParentRoute: () => settings,
+    getParentRoute: () => root,
     path: "scheduled-tasks",
     validateSearch: validateScheduledTasksSearch,
   });
@@ -66,14 +66,8 @@ function createSettingsRouter(initialEntry = "/settings/general") {
   });
   return createRouter({
     routeTree: root.addChildren([
-      settings.addChildren([
-        general,
-        projects,
-        integrations,
-        sourceControl,
-        providers,
-        scheduledTasks,
-      ]),
+      settings.addChildren([general, projects, integrations, sourceControl, providers]),
+      scheduledTasks,
       legacyProject,
     ]),
     history: createMemoryHistory({ initialEntries: [initialEntry] }),
@@ -106,7 +100,7 @@ describe("settings scope navigation", () => {
     expect(router.state.location.search).toEqual(checkoutSearch);
   });
 
-  it.each(["/settings/projects", "/settings/scheduled-tasks"] as const)(
+  it.each(["/settings/projects"] as const)(
     "keeps %s when regrouping or selecting a target from the shared settings layout",
     async (to) => {
       const router = createSettingsRouter();
@@ -240,7 +234,7 @@ describe("scheduled task scope navigation", () => {
   it("opens a task link on its owning environment, then clears the task when changing filters", async () => {
     const router = createSettingsRouter();
     await router.navigate({
-      to: "/settings/scheduled-tasks",
+      to: "/scheduled-tasks",
       search: {
         environmentId: EnvironmentId.make("remote-server"),
         taskId: ScheduledTaskId.make("task-1"),
@@ -252,8 +246,7 @@ describe("scheduled task scope navigation", () => {
       taskId: "task-1",
     });
     await router.navigate({
-      from: "/settings",
-      to: router.state.location.pathname,
+      to: "/scheduled-tasks",
       search: () => ({ machine: undefined, project: undefined, checkout: undefined }),
     });
     expect(router.state.matches.at(-1)?.search).toEqual({});

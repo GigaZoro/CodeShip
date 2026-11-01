@@ -25,7 +25,7 @@ import {
   UsageLimitsGlance,
   useLimitPools,
 } from "../usage/UsageLimitsGlance";
-import { useNavigateToMainApp } from "./mainAppLocation";
+import { isSettingsPage, useNavigateToMainApp } from "./mainAppLocation";
 import { SidebarUpdatePill } from "./SidebarUpdatePill";
 
 type SidebarNavDestination = "threads" | "pull-requests" | "scheduled-tasks" | "usage" | "settings";
@@ -33,8 +33,8 @@ type SidebarNavDestination = "threads" | "pull-requests" | "scheduled-tasks" | "
 function resolveActiveDestination(pathname: string): SidebarNavDestination {
   if (pathname === "/pull-requests") return "pull-requests";
   if (pathname === "/usage") return "usage";
-  if (pathname === "/settings/scheduled-tasks") return "scheduled-tasks";
-  if (pathname === "/settings" || pathname.startsWith("/settings/")) return "settings";
+  if (pathname === "/scheduled-tasks") return "scheduled-tasks";
+  if (isSettingsPage(pathname)) return "settings";
   return "threads";
 }
 
@@ -160,7 +160,7 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
           icon={<CalendarClockIcon />}
           label="Scheduled tasks"
           isActive={active === "scheduled-tasks"}
-          onClick={go(() => navigate({ to: "/settings/scheduled-tasks" }))}
+          onClick={go(() => navigate({ to: "/scheduled-tasks" }))}
         />
       </SidebarMenu>
       <SidebarMenu className="items-center">

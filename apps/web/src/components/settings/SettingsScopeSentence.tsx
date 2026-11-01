@@ -62,7 +62,11 @@ interface SettingsScopeMenuProps {
   readonly onChange: (next: SettingsScopeSearch) => void;
 }
 
-export function SettingsScopeSentence() {
+export function SettingsScopeSentence({
+  lead = "Applying settings for",
+}: {
+  lead?: string | undefined;
+}) {
   const scope = useOptionalSettingsScope();
   const pathname = useLocation({ select: (location) => location.pathname });
   const { environments } = useEnvironments();
@@ -77,7 +81,7 @@ export function SettingsScopeSentence() {
   return (
     <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 px-3 text-sm text-muted-foreground sm:px-4">
       <span className="flex min-w-0 items-center gap-1.5">
-        <span className="shrink-0">Applying settings for</span>
+        <span className="shrink-0">{lead}</span>
         <ProjectScopeMenu {...props} />
       </span>
       <span className="flex min-w-0 items-center gap-1.5">

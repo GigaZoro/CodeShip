@@ -46,6 +46,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 
+import { isElectron } from "../../env";
 import { formatRelativeTime } from "../../timestampFormat";
 import { useEnvironmentSettings } from "../../hooks/useSettings";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
@@ -116,6 +117,8 @@ import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../WorkspaceBreadcrumb";
+import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import {
   SettingsPageContainer,
   SettingsRow,
@@ -353,7 +356,7 @@ function statusVariant(status: ScheduledTask["lastRunStatus"]) {
 }
 
 export function ScheduledTasksSettings(target: {
-  readonly environmentId?: EnvironmentId;
+  readonly environmentId?: EnvironmentId | undefined;
   readonly taskId?: ScheduledTaskId | undefined;
 }) {
   const { scope, environments, connectedEnvironments, environment } = useSettingsScope();
@@ -394,12 +397,12 @@ export function ScheduledTasksSettings(target: {
     setOpenedLinkTaskId(target.taskId);
     if (editor === null) setEditor({ environmentId: linkedEnvironmentId, task: linkedTask });
   }
-  const navigate = useNavigate({ from: "/settings/scheduled-tasks" });
+  const navigate = useNavigate({ from: "/scheduled-tasks" });
   const closeEditor = () => {
     setEditor(null);
     if (target.taskId === undefined) return;
     void navigate({
-      to: "/settings/scheduled-tasks",
+      to: "/scheduled-tasks",
       search: ({ taskId: _closed, ...rest }) => rest,
       replace: true,
     });
@@ -417,14 +420,17 @@ export function ScheduledTasksSettings(target: {
       (entry) => entry.environmentId === defaultEnvironment?.environmentId,
     ) ?? permittedEnvironments[0];
   return (
-    <SettingsPageContainer>
-      <SettingsSection
-        title="Scheduled tasks"
-        variant="plain"
-        headerAction={
+    <>
+      <WorkspacePageHeader electron={isElectron} className="border-b">
+        <WorkspaceBreadcrumb ariaLabel="Scheduled tasks breadcrumb">
+          <WorkspaceBreadcrumbItem current>
+            <h1>Scheduled tasks</h1>
+          </WorkspaceBreadcrumbItem>
+        </WorkspaceBreadcrumb>
+        <div className="ms-auto flex shrink-0 items-center">
           <Button
             size="xs"
-            variant="ghost-muted"
+            variant="ghost"
             disabled={!creationEnvironment}
             onClick={() =>
               creationEnvironment &&
@@ -434,8 +440,9 @@ export function ScheduledTasksSettings(target: {
             <PlusIcon className="size-3" />
             New task
           </Button>
-        }
-      >
+        </div>
+      </WorkspacePageHeader>
+      <SettingsPageContainer scopeLead="Showing tasks for">
         {scope.kind === "unavailable" ? (
           <SettingsSection title="Unavailable selection">
             <SettingsRow title={scope.message} />
@@ -468,7 +475,7 @@ export function ScheduledTasksSettings(target: {
             ))}
           </div>
         )}
-      </SettingsSection>
+      </SettingsPageContainer>
       {editor ? (
         <ScheduledTaskEditorDialog
           key={`${editor.environmentId}:${editor.task?.id ?? "new"}`}
@@ -477,7 +484,7 @@ export function ScheduledTasksSettings(target: {
           onClose={closeEditor}
         />
       ) : null}
-    </SettingsPageContainer>
+    </>
   );
 }
 

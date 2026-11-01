@@ -12,7 +12,6 @@ import {
   FlaskConicalIcon,
   BotIcon,
   createLucideIcon,
-  CalendarClockIcon,
   FileDiffIcon,
   FolderTreeIcon,
   GitBranchIcon,
@@ -98,7 +97,6 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/threads": MessagesSquareIcon,
   "/settings/browser": GlobeIcon,
   "/settings/devices": SmartphoneIcon,
-  "/settings/scheduled-tasks": CalendarClockIcon,
   "/settings/source-control": GitBranchIcon,
   "/settings/worktrees": FolderTreeIcon,
   "/settings/connections": ServerIcon,
@@ -126,8 +124,17 @@ function SettingsSectionIcon({ to }: { to: SettingsPath }) {
   return <Icon className="size-4 shrink-0 text-(--sidebar-icon-color)" />;
 }
 
-export function SettingsSidebarNav({ pathname }: { pathname: string }) {
-  const navArea = workspaceAreaProps("settings-nav", 0, "Settings sections");
+export function SettingsSidebarNav({
+  pathname,
+  inSidebar = false,
+}: {
+  pathname: string;
+  /** Fills the app sidebar's column, which is already a workspace area. */
+  inSidebar?: boolean;
+}) {
+  const navArea = inSidebar
+    ? { "aria-label": "Settings sections" }
+    : workspaceAreaProps("settings-nav", 0, "Settings sections");
   const navigate = useNavigate();
   const currentHash = useLocation({ select: (location) => location.hash });
   const currentSearch = useLocation({ select: (location) => location.search });
@@ -256,8 +263,10 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
       {...navArea}
       role="navigation"
       className={cn(
-        "flex w-60 shrink-0 flex-col border-e bg-sidebar text-sidebar-foreground max-md:w-14",
-        compactSearchOpen &&
+        "flex flex-col text-sidebar-foreground",
+        inSidebar ? "min-w-0 flex-1" : "w-60 shrink-0 border-e bg-sidebar max-md:w-14",
+        !inSidebar &&
+          compactSearchOpen &&
           "max-md:absolute max-md:inset-y-0 max-md:start-0 max-md:z-10 max-md:w-full",
       )}
     >

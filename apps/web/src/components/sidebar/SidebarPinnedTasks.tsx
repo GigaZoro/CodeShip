@@ -149,7 +149,7 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
 
   const openSettings = () =>
     void navigate({
-      to: "/settings/scheduled-tasks",
+      to: "/scheduled-tasks",
       search: { environmentId, taskId: task.id },
     });
   const openRun = () => {

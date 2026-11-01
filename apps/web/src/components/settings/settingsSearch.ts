@@ -28,7 +28,6 @@ export type SettingsPath =
   | "/settings/threads"
   | "/settings/browser"
   | "/settings/devices"
-  | "/settings/scheduled-tasks"
   | "/settings/source-control"
   | "/settings/worktrees"
   | "/settings/connections"
@@ -98,7 +97,6 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/threads": "Threads",
   "/settings/browser": "Browser",
   "/settings/devices": "Devices",
-  "/settings/scheduled-tasks": "Scheduled tasks",
   "/settings/source-control": "Source control",
   "/settings/worktrees": "Worktrees",
   "/settings/connections": "Environments",
@@ -128,13 +126,7 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
   },
   {
     heading: "Agents",
-    paths: [
-      "/settings/providers",
-      "/settings/threads",
-      "/settings/browser",
-      "/settings/devices",
-      "/settings/scheduled-tasks",
-    ],
+    paths: ["/settings/providers", "/settings/threads", "/settings/browser", "/settings/devices"],
   },
   {
     heading: "Code",
@@ -1243,7 +1235,6 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/connections": "connections",
   "/settings/access": "connections",
   "/settings/secrets": null,
-  "/settings/scheduled-tasks": null,
   "/settings/maintenance": null,
   "/settings/labs": null,
   "/settings/about": null,

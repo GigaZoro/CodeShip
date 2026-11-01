@@ -1,14 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { validateScheduledTasksSearch } from "../components/settings/scheduledTasksSettings.logic";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
-import { ScheduledTasksSettings } from "../components/settings/ScheduledTasksSettings";
-
-function SettingsScheduledTasksRoute() {
-  const target = Route.useSearch();
-  return <ScheduledTasksSettings {...target} />;
-}
-
+// Moved out of Settings; old links and reloaded windows land on the new page.
 export const Route = createFileRoute("/_chat/settings/scheduled-tasks")({
-  validateSearch: validateScheduledTasksSearch,
-  component: SettingsScheduledTasksRoute,
+  beforeLoad: ({ location }) => {
+    throw redirect({ href: `/scheduled-tasks${location.searchStr}`, replace: true });
+  },
 });
