@@ -1216,6 +1216,63 @@ interface ProviderInstanceRowActions {
 
 const NO_MODELS: ReadonlyArray<string> = [];
 
+const CLAUDE_TOKEN_VARIABLE = "CLAUDE_CODE_OAUTH_TOKEN";
+
+/** Only the default provider inherits the machine's token; the server drops a blank one to hide it. */
+function ClaudeTokenAccountRow({
+  instance,
+  isDefault,
+  onChange,
+}: {
+  readonly instance: ProviderInstanceConfig;
+  readonly isDefault: boolean;
+  readonly onChange: (next: ProviderInstanceConfig) => void;
+}) {
+  const { environment = [], ...rest } = instance;
+  const otherVariables = environment.filter((variable) => variable.name !== CLAUDE_TOKEN_VARIABLE);
+  const usesMachineToken =
+    isDefault &&
+    !environment.some(
+      (variable) =>
+        variable.name === CLAUDE_TOKEN_VARIABLE &&
+        (variable.valueRedacted === true || variable.value.trim().length > 0),
+    );
+  return (
+    <SettingsRow
+      title="Account"
+      description={
+        usesMachineToken
+          ? "Using the CLAUDE_CODE_OAUTH_TOKEN set on this machine. Ignore it to sign this provider in instead."
+          : "Using the CLAUDE_CODE_OAUTH_TOKEN in this provider's environment variables. Remove it to sign in."
+      }
+      control={
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={() =>
+            onChange(
+              usesMachineToken
+                ? {
+                    ...rest,
+                    environment: [
+                      ...otherVariables,
+                      { name: CLAUDE_TOKEN_VARIABLE, value: "", sensitive: false },
+                    ],
+                  }
+                : otherVariables.length > 0
+                  ? { ...rest, environment: otherVariables }
+                  : rest,
+            )
+          }
+        >
+          {usesMachineToken ? "Ignore token" : "Remove token"}
+        </Button>
+      }
+    />
+  );
+}
+
 /** Stable props let this boundary return cached cards even when settings rebuild parent row elements. */
 function ProviderInstanceRow({
   environmentId,
@@ -1383,13 +1440,10 @@ function ProviderInstanceRow({
           driver === "claudeAgent" &&
           liveProvider?.setup?.canAuthenticate === false &&
           liveProvider.auth.type === "oauthToken" ? (
-          <SettingsRow
-            title="Account"
-            description={
-              isDefault
-                ? "Using CLAUDE_CODE_OAUTH_TOKEN. Remove it from this provider's environment or the machine's to sign in."
-                : "Using CLAUDE_CODE_OAUTH_TOKEN. Remove it from this provider's environment to sign in."
-            }
+          <ClaudeTokenAccountRow
+            instance={instance}
+            isDefault={isDefault}
+            onChange={(next) => actions.updateInstance(instanceId, instance, next)}
           />
         ) : null
       }

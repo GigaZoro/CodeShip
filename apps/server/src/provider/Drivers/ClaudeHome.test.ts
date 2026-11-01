@@ -67,10 +67,16 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
           [{ name: "CLAUDE_CODE_OAUTH_TOKEN", value: "work-token", sensitive: true }],
           machine,
         );
+        const defaultIgnoringMachineToken = yield* mergeClaudeInstanceEnvironment(
+          ProviderInstanceId.make("claudeAgent"),
+          [{ name: "CLAUDE_CODE_OAUTH_TOKEN", value: "", sensitive: false }],
+          machine,
+        );
 
         expect(defaultEnv.CLAUDE_CODE_OAUTH_TOKEN).toBe("machine-token");
         expect(addedEnv).toEqual({ PATH: "/bin" });
         expect(addedWithToken.CLAUDE_CODE_OAUTH_TOKEN).toBe("work-token");
+        expect(defaultIgnoringMachineToken).toEqual({ PATH: "/bin" });
       }),
     );
 

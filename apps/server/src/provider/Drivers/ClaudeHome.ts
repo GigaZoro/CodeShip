@@ -23,6 +23,7 @@ const DEFAULT_CLAUDE_INSTANCE_ID = defaultInstanceIdForDriver(
 /**
  * A `CLAUDE_CODE_OAUTH_TOKEN` overrides Claude's saved login, so the machine's token belongs to
  * the default provider only. Any other provider keeps its own sign-in unless its settings set one.
+ * A blank token in a provider's settings hides the machine's token so that provider can sign in.
  */
 export const mergeClaudeInstanceEnvironment = Effect.fn("mergeClaudeInstanceEnvironment")(
   function* (
@@ -31,10 +32,13 @@ export const mergeClaudeInstanceEnvironment = Effect.fn("mergeClaudeInstanceEnvi
     hostEnvironment: NodeJS.ProcessEnv,
   ) {
     const { CLAUDE_CODE_OAUTH_TOKEN: _machineToken, ...withoutToken } = hostEnvironment;
-    return yield* mergeProviderInstanceEnvironment(
+    const merged = yield* mergeProviderInstanceEnvironment(
       environment,
       instanceId === DEFAULT_CLAUDE_INSTANCE_ID ? hostEnvironment : withoutToken,
     );
+    if (merged.CLAUDE_CODE_OAUTH_TOKEN?.trim() !== "") return merged;
+    const { CLAUDE_CODE_OAUTH_TOKEN: _blankToken, ...withoutBlankToken } = merged;
+    return withoutBlankToken;
   },
 );
 

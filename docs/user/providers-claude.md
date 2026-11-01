@@ -25,7 +25,10 @@ you sign it in to a different account. A Claude provider signed in with a
 account's email or plan. Claude uses a token ahead of a sign-in, so a
 `CLAUDE_CODE_OAUTH_TOKEN` set on the machine applies only to the first Claude
 provider. To give another provider a token, add it to that provider's
-**Environment variables**. Remove the token to sign that provider in instead.
+**Environment variables**. Choose **Remove token** under **Account** to sign that
+provider in instead. When the first provider's token comes from the machine, choose
+**Ignore token**: it adds a blank `CLAUDE_CODE_OAUTH_TOKEN` to that provider's
+**Environment variables**, and deleting that variable uses the machine's token again.
 
 To keep an account's settings and local conversation state separate too, give the
 instance its own **CLAUDE_CONFIG_DIR path** and sign that directory in on the
