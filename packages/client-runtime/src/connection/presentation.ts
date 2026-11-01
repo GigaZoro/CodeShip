@@ -132,6 +132,21 @@ function mcpUrlFromBase(httpBaseUrl: string): string | null {
   return url.toString();
 }
 
+/**
+ * Each environment's label, with its address added where two share one. Servers on one
+ * computer all take that computer's name, so the name alone cannot tell them apart.
+ */
+export function distinctEnvironmentLabels(
+  environments: ReadonlyArray<{ readonly label: string; readonly displayUrl: string | null }>,
+): string[] {
+  const counts = new Map<string, number>();
+  for (const { label } of environments) counts.set(label, (counts.get(label) ?? 0) + 1);
+  return environments.map(({ label, displayUrl }) => {
+    const address = displayUrl?.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/\/$/, "");
+    return (counts.get(label) ?? 0) > 1 && address ? `${label} (${address})` : label;
+  });
+}
+
 export function connectionCatalogDisplayUrl(entry: ConnectionCatalogEntry): string | null {
   switch (entry.target._tag) {
     case "PrimaryConnectionTarget":

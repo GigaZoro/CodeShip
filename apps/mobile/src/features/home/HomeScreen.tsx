@@ -81,6 +81,7 @@ import {
   buildHomeProjectScopes,
   buildHomeThreadListGrouping,
   findHomeProjectScope,
+  homeFolderNewThreadTargets,
   sortHomeProjectScopes,
   type HomeProjectSortOrder,
 } from "./homeThreadList";
@@ -580,7 +581,9 @@ export function HomeScreen(props: HomeScreenProps) {
           hiddenCount={item.hiddenCount}
           hiddenNeedsAttention={item.hiddenNeedsAttention}
           pane={primaryColumn ? "sidebar" : "screen"}
+          newThreadTargets={homeFolderNewThreadTargets(item.folder, projectScopes)}
           onToggle={toggleThreadListFolder}
+          onNewThreadInProject={props.onNewThreadInProject}
         />
       );
     }
@@ -635,7 +638,8 @@ export function HomeScreen(props: HomeScreenProps) {
         providerInstance={resolveProviderInstance(thread)}
         providers={providersByEnvironmentId.get(thread.environmentId)}
         environmentLabel={
-          Object.keys(props.savedConnectionsById).length > 1
+          // A machine folder already names the machine.
+          Object.keys(props.savedConnectionsById).length > 1 && item.folderKind !== "machine"
             ? (props.savedConnectionsById[thread.environmentId]?.environmentLabel ?? null)
             : null
         }

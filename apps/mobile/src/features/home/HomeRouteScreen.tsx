@@ -9,6 +9,7 @@ import { useNavigation } from "@react-navigation/native";
 import { useMemo, useState } from "react";
 import { Platform, useWindowDimensions } from "react-native";
 
+import { distinctEnvironmentLabels } from "@t3tools/client-runtime/connection";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { resolveScratchProjectScopeKey } from "@t3tools/client-runtime/state/project-grouping";
 
@@ -110,10 +111,17 @@ export function HomeRouteScreen() {
       (environment) => [environment.environmentId, environment.connectionState] as const,
     ),
   );
-  const environments = Arr.sort(
-    Object.values(savedConnectionsById).map((connection) => ({
-      environmentId: connection.environmentId,
+  const savedConnections = Object.values(savedConnectionsById);
+  const environmentLabels = distinctEnvironmentLabels(
+    savedConnections.map((connection) => ({
       label: connection.environmentLabel,
+      displayUrl: connection.displayUrl,
+    })),
+  );
+  const environments = Arr.sort(
+    savedConnections.map((connection, index) => ({
+      environmentId: connection.environmentId,
+      label: environmentLabels[index] ?? connection.environmentLabel,
       connectionState: connectionStateByEnvironmentId.get(connection.environmentId) ?? "available",
     })),
     Order.mapInput(Order.String, (environment: { readonly label: string }) => environment.label),

@@ -1,6 +1,9 @@
 import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
 import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
-import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
+import {
+  distinctEnvironmentLabels,
+  type EnvironmentServerConfig,
+} from "@t3tools/client-runtime/connection";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
 import {
   dropThreadContext,
@@ -986,10 +989,16 @@ function useSidebarMachines(): readonly SidebarMachine[] {
   const environments = useEnvironmentConnectionSummaries();
   const machineById = useEnvironmentMachines();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  return sortSidebarMachines(
+  const labels = distinctEnvironmentLabels(
     environments.map((environment) => ({
-      environmentId: environment.environmentId,
       label: environment.environmentLabel,
+      displayUrl: environment.displayUrl,
+    })),
+  );
+  return sortSidebarMachines(
+    environments.map((environment, index) => ({
+      environmentId: environment.environmentId,
+      label: labels[index] ?? environment.environmentLabel,
       machineKind: machineById.get(environment.environmentId) ?? "server",
       disconnected: isSidebarEnvironmentDisconnected(environment.connectionState),
     })),

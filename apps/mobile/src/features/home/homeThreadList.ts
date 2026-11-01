@@ -245,6 +245,44 @@ function homeMachineProjectFolderKey(environmentId: EnvironmentId, scopeKey: str
   return `${homeMachineFolderKey(environmentId)}:project:${scopeKey}`;
 }
 
+export interface HomeFolderNewThreadTarget {
+  readonly title: string;
+  /** Tells two checkouts of one project on a machine apart. */
+  readonly subtitle: string | null;
+  readonly project: EnvironmentProject;
+}
+
+/**
+ * Where a folder's new-thread button starts a thread: its project, or any project on the
+ * machine. An offline machine offers none, since it cannot start one until it is back.
+ */
+export function homeFolderNewThreadTargets(
+  folder: ThreadListV2Folder,
+  projectScopes: ReadonlyArray<HomeProjectScope>,
+): ReadonlyArray<HomeFolderNewThreadTarget> {
+  if (folder.kind === "project") {
+    for (const scope of projectScopes) {
+      const project = scope.projects.find(
+        (candidate) =>
+          scopedProjectKey(candidate.environmentId, candidate.id) === folder.projectKey,
+      );
+      if (project) return [{ title: scope.title, subtitle: null, project }];
+    }
+    return [];
+  }
+  if (folder.offline) return [];
+  return projectScopes.flatMap((scope) => {
+    const onMachine = scope.projects.filter(
+      (project) => project.environmentId === folder.environmentId,
+    );
+    return onMachine.map((project) => ({
+      title: scope.title,
+      subtitle: onMachine.length > 1 ? project.workspaceRoot : null,
+      project,
+    }));
+  });
+}
+
 /** Shares the folder state map with project folders, outside their key space. */
 function homeMachineFolderKey(environmentId: EnvironmentId): string {
   return `machine:${environmentId}`;

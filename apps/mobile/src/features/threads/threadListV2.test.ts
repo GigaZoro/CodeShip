@@ -928,6 +928,11 @@ describe("thread list folders", () => {
       "v2-working-shelf",
       `v2-thread:copy:${environmentId}:working`,
     ]);
+    expect(items.flatMap((item) => (item.type === "v2-thread" ? [item.folderKind] : []))).toEqual([
+      "project",
+      "project",
+      null,
+    ]);
   });
 });
 

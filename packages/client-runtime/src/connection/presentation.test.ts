@@ -13,7 +13,11 @@ import {
   RelayConnectionTarget,
   type SupervisorConnectionState,
 } from "./model.ts";
-import { environmentMcpUrl, presentConnectionState } from "./presentation.ts";
+import {
+  distinctEnvironmentLabels,
+  environmentMcpUrl,
+  presentConnectionState,
+} from "./presentation.ts";
 
 const TARGET = new BearerConnectionTarget({
   environmentId: EnvironmentId.make("environment-1"),
@@ -50,6 +54,17 @@ function supervisorState(overrides: Partial<SupervisorConnectionState>): Supervi
 }
 
 describe("connection presentation", () => {
+  it("adds the address only to labels two environments share", () => {
+    expect(
+      distinctEnvironmentLabels([
+        { label: "Studio", displayUrl: "http://localhost:3773/" },
+        { label: "Studio", displayUrl: "https://studio.tailnet.ts.net" },
+        { label: "Laptop", displayUrl: "http://laptop.local:3773" },
+        { label: "Studio", displayUrl: null },
+      ]),
+    ).toEqual(["Studio (localhost:3773)", "Studio (studio.tailnet.ts.net)", "Laptop", "Studio"]);
+  });
+
   it("copies the MCP address of the route this device is connected over", () => {
     const route = (connectionId: string, httpBaseUrl: string): ConnectionRoute => {
       const target = new BearerConnectionTarget({ ...TARGET, connectionId });

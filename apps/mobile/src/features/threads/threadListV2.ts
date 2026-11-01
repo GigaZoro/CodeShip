@@ -384,6 +384,8 @@ export interface ThreadListV2ThreadListItem {
   readonly hasQueuedMessages: boolean;
   readonly canMoveUp: boolean;
   readonly canMoveDown: boolean;
+  /** The kind of folder the row sits in; its row leaves out what the folder already says. */
+  readonly folderKind: ThreadListV2Folder["kind"] | null;
 }
 
 export interface ThreadListV2PendingListItem {
@@ -469,7 +471,8 @@ export function threadListV2ListItemsAreEqual(
         previous.showTrailingDivider === item.showTrailingDivider &&
         previous.hasQueuedMessages === item.hasQueuedMessages &&
         previous.canMoveUp === item.canMoveUp &&
-        previous.canMoveDown === item.canMoveDown
+        previous.canMoveDown === item.canMoveDown &&
+        previous.folderKind === item.folderKind
       );
     case "v2-pending":
       return (
@@ -601,6 +604,7 @@ export function buildThreadListV2ListItems(input: {
         queuedThreadKeys?.has(`${item.thread.environmentId}:${item.thread.id}`) === true,
       canMoveUp: move?.canMoveUp === true,
       canMoveDown: move?.canMoveDown === true,
+      folderKind: null,
     };
   });
   const pendingItems = input.pendingTasks.map((pendingTask, index): ThreadListV2ListItem => ({
@@ -622,10 +626,14 @@ export function buildThreadListV2ListItems(input: {
   const result: ThreadListV2ListItem[] = [...pendingItems];
   const folderHeaders = input.folderHeaders ?? [];
   let folderHeaderIndex = 0;
+  let folderKind: ThreadListV2Folder["kind"] | null = null;
   // A closed folder can end the active rows, so its header sits at `activeEnd`.
   for (let index = 0; index <= activeEnd; index += 1) {
     let header = folderHeaders[folderHeaderIndex];
     while (header !== undefined && header.index === index) {
+      // A nested project folder sits in a machine folder, whose machine its rows leave out too.
+      folderKind =
+        header.folder.kind === "project" && header.folder.nested ? "machine" : header.folder.kind;
       result.push({
         type: "v2-folder",
         key: `v2-folder:${header.folder.key}`,
@@ -637,7 +645,11 @@ export function buildThreadListV2ListItems(input: {
       header = folderHeaders[folderHeaderIndex];
     }
     const threadItem = index < activeEnd ? threadItems[index] : undefined;
-    if (threadItem !== undefined) result.push(threadItem);
+    if (threadItem?.type === "v2-thread" && folderKind !== null) {
+      result.push({ ...threadItem, folderKind });
+    } else if (threadItem !== undefined) {
+      result.push(threadItem);
+    }
   }
   const shelfDisabled = input.shelfPreferencesLoading === true;
   if (workingShelfHeaderIndex !== null && workingCount > 0) {

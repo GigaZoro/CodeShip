@@ -164,15 +164,15 @@ entry; off, each checkout is its own project.
 
 Click or tap a folder to open or close it. A closed folder shows how many threads it holds, and a
 dot when one of them needs you. A machine that is offline shows **Offline** and starts closed.
-While threads are grouped, active threads are ordered by their latest message, so you cannot move
-them by hand.
+When two machines share a name, their folders add the address. While threads are grouped, active
+threads are ordered by their latest message, so you cannot move them by hand.
 
-On web and desktop, use the pen button on a project folder, or right-click it, to start a thread
-in that project; inside a machine folder it starts on that machine. The pen button on a machine
-folder opens **New thread in...** with only that machine's projects. **New thread** and its
-shortcut start in the current project when folders are by project, and ask which project otherwise. In project folders, threads on another machine show
-that machine's icon. You can drag a grouped thread onto the composer to mention it, but not
-within the sidebar.
+Use the pen button on a project folder to start a thread in that project; inside a machine folder
+it starts on that machine. The pen button on a machine folder lists that machine's projects to
+start in. On web and desktop, you can also right-click a project folder. **New thread** and its
+shortcut start in the current project when folders are by project, and ask which project
+otherwise. In project folders, threads on another machine show that machine's icon. You can drag
+a grouped thread onto the composer to mention it, but not within the sidebar.
 
 The same menu filters the sidebar. Click a machine or project to show only its threads, or
 shift-click to add more. Machines appear when you have more than one. Choosing both a machine

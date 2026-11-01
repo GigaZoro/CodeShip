@@ -57,6 +57,7 @@ import {
   type ThreadPrPresentation,
 } from "../../state/thread-pr-presentation";
 import { useThreadPr } from "../../state/use-thread-pr";
+import type { HomeFolderNewThreadTarget } from "../home/homeThreadList";
 import { useSwipeRowDormant } from "../home/swipe-row-activation";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regeneration-menu";
@@ -303,78 +304,120 @@ export const ThreadListV2FolderHeader = memo(function ThreadListV2FolderHeader(p
   readonly hiddenCount: number;
   readonly hiddenNeedsAttention: boolean;
   readonly pane?: "screen" | "sidebar";
+  readonly newThreadTargets: ReadonlyArray<HomeFolderNewThreadTarget>;
   readonly onToggle: (folder: ThreadListV2Folder) => void;
+  readonly onNewThreadInProject: (project: EnvironmentProject) => void;
 }) {
-  const { folder } = props;
+  const { folder, newThreadTargets } = props;
   const sidebarPane = props.pane === "sidebar";
   const mutedText = sidebarPane ? "text-drawer-foreground-muted" : "text-foreground-muted";
   const mutedTint = sidebarPane ? "accent-drawer-foreground-muted" : "accent-foreground-muted";
   const offline = folder.kind === "machine" && folder.offline;
   const nested = folder.kind === "project" && folder.nested;
-  return (
+  const newThreadLabel = `New thread ${folder.kind === "project" ? "in" : "on"} ${folder.label}`;
+  const onlyTarget = newThreadTargets.length === 1 ? newThreadTargets[0] : undefined;
+  const newThreadButton = (onPress?: () => void) => (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={[
-        folder.label,
-        offline ? "offline" : null,
-        props.hiddenCount > 0
-          ? `${props.hiddenCount} hidden ${props.hiddenCount === 1 ? "thread" : "threads"}`
-          : null,
-        props.hiddenNeedsAttention ? "needs you" : null,
-      ]
-        .filter(Boolean)
-        .join(", ")}
-      accessibilityHint={`${folder.expanded ? "Collapses" : "Expands"} the folder.`}
-      accessibilityState={{ expanded: folder.expanded }}
-      className={cn(
-        "min-h-11 flex-row items-center gap-2.5",
-        sidebarPane ? "px-3" : "px-5",
-        // Lines the icon up with the machine folder's name.
-        nested ? (sidebarPane ? "pl-9" : "pl-11") : "mt-3",
-      )}
-      onPress={() => props.onToggle(folder)}
+      accessibilityLabel={newThreadLabel}
+      className="size-8 items-center justify-center"
+      hitSlop={8}
+      onPress={onPress}
       style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
     >
-      {folder.kind === "project" ? (
-        props.project ? (
-          <ProjectFavicon
-            environmentId={props.project.environmentId}
-            faviconPath={props.project.faviconPath}
-            projectIcon={props.project.projectIcon}
-            size={16}
-            projectTitle={props.project.title}
-            workspaceRoot={props.project.workspaceRoot}
-          />
-        ) : null
-      ) : (
-        <EnvironmentMachineSymbol
-          kind={props.machine ?? "server"}
-          size={14}
-          tintColorClassName={mutedTint}
-        />
-      )}
-      <Text
-        numberOfLines={1}
-        className={cn(
-          "min-w-0 flex-1 text-sm font-t3-medium",
-          sidebarPane ? "text-drawer-foreground" : "text-foreground",
-        )}
-      >
-        {folder.label}
-      </Text>
-      {offline ? <Text className={cn("text-xs", mutedText)}>Offline</Text> : null}
-      {props.hiddenNeedsAttention ? <View className="size-1.5 rounded-full bg-warning" /> : null}
-      {props.hiddenCount > 0 ? (
-        <Text className={cn("text-xs tabular-nums", mutedText)}>{props.hiddenCount}</Text>
-      ) : null}
-      <SymbolView
-        name="chevron.down"
-        size={10}
-        tintColorClassName={mutedTint}
-        type="monochrome"
-        style={{ transform: [{ rotate: folder.expanded ? "0deg" : "-90deg" }] }}
-      />
+      <SymbolView name="square.and.pencil" size={14} tintColorClassName={mutedTint} />
     </Pressable>
+  );
+  return (
+    <View
+      className={cn(
+        "flex-row items-center gap-1",
+        sidebarPane ? "pr-1.5" : "pr-3.5",
+        !nested && "mt-3",
+      )}
+    >
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={[
+          folder.label,
+          offline ? "offline" : null,
+          props.hiddenCount > 0
+            ? `${props.hiddenCount} hidden ${props.hiddenCount === 1 ? "thread" : "threads"}`
+            : null,
+          props.hiddenNeedsAttention ? "needs you" : null,
+        ]
+          .filter(Boolean)
+          .join(", ")}
+        accessibilityHint={`${folder.expanded ? "Collapses" : "Expands"} the folder.`}
+        accessibilityState={{ expanded: folder.expanded }}
+        className={cn(
+          "min-h-11 min-w-0 flex-1 flex-row items-center gap-2.5",
+          // Lines the icon up with the machine folder's name.
+          nested ? (sidebarPane ? "pl-9" : "pl-11") : sidebarPane ? "pl-3" : "pl-5",
+        )}
+        onPress={() => props.onToggle(folder)}
+        style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+      >
+        {folder.kind === "project" ? (
+          props.project ? (
+            <ProjectFavicon
+              environmentId={props.project.environmentId}
+              faviconPath={props.project.faviconPath}
+              projectIcon={props.project.projectIcon}
+              size={16}
+              projectTitle={props.project.title}
+              workspaceRoot={props.project.workspaceRoot}
+            />
+          ) : null
+        ) : (
+          <EnvironmentMachineSymbol
+            kind={props.machine ?? "server"}
+            size={14}
+            tintColorClassName={mutedTint}
+          />
+        )}
+        <Text
+          numberOfLines={1}
+          className={cn(
+            "min-w-0 flex-1 text-sm font-t3-medium",
+            sidebarPane ? "text-drawer-foreground" : "text-foreground",
+          )}
+        >
+          {folder.label}
+        </Text>
+        {offline ? <Text className={cn("text-xs", mutedText)}>Offline</Text> : null}
+        {props.hiddenNeedsAttention ? <View className="size-1.5 rounded-full bg-warning" /> : null}
+        {props.hiddenCount > 0 ? (
+          <Text className={cn("text-xs tabular-nums", mutedText)}>{props.hiddenCount}</Text>
+        ) : null}
+        <SymbolView
+          name="chevron.down"
+          size={10}
+          tintColorClassName={mutedTint}
+          type="monochrome"
+          style={{ transform: [{ rotate: folder.expanded ? "0deg" : "-90deg" }] }}
+        />
+      </Pressable>
+      {/* A project folder starts there; a machine holds many projects, so the user picks one. */}
+      {folder.kind === "project" && onlyTarget ? (
+        newThreadButton(() => props.onNewThreadInProject(onlyTarget.project))
+      ) : folder.kind === "machine" && newThreadTargets.length > 0 ? (
+        <Menu
+          title={newThreadLabel}
+          actions={newThreadTargets.map((target, index) => ({
+            id: String(index),
+            title: target.title,
+            ...(target.subtitle === null ? {} : { subtitle: target.subtitle }),
+          }))}
+          onPressAction={({ nativeEvent }) => {
+            const target = newThreadTargets[Number(nativeEvent.event)];
+            if (target) props.onNewThreadInProject(target.project);
+          }}
+        >
+          {newThreadButton()}
+        </Menu>
+      ) : null}
+    </View>
   );
 });
 

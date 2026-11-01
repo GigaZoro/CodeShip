@@ -9,6 +9,8 @@ import {
   buildHomeProjectScopes,
   buildHomeThreadListGrouping,
   findHomeProjectScope,
+  homeFolderNewThreadTargets,
+  type HomeProjectScope,
 } from "./homeThreadList";
 import { makeThreadShellFixture } from "../../test-fixtures";
 import { buildThreadListV2Items } from "../threads/threadListV2";
@@ -229,6 +231,56 @@ describe("home project scopes", () => {
 });
 
 describe("home thread list grouping", () => {
+  it("offers a machine's projects, every checkout of each, and none while it is offline", () => {
+    const studio = EnvironmentId.make("studio");
+    const laptop = EnvironmentId.make("laptop");
+    const scope = (key: string, projects: ReadonlyArray<EnvironmentProject>): HomeProjectScope => ({
+      key,
+      title: key,
+      representative: projects[0]!,
+      projects,
+      projectRefs: projects.map((project) => ({
+        environmentId: project.environmentId,
+        projectId: project.id,
+      })),
+    });
+    const api = makeProject({ environmentId: studio, id: ProjectId.make("api"), title: "api" });
+    const apiCopy = makeProject({
+      environmentId: studio,
+      id: ProjectId.make("api-copy"),
+      title: "api",
+    });
+    const web = makeProject({ environmentId: laptop, id: ProjectId.make("web"), title: "web" });
+    const scopes = [scope("api", [api, apiCopy]), scope("web", [web])];
+    const machine = (offline: boolean) => ({
+      kind: "machine" as const,
+      key: `machine:${studio}`,
+      label: "Studio",
+      environmentId: studio,
+      offline,
+      expanded: true,
+      expandedByDefault: true,
+    });
+
+    expect(homeFolderNewThreadTargets(machine(false), scopes)).toEqual([
+      { title: "api", subtitle: api.workspaceRoot, project: api },
+      { title: "api", subtitle: apiCopy.workspaceRoot, project: apiCopy },
+    ]);
+    expect(homeFolderNewThreadTargets(machine(true), scopes)).toEqual([]);
+    const nestedProject = {
+      kind: "project" as const,
+      key: `machine:${studio}:project:api`,
+      label: "api",
+      projectKey: `${studio}:${apiCopy.id}`,
+      nested: true,
+      expanded: true,
+      expandedByDefault: true,
+    };
+    expect(homeFolderNewThreadTargets(nestedProject, scopes)).toEqual([
+      { title: "api", subtitle: null, project: apiCopy },
+    ]);
+  });
+
   it("orders machines by name with offline ones last, closed until the user opens one", () => {
     const machine = (id: string, label: string, offline: boolean) => ({
       environmentId: EnvironmentId.make(id),

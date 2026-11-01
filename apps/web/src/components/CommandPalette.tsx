@@ -26,7 +26,10 @@ import {
   type AddProjectRemoteSourceReadiness,
 } from "@t3tools/client-runtime/operations/projects";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
-import { connectionStatusText } from "@t3tools/client-runtime/connection";
+import {
+  connectionStatusText,
+  distinctEnvironmentLabels,
+} from "@t3tools/client-runtime/connection";
 import { resolveThreadReferenceCopyTarget } from "@t3tools/client-runtime/thread-reference";
 import {
   canPreloadBrowsePath,
@@ -855,7 +858,10 @@ function OpenCommandPaletteDialog(props: {
         },
       }),
     );
-    const machineLabel = environmentLabelById.get(newThreadMachineId);
+    const machineLabel =
+      distinctEnvironmentLabels(environments)[
+        environments.findIndex((environment) => environment.environmentId === newThreadMachineId)
+      ];
     return {
       value: `${NEW_THREAD_ON_MACHINE_GROUP_PREFIX}${newThreadMachineId}`,
       label: machineLabel ? `Projects on ${machineLabel}` : "Projects",

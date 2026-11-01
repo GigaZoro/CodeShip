@@ -1,6 +1,7 @@
 import { useActiveNewTask } from "../../state/active-new-task";
 import { ThreadUndoNotice } from "../home/ThreadUndoNotice";
 import { useAndroidControlSizing } from "../../components/ui/useAndroidControlSizing";
+import { distinctEnvironmentLabels } from "@t3tools/client-runtime/connection";
 import { resolveScratchProjectScopeKey } from "@t3tools/client-runtime/state/project-grouping";
 import {
   useAppearancePreferences,
@@ -56,6 +57,7 @@ import {
 import {
   buildHomeProjectScopes,
   buildHomeThreadListGrouping,
+  homeFolderNewThreadTargets,
   sortHomeProjectScopes,
 } from "../home/homeThreadList";
 import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "../home/thread-swipe-actions";
@@ -185,10 +187,17 @@ function ThreadNavigationSidebarPane(
   const { confirmDeletePendingTask } = usePendingTaskListActions((params) =>
     selectDetail({ name: "Thread", params }),
   );
-  const environments = Object.values(savedConnectionsById)
-    .map((connection) => ({
-      environmentId: connection.environmentId,
+  const savedConnections = Object.values(savedConnectionsById);
+  const environmentLabels = distinctEnvironmentLabels(
+    savedConnections.map((connection) => ({
       label: connection.environmentLabel,
+      displayUrl: connection.displayUrl,
+    })),
+  );
+  const environments = savedConnections
+    .map((connection, index) => ({
+      environmentId: connection.environmentId,
+      label: environmentLabels[index] ?? connection.environmentLabel,
     }))
     .sort((left, right) => left.label.localeCompare(right.label));
   const availableEnvironmentIds = new Set(
@@ -612,7 +621,8 @@ function ThreadNavigationSidebarPane(
             providerInstance={resolveProviderInstance(thread)}
             providers={providersByEnvironmentId.get(thread.environmentId)}
             environmentLabel={
-              Object.keys(savedConnectionsById).length > 1
+              // A machine folder already names the machine.
+              Object.keys(savedConnectionsById).length > 1 && item.folderKind !== "machine"
                 ? (savedConnectionsById[thread.environmentId]?.environmentLabel ?? null)
                 : null
             }
@@ -689,7 +699,9 @@ function ThreadNavigationSidebarPane(
             hiddenCount={item.hiddenCount}
             hiddenNeedsAttention={item.hiddenNeedsAttention}
             pane="sidebar"
+            newThreadTargets={homeFolderNewThreadTargets(item.folder, projectScopes)}
             onToggle={toggleThreadListFolder}
+            onNewThreadInProject={props.onNewThreadInProject}
           />
         );
       case "v2-working-shelf":
