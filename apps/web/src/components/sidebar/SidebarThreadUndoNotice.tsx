@@ -15,7 +15,7 @@ import { SidebarMenuItem } from "../ui/sidebar";
 export function SidebarThreadUndoNotice() {
   const notice = useThreadUndoNotice((state) => state.notice);
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
-  // Short enough to fit beside the utility icons; screen readers hear the full summary.
+  // Short enough to fit beside the update pill; screen readers hear the full summary.
   const summary = notice
     ? notice.count === 1
       ? notice.action

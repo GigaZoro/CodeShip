@@ -1,12 +1,8 @@
-import { ArrowLeftIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
-import { tightestLimitWindow } from "@t3tools/shared/usageLimits";
-import type { ReactNode } from "react";
-import { memo, useState } from "react";
-import { Link, useLocation, useNavigate } from "@tanstack/react-router";
+import { memo } from "react";
+import { Link } from "@tanstack/react-router";
 
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
-import { usePullRequestsSupported } from "../../state/environments";
 import {
   resolveEnvironmentIdentificationPillLabel,
   resolveSidebarStageBackdropVariant,
@@ -14,30 +10,11 @@ import {
   useEnvironmentStageLabel,
 } from "../SidebarStageBackdrop";
 import { Badge } from "../ui/badge";
-import { ProgressRing } from "../ui/progress-ring";
-import {
-  limitPoolLabel,
-  limitTone,
-  limitWindowLabel,
-  UsageLimitsGlance,
-  useLimitPools,
-} from "../usage/UsageLimitsGlance";
 import { CodeShipBrand } from "../CodeShipBrand";
-import {
-  SidebarFooter,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  SidebarTrigger,
-  useSidebar,
-} from "../ui/sidebar";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPreferences";
-import { isSidebarUtilityPage, useNavigateToMainApp } from "./mainAppLocation";
+import { SidebarFooter, SidebarMenu, SidebarTrigger } from "../ui/sidebar";
 import { SidebarThreadUndoNotice } from "./SidebarThreadUndoNotice";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 import { SidebarUpdateArchitectureWarning, SidebarUpdatePill } from "./SidebarUpdatePill";
-import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { observeResize } from "~/lib/observeResize";
 
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
@@ -133,139 +110,16 @@ function SidebarBrandMark({ onBackdrop }: { onBackdrop: boolean }) {
   );
 }
 
-function SidebarUtilityItem({
-  icon,
-  label,
-  tooltip = label,
-  onTooltipOpenChange,
-  onClick,
-}: {
-  icon: ReactNode;
-  label: string;
-  tooltip?: ReactNode;
-  onTooltipOpenChange?: (open: boolean) => void;
-  onClick: () => void;
-}) {
-  return (
-    <SidebarMenuItem className="shrink-0">
-      <Tooltip onOpenChange={onTooltipOpenChange}>
-        <TooltipTrigger
-          render={
-            <SidebarMenuButton aria-label={label} onClick={onClick} size="icon">
-              {icon}
-            </SidebarMenuButton>
-          }
-        />
-        <TooltipPopup side="top">{tooltip}</TooltipPopup>
-      </Tooltip>
-    </SidebarMenuItem>
-  );
-}
-
-/** Rings the limit closest to running out; hover summarizes every provider, click opens Usage. */
-function SidebarUsageItem({ onClick }: { onClick: () => void }) {
-  // Reset countdowns read the clock when the summary opens instead of ticking.
-  const [now, setNow] = useState(() => Date.now());
-  const pools = useLimitPools(now);
-  const tightest = tightestLimitWindow(pools);
-  if (!tightest) {
-    return <SidebarUtilityItem icon={<ChartNoAxesColumnIcon />} label="Usage" onClick={onClick} />;
-  }
-  const { pool, window } = tightest;
-  return (
-    <SidebarUtilityItem
-      icon={
-        <ProgressRing
-          value={window.usedPercent}
-          tone={limitTone(window.remainingPercent)}
-          className="size-4"
-        />
-      }
-      label={`Usage: ${limitPoolLabel(pool)} ${limitWindowLabel(pool, window)} ${window.remainingPercent}% left`}
-      tooltip={<UsageLimitsGlance pools={pools} now={now} />}
-      onTooltipOpenChange={(open) => {
-        if (open) setNow(Date.now());
-      }}
-      onClick={onClick}
-    />
-  );
-}
-
-const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
-  const navigate = useNavigate();
-  const navigateToMainApp = useNavigateToMainApp();
-  const { isMobile, setOpenMobile } = useSidebar();
-  const isOnUtilityPage = useLocation({
-    select: (location) => isSidebarUtilityPage(location.pathname),
-  });
-  const pullRequestsSupported = usePullRequestsSupported();
-  const closeMobileSidebar = () => {
-    if (isMobile) {
-      setOpenMobile(false);
-    }
-  };
-  const handlePullRequestsClick = () => {
-    closeMobileSidebar();
-    void navigate({
-      to: "/pull-requests",
-      search: readPullRequestListPreferences(),
-    });
-  };
-  const handleSettingsClick = () => {
-    closeMobileSidebar();
-    void navigate({ to: "/settings" });
-  };
-
-  const handleUsageClick = () => {
-    if (isMobile) {
-      setOpenMobile(false);
-    }
-    void navigate({ to: "/usage" });
-  };
-
-  const handleBackClick = () => {
-    closeMobileSidebar();
-    void navigateToMainApp();
-  };
-
-  return (
-    <SidebarMenu className="flex-row items-center">
-      {isOnUtilityPage ? (
-        <SidebarMenuItem className="min-w-0 flex-1">
-          <SidebarMenuButton onClick={handleBackClick}>
-            <ArrowLeftIcon />
-            <span>Back</span>
-          </SidebarMenuButton>
-        </SidebarMenuItem>
-      ) : (
-        <>
-          <SidebarUtilityItem
-            icon={<SettingsIcon />}
-            label="Settings"
-            onClick={handleSettingsClick}
-          />
-          {pullRequestsSupported ? (
-            <SidebarUtilityItem
-              icon={<PullRequestGlyph.pullRequest />}
-              label="Pull requests"
-              onClick={handlePullRequestsClick}
-            />
-          ) : null}
-          <SidebarUsageItem onClick={handleUsageClick} />
-        </>
-      )}
-      <SidebarThreadUndoNotice />
-      <SidebarUpdatePill />
-    </SidebarMenu>
-  );
-});
-
 export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   return (
     <SidebarFooter>
       <SidebarProviderUpdatePill />
       <SidebarUpdateArchitectureWarning />
-      <SidebarUtilityMenu />
+      {/* Keeps its height while empty, so an undo notice or update pill never moves the list. */}
+      <SidebarMenu className="min-h-8 flex-row items-center">
+        <SidebarThreadUndoNotice />
+        <SidebarUpdatePill />
+      </SidebarMenu>
     </SidebarFooter>
   );
 });
