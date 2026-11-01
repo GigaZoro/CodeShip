@@ -70,23 +70,25 @@ export function measureRestingComposerControls(
 ): RestingComposerControlsMeasurement | null {
   const gap = Number.parseFloat(getComputedStyle(controls).columnGap) || 0;
   const picker = controls.querySelector<HTMLElement>("[data-chat-provider-model-picker]");
-  const leadingControl =
-    picker ?? controls.querySelector<HTMLElement>('[data-chat-provider-unavailable="true"]');
-  if (!leadingControl) return null;
+  if (!picker) return null;
+  const providerUnavailable = controls.querySelector<HTMLElement>(
+    '[data-chat-provider-unavailable="true"]',
+  );
   const separator = controls.querySelector<HTMLElement>("[data-resting-controls-separator]");
   const separatorWidth = separator ? elementOuterWidth(separator) : 0;
   const overflow = controls.querySelector<HTMLElement>("[data-resting-controls-overflow]");
   const separatorAndGapWidth = separatorWidth > 0 ? separatorWidth + gap : 0;
+  const providerUnavailableWidth = providerUnavailable
+    ? elementOuterWidth(providerUnavailable) + gap
+    : 0;
   const blocks = Array.from(controls.querySelectorAll<HTMLElement>("[data-resting-block]"));
   const widths = blocks.map(controlBlockWidths);
   return {
     gap,
     naturalFixedWidth:
-      (picker ? providerModelPickerNaturalWidth(picker) : elementOuterWidth(leadingControl)) +
-      separatorAndGapWidth,
+      providerModelPickerNaturalWidth(picker) + providerUnavailableWidth + separatorAndGapWidth,
     minimumFixedWidth:
-      (picker ? providerModelPickerMinimumWidth(picker) : elementOuterWidth(leadingControl)) +
-      separatorAndGapWidth,
+      providerModelPickerMinimumWidth(picker) + providerUnavailableWidth + separatorAndGapWidth,
     blockWidths: widths.map((width) => width.natural),
     iconOnlyBlockWidths: widths.map((width) => width.iconOnly),
     overflowWidth: overflow ? elementOuterWidth(overflow) : 0,

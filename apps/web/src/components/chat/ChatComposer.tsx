@@ -899,6 +899,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         ? providerInstanceEntries.find((entry) => hasProviderSetup(entry.snapshot))?.instanceId
         : undefined))
     : undefined;
+  const unavailableProviderEntry = providerInstanceEntries.find(
+    (entry) => entry.instanceId === unavailableProviderInstanceId,
+  );
+  const providerUnavailableLabel =
+    unavailableProviderInstanceId === undefined
+      ? providerSetupInstanceId
+        ? "Open provider settings"
+        : "No provider available"
+      : unavailableProviderEntry === undefined
+        ? "Provider not found"
+        : `${unavailableProviderEntry.displayName} is ${unavailableProviderEntry.enabled ? "unavailable" : "off"}`;
   const resolvedCompactDisabledReason =
     compactDisabledReason ?? (noProviderAvailable ? "Compacting is unavailable right now" : null);
   const { modes: compatibleRuntimeModes, mode: compatibleRuntimeMode } =
@@ -2318,6 +2329,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       iconOnlyBlockCount={iconOnlyBlockCount}
       showProviderUnavailable={showProviderUnavailable}
       providerSetupInstanceId={providerSetupInstanceId}
+      providerUnavailableLabel={providerUnavailableLabel}
       onOpenProviderSetup={onOpenProviderSetup}
       providerCatalogPending={providerCatalogPending}
       isSendBusy={isSendBusy}
@@ -3210,7 +3222,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   aria-label="Expand composer"
                 >
                   {prompt.trim() ||
-                    (showProviderUnavailable ? "Enable a provider in Settings" : "Ask anything...")}
+                    (showProviderUnavailable
+                      ? unavailableProviderInstanceId === undefined
+                        ? "Enable a provider in Settings"
+                        : "Choose a model"
+                      : "Ask anything...")}
                 </button>
                 {collapsedComposerImagePreviews}
                 <button
@@ -3374,7 +3390,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                             : projectSelectionRequired
                               ? "Choose a project above to start a thread"
                               : showProviderUnavailable
-                                ? "Enable a provider in Settings to send a message"
+                                ? unavailableProviderInstanceId === undefined
+                                  ? "Enable a provider in Settings to send a message"
+                                  : "Choose a model to send a message"
                                 : DEFAULT_COMPOSER_PLACEHOLDER
                     }
                     disabled={

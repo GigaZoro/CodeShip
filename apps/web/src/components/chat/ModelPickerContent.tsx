@@ -427,6 +427,17 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     );
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | "favorites">(
     () => {
+      // An unusable selection has no tab of its own; open where a working model can be picked.
+      if (activeEntry === undefined || !isProviderInstancePickerVisible(activeEntry)) {
+        if (favorites.length > 0) return "favorites";
+        return (
+          instanceEntries.find(
+            (entry) =>
+              isProviderInstancePickerReady(entry) &&
+              (props.lockedProvider === null || entry.driverKind === props.lockedProvider),
+          )?.instanceId ?? props.activeInstanceId
+        );
+      }
       if (
         props.lockedProvider !== null ||
         activeInstanceHasSelectableUnavailableModel ||

@@ -68,6 +68,7 @@ export function ComposerControlsBar(props: {
   iconOnlyBlockCount: number;
   showProviderUnavailable: boolean;
   providerSetupInstanceId: ProviderInstanceId | undefined;
+  providerUnavailableLabel: string;
   onOpenProviderSetup: ChatComposerProps["onOpenProviderSetup"];
   providerCatalogPending: boolean;
   isSendBusy: boolean;
@@ -116,6 +117,7 @@ export function ComposerControlsBar(props: {
     iconOnlyBlockCount,
     showProviderUnavailable,
     providerSetupInstanceId,
+    providerUnavailableLabel,
     onOpenProviderSetup,
     providerCatalogPending,
     isSendBusy,
@@ -285,26 +287,32 @@ export function ComposerControlsBar(props: {
       {...(modelPickerIconClassName
         ? { activeProviderIconClassName: modelPickerIconClassName }
         : {})}
+      {...(showProviderUnavailable ? { triggerLabel: "Choose model" } : {})}
       onOpenChange={onModelPickerOpenChange}
       getModelDisabledReason={getModelDisabledReason}
       onOpenProviderSetup={onOpenProviderSetup}
     />
   );
+  // The picker stays beside the warning so a stuck selection can move to a working provider.
   return showProviderUnavailable ? (
-    <ComposerControl
-      type="button"
-      disabled={!providerSetupInstanceId}
-      onClick={() => {
-        if (providerSetupInstanceId) {
-          onOpenProviderSetup(providerSetupInstanceId);
-        }
-      }}
-      data-chat-provider-unavailable="true"
-      className="shrink-0"
-    >
-      <CircleAlertIcon className="size-4" />
-      {providerSetupInstanceId ? "Open provider settings" : "No provider available"}
-    </ComposerControl>
+    <>
+      {composerModelPicker}
+      <ComposerControl
+        type="button"
+        size={composerControlsCollapsed ? "xs" : "sm"}
+        disabled={!providerSetupInstanceId}
+        onClick={() => {
+          if (providerSetupInstanceId) {
+            onOpenProviderSetup(providerSetupInstanceId);
+          }
+        }}
+        data-chat-provider-unavailable="true"
+        className="shrink-0"
+      >
+        <CircleAlertIcon className="size-4" />
+        {providerUnavailableLabel}
+      </ComposerControl>
+    </>
   ) : (
     <>
       {composerModelPicker}
