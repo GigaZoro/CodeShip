@@ -153,7 +153,6 @@ function SwitchPlan({
       onOpenChange={(open) => !open && !checking && onClose()}
       title={`Switch to ${label}?`}
       version={release.version}
-      providerCount={0}
       rows={everything.rows}
       notes={[
         ...(everything.rows.length === 0 && !crossesLocal

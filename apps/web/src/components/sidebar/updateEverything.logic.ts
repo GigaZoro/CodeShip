@@ -585,6 +585,30 @@ export interface UpdateEverythingRow {
   readonly providers: ReadonlyArray<string>;
 }
 
+/** This app's rows share one choice, since its install restarts every server it hosts. */
+export const updateRowKey = (row: UpdateEverythingRow): string =>
+  row.app === "this-app" || row.environmentId === null ? "this-app" : row.environmentId;
+
+export interface UpdateEverythingSelection {
+  readonly local: boolean;
+  /** Machines that get no app, server, or provider update. */
+  readonly excluded: ReadonlySet<EnvironmentId>;
+}
+
+export function selectUpdateRows(
+  rows: ReadonlyArray<UpdateEverythingRow>,
+  unchecked: ReadonlySet<string>,
+): UpdateEverythingSelection {
+  return {
+    local: !unchecked.has("this-app"),
+    excluded: new Set(
+      rows.flatMap((row) =>
+        row.environmentId !== null && unchecked.has(updateRowKey(row)) ? [row.environmentId] : [],
+      ),
+    ),
+  };
+}
+
 function countLabel(count: number, noun: string): string | null {
   return count === 0 ? null : `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
@@ -598,7 +622,6 @@ function joinList(parts: ReadonlyArray<string>): string {
 export function describeUpdateEverything(plan: UpdateEverythingPlan): {
   readonly summary: string;
   readonly version: string | null;
-  readonly providerCount: number;
   readonly rows: ReadonlyArray<UpdateEverythingRow>;
 } {
   const providerCount = plan.providerMachines.reduce(
@@ -652,7 +675,6 @@ export function describeUpdateEverything(plan: UpdateEverythingPlan): {
       plan.localVersion ??
       plan.servers.find((server) => server.selfUpdate !== "desktop-managed")?.targetVersion ??
       null,
-    providerCount,
     rows: Array.from(rows.values()),
   };
 }

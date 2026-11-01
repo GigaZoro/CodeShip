@@ -9,6 +9,7 @@ import {
   describeUpdateCapsule,
   describeUpdateEverything,
   runUpdateEverything,
+  selectUpdateRows,
   type UpdateEverythingMachine,
 } from "./updateEverything.logic";
 
@@ -329,6 +330,15 @@ describe("describeUpdateEverything", () => {
       ["alvin", null, "needs a manual update", ["Claude"]],
       ["TheoRoom", null, "not connected", []],
     ]);
+    // Unchecking this app leaves out every server it hosts, with their providers.
+    expect(selectUpdateRows(rows, new Set(["this-app"]))).toEqual({
+      local: false,
+      excluded: new Set([id("local"), id("wsl")]),
+    });
+    expect(selectUpdateRows(rows, new Set([id("npm")]))).toEqual({
+      local: true,
+      excluded: new Set([id("npm")]),
+    });
   });
 });
 

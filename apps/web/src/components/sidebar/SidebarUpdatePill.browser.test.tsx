@@ -38,7 +38,6 @@ vi.mock("./useUpdateEverything", () => ({
     hasUpdates: mocks.hasUpdates,
     summary: "Update everything",
     version: null,
-    providerCount: 0,
     rows: [],
     restarts: [],
   }),

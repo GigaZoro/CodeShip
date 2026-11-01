@@ -33,7 +33,11 @@ import {
 import { SidebarUpdateReleaseNotes } from "./SidebarUpdateReleaseNotes";
 import { SidebarUpdateCapsule } from "./SidebarUpdateCapsule";
 import { UpdateEverythingDialog } from "./UpdateEverythingDialog";
-import type { UpdateEverythingRun, UpdateRunLocalState } from "./updateEverything.logic";
+import type {
+  UpdateEverythingRun,
+  UpdateEverythingSelection,
+  UpdateRunLocalState,
+} from "./updateEverything.logic";
 import {
   clearSavedUpdateEverythingResult,
   saveUpdateEverythingResult,
@@ -266,19 +270,20 @@ function SidebarUpdateControl() {
     void installLocalUpdate(bridge).finally(() => setIsActionPending(false));
   };
 
-  const runEverything = async () => {
+  const runEverything = async ({ local, excluded }: UpdateEverythingSelection) => {
     const bridge = window.desktopBridge;
     setIsConfirmingEverything(false);
     setIsActionPending(true);
     const result = await settlePromise(() =>
       everything.run({
-        ...(bridge && action === "download"
+        excluded,
+        ...(local && bridge && action === "download"
           ? {
               downloadLocal: (reportError) =>
                 downloadLocalUpdate(bridge, { notifyDownloaded: false, reportError }),
             }
           : {}),
-        ...(bridge && action !== "none"
+        ...(local && bridge && action !== "none"
           ? { installLocal: (reportError) => installLocalUpdate(bridge, reportError) }
           : {}),
       }),
@@ -307,10 +312,10 @@ function SidebarUpdateControl() {
       open={isConfirmingEverything}
       onOpenChange={setIsConfirmingEverything}
       version={everything.version}
-      providerCount={everything.providerCount}
       rows={everything.rows}
       restarts={everything.restarts}
-      onConfirm={() => void runEverything()}
+      selectable
+      onConfirm={(selection) => void runEverything(selection)}
     />
   );
 

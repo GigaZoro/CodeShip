@@ -1,4 +1,4 @@
-import { PROVIDER_DISPLAY_NAMES } from "@t3tools/contracts";
+import { type EnvironmentId, PROVIDER_DISPLAY_NAMES } from "@t3tools/contracts";
 import { settlePromise } from "@t3tools/client-runtime/state/runtime";
 import { useRef, useState } from "react";
 
@@ -34,20 +34,25 @@ export function useProviderUpdates() {
       : [];
   });
 
-  const updateAll = async ({ quiet = false }: { readonly quiet?: boolean } = {}) => {
+  const updateAll = async ({
+    quiet = false,
+    excluded,
+  }: { readonly quiet?: boolean; readonly excluded?: ReadonlySet<EnvironmentId> } = {}) => {
     const runs = await Promise.all(
-      machines.flatMap(({ environmentId, label, candidates }) =>
-        candidates.map(async (candidate): Promise<ProviderUpdateRun> => ({
-          environmentId,
-          machineLabel: label,
-          driver: candidate.driver,
-          instanceId: candidate.instanceId,
-          result: await updateProvider({
+      machines
+        .filter((machine) => !excluded?.has(machine.environmentId))
+        .flatMap(({ environmentId, label, candidates }) =>
+          candidates.map(async (candidate): Promise<ProviderUpdateRun> => ({
             environmentId,
-            input: { provider: candidate.driver, instanceId: candidate.instanceId },
-          }),
-        })),
-      ),
+            machineLabel: label,
+            driver: candidate.driver,
+            instanceId: candidate.instanceId,
+            result: await updateProvider({
+              environmentId,
+              input: { provider: candidate.driver, instanceId: candidate.instanceId },
+            }),
+          })),
+        ),
     );
     const view = quiet ? null : getProviderUpdateRunToastView(runs);
     if (view) {
