@@ -247,7 +247,8 @@ project's settings page has the same switch. On mobile, use **Settings → Threa
 While it is on, CodeShip imports a project's whole history, then picks up new conversations when the
 server starts, when you add the project, and every few minutes. Conversations from while CodeShip was
 closed appear the next time it starts. Only conversations started in a project's own folder are
-imported, so add a project to manage its conversations in CodeShip. Imported threads start settled.
+imported, so add a project to manage its conversations in CodeShip. Codex app chats that have no
+project go to **No project** on that computer. Imported threads start settled.
 Conversations CodeShip already owns, and imported threads you deleted, are not imported again.
 Imports follow the limits described in [Import your projects](welcome-wizard.md#import-your-projects),
 except that there is no 30-day window and no per-run file cap.

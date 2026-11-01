@@ -390,7 +390,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                     footer={
                       projectSelected
                         ? undefined
-                        : "Only folders added as projects are imported. Add a project to CodeShip to manage all of its conversations."
+                        : "Only folders added as projects are imported, plus Codex app chats without a project, which go to No project."
                     }
                   >
                     <SettingsSwitchRow

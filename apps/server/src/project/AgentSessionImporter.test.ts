@@ -32,6 +32,7 @@ import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.t
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as AgentSessionImporter from "./AgentSessionImporter.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
+import * as ManagedProjectFolders from "./ManagedProjectFolders.ts";
 import * as ProjectService from "./ProjectService.ts";
 
 const projectId = ProjectId.make("agent-session-import-project");
@@ -164,12 +165,14 @@ const seedOwner = Effect.fn(function* (
 const makeImporter = Effect.fn(function* (
   candidates: ReadonlyArray<ReturnType<typeof candidate>>,
   beforeTransaction: Effect.Effect<void> = Effect.void,
+  scratchFolder?: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const events = yield* EventStore.EventStoreV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const published: Array<ApplicationStoredEvent> = [];
   const ownedSessions: Array<ReadonlySet<string> | undefined> = [];
+  const projectless: Array<boolean | undefined> = [];
   const withTransaction: typeof sql.withTransaction = (effect) =>
     beforeTransaction.pipe(Effect.andThen(sql.withTransaction(effect)));
   const importSql = new Proxy(sql, {
@@ -208,8 +211,17 @@ const makeImporter = Effect.fn(function* (
           Layer.mock(AgentSessionScanner.AgentSessionScanner)({
             recentThreads: (_root, _completed, options) => {
               ownedSessions.push(options?.ownedSessions);
+              projectless.push(options?.projectless);
               return Stream.fromIterable(candidates);
             },
+          }),
+          Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+            namedProjectsRoot: "/t3/projects",
+            isScratchProject: () => Effect.succeed(scratchFolder !== undefined),
+            folderForThread: () =>
+              Effect.succeed(
+                scratchFolder === undefined ? Option.none() : Option.some(scratchFolder),
+              ),
           }),
           Layer.mock(ProjectService.ProjectService)({
             getById: () =>
@@ -239,7 +251,12 @@ const makeImporter = Effect.fn(function* (
     ),
   );
   const importer = Context.get(context, AgentSessionImporter.AgentSessionImporter);
-  return { run: importer.importRecentAgentThreads({ projectId }), published, ownedSessions };
+  return {
+    run: importer.importRecentAgentThreads({ projectId }),
+    published,
+    ownedSessions,
+    projectless,
+  };
 });
 
 it.effect(
@@ -323,6 +340,21 @@ it.effect(
         });
       }
     }).pipe(Effect.scoped, Effect.provide(persistence)),
+);
+
+it.effect("imports Codex chats without a project into No project, each in its own folder", () =>
+  Effect.gen(function* () {
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const source = candidate(CODEX_MODEL_SELECTION, "projectless");
+    const folder = "/t3/scratch/2026-09-01-imported-thread-ectless";
+    const importer = yield* makeImporter([source], Effect.void, folder);
+
+    expect(yield* importer.run).toEqual({ importedCount: 1, skippedCount: 0 });
+    expect(importer.projectless).toEqual([true]);
+    expect((yield* projections.getThreadRecords(importId(source), [])).thread.worktreePath).toBe(
+      folder,
+    );
+  }).pipe(Effect.scoped, Effect.provide(persistence)),
 );
 
 it.effect("rechecks ownership after the import reaches the commit transaction", () =>

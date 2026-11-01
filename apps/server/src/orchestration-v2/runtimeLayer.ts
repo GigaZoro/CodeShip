@@ -238,11 +238,15 @@ const layerOrchestratorProvided = Orchestrator.layer.pipe(
 const layerAgentSessionScannerProvided = AgentSessionScanner.layer.pipe(
   Layer.provide(ProviderSessionRuntime.layer),
 );
+const layerManagedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
+  Layer.provide(layerProjectService),
+);
 const layerAgentSessionImporterProvided = AgentSessionImporter.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
       layerAgentSessionScannerProvided,
       layerProjectService,
+      layerManagedProjectFoldersProvided,
       layerOrchestratorProvided,
       layerEventSink,
       IdAllocator.layer,
@@ -266,9 +270,6 @@ export const layerProjectSetupScriptRunner = ProjectSetupScriptRunner.layer.pipe
   Layer.provide(layerProjectService),
   // Whether a thread came from a linked environment, which skips setup.
   Layer.provide(ProjectionStore.layer),
-);
-const layerManagedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
-  Layer.provide(layerProjectService),
 );
 const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(
   Layer.provide(

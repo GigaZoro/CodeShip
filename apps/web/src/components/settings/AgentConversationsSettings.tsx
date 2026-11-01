@@ -24,7 +24,7 @@ export function AgentConversationsSettings() {
         status={
           isProjectScope
             ? undefined
-            : "Only folders added as projects are imported. Add a project to CodeShip to manage all of its conversations."
+            : "Only folders added as projects are imported, plus Codex app chats without a project, which go to No project."
         }
         resetAction={
           settings.importAgentConversations ? (

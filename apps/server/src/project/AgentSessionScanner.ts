@@ -160,6 +160,8 @@ export interface AgentSessionThreadOptions {
   readonly history?: "recent" | "all";
   /** `${providerInstanceId}\0${nativeId}` of sessions that threads already own; they are not read. */
   readonly ownedSessions?: ReadonlySet<string>;
+  /** Reads Codex app chats that have no project instead; `workspaceRoot` is the No project folder. */
+  readonly projectless?: boolean;
 }
 
 export const ownedSessionKey = (providerInstanceId: string, nativeId: string) =>
@@ -303,7 +305,7 @@ function foldClaudeFields(fields: ClaudeFields, record: DecodedTranscriptRecord)
 // Codex records setup context as user text ahead of the real request. Skip
 // these leading blocks when deriving a title; imported messages keep them.
 const CODEX_TITLE_PREAMBLE =
-  /^(?:\s*(?:<(recommended_plugins|environment_context|user_instructions|INSTRUCTIONS|in-app-browser-context)(?:\s[^>]*)?>[\s\S]*?<\/\1>|# AGENTS\.md instructions\b[^\n]*|## My request for Codex:))+/;
+  /^(?:\s*(?:<(recommended_plugins|environment_context|user_instructions|INSTRUCTIONS|in-app-browser-context|external_codex_apps_open_page)(?:\s[^>]*)?>[\s\S]*?<\/\1>|# AGENTS\.md instructions\b[^\n]*|## My request for Codex:))+/;
 
 function deriveTitle(source: AgentSessionSource, text: string): string | undefined {
   const request = source === "codex" ? text.replace(CODEX_TITLE_PREAMBLE, "") : text;
@@ -680,23 +682,21 @@ export const make = Effect.gen(function* () {
       normalizeProjectPathForComparison(path.resolve(directory)),
     ),
   );
-  const excludedProjectAncestors = [
-    path.join(homeDir, "Downloads"),
-    path.join(homeDir, "Documents", "Codex"),
-  ];
+  // The Codex app runs chats that have no project in dated folders here.
+  const codexChatsRoot = path.join(homeDir, "Documents", "Codex");
+  const excludedProjectAncestors = [path.join(homeDir, "Downloads"), codexChatsRoot];
+  const isInside = (candidatePath: string, directory: string) =>
+    normalizeForWorktreeMatch(candidatePath, foldWorktreeCase).startsWith(
+      normalizeForWorktreeMatch(directory, foldWorktreeCase),
+    );
+  // Matched by path text only: macOS prompts the user when a process first reads Documents.
+  const isCodexChat = (source: AgentSessionSource, directory: string) =>
+    source === "codex" && isInside(directory, codexChatsRoot);
 
   const isExcludedProjectPath = (candidatePath: string) =>
     excludedProjectRoots.has(normalizeProjectPathForComparison(candidatePath)) ||
-    excludedProjectAncestors.some((ancestor) =>
-      normalizeForWorktreeMatch(candidatePath, foldWorktreeCase).startsWith(
-        normalizeForWorktreeMatch(ancestor, foldWorktreeCase),
-      ),
-    ) ||
-    managedDirs.some((directory) =>
-      normalizeForWorktreeMatch(candidatePath, foldWorktreeCase).startsWith(
-        normalizeForWorktreeMatch(directory, foldWorktreeCase),
-      ),
-    ) ||
+    excludedProjectAncestors.some((ancestor) => isInside(candidatePath, ancestor)) ||
+    managedDirs.some((directory) => isInside(candidatePath, directory)) ||
     worktreesDirs.some((directory) =>
       isT3ManagedWorktree(candidatePath, directory, foldWorktreeCase),
     );
@@ -1409,9 +1409,12 @@ export const make = Effect.gen(function* () {
     options: AgentSessionThreadOptions,
   ) {
     const allHistory = options.history === "all";
+    const projectless = options.projectless === true;
     const root = path.resolve(expandHomePath(workspaceRoot, homeDir));
     const realRoot = yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root));
-    if (isExcludedProjectPath(root) || isExcludedProjectPath(realRoot)) return Stream.empty;
+    if (!projectless && (isExcludedProjectPath(root) || isExcludedProjectPath(realRoot))) {
+      return Stream.empty;
+    }
     const rootIdentity = yield* directoryIdentity(root);
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     const cutoffMs = allHistory ? Number.NEGATIVE_INFINITY : nowMs - RECENT_THREAD_WINDOW_MS;
@@ -1430,7 +1433,12 @@ export const make = Effect.gen(function* () {
       const expanded = expandHomePath(candidate.cwd.trim(), homeDir);
       if (!path.isAbsolute(expanded)) continue;
       const resolved = path.resolve(expanded);
-      if ((yield* directoryIdentity(resolved)) !== rootIdentity) continue;
+      // Imported chats group under the root they were imported into, so projectless still matches it.
+      if (isCodexChat(candidate.source, resolved)) {
+        if (!projectless) continue;
+      } else if ((yield* directoryIdentity(resolved)) !== rootIdentity) {
+        continue;
+      }
 
       for (const transcript of candidate.transcripts) {
         if (
@@ -1519,10 +1527,12 @@ export const make = Effect.gen(function* () {
             return Option.some<AgentSessionRecentThread>({ _tag: "Skipped" });
           }
           const expandedCwd = expandHomePath(snapshot.cwd.value.trim(), homeDir);
-          if (
-            !path.isAbsolute(expandedCwd) ||
-            (yield* directoryIdentity(path.resolve(expandedCwd))) !== rootIdentity
-          ) {
+          const inScope =
+            path.isAbsolute(expandedCwd) &&
+            (projectless
+              ? isCodexChat(candidate.source, path.resolve(expandedCwd))
+              : (yield* directoryIdentity(path.resolve(expandedCwd))) === rootIdentity);
+          if (!inScope) {
             return Option.some<AgentSessionRecentThread>({ _tag: "Skipped" });
           }
 

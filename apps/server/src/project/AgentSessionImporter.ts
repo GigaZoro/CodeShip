@@ -36,6 +36,7 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
+import * as ManagedProjectFolders from "./ManagedProjectFolders.ts";
 import * as ProjectService from "./ProjectService.ts";
 
 const IMPORT_EVENT_PREFIX = "agent-session-import:v2";
@@ -170,6 +171,7 @@ const make = Effect.gen(function* () {
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const runtimes = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
   const importAgentThreads = Effect.fn("importRecentAgentThreadsV2")(function* (
     input: AgentSessionImportInput,
     history: "recent" | "all",
@@ -226,9 +228,11 @@ const make = Effect.gen(function* () {
           AgentSessionScanner.ownedSessionKey(owner.providerInstanceId, owner.nativeId),
         ),
     );
+    const projectless = yield* managedFolders.isScratchProject(input.projectId);
     const outcomes = scanner.recentThreads(project.workspaceRoot, completedSources, {
       history,
       ownedSessions,
+      projectless,
     });
     const importedThreadIds = new Set<ThreadId>();
     let importedCount = 0;
@@ -300,6 +304,16 @@ const make = Effect.gen(function* () {
             return true;
           }
 
+          // Like any No project thread, follow-ups run in a folder of their own.
+          const worktreePath = projectless
+            ? Option.getOrNull(
+                yield* managedFolders.folderForThread({
+                  projectId: input.projectId,
+                  threadId,
+                  text: thread.title,
+                }),
+              )
+            : null;
           const model = thread.model ?? DEFAULT_MODEL_BY_PROVIDER[driver] ?? DEFAULT_MODEL;
           const providerThreadId = idAllocator.derive.providerThread({
             driver,
@@ -319,7 +333,7 @@ const make = Effect.gen(function* () {
             runtimeMode: DEFAULT_RUNTIME_MODE,
             interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
             branch: null,
-            worktreePath: null,
+            worktreePath,
             linkedPullRequest: null,
             branchPullRequest: null,
             activeProviderThreadId: providerThreadId,

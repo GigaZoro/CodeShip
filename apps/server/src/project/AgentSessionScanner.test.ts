@@ -10,6 +10,7 @@ import {
   type ServerSettings as ContractServerSettings,
   ThreadId,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -1165,6 +1166,73 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
         });
 
         expect(threads.map((thread) => thread.providerSessionId)).toEqual([oldClaude]);
+      }),
+    );
+
+    it.effect("imports Codex app chats without a project only into No project", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const nowMs = Date.parse("2026-08-24T12:00:00.000Z");
+        yield* TestClock.setTime(nowMs);
+        const home = yield* makeTempDir("t3code-home-");
+        const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+        const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+        const configBaseDir = yield* makeTempDir("t3code-scanner-base-");
+        const workspace = yield* makeTempDir("t3code-workspace-");
+        const scratchRoot = path.join(configBaseDir, "scratch");
+        yield* fileSystem.makeDirectory(scratchRoot);
+        // Never created: chats must match by path alone because macOS guards Documents.
+        const chatFolder = path.join(home, "Documents", "Codex", "2026-08-24", "new-chat");
+        const prompt = encodeTranscriptRecord({
+          type: "event_msg",
+          payload: { type: "user_message", message: "Check the bot" },
+        });
+        for (const [sessionId, cwd] of [
+          ["codex-chat", chatFolder],
+          ["codex-project", workspace],
+        ] as const) {
+          yield* writeTranscript({
+            filePath: path.join(
+              codexHomePath,
+              "sessions",
+              "2026",
+              "08",
+              "24",
+              `rollout-${sessionId}.jsonl`,
+            ),
+            contents: `${encodeTranscriptRecord({ type: "session_meta", payload: { id: sessionId, cwd } })}\n${prompt}`,
+            mtimeMs: nowMs - 60_000,
+          });
+        }
+        yield* writeTranscript({
+          filePath: path.join(claudeHomePath, "projects", "-chat", "claude-chat.jsonl"),
+          contents: `${JSON.stringify({
+            type: "user",
+            cwd: chatFolder,
+            sessionId: "claude-chat",
+            message: { role: "user", content: "Check the bot" },
+          })}\n`,
+          mtimeMs: nowMs - 60_000,
+        });
+
+        yield* Effect.gen(function* () {
+          const scanner = yield* AgentSessionScanner.AgentSessionScanner;
+          const sessionIds = (workspaceRoot: string, projectless: boolean) =>
+            scanner.recentThreads(workspaceRoot, [], { projectless }).pipe(
+              Stream.runCollect,
+              Effect.map((outcomes) =>
+                Array.from(outcomes).flatMap((outcome) =>
+                  outcome._tag === "Importable" ? [outcome.thread.providerSessionId] : [],
+                ),
+              ),
+            );
+          expect(yield* sessionIds(scratchRoot, true)).toEqual(["codex-chat"]);
+          expect(yield* sessionIds(workspace, false)).toEqual(["codex-project"]);
+        }).pipe(
+          Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath, configBaseDir })),
+          Effect.provideService(HostProcess.HomeDirectory, home),
+        );
       }),
     );
 
@@ -2452,6 +2520,7 @@ describe("parseAgentSessionTranscript", () => {
       "<recommended_plugins>\nGitHub\n</recommended_plugins>",
       "# AGENTS.md instructions for /tmp/project\n\n<INSTRUCTIONS>\nRules\n</INSTRUCTIONS>",
       '<in-app-browser-context source="ambient-ui-state">\nTab\n</in-app-browser-context>',
+      '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>',
       "Fix the import titles",
     ].join("\n");
     const thread = AgentSessionScanner.parseAgentSessionTranscript({
