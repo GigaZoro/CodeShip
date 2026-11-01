@@ -32,7 +32,8 @@ const startingSideChats = new Set<string>();
  */
 export function useStartSideChat(threadRef: ScopedThreadRef | null) {
   const shell = useQuietThreadShell(threadRef);
-  const thread = useQuietThreadProjection(threadRef);
+  // A draft's reserved thread 404s before the server lists it, and that marks it deleted for good.
+  const thread = useQuietThreadProjection(shell === null ? null : threadRef);
   const providersByEnvironment = useEnvironmentProviders();
   const forkThreadFromRun = useAtomCommand(threadEnvironment.forkFromRun, { reportFailure: false });
   const setInteractionMode = useOrchestrationCommand(threadEnvironment.setInteractionMode, {
