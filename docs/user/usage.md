@@ -111,9 +111,14 @@ Filter with the environment dropdown to see what a single machine has.
 
 When a Claude or Codex account has no overall weekly quota left, its pooled session contribution
 shows 0% left. The next refill depends on both reset times: an exhausted session must also reset,
-and a partly spent session may only regain its unused portion when the week resets. Missing or
-stale reset times have no refill estimate; refresh Limits for a new reading. Claude's
-model-specific weekly allowances keep their reported values.
+and a partly spent session may only regain its unused portion when the week resets. A session
+with no running reset time becomes usable when the week resets. A missing or stale weekly reset
+time has no refill estimate; refresh Limits for a new reading. Claude's model-specific weekly
+allowances keep their reported values.
+
+Codex accounts you [connect with ChatGPT](./providers-codex.md#connect-with-chatgpt) have no bar,
+because ChatGPT tracks their limits. The **ChatGPT usage** card lists them; choose
+**Manage usage** to open ChatGPT, then sign in with the account you connected.
 
 Opening Limits checks the selected connected environments automatically. Each client waits at
 least five minutes between automatic checks of an environment, including after a failed check.

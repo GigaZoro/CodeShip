@@ -944,24 +944,36 @@ describe("pooled account columns", () => {
     expect(keys(collectLimitPools(accounts.toReversed(), now)[0]!)).toEqual(keys(pool!));
   });
 
-  it.each([undefined, "invalid", "2026-09-03T11:30:00.000Z"])(
-    "keeps blocked sessions empty without predicting a refill from a missing or stale clock (%s)",
-    (resetsAt) => {
+  it.each([
+    [undefined, 40, 30],
+    ["invalid", 40, 30],
+    ["2026-09-03T11:30:00.000Z", 40, 50],
+    [undefined, 100, null],
+  ] as const)(
+    "refills a blocked session (clock %s, %i percent spent) at the weekly reset, never without a weekly clock",
+    (resetsAt, usedPercent, restoresPercent) => {
       const [pool] = collectLimitPools(
         [
           account("session-clock", [
-            { ...window, resetsAt },
+            { ...window, usedPercent, resetsAt },
             { ...weekly, usedPercent: 100 },
           ]),
           account("weekly-clock", [window, { ...weekly, usedPercent: 100, resetsAt }]),
         ],
         now,
       );
-      expect(pool!.windows[0]).toMatchObject({ remainingPercent: 0, pace: null, resets: [] });
-      expect(pool!.windows[0]!.columns.map((column) => column.window?.resetsAt)).toEqual([
-        undefined,
-        undefined,
-      ]);
+      expect(pool!.windows[0]).toMatchObject({ remainingPercent: 0, pace: null });
+      expect(
+        pool!.windows[0]!.resets.map((reset) => [
+          reset.member.account.key,
+          reset.at,
+          reset.restoresPercent,
+        ]),
+      ).toEqual(
+        restoresPercent === null
+          ? []
+          : [["session-clock", Date.parse(weekly.resetsAt), restoresPercent]],
+      );
     },
   );
 

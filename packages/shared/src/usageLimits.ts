@@ -537,22 +537,18 @@ function poolMember(account: LimitAccount, reported: ServerProviderUsageWindow, 
   const cutoff = Math.max(now, Date.parse(account.limits.checkedAt));
   let resetsAt: string | undefined;
   let refillPercent = 0;
-  // A stale or missing clock cannot tell us when blocked quota becomes usable.
-  if (
-    weeklyReset !== null &&
-    sessionReset !== null &&
-    weeklyReset > cutoff &&
-    sessionReset > cutoff
-  ) {
-    if (sessionReset <= weeklyReset) {
+  // Only a stale or missing weekly clock hides when blocked quota becomes usable. Claude drops the
+  // session clock while no session runs, and a lapsed one has already refilled before the week.
+  if (weeklyReset !== null && weeklyReset > cutoff) {
+    if (sessionReset !== null && sessionReset <= weeklyReset) {
       resetsAt = spentWeekly.resetsAt;
       refillPercent = 100;
-    } else if (reported.usedPercent >= 100) {
+    } else if (sessionReset !== null && reported.usedPercent >= 100) {
       resetsAt = reported.resetsAt;
       refillPercent = 100;
-    } else {
+    } else if (reported.usedPercent < 100) {
       resetsAt = spentWeekly.resetsAt;
-      refillPercent = 100 - Math.max(0, Math.min(100, reported.usedPercent));
+      refillPercent = 100 - Math.max(0, reported.usedPercent);
     }
   }
   return {

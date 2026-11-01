@@ -541,6 +541,9 @@ function PoolWindowCard({
   readonly description?: string | undefined;
 }) {
   const nextRefill = pool.resets.find((reset) => reset.restoresPercent > 0);
+  const nextRefillIn = nextRefill
+    ? formatResetsIn(nextRefill.member.window, now)?.replace(/^resets /i, "")
+    : undefined;
   return (
     <div className="grid items-center gap-x-6 gap-y-3 rounded-lg border border-border/60 p-4 md:grid-cols-[11rem_minmax(0,1fr)]">
       <div className="flex flex-col gap-1">
@@ -555,8 +558,9 @@ function PoolWindowCard({
           </span>
         </span>
         {nextRefill && pool.columns.length > 1 ? (
-          <span className="text-xs font-medium text-foreground tabular-nums">
-            ↻ +{nextRefill.restoresPercent}%
+          <span className="text-xs text-muted-foreground tabular-nums">
+            <span className="font-medium text-foreground">↻ +{nextRefill.restoresPercent}%</span>
+            {nextRefillIn ? ` ${nextRefillIn}` : null}
           </span>
         ) : null}
       </div>
@@ -660,9 +664,15 @@ export function UsageLimitsPooled({
             ) : null}
             <div className="min-w-0 space-y-1">
               <h2 className="text-sm font-medium">{link.label}</h2>
+              <ul className="text-xs text-foreground">
+                {link.accounts.map((account) => (
+                  <li key={account}>{account}</li>
+                ))}
+              </ul>
               {link.url === CHATGPT_USAGE_URL ? (
                 <p className="text-xs text-muted-foreground">
-                  View usage in ChatGPT with your connected account.
+                  ChatGPT tracks the limits of accounts you sign in to with ChatGPT, so they have no
+                  bar here. Open it with the account you connected.
                 </p>
               ) : link.message ? (
                 <p className="max-w-xl text-xs text-muted-foreground">{link.message}</p>
