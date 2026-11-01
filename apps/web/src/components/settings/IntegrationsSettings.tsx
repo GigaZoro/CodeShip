@@ -7,6 +7,9 @@ import {
   AuthSettingsWriteScope,
   BrowserImportFailureReason,
   BROWSER_PROFILE_MAX_COUNT,
+  type BrowserAssistantKind,
+  BrowserAssistantKind as BrowserAssistantKindSchema,
+  browserAssistantKey,
   type BrowserLinkTarget,
   type BrowserProfile,
   BrowserSearchEngine,
@@ -37,10 +40,15 @@ import {
 } from "@t3tools/contracts";
 import { isValidSearchUrlTemplate } from "@t3tools/shared/preview";
 import { PREVIEW_VIEWPORT_PRESETS } from "@t3tools/shared/previewViewport";
-import { MoreVertical, Plus as PlusIcon } from "lucide-react";
+import { MoreVertical, Plus as PlusIcon, XIcon } from "lucide-react";
 import { useRef, useState } from "react";
 
 import { ScreenRotationIcon } from "~/browser/ScreenRotationIcon";
+import {
+  BROWSER_ASSISTANTS,
+  browserAssistantLabel,
+  useBrowserAssistants,
+} from "~/browser/browserAssistants";
 import { resolveEnvironmentOptionLabel } from "~/components/BranchToolbar.logic";
 import { previewBridge } from "~/components/preview/previewBridge";
 import { cn, randomUUID } from "~/lib/utils";
@@ -67,6 +75,9 @@ import {
   MenuItem,
   MenuPopup,
   MenuSeparator,
+  MenuSub,
+  MenuSubPopup,
+  MenuSubTrigger,
   MenuTrigger,
 } from "../ui/menu";
 import { readLocalApi } from "~/localApi";
@@ -1205,6 +1216,9 @@ function BrowserProfilesSetting({ disabled }: { readonly disabled: boolean }) {
     const currentSettings = getClientSettings();
     updateSettings({
       browserProfiles: currentSettings.browserProfiles.filter((profile) => profile.id !== id),
+      browserAssistants: currentSettings.browserAssistants.filter(
+        (assistant) => assistant.profileId !== id,
+      ),
       ...(currentSettings.browserDefaultProfileId === id
         ? { browserDefaultProfileId: DEFAULT_BROWSER_PROFILE_ID }
         : {}),
@@ -1546,6 +1560,120 @@ function BrowserProfilesSetting({ disabled }: { readonly disabled: boolean }) {
   );
 }
 
+function BrowserAssistantsSetting({ disabled }: { readonly disabled: boolean }) {
+  const settingsHydrated = useClientSettingsHydrated();
+  const updateSettings = useUpdatePrimarySettings();
+  const assistants = useBrowserAssistants();
+  const profiles = useClientSettings((settings) =>
+    resolveBrowserProfiles(settings.browserProfiles).filter(
+      (profile) => profile.kind !== "incognito",
+    ),
+  );
+  const writesDisabled = disabled || !settingsHydrated;
+  const added = new Set(assistants.map(browserAssistantKey));
+
+  // Read live settings so a second click before rerender cannot add a duplicate.
+  const addAssistant = (kind: BrowserAssistantKind, profileId: string) => {
+    if (!settingsHydrated) return;
+    const current = getClientSettings().browserAssistants;
+    const key = browserAssistantKey({ kind, profileId });
+    if (current.some((entry) => browserAssistantKey(entry) === key)) return;
+    updateSettings({ browserAssistants: [...current, { kind, profileId }] });
+  };
+
+  const removeAssistant = (key: string) => {
+    if (!settingsHydrated) return;
+    updateSettings({
+      browserAssistants: getClientSettings().browserAssistants.filter(
+        (entry) => browserAssistantKey(entry) !== key,
+      ),
+    });
+  };
+
+  return (
+    <SettingsRow
+      {...searchableSetting("browser-assistants")}
+      description="Open a ChatGPT dot or Claude Duet from the thread details card, in the browser profile signed in to that account."
+      control={
+        <Menu>
+          <MenuTrigger render={<Button size="sm" variant="outline" disabled={writesDisabled} />}>
+            <PlusIcon />
+            Add
+          </MenuTrigger>
+          <MenuPopup align="end">
+            {BrowserAssistantKindSchema.literals.map((kind) => {
+              const { label, Icon } = BROWSER_ASSISTANTS[kind];
+              return (
+                <MenuSub key={kind}>
+                  <MenuSubTrigger>
+                    <Icon aria-hidden className="size-4" />
+                    {label}
+                  </MenuSubTrigger>
+                  <MenuSubPopup className="max-w-56">
+                    <MenuGroup>
+                      <MenuGroupLabel>Browser profile</MenuGroupLabel>
+                      {profiles.map((profile) => (
+                        <MenuItem
+                          key={profile.id}
+                          disabled={added.has(browserAssistantKey({ kind, profileId: profile.id }))}
+                          onClick={() => addAssistant(kind, profile.id)}
+                        >
+                          <span className="min-w-0 truncate">{profile.name}</span>
+                        </MenuItem>
+                      ))}
+                    </MenuGroup>
+                  </MenuSubPopup>
+                </MenuSub>
+              );
+            })}
+          </MenuPopup>
+        </Menu>
+      }
+    >
+      {assistants.length > 0 ? (
+        <div className="mt-2 mb-2 overflow-hidden rounded-lg border border-border/60">
+          {assistants.map((assistant, index) => {
+            const key = browserAssistantKey(assistant);
+            const label = browserAssistantLabel(assistant);
+            const { Icon } = BROWSER_ASSISTANTS[assistant.kind];
+            return (
+              <div
+                key={key}
+                className={cn(
+                  "flex items-center gap-3 px-3 py-2",
+                  index > 0 && "border-t border-border/60",
+                )}
+              >
+                <Icon
+                  aria-hidden
+                  className={cn("size-4 shrink-0", writesDisabled && "opacity-64")}
+                />
+                <span
+                  className={cn(
+                    "min-w-0 flex-1 truncate text-sm text-foreground",
+                    writesDisabled && "opacity-64",
+                  )}
+                >
+                  {label}
+                </span>
+                <Button
+                  size="icon-xs"
+                  variant="ghost-muted"
+                  disabled={writesDisabled}
+                  aria-label={`Remove ${label}`}
+                  onClick={() => removeAssistant(key)}
+                >
+                  <XIcon />
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </SettingsRow>
+  );
+}
+
 export function BrowserSettingsPanel() {
   const desktopOnly = !isElectron;
   const desktopOnlyMessage = desktopOnly ? "Only available in the desktop app." : undefined;
@@ -1558,6 +1686,7 @@ export function BrowserSettingsPanel() {
       <SettingsSection id="browser" title="Browsing">
         <SettingsUnavailableGroup message={desktopOnlyMessage}>
           <BrowserProfilesSetting disabled={desktopOnly} />
+          <BrowserAssistantsSetting disabled={desktopOnly} />
           <BrowserLinkTargetSetting disabled={desktopOnly} />
           <BrowserAutoShowFloatingPreviewSetting disabled={desktopOnly} />
         </SettingsUnavailableGroup>

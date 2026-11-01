@@ -57,3 +57,38 @@ export function findBrowserProfile(
 ): BrowserProfile | undefined {
   return id === undefined ? undefined : profiles.find((profile) => profile.id === id);
 }
+
+/** Always-on assistants that only have a web UI: a ChatGPT dot or a Claude Duet. */
+export const BrowserAssistantKind = Schema.Literals(["dot", "duet"]);
+export type BrowserAssistantKind = typeof BrowserAssistantKind.Type;
+
+/** The profile carries the account: it holds that account's ChatGPT or Claude sign-in. */
+export const BrowserAssistant = Schema.Struct({
+  kind: BrowserAssistantKind,
+  profileId: BrowserProfileId,
+});
+export type BrowserAssistant = typeof BrowserAssistant.Type;
+
+export const browserAssistantKey = (assistant: BrowserAssistant) =>
+  `${assistant.kind}:${assistant.profileId}`;
+
+export interface ResolvedBrowserAssistant extends BrowserAssistant {
+  readonly profile: BrowserProfile;
+}
+
+/** Drops duplicates and assistants whose profile is gone or incognito, which keeps no sign-in. */
+export function resolveBrowserAssistants(
+  assistants: ReadonlyArray<BrowserAssistant>,
+  profiles: ReadonlyArray<BrowserProfile>,
+): ReadonlyArray<ResolvedBrowserAssistant> {
+  const seen = new Set<string>();
+  const resolved: Array<ResolvedBrowserAssistant> = [];
+  for (const assistant of assistants) {
+    const profile = findBrowserProfile(profiles, assistant.profileId);
+    const key = browserAssistantKey(assistant);
+    if (!profile || profile.kind === "incognito" || seen.has(key)) continue;
+    seen.add(key);
+    resolved.push({ ...assistant, profile });
+  }
+  return resolved;
+}

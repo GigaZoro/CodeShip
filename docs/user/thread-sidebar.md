@@ -314,6 +314,12 @@ Select a server to open it in the browser panel. **Stop** ends the server's job
 and keeps the agent, the terminal, and CodeShip running. Stop needs terminal
 access to the environment and is not available on Windows.
 
+In the desktop app, the card can also open a ChatGPT dot or Claude Duet in the
+browser panel. A browser profile holds one account's sign-in, so add one profile per
+account in **Settings → Browser → Browser profiles** and sign in to ChatGPT or
+Claude there. Then pair each assistant with its profile under **Dots and Duets**
+on the same page. Duet opens at claude.ai, where Anthropic hosts it.
+
 To choose what the thread details card shows, right-click the card or open
 **Settings → Appearance → Thread details**. Hidden rows keep their keyboard
 shortcuts, such as Open in editor and project scripts. **Reset to default** brings

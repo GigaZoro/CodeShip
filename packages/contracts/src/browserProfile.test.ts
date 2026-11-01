@@ -4,6 +4,7 @@ import {
   BUILT_IN_BROWSER_PROFILES,
   DEFAULT_BROWSER_PROFILE_ID,
   INCOGNITO_BROWSER_PROFILE_ID,
+  resolveBrowserAssistants,
   resolveBrowserProfiles,
   type BrowserProfile,
 } from "./browserProfile.ts";
@@ -19,6 +20,27 @@ describe("resolveBrowserProfiles", () => {
     ]);
 
     expect(resolved).toEqual([...BUILT_IN_BROWSER_PROFILES, work]);
+  });
+});
+
+describe("resolveBrowserAssistants", () => {
+  it("keeps one entry per assistant and signed-in profile", () => {
+    const profiles = resolveBrowserProfiles([work]);
+    const resolved = resolveBrowserAssistants(
+      [
+        { kind: "duet", profileId: work.id },
+        { kind: "dot", profileId: "removed-profile" },
+        { kind: "dot", profileId: INCOGNITO_BROWSER_PROFILE_ID },
+        { kind: "duet", profileId: work.id },
+        { kind: "dot", profileId: work.id },
+      ],
+      profiles,
+    );
+
+    expect(resolved).toEqual([
+      { kind: "duet", profileId: work.id, profile: work },
+      { kind: "dot", profileId: work.id, profile: work },
+    ]);
   });
 });
 

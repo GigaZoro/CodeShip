@@ -1,10 +1,11 @@
-import type {
-  EditorId,
-  EnvironmentId,
-  ProjectId,
-  ProjectScript,
-  ResolvedKeybindingsConfig,
-  ThreadId,
+import {
+  AuthPreviewOperateScope,
+  type EditorId,
+  type EnvironmentId,
+  type ProjectId,
+  type ProjectScript,
+  type ResolvedKeybindingsConfig,
+  type ThreadId,
 } from "@t3tools/contracts";
 
 import type { DraftId } from "../../composerDraftStore";
@@ -27,6 +28,10 @@ import { ThreadDetailsUsage, type ThreadDetailsUsageInput } from "./ThreadDetail
 import { ThreadDetailsItemsMenuItems } from "./ThreadDetailsItemsMenu";
 import { resolveThreadDetailsVisibility, THREAD_DETAILS_ITEMS } from "./threadDetailsItems";
 import { useClientSettings } from "../../hooks/useSettings";
+import { useBrowserAssistants } from "../../browser/browserAssistants";
+import { usePreviewAvailable } from "../../browser/previewRuntime";
+import { useEnvironmentScope } from "../../state/session";
+import { ThreadAssistantsControl } from "./ThreadAssistantsControl";
 import { cn } from "../../lib/utils";
 import { SlidersHorizontalIcon } from "lucide-react";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
@@ -90,6 +95,9 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
     props.activeProjectScripts && visible.scripts ? props.gitCwd : null,
   );
   const activeThreadRef = { environmentId: props.environmentId, threadId: props.threadId };
+  const assistants = useBrowserAssistants();
+  const previewAvailable = usePreviewAvailable(props.environmentId);
+  const canOperatePreview = useEnvironmentScope(props.environmentId, AuthPreviewOperateScope);
   const branchToolbarProps = {
     showGitControls: props.isGitRepo,
     environmentId: props.environmentId,
@@ -149,6 +157,13 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
           environment: density === "full" && visible.environment,
           openIn: density !== "essential" && visible.openIn && props.showOpenInPicker,
           scripts: visible.scripts && props.activeProjectScripts !== undefined,
+          assistants:
+            density !== "essential" &&
+            visible.assistants &&
+            !props.draftId &&
+            assistants.length > 0 &&
+            previewAvailable &&
+            canOperatePreview,
           branch: props.gitCwd !== null && props.isGitRepo && visible.branch,
           git:
             props.gitCwd !== null &&
@@ -158,7 +173,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
         return (
           <>
             <div className="group/details-items">
-              {show.environment || show.openIn || show.scripts ? (
+              {show.environment || show.openIn || show.scripts || show.assistants ? (
                 <ThreadDetailsSection
                   headingId="thread-details-workspace-heading"
                   title="Workspace"
@@ -202,6 +217,13 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                         onAddScript={props.onAddProjectScript}
                         onUpdateScript={props.onUpdateProjectScript}
                         onDeleteScript={props.onDeleteProjectScript}
+                      />
+                    ) : null}
+
+                    {show.assistants ? (
+                      <ThreadAssistantsControl
+                        threadRef={activeThreadRef}
+                        assistants={assistants}
                       />
                     ) : null}
                   </div>

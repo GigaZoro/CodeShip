@@ -31,7 +31,12 @@ import {
 import { ModelSelection } from "./modelSelection.ts";
 import { ProjectScript, type ProjectMutation } from "./project.ts";
 import { DEFAULT_RUNTIME_MODE, RuntimeMode } from "./providerPolicy.ts";
-import { BrowserProfile, BrowserProfileId, DEFAULT_BROWSER_PROFILE_ID } from "./browserProfile.ts";
+import {
+  BrowserAssistant,
+  BrowserProfile,
+  BrowserProfileId,
+  DEFAULT_BROWSER_PROFILE_ID,
+} from "./browserProfile.ts";
 import {
   BrowserRecordingFrameRate,
   DEFAULT_BROWSER_RECORDING_FRAME_RATE,
@@ -413,6 +418,10 @@ export const ClientSettingsSchema = Schema.Struct({
 
   browserDefaultProfileId: BrowserProfileId.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_PROFILE_ID)),
+  ),
+
+  browserAssistants: Schema.Array(BrowserAssistant).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
   ),
 
   confirmQuit: QuitConfirmationModeSetting.pipe(
@@ -1842,6 +1851,7 @@ export const ClientSettingsPatch = Schema.Struct({
   browserAutoShowFloatingPreview: Schema.optionalKey(Schema.Boolean),
   browserProfiles: Schema.optionalKey(Schema.Array(BrowserProfile)),
   browserDefaultProfileId: Schema.optionalKey(BrowserProfileId),
+  browserAssistants: Schema.optionalKey(Schema.Array(BrowserAssistant)),
   confirmQuit: Schema.optionalKey(QuitConfirmationMode),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),

@@ -906,6 +906,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     targetId: "browser",
   },
   {
+    id: "browser-assistants",
+    title: "Dots and Duets",
+    to: "/settings/browser",
+    searchTerms: ["chatgpt dot dots claude duet openai anthropic assistant agent account"],
+  },
+  {
     id: "browser-default-profile",
     title: "Default browser profile",
     to: "/settings/browser",
