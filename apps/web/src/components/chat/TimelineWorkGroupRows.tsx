@@ -1,5 +1,6 @@
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
-import { WorkLogButton, WorkLogList, WorkLogRow } from "./WorkLog";
+import { WorkLogButton, WorkLogIcon, WorkLogList, WorkLogRow } from "./WorkLog";
+import { WorkingSpark } from "./WorkingSpark";
 import type { WorktreeSetupSnapshot } from "@t3tools/contracts";
 import { type ToolActivityIcon } from "@t3tools/contracts";
 import { liveThoughtLine } from "@t3tools/client-runtime/work-log/presentation";
@@ -292,7 +293,17 @@ export function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: 
   );
   return (
     <div className="border-b border-border/60 pb-2 pt-1">
-      <div className="flex h-6 min-w-0 items-baseline gap-2 px-1 text-sm leading-relaxed text-muted-foreground tabular-nums">
+      <div
+        className={cn(
+          "flex h-6 min-w-0 items-baseline text-sm leading-relaxed text-muted-foreground tabular-nums",
+          shimmer ? "gap-2 px-1" : "gap-1.5 px-0.5",
+        )}
+      >
+        {shimmer ? null : (
+          <WorkLogIcon>
+            <WorkingSpark />
+          </WorkLogIcon>
+        )}
         <span
           ref={shimmer ? observeVisibleAnimation : undefined}
           className="relative shrink-0 overflow-hidden whitespace-nowrap"

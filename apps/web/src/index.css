@@ -583,6 +583,26 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   will-change: var(--visible-animation-will-change, auto);
 }
 
+/* Six frames tall: steps between the first and last frame, then back. */
+@keyframes working-spark {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(calc(-500% / 6));
+  }
+}
+
+@utility working-spark {
+  transform: translateY(calc(-500% / 6));
+
+  @media (prefers-reduced-motion: no-preference) {
+    animation: working-spark 660ms steps(6, jump-none) infinite alternate;
+    animation-play-state: var(--visible-animation-state, paused);
+    will-change: var(--visible-animation-will-change, auto);
+  }
+}
+
 @keyframes live-activity-focus {
   from {
     transform: translateX(0);
