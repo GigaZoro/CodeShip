@@ -450,6 +450,26 @@ export function displayLimitWindows(pool: LimitPool) {
     .sort((left, right) => cursorUsageWindowRank(left.id) - cursorUsageWindowRank(right.id));
 }
 
+/**
+ * The window closest to running out across providers. Session and weekly allowances gate work, so a
+ * provider's monthly spend cap or one-off quota counts only when it reports neither.
+ */
+export function tightestLimitWindow(pools: readonly LimitPool[]) {
+  let tightest: { readonly pool: LimitPool; readonly window: LimitPoolWindow } | null = null;
+  for (const pool of pools) {
+    const windows = displayLimitWindows(pool);
+    const gating = windows.filter(
+      (window) => window.kind === "session" || window.kind === "weekly",
+    );
+    for (const window of gating.length > 0 ? gating : windows) {
+      if (tightest === null || window.remainingPercent < tightest.window.remainingPercent) {
+        tightest = { pool, window };
+      }
+    }
+  }
+  return tightest;
+}
+
 const WINDOW_KIND_ORDER: Record<ServerProviderUsageWindow["kind"], number> = {
   session: 0,
   weekly: 1,

@@ -21,6 +21,7 @@ import {
   exhaustedUsageWindow,
   paceOf,
   paceRemainingPercent,
+  tightestLimitWindow,
   usesChatGptSharing,
   resolveNewThreadModelSelection,
 } from "./usageLimits.ts";
@@ -1009,6 +1010,28 @@ describe("pooled account columns", () => {
     expect(pool!.windows[1]!.remainingPercent).toBe(40);
     expect(pool!.windows[1]!.resets.map((reset) => reset.restoresPercent)).toEqual([40, 20]);
   });
+
+  it.each([
+    [50, "claude:Weekly"],
+    [70, "cursor:Total"],
+  ])(
+    "headlines the tightest session or weekly window, or other kinds without one (cursor %i%% used)",
+    (cursorUsed, expected) => {
+      const claude = account("claude", [
+        { ...window, usedPercent: 30 },
+        { ...weekly, usedPercent: 60 },
+        { id: "monthly_spend", kind: "monthly", label: "Monthly spend", usedPercent: 100 },
+      ]);
+      const cursor = {
+        ...account("cursor", [
+          { id: "totalPercentUsed", kind: "monthly", label: "Total", usedPercent: cursorUsed },
+        ]),
+        driver: ProviderDriverKind.make("cursor"),
+      };
+      const tightest = tightestLimitWindow(collectLimitPools([claude, cursor], now));
+      expect(`${tightest?.pool.accounts[0]?.key}:${tightest?.window.label}`).toBe(expected);
+    },
+  );
 
   it("falls back to weekly resets when no account reports a session", () => {
     const [pool] = collectLimitPools(

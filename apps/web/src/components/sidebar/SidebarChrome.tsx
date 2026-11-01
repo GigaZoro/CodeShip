@@ -1,6 +1,7 @@
 import { ArrowLeftIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
+import { tightestLimitWindow } from "@t3tools/shared/usageLimits";
 import type { ReactNode } from "react";
-import { memo } from "react";
+import { memo, useState } from "react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
@@ -13,6 +14,14 @@ import {
   useEnvironmentStageLabel,
 } from "../SidebarStageBackdrop";
 import { Badge } from "../ui/badge";
+import { ProgressRing } from "../ui/progress-ring";
+import {
+  limitPoolLabel,
+  limitTone,
+  limitWindowLabel,
+  UsageLimitsGlance,
+  useLimitPools,
+} from "../usage/UsageLimitsGlance";
 import { CodeShipBrand } from "../CodeShipBrand";
 import {
   SidebarFooter,
@@ -127,15 +136,19 @@ function SidebarBrandMark({ onBackdrop }: { onBackdrop: boolean }) {
 function SidebarUtilityItem({
   icon,
   label,
+  tooltip = label,
+  onTooltipOpenChange,
   onClick,
 }: {
   icon: ReactNode;
   label: string;
+  tooltip?: ReactNode;
+  onTooltipOpenChange?: (open: boolean) => void;
   onClick: () => void;
 }) {
   return (
     <SidebarMenuItem className="shrink-0">
-      <Tooltip>
+      <Tooltip onOpenChange={onTooltipOpenChange}>
         <TooltipTrigger
           render={
             <SidebarMenuButton aria-label={label} onClick={onClick} size="icon">
@@ -143,9 +156,38 @@ function SidebarUtilityItem({
             </SidebarMenuButton>
           }
         />
-        <TooltipPopup side="top">{label}</TooltipPopup>
+        <TooltipPopup side="top">{tooltip}</TooltipPopup>
       </Tooltip>
     </SidebarMenuItem>
+  );
+}
+
+/** Rings the limit closest to running out; hover summarizes every provider, click opens Usage. */
+function SidebarUsageItem({ onClick }: { onClick: () => void }) {
+  // Reset countdowns read the clock when the summary opens instead of ticking.
+  const [now, setNow] = useState(() => Date.now());
+  const pools = useLimitPools(now);
+  const tightest = tightestLimitWindow(pools);
+  if (!tightest) {
+    return <SidebarUtilityItem icon={<ChartNoAxesColumnIcon />} label="Usage" onClick={onClick} />;
+  }
+  const { pool, window } = tightest;
+  return (
+    <SidebarUtilityItem
+      icon={
+        <ProgressRing
+          value={window.usedPercent}
+          tone={limitTone(window.remainingPercent)}
+          className="size-4"
+        />
+      }
+      label={`Usage: ${limitPoolLabel(pool)} ${limitWindowLabel(pool, window)} ${window.remainingPercent}% left`}
+      tooltip={<UsageLimitsGlance pools={pools} now={now} />}
+      onTooltipOpenChange={(open) => {
+        if (open) setNow(Date.now());
+      }}
+      onClick={onClick}
+    />
   );
 }
 
@@ -209,11 +251,7 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
               onClick={handlePullRequestsClick}
             />
           ) : null}
-          <SidebarUtilityItem
-            icon={<ChartNoAxesColumnIcon />}
-            label="Usage"
-            onClick={handleUsageClick}
-          />
+          <SidebarUsageItem onClick={handleUsageClick} />
         </>
       )}
       <SidebarThreadUndoNotice />
