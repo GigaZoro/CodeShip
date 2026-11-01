@@ -1,6 +1,5 @@
 import { type RuntimeRequestId, type ScopedThreadRef } from "@t3tools/contracts";
-import { memo, use, useEffect, useEffectEvent, useRef, useState } from "react";
-import { BackgroundThreadContext } from "./backgroundThread";
+import { memo, useEffect, useEffectEvent, useRef, useState } from "react";
 import { useStableCallback } from "~/hooks/useStableCallback";
 import { type PendingUserInput } from "../../session-logic";
 import type { PendingUserInputDraftAnswer } from "@t3tools/client-runtime/state/pending-user-input";
@@ -143,11 +142,10 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   };
 
   const selectOptionFromShortcut = useEffectEvent(handleOptionSelection);
-  const backgroundThread = use(BackgroundThreadContext);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes a document keydown listener for digit shortcuts while a question is answerable
   useEffect(() => {
-    if (!activeQuestion || responseDisabled || isCollapsed || backgroundThread) return;
+    if (!activeQuestion || responseDisabled || isCollapsed) return;
     const handler = (event: globalThis.KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const target = event.target;
@@ -171,7 +169,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [activeQuestion, backgroundThread, isCollapsed, responseDisabled]);
+  }, [activeQuestion, isCollapsed, responseDisabled]);
 
   if (!activeQuestion) {
     return null;

@@ -5,7 +5,9 @@ import { RotateCcwIcon } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { useSettingsRestore } from "../components/settings/SettingsPanels";
 
-import { AppRouteModal, AppRouteModalClose } from "../components/AppRouteModal";
+import { isElectron } from "../env";
+import { SidebarInset } from "../components/ui/sidebar";
+import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { SettingsBreadcrumb } from "../components/settings/SettingsBreadcrumb";
 import { SettingsSidebarNav } from "../components/settings/SettingsSidebarNav";
 import {
@@ -117,29 +119,30 @@ function SettingsContentLayout() {
   const [restoreSignal, setRestoreSignal] = useState(0);
 
   return (
-    <AppRouteModal label="Settings">
+    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
+      <WorkspacePageHeader electron={isElectron} className="border-b">
+        <SettingsBreadcrumb pathname={location.pathname} />
+        {location.pathname === "/settings/general" ? (
+          <div className="ms-auto flex shrink-0 items-center">
+            <RestoreDeviceDefaultsButton
+              onRestored={() => setRestoreSignal((value) => value + 1)}
+            />
+          </div>
+        ) : null}
+      </WorkspacePageHeader>
       <div className="relative flex min-h-0 flex-1">
         <SettingsSidebarNav pathname={location.pathname} />
-        <div {...contentArea} className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <header className="flex h-12 shrink-0 items-center gap-3 border-b ps-5 pe-2">
-            <SettingsBreadcrumb pathname={location.pathname} />
-            <div className="ms-auto flex shrink-0 items-center gap-1">
-              {location.pathname === "/settings/general" ? (
-                <RestoreDeviceDefaultsButton
-                  onRestored={() => setRestoreSignal((value) => value + 1)}
-                />
-              ) : null}
-              <AppRouteModalClose />
-            </div>
-          </header>
-          <div key={`${contentScopeKey}:${restoreSignal}`} className="min-h-0 flex flex-1 flex-col">
-            <SettingsScopeBoundary pathname={location.pathname}>
-              <Outlet />
-            </SettingsScopeBoundary>
-          </div>
+        <div
+          {...contentArea}
+          key={`${contentScopeKey}:${restoreSignal}`}
+          className="flex min-h-0 min-w-0 flex-1 flex-col"
+        >
+          <SettingsScopeBoundary pathname={location.pathname}>
+            <Outlet />
+          </SettingsScopeBoundary>
         </div>
       </div>
-    </AppRouteModal>
+    </SidebarInset>
   );
 }
 

@@ -205,13 +205,7 @@ export function createWorkspaceFocusController(doc: Document) {
     // Inline listboxes (such as Settings search) belong to their workspace area, while
     // portalled listboxes and menus can also supply a boundary without a popup data-slot.
     const activePopup = doc.activeElement?.closest<HTMLElement>('[role="menu"], [role="listbox"]');
-    // Settings opens as a route modal with its own areas; navigation stays inside it.
-    const appModal = Array.from(doc.querySelectorAll<HTMLElement>("[data-app-modal]")).find(
-      isWorkspaceElementVisible,
-    );
-    const boundaries = Array.from(
-      doc.querySelectorAll<HTMLElement>(FOCUS_BOUNDARY_SELECTOR),
-    ).filter((boundary) => boundary !== appModal);
+    const boundaries = Array.from(doc.querySelectorAll<HTMLElement>(FOCUS_BOUNDARY_SELECTOR));
     if (activePopup && !activePopup.closest(AREA_SELECTOR)) boundaries.push(activePopup);
     // A modal keeps focus wherever it is; any other popup only while it holds focus,
     // so hover popups and notifications never swallow the key.
@@ -224,7 +218,7 @@ export function createWorkspaceFocusController(doc: Document) {
       )
     )
       return false;
-    const areas = Array.from((appModal ?? doc).querySelectorAll<HTMLElement>(AREA_SELECTOR))
+    const areas = Array.from(doc.querySelectorAll<HTMLElement>(AREA_SELECTOR))
       .filter(isWorkspaceElementVisible)
       .sort(
         (left, right) => Number(left.dataset.workspaceOrder) - Number(right.dataset.workspaceOrder),

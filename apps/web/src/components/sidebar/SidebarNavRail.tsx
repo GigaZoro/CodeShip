@@ -161,12 +161,12 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
           isActive={active === "scheduled-tasks"}
           onClick={go(() => navigate({ to: "/settings/scheduled-tasks" }))}
         />
+      </SidebarMenu>
+      <SidebarMenu className="items-center">
         <SidebarNavRailUsageItem
           isActive={active === "usage"}
           onClick={go(() => navigate({ to: "/usage" }))}
         />
-      </SidebarMenu>
-      <SidebarMenu className="items-center">
         <SidebarNavRailItem
           icon={<SettingsIcon />}
           label="Settings"

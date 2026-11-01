@@ -8,7 +8,6 @@ import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { dispatchPreviewAction, type PreviewAction } from "../components/preview/previewActionBus";
 import { newThreadAsksForProject } from "../components/Sidebar.logic";
-import { isAppModalPage } from "../components/sidebar/mainAppLocation";
 import { createNewThreadHandler, resolveDefaultProjectRef } from "../hooks/useHandleNewThread";
 import { createScratchProjectActions } from "../hooks/useScratchProject";
 import { getClientSettings } from "../hooks/useSettings";
@@ -30,9 +29,9 @@ import { type CommandHandler, registerCommands } from "./dispatcher";
 const CHAT_ROUTE_ID = "/_chat";
 
 /**
- * New-thread and preview commands, live while a chat route is showing and no
- * modal page (Settings, Usage) covers it. Everything is read at event time, so
- * the scope is registered once instead of re-registering on every store change.
+ * New-thread and preview commands, live while a chat route is showing. Everything
+ * is read at event time, so the scope is registered once instead of re-registering
+ * on every store change.
  */
 export function installChatRouteCommands(router: AnyRouter): () => void {
   const handleNewThread = createNewThreadHandler(router);
@@ -158,7 +157,6 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
     {
       when: () =>
         router.state.matches.some((match) => match.routeId === CHAT_ROUTE_ID) &&
-        !router.state.matches.some((match) => isAppModalPage(match.pathname)) &&
         !isCommandPaletteOpen(),
       context: () => {
         const threadRef = readRouteThreadRef();

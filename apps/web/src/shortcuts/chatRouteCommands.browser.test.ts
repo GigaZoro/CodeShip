@@ -48,16 +48,13 @@ describe("chat route commands", () => {
     expect(pressEscape().defaultPrevented).toBe(false);
   });
 
-  it("stays out of the way off the chat route and under modal pages", () => {
+  it("stays out of the way off the chat route", () => {
     const { router, navigate } = routerAt([{ routeId: "__root__", pathname: "/pair" }]);
     using stack = new DisposableStack();
     stack.defer(installChatRouteCommands(router));
     stack.defer(() => useThreadSelectionStore.getState().clearSelection());
     selectThread("env:thread-1");
 
-    expect(pressEscape().defaultPrevented).toBe(false);
-
-    navigate([...CHAT, { routeId: "/_chat/settings", pathname: "/settings" }]);
     expect(pressEscape().defaultPrevented).toBe(false);
     expect(useThreadSelectionStore.getState().selectedThreadKeys.size).toBe(1);
 

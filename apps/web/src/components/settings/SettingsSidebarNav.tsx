@@ -175,7 +175,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
             target.tagName === "TEXTAREA" ||
             target.isContentEditable)) ||
           target.closest(
-            '[role="dialog"]:not([data-app-modal]), [aria-modal="true"]:not([data-app-modal]), [data-slot$="popup"]:not([data-app-modal]), [data-keybinding-capture]',
+            '[role="dialog"], [aria-modal="true"], [data-slot$="popup"], [data-keybinding-capture]',
           ) !== null)
       ) {
         return;

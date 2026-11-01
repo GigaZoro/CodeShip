@@ -173,5 +173,5 @@ On web and desktop, open Usage from the command palette. While on Usage,
 press `C`, `T`, or `L` for Cost, Tokens, or Limits while not typing in a field.
 Use `Ctrl+Shift+1/2/3/4` (`Cmd+Shift+1/2/3/4` on macOS) for the past
 24 hours, 7 days, 30 days, or 90 days. Period shortcuts do nothing on Limits.
-Press `Escape` to return to the previous page. Customize these shortcuts in
+Press `Escape` to return to your last thread. Customize these shortcuts in
 **Settings → Keybindings**.

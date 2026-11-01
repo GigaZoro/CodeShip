@@ -6,7 +6,7 @@ function setup() {
   const root = document.createElement("div");
   document.body.append(root);
   const controller = createWorkspaceFocusController(document);
-  const area = (name: string, order: number, parent: HTMLElement = root) => {
+  const area = (name: string, order: number) => {
     const element = document.createElement("section");
     element.dataset.workspaceArea = name;
     element.dataset.workspaceOrder = String(order);
@@ -14,7 +14,7 @@ function setup() {
     const button = document.createElement("button");
     button.textContent = name;
     element.append(button);
-    parent.append(element);
+    root.append(element);
     return { element, button };
   };
   const append = (html: string) => {
@@ -134,20 +134,6 @@ describe("workspace area focus", () => {
     composer.button.focus();
     expect(fixture.controller.move(1)).toBe(true);
     expect(document.activeElement).toBe(panel.button);
-  });
-
-  it("moves only between the areas of an open Settings modal", () => {
-    using fixture = setup();
-    fixture.area("sidebar", 0);
-    fixture.area("composer", 2);
-    const modal = fixture.append('<div role="dialog" data-app-modal=""></div>');
-    const nav = fixture.area("settings-nav", 0, modal);
-    const content = fixture.area("settings", 1, modal);
-    nav.button.focus();
-    expect(fixture.controller.move(1)).toBe(true);
-    expect(document.activeElement).toBe(content.button);
-    expect(fixture.controller.move(1)).toBe(true);
-    expect(document.activeElement).toBe(nav.button);
   });
 
   it("keeps moving while a shortcut recorder is on the page but not focused", () => {

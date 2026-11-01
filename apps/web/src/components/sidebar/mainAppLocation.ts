@@ -2,13 +2,14 @@ import { useNavigate, type AnyRouter } from "@tanstack/react-router";
 
 import { GUEST_PAGE_PATH } from "../../guestPage";
 
-/** Settings and Usage open as modals over the last main-app view. */
-export function isAppModalPage(pathname: string) {
-  return pathname === "/settings" || pathname.startsWith("/settings/") || pathname === "/usage";
-}
-
-function isSidebarUtilityPage(pathname: string) {
-  return pathname === "/pull-requests";
+/** The sidebar rail's sections other than Threads. */
+export function isSidebarSectionPage(pathname: string) {
+  return (
+    pathname === "/pull-requests" ||
+    pathname === "/usage" ||
+    pathname === "/settings" ||
+    pathname.startsWith("/settings/")
+  );
 }
 
 // Pages the root route always renders without the app shell, so they are never
@@ -17,27 +18,23 @@ function isSidebarUtilityPage(pathname: string) {
 const SHELL_LESS_PATHS = new Set(["/pair", "/connect", "/connect-agent", GUEST_PAGE_PATH]);
 
 let mainAppHref: string | null = null;
-let appModalReturnHref: string | null = null;
 
-/** Remembers where Settings, Usage, and the utility pages lead back to. */
+/** Remembers the last thread-side page, where leaving a section returns to. */
 export function startMainAppLocationTracking(router: AnyRouter): () => void {
   const record = () => {
     const { pathname, href } = router.state.location;
-    if (isAppModalPage(pathname) || SHELL_LESS_PATHS.has(pathname)) return;
-    appModalReturnHref = href;
-    if (!isSidebarUtilityPage(pathname)) mainAppHref = href;
+    if (isSidebarSectionPage(pathname) || SHELL_LESS_PATHS.has(pathname)) return;
+    mainAppHref = href;
   };
   record();
   return router.subscribe("onResolved", record);
 }
 
-export function useNavigateToMainApp() {
-  const navigate = useNavigate();
-  return () => navigate({ href: mainAppHref ?? "/" });
+export function readMainAppHref() {
+  return mainAppHref ?? "/";
 }
 
-/** Leaves Settings or Usage for the page that opened it. */
-export function useCloseAppModal() {
+export function useNavigateToMainApp() {
   const navigate = useNavigate();
-  return () => navigate({ href: appModalReturnHref ?? mainAppHref ?? "/" });
+  return () => navigate({ href: readMainAppHref() });
 }

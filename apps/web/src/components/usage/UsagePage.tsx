@@ -33,6 +33,7 @@ import {
   type MergedUsage,
 } from "@t3tools/shared/usageMerge";
 
+import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { resolveHour12 } from "../../timestampFormat";
@@ -68,7 +69,7 @@ import {
 } from "../ui/menu";
 import { ScrollArea } from "../ui/scroll-area";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
-import { AppRouteModal, AppRouteModalClose } from "../AppRouteModal";
+import { SidebarInset } from "../ui/sidebar";
 import { Skeleton } from "../ui/skeleton";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -80,6 +81,7 @@ import {
   WorkspaceBreadcrumbText,
 } from "../WorkspaceBreadcrumb";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
+import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { UsageLimitsSection } from "./UsageLimits";
 import { UsagePriceOverrides } from "./UsagePriceOverrides";
 import { UsageProviderChart } from "./UsageProviderChart";
@@ -543,12 +545,11 @@ export function UsagePage() {
   );
 
   return (
-    <AppRouteModal label="Usage">
+    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="@container/usage-header flex min-h-12 shrink-0 items-center gap-1 border-b ps-5 pe-2">
+        <WorkspacePageHeader electron={isElectron} className="@container/usage-header border-b">
           {topbarContent}
-          <AppRouteModalClose />
-        </header>
+        </WorkspacePageHeader>
 
         <ScrollArea className="min-h-0 flex-1">
           <WorkspacePageContainer width="wide">
@@ -639,7 +640,7 @@ export function UsagePage() {
           }}
         />
       ) : null}
-    </AppRouteModal>
+    </SidebarInset>
   );
 }
 

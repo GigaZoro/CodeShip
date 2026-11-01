@@ -41,7 +41,7 @@ import { BackgroundThreadAnnouncer } from "./BackgroundThreadAnnouncer";
 import ThreadSidebar from "./Sidebar";
 import { SidebarBrandWidthProbe, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { SidebarNavRail } from "./sidebar/SidebarNavRail";
-import { isAppModalPage } from "./sidebar/mainAppLocation";
+import { isSidebarSectionPage, readMainAppHref } from "./sidebar/mainAppLocation";
 import type { SidebarRouteReveal } from "./sidebar/routeReveal";
 import { useSidebarStageBackdropVariant } from "./SidebarStageBackdrop";
 import {
@@ -198,23 +198,20 @@ function registerWorkspaceFocusCommands(router: AnyRouter): () => void {
   };
 }
 
-// Escape leaves the pull requests page when no scope (a selection, a dialog,
-// a drag) claimed it, so it observes after every other scope.
-function registerPullRequestsEscapeCommand(router: AnyRouter): () => void {
+// Escape leaves a sidebar section (Pull requests, Settings, Usage) for the last
+// thread when no scope (a selection, a dialog, a drag) claimed it, so it
+// observes after every other scope.
+function registerSectionEscapeCommand(router: AnyRouter): () => void {
   return registerCommands(
     {},
     {
       observe: (event, consumed) => {
         if (consumed || event.repeat || event.isComposing || event.key !== "Escape") return;
-        if (router.state.location.pathname !== "/pull-requests") return;
+        if (!isSidebarSectionPage(router.state.location.pathname)) return;
         event.preventDefault();
         const activeElement = document.activeElement;
         if (activeElement instanceof HTMLElement) activeElement.blur();
-        if (router.state.location.state.__TSR_index !== 0) {
-          window.history.back();
-          return;
-        }
-        void router.navigate({ to: "/" });
+        void router.navigate({ href: readMainAppHref() });
       },
     },
   );
@@ -226,19 +223,17 @@ const MODIFIER_KEYS = new Set(["Alt", "Control", "Meta", "Shift"]);
 // hold must survive whatever that re-renders.
 let heldUndoKey: string | null = null;
 
-// Undoes the thread actions in the sidebar's notice. Settings and Usage own
-// mod+z while open. Captured so mod+z reaches it before the composer's own
-// undo handler consumes the key.
+// Undoes the thread actions in the sidebar's notice. Captured so mod+z reaches
+// it before the composer's own undo handler consumes the key.
 function registerThreadUndoCommands(
   router: AnyRouter,
   readSidebarVisible: () => boolean,
 ): () => void {
-  const threadSidebarShown = () => !isAppModalPage(router.state.location.pathname);
   const unregister = registerCommands(
     {},
     {
       capture: true,
-      when: threadSidebarShown,
+      when: (event) => !isKeybindingCaptureTarget(event),
       onKeyDown: (event) => {
         // Cancel a held key's repeats so they cannot fall through to the
         // editor's own undo, even after the last notice is gone.
@@ -280,9 +275,7 @@ function registerThreadUndoCommands(
     },
   );
   // Pastes from a menu, dictation and drops edit text without a keypress.
-  const onInput = () => {
-    if (threadSidebarShown()) releaseThreadUndoShortcut();
-  };
+  const onInput = () => releaseThreadUndoShortcut();
   window.addEventListener("input", onInput, true);
   return () => {
     unregister();
@@ -301,7 +294,7 @@ function registerAppShellCommands(router: AnyRouter, shellElement: Element): () 
     registerThreadUndoCommands(router, readSidebarVisible),
     registerNavigationHistoryCommands(router),
     registerWorkspaceFocusCommands(router),
-    registerPullRequestsEscapeCommand(router),
+    registerSectionEscapeCommand(router),
     registerMenuAction("open-settings", () => {
       if (!/^\/settings(\/|$)/.test(router.state.location.pathname))
         void router.navigate({ to: "/settings" });

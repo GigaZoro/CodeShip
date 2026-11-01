@@ -64,18 +64,17 @@ describe("thread find store", () => {
     detach();
   });
 
-  it("keeps find over Settings and Usage, and closes it on any other route", () => {
+  it("keeps find on its own thread, and closes it on any other route", () => {
     setup();
     openThreadFindOnQuery(threadKey, { query: "x" });
-    retainThreadFindForRoute({ modalPage: false, threadRef });
-    retainThreadFindForRoute({ modalPage: true, threadRef: null });
+    retainThreadFindForRoute(threadRef);
     expect(useThreadFindStore.getState()).toMatchObject({ threadKey, query: "x" });
 
-    retainThreadFindForRoute({ modalPage: false, threadRef: otherRef });
+    retainThreadFindForRoute(otherRef);
     expect(useThreadFindStore.getState()).toMatchObject({ threadKey: null, query: "" });
 
     openThreadFindOnQuery(threadKey, { query: "x" });
-    retainThreadFindForRoute({ modalPage: false, threadRef: null });
+    retainThreadFindForRoute(null);
     expect(useThreadFindStore.getState().threadKey).toBeNull();
   });
 });
