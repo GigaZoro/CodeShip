@@ -53,7 +53,12 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
   member: SidebarProjectGroupMember | null;
   collapsed: boolean;
   hiddenThreads: readonly EnvironmentThreadShell[];
+  /** Set while this folder is being dragged to a new place. */
+  dragging: boolean;
+  /** Where a dragged sibling would land, in pixels below this folder's top. */
+  dropLineOffset: number | null;
   onToggle: (folderKey: string) => void;
+  onDragStart: (folderKey: string, event: PointerEvent) => void;
   onNewThread: (group: SidebarProjectSnapshot, member: SidebarProjectGroupMember | null) => void;
   onContextMenu: (
     group: SidebarProjectSnapshot,
@@ -72,7 +77,10 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
       label={group.displayName}
       collapsed={props.collapsed}
       hiddenThreads={props.hiddenThreads}
+      dragging={props.dragging}
+      dropLineOffset={props.dropLineOffset}
       onToggle={() => props.onToggle(folderKey)}
+      onDragStart={(event) => props.onDragStart(folderKey, event)}
       newThread={{
         label: `New thread in ${group.displayName}`,
         onClick: () => props.onNewThread(group, member),
@@ -135,10 +143,13 @@ function SidebarFolderHeader(props: {
   newThread: { readonly label: string; readonly onClick: () => void } | null;
   collapsed: boolean;
   hiddenThreads: readonly EnvironmentThreadShell[];
+  dragging?: boolean;
+  dropLineOffset?: number | null;
   onToggle: () => void;
+  onDragStart?: (event: PointerEvent) => void;
   onContextMenu?: (position: { x: number; y: number }) => void;
 }) {
-  const { onContextMenu, newThread } = props;
+  const { onContextMenu, onDragStart, newThread } = props;
   const { rowId, parentRowId, collapsed, hiddenThreads } = props;
   const localLastVisitedAtById = useUiStateStore((state) => state.threadLastVisitedAtById);
   const dot = collapsed
@@ -160,8 +171,16 @@ function SidebarFolderHeader(props: {
       className={cn(
         "group/project-folder relative list-none",
         parentRowId ? "mt-0.5" : "mt-2 first:mt-0",
+        props.dragging && "opacity-50",
       )}
     >
+      {props.dropLineOffset != null ? (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-x-1 z-10 h-0.5 -translate-y-1/2 rounded-full bg-primary"
+          style={{ top: props.dropLineOffset }}
+        />
+      ) : null}
       <button
         type="button"
         role="treeitem"
@@ -170,6 +189,13 @@ function SidebarFolderHeader(props: {
         data-sidebar-parent={parentRowId}
         aria-expanded={!collapsed}
         onClick={props.onToggle}
+        onPointerDown={
+          onDragStart
+            ? (event) => {
+                if (event.button === 0 && event.isPrimary) onDragStart(event.nativeEvent);
+              }
+            : undefined
+        }
         onContextMenu={
           onContextMenu
             ? (event) => {

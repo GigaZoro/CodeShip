@@ -115,7 +115,7 @@ import {
   type SidebarProjectGroupMember,
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
-import { resolveProjectExpanded, useUiStateStore } from "../uiStateStore";
+import { reorderProjects, resolveProjectExpanded, useUiStateStore } from "../uiStateStore";
 import {
   getThreadKeysToDeselectAfterDelete,
   useThreadSelectionStore,
@@ -204,6 +204,7 @@ import {
   resolveSidebarSweepKeys,
   resolveSidebarDropTarget,
   resolveSidebarDropVerb,
+  resolveSidebarFolderDropSlot,
   resolveSidebarThreadSection,
   searchSidebarThreads,
   newThreadAsksForProject,
@@ -1224,6 +1225,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     action: SidebarSweepAction;
     keys: ReadonlySet<string>;
   } | null>(null);
+  const [projectFolderDrag, setProjectFolderDrag] = useState<{
+    readonly folderKey: string;
+    /** The sibling that draws the drop line, and the line's offset from its top. */
+    readonly line: { readonly folderKey: string; readonly offset: number } | null;
+  } | null>(null);
+  const setProjectOrder = useUiStateStore((store) => store.setProjectOrder);
+  const projectSortOrder = useClientSettings((settings) => settings.sidebarProjectSortOrder);
   const snoozingThreadKeysRef = useRef(new Set<string>());
   const removeFromSelection = useThreadSelectionStore((s) => s.removeFromSelection);
   const shortcutModifiers = useShortcutModifierState();
@@ -1441,46 +1449,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     if (isMobile) setOpenMobile(false);
     openCommandPalette({ open: "new-thread-in", environmentId: machine.environmentId });
   });
-  const handleProjectFolderContextMenu = useStableCallback(
-    (
-      group: SidebarProjectSnapshot,
-      member: SidebarProjectGroupMember | null,
-      position: { x: number; y: number },
-    ) => {
-      const api = readLocalApi();
-      if (!api) return;
-      void (async () => {
-        const clicked = await settlePromise(() =>
-          api.contextMenu.show(
-            [
-              { id: "new-thread", label: "New thread" },
-              { id: "copy-path", label: "Copy path" },
-              { id: "project-settings", label: "Project settings", icon: "settings" },
-            ],
-            position,
-          ),
-        );
-        if (clicked._tag === "Failure") return;
-        switch (clicked.value) {
-          case "new-thread":
-            startThreadInProjectFolder(group, member);
-            return;
-          case "copy-path": {
-            const { workspaceRoot } = member ?? group;
-            copyPathToClipboard(workspaceRoot, { path: workspaceRoot });
-            return;
-          }
-          case "project-settings":
-            openProjectSettings(
-              group,
-              member ? scopeProjectRef(member.environmentId, member.id) : undefined,
-            );
-            return;
-        }
-      })();
-    },
-  );
-
   const {
     workingShelfEnabled,
     pinnedThreads,
@@ -1542,6 +1510,162 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         : null,
     },
   });
+
+  // Siblings share a parent: the list's top level, or one machine folder.
+  const projectFolderSiblings = (folderKey: string): SidebarProjectFolder[] => {
+    const folder = folderList?.find((candidate) => candidate.key === folderKey);
+    if (folderList === null || folder?.kind !== "project") return [];
+    const parent = folder.member?.environmentId ?? null;
+    return folderList.filter(
+      (candidate): candidate is SidebarProjectFolder =>
+        candidate.kind === "project" && (candidate.member?.environmentId ?? null) === parent,
+    );
+  };
+  // Moving a folder saves the order shown with it moved, so the projects keep it from then on.
+  const moveProjectFolder = useStableCallback(
+    (folder: SidebarProjectFolder, target: SidebarProjectFolder, placement: "before" | "after") => {
+      const memberKeys = (group: SidebarProjectSnapshot) =>
+        group.memberProjects.map((member) => member.physicalProjectKey);
+      const order = reorderProjects(projectGroups.flatMap(memberKeys), memberKeys(folder.group), {
+        ids: memberKeys(target.group),
+        placement,
+      });
+      if (order === null) return;
+      setProjectOrder(order);
+      if (projectSortOrder !== "manual") {
+        void updateClientSettings({ sidebarProjectSortOrder: "manual" });
+      }
+    },
+  );
+  const startProjectFolderDrag = useStableCallback((folderKey: string, event: PointerEvent) => {
+    const siblings = projectFolderSiblings(folderKey);
+    const from = siblings.findIndex((candidate) => candidate.key === folderKey);
+    const list = threadListRef.current;
+    if (from < 0 || siblings.length < 2 || list === null) return;
+    const folder = siblings[from]!;
+    const others = siblings.filter((candidate) => candidate !== folder);
+    const rowOf = (selector: string) => list.querySelector(selector)?.closest("li") ?? null;
+    let drop: { target: SidebarProjectFolder; placement: "before" | "after" } | null = null;
+    let lineKey = "";
+    const moveTo = (y: number) => {
+      // A folder spans its header and its rows, so an open folder is dropped around as a whole.
+      const extents = others.flatMap((sibling) => {
+        const header = rowOf(`[data-sidebar-row="${CSS.escape(sidebarFolderRowId(sibling.key))}"]`);
+        if (header === null) return [];
+        const lastThread = sibling.threads.at(-1);
+        const last = lastThread
+          ? rowOf(`li[data-thread-item="${CSS.escape(threadShellKey(lastThread))}"]`)
+          : null;
+        const top = header.getBoundingClientRect().top;
+        return [{ folder: sibling, top, bottom: (last ?? header).getBoundingClientRect().bottom }];
+      });
+      const slot = resolveSidebarFolderDropSlot(extents, y);
+      drop = null;
+      let line: { folderKey: string; offset: number } | null = null;
+      if (slot !== null) {
+        const { folder: target, top, bottom } = slot.sibling;
+        // Either side of its own place leaves the folder where it was.
+        if (others.indexOf(target) + (slot.placement === "after" ? 1 : 0) !== from) {
+          drop = { target, placement: slot.placement };
+          line = { folderKey: target.key, offset: slot.placement === "before" ? 0 : bottom - top };
+        }
+      }
+      // Re-render only when the line moves; pointer moves arrive every frame.
+      const nextLineKey = line ? `${line.folderKey}:${line.offset}` : "none";
+      if (nextLineKey === lineKey) return;
+      lineKey = nextLineKey;
+      setProjectFolderDrag({ folderKey, line });
+    };
+    dragSensorRef.current = new SidebarPointerSensor({
+      active: folderKey,
+      event,
+      options: {
+        distance: SIDEBAR_DRAG_DISTANCE,
+        onAttach: () => {},
+        onFinish: () => {
+          dragSensorRef.current = null;
+          setProjectFolderDrag(null);
+        },
+      },
+      onPending: () => {},
+      onStart: () => {},
+      onMove: ({ y }) => moveTo(y),
+      onEnd: () => {
+        if (drop) moveProjectFolder(folder, drop.target, drop.placement);
+      },
+      onCancel: () => {},
+      onAbort: () => {},
+    });
+  });
+  const handleProjectFolderContextMenu = useStableCallback(
+    (
+      group: SidebarProjectSnapshot,
+      member: SidebarProjectGroupMember | null,
+      position: { x: number; y: number },
+    ) => {
+      const api = readLocalApi();
+      if (!api) return;
+      const folderKey = member
+        ? sidebarMachineProjectFolderKey(member.environmentId, group.projectKey)
+        : group.projectKey;
+      // Moving without dragging, from the keyboard or a single click.
+      const siblings = projectFolderSiblings(folderKey);
+      const index = siblings.findIndex((candidate) => candidate.key === folderKey);
+      const previous = siblings[index - 1];
+      const next = siblings[index + 1];
+      void (async () => {
+        const clicked = await settlePromise(() =>
+          api.contextMenu.show(
+            [
+              { id: "new-thread", label: "New thread" },
+              { id: "copy-path", label: "Copy path" },
+              ...(siblings.length > 1
+                ? [
+                    {
+                      id: "move-up",
+                      label: "Move up",
+                      disabled: previous === undefined,
+                      separatorBefore: true,
+                    },
+                    { id: "move-down", label: "Move down", disabled: next === undefined },
+                  ]
+                : []),
+              {
+                id: "project-settings",
+                label: "Project settings",
+                icon: "settings",
+                separatorBefore: siblings.length > 1,
+              },
+            ],
+            position,
+          ),
+        );
+        if (clicked._tag === "Failure") return;
+        switch (clicked.value) {
+          case "new-thread":
+            startThreadInProjectFolder(group, member);
+            return;
+          case "copy-path": {
+            const { workspaceRoot } = member ?? group;
+            copyPathToClipboard(workspaceRoot, { path: workspaceRoot });
+            return;
+          }
+          case "move-up":
+            if (previous) moveProjectFolder(siblings[index]!, previous, "before");
+            return;
+          case "move-down":
+            if (next) moveProjectFolder(siblings[index]!, next, "after");
+            return;
+          case "project-settings":
+            openProjectSettings(
+              group,
+              member ? scopeProjectRef(member.environmentId, member.id) : undefined,
+            );
+            return;
+        }
+      })();
+    },
+  );
 
   // Ranked across environments as the palette ranks them, so one
   // environment's list does not sit above another's better matches; rows
@@ -3502,6 +3626,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       "relative flex flex-col gap-px",
                       sidebarListItems.length > 0 && "flex-1",
                       actionSweep !== null && "**:pointer-events-none",
+                      projectFolderDrag !== null && "cursor-grabbing **:pointer-events-none",
                     )}
                   >
                     {(() => {
@@ -3676,7 +3801,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 member={folder.member}
                                 collapsed={folder.collapsed}
                                 hiddenThreads={folder.hiddenThreads}
+                                dragging={projectFolderDrag?.folderKey === folder.key}
+                                dropLineOffset={
+                                  projectFolderDrag?.line?.folderKey === folder.key
+                                    ? projectFolderDrag.line.offset
+                                    : null
+                                }
                                 onToggle={toggleFolder}
+                                onDragStart={startProjectFolderDrag}
                                 onNewThread={startThreadInProjectFolder}
                                 onContextMenu={handleProjectFolderContextMenu}
                               />,

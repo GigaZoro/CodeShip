@@ -338,6 +338,19 @@ export function sidebarThreadKeyAtY(list: HTMLElement, y: number): string | null
   return key;
 }
 
+/** A dragged folder lands before the first sibling whose middle is below the pointer, else last. */
+export function resolveSidebarFolderDropSlot<
+  TSibling extends { readonly top: number; readonly bottom: number },
+>(
+  siblings: readonly TSibling[],
+  y: number,
+): { readonly sibling: TSibling; readonly placement: "before" | "after" } | null {
+  const next = siblings.find((sibling) => y < (sibling.top + sibling.bottom) / 2);
+  if (next) return { sibling: next, placement: "before" };
+  const last = siblings.at(-1);
+  return last ? { sibling: last, placement: "after" } : null;
+}
+
 export function planSidebarThreadDrop(input: {
   readonly activeKey: string;
   readonly activeSection: SidebarSection;

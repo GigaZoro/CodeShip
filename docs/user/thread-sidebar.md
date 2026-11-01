@@ -182,6 +182,11 @@ dot when one of them needs you. A machine that is offline shows **Offline** and 
 When two machines share a name, their folders add the address. While threads are grouped, active
 threads are ordered by their latest message, so you cannot move them by hand.
 
+On web and desktop, drag a project folder up or down to reorder your projects, or right-click it and
+choose **Move up** or **Move down**. Inside a machine folder, a project moves among that machine's
+projects. Moving a folder sets **Settings → General → Project order** to **Manual**, so new activity
+no longer reshuffles your projects; choose another order there to go back.
+
 Use the pen button on a project folder to start a thread in that project; inside a machine folder
 it starts on that machine. The pen button on a machine folder lists that machine's projects to
 start in. On web and desktop, you can also right-click a project folder. **New thread** and its

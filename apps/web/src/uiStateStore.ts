@@ -393,48 +393,22 @@ export function setProjectExpanded(
   };
 }
 
+/** The project order with `movedIds` moved next to `target`, or null when nothing moves. */
 export function reorderProjects(
-  state: UiState,
   currentProjectOrder: readonly string[],
-  draggedProjectIds: readonly string[],
-  targetProjectIds: readonly string[],
-): UiState {
-  if (draggedProjectIds.length === 0) {
-    return state;
-  }
-  const draggedSet = new Set(draggedProjectIds);
-  const targetSet = new Set(targetProjectIds);
-  if (draggedProjectIds.every((id) => targetSet.has(id))) {
-    return state;
-  }
-
-  const originalTargetIndex = currentProjectOrder.findIndex((id) => targetSet.has(id));
-  if (originalTargetIndex < 0) {
-    return state;
-  }
-
-  const projectOrder = [...currentProjectOrder];
-
-  const removed: string[] = [];
-  let draggedBeforeTarget = 0;
-  for (let i = projectOrder.length - 1; i >= 0; i--) {
-    if (draggedSet.has(projectOrder[i]!)) {
-      removed.unshift(projectOrder.splice(i, 1)[0]!);
-      if (i < originalTargetIndex) {
-        draggedBeforeTarget++;
-      }
-    }
-  }
-  if (removed.length === 0) {
-    return state;
-  }
-
-  const insertIndex = originalTargetIndex - Math.max(0, draggedBeforeTarget - 1);
-  projectOrder.splice(insertIndex, 0, ...removed);
-  return {
-    ...state,
-    projectOrder,
-  };
+  movedIds: readonly string[],
+  target: { readonly ids: readonly string[]; readonly placement: "before" | "after" },
+): string[] | null {
+  const moved = new Set(movedIds);
+  const targets = new Set(target.ids);
+  const movedOrder = currentProjectOrder.filter((id) => moved.has(id));
+  const projectOrder = currentProjectOrder.filter((id) => !moved.has(id));
+  const first = projectOrder.findIndex((id) => targets.has(id));
+  if (movedOrder.length === 0 || first < 0) return null;
+  const insertAt =
+    target.placement === "before" ? first : projectOrder.findLastIndex((id) => targets.has(id)) + 1;
+  projectOrder.splice(insertAt, 0, ...movedOrder);
+  return projectOrder.every((id, index) => id === currentProjectOrder[index]) ? null : projectOrder;
 }
 
 interface UiStateStore extends UiState {
@@ -446,11 +420,7 @@ interface UiStateStore extends UiState {
   setSidebarMachineScopeIds: (environmentIds: readonly string[]) => void;
   setPullRequestMergeMethod: (method: PullRequestMergeMethod) => void;
   setProjectExpanded: (projectIds: string | readonly string[], expanded: boolean) => void;
-  reorderProjects: (
-    currentProjectOrder: readonly string[],
-    draggedProjectIds: readonly string[],
-    targetProjectIds: readonly string[],
-  ) => void;
+  setProjectOrder: (projectOrder: readonly string[]) => void;
 }
 
 export const useUiStateStore = create<UiStateStore>((set) => ({
@@ -470,10 +440,7 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
   setPullRequestMergeMethod: (method) => set((state) => setPullRequestMergeMethod(state, method)),
   setProjectExpanded: (projectIds, expanded) =>
     set((state) => setProjectExpanded(state, projectIds, expanded)),
-  reorderProjects: (currentProjectOrder, draggedProjectIds, targetProjectIds) =>
-    set((state) =>
-      reorderProjects(state, currentProjectOrder, draggedProjectIds, targetProjectIds),
-    ),
+  setProjectOrder: (projectOrder) => set({ projectOrder: [...projectOrder] }),
 }));
 
 useUiStateStore.subscribe((state) => debouncedPersistState.maybeExecute(state));
