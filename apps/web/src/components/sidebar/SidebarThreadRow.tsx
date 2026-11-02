@@ -1,6 +1,7 @@
 import { ThreadHoverCard, ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { resolveThreadRowStatus, ThreadRowStatusIcon } from "./threadRowStatus";
 import { ThreadTerminalStatusButton } from "../ThreadStatusIndicators";
+import { ThreadScheduledTaskIndicator } from "./ThreadScheduledTaskIndicator";
 import { discardComposerDraft } from "../../lib/discardComposerDraft";
 import { requestCustomSnooze } from "../CustomSnoozeDialog";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
@@ -1112,6 +1113,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     )
   ) : null;
 
+  const scheduledIndicator = (
+    <ThreadScheduledTaskIndicator environmentId={thread.environmentId} threadId={thread.id} />
+  );
+
   // A machine folder already names the machine.
   const remoteMachineIcon =
     isRemote && !showsScratchMachine && !props.inMachineFolder ? (
@@ -1247,6 +1252,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {draftIndicator}
               {title}
               {multiline ? titleLineIcons : null}
+              {scheduledIndicator}
               {pinIndicator}
               {inFolder && !multiline && isRemote && !props.inMachineFolder ? (
                 <EnvironmentMachineIcon
@@ -1444,6 +1450,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               ) : null}
               {/* Left of the status slot, the pin would slide when hover swaps the
                 label for the wider row controls. */}
+              {scheduledIndicator}
               {pinIndicator}
               {props.projectDisplayName ? (
                 <span

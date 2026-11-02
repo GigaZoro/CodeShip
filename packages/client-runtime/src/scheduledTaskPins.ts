@@ -51,6 +51,22 @@ export function pinnedTaskRunThreadId(
   return task.lastRunThreadId ?? task.threadId;
 }
 
+/**
+ * The tasks a thread row marks as scheduled. A bound task marks its thread even after
+ * a rebind leaves `lastRunThreadId` stale; a fresh-thread task marks only its latest
+ * run. A one-time task stops marking once it has no run left.
+ */
+export function scheduledTasksForThread(
+  tasks: ReadonlyArray<ScheduledTask>,
+  threadId: string,
+): ScheduledTask[] {
+  return tasks.filter(
+    (task) =>
+      (task.threadId ?? task.lastRunThreadId) === threadId &&
+      (task.schedule.type !== "once" || task.nextRunAt !== null),
+  );
+}
+
 /** Seconds matter for short intervals, so under an hour reads as a m:ss countdown. */
 export function formatNextRunCountdown(nextRunAt: string, nowMs: number): string {
   const remainingMs = Date.parse(nextRunAt) - nowMs;

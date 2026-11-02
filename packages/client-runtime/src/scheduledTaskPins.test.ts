@@ -6,6 +6,7 @@ import {
   formatNextRunCountdown,
   intervalWaitProgress,
   resolvePinnedTaskStatus,
+  scheduledTasksForThread,
 } from "./scheduledTaskPins.ts";
 
 describe("resolvePinnedTaskStatus", () => {
@@ -120,5 +121,41 @@ describe("collectPinnedTasks", () => {
       "server:ci",
       "laptop:deploy",
     ]);
+  });
+});
+
+describe("scheduledTasksForThread", () => {
+  const every = { type: "interval" as const, everyMs: 3_600_000 };
+  const once = { type: "once" as const, runAt: "2026-11-03T09:00:00.000Z" };
+  it.each([
+    {
+      name: "a task bound to the thread",
+      task: { threadId: "t1", lastRunThreadId: null, schedule: every, nextRunAt: null },
+      expected: true,
+    },
+    {
+      name: "a fresh-thread task's latest run",
+      task: { threadId: null, lastRunThreadId: "t1", schedule: every, nextRunAt: null },
+      expected: true,
+    },
+    {
+      name: "a task rebound elsewhere after running here",
+      task: { threadId: "t2", lastRunThreadId: "t1", schedule: every, nextRunAt: null },
+      expected: false,
+    },
+    {
+      name: "a one-time task still to run",
+      task: { threadId: "t1", schedule: once, nextRunAt: "2026-11-03T09:00:00.000Z" },
+      expected: true,
+    },
+    {
+      name: "a one-time task that already ran",
+      task: { threadId: null, lastRunThreadId: "t1", schedule: once, nextRunAt: null },
+      expected: false,
+    },
+  ])("$name", ({ task, expected }) => {
+    expect(scheduledTasksForThread([task as unknown as ScheduledTask], "t1")).toHaveLength(
+      expected ? 1 : 0,
+    );
   });
 });

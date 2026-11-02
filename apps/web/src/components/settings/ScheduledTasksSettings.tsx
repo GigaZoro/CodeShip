@@ -350,9 +350,31 @@ function relativeLabel(value: string | null, nowMs: number): string {
 }
 
 // Use the label's minute tick because the compiler caches render-time Date.now() on the timestamp.
-export function ScheduledRelativeLabel(props: { value: string | null }) {
+function ScheduledRelativeLabel(props: { value: string | null }) {
   const nowMinute = useNowMinute();
   return relativeLabel(props.value, Date.parse(`${nowMinute}:00.000Z`));
+}
+
+/** The schedule and what holds or comes next: the policy blocking it, the next run, or paused. */
+export function ScheduledTaskScheduleLine(props: { task: ScheduledTask }) {
+  const { task } = props;
+  return (
+    <>
+      {scheduleLabel(task.schedule)}
+      {task.blockedByPolicy !== undefined ? (
+        ` · ${task.blockedByPolicy}`
+      ) : task.enabled && task.nextRunAt !== null ? (
+        <>
+          {" · next "}
+          <ScheduledRelativeLabel value={task.nextRunAt} />
+        </>
+      ) : task.enabled ? (
+        ""
+      ) : (
+        " · paused"
+      )}
+    </>
+  );
 }
 
 function deliveryOutcomeVariant(outcome: string) {

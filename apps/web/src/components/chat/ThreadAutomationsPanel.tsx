@@ -23,7 +23,7 @@ import {
 
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { cn } from "../../lib/utils";
-import { ScheduledRelativeLabel, scheduleLabel } from "../settings/ScheduledTasksSettings";
+import { ScheduledTaskScheduleLine } from "../settings/ScheduledTasksSettings";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -47,26 +47,6 @@ const STATUS_DOT_CLASS: Record<ScheduledTask["lastRunStatus"], string> = {
   succeeded: "bg-emerald-500",
   failed: "bg-destructive",
 };
-
-function taskScheduleLine(task: ScheduledTask) {
-  return (
-    <>
-      {scheduleLabel(task.schedule)}
-      {task.blockedByPolicy !== undefined ? (
-        ` · ${task.blockedByPolicy}`
-      ) : task.enabled && task.nextRunAt !== null ? (
-        <>
-          {" · next "}
-          <ScheduledRelativeLabel value={task.nextRunAt} />
-        </>
-      ) : task.enabled ? (
-        ""
-      ) : (
-        " · paused"
-      )}
-    </>
-  );
-}
 
 function PinToSidebarControl(props: {
   readonly task: ScheduledTask;
@@ -222,11 +202,15 @@ export function ThreadAutomationsPanel(props: {
                 <span className="block truncate text-sm font-medium text-foreground/80">
                   {task.title}
                 </span>
-                <p className="truncate text-2xs text-muted-foreground">{taskScheduleLine(task)}</p>
+                <p className="truncate text-2xs text-muted-foreground">
+                  <ScheduledTaskScheduleLine task={task} />
+                </p>
               </TooltipTrigger>
               <TooltipPopup side="left">
                 <p className="font-medium">{task.title}</p>
-                <p className="text-muted-foreground">{taskScheduleLine(task)}</p>
+                <p className="text-muted-foreground">
+                  <ScheduledTaskScheduleLine task={task} />
+                </p>
               </TooltipPopup>
             </Tooltip>
             {supportsScheduledTaskPinning(task) ? (

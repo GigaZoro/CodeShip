@@ -76,6 +76,10 @@ Select the task to open the thread its last run used, or its settings if it has 
 Right-click the row on web and desktop, or long-press it on mobile, to run the task now or
 unpin it.
 
+Pinned or not, a thread a scheduled task runs in shows a calendar icon in the thread list. On web
+and desktop, hover it for the schedule and next run, or click it to open the task. A task that
+starts a new thread for each run marks only the thread from its latest run.
+
 ## Pin and reorder threads
 
 Pin a thread from its menu to keep it above your active work.
