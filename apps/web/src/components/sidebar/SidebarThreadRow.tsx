@@ -448,17 +448,18 @@ type ListThreadRowProps = Omit<SidebarThreadRowProps, "sortable" | "copy">;
 // Takes the row's props rather than a render function: a closure from the
 // sidebar body is new on every sidebar render, which rebuilt the bag and
 // re-rendered every memoized row with it.
-/** A null `sortableId` makes a copy, a second row for a thread whose own row drags. */
+/** A null `sortableId` makes a row that does not drag: a copy, or a Needs you row. */
 export function SortableThreadRow(
   props: ListThreadRowProps & {
     sortableId: string | null;
+    copy: boolean;
     sortableDisabled: boolean;
     contextDrag: boolean;
   },
 ) {
-  const { sortableId, sortableDisabled, contextDrag, ...rowProps } = props;
+  const { sortableId, copy, sortableDisabled, contextDrag, ...rowProps } = props;
   return sortableId === null ? (
-    <SidebarThreadRowCopy {...rowProps} />
+    <StaticThreadRow {...rowProps} copy={copy} />
   ) : (
     <DraggableThreadRow
       {...rowProps}
@@ -469,10 +470,10 @@ export function SortableThreadRow(
   );
 }
 
-function SidebarThreadRowCopy(props: ListThreadRowProps) {
+function StaticThreadRow(props: ListThreadRowProps & { copy: boolean }) {
   const thread =
     useThreadShell(scopeThreadRef(props.thread.environmentId, props.thread.id)) ?? props.thread;
-  return <SidebarThreadRow key={props.variant} {...props} copy thread={thread} />;
+  return <SidebarThreadRow key={props.variant} {...props} thread={thread} />;
 }
 
 function DraggableThreadRow(

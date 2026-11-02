@@ -1,6 +1,7 @@
 import { CollapsibleSectionHeader } from "../ui/collapsible-section-header";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { BellDotIcon } from "lucide-react";
 import { type ReactNode, useLayoutEffect } from "react";
 import { cn } from "~/lib/utils";
 import {
@@ -104,6 +105,21 @@ export function SidebarDragBoundary(props: {
         </div>
       ) : null}
     </SortableSidebarMarker>
+  );
+}
+
+/** Heads the threads waiting on the user. It never collapses, so none of them can hide. */
+export function SidebarNeedsYouHeader(props: { count: number }) {
+  return (
+    <li
+      role="none"
+      data-testid="sidebar-needs-you-header"
+      className="mx-0.5 flex h-8 list-none items-center gap-2 px-2 text-xs font-medium text-warning-foreground"
+    >
+      <BellDotIcon aria-hidden className="size-3.5 shrink-0" />
+      <span className="min-w-0 flex-1 truncate">Needs you</span>
+      <span className="shrink-0 font-normal tabular-nums">{props.count}</span>
+    </li>
   );
 }
 

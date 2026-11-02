@@ -30,6 +30,24 @@ export function isThreadWorking(thread: WorkingThreadInput): boolean {
   return !(thread.interactionMode === "plan" && thread.hasActionableProposedPlan && runSettled);
 }
 
+/** An approval, a question, a subagent's request, or a guest's message is waiting on the user. */
+export function threadAwaitsUser(
+  thread: Pick<
+    EnvironmentThreadShell,
+    | "hasPendingApprovals"
+    | "hasPendingUserInput"
+    | "pendingSubagentRequest"
+    | "pendingGuestMessageCount"
+  >,
+): boolean {
+  return (
+    thread.hasPendingApprovals ||
+    thread.hasPendingUserInput ||
+    thread.pendingSubagentRequest != null ||
+    (thread.pendingGuestMessageCount ?? 0) > 0
+  );
+}
+
 type InboxThreadInput = Pick<
   EnvironmentThreadShell,
   "id" | "environmentId" | "createdAt" | "unsettledAt" | "latestRun"

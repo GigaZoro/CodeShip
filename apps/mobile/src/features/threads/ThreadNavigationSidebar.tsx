@@ -82,6 +82,7 @@ import {
   ThreadListV2SettledShelfHeader,
   ThreadListV2ShowMoreRow,
   ThreadListV2SnoozedShelfHeader,
+  ThreadListV2NeedsYouHeader,
   ThreadListV2WorkingShelfHeader,
 } from "./thread-list-v2-items";
 import { useThreadRowProviderInstanceResolver } from "./thread-provider-instance";
@@ -672,11 +673,12 @@ function ThreadNavigationSidebarPane(
             pinningSupported={pinningEnvironmentIds.has(thread.environmentId)}
             autoSettleOptOutSupported={autoSettleOptOutEnvironmentIds.has(thread.environmentId)}
             reorderSupported={
-              item.item.pinned
+              item.item.needsYou !== true &&
+              (item.item.pinned
                 ? pinReorderEnvironmentIds.has(thread.environmentId)
                 : !workingShelfEnabled &&
                   grouping === null &&
-                  activeReorderEnvironmentIds.has(thread.environmentId)
+                  activeReorderEnvironmentIds.has(thread.environmentId))
             }
             canMoveUp={item.canMoveUp}
             canMoveDown={item.canMoveDown}
@@ -708,13 +710,14 @@ function ThreadNavigationSidebarPane(
                 : undefined
             }
             hiddenCount={item.hiddenCount}
-            hiddenNeedsAttention={item.hiddenNeedsAttention}
             pane="sidebar"
             newThreadTargets={homeFolderNewThreadTargets(item.folder, projectScopes)}
             onToggle={toggleThreadListFolder}
             onNewThreadInProject={props.onNewThreadInProject}
           />
         );
+      case "v2-needs-you":
+        return <ThreadListV2NeedsYouHeader count={item.count} pane="sidebar" />;
       case "v2-working-shelf":
         return (
           <ThreadListV2WorkingShelfHeader

@@ -63,6 +63,7 @@ import {
   ThreadListV2SettledShelfHeader,
   ThreadListV2ShowMoreRow,
   ThreadListV2SnoozedShelfHeader,
+  ThreadListV2NeedsYouHeader,
   ThreadListV2WorkingShelfHeader,
 } from "../threads/thread-list-v2-items";
 import { useThreadRowProviderInstanceResolver } from "../threads/thread-provider-instance";
@@ -580,11 +581,18 @@ export function HomeScreen(props: HomeScreenProps) {
               : undefined
           }
           hiddenCount={item.hiddenCount}
-          hiddenNeedsAttention={item.hiddenNeedsAttention}
           pane={primaryColumn ? "sidebar" : "screen"}
           newThreadTargets={homeFolderNewThreadTargets(item.folder, projectScopes)}
           onToggle={toggleThreadListFolder}
           onNewThreadInProject={props.onNewThreadInProject}
+        />
+      );
+    }
+    if (item.type === "v2-needs-you") {
+      return (
+        <ThreadListV2NeedsYouHeader
+          count={item.count}
+          pane={primaryColumn ? "sidebar" : "screen"}
         />
       );
     }
@@ -670,11 +678,12 @@ export function HomeScreen(props: HomeScreenProps) {
         pinningSupported={pinningEnvironmentIds.has(thread.environmentId)}
         autoSettleOptOutSupported={autoSettleOptOutEnvironmentIds.has(thread.environmentId)}
         reorderSupported={
-          item.item.pinned
+          item.item.needsYou !== true &&
+          (item.item.pinned
             ? pinReorderEnvironmentIds.has(thread.environmentId)
             : !workingShelfEnabled &&
               grouping === null &&
-              activeReorderEnvironmentIds.has(thread.environmentId)
+              activeReorderEnvironmentIds.has(thread.environmentId))
         }
         canMoveUp={item.canMoveUp}
         canMoveDown={item.canMoveDown}

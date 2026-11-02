@@ -55,6 +55,14 @@ in a new thread's model picker to add or remove them. A regular click returns to
 single model. Choose a base branch and send. Each selection starts a separate thread
 and worktree while you stay in the new thread composer. This requires a Git project.
 
+## See what needs you
+
+Threads waiting on you sit together under **Needs you** at the top of the thread list, below
+pinned tasks: an approval, an answer to a question, a subagent's request, or a guest's message.
+It lists them from every machine and project, even when the list is filtered to one, the thread's
+folder is closed, or the thread is pinned or settled. Once you answer, the thread returns to its
+usual place.
+
 ## Pin scheduled tasks
 
 Pin a scheduled task to watch it from the thread list. On web and desktop, choose
@@ -147,8 +155,8 @@ Threads that are working or waiting on work they will resume from move into a co
 **Working** section below the active list.
 That includes subagents, watched pull requests, and background commands or monitors the agent
 says it is waiting on. A dev server or other process an agent leaves running does not keep a thread
-there. A thread returns to the top of the active list when it finishes, fails, or needs an approval or
-answer. The Working section lists the thread you last sent work to first. Pinned threads stay in
+there. A thread returns to the top of the active list when it finishes or fails, and moves to
+**Needs you** when it needs an approval or answer. The Working section lists the thread you last sent work to first. Pinned threads stay in
 the pinned section.
 
 This is on by default. Turn it off with **Settings → General → Working section** on web and desktop,
@@ -177,8 +185,8 @@ entry; off, each checkout is its own project. Machine folders still list a proje
 machine, so with them on, this mostly decides the filter and the project picker, and whether a new
 thread can switch to another machine that has the project.
 
-Click or tap a folder to open or close it. A closed folder shows how many threads it holds, and a
-dot when one of them needs you. A machine that is offline shows **Offline** and starts closed.
+Click or tap a folder to open or close it. A closed folder shows how many threads it holds; a
+thread that needs you is listed under **Needs you** instead. A machine that is offline shows **Offline** and starts closed.
 When two machines share a name, their folders add the address. While threads are grouped, active
 threads are ordered by their latest message, so you cannot move them by hand.
 

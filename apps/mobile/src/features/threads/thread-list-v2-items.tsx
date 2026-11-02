@@ -167,7 +167,7 @@ const LEGACY_MENU_ACTIONS: MenuAction[] = [
 function ThreadListV2Section(props: {
   readonly label: string;
   readonly pane?: "screen" | "sidebar";
-  readonly tone?: "default" | "snoozed";
+  readonly tone?: "default" | "snoozed" | "attention";
   readonly disclosure?: {
     readonly expanded: boolean;
     readonly disabled?: boolean;
@@ -177,6 +177,7 @@ function ThreadListV2Section(props: {
   };
 }) {
   const snoozed = props.tone === "snoozed";
+  const attention = props.tone === "attention";
   const sidebarPane = props.pane === "sidebar";
   const className = cn(
     "mb-1.5 mt-4 flex-row items-center gap-2.5",
@@ -184,14 +185,19 @@ function ThreadListV2Section(props: {
   );
   const content = (
     <>
+      {attention ? (
+        <SymbolView name="bell.badge" size={12} tintColorClassName="accent-warning-foreground" />
+      ) : null}
       <Text
         className={cn(
           "text-xs font-t3-medium",
-          sidebarPane
-            ? "text-drawer-foreground-muted"
-            : snoozed
-              ? "text-foreground-secondary"
-              : "text-foreground-tertiary",
+          attention
+            ? "text-warning-foreground"
+            : sidebarPane
+              ? "text-drawer-foreground-muted"
+              : snoozed
+                ? "text-foreground-secondary"
+                : "text-foreground-tertiary",
         )}
       >
         {props.label}
@@ -199,7 +205,13 @@ function ThreadListV2Section(props: {
       <View
         className={cn(
           "h-px flex-1",
-          snoozed ? "bg-primary/20" : sidebarPane ? "bg-drawer-border" : "bg-border",
+          attention
+            ? "bg-warning/30"
+            : snoozed
+              ? "bg-primary/20"
+              : sidebarPane
+                ? "bg-drawer-border"
+                : "bg-border",
         )}
       />
       {props.disclosure ? (
@@ -246,6 +258,16 @@ const ThreadListV2SectionDivider = memo(function ThreadListV2SectionDivider(prop
   readonly pane?: "screen" | "sidebar";
 }) {
   return <ThreadListV2Section {...props} />;
+});
+
+/** Heads the threads waiting on the user. It never collapses, so none of them can hide. */
+export const ThreadListV2NeedsYouHeader = memo(function ThreadListV2NeedsYouHeader(props: {
+  readonly count: number;
+  readonly pane?: "screen" | "sidebar";
+}) {
+  return (
+    <ThreadListV2Section label={`Needs you (${props.count})`} pane={props.pane} tone="attention" />
+  );
 });
 
 type ThreadListV2ShelfHeaderProps = {
@@ -296,13 +318,12 @@ export const ThreadListV2SettledShelfHeader = memo(function ThreadListV2SettledS
   return <ThreadListV2ShelfHeader {...props} kind="settled" />;
 });
 
-/** A folder of active threads. Closed, it counts what it hides and flags one that needs you. */
+/** A folder of active threads. Closed, it counts what it hides; Needs you lists the waiting ones. */
 export const ThreadListV2FolderHeader = memo(function ThreadListV2FolderHeader(props: {
   readonly folder: ThreadListV2Folder;
   readonly project: EnvironmentProject | null;
   readonly machine: EnvironmentMachineKind | undefined;
   readonly hiddenCount: number;
-  readonly hiddenNeedsAttention: boolean;
   readonly pane?: "screen" | "sidebar";
   readonly newThreadTargets: ReadonlyArray<HomeFolderNewThreadTarget>;
   readonly onToggle: (folder: ThreadListV2Folder) => void;
@@ -344,7 +365,6 @@ export const ThreadListV2FolderHeader = memo(function ThreadListV2FolderHeader(p
           props.hiddenCount > 0
             ? `${props.hiddenCount} hidden ${props.hiddenCount === 1 ? "thread" : "threads"}`
             : null,
-          props.hiddenNeedsAttention ? "needs you" : null,
         ]
           .filter(Boolean)
           .join(", ")}
@@ -386,7 +406,6 @@ export const ThreadListV2FolderHeader = memo(function ThreadListV2FolderHeader(p
           {folder.label}
         </Text>
         {offline ? <Text className={cn("text-xs", mutedText)}>Offline</Text> : null}
-        {props.hiddenNeedsAttention ? <View className="size-1.5 rounded-full bg-warning" /> : null}
         {props.hiddenCount > 0 ? (
           <Text className={cn("text-xs tabular-nums", mutedText)}>{props.hiddenCount}</Text>
         ) : null}

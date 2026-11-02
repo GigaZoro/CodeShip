@@ -36,6 +36,7 @@ import {
 import {
   createInboxReturnTracker,
   isThreadWorking,
+  threadAwaitsUser,
 } from "@t3tools/client-runtime/state/thread-inbox";
 import { sortSettledThreads } from "@t3tools/client-runtime/state/thread-sort";
 import {
@@ -280,6 +281,7 @@ import { Switch } from "./ui/switch";
 import { Toggle, ToggleGroup } from "./ui/toggle-group";
 import {
   SidebarDragBoundary,
+  SidebarNeedsYouHeader,
   SidebarSectionHeader,
   SidebarSectionPlaceholder,
 } from "./sidebar/SidebarListMarkers";
@@ -530,8 +532,14 @@ function useSidebarThreads(input: {
     clockKey: `${nowMinute}:${snoozeWakeClock}:${inboxReturnsVersion}`,
   });
 
-  const { pinnedThreads, activeThreads, workingThreads, snoozedThreads, settledThreads } =
-    partition;
+  const {
+    needsYouThreads,
+    pinnedThreads,
+    activeThreads,
+    workingThreads,
+    snoozedThreads,
+    settledThreads,
+  } = partition;
   // Older settled threads load in pages; the shelf lists them only as far as they are loaded.
   const olderSettledShelf = useOlderSettledShelf({
     scopes: olderSettledScopes([...serverConfigs.keys()], scopedProjectKeys),
@@ -672,6 +680,7 @@ function useSidebarThreads(input: {
     visibleWorkingThreads.map(threadShellKey).filter((key) => folderThreadKeys.has(key)),
   );
   const orderedThreads = [
+    ...needsYouThreads,
     ...pinnedThreads,
     ...(folderList === null ? activeThreads : folderList.flatMap((folder) => folder.threads)),
     ...visibleWorkingThreads.filter((thread) => !workingCopyKeys.has(threadShellKey(thread))),
@@ -693,6 +702,7 @@ function useSidebarThreads(input: {
     threads,
     workingShelfEnabled,
     searchableThreads: [
+      ...needsYouThreads,
       ...pinnedThreads,
       ...activeThreads,
       ...workingThreads,
@@ -726,7 +736,16 @@ function useSidebarThreads(input: {
     workingCopyKeys,
     orderedThreadKeys: orderedThreads.map(threadShellKey),
     threadByKey: new Map(orderedThreads.map((thread) => [threadShellKey(thread), thread] as const)),
-    settledThreadKeys: new Set(settledThreads.map(threadShellKey)),
+    // A settled thread waiting on the user is listed under Needs you; its menu still offers Un-settle.
+    settledThreadKeys: new Set(
+      [
+        ...settledThreads,
+        ...needsYouThreads.filter(
+          (thread) =>
+            serverConfigs.has(thread.environmentId) && thread.settledOverride === "settled",
+        ),
+      ].map(threadShellKey),
+    ),
     snoozedThreadKeys: new Set(snoozedThreads.map(threadShellKey)),
     sectionByThreadKey,
     pinnedKeys: pinnedThreads.map(threadShellKey),
@@ -753,6 +772,11 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   } = input;
   const preciseNow = new Date().toISOString();
   const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys, delegatedUnderParent);
+  // Ignores the project scope: a thread waiting on the user must not hide in a folder, shelf, or filter.
+  const needsYou = filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent).filter(
+    threadAwaitsUser,
+  );
+  const needsYouKeys = new Set(needsYou.map(threadShellKey));
   const inboxObservation = inboxReturns.observe(workingShelfEnabled ? threads : null);
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
@@ -772,6 +796,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   for (const thread of visible) {
     const configLoaded = serverConfigs.has(thread.environmentId);
     const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+    if (needsYouKeys.has(threadKey)) continue;
     if (configLoaded) {
       activeReorderable.add(threadKey);
       draggable.add(threadKey);
@@ -817,6 +842,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
       ? sortInboxThreadsByReturn(active, inboxObservation.returnedAt)
       : sortThreadsForSidebar(active);
   return {
+    needsYouThreads: sortWorkingThreadsBySend(needsYou),
     pinnedThreads:
       optimisticDrop?.section !== "pinned" || optimisticDrop.order === null
         ? sortedPinned
@@ -1451,6 +1477,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   });
   const {
     workingShelfEnabled,
+    needsYouThreads,
     pinnedThreads,
     draggableThreadKeys,
     activeReorderableThreadKeys,
@@ -2295,13 +2322,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   }, [cancelThreadDrag, dragState, sidebarListItems]);
   // Only order, section, or draft changes need layout reads and motion.
   const listMotionLayoutKey = [
+    needsYouThreads.map(threadShellKey).join("\n"),
     sidebarListItemsKey,
     folderList?.map((folder) => `${folder.key}:${folder.threads.length}`).join("\n") ?? "",
     visibleDraftSessionCount,
     routeDraftIdForRows ?? "",
   ].join("\0");
   const listMotionAnimate =
-    dragState === null && sidebarListItems.length + visibleDraftSessionCount > 0;
+    dragState === null &&
+    needsYouThreads.length + sidebarListItems.length + visibleDraftSessionCount > 0;
   // Cache on both fields so layout-key changes trigger the effect even when animate is unchanged.
   const listMotionPass = { layoutKey: listMotionLayoutKey, animate: listMotionAnimate };
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the list motion controller to animate or not after each layout-affecting commit
@@ -3632,7 +3661,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                     {(() => {
                       const renderThreadRow = (
                         thread: EnvironmentThreadShell,
-                        section: SidebarSection,
+                        section: SidebarSection | "needs-you",
                         folder?: SidebarFolder,
                       ) => {
                         // The tree row of the folder this row sits in.
@@ -3644,12 +3673,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           scopeThreadRef(thread.environmentId, thread.id),
                         );
                         const copy = folder === undefined && workingCopyKeys.has(threadKey);
+                        const needsYou = section === "needs-you";
                         // A rename begun on a copy stays there while the copy is listed.
                         const isRenaming =
                           renamingThreadKey === threadKey &&
                           (copy ? renamingCopy : !renamingCopy || !workingCopyKeys.has(threadKey));
                         const isCard =
-                          section === "active" || section === "pinned" || section === "working";
+                          needsYou ||
+                          section === "active" ||
+                          section === "pinned" ||
+                          section === "working";
                         const rowVariant = folderRow
                           ? folderRowsMultiline
                             ? "folder-multiline"
@@ -3660,7 +3693,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         return (
                           <SortableThreadRow
                             key={copy ? `copy:${threadKey}` : threadKey}
-                            sortableId={copy ? null : threadKey}
+                            // Needs you rows sit outside the sortable list, whose sections they would cross.
+                            sortableId={copy || needsYou ? null : threadKey}
+                            copy={copy}
                             contextDrag={isContextDrag}
                             sortableDisabled={
                               renamingThreadKey === threadKey ||
@@ -3686,7 +3721,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                   ? "unsettle"
                                   : "settle"
                             }
-                            settlementSupported={serverConfigs.has(thread.environmentId)}
+                            // Settling would not move a thread that still waits on the user.
+                            settlementSupported={
+                              !needsYou && serverConfigs.has(thread.environmentId)
+                            }
                             snoozeSupported={serverConfigs.has(thread.environmentId)}
                             pinningSupported={serverConfigs.has(thread.environmentId)}
                             isPinned={thread.pinnedAt != null}
@@ -3784,6 +3822,20 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           onNavigateToThread={navigateToThread}
                         />,
                       ];
+                      if (needsYouThreads.length > 0) {
+                        items.push(
+                          <SidebarNeedsYouHeader
+                            key="needs-you-header"
+                            count={needsYouThreads.length}
+                          />,
+                          ...needsYouThreads.map((thread) => renderThreadRow(thread, "needs-you")),
+                          <li
+                            key="needs-you-divider"
+                            aria-hidden
+                            className="mx-2.5 my-1.5 h-px list-none bg-sidebar-border/60"
+                          />,
+                        );
+                      }
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
                           // Folders draw active rows in their own place below.
@@ -3984,7 +4036,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           {!isSearchingThreads &&
           !hasFolders &&
           visibleDraftSessionCount === 0 &&
-          pinnedThreads.length +
+          needsYouThreads.length +
+            pinnedThreads.length +
             activeThreads.length +
             workingThreads.length +
             snoozedThreads.length +

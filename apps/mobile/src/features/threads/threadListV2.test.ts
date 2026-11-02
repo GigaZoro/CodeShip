@@ -201,6 +201,7 @@ describe("search lists ranked matches", () => {
         makeThread({ id: ThreadId.make("notes"), title: "Deploy notes" }),
         makeThread({ id: ThreadId.make("mentioned"), title: "Weekly notes" }),
         makeThread({ id: ThreadId.make("exact"), title: "Deploy", settledOverride: "settled" }),
+        makeThread({ id: ThreadId.make("waiting"), title: "Unrelated", hasPendingUserInput: true }),
       ],
       environmentId: null,
       searchQuery: "deploy",
@@ -798,7 +799,7 @@ describe("thread list folders", () => {
     ]);
   });
 
-  it("closes a folder down to the open thread and flags a hidden one that needs you", () => {
+  it("closes a folder down to the open thread and leads with every thread that needs you", () => {
     const layout = buildThreadListV2Items({
       threads: [
         makeThread({ id: ThreadId.make("open"), title: "Open", projectId: projectA }),
@@ -806,19 +807,61 @@ describe("thread list folders", () => {
           id: ThreadId.make("approval"),
           title: "Approval",
           projectId: projectA,
+          createdAt: "2026-06-01T03:00:00.000Z",
           hasPendingApprovals: true,
         }),
         makeThread({ id: ThreadId.make("quiet"), title: "Quiet", projectId: projectA }),
+        makeThread({
+          id: ThreadId.make("settled-question"),
+          title: "Settled question",
+          projectId: projectA,
+          createdAt: "2026-06-01T02:00:00.000Z",
+          hasPendingUserInput: true,
+          settledOverride: "settled",
+          settledAt: NOW,
+        }),
+        makeThread({
+          id: ThreadId.make("other-machine"),
+          title: "Other machine",
+          environmentId: EnvironmentId.make("environment-remote"),
+          projectId: projectB,
+          createdAt: "2026-06-01T01:00:00.000Z",
+          pinnedAt: NOW,
+          pendingGuestMessageCount: 1,
+        }),
       ],
-      environmentId: null,
+      // Filtered to one machine: Needs you still lists the other machine's thread.
+      environmentId,
       searchQuery: "",
       now: NOW,
       selectedThreadKey: `${environmentId}:open`,
       grouping: grouping([folder(projectA, false)]),
     });
 
-    expect(layout.items.map((item) => item.thread.id)).toEqual(["open"]);
-    expect(layout.folderHeaders).toMatchObject([{ hiddenCount: 2, hiddenNeedsAttention: true }]);
+    expect(layout.items.map((item) => [item.thread.id, item.needsYou === true])).toEqual([
+      ["approval", true],
+      ["settled-question", true],
+      ["other-machine", true],
+      ["open", false],
+    ]);
+    expect(layout.folderHeaders).toEqual([expect.objectContaining({ index: 3, hiddenCount: 1 })]);
+    expect(layout.settledCount).toBe(0);
+    expect(
+      buildThreadListV2ListItems({
+        items: layout.items,
+        pendingTasks: [makePendingTask("queued")],
+        folderHeaders: layout.folderHeaders,
+        needsYouCount: layout.needsYouCount,
+      }).map((item) => (item.type === "v2-thread" ? item.item.thread.id : item.type)),
+    ).toEqual([
+      "v2-needs-you",
+      "approval",
+      "settled-question",
+      "other-machine",
+      "v2-pending",
+      "v2-folder",
+      "open",
+    ]);
   });
 
   it("nests project folders in an open machine folder, and a closed one lists the open thread", () => {
@@ -1823,12 +1866,14 @@ describe("Working section beta", () => {
 
   it("folds unpinned working threads into a collapsed shelf", () => {
     const layout = build();
+    // Waiting on an approval, the running thread leads under Needs you instead of Working.
     expect(ids(layout)).toEqual([
+      "asks-approval",
       "pinned-working",
       "finished-late",
-      "asks-approval",
       "finished-early",
     ]);
+    expect(layout.needsYouCount).toBe(1);
     expect(layout.workingCount).toBe(1);
     expect(layout.workingShelfHeaderIndex).toBe(4);
 
@@ -1870,7 +1915,7 @@ describe("Working section beta", () => {
       inboxReturnAt: (thread) =>
         thread.id === "finished-early" ? Date.parse("2026-06-01T04:00:00.000Z") : undefined,
     });
-    expect(ids(layout).slice(1)).toEqual(["finished-early", "finished-late", "asks-approval"]);
+    expect(ids(layout).slice(2)).toEqual(["finished-early", "finished-late"]);
   });
 
   it("places the shelf after queued tasks and before snoozed and settled threads", () => {
