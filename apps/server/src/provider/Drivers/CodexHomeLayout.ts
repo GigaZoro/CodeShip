@@ -1,3 +1,6 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Linking without elevation on Windows needs junctions and exact file IDs, which Effect's FileSystem lacks.
+import * as NodeFSP from "node:fs/promises";
+
 import { ProviderDriverKind, type CodexSettings } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -85,7 +88,14 @@ export class CodexShadowHomeFileSystemError extends Schema.TaggedError<CodexShad
   "CodexShadowHomeFileSystemError",
   {
     ...CodexShadowHomeContext,
-    operation: Schema.Literals(["readLink", "makeDirectory", "readDirectory", "remove", "symlink"]),
+    operation: Schema.Literals([
+      "readLink",
+      "makeDirectory",
+      "readDirectory",
+      "remove",
+      "symlink",
+      "stat",
+    ]),
     path: Schema.String,
     targetPath: Schema.optional(Schema.String),
     entryName: Schema.optional(Schema.String),
@@ -224,6 +234,32 @@ const removePrivateSymlink = Effect.fn("CodexHomeLayout.removePrivateSymlink")(f
   }
 });
 
+// SQLite deletes and recreates its -wal and -shm files, so a hard link would split a database from its log.
+const SQLITE_FILE = /\.(?:sqlite|db)(?:-wal|-shm|-journal)?$/i;
+
+// Windows symlinks need Developer Mode or elevation; hard links do not. Codex may replace a shared
+// file, so re-link whenever the account's copy is no longer the same file.
+const shareFileOnWindows = (target: string, link: string) =>
+  Effect.tryPromise(async () => {
+    if (SQLITE_FILE.test(link)) return;
+    const [shared, current] = await Promise.all([
+      NodeFSP.stat(target, { bigint: true }),
+      NodeFSP.lstat(link, { bigint: true }).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      }),
+    ]);
+    if (current?.ino === shared.ino && current.dev === shared.dev) return;
+    const pending = `${link}.t3-link`;
+    await NodeFSP.rm(pending, { force: true });
+    await NodeFSP.link(target, pending);
+    // Windows refuses to replace a file Codex holds open; the next setup retries.
+    await NodeFSP.rename(pending, link).catch(async (error: unknown) => {
+      await NodeFSP.rm(pending, { force: true });
+      throw error;
+    });
+  });
+
 const ensureSymlink = Effect.fn("CodexHomeLayout.ensureSymlink")(function* (input: {
   readonly fileSystem: FileSystem.FileSystem;
   readonly sharedHomePath: string;
@@ -231,6 +267,7 @@ const ensureSymlink = Effect.fn("CodexHomeLayout.ensureSymlink")(function* (inpu
   readonly entryName: string;
 }): Effect.fn.Return<void, CodexShadowHomeError, Path.Path> {
   const path = yield* Path.Path;
+  const windows = yield* HostProcess.isWindows;
   const target = path.join(input.sharedHomePath, input.entryName);
   const link = path.join(input.effectiveHomePath, input.entryName);
   const state = yield* readLinkState({
@@ -238,9 +275,50 @@ const ensureSymlink = Effect.fn("CodexHomeLayout.ensureSymlink")(function* (inpu
     linkPath: link,
   });
 
-  const createLink = input.fileSystem.symlink(target, link).pipe(
-    Effect.catchTags({
-      PlatformError: (cause) =>
+  if (windows) {
+    const targetType = yield* input.fileSystem.stat(target).pipe(
+      Effect.map((info) => info.type),
+      Effect.catchTags({
+        PlatformError: (cause) =>
+          cause.reason._tag === "NotFound"
+            ? Effect.void
+            : new CodexShadowHomeFileSystemError({
+                sharedHomePath: input.sharedHomePath,
+                effectiveHomePath: input.effectiveHomePath,
+                operation: "stat",
+                path: target,
+                entryName: input.entryName,
+                cause,
+              }),
+      }),
+    );
+    // Codex's temporary files can vanish between listing the home and linking them.
+    if (targetType === undefined) return;
+    if (targetType !== "Directory") {
+      if (state._tag === "Symlink" && path.resolve(path.dirname(link), state.target) === target) {
+        return;
+      }
+      return yield* shareFileOnWindows(target, link).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning(
+            "A shared Codex file could not be linked; this account keeps its own.",
+            {
+              path: link,
+              error,
+            },
+          ),
+        ),
+      );
+    }
+  }
+
+  // Junctions link folders on Windows without Developer Mode or elevation.
+  const createLink = Effect.gen(function* () {
+    if (windows) return yield* Effect.tryPromise(() => NodeFSP.symlink(target, link, "junction"));
+    return yield* input.fileSystem.symlink(target, link);
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
         new CodexShadowHomeFileSystemError({
           sharedHomePath: input.sharedHomePath,
           effectiveHomePath: input.effectiveHomePath,
@@ -250,7 +328,7 @@ const ensureSymlink = Effect.fn("CodexHomeLayout.ensureSymlink")(function* (inpu
           entryName: input.entryName,
           cause,
         }),
-    }),
+    ),
   );
 
   if (state._tag === "NotSymlink") {

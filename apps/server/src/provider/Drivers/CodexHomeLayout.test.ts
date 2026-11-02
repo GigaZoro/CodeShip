@@ -6,6 +6,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import { CodexSettings } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   CodexShadowHomeEntryConflictError,
   CodexShadowHomePathConflictError,
@@ -408,7 +409,10 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
             }),
           );
 
-          const error = yield* materializeCodexShadowHome(layout).pipe(Effect.flip);
+          const error = yield* materializeCodexShadowHome(layout).pipe(
+            Effect.provideService(HostProcess.Platform, "linux"),
+            Effect.flip,
+          );
 
           expect(error).toBeInstanceOf(CodexShadowHomeEntryConflictError);
           expect(error).toMatchObject({
@@ -422,6 +426,45 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
             `Cannot create Codex shadow home entry 'config.toml' because '${path.join(shadowHome, "config.toml")}' already exists and is not a symlink.`,
           );
         }),
+    );
+
+    it.effect("shares the main home on Windows without symlinks, except SQLite files", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+        const shadowHome = yield* makeTempDir("t3code-codex-shadow-");
+        const sharedConfig = path.join(sharedHome, "config.toml");
+        yield* writeTextFile(path.join(sharedHome, "sessions", "rollout.jsonl"), "shared\n");
+        yield* writeTextFile(sharedConfig, 'model = "shared"\n');
+        yield* writeTextFile(path.join(shadowHome, "config.toml"), 'model = "stale"\n');
+        yield* writeTextFile(path.join(sharedHome, "state_5.sqlite"), "shared");
+        yield* writeTextFile(path.join(sharedHome, "state_5.sqlite-wal"), "shared");
+        yield* writeTextFile(path.join(shadowHome, "state_5.sqlite"), "account");
+        const layout = yield* resolveCodexHomeLayout(
+          decodeCodexSettings({ homePath: sharedHome, shadowHomePath: shadowHome }),
+        );
+        const materializeOnWindows = materializeCodexShadowHome(layout).pipe(
+          Effect.provideService(HostProcess.Platform, "win32"),
+        );
+
+        yield* materializeOnWindows;
+        // Codex replaces config.toml atomically, which breaks a hard link.
+        yield* writeTextFile(`${sharedConfig}.tmp`, 'model = "updated"\n');
+        yield* fileSystem.rename(`${sharedConfig}.tmp`, sharedConfig);
+        yield* materializeOnWindows;
+
+        expect(
+          yield* fileSystem.readFileString(path.join(shadowHome, "sessions", "rollout.jsonl")),
+        ).toBe("shared\n");
+        expect(yield* fileSystem.readFileString(path.join(shadowHome, "config.toml"))).toBe(
+          'model = "updated"\n',
+        );
+        expect(yield* fileSystem.readFileString(path.join(shadowHome, "state_5.sqlite"))).toBe(
+          "account",
+        );
+        expect(yield* fileSystem.exists(path.join(shadowHome, "state_5.sqlite-wal"))).toBe(false);
+      }),
     );
   });
 });
