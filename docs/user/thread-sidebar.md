@@ -217,6 +217,19 @@ sending an answer or restarting the agent. Settling also closes the thread's
 terminals that wait at an idle prompt, and keeps their output. A terminal that
 runs a command, such as a dev server, stays open.
 
+When a thread has its own worktree, settling it asks first if that worktree has
+uncommitted files or commits the default branch does not have yet, so unshipped
+work does not slip out of view. Commits count as merged once they reach the
+default branch or the branch's pull request merges.
+
+Automatic settlement keeps that work in view too. Before such a thread settles on
+its own, CodeShip commits its changes and opens a pull request, then settles it.
+With **Keep threads with a PR** on, the thread stays active with its new pull
+request. Turn off **Open a PR for unmerged work** in **Settings → Threads** to keep
+these threads active instead. A thread also stays active when its pull request
+cannot be opened, for example in a repository without a remote. A thread whose
+pull request was closed settles without a new one.
+
 To reclaim disk space from settled work, turn on **Run in the thread's worktree when the
 thread settles** for one of the project's actions, or set `"runOnSettle": true` on a
 `t3.json` script, for example `cargo clean`. It runs each time a thread in its own

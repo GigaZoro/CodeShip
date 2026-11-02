@@ -500,6 +500,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "project-defaults",
   },
   {
+    id: "auto-settle-opens-pull-requests",
+    title: "Open a PR for unmerged work",
+    to: "/settings/threads",
+    searchTerms: ["pull request worktree unmerged commit auto-settle sidebar"],
+    requiresThreadAutoSettlement: true,
+    scope: "project-defaults",
+  },
+  {
     id: "keep-threads-with-pull-requests",
     title: "Keep threads with a PR",
     to: "/settings/threads",

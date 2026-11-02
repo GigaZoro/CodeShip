@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off -- UI snooze presets use local calendar boundaries and Intl labels.
 import * as DateTime from "effect/DateTime";
 import { DEFAULT_SNOOZE_PRESETS, type SnoozePresetSetting } from "@t3tools/contracts/settings";
+import type { VcsStatusResult, VcsUnmergedWorkResult } from "@t3tools/contracts";
 
 import type { EnvironmentThreadShell, PendingSubagentRequest } from "./models.ts";
 
@@ -385,4 +386,69 @@ export function isThreadWokeUnseen(input: {
     .map((value) => (value ? Date.parse(value) : NaN))
     .filter((ms) => !Number.isNaN(ms));
   return seenAt.every((ms) => ms < wokeAtMs);
+}
+
+function countLabel(count: number, singular: string, plural: string): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+/** Servers without vcs.unmergedWork answer from a full status read, which may fetch first. */
+export function unmergedWorkFromStatus(status: VcsStatusResult): VcsUnmergedWorkResult {
+  if (!status.isRepo) return { refName: null, changedFileCount: 0, unmergedCommitCount: 0 };
+  return {
+    refName: status.refName,
+    changedFileCount: status.workingTree.files.length,
+    unmergedCommitCount:
+      status.isDefaultRef || status.pr?.state === "merged"
+        ? 0
+        : (status.aheadOfDefaultCount ?? status.aheadCount),
+  };
+}
+
+/** Names a worktree's unmerged work, or null when it has none. */
+function describeUnmergedWork(work: VcsUnmergedWorkResult): string | null {
+  const parts = [
+    work.unmergedCommitCount > 0
+      ? countLabel(work.unmergedCommitCount, "unmerged commit", "unmerged commits")
+      : null,
+    work.changedFileCount > 0
+      ? countLabel(work.changedFileCount, "uncommitted file", "uncommitted files")
+      : null,
+  ].filter((part) => part !== null);
+  if (parts.length === 0) return null;
+  const summary = parts.join(" and ");
+  return work.refName === null ? summary : `${summary} on ${work.refName}`;
+}
+
+/**
+ * The question to ask before settling threads whose worktrees hold unmerged work, or null when
+ * none do. A null `work` is a worktree the check failed on. `settlingCount` covers every thread
+ * in the batch, including ones with nothing unmerged.
+ */
+export function unmergedWorkSettleConfirmation(
+  threads: ReadonlyArray<{ readonly title: string; readonly work: VcsUnmergedWorkResult | null }>,
+  settlingCount: number,
+): { readonly title: string; readonly message: string } | null {
+  const flagged = threads.flatMap((thread) => {
+    const summary = thread.work === null ? null : describeUnmergedWork(thread.work);
+    return thread.work !== null && summary === null ? [] : [{ title: thread.title, summary }];
+  });
+  const [only] = flagged;
+  if (only === undefined) return null;
+  if (settlingCount === 1 && flagged.length === 1) {
+    return {
+      title: `Settle “${only.title}”?`,
+      message:
+        only.summary === null
+          ? "Its worktree could not be checked for changes that are not merged yet."
+          : `Its worktree has changes that are not merged yet: ${only.summary}.`,
+    };
+  }
+  return {
+    title: `Settle ${countLabel(settlingCount, "thread", "threads")}?`,
+    message: [
+      "These worktrees may have changes that are not merged yet:",
+      ...flagged.map((thread) => `“${thread.title}”: ${thread.summary ?? "could not be checked"}`),
+    ].join("\n"),
+  };
 }

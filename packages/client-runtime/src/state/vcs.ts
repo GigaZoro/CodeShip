@@ -303,6 +303,11 @@ export function createVcsEnvironmentAtoms<R, E>(
       concurrency: vcsCommandConcurrency,
       onSettled: invalidateRefs,
     }),
+    // Unscheduled like readRefs, so settling never waits behind a pull or push.
+    readUnmergedWork: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:read-unmerged-work",
+      tag: WS_METHODS.vcsUnmergedWork,
+    }),
     refreshStatus: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:refresh-status",
       tag: WS_METHODS.vcsRefreshStatus,

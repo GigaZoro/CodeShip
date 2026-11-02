@@ -265,6 +265,16 @@ export const VcsStatusResult = Schema.Struct({
 });
 export type VcsStatusResult = typeof VcsStatusResult.Type;
 
+/** Work in a checkout that the default branch does not have yet. Zero counts outside a repository. */
+export const VcsUnmergedWorkResult = Schema.Struct({
+  refName: Schema.NullOr(TrimmedNonEmptyStringSchema),
+  /** Uncommitted and untracked files. */
+  changedFileCount: NonNegativeInt,
+  /** Commits missing from the default branch; zero once the branch's pull request merged. */
+  unmergedCommitCount: NonNegativeInt,
+});
+export type VcsUnmergedWorkResult = typeof VcsUnmergedWorkResult.Type;
+
 export const VcsStatusStreamEvent = Schema.Union([
   Schema.TaggedStruct("snapshot", {
     local: VcsStatusLocalResult,

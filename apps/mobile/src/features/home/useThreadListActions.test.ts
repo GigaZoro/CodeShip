@@ -24,7 +24,13 @@ const state = vi.hoisted(() => ({
     environmentId: string;
     input: { threadId: string; orderKey?: string; snoozedUntil?: string; reason?: string };
   }[],
-  dialogs: [] as { onConfirm: () => void }[],
+  dialogs: [] as { title: string; onConfirm: () => void; onCancel?: () => void }[],
+  dialogShown: Promise.withResolvers<void>(),
+  unmergedWork: { refName: null, changedFileCount: 0, unmergedCommitCount: 0 } as {
+    refName: string | null;
+    changedFileCount: number;
+    unmergedCommitCount: number;
+  },
   alerts: [] as {
     title: string;
     buttons?: { text: string; onPress?: () => void }[];
@@ -50,7 +56,16 @@ vi.mock("expo-haptics", () => ({
 vi.mock("../../components/ui/Dialog", () => ({
   alert: (title: string, _message: string, buttons?: { text: string; onPress?: () => void }[]) =>
     state.alerts.push({ title, buttons }),
-  confirm: (dialog: { onConfirm: () => void }) => state.dialogs.push(dialog),
+  confirm: (dialog: { title: string; onConfirm: () => void }) => {
+    state.dialogs.push(dialog);
+    state.dialogShown.resolve();
+  },
+}));
+vi.mock("../../state/vcs", () => ({
+  vcsEnvironment: {
+    readUnmergedWork: async () => AsyncResult.success(state.unmergedWork),
+    refreshStatus: async () => AsyncResult.failure(Cause.fail(new Error("Unexpected status read"))),
+  },
 }));
 vi.mock("../archive/useArchivedThreadSnapshots", () => ({
   refreshArchivedThreadsForEnvironment: (environmentId: string) => {
@@ -87,6 +102,7 @@ vi.mock("../../state/atom-registry", () => ({
                         threadPinning: true,
                         threadPinReorder: true,
                         threadTitleRegeneration: true,
+                        vcsUnmergedWork: true,
                       },
                     },
                   },
@@ -192,6 +208,8 @@ beforeEach(() => {
   state.requests = [];
   state.shells = [];
   state.dialogs = [];
+  state.dialogShown = Promise.withResolvers<void>();
+  state.unmergedWork = { refName: null, changedFileCount: 0, unmergedCommitCount: 0 };
   state.alerts = [];
   state.afterRequest = undefined;
   state.heldActions = new Map();
@@ -286,6 +304,33 @@ describe("pinned thread operation permissions", () => {
 
     expect(await useThreadListActions().moveThread(moved, "up")).toBe(false);
     expect(state.requests).toHaveLength(1);
+  });
+});
+
+describe("settling a worktree thread", () => {
+  it("asks while the worktree has unmerged work and settles only once confirmed", async () => {
+    state.unmergedWork = { refName: "t3/feature", changedFileCount: 1, unmergedCommitCount: 2 };
+    const thread = makeThread({ worktreePath: "/repo/.t3/worktrees/feature" });
+
+    const declined = useThreadListActions().settleThread(thread);
+    await state.dialogShown.promise;
+    state.dialogs[0]!.onCancel!();
+    expect(await declined).toBe(false);
+
+    state.dialogShown = Promise.withResolvers<void>();
+    const confirmed = useThreadListActions().settleThread(thread);
+    await state.dialogShown.promise;
+    expect(state.requests).toEqual([]);
+    state.dialogs[1]!.onConfirm();
+    expect(await confirmed).toBe(true);
+    expect(state.requests.map(({ action }) => action)).toEqual(["settle"]);
+  });
+
+  it("settles a worktree with nothing unmerged without asking", async () => {
+    const thread = makeThread({ worktreePath: "/repo/.t3/worktrees/feature" });
+    expect(await useThreadListActions().settleThread(thread)).toBe(true);
+    expect(state.dialogs).toEqual([]);
+    expect(state.requests.map(({ action }) => action)).toEqual(["settle"]);
   });
 });
 

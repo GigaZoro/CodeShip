@@ -441,6 +441,10 @@ export function useSettingsRestore(onRestored?: () => void) {
     DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleKeepPullRequests
       ? ["Keep threads with a PR"]
       : []),
+    ...(settings.sidebarAutoSettleOpensPullRequests !==
+    DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOpensPullRequests
+      ? ["Open a PR for unmerged work"]
+      : []),
     ...(settings.sidebarAutoSettleOnMerge !== DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge
       ? ["Auto-settle merged threads"]
       : []),
@@ -611,6 +615,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarWorkingShelfEnabled: DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled,
       sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
       sidebarAutoSettleKeepPullRequests: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleKeepPullRequests,
+      sidebarAutoSettleOpensPullRequests:
+        DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOpensPullRequests,
       sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
       autoResumeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads,
       snoozeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads,
@@ -1525,6 +1531,10 @@ export function ThreadsSettingsPanel() {
   const supportsAutoSettlementScope = connectedEnvironments.every(
     (target) => target.serverConfig?.environment.capabilities.threadAutoSettlementScope === true,
   );
+  // Servers that check worktrees for unmerged work are the ones that read this setting.
+  const supportsUnmergedWorkPullRequests = connectedEnvironments.every(
+    (target) => target.serverConfig?.environment.capabilities.vcsUnmergedWork === true,
+  );
 
   const textGenerationProviders = serverProviders.filter(
     (provider) => provider.supportsTextGeneration !== false,
@@ -1762,6 +1772,25 @@ export function ThreadsSettingsPanel() {
                     updateSettings({ sidebarAutoSettleKeepPullRequests: checked })
                   }
                   aria-label="Keep threads with a PR"
+                />
+              }
+            />
+          ) : null}
+          {(settings.sidebarAutoSettleAfterDays !== null || settings.sidebarAutoSettleOnMerge) &&
+          supportsUnmergedWorkPullRequests ? (
+            <SettingsRow
+              serverScoped
+              settingKeys={["sidebarAutoSettleOpensPullRequests"]}
+              {...searchableSetting("auto-settle-opens-pull-requests")}
+              description="Before a thread whose worktree has unmerged changes settles on its own, commit them and open a pull request. Off keeps those threads active."
+              control={
+                <ScopedSwitch
+                  settingKeys={["sidebarAutoSettleOpensPullRequests"]}
+                  checked={settings.sidebarAutoSettleOpensPullRequests}
+                  onCheckedChange={(checked) =>
+                    updateSettings({ sidebarAutoSettleOpensPullRequests: checked })
+                  }
+                  aria-label="Open a PR for unmerged work"
                 />
               }
             />

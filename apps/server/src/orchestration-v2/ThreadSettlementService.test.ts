@@ -18,6 +18,9 @@ import {
   type PullRequestSummary,
   type ServerSettings as ContractServerSettings,
   type ServerSettingsPatch,
+  type GitRunStackedActionInput,
+  type GitRunStackedActionResult,
+  type VcsUnmergedWorkResult,
 } from "@t3tools/contracts";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import * as Crypto from "effect/Crypto";
@@ -32,6 +35,8 @@ import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 
 import * as GitManager from "../git/GitManager.ts";
+import * as GitWorkflowService from "../git/GitWorkflowService.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerActivation from "../serverActivation.ts";
@@ -628,6 +633,8 @@ interface HarnessOptions {
   readonly branchPullRequest?: GitManager.GitManager["Service"]["branchPullRequest"];
   readonly pullRequestSummary?: PullRequestService.PullRequestService["Service"]["summary"];
   readonly existingWorktreePaths?: ReadonlyArray<string>;
+  readonly unmergedWork?: VcsUnmergedWorkResult;
+  readonly hasPrimaryRemote?: boolean;
   readonly onDispatch?: (command: AutoSettleCommand) => Effect.Effect<void>;
   readonly onScriptRun?: (
     input: ProjectSetupScriptRunner.ProjectSetupScriptRunnerInput,
@@ -658,6 +665,8 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
   >([]);
   const summaryRecovery = yield* Ref.make<ReadonlyArray<boolean | undefined>>([]);
   const invalidatedCwds = yield* Ref.make<ReadonlyArray<string>>([]);
+  const stackedActions = yield* Ref.make<ReadonlyArray<GitRunStackedActionInput>>([]);
+  const pullRequestLinks = yield* Ref.make<ReadonlyArray<string>>([]);
   const domainEvents = yield* PubSub.unbounded<OrchestrationV2DomainEvent>();
   const closedIdle = yield* Queue.unbounded<{ readonly threadId: string }>();
   const scriptRuns =
@@ -700,6 +709,11 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     });
 
   const dispatch: Orchestrator.OrchestratorV2Shape["dispatch"] = (command) => {
+    if (command.type === "thread.pull-request.link") {
+      return Ref.update(pullRequestLinks, (links) => [...links, command.threadId]).pipe(
+        Effect.as({ sequence: 1, storedEvents: [] }),
+      );
+    }
     if (command.type !== "thread.auto-settle") {
       return Effect.die(new Error(`Unexpected command: ${command.type}`));
     }
@@ -748,6 +762,41 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     Layer.mock(Orchestrator.OrchestratorV2)({
       streamDomainEvents: Stream.fromPubSub(domainEvents),
       dispatch,
+      getThreadShell: (threadId) =>
+        Ref.get(snapshots).pipe(
+          Effect.map(
+            (snapshot) => snapshot.threads.find((thread) => thread.id === threadId) ?? null,
+          ),
+        ),
+    }),
+    Layer.mock(ProjectService.ProjectService)({
+      getShell: () => Effect.succeedNone,
+    }),
+    Layer.mock(GitWorkflowService.GitWorkflowService)({
+      unmergedWork: () =>
+        Effect.succeed(
+          options.unmergedWork ?? { refName: null, changedFileCount: 0, unmergedCommitCount: 0 },
+        ),
+      localStatus: () =>
+        Effect.succeed({
+          isRepo: true,
+          hasPrimaryRemote: options.hasPrimaryRemote ?? true,
+          isDefaultRef: false,
+          refName: options.unmergedWork?.refName ?? null,
+          hasWorkingTreeChanges: false,
+          workingTree: { files: [], insertions: 0, deletions: 0 },
+        }),
+      runStackedAction: (input) =>
+        Ref.update(stackedActions, (actions) => [...actions, input]).pipe(
+          Effect.as({
+            action: input.action,
+            branch: { status: "skipped_not_requested" },
+            commit: { status: "created" },
+            push: { status: "pushed" },
+            pr: { status: "created", number: 7, url: "https://github.com/owner/repository/pull/7" },
+            toast: { title: "Created pull request", cta: { kind: "none" } },
+          } satisfies GitRunStackedActionResult),
+        ),
     }),
     Layer.mock(TerminalManager.TerminalManager)({
       closeIdle: (input) =>
@@ -789,6 +838,8 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     summaryCalls,
     summaryRecovery,
     invalidatedCwds,
+    stackedActions,
+    pullRequestLinks,
     closedIdle,
     scriptRuns,
     publishEvent: (event: OrchestrationV2DomainEvent) => PubSub.publish(domainEvents, event),
@@ -883,6 +934,58 @@ describe("ThreadSettlementServiceV2 worker", () => {
             thread.id,
           ]);
         }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect("opens a pull request for unmerged worktree work instead of settling it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const unmerged = { refName: "feature", changedFileCount: 1, unmergedCommitCount: 2 };
+        const pushed = { refName: "feature", changedFileCount: 0, unmergedCommitCount: 2 };
+        const cases = [
+          { name: "clean", work: undefined, pr: null, settles: true, opensPr: false },
+          { name: "no pull request", work: unmerged, pr: null, settles: false, opensPr: true },
+          { name: "pushed to open PR", work: pushed, pr: "open", settles: true, opensPr: false },
+          { name: "closed PR", work: pushed, pr: "closed", settles: true, opensPr: false },
+          { name: "setting off", work: unmerged, pr: null, settles: false, opensPr: false },
+          { name: "no remote", work: unmerged, pr: null, settles: false, opensPr: false },
+        ] as const;
+        for (const testCase of cases) {
+          const thread = makeThread(`worktree-${testCase.name}`, {
+            branch: "feature",
+            worktreePath: "/worktrees/feature",
+          });
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([thread]),
+            settings: {
+              ...DEFAULT_SERVER_SETTINGS,
+              sidebarAutoSettleAfterDays: 3,
+              sidebarAutoSettleOpensPullRequests: testCase.name !== "setting off",
+            },
+            existingWorktreePaths: ["/worktrees/feature"],
+            ...(testCase.work === undefined ? {} : { unmergedWork: testCase.work }),
+            hasPrimaryRemote: testCase.name !== "no remote",
+            branchPullRequest: () =>
+              Effect.succeed(testCase.pr === null ? null : makeBranchPullRequest(testCase.pr)),
+          });
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+            expect(
+              (yield* Ref.get(fixture.commands)).map((command) => command.threadId),
+              testCase.name,
+            ).toEqual(testCase.settles ? [thread.id] : []);
+            expect(
+              (yield* Ref.get(fixture.stackedActions)).map((input) => input.action),
+              testCase.name,
+            ).toEqual(testCase.opensPr ? ["commit_push_pr"] : []);
+            expect(yield* Ref.get(fixture.pullRequestLinks), testCase.name).toEqual(
+              testCase.opensPr ? [thread.id] : [],
+            );
+          }).pipe(Effect.provide(fixture.layer));
+        }
       }),
     ),
   );

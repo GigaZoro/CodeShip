@@ -1,4 +1,5 @@
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FileSystem from "effect/FileSystem";
@@ -27,6 +28,7 @@ import {
   type VcsStatusLocalResult,
   type VcsStatusRemoteResult,
   type VcsStatusResult,
+  type VcsUnmergedWorkResult,
 } from "@t3tools/contracts";
 
 import * as GitManager from "./GitManager.ts";
@@ -53,6 +55,9 @@ export class GitWorkflowService extends Context.Service<
       input: VcsStatusInput,
     ) => Effect.Effect<VcsStatusLocalResult, GitManagerServiceError>;
     readonly currentBranch: (cwd: string) => Effect.Effect<string | null, GitManagerServiceError>;
+    readonly unmergedWork: (
+      input: VcsStatusInput,
+    ) => Effect.Effect<VcsUnmergedWorkResult, GitManagerServiceError>;
     readonly remoteStatus: (
       input: VcsStatusInput,
       options?: GitManager.GitRemoteStatusOptions,
@@ -168,6 +173,9 @@ function nonRepositoryListRefs(): VcsListRefsResult {
     totalCount: 0,
   };
 }
+
+// Settling waits on this fetch, so an unreachable remote must not hold it for long.
+const UNMERGED_WORK_FETCH_TIMEOUT = Duration.seconds(10);
 
 /** @public */
 export const make = Effect.gen(function* () {
@@ -358,6 +366,60 @@ export const make = Effect.gen(function* () {
         stderrLength: result.stderr.length,
         detail: "Failed to read the checked-out branch.",
       });
+    }),
+    unmergedWork: Effect.fn("GitWorkflowService.unmergedWork")(function* (input) {
+      const none = { refName: null, changedFileCount: 0, unmergedCommitCount: 0 };
+      if (!(yield* detectGitRepositoryForStatus("GitWorkflowService.unmergedWork", input.cwd))) {
+        return none;
+      }
+      const read = Effect.fnUntraced(function* () {
+        const details = yield* git.statusDetailsLocal(input.cwd, { includeDivergence: true });
+        return details.isRepo
+          ? {
+              refName: details.branch,
+              changedFileCount: details.workingTree.files.length,
+              unmergedCommitCount: details.isDefaultBranch ? 0 : details.aheadOfDefaultCount,
+            }
+          : none;
+      });
+      const work = yield* read();
+      if (work.unmergedCommitCount === 0 || work.refName === null) return work;
+      // Squash and rebase merges leave the branch's own commits outside the default branch.
+      // A lookup that fails keeps the commits counted, so the warning errs toward showing.
+      const pullRequest = yield* gitManager
+        .branchPullRequest({ cwd: input.cwd, branch: work.refName })
+        .pipe(Effect.orElseSucceed(() => null));
+      if (pullRequest?.state === "merged") {
+        const head = pullRequest.headSha
+          ? yield* git.resolveCommit({ cwd: input.cwd, revision: "HEAD" })
+          : null;
+        // Commits added after the merge are still unmerged.
+        if (head === null || head.commitSha === pullRequest.headSha) {
+          return { ...work, unmergedCommitCount: 0 };
+        }
+      }
+      // A merge or push from elsewhere reaches the local default ref only after a fetch.
+      const fetchDefaultBranch = Effect.fnUntraced(function* () {
+        const remoteName = yield* git.resolvePrimaryRemoteName(input.cwd);
+        let remoteBranch = yield* git.resolveDefaultBranchName(input.cwd, remoteName);
+        // Repositories that were not cloned have no remote HEAD to name the default.
+        if (remoteBranch === null) {
+          for (const refName of ["main", "master"]) {
+            if (yield* git.remoteBranchExists({ cwd: input.cwd, remoteName, refName })) {
+              remoteBranch = refName;
+              break;
+            }
+          }
+        }
+        if (remoteBranch === null) return false;
+        yield* git.fetchRemoteTrackingBranch({ cwd: input.cwd, remoteName, remoteBranch });
+        return true;
+      });
+      const fetched = yield* fetchDefaultBranch().pipe(
+        Effect.timeout(UNMERGED_WORK_FETCH_TIMEOUT),
+        Effect.orElseSucceed(() => false),
+      );
+      return fetched ? yield* read() : work;
     }),
     remoteStatus: Effect.fn("GitWorkflowService.remoteStatus")(function (input, options) {
       return detectGitRepositoryForStatus("GitWorkflowService.remoteStatus", input.cwd).pipe(

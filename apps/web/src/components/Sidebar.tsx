@@ -1106,6 +1106,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const {
     settleThread,
+    confirmSettlingUnmergedWork,
     unsettleThread,
     snoozeThread,
     unsnoozeThread,
@@ -1951,14 +1952,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
 
   const attemptSettle = (
     threadRef: ScopedThreadRef,
-    opts: { coSettlingKeys?: ReadonlySet<string> } = {},
+    opts: { coSettlingKeys?: ReadonlySet<string>; unmergedWorkConfirmed?: boolean } = {},
   ) => {
     void (async () => {
       const threadKey = scopedThreadKey(threadRef);
       if (settlingThreadKeysRef.current.has(threadKey)) return;
       settlingThreadKeysRef.current.add(threadKey);
       const navigateAfterSettle = planForwardNavigation(threadKey, opts.coSettlingKeys);
-      const result = await settleThread(threadRef);
+      const result = await settleThread(threadRef, {
+        unmergedWorkConfirmed: opts.unmergedWorkConfirmed ?? false,
+      });
       settlingThreadKeysRef.current.delete(threadKey);
       if (result._tag === "Failure") {
         if (!isAtomCommandInterrupted(result)) {
@@ -1990,11 +1993,19 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   useEffect(() => registerSettleAndAdvance(attemptSettle), [attemptSettle]);
   const settleThreads = (threadKeys: readonly string[]) => {
     const coSettlingKeys = new Set(threadKeys);
-    for (const threadKey of threadKeys) {
+    const threadRefs = threadKeys.flatMap((threadKey) => {
       const thread = threadByKeyRef.current.get(threadKey);
-      if (!thread || thread.settledOverride === "settled") continue;
-      attemptSettle(scopeThreadRef(thread.environmentId, thread.id), { coSettlingKeys });
-    }
+      return !thread || thread.settledOverride === "settled"
+        ? []
+        : [scopeThreadRef(thread.environmentId, thread.id)];
+    });
+    // One question for the whole range instead of one per thread.
+    void confirmSettlingUnmergedWork(threadRefs).then((confirmed) => {
+      if (!confirmed) return;
+      for (const threadRef of threadRefs) {
+        attemptSettle(threadRef, { coSettlingKeys, unmergedWorkConfirmed: true });
+      }
+    });
   };
   const attemptUnsettle = (threadRef: ScopedThreadRef) => {
     void (async () => {

@@ -25,6 +25,9 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as GitManager from "../git/GitManager.ts";
+import * as GitWorkflowService from "../git/GitWorkflowService.ts";
+import { linkCreatedPullRequest } from "../git/linkCreatedPullRequest.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -42,6 +45,11 @@ export interface SettlementPullRequest {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
+const HOUR_MS = 60 * 60 * 1_000;
+// A thread kept active for unmerged work is rechecked this often, not on every sweep.
+const UNMERGED_WORK_RECHECK_MS = HOUR_MS;
+// Each attempt can run text generation for a commit and pull request, so failures back off.
+const UNMERGED_WORK_RETRY_AFTER_FAILURE_MS = 6 * HOUR_MS;
 const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
 
 function toMillis(value: DateTime.Utc | null | undefined): number | null {
@@ -277,12 +285,14 @@ export function autoSettlementSettingsKey(
     settings.sidebarAutoSettleOnMerge,
     settings.sidebarAutoSettleAfterDays,
     settings.sidebarAutoSettleKeepPullRequests,
+    settings.sidebarAutoSettleOpensPullRequests,
     Object.entries(settings.projectSettingsOverrides)
       .filter(
         ([, entry]) =>
           entry.sidebarAutoSettleOnMerge !== undefined ||
           entry.sidebarAutoSettleAfterDays !== undefined ||
-          entry.sidebarAutoSettleKeepPullRequests !== undefined,
+          entry.sidebarAutoSettleKeepPullRequests !== undefined ||
+          entry.sidebarAutoSettleOpensPullRequests !== undefined,
       )
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([projectId, entry]) => [
@@ -292,6 +302,7 @@ export function autoSettlementSettingsKey(
           ? "inherit"
           : entry.sidebarAutoSettleAfterDays,
         entry.sidebarAutoSettleKeepPullRequests ?? "inherit",
+        entry.sidebarAutoSettleOpensPullRequests ?? "inherit",
       ]),
   ]);
 }
@@ -302,6 +313,8 @@ export const make = Effect.gen(function* () {
   const projectStore = yield* ProjectStore.ProjectStoreV2;
   const settingsService = yield* ServerSettings.ServerSettingsService;
   const git = yield* GitManager.GitManager;
+  const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
+  const projectService = yield* ProjectService.ProjectService;
   const pullRequests = yield* PullRequestService.PullRequestService;
   const crypto = yield* Crypto.Crypto;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -312,6 +325,111 @@ export const make = Effect.gen(function* () {
   const projectScripts = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
   // Repeated thread.settled retains settledAt; run the action only once per settlement.
   const settleActionRunAt = new Map<ThreadId, number>();
+  const unmergedWorkHeldUntilMs = new Map<ThreadId, number>();
+  const worktreesOpeningPullRequests = new Set<string>();
+
+  /**
+   * False keeps the thread active so its worktree's unmerged work stays in view. That work gets a
+   * pull request first when the setting allows; the link it adds sweeps the thread again.
+   */
+  const releasesUnmergedWork = Effect.fnUntraced(
+    function* (
+      thread: ProjectionStore.ProjectionSettlementCandidate,
+      opensPullRequests: boolean,
+      nowMs: number,
+    ) {
+      const cwd = thread.worktreePath;
+      if (cwd === null || !(yield* fileSystem.exists(cwd))) return true;
+      if (
+        (unmergedWorkHeldUntilMs.get(thread.id) ?? 0) > nowMs ||
+        worktreesOpeningPullRequests.has(cwd)
+      ) {
+        return false;
+      }
+      const hold = (durationMs: number) => {
+        unmergedWorkHeldUntilMs.set(thread.id, nowMs + durationMs);
+        return false;
+      };
+      const work = yield* gitWorkflow.unmergedWork({ cwd });
+      if (work.changedFileCount === 0 && work.unmergedCommitCount === 0) {
+        unmergedWorkHeldUntilMs.delete(thread.id);
+        return true;
+      }
+      const pullRequest =
+        work.refName === null ? null : yield* git.branchPullRequest({ cwd, branch: work.refName });
+      // A closed pull request set the work aside on purpose; an open one already holds the commits.
+      if (
+        pullRequest?.state === "closed" ||
+        (pullRequest?.state === "open" && work.changedFileCount === 0)
+      ) {
+        unmergedWorkHeldUntilMs.delete(thread.id);
+        return true;
+      }
+      if (
+        !opensPullRequests ||
+        work.refName === null ||
+        !(yield* gitWorkflow.localStatus({ cwd })).hasPrimaryRemote
+      ) {
+        return hold(UNMERGED_WORK_RECHECK_MS);
+      }
+      // Recheck after the reads above: a concurrent sweep may have started on this worktree.
+      if (worktreesOpeningPullRequests.has(cwd)) return false;
+      worktreesOpeningPullRequests.add(cwd);
+      const uuid = yield* crypto.randomUUIDv4();
+      const opened = yield* gitWorkflow
+        .runStackedAction({
+          actionId: `auto-settle:${thread.id}:${uuid}`,
+          cwd,
+          action: "commit_push_pr",
+          threadId: thread.id,
+          projectId: thread.projectId,
+        })
+        .pipe(
+          Effect.tap((result) =>
+            linkCreatedPullRequest({
+              threadId: thread.id,
+              result,
+              commandId: Effect.succeed(
+                CommandId.make(`server:auto-settle-pr:${thread.id}:${uuid}`),
+              ),
+            }),
+          ),
+          Effect.as(true),
+          Effect.catchCauseIf(
+            (cause) => !Cause.hasInterruptsOnly(cause),
+            (cause) =>
+              Effect.logWarning("opening a pull request before automatic settlement failed", {
+                threadId: thread.id,
+                cause: Cause.pretty(cause),
+              }).pipe(Effect.as(false)),
+          ),
+          Effect.ensuring(Effect.sync(() => worktreesOpeningPullRequests.delete(cwd))),
+          Effect.provideService(Orchestrator.OrchestratorV2, orchestrator),
+          Effect.provideService(ProjectService.ProjectService, projectService),
+        );
+      if (!opened) return hold(UNMERGED_WORK_RETRY_AFTER_FAILURE_MS);
+      unmergedWorkHeldUntilMs.delete(thread.id);
+      return false;
+    },
+    (effect, thread, _opensPullRequests, nowMs) =>
+      effect.pipe(
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterruptsOnly(cause),
+          (cause) =>
+            Effect.logWarning("checking unmerged work before automatic settlement failed", {
+              threadId: thread.id,
+              cause: Cause.pretty(cause),
+            }).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  unmergedWorkHeldUntilMs.set(thread.id, nowMs + UNMERGED_WORK_RECHECK_MS);
+                  return false;
+                }),
+              ),
+            ),
+        ),
+      ),
+  );
 
   const sweep = Effect.fn("ThreadSettlementServiceV2.sweep")(function* (
     mergedPullRequest: PullRequestService.PullRequestMergeEvent | null,
@@ -347,6 +465,15 @@ export const make = Effect.gen(function* () {
           autoSettleKeepPullRequests: currentSettings.sidebarAutoSettleKeepPullRequests,
         });
         if (settledAt === null) return thread;
+        if (
+          !(yield* releasesUnmergedWork(
+            thread,
+            currentSettings.sidebarAutoSettleOpensPullRequests,
+            DateTime.toEpochMillis(decisionNow),
+          ))
+        ) {
+          return null;
+        }
         const uuid = yield* crypto.randomUUIDv4();
         yield* orchestrator.dispatch({
           type: "thread.auto-settle",
@@ -680,6 +807,8 @@ export const make = Effect.gen(function* () {
           return Effect.void;
         }
         lastSettlementSettings = key;
+        // Held threads follow the new rules now rather than after their recheck delay.
+        unmergedWorkHeldUntilMs.clear();
         return fullSweeps.enqueue(undefined);
       }),
     );

@@ -249,6 +249,7 @@ describe("auto-settlement search availability", () => {
       "auto-settle-inactive-threads",
       "auto-settle-merged-threads",
       "days-before-auto-settle",
+      "auto-settle-opens-pull-requests",
       "keep-threads-with-pull-requests",
     ]);
   });

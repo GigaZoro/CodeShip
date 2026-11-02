@@ -2,7 +2,11 @@ import type { ThreadMoveDestination } from "../threads/threadOrder";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import * as ThreadUndo from "@t3tools/client-runtime/state/thread-undo";
 import { showThreadUndoNotice } from "./thread-undo-notice";
-import { canSnooze } from "@t3tools/client-runtime/state/thread-settled";
+import {
+  canSnooze,
+  unmergedWorkFromStatus,
+  unmergedWorkSettleConfirmation,
+} from "@t3tools/client-runtime/state/thread-settled";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Haptics from "expo-haptics";
@@ -17,6 +21,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { readEnvironmentScope } from "../../state/session";
 import { environmentThreadShells, threadEnvironment } from "../../state/threads";
+import { vcsEnvironment } from "../../state/vcs";
 import { queuedThreadKeysAtom } from "../../state/use-thread-outbox";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
@@ -35,6 +40,13 @@ import { resolveThreadTitleRename } from "../threads/thread-title-rename";
 
 function environmentConfigLoaded(environmentId: EnvironmentThreadShell["environmentId"]) {
   return appAtomRegistry.get(environmentServerConfigsAtom).has(environmentId);
+}
+
+function environmentSupportsUnmergedWork(environmentId: EnvironmentThreadShell["environmentId"]) {
+  return (
+    appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
+      .vcsUnmergedWork === true
+  );
 }
 
 function environmentSupportsAutoSettleOptOut(
@@ -221,6 +233,12 @@ export function useThreadListActions(): {
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
+  const readUnmergedWork = useAtomCommand(vcsEnvironment.readUnmergedWork, {
+    reportFailure: false,
+  });
+  const refreshVcsStatus = useAtomCommand(vcsEnvironment.refreshStatus, {
+    reportFailure: false,
+  });
   const snoozeInFlightThreadKeys = useRef(new Set<string>());
   const titleRegenerationInFlightThreadKeys = useRef(new Set<string>());
 
@@ -276,7 +294,53 @@ export function useThreadListActions(): {
         }
       },
     });
+  /** False when the user declines settling a thread whose worktree holds unmerged work. */
+  const confirmUnmergedWork = async (thread: EnvironmentThreadShell, worktreePath: string) => {
+    const request = { environmentId: thread.environmentId, input: { cwd: worktreePath } };
+    const result = environmentSupportsUnmergedWork(thread.environmentId)
+      ? await readUnmergedWork(request)
+      : await refreshVcsStatus(request);
+    if (result._tag !== "Success") {
+      console.error("Unmerged work check failed before settling", {
+        threadId: thread.id,
+        worktreePath,
+        error: Cause.squash(result.cause),
+      });
+    }
+    const confirmation = unmergedWorkSettleConfirmation(
+      [
+        {
+          title: thread.title,
+          work:
+            result._tag !== "Success"
+              ? null
+              : "pr" in result.value
+                ? unmergedWorkFromStatus(result.value)
+                : result.value,
+        },
+      ],
+      1,
+    );
+    if (!confirmation) return true;
+    return new Promise<boolean>((resolve) => {
+      Dialog.confirm({
+        ...confirmation,
+        confirmText: "Settle",
+        onConfirm: () => resolve(true),
+        onCancel: () => resolve(false),
+      });
+    });
+  };
   const settleThread = async (thread: EnvironmentThreadShell) => {
+    if (!checkThreadOperationPermission(thread, actionFailureTitle("settle"))) return false;
+    // Threads with nothing to check stay synchronous, so a quick Undo cannot overtake the settle.
+    if (
+      thread.worktreePath &&
+      environmentConfigLoaded(thread.environmentId) &&
+      !(await confirmUnmergedWork(thread, thread.worktreePath))
+    ) {
+      return false;
+    }
     const key = scopedThreadKey(thread.environmentId, thread.id);
     const plan = ThreadUndo.planThreadUndo("settle", thread);
     let claim: ReturnType<typeof ThreadUndo.begin> | undefined;

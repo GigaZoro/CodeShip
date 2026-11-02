@@ -5,7 +5,12 @@ import {
   scopedThreadKey,
 } from "@t3tools/client-runtime/environment";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import { canSnooze, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
+import {
+  canSnooze,
+  threadWokeAt,
+  unmergedWorkFromStatus,
+  unmergedWorkSettleConfirmation,
+} from "@t3tools/client-runtime/state/thread-settled";
 import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
 import {
   AuthOrchestrationOperateScope,
@@ -39,6 +44,7 @@ import { readLocalApi } from "../localApi";
 import {
   readEnvironmentServerConfigLoaded,
   readEnvironmentSupportsAutoSettleOptOut,
+  readEnvironmentSupportsUnmergedWork,
   readEnvironmentThreadRefs,
   readProject,
   readThreadShell,
@@ -309,6 +315,9 @@ export function useThreadActions() {
     refresh: true,
   });
   const refreshVcsStatus = useAtomCommand(vcsEnvironment.refreshStatus, {
+    reportFailure: false,
+  });
+  const readUnmergedWork = useAtomCommand(vcsEnvironment.readUnmergedWork, {
     reportFailure: false,
   });
   const sidebarThreadSortOrder = useClientSettings((settings) => settings.sidebarThreadSortOrder);
@@ -721,7 +730,59 @@ export function useThreadActions() {
     return result;
   };
 
-  const settleThread = async (target: ScopedThreadRef) => {
+  const unmergedWorkChecks = (targets: ReadonlyArray<ScopedThreadRef>) =>
+    targets.flatMap((target) => {
+      const thread = readThreadShell(target);
+      return thread?.worktreePath && readEnvironmentServerConfigLoaded(target.environmentId)
+        ? [{ target, title: thread.title, cwd: thread.worktreePath }]
+        : [];
+    });
+
+  const confirmUnmergedWork = async (
+    checks: ReturnType<typeof unmergedWorkChecks>,
+    settlingCount: number,
+  ) => {
+    const threads = await Promise.all(
+      checks.map(async ({ target, title, cwd }) => {
+        const request = { environmentId: target.environmentId, input: { cwd } };
+        const result = readEnvironmentSupportsUnmergedWork(target.environmentId)
+          ? await readUnmergedWork(request)
+          : await refreshVcsStatus(request);
+        if (result._tag === "Success") {
+          const work = "pr" in result.value ? unmergedWorkFromStatus(result.value) : result.value;
+          return { title, work };
+        }
+        console.error("Unmerged work check failed before settling", {
+          threadId: target.threadId,
+          worktreePath: cwd,
+          error: squashAtomCommandFailure(result),
+        });
+        return { title, work: null };
+      }),
+    );
+    const confirmation = unmergedWorkSettleConfirmation(threads, settlingCount);
+    const localApi = readLocalApi();
+    if (!confirmation || !localApi) return true;
+    const confirmed = await settlePromise(() =>
+      localApi.dialogs.confirm(`${confirmation.title}\n${confirmation.message}`),
+    );
+    if (confirmed._tag === "Success") return confirmed.value;
+    console.error("Unmerged work confirmation failed to open", {
+      error: squashAtomCommandFailure(confirmed),
+    });
+    return false;
+  };
+
+  /** False when the user declines settling threads whose worktrees hold unmerged work. */
+  const confirmSettlingUnmergedWork = async (targets: ReadonlyArray<ScopedThreadRef>) => {
+    const checks = unmergedWorkChecks(targets);
+    return checks.length === 0 || confirmUnmergedWork(checks, targets.length);
+  };
+
+  const settleThread = async (
+    target: ScopedThreadRef,
+    options: { readonly unmergedWorkConfirmed?: boolean } = {},
+  ) => {
     if (!readEnvironmentServerConfigLoaded(target.environmentId)) {
       return AsyncResult.failure(
         Cause.fail(
@@ -731,6 +792,12 @@ export function useThreadActions() {
           }),
         ),
       );
+    }
+    // Threads with nothing to check stay synchronous, so a quick Undo cannot overtake the settle.
+    const checks = options.unmergedWorkConfirmed ? [] : unmergedWorkChecks([target]);
+    if (checks.length > 0 && !(await confirmUnmergedWork(checks, 1))) {
+      // Declining reads as an interrupt, which callers treat as a quiet no-op.
+      return AsyncResult.failure(Cause.interrupt());
     }
     const resolved = resolveThreadTarget(target);
     // oxlint-disable-next-line react/purity -- runs in an event handler (oxc#27309)
@@ -933,6 +1000,7 @@ export function useThreadActions() {
     deleteThread,
     confirmAndDeleteThread,
     settleThread,
+    confirmSettlingUnmergedWork,
     unsettleThread,
     snoozeThread,
     unsnoozeThread,
