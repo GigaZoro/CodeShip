@@ -1,5 +1,5 @@
 import { RefreshIcon } from "~/components/ui/refresh-icon";
-import { PlusIcon, SearchIcon } from "lucide-react";
+import { FilterXIcon, PlusIcon, SearchIcon } from "lucide-react";
 
 import { openCommandPalette } from "../../commandPaletteBus";
 import { Button } from "../ui/button";
@@ -54,6 +54,7 @@ export function PullRequestListEmptyState({
   loadingMore,
   refreshing,
   onClearQuery,
+  onClearFilters,
   onLoadMore,
   onRefresh,
 }: {
@@ -65,6 +66,7 @@ export function PullRequestListEmptyState({
   loadingMore: boolean;
   refreshing: boolean;
   onClearQuery: () => void;
+  onClearFilters: () => void;
   onLoadMore: () => void;
   onRefresh: () => void;
 }) {
@@ -130,11 +132,17 @@ export function PullRequestListEmptyState({
         <EmptyTitle>{filtered ? "Nothing under these filters" : "No pull requests"}</EmptyTitle>
         <EmptyDescription>
           {filtered
-            ? "Widen the state, involvement or project filter to see more."
+            ? "No pull requests match the filters you set."
             : "Pull requests from every project in this workspace appear here."}
         </EmptyDescription>
       </EmptyHeader>
       <div className="flex flex-wrap justify-center gap-2">
+        {filtered ? (
+          <Button size="sm" onClick={onClearFilters}>
+            <FilterXIcon className="size-3.5" />
+            Clear filters
+          </Button>
+        ) : null}
         {canLoadMore ? (
           <Button size="sm" variant="outline" disabled={loadingMore} onClick={onLoadMore}>
             {loadingMore ? "Loading..." : "Load more pull requests"}

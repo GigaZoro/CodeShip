@@ -87,6 +87,11 @@ export function connectionStatusText(connection: EnvironmentConnectionPresentati
   }
 }
 
+/** Up or on its way, so a server config missing now can still arrive and nothing is final yet. */
+export function connectionMayStillAnswer(phase: EnvironmentConnectionPhase): boolean {
+  return phase === "connecting" || phase === "reconnecting" || phase === "connected";
+}
+
 export function connectionStatusTitle(connection: EnvironmentConnectionPresentation): string {
   if (connection.phase === "reconnecting" && connection.error) {
     return "Failed to connect. Reconnecting...";

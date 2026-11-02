@@ -33,6 +33,7 @@ import {
 } from "lucide-react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Kbd } from "../ui/kbd";
@@ -150,6 +151,7 @@ export function SettingsSidebarNav({
   const [query, setQuery] = useState("");
   // Below md the nav is an icon rail; searching expands it over the page.
   const [compactSearchOpen, setCompactSearchOpen] = useState(false);
+  const compactLayout = useMediaQuery("max-md");
   const [activeResultIndex, setActiveResultIndex] = useState(0);
   const searchableItems = useAvailableSettingsSearchItems(scopeSearch);
   const results = searchSettings(query, searchableItems);
@@ -203,6 +205,7 @@ export function SettingsSidebarNav({
   }, [compactSearchOpen]);
 
   const handleSectionClick = (to: SettingsPath) => {
+    setCompactSearchOpen(false);
     void navigate({
       to,
       hash: "",
@@ -263,6 +266,19 @@ export function SettingsSidebarNav({
     <nav
       {...navArea}
       role="navigation"
+      // Closes only when focus leaves the nav: pressing a section blurs the search first, and
+      // collapsing then would move the rows out from under the press.
+      onBlur={(event) => {
+        if (isSearching || event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        setCompactSearchOpen(false);
+      }}
+      onMouseDown={(event) => {
+        // Safari never focuses a pressed button, so the blur above would see no target; keep the
+        // search focused instead while its labels are showing.
+        if (compactLayout && compactSearchOpen && event.target !== searchInputRef.current) {
+          event.preventDefault();
+        }
+      }}
       className={cn(
         "flex flex-col text-sidebar-foreground",
         inSidebar ? "min-w-0 flex-1" : "w-60 shrink-0 border-e bg-sidebar max-md:w-14",
@@ -293,9 +309,6 @@ export function SettingsSidebarNav({
                 }}
                 onKeyDown={handleSearchKeyDown}
                 onFocus={() => setCompactSearchOpen(true)}
-                onBlur={() => {
-                  if (!isSearching) setCompactSearchOpen(false);
-                }}
                 placeholder="Search"
                 aria-label="Search settings"
                 role="combobox"

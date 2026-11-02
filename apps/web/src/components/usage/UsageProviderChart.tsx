@@ -391,7 +391,7 @@ function UsageChartPlot({
     return observeResize([plot, tooltip], positionTooltip);
   }, [hoverIndex, positionTooltip]);
 
-  const handleMove = (event: React.MouseEvent<HTMLDivElement>) => {
+  const handleMove = (event: React.PointerEvent<HTMLDivElement>) => {
     const plot = plotRef.current;
     if (plot === null || periods.length === 0) return;
     const bounds = plot.getBoundingClientRect();
@@ -410,9 +410,17 @@ function UsageChartPlot({
   return (
     <div
       ref={plotRef}
-      className="relative h-56 flex-1"
-      onMouseMove={handleMove}
-      onMouseLeave={() => {
+      // pan-y keeps page scrolling while a sideways drag scrubs the periods on touch screens.
+      className="relative h-56 flex-1 touch-pan-y"
+      onPointerMove={handleMove}
+      onPointerDown={handleMove}
+      onPointerLeave={(event) => {
+        // A lifted finger also leaves, which would hide the period it just tapped.
+        if (event.pointerType === "touch") return;
+        hoverPositionRef.current = null;
+        setHoverIndex(null);
+      }}
+      onPointerCancel={() => {
         hoverPositionRef.current = null;
         setHoverIndex(null);
       }}

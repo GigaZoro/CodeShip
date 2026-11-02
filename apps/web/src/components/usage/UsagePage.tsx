@@ -1,4 +1,5 @@
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
+import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { useAtomValue } from "@effect/atom-react";
@@ -12,7 +13,7 @@ import {
 } from "@t3tools/contracts";
 import { CircleAlertIcon, ChevronDownIcon, InfoIcon, SlidersHorizontalIcon } from "lucide-react";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
-import { settlePromise } from "@t3tools/client-runtime/state/runtime";
+import { isAtomCommandInterrupted, settlePromise } from "@t3tools/client-runtime/state/runtime";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Cause from "effect/Cause";
 import {
@@ -58,6 +59,7 @@ import {
   makeWindow,
   usageSourceMessages,
 } from "@t3tools/shared/usageFormat";
+import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { Button, InlineButton } from "../ui/button";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import {
@@ -83,6 +85,7 @@ import {
 } from "../WorkspaceBreadcrumb";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
+import { UsageGapsNotice } from "./UsageGapsNotice";
 import { UsageLimitsSection } from "./UsageLimits";
 import { UsagePriceOverrides } from "./UsagePriceOverrides";
 import { UsageProviderChart } from "./UsageProviderChart";
@@ -118,6 +121,8 @@ function isUsageWindowDays(value: number): value is UsagePagePreferences["window
 }
 
 const providerLabel = (provider: UsageProviderKind) => PROVIDER_PRESENTATION[provider].label;
+
+type UsageBreakdown = "model" | "time";
 
 function usageLoading(
   showingKept: boolean,
@@ -200,8 +205,13 @@ export function UsagePage() {
   const showingLimits = metric === "limits";
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [limitsNow, setLimitsNow] = useState(() => Date.now());
+  const [limitsRefreshFailures, setLimitsRefreshFailures] = useState<ReadonlySet<EnvironmentId>>(
+    () => new Set(),
+  );
   const refreshingRef = useRef(false);
   const [priceDialog, setPriceDialog] = useState<{ readonly model?: string } | null>(null);
+  // Lives here so a rescan's skeleton or a visit to Limits does not reset it to Model.
+  const [breakdown, setBreakdown] = useState<UsageBreakdown>("model");
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
   const hiddenProviders = new Set(preferences.hiddenProviders);
@@ -291,21 +301,38 @@ export function UsagePage() {
     // Settled so the timestamp still advances when a refresh throws.
     settlePromise(() =>
       Promise.all(
-        Array.from(presentations, ([environmentId, presentation]) => {
+        Array.from(presentations, async ([environmentId, presentation]) => {
           if (selectedEnvironmentIds !== null && !selectedEnvironmentIds.has(environmentId)) return;
-          if (presentation.connection.phase === "connected" && presentation.serverConfig !== null) {
-            return refreshUsageLimits(
-              environmentId,
-              () => refreshProviders({ environmentId, input: {} }),
-              automatic,
-              afterPending,
-            );
+          if (presentation.connection.phase !== "connected" || presentation.serverConfig === null) {
+            return;
           }
+          const refreshed = await refreshUsageLimits(
+            environmentId,
+            () => refreshProviders({ environmentId, input: {} }),
+            automatic,
+            afterPending,
+          );
+          // A throttled or shared refresh answers nothing new, so it keeps the earlier outcome.
+          if (refreshed === undefined) return;
+          // Command failures come back as results, so a failed refresh would otherwise look done.
+          return {
+            environmentId,
+            failed: refreshed._tag === "Failure" && !isAtomCommandInterrupted(refreshed),
+          };
         }),
       ),
     ).then((result) => {
       setLimitsNow(Date.now());
       if (!AsyncResult.isSuccess(result)) throw Cause.squash(result.cause);
+      const outcomes = result.value.filter((outcome) => outcome !== undefined);
+      setLimitsRefreshFailures((previous) => {
+        const next = new Set(previous);
+        for (const outcome of outcomes) {
+          if (outcome.failed) next.add(outcome.environmentId);
+          else next.delete(outcome.environmentId);
+        }
+        return next;
+      });
     });
   const onUsageKeyDown = useEffectEvent((event: KeyboardEvent) => {
     if (
@@ -320,7 +347,8 @@ export function UsagePage() {
     const command = resolveUsageShortcut(event, keybindings);
     const metricOption = METRIC_OPTIONS.find((option) => option.command === command);
     const periodOption = WINDOW_OPTIONS.find((option) => option.command === command);
-    if (!metricOption && !periodOption) return;
+    // Periods do nothing on Limits, so their keys stay free there.
+    if (!metricOption && (!periodOption || showingLimits)) return;
 
     event.preventDefault();
     event.stopPropagation();
@@ -384,6 +412,12 @@ export function UsagePage() {
     if (showingLimits && connectedLimitsEnvironments) autoRefreshLimits();
   }, [showingLimits, connectedLimitsEnvironments]);
 
+  const failedLimitsLabels = [...presentations].flatMap(([environmentId, presentation]) =>
+    limitsRefreshFailures.has(environmentId) &&
+    (selectedEnvironmentIds === null || selectedEnvironmentIds.has(environmentId))
+      ? [presentation.entry.target.label]
+      : [],
+  );
   const days = enumerateDays(shownWindow.sinceDay, shownWindow.untilDay);
   const hours =
     shownWindow.sinceTime === undefined || shownWindow.untilTime === undefined
@@ -546,7 +580,11 @@ export function UsagePage() {
   );
 
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
+    <SidebarInset
+      {...workspaceAreaProps("usage", 1, "Usage")}
+      role="main"
+      className="h-dvh min-h-0 overflow-hidden overscroll-y-none"
+    >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <WorkspacePageHeader electron={isElectron} className="@container/usage-header border-b">
           {topbarContent}
@@ -560,56 +598,118 @@ export function UsagePage() {
                   ? `Connect an environment to see ${showingLimits ? "limits" : "usage"}.`
                   : `Select an environment to see ${showingLimits ? "limits" : "usage"}.`}
               </p>
+            ) : PROVIDER_ORDER.every((provider) => hiddenProviders.has(provider)) ? (
+              <div
+                role="status"
+                className="space-y-3 py-12 text-center text-sm text-muted-foreground"
+              >
+                <p>Every provider is hidden.</p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => updatePreferences({ hiddenProviders: [] })}
+                >
+                  Show all providers
+                </Button>
+              </div>
             ) : showingLimits ? (
-              <UsageLimitsSection
-                selectedEnvironmentIds={selectedEnvironmentIds}
-                hiddenProviders={hiddenProviders}
-                now={limitsNow}
-                cursorPrompt={
-                  cursorAccessEnvironments.length > 0 ? (
-                    <CursorEnableLimits
-                      environments={cursorAccessEnvironments}
-                      onEnabled={() => {
-                        void refresh();
-                        void refreshLimits(false, true);
-                      }}
-                    />
-                  ) : null
-                }
-              />
+              <>
+                {failedLimitsLabels.length > 0 ? (
+                  <Alert variant="warning" role="status">
+                    <CircleAlertIcon aria-hidden />
+                    <AlertDescription>
+                      Couldn't refresh limits on {failedLimitsLabels.join(", ")}. Showing the last
+                      values read.
+                    </AlertDescription>
+                    <AlertAction>
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        disabled={isRefreshing}
+                        onClick={refreshWindow}
+                      >
+                        Retry
+                      </Button>
+                    </AlertAction>
+                  </Alert>
+                ) : null}
+                <UsageLimitsSection
+                  selectedEnvironmentIds={selectedEnvironmentIds}
+                  hiddenProviders={hiddenProviders}
+                  now={limitsNow}
+                  cursorPrompt={
+                    cursorAccessEnvironments.length > 0 ? (
+                      <CursorEnableLimits
+                        environments={cursorAccessEnvironments}
+                        onEnabled={() => {
+                          void refresh();
+                          void refreshLimits(false, true);
+                        }}
+                      />
+                    ) : null
+                  }
+                />
+              </>
             ) : shown === null ? (
               <UsageSkeleton />
-            ) : !canReadDiagnostics ? (
-              <div className="space-y-2 py-12 text-center text-sm text-muted-foreground">
+            ) : !canReadDiagnostics ||
+              selectedEnvironments.every(
+                (environment) => environment.error !== null && environment.summary === null,
+              ) ? (
+              // Nothing to show at all: an empty overview would read as zero spend.
+              <div
+                role="status"
+                className="space-y-2 py-12 text-center text-sm text-muted-foreground"
+              >
                 {selectedEnvironments.map((environment) => (
                   <p key={environment.environmentId}>
                     {selectedEnvironments.length > 1 ? `${environment.label}: ` : null}
                     {environment.error}
                   </p>
                 ))}
+                {canReadDiagnostics ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={refreshingUsage}
+                    onClick={refreshWindow}
+                  >
+                    Retry
+                  </Button>
+                ) : null}
               </div>
             ) : (
-              <UsageOverview
-                merged={merged}
-                shownWindow={shownWindow}
-                hour12={hour12}
-                chartType={chartType}
-                chartControls={chartControls}
-                days={days}
-                hours={hours}
-                showingKept={showingKept}
-                metric={metric === "tokens" ? "tokens" : "cost"}
-                selectedEnvironments={selectedEnvironments}
-                hiddenProviders={hiddenProviders}
-                refreshingUsage={refreshingUsage}
-                cursorAccessEnvironments={cursorAccessEnvironments}
-                showChatGptSharing={showChatGptSharing}
-                onCursorEnabled={() => {
-                  void refresh();
-                  void refreshLimits(false, true);
-                }}
-                onSelectModel={selectUsageModel}
-              />
+              <>
+                <UsageGapsNotice
+                  environments={selectedEnvironments}
+                  contractMismatches={merged.contractMismatches}
+                  retrying={refreshingUsage}
+                  onRetry={refreshWindow}
+                />
+                <UsageOverview
+                  merged={merged}
+                  shownWindow={shownWindow}
+                  hour12={hour12}
+                  chartType={chartType}
+                  chartControls={chartControls}
+                  days={days}
+                  hours={hours}
+                  showingKept={showingKept}
+                  metric={metric === "tokens" ? "tokens" : "cost"}
+                  selectedEnvironments={selectedEnvironments}
+                  hiddenProviders={hiddenProviders}
+                  refreshingUsage={refreshingUsage}
+                  cursorAccessEnvironments={cursorAccessEnvironments}
+                  showChatGptSharing={showChatGptSharing}
+                  onCursorEnabled={() => {
+                    void refresh();
+                    void refreshLimits(false, true);
+                  }}
+                  onSelectModel={selectUsageModel}
+                  breakdown={breakdown}
+                  onBreakdownChange={setBreakdown}
+                />
+              </>
             )}
           </WorkspacePageContainer>
         </ScrollArea>
@@ -662,6 +762,8 @@ function UsageOverview({
   showChatGptSharing,
   onCursorEnabled,
   onSelectModel,
+  breakdown,
+  onBreakdownChange,
 }: {
   readonly merged: MergedUsage;
   readonly chartType: "area" | "bar";
@@ -679,8 +781,9 @@ function UsageOverview({
   readonly showChatGptSharing: boolean;
   readonly onCursorEnabled: () => void;
   readonly onSelectModel: (key: string) => void;
+  readonly breakdown: UsageBreakdown;
+  readonly onBreakdownChange: (breakdown: UsageBreakdown) => void;
 }) {
-  const [breakdown, setBreakdown] = useState<"model" | "time">("model");
   const shownHourly = shownWindow.resolution === "hour";
   const loading = usageLoading(showingKept, selectedEnvironments, refreshingUsage, hiddenProviders);
   // Copy the primitive; JSX reads of loading.partial would merge all derivations into one compiler cache
@@ -951,7 +1054,7 @@ function UsageOverview({
             value={[breakdown]}
             onValueChange={(next) => {
               const value = next[0];
-              if (value === "model" || value === "time") setBreakdown(value);
+              if (value === "model" || value === "time") onBreakdownChange(value);
             }}
           >
             {(
@@ -1003,7 +1106,8 @@ function UsageOverview({
                           type="button"
                           onClick={() => onSelectModel(key)}
                           className={cn(
-                            "flex items-center gap-2 text-left text-foreground outline-none after:absolute after:inset-0",
+                            // The ring sits on the overlay that spans the row, so focus shows on the whole row.
+                            "flex items-center gap-2 text-left text-foreground outline-none after:absolute after:inset-0 after:rounded-sm focus-visible:after:ring-2 focus-visible:after:ring-ring focus-visible:after:ring-inset",
                             !hasBar && "py-1",
                           )}
                         >
@@ -1061,7 +1165,9 @@ function UsageOverview({
                     </th>
                   ))}
                   <th className="py-2 pl-4 text-right font-normal">Total</th>
-                  <th className="py-2 pl-4 text-right font-normal">Tokens</th>
+                  <th className="py-2 pl-4 text-right font-normal">
+                    {metric === "tokens" ? "Cost" : "Tokens"}
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -1093,7 +1199,9 @@ function UsageOverview({
                             figureClass(loadingProviders.has(provider)),
                           )}
                         >
-                          {formatUsd(period.byProvider.get(provider)?.costUsd ?? 0)}
+                          {metric === "tokens"
+                            ? formatTokens(period.byProvider.get(provider)?.totalTokens ?? 0)
+                            : formatUsd(period.byProvider.get(provider)?.costUsd ?? 0)}
                         </td>
                       ))}
                       <td
@@ -1102,7 +1210,9 @@ function UsageOverview({
                           figureClass(loadingPartial),
                         )}
                       >
-                        {formatUsd(period.costUsd)}
+                        {metric === "tokens"
+                          ? formatTokens(period.totalTokens)
+                          : formatUsd(period.costUsd)}
                       </td>
                       <td
                         className={cn(
@@ -1110,7 +1220,9 @@ function UsageOverview({
                           figureClass(loadingPartial),
                         )}
                       >
-                        {formatTokens(period.totalTokens)}
+                        {metric === "tokens"
+                          ? formatUsd(period.costUsd)
+                          : formatTokens(period.totalTokens)}
                       </td>
                     </tr>
                   ))
@@ -1535,6 +1647,9 @@ function UsageProviderFilter({
 function UsageSkeleton() {
   return (
     <>
+      <span role="status" className="sr-only">
+        Loading usage…
+      </span>
       <section className="grid gap-6 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]">
         <div className="flex flex-col gap-5">
           <div className="flex flex-col gap-1">

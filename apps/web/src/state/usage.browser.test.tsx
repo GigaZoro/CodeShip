@@ -20,6 +20,7 @@ vi.mock("@t3tools/client-runtime/state/usage", () => ({
 }));
 vi.mock("../rpc/atomRegistry", () => ({ appAtomRegistry: {} }));
 vi.mock("./presentation", () => ({ environmentPresentations: {} }));
+vi.mock("./query", () => ({ formatEnvironmentQueryError: () => "The request failed." }));
 vi.mock("./server", () => ({ serverEnvironment: {} }));
 vi.mock("./session", () => ({ environmentSession: {}, readEnvironmentScope: vi.fn() }));
 

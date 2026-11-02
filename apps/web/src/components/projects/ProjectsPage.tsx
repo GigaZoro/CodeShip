@@ -1,4 +1,5 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
+import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import {
   scopedProjectKey,
   scopedThreadKey,
@@ -39,7 +40,7 @@ import {
   type SidebarProjectSnapshot,
 } from "../../sidebarProjectGrouping";
 import {
-  useAllEnvironmentProjectSnapshotsReady,
+  useAllEnvironmentShellsBootstrapped,
   useDelegatedUnderParent,
   useProjects,
   useQuietThreadShells,
@@ -170,7 +171,8 @@ export function ProjectsPage() {
   const locallyUnreadKeys = useLocallyUnreadThreadKeys(threads);
   const serverConfigs = useServerConfigs();
   const delegatedUnderParent = useDelegatedUnderParent();
-  const projectsReady = useAllEnvironmentProjectSnapshotsReady();
+  // As on Home: a machine that settled offline counts as answered, so it cannot hold the skeleton.
+  const projectsReady = useAllEnvironmentShellsBootstrapped();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
   const setProjectExpanded = useUiStateStore((store) => store.setProjectExpanded);
@@ -424,7 +426,11 @@ export function ProjectsPage() {
   ];
 
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
+    <SidebarInset
+      {...workspaceAreaProps("projects", 1, "Projects")}
+      role="main"
+      className="h-dvh min-h-0 overflow-hidden overscroll-y-none"
+    >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <WorkspacePageHeader electron={isElectron} className="border-b">
           <WorkspaceBreadcrumb ariaLabel="Projects breadcrumb" className="min-w-0">
@@ -486,7 +492,7 @@ export function ProjectsPage() {
                   </EmptyContent>
                 </Empty>
               ) : (
-                <div className="grid grid-cols-[repeat(auto-fill,minmax(20rem,1fr))] gap-4">
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(min(20rem,100%),1fr))] gap-4">
                   {["first", "second", "third"].map((key) => (
                     <Skeleton key={key} shape="card" className="h-48" />
                   ))}
@@ -725,7 +731,7 @@ function ProjectCardMenu(props: { card: ProjectCard; handlers: ProjectCardHandle
               checked={sidebarFolderOpen}
               onCheckedChange={() => handlers.onToggleSidebarFolder(card)}
             >
-              Open in sidebar
+              Expand in thread list
             </MenuCheckboxItem>
           </>
         )}

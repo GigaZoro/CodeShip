@@ -1,4 +1,5 @@
 import { EnvironmentId, type DesktopPreviewTabState } from "@t3tools/contracts";
+import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import { ArrowLeftIcon, ArrowRightIcon, ExternalLinkIcon, TriangleAlertIcon } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
@@ -25,6 +26,9 @@ const THREAD_PAGE_TAB_ID = "codeship-thread-page";
 const THREAD_PAGE_SESSION_SCOPE = EnvironmentId.make("thread-page");
 
 type PreviewBridge = NonNullable<typeof previewBridge>;
+
+// Leaving the page closes its tab, so returning reopens the note the user was on.
+let lastShownUrl: string | null = null;
 
 function HeaderIconButton(props: {
   readonly label: string;
@@ -56,7 +60,11 @@ function HeaderIconButton(props: {
 
 function ThreadPageShell(props: { readonly controls?: ReactNode; readonly children: ReactNode }) {
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
+    <SidebarInset
+      {...workspaceAreaProps("thread-page", 1, "ThreadPage")}
+      role="main"
+      className="h-dvh min-h-0 overflow-hidden overscroll-y-none"
+    >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <WorkspacePageHeader electron={isElectron} className="border-b">
           <h1 className="min-w-0 truncate text-sm font-medium">ThreadPage</h1>
@@ -102,7 +110,7 @@ function ThreadPageBrowser({
   readonly url: string | undefined;
 }) {
   const clientSettingsHydrated = useClientSettingsHydrated();
-  const [initialUrl] = useState(() => url ?? THREAD_PAGE_APP_URL);
+  const [initialUrl] = useState(() => url ?? lastShownUrl ?? THREAD_PAGE_APP_URL);
   const openedUrlRef = useRef(url);
   const config = usePreviewWebviewConfig(THREAD_PAGE_SESSION_SCOPE);
   const [tab, setTab] = useState<DesktopPreviewTabState | null>(null);
@@ -125,7 +133,11 @@ function ThreadPageBrowser({
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to the desktop bridge's tab state and new-tab link events
   useEffect(() => {
     const disposeState = bridge.onStateChange((tabId, state) => {
-      if (tabId === THREAD_PAGE_TAB_ID) setTab(state);
+      if (tabId !== THREAD_PAGE_TAB_ID) return;
+      setTab(state);
+      if (state.navStatus.kind === "Success" && isThreadPageUrl(state.navStatus.url)) {
+        lastShownUrl = state.navStatus.url;
+      }
     });
     // Links ThreadPage opens in a new tab stay here when they are ThreadPage's own.
     const disposeLinks = bridge.onOpenLink(({ tabId, url }) => {
@@ -263,6 +275,15 @@ function ThreadPageBrowser({
             data-preview-tab={THREAD_PAGE_TAB_ID}
             className="absolute inset-0 flex bg-background"
           />
+        ) : null}
+        {/* Until the tab reports in, the body would be blank with every control disabled. */}
+        {tab === null && failure === null ? (
+          <p
+            role="status"
+            className="absolute inset-0 flex items-center justify-center bg-background text-muted-foreground text-sm"
+          >
+            Opening ThreadPage…
+          </p>
         ) : null}
         {failure ? (
           <div className="absolute inset-0 flex bg-background">

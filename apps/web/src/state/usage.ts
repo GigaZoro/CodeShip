@@ -20,6 +20,7 @@ import { useState } from "react";
 import { mergeUsage, type EnvironmentUsage, type MergedUsage } from "@t3tools/shared/usageMerge";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentPresentations } from "./presentation";
+import { formatEnvironmentQueryError } from "./query";
 import { serverEnvironment } from "./server";
 import { environmentSession, readEnvironmentScope } from "./session";
 
@@ -75,7 +76,10 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
         isPending: result.waiting,
         canReadDiagnostics: true,
         isConnected,
-        error: result._tag === "Failure" ? "This environment could not report usage." : null,
+        error:
+          result._tag === "Failure"
+            ? `This environment could not report usage: ${formatEnvironmentQueryError(result.cause)}`
+            : null,
         summary,
         needsCursorKeychainAccess: needsCursorKeychainAccess(
           summary,

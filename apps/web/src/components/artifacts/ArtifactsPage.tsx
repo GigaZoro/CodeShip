@@ -1,14 +1,16 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { ArrowLeftIcon, MessageSquareIcon, SearchIcon, ShapesIcon } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { isElectron } from "../../env";
 import { useProviderEntryByEnvironmentAndInstanceId } from "../../hooks/useEnvironmentProviderEntries";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { cn } from "../../lib/utils";
 import type { ProviderInstanceEntry } from "../../providerInstances";
+import { useLiveRefresh } from "../../hooks/useLiveRefresh";
 import { useConnectedEnvironmentIds, useEnvironments } from "../../state/environments";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { HtmlRenderFrame } from "../chat/HtmlRenderFrame";
@@ -19,6 +21,8 @@ import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
+import { RefreshIcon } from "../ui/refresh-icon";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
 import { ScrollArea } from "../ui/scroll-area";
 import { SidebarInset } from "../ui/sidebar";
@@ -188,7 +192,10 @@ export function ArtifactsPage(props: {
   const { environments } = useEnvironments();
   const { artifacts, failedEnvironmentIds, isLoading, truncated, refresh } =
     useArtifacts(environmentIds);
+  // Agents publish while the page is open, so returning to it reads the list again.
+  useLiveRefresh(refresh, { key: "artifacts", enabled: environmentIds.length > 0 });
   const [query, setQuery] = useState("");
+  const listRef = useRef<HTMLUListElement>(null);
   const narrow = useMediaQuery("max-lg");
   const providerEntries = useProviderEntryByEnvironmentAndInstanceId();
   const foldedQuery = query.trim().toLocaleLowerCase();
@@ -227,6 +234,16 @@ export function ArtifactsPage(props: {
             placeholder="Search artifacts"
             value={query}
             onChange={(event) => setQuery(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                listRef.current?.querySelector<HTMLElement>("button")?.focus();
+                return;
+              }
+              if (event.key !== "Escape" || query.length === 0) return;
+              event.preventDefault();
+              setQuery("");
+            }}
           />
         </InputGroup>
       </div>
@@ -248,7 +265,21 @@ export function ArtifactsPage(props: {
         ) : shown.length === 0 && artifacts.length > 0 ? (
           <p className="px-5 py-6 text-muted-foreground text-sm">No artifacts match “{query}”.</p>
         ) : (
-          <ul aria-label="Artifacts" className="flex flex-col gap-0.5 px-1.5 pb-3">
+          <ul
+            ref={listRef}
+            aria-label="Artifacts"
+            className="flex flex-col gap-0.5 px-1.5 pb-3"
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+              const buttons = [
+                ...event.currentTarget.querySelectorAll<HTMLElement>(":scope > li > button"),
+              ];
+              const index = buttons.indexOf(document.activeElement as HTMLElement);
+              if (index < 0) return;
+              event.preventDefault();
+              buttons[event.key === "ArrowDown" ? index + 1 : index - 1]?.focus();
+            }}
+          >
             {shown.map((artifact) => (
               <ArtifactRow
                 key={artifactKey(artifact)}
@@ -284,7 +315,11 @@ export function ArtifactsPage(props: {
   const empty = artifacts.length === 0 && !isLoading && failedLabels.length === 0;
 
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
+    <SidebarInset
+      {...workspaceAreaProps("artifacts", 1, "Artifacts")}
+      role="main"
+      className="h-dvh min-h-0 overflow-hidden overscroll-y-none"
+    >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <WorkspacePageHeader electron={isElectron} className="border-b">
           <WorkspaceBreadcrumb ariaLabel="Artifacts breadcrumb" className="min-w-0 flex-1">
@@ -292,6 +327,23 @@ export function ArtifactsPage(props: {
               <h1>Artifacts</h1>
             </WorkspaceBreadcrumbItem>
           </WorkspaceBreadcrumb>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label="Refresh artifacts"
+                  aria-busy={isLoading}
+                  disabled={isLoading || environmentIds.length === 0}
+                  onClick={refresh}
+                />
+              }
+            >
+              <RefreshIcon size="md" refreshing={isLoading} />
+            </TooltipTrigger>
+            <TooltipPopup side="bottom">Refresh</TooltipPopup>
+          </Tooltip>
         </WorkspacePageHeader>
         {empty ? (
           <Empty>
@@ -323,7 +375,7 @@ export function ArtifactsPage(props: {
               />
             ) : (
               <div className="flex flex-1 items-center justify-center text-muted-foreground text-sm">
-                {isLoading ? null : "Select an artifact to preview it."}
+                {isLoading || artifacts.length === 0 ? null : "Select an artifact to preview it."}
               </div>
             )}
           </div>

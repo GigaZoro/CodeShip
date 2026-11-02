@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { workspaceAreaProps } from "../lib/workspaceFocus";
 
 import { ScheduledTasksSettings } from "../components/settings/ScheduledTasksSettings";
 import { SettingsScopeProvider } from "../components/settings/SettingsScopeContext";
@@ -9,7 +10,11 @@ function ScheduledTasksRoute() {
   const { environmentId, taskId, ...scopeSearch } = Route.useSearch();
   const navigate = Route.useNavigate();
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
+    <SidebarInset
+      {...workspaceAreaProps("scheduled-tasks", 1, "Scheduled tasks")}
+      role="main"
+      className="h-dvh min-h-0 overflow-hidden overscroll-y-none"
+    >
       <SettingsScopeProvider
         search={scopeSearch}
         onChange={(next) => {

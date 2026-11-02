@@ -1,4 +1,5 @@
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
+import { connectionMayStillAnswer } from "@t3tools/client-runtime/connection";
 import { applyPullRequestDraftFilterChange } from "@t3tools/client-runtime/pull-request-query";
 import { Spinner } from "~/components/ui/spinner";
 import type { PullRequestSpeedActionResult } from "~/components/pullRequest/PullRequestSpeedActions";
@@ -75,6 +76,12 @@ import { PullRequestListEmptyState } from "./PullRequestListEmptyState";
 import { PullRequestListGhost } from "./PullRequestGhosts";
 import { type PullRequestRowTarget } from "./PullRequestRow";
 import { PullRequestsUnavailableState } from "./PullRequestsUnavailableState";
+import {
+  PullRequestListGapsNotice,
+  SourceControlMessage,
+  useOpenSourceControlSettings,
+  type PullRequestListGap,
+} from "./PullRequestListGapsNotice";
 import { RightPanelTabs } from "../RightPanelTabs";
 import { isCommandPaletteOpen } from "~/commandPaletteBus";
 import { isElectron } from "~/env";
@@ -82,6 +89,10 @@ import { resolveShortcutCommand, shortcutLabelForCommand } from "~/keybindings";
 import { registerCommands } from "~/shortcuts/dispatcher";
 import { isTerminalFocused } from "~/lib/terminalFocus";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "../chat/PanelLayoutControls";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { useEnvironments } from "../../state/environments";
+import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../../rightPanelLayout";
+import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
 import { SidebarInset } from "../ui/sidebar";
 import { useLiveRefresh } from "~/hooks/useLiveRefresh";
@@ -146,6 +157,17 @@ export function PullRequestsPage() {
     sort === "ready" || sort === "largest" || sort === "smallest" ? "eager" : "visible";
   const navigate = useNavigate({ from: "/pull-requests" });
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const openSourceControlSettings = useOpenSourceControlSettings();
+  const { environments: knownEnvironments, isReady: environmentsReady } = useEnvironments();
+  // Pull requests need a server's config; with none on its way, loading would never end.
+  const noServerConnecting =
+    environmentsReady &&
+    !knownEnvironments.some((environment) =>
+      connectionMayStillAnswer(environment.connection.phase),
+    );
+  const serverTooOld = knownEnvironments.some(
+    (environment) => environment.connection.phase === "unsupported",
+  );
   const {
     capableEnvironments,
     scopedEnvironmentId,
@@ -1013,10 +1035,12 @@ export function PullRequestsPage() {
   );
   const rightPanelAvailable = selectedPullRequestSurface !== null;
   const [maximized, setMaximized] = useState(false);
-  const rightPanelMaximized = rightPanelState.isOpen && maximized;
+  // Too narrow for the list and an open pull request side by side, so the pull request takes the row.
+  const panelCrowded = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
+  const rightPanelMaximized = rightPanelState.isOpen && (maximized || panelCrowded);
   if (!rightPanelState.isOpen && maximized) setMaximized(false);
   const toggleRightPanelMaximized = () => {
-    if (rightPanelState.isOpen) setMaximized((value) => !value);
+    if (rightPanelState.isOpen && !panelCrowded) setMaximized((value) => !value);
   };
   const onGuideShown = () => setMaximized(true);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- opens the URL-linked pull request in the right panel store
@@ -1092,10 +1116,51 @@ export function PullRequestsPage() {
     });
   };
 
+  // A failed search keeps the last rows on screen, but it is no longer searching once nothing is pending.
+  const searching =
+    typedQuery.length > 0 &&
+    (!querySettled || showingCarried) &&
+    (listQuery.error === null || listQuery.isPending);
+  const listGaps: PullRequestListGap[] = [
+    // Only what the current filters would have listed.
+    ...hosts
+      .filter(
+        (host) => !host.configured && (search.host === undefined || host.host === search.host),
+      )
+      .map((host) => ({
+        key: `host:${host.host}`,
+        label: pullRequestHostLabel(hosts, host),
+        detail: host.detail ?? "This host could not be read.",
+      })),
+    ...listErrors
+      .filter(
+        (error) =>
+          (scopedProjectId === undefined || error.projectId === scopedProjectId) &&
+          (scopedEnvironmentId === null || error.environmentId === scopedEnvironmentId),
+      )
+      .map((error) => ({
+        key: `project:${error.environmentId}:${error.projectId}`,
+        label: error.projectTitle,
+        detail: error.message,
+      })),
+  ];
+  const clearFilters = () =>
+    updateListScope({
+      state: "open",
+      involvement: "all",
+      environmentId: undefined,
+      projectId: undefined,
+      host: undefined,
+      draft: undefined,
+      review: undefined,
+      checks: undefined,
+      author: undefined,
+      labels: undefined,
+    });
   const searchInput = (
     <PullRequestSearchInput
       value={search.q ?? ""}
-      busy={typedQuery.length > 0 && (!querySettled || showingCarried)}
+      busy={searching}
       onChange={(query) => updateListScope({ q: query || undefined })}
       onSubmit={submitQuery}
     />
@@ -1124,7 +1189,7 @@ export function PullRequestsPage() {
       className="absolute top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] z-50 mr-px flex h-[var(--workspace-topbar-height)] items-center gap-1 [-webkit-app-region:no-drag]"
       data-workspace-titlebar-controls
     >
-      {rightPanelState.isOpen ? (
+      {rightPanelState.isOpen && !panelCrowded ? (
         <RightPanelMaximizeControl
           maximized={rightPanelMaximized}
           onToggle={toggleRightPanelMaximized}
@@ -1139,8 +1204,28 @@ export function PullRequestsPage() {
     (!querySettled || (showingCarried && listQuery.isPending));
   const listBody = (
     <>
+      {capabilityKnown &&
+      pullRequestsSupported &&
+      !firstLoad &&
+      !(listQuery.error && shownCount === 0) ? (
+        <PullRequestListGapsNotice gaps={listGaps} />
+      ) : null}
       {!capabilityKnown ? (
-        <PullRequestListGhost rows={7} caption="Loading pull requests…" />
+        noServerConnecting ? (
+          <PullRequestsUnavailableState
+            {...(serverTooOld
+              ? {
+                  title: "Pull requests unavailable",
+                  error: "Update your CodeShip servers to browse pull requests.",
+                }
+              : {
+                  title: "No server connected",
+                  error: "Connect to a CodeShip server to browse its pull requests.",
+                })}
+          />
+        ) : (
+          <PullRequestListGhost rows={7} caption="Loading pull requests…" />
+        )
       ) : !pullRequestsSupported ? (
         <PullRequestsUnavailableState
           title="Pull requests unavailable"
@@ -1153,6 +1238,7 @@ export function PullRequestsPage() {
           error={listQuery.error}
           refreshing={listQuery.isPending}
           onRetry={() => listQuery.refresh()}
+          onOpenSettings={openSourceControlSettings}
         />
       ) : carriedToNothing ? (
         <PullRequestListGhost rows={7} />
@@ -1169,10 +1255,11 @@ export function PullRequestsPage() {
             scopedProjectId !== undefined ||
             search.host !== undefined
           }
-          searching={typedQuery.length > 0 && (!querySettled || showingCarried)}
+          searching={searching}
           canLoadMore={listData?.truncated === true && (canContinue || pageSize < MAX_PAGE_SIZE)}
           loadingMore={loadingMore}
           onClearQuery={() => updateListScope({ q: undefined })}
+          onClearFilters={clearFilters}
           onLoadMore={loadMore}
         />
       ) : (
@@ -1193,12 +1280,20 @@ export function PullRequestsPage() {
       )}
 
       {listQuery.error && shownCount > 0 ? (
-        <div className="flex items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning-surface px-3 py-2 text-xs">
-          <span>{listQuery.error} Showing the last pull requests loaded.</span>
-          <Button size="xs" variant="outline" onClick={() => listQuery.refresh()}>
-            Retry
-          </Button>
-        </div>
+        // Servers that answered keep fresh rows, so only the failed one may be missing or stale.
+        <Alert variant="warning" role="status">
+          <AlertDescription>
+            <span>
+              <SourceControlMessage text={listQuery.error} /> Some pull requests may be missing or
+              out of date.
+            </span>
+          </AlertDescription>
+          <AlertAction>
+            <Button size="xs" variant="outline" onClick={() => listQuery.refresh()}>
+              Retry
+            </Button>
+          </AlertAction>
+        </Alert>
       ) : null}
       {listData?.truncated && entries.length > 0 ? (
         <div className="flex justify-center py-3 text-xs text-muted-foreground">

@@ -133,9 +133,21 @@ export function PullRequestsColumn({
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- window keydown listener focuses the visible search input on Cmd/Ctrl+F
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) return;
+      if (event.defaultPrevented || maximizedAway) return;
       if (event.key.toLowerCase() !== "f" || !(event.metaKey || event.ctrlKey)) return;
       if (event.altKey || event.shiftKey) return;
+      // Find inside an open pull request, a dialog or a popup stays the browser's.
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        target !== document.body &&
+        (target.closest('[role="dialog"], [aria-modal="true"], [data-slot$="popup"]') !== null ||
+          target.closest(
+            '[data-workspace-area="pull-requests"], [data-workspace-area="sidebar"]',
+          ) === null)
+      ) {
+        return;
+      }
       event.preventDefault();
       // A closed topbar search has no input yet; opening it mounts one that focuses itself.
       if (condensed) setSearchOpen(true);
@@ -145,7 +157,7 @@ export function PullRequestsColumn({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [condensed]);
+  }, [condensed, maximizedAway]);
   if (!condensed && searchOpen) setSearchOpen(false);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- moves DOM focus to the in-flow search when the topbar search it was typed in unmounts
   useEffect(() => {

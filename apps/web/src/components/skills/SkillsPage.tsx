@@ -1,4 +1,11 @@
+import { connectionMayStillAnswer } from "@t3tools/client-runtime/connection";
 import type { ProviderSkillSourceKind } from "@t3tools/client-runtime/providerSkills";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import {
+  AuthOrchestrationOperateScope,
+  type EditorId,
+  type EnvironmentId,
+} from "@t3tools/contracts";
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
@@ -6,17 +13,22 @@ import {
   ChevronRightIcon,
   ChevronsDownUpIcon,
   ChevronsUpDownIcon,
+  FileCodeIcon,
   ListFilterIcon,
   SearchIcon,
   SparklesIcon,
 } from "lucide-react";
 import { useId, useState } from "react";
 
+import { useOpenInPreferredEditor } from "../../editorPreferences";
 import { isElectron } from "../../env";
 import { useEnvironmentProviderEntries } from "../../hooks/useEnvironmentProviderEntries";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { cn } from "../../lib/utils";
+import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import type { ProviderInstanceEntry } from "../../providerInstances";
+import { useEnvironment, useEnvironments } from "../../state/environments";
+import { useEnvironmentScope } from "../../state/session";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { SkillSourceBadge, skillSourcePresentation } from "../chat/SkillSourceBadge";
 import { DiffFilePathCopyButton } from "../DiffFilePathCopyButton";
@@ -43,6 +55,8 @@ import {
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { ScrollArea } from "../ui/scroll-area";
 import { SidebarInset } from "../ui/sidebar";
+import { Skeleton } from "../ui/skeleton";
+import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../WorkspaceBreadcrumb";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
@@ -77,15 +91,60 @@ function toggled<Value extends string>(
   return next.length > 0 ? next : undefined;
 }
 
-function SkillRow(props: { readonly row: SkillRowModel }) {
+const NO_EDITORS: readonly EditorId[] = [];
+
+/** Opens a SKILL.md in the machine's preferred editor, or null when that machine cannot. */
+function useOpenSkillFile(environmentId: EnvironmentId): ((path: string) => void) | null {
+  const availableEditors =
+    useEnvironment(environmentId)?.serverConfig?.availableEditors ?? NO_EDITORS;
+  const canOpenEditor = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
+  const openInEditor = useOpenInPreferredEditor(environmentId, availableEditors);
+  if (!canOpenEditor || availableEditors.length === 0) return null;
+  return (path) =>
+    void openInEditor(path).then((result) => {
+      if (result._tag === "Success") return;
+      const error = squashAtomCommandFailure(result);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not open the skill",
+          description: error instanceof Error ? error.message : "The editor did not open.",
+        }),
+      );
+    });
+}
+
+function SkillRow(props: {
+  readonly row: SkillRowModel;
+  readonly onOpen: ((path: string) => void) | null;
+}) {
   const { skill, source, missingOn } = props.row;
+  const { onOpen } = props;
   const description = skill.shortDescription ?? skill.description;
+  const name = formatProviderSkillDisplayName(skill);
   return (
-    <li className="flex min-w-0 flex-col gap-1 px-4 py-3">
-      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-        <span className="min-w-0 truncate font-medium text-sm">
-          {formatProviderSkillDisplayName(skill)}
+    <li className="relative flex min-w-0 flex-col gap-1 px-4 py-3">
+      {onOpen ? (
+        <span className="absolute top-2 right-2">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  size="icon-xs"
+                  variant="ghost-muted"
+                  aria-label={`Open ${name} SKILL.md in editor`}
+                  onClick={() => onOpen(skill.path)}
+                />
+              }
+            >
+              <FileCodeIcon aria-hidden />
+            </TooltipTrigger>
+            <TooltipPopup>Open in editor</TooltipPopup>
+          </Tooltip>
         </span>
+      ) : null}
+      <div className={cn("flex min-w-0 flex-wrap items-center gap-1.5", onOpen && "pe-8")}>
+        <span className="min-w-0 truncate font-medium text-sm">{name}</span>
         <SkillSourceBadge kind={source} />
         {skill.enabled ? null : (
           <Badge size="sm" variant="outline">
@@ -120,6 +179,7 @@ function SkillAgentSection(props: {
   readonly group: SkillAgentGroup<ProviderInstanceEntry>;
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
+  readonly onOpenFile: ((path: string) => void) | null;
 }) {
   const { group } = props;
   return (
@@ -151,7 +211,7 @@ function SkillAgentSection(props: {
         <CollapsiblePanel animate={false}>
           <ul className="divide-y rounded-lg border">
             {group.skills.map((row) => (
-              <SkillRow key={row.skill.path} row={row} />
+              <SkillRow key={row.skill.path} row={row} onOpen={props.onOpenFile} />
             ))}
           </ul>
         </CollapsiblePanel>
@@ -161,18 +221,37 @@ function SkillAgentSection(props: {
 }
 
 function SkillAgentSections(props: {
+  readonly environmentId: EnvironmentId;
   readonly groups: ReadonlyArray<SkillAgentGroup<ProviderInstanceEntry>>;
   readonly collapsed: ReadonlySet<string>;
   readonly onToggle: (agentKey: string, open: boolean) => void;
 }) {
+  const openFile = useOpenSkillFile(props.environmentId);
   return props.groups.map((group) => (
     <SkillAgentSection
       key={group.key}
       group={group}
       open={!props.collapsed.has(group.key)}
       onOpenChange={(open) => props.onToggle(group.key, open)}
+      onOpenFile={openFile}
     />
   ));
+}
+
+function SkillsSkeleton() {
+  return (
+    <div role="status" aria-label="Loading skills" className="flex flex-col gap-3">
+      <Skeleton className="h-4 w-32" />
+      <div className="divide-y rounded-lg border">
+        {["first", "second", "third", "fourth"].map((key) => (
+          <div key={key} className="flex flex-col gap-1.5 px-4 py-3">
+            <Skeleton className="h-4 w-1/3" />
+            <Skeleton className="h-3 w-2/3" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function columnEmptyText(column: SkillMachineColumn<SidebarMachine, ProviderInstanceEntry>) {
@@ -216,6 +295,7 @@ function SkillMachineColumnView(props: {
         </p>
       ) : (
         <SkillAgentSections
+          environmentId={column.machine.environmentId}
           groups={column.groups}
           collapsed={props.collapsed}
           onToggle={props.onToggle}
@@ -415,9 +495,23 @@ export function SkillsPage() {
       open ? current.filter((key) => key !== agentKey) : [...new Set([...current, agentKey])],
     );
   const allCollapsed = view.agents.every((agent) => collapsed.has(agent.key));
+  const { environments, isReady } = useEnvironments();
+  // Skills arrive with each machine's providers; until one answers, none is not "no skills".
+  const loading =
+    view.total === 0 &&
+    (!isReady ||
+      environments.some(
+        (environment) =>
+          environment.serverConfig === null &&
+          connectionMayStillAnswer(environment.connection.phase),
+      ));
 
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
+    <SidebarInset
+      {...workspaceAreaProps("skills", 1, "Skills")}
+      role="main"
+      className="h-dvh min-h-0 overflow-hidden overscroll-y-none"
+    >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <WorkspacePageHeader electron={isElectron} className="border-b">
           <WorkspaceBreadcrumb ariaLabel="Skills breadcrumb" className="min-w-0">
@@ -485,7 +579,13 @@ export function SkillsPage() {
             </div>
           ) : null}
         </WorkspacePageHeader>
-        {view.total === 0 ? (
+        {loading ? (
+          <ScrollArea className="min-h-0 flex-1">
+            <WorkspacePageContainer width="wide">
+              <SkillsSkeleton />
+            </WorkspacePageContainer>
+          </ScrollArea>
+        ) : view.total === 0 ? (
           <Empty>
             <EmptyHeader>
               <EmptyMedia variant="icon">
@@ -530,13 +630,14 @@ export function SkillsPage() {
                     />
                   ))}
                 </div>
-              ) : (
+              ) : view.columns[0] ? (
                 <SkillAgentSections
-                  groups={view.columns[0]?.groups ?? []}
+                  environmentId={view.columns[0].machine.environmentId}
+                  groups={view.columns[0].groups}
                   collapsed={collapsed}
                   onToggle={toggleAgent}
                 />
-              )}
+              ) : null}
             </WorkspacePageContainer>
           </ScrollArea>
         )}

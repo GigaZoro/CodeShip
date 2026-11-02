@@ -563,7 +563,10 @@ export function SettingResetButton({
           <Button
             size="icon-micro"
             variant="ghost-muted"
-            aria-label={`Reset ${label} to default`}
+            // The name says what the visible tooltip says, which is not always "to default".
+            aria-label={
+              tooltip === "Reset to default" ? `Reset ${label} to default` : `${tooltip}: ${label}`
+            }
             disabled={disabled}
             onClick={(event) => {
               event.stopPropagation();

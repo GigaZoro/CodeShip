@@ -48,9 +48,11 @@ export function limitWindowLabel(pool: LimitPool, window: LimitPoolWindow): stri
 export function UsageLimitsGlance({
   pools,
   now,
+  shortcut = null,
 }: {
   readonly pools: readonly LimitPool[];
   readonly now: number;
+  readonly shortcut?: string | null;
 }) {
   return (
     <div className="flex w-64 max-w-full flex-col gap-2.5 py-1">
@@ -107,7 +109,9 @@ export function UsageLimitsGlance({
           </section>
         );
       })}
-      <p className="border-t border-border/60 pt-1.5 text-muted-foreground">Click for details</p>
+      <p className="border-t border-border/60 pt-1.5 text-muted-foreground">
+        Click for details{shortcut ? ` (${shortcut})` : null}
+      </p>
     </div>
   );
 }

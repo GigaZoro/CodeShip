@@ -28,7 +28,7 @@ export function SettingsBreadcrumb({ pathname }: { pathname: string }) {
         </>
       ) : null}
       <WorkspaceBreadcrumbItem current className="truncate">
-        {sectionLabel ?? "Settings"}
+        <h1 className="truncate">{sectionLabel ?? "Settings"}</h1>
       </WorkspaceBreadcrumbItem>
     </WorkspaceBreadcrumb>
   );

@@ -128,7 +128,7 @@ function SidebarNavRailUsageItem({
         />
       }
       label={`Usage: ${limitPoolLabel(pool)} ${limitWindowLabel(pool, window)} ${window.remainingPercent}% left`}
-      tooltip={<UsageLimitsGlance pools={pools} now={now} />}
+      tooltip={<UsageLimitsGlance pools={pools} now={now} shortcut={shortcut} />}
       onTooltipOpenChange={(open) => {
         if (open) setNow(Date.now());
       }}

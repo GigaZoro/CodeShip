@@ -1,3 +1,4 @@
+import { connectionMayStillAnswer } from "@t3tools/client-runtime/connection";
 import {
   AuthProvidersManageScope,
   type EnvironmentId,
@@ -402,5 +403,21 @@ export function UsageLimitsSection({
       ];
     }),
   );
-  return <UsageLimitsPooled presentations={selected} now={now} cursorPrompt={cursorPrompt} />;
+  // Limits arrive with the server config, so a machine still connecting has none to show yet.
+  const connecting = [...selected.values()].filter(
+    (presentation) =>
+      presentation.serverConfig === null && connectionMayStillAnswer(presentation.connection.phase),
+  );
+  const emptyMessage =
+    connecting.length > 0
+      ? `Connecting to ${connecting.map((presentation) => presentation.entry.target.label).join(", ")}…`
+      : undefined;
+  return (
+    <UsageLimitsPooled
+      presentations={selected}
+      now={now}
+      cursorPrompt={cursorPrompt}
+      {...(emptyMessage === undefined ? {} : { emptyMessage })}
+    />
+  );
 }
