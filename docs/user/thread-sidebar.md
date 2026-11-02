@@ -190,6 +190,15 @@ thread that needs you is listed under **Needs you** instead. A machine that is o
 When two machines share a name, their folders add the address. While threads are grouped, active
 threads are ordered by their latest message, so you cannot move them by hand.
 
+On web and desktop, an open folder lists its five most recent threads. Choose **Show N more** below
+them for the rest, and **Show less** to fold them again. Threads that are working, failed, hit a
+usage limit, woke from a snooze, or finished since you last opened them always stay listed. Alt-click a folder
+(Option-click on macOS) to open or close every folder beside it, or right-click a project folder
+and choose **Collapse others**, **Collapse all**, or **Expand all**. Right-click a machine folder to
+do the same for all machines or all projects. **Collapse all** and **Expand all** in the filter
+menu next to the search open or close every folder at once, as do **Collapse all sidebar folders**
+and **Expand all sidebar folders** in the command palette.
+
 On web and desktop, drag a project folder up or down to reorder your projects, or right-click it and
 choose **Move up** or **Move down**. Inside a machine folder, a project moves among that machine's
 projects. Moving a folder sets **Settings → General → Project order** to **Manual**, so new activity
@@ -206,6 +215,21 @@ The same menu filters the sidebar. Click a machine or project to show only its t
 shift-click to add more. Machines appear when you have more than one. Choosing both a machine
 and a project shows that project's threads on that machine. A project or machine you filter to
 keeps its folder even with no active threads, so you can start one there.
+
+## See every project
+
+On web and desktop, choose **Projects** in the sidebar rail, or **Open projects** from the command
+palette, to see all your projects side by side with their open threads. With **Group by machine**
+on, they are listed under each machine. Filter to threads that need you, which here also counts
+threads that failed or hit a usage limit and snoozes that woke; to threads that are working; or to
+threads that finished since you last opened them. Search finds projects by name and
+threads by title. Projects with no open threads move to a compact list below the others, with when
+they were last active.
+
+Each project's menu starts a new thread there and, while the sidebar groups threads by project,
+opens or closes its sidebar folder. **Settle finished threads** settles the project's idle threads
+in one step. Pinned threads and threads marked **Done** because they finished since you last opened
+them are left alone, and **Undo** brings the settled ones back.
 
 ## Settle finished work
 
@@ -358,6 +382,21 @@ browser panel. A browser profile holds one account's sign-in, so add one profile
 account in **Settings → Browser → Browser profiles** and sign in to ChatGPT or
 Claude there. Then pair each assistant with its profile under **Dots and Duets**
 on the same page. Duet opens at claude.ai, where Anthropic hosts it.
+
+Once a thread has started, the top of the thread details card sums up where it works: the
+machine, the branch and its pull request, and how much changed. Select it to show the workspace and
+Git controls, and again to fold them; each device keeps your choice. Select the pull request number
+to open the pull request. A new thread keeps every control in view, so you can pick where it runs
+before you send it.
+
+While the agent works through a to-do list, the card shows that list for the turn it is on and how
+many steps are done. **Ask the agent** sends a common request as your message: commit and open a
+pull request, run the tests, or review the changes. Add your own requests, and set their order, in
+**Settings → Appearance → Ask the agent**, or with the settings button beside **Ask the agent** in
+the card; the command palette lists them all as **Ask the agent** items for the open thread. While the agent is working, the request waits until it finishes. If you are writing a
+message, the request is added to it instead, for you to send. These requests are unavailable in
+plan mode, where the agent only plans. **Your prompts** lists the messages you sent, as far back as
+the conversation has loaded; the one on screen is marked, and selecting one scrolls back to it.
 
 To choose what the thread details card shows, right-click the card or open
 **Settings → Appearance → Thread details**. Hidden rows keep their keyboard

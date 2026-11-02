@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   CalendarClockIcon,
   ChartNoAxesColumnIcon,
+  LayoutGridIcon,
   MessagesSquareIcon,
   SettingsIcon,
   ShapesIcon,
@@ -32,6 +33,7 @@ import { SidebarUpdatePill } from "./SidebarUpdatePill";
 
 type SidebarNavDestination =
   | "threads"
+  | "projects"
   | "pull-requests"
   | "artifacts"
   | "skills"
@@ -40,6 +42,7 @@ type SidebarNavDestination =
   | "settings";
 
 function resolveActiveDestination(pathname: string): SidebarNavDestination {
+  if (pathname === "/projects") return "projects";
   if (pathname === "/pull-requests") return "pull-requests";
   if (pathname === "/artifacts") return "artifacts";
   if (pathname === "/skills") return "skills";
@@ -156,6 +159,12 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
           label="Threads"
           isActive={active === "threads"}
           onClick={go(navigateToMainApp)}
+        />
+        <SidebarNavRailItem
+          icon={<LayoutGridIcon />}
+          label="Projects"
+          isActive={active === "projects"}
+          onClick={go(() => navigate({ to: "/projects" }))}
         />
         {pullRequestsSupported ? (
           <SidebarNavRailItem

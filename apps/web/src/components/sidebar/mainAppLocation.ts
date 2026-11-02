@@ -10,6 +10,7 @@ export function isSettingsPage(pathname: string) {
 /** The sidebar rail's sections other than Threads. */
 export function isSidebarSectionPage(pathname: string) {
   return (
+    pathname === "/projects" ||
     pathname === "/pull-requests" ||
     pathname === "/artifacts" ||
     pathname === "/skills" ||

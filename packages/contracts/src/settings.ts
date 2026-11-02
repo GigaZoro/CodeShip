@@ -131,6 +131,20 @@ export const DEFAULT_SNOOZE_PRESETS: ReadonlyArray<SnoozePresetSetting> = [
   { kind: "at", day: "monday", time: "09:00" },
 ];
 
+export const MAX_CUSTOM_AGENT_ACTIONS = 8;
+export const MAX_AGENT_ACTION_LABEL_LENGTH = 40;
+export const MAX_AGENT_ACTION_PROMPT_LENGTH = 2000;
+/** A request the user saved for the thread details card's Ask the agent buttons. */
+export const CustomAgentAction = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString.check(Schema.isMaxLength(MAX_AGENT_ACTION_LABEL_LENGTH)),
+  prompt: TrimmedNonEmptyString.check(Schema.isMaxLength(MAX_AGENT_ACTION_PROMPT_LENGTH)),
+});
+export type CustomAgentAction = typeof CustomAgentAction.Type;
+const CustomAgentActions = Schema.Array(CustomAgentAction).check(
+  Schema.isMaxLength(MAX_CUSTOM_AGENT_ACTIONS),
+);
+
 export const MIN_GLASS_OPACITY = 40;
 export const MAX_GLASS_OPACITY = 100;
 export const GlassOpacity = Schema.Int.check(
@@ -513,6 +527,8 @@ export const ClientSettingsSchema = Schema.Struct({
   // Opt-in for the removed legacy sidebar, also read as project grouping.
   legacySidebarEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   sidebarWorkingShelfEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // Shown after the built-in Ask the agent requests.
+  customAgentActions: CustomAgentActions.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   sidebarProjectGroupingMode: SidebarProjectGroupingMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE)),
   ),
@@ -1901,6 +1917,7 @@ export const ClientSettingsPatch = Schema.Struct({
   threadDetailsUsageEnabled: Schema.optionalKey(Schema.Boolean),
   threadDetailsItems: Schema.optionalKey(Schema.Record(Schema.String, Schema.Boolean)),
   sidebarWorkingShelfEnabled: Schema.optionalKey(Schema.Boolean),
+  customAgentActions: Schema.optionalKey(CustomAgentActions),
   sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
   sidebarProjectGroupingOverrides: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, SidebarProjectGroupingMode),

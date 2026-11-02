@@ -94,6 +94,7 @@ import { TimelineSystemDivider } from "./TimelineSystemDivider";
 
 import { forwardWheelToTimeline } from "./timelineMinimapWheel";
 import { TimelineMinimap } from "./TimelineMinimap";
+import { attachTimelineOutline, publishTimelineOutline } from "./timelineOutlineStore";
 import {
   type TimelineRowSharedState,
   type TimelineRowActivityState,
@@ -1161,6 +1162,33 @@ const ConversationTimeline = memo(function ConversationTimeline({
     };
   });
 
+  const scrollToTimelineRow = (rowIndex: number) => {
+    navigateTimeline();
+    void listRef.current?.scrollToIndex({
+      index: rowIndex,
+      animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+      viewOffset: 24,
+    });
+  };
+  const revealOutlinePrompt = useStableCallback((promptId: string) => {
+    const item = minimapItems.find((candidate) => candidate.id === promptId);
+    if (item) scrollToTimelineRow(item.rowIndex);
+  });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers this timeline's scrolling with the outline registry the details card uses
+  useLayoutEffect(
+    () => attachTimelineOutline(listIdentityKey, revealOutlinePrompt),
+    [listIdentityKey, revealOutlinePrompt],
+  );
+  // The index still points into the previous thread until the restore settles.
+  const outlineCurrentId =
+    restoringThreadPosition || minimapCurrentIndex === null
+      ? null
+      : (minimapItems[minimapCurrentIndex]?.id ?? null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- mirrors the prompts and the one on screen into the outline store; it skips unchanged writes
+  useEffect(() => {
+    publishTimelineOutline(listIdentityKey, minimapItems, outlineCurrentId);
+  }, [listIdentityKey, minimapItems, outlineCurrentId]);
+
   useThreadFindPositionReader({
     threadKey: listIdentityKey,
     navigate: navigateTimeline,
@@ -1354,14 +1382,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
               currentIndex={minimapCurrentIndex}
               stripMap={minimapStripMap}
               onWheel={forwardMinimapWheel}
-              onSelect={(item) => {
-                navigateTimeline();
-                void listRef.current?.scrollToIndex({
-                  index: item.rowIndex,
-                  animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-                  viewOffset: 24,
-                });
-              }}
+              onSelect={(item) => scrollToTimelineRow(item.rowIndex)}
             />
           </TooltipScrollDismissArea>
         </TimelineRowActivityCtx>

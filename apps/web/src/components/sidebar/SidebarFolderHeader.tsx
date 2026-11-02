@@ -46,6 +46,10 @@ export function sidebarFolderRowId(folderKey: string) {
   return `folder:${folderKey}`;
 }
 
+export function sidebarFolderMoreRowId(folderKey: string) {
+  return `${sidebarFolderRowId(folderKey)}:more`;
+}
+
 export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHeader(props: {
   folderKey: string;
   group: SidebarProjectSnapshot;
@@ -57,7 +61,7 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
   dragging: boolean;
   /** Where a dragged sibling would land, in pixels below this folder's top. */
   dropLineOffset: number | null;
-  onToggle: (folderKey: string) => void;
+  onToggle: (folderKey: string, siblings: boolean) => void;
   onDragStart: (folderKey: string, event: PointerEvent) => void;
   onNewThread: (group: SidebarProjectSnapshot, member: SidebarProjectGroupMember | null) => void;
   onContextMenu: (
@@ -79,7 +83,7 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
       hiddenThreads={props.hiddenThreads}
       dragging={props.dragging}
       dropLineOffset={props.dropLineOffset}
-      onToggle={() => props.onToggle(folderKey)}
+      onToggle={(siblings) => props.onToggle(folderKey, siblings)}
       onDragStart={(event) => props.onDragStart(folderKey, event)}
       newThread={{
         label: `New thread in ${group.displayName}`,
@@ -94,8 +98,9 @@ export const SidebarMachineFolderHeader = memo(function SidebarMachineFolderHead
   machine: SidebarMachine;
   collapsed: boolean;
   hiddenThreads: readonly EnvironmentThreadShell[];
-  onToggle: (folderKey: string) => void;
+  onToggle: (folderKey: string, siblings: boolean) => void;
   onNewThread: (machine: SidebarMachine) => void;
+  onContextMenu: (machine: SidebarMachine, position: { x: number; y: number }) => void;
 }) {
   const { machine } = props;
   const folderKey = sidebarMachineFolderKey(machine.environmentId);
@@ -117,7 +122,8 @@ export const SidebarMachineFolderHeader = memo(function SidebarMachineFolderHead
       }
       collapsed={props.collapsed}
       hiddenThreads={props.hiddenThreads}
-      onToggle={() => props.onToggle(folderKey)}
+      onToggle={(siblings) => props.onToggle(folderKey, siblings)}
+      onContextMenu={(position) => props.onContextMenu(machine, position)}
       // An offline machine cannot start a thread until it is back.
       newThread={
         machine.disconnected
@@ -145,7 +151,7 @@ function SidebarFolderHeader(props: {
   hiddenThreads: readonly EnvironmentThreadShell[];
   dragging?: boolean;
   dropLineOffset?: number | null;
-  onToggle: () => void;
+  onToggle: (siblings: boolean) => void;
   onDragStart?: (event: PointerEvent) => void;
   onContextMenu?: (position: { x: number; y: number }) => void;
 }) {
@@ -188,7 +194,7 @@ function SidebarFolderHeader(props: {
         data-sidebar-row={rowId}
         data-sidebar-parent={parentRowId}
         aria-expanded={!collapsed}
-        onClick={props.onToggle}
+        onClick={(event) => props.onToggle(event.altKey)}
         onPointerDown={
           onDragStart
             ? (event) => {
@@ -257,3 +263,33 @@ function SidebarFolderHeader(props: {
     </li>
   );
 }
+
+/** The row under an open folder that lists the threads past its preview, or folds them again. */
+export const SidebarFolderMoreRow = memo(function SidebarFolderMoreRow(props: {
+  folderKey: string;
+  /** Set when the folder sits in a machine folder, so the label lines up with nested titles. */
+  nested: boolean;
+  overflowCount: number;
+  showingAll: boolean;
+  onToggle: (folderKey: string) => void;
+}) {
+  const { folderKey } = props;
+  return (
+    <li className="list-none">
+      <button
+        type="button"
+        role="treeitem"
+        tabIndex={-1}
+        data-sidebar-row={sidebarFolderMoreRowId(folderKey)}
+        data-sidebar-parent={sidebarFolderRowId(folderKey)}
+        onClick={() => props.onToggle(folderKey)}
+        className={cn(
+          "flex h-8 w-full cursor-pointer items-center rounded-md pe-2.5 text-left text-xs text-sidebar-muted-foreground outline-none hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+          props.nested ? "ps-15.5" : "ps-9",
+        )}
+      >
+        {props.showingAll ? "Show less" : `Show ${props.overflowCount} more`}
+      </button>
+    </li>
+  );
+});

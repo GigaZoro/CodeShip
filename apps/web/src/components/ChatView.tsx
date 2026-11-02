@@ -82,6 +82,7 @@ import {
   deriveLatestThreadRun,
   deriveThreadStructureRuntime,
 } from "@t3tools/client-runtime/state/thread-execution";
+import { resolveComposerDispatchMode } from "@t3tools/client-runtime/state/composer-dispatch";
 import {
   resolveWorkflowOpening,
   workflowOpeningParentThreadId,
@@ -286,6 +287,7 @@ import {
 } from "./chat/PanelLayoutControls";
 import type { ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { ThreadDetailsPanel } from "./chat/ThreadDetailsPanel";
+import { publishAgentActionsTarget } from "./chat/agentActions";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import {
   resolveEffectiveEnvMode,
@@ -2893,6 +2895,73 @@ export default function ChatView(props: ChatViewProps) {
   };
   const onWorktreeSetupWorkLocallyStable = useStableCallback(onWorktreeSetupWorkLocally);
   const onComposerSendStable = useStableCallback(onSend);
+  // A details card action sends its request as the user's message. Text or attachments the user
+  // is still writing are never sent unseen: the request joins the draft instead. During a turn it
+  // waits in the queue, since steering would act on half-finished work.
+  const askAgent = (prompt: string) => {
+    const composer = composerRef.current;
+    if (!composer) return;
+    // A request a blocked send left behind is already there to send; adding it again would repeat it.
+    if (promptRef.current.trimEnd().endsWith(prompt)) {
+      composer.focusAtEnd();
+      return;
+    }
+    const draft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+    const draftInProgress =
+      promptRef.current.trim().length > 0 ||
+      (draft !== null && composerDraftHasUserContent({ ...draft, prompt: "" }));
+    if (!composer.insertTextAtEnd(prompt, { ensureLeadingBoundary: true })) return;
+    if (draftInProgress) return;
+    void (async () => {
+      await onSend(
+        undefined,
+        resolveComposerDispatchMode({
+          running: phase === "running",
+          alternateModifier: false,
+          activeTurnDefault: "queue",
+          canSteer: !isCompacting,
+        }),
+      );
+      // A send the composer declined, say with its provider signed out, leaves the request in the
+      // draft; focusing it there shows the request beside whatever the composer says is wrong.
+      if (promptRef.current.trimEnd().endsWith(prompt)) composerRef.current?.focusAtEnd();
+    })();
+  };
+  const askAgentStable = useStableCallback(askAgent);
+  const agentActionsUnavailableReason = !canOperateThread
+    ? "This connection can't send messages to this thread."
+    : activeEnvironmentUnavailable
+      ? "Reconnecting to this thread's machine."
+      : threadDetailLoading
+        ? "Loading this thread."
+        : pendingApprovals.length > 0
+          ? "Answer the agent's approval request first."
+          : pendingUserInputs.length > 0
+            ? "Answer the agent's question first."
+            : queuedRunEdit.isEditing
+              ? "Finish editing the queued message first."
+              : isRevertingCheckpoint
+                ? "Restoring a checkpoint."
+                : interactionModeEnabled && interactionMode === "plan"
+                  ? "Leave plan mode first: in it, the agent only plans."
+                  : null;
+  const agentActionsOffered = isServerThread && composerMounted && !draftId;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- offers this thread's agent actions to the command palette while the chat view shows it
+  useEffect(() => {
+    if (!agentActionsOffered) return;
+    return publishAgentActionsTarget({
+      threadKey: routeThreadKey,
+      isGitRepo,
+      unavailableReason: agentActionsUnavailableReason,
+      ask: askAgentStable,
+    });
+  }, [
+    agentActionsOffered,
+    routeThreadKey,
+    isGitRepo,
+    agentActionsUnavailableReason,
+    askAgentStable,
+  ]);
   const sendPreviewAnnotation = (
     annotation: PreviewAnnotationPayload,
     image: ComposerImageAttachment | null,
@@ -3792,6 +3861,11 @@ export default function ChatView(props: ChatViewProps) {
               onAddProjectScript={saveProjectScriptStable}
               onUpdateProjectScript={updateProjectScriptStable}
               onDeleteProjectScript={deleteProjectScriptStable}
+              agentActions={
+                agentActionsOffered
+                  ? { onAsk: askAgentStable, unavailableReason: agentActionsUnavailableReason }
+                  : null
+              }
               usage={{
                 providerInstanceId: activeProviderInstanceId,
                 providers: providerStatuses,
