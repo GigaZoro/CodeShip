@@ -9,6 +9,12 @@
 - The full dev stack: `vp run dev`, then open the pairing URL it prints through the forwarded web port (5733). The bare origin is useless without the pairing token. In VS Code the forwarded port is a true localhost, so the printed URL works as-is; in browser Codespaces the forwarded origin differs, and if the server rejects it, pass the forwarded origin via `T3CODE_DEV_ALLOWED_ORIGINS`.
 - Everything the Linux CI jobs run: focused `vp test run <files>`, `vp lint <files>`, package typechecks, `vp run build:desktop`, and the resource-monitor cargo build and tests. (`vpr` is not on PATH here; the curl installer only shims `vp`. Use `vp run <script>` or `node_modules/.bin/vpr` after install.)
 
+## Agents and plugins
+
+`.devcontainer/install-agents.sh` installs the Claude Code and Codex CLIs, plus the frontend-design Claude plugin and the Dale Codex plugin, so CodeShip in a codespace can run both providers and its Plugins page works. Sign in once per container with `claude` (then `/login`) and `codex login --device-auth`. Plugins synced from your claude.ai account appear after sign-in. The script is idempotent; a failure during creation only warns, so rerun it if the container was created offline.
+
+Dale's repository is a plugin rather than a marketplace, so the script wraps it in a local `dale-local` marketplace under `~/.local/share/dale-marketplace`, matching the plugin id a Mac install uses.
+
 ## State and safety
 
 `T3CODE_HOME` points at the workspace's gitignored `.t3`, so all runtime state stays inside the container workspace, mirroring the worktree default. There is no live install to damage inside a container, but the test-data rule from AGENTS.md still holds: copy data in, never point at shared state.
