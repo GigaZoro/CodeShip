@@ -9,10 +9,13 @@ export const THREAD_DETAILS_ITEMS = [
   { id: "branch", label: "Branch and pull request", defaultVisible: true },
   { id: "gitActions", label: "Git actions", defaultVisible: true },
   { id: "changes", label: "Changes", defaultVisible: true },
+  { id: "tasks", label: "Tasks", defaultVisible: true },
+  { id: "agentActions", label: "Ask the agent", defaultVisible: true },
   { id: "servers", label: "Servers", defaultVisible: true },
   { id: "automations", label: "Automations", defaultVisible: true },
   { id: "lineage", label: "Lineage", defaultVisible: true },
   { id: "sideChats", label: "Side chats", defaultVisible: true },
+  { id: "outline", label: "Your prompts", defaultVisible: true },
   { id: "usage", label: "Usage limits", defaultVisible: false },
   { id: "context", label: "Context window", defaultVisible: false },
 ] as const;

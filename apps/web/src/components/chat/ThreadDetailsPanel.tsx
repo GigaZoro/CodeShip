@@ -18,6 +18,12 @@ import ProjectScriptsControl, {
   type ProjectScriptActionResult,
 } from "../ProjectScriptsControl";
 import { memo, useState, type ComponentProps } from "react";
+import * as Schema from "effect/Schema";
+import { useLocalStorage } from "../../hooks/useLocalStorage";
+import { ThreadAgentActionsPanel } from "./ThreadAgentActionsPanel";
+import { ThreadDetailsSummary } from "./ThreadDetailsSummary";
+import { ThreadOutlinePanel } from "./ThreadOutlinePanel";
+import { ThreadTasksPanel } from "./ThreadTasksPanel";
 import { ThreadDetailsCard } from "./ThreadDetailsCard";
 import { OpenInPicker } from "./OpenInPicker";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
@@ -46,6 +52,8 @@ import {
 import { Menu, MenuPopup } from "../ui/menu";
 
 const GitActionsControl = memo(BaseGitActionsControl);
+
+const THREAD_DETAILS_CONTROLS_EXPANDED_KEY = "t3code:thread-details:controls-expanded";
 
 interface ThreadDetailsPanelProps extends Pick<
   ComponentProps<typeof ThreadDetailsCard>,
@@ -89,11 +97,33 @@ interface ThreadDetailsPanelProps extends Pick<
   ) => Promise<ProjectScriptActionResult>;
   onDeleteProjectScript: (scriptId: string) => Promise<ProjectScriptActionResult>;
   usage: ThreadDetailsUsageInput;
+  /** Sends a request to the thread's agent; null hides the actions, as on a draft. */
+  agentActions: {
+    readonly onAsk: (prompt: string) => void;
+    /** Why the agent cannot take a message now, or null when it can. */
+    readonly unavailableReason: string | null;
+  } | null;
 }
 
 export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
   const visible = useClientSettings(resolveThreadDetailsVisibility);
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
+  const [controlsExpanded, setControlsExpanded] = useLocalStorage(
+    THREAD_DETAILS_CONTROLS_EXPANDED_KEY,
+    false,
+    Schema.Boolean,
+  );
+  // A draft picks its machine and branch here before it is sent, so it keeps every control open.
+  const foldsControls =
+    props.draftId === undefined &&
+    (visible.environment ||
+      visible.openIn ||
+      visible.scripts ||
+      visible.assistants ||
+      visible.branch ||
+      visible.gitActions ||
+      visible.changes);
+  const showControls = props.draftId !== undefined || controlsExpanded;
   const fileScripts = useT3ProjectFileScripts(
     props.environmentId,
     props.activeProjectScripts && visible.scripts ? props.gitCwd : null,
@@ -133,9 +163,9 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
       threadRef={{ environmentId: props.environmentId, threadId: props.threadId }}
       anchor={props.anchor}
       handle={props.handle}
-      contentKey={THREAD_DETAILS_ITEMS.filter((item) => visible[item.id])
+      contentKey={`${THREAD_DETAILS_ITEMS.filter((item) => visible[item.id])
         .map((item) => item.id)
-        .join(",")}
+        .join(",")}:${showControls ? "controls" : "folded"}`}
       onContextMenu={(event) => {
         // Popups the card opens bubble here through React; they, fields, links, and selected text
         // keep their own menus.
@@ -177,11 +207,30 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
         return (
           <>
             <div className="group/details-items">
-              {show.environment || show.openIn || show.scripts || show.assistants ? (
+              {foldsControls ? (
+                <ThreadDetailsSection
+                  headingId="thread-details-summary-heading"
+                  title="Workspace summary"
+                  separated={false}
+                  showHeading={false}
+                >
+                  <ThreadDetailsSummary
+                    environmentId={props.environmentId}
+                    threadId={props.threadId}
+                    gitCwd={props.gitCwd}
+                    isGitRepo={props.isGitRepo}
+                    expanded={controlsExpanded}
+                    onToggle={() => setControlsExpanded((expanded) => !expanded)}
+                  />
+                </ThreadDetailsSection>
+              ) : null}
+
+              {showControls &&
+              (show.environment || show.openIn || show.scripts || show.assistants) ? (
                 <ThreadDetailsSection
                   headingId="thread-details-workspace-heading"
                   title="Workspace"
-                  separated={false}
+                  separated={foldsControls}
                   showHeading={false}
                 >
                   <div className="flex flex-col">
@@ -234,7 +283,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 </ThreadDetailsSection>
               ) : null}
 
-              {props.gitCwd && (show.branch || show.git) ? (
+              {showControls && props.gitCwd && (show.branch || show.git) ? (
                 <ThreadDetailsSection
                   headingId="thread-details-version-control-heading"
                   title="Version Control"
@@ -260,6 +309,18 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 </ThreadDetailsSection>
               ) : null}
 
+              {!props.draftId && visible.tasks ? (
+                <ThreadTasksPanel environmentId={props.environmentId} threadId={props.threadId} />
+              ) : null}
+
+              {props.agentActions && visible.agentActions ? (
+                <ThreadAgentActionsPanel
+                  isGitRepo={props.isGitRepo}
+                  unavailableReason={props.agentActions.unavailableReason}
+                  onAsk={props.agentActions.onAsk}
+                />
+              ) : null}
+
               {density === "full" && !props.draftId && visible.servers ? (
                 <ThreadServersPanel environmentId={props.environmentId} threadId={props.threadId} />
               ) : null}
@@ -278,6 +339,10 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                   showLineage={visible.lineage}
                   showSideChats={visible.sideChats}
                 />
+              ) : null}
+
+              {!props.draftId && visible.outline ? (
+                <ThreadOutlinePanel environmentId={props.environmentId} threadId={props.threadId} />
               ) : null}
 
               {visible.usage ? <ThreadDetailsUsage {...props.usage} /> : null}

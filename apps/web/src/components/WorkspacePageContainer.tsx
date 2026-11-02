@@ -2,12 +2,14 @@ import type { ComponentPropsWithoutRef } from "react";
 
 import { cn } from "../lib/utils";
 
-export type WorkspacePageWidth = "readable" | "wide" | "expanded";
+export type WorkspacePageWidth = "readable" | "wide" | "expanded" | "full";
 
 const WIDTH_CLASS: Record<WorkspacePageWidth, string> = {
   readable: "max-w-4xl",
   wide: "max-w-5xl",
   expanded: "max-w-6xl",
+  // Grids of cards, which add columns as the window widens.
+  full: "max-w-none",
 };
 
 export function WorkspacePageContainer({

@@ -2,7 +2,9 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   CalendarClockIcon,
   ChartNoAxesColumnIcon,
+  LayoutGridIcon,
   MessagesSquareIcon,
+  NotebookPenIcon,
   SettingsIcon,
   ShapesIcon,
   SparklesIcon,
@@ -32,19 +34,23 @@ import { SidebarUpdatePill } from "./SidebarUpdatePill";
 
 type SidebarNavDestination =
   | "threads"
+  | "projects"
   | "pull-requests"
   | "artifacts"
   | "skills"
   | "scheduled-tasks"
+  | "thread-page"
   | "usage"
   | "settings";
 
 function resolveActiveDestination(pathname: string): SidebarNavDestination {
+  if (pathname === "/projects") return "projects";
   if (pathname === "/pull-requests") return "pull-requests";
   if (pathname === "/artifacts") return "artifacts";
   if (pathname === "/skills") return "skills";
   if (pathname === "/usage") return "usage";
   if (pathname === "/scheduled-tasks") return "scheduled-tasks";
+  if (pathname === "/thread-page") return "thread-page";
   if (isSettingsPage(pathname)) return "settings";
   return "threads";
 }
@@ -157,6 +163,12 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
           isActive={active === "threads"}
           onClick={go(navigateToMainApp)}
         />
+        <SidebarNavRailItem
+          icon={<LayoutGridIcon />}
+          label="Projects"
+          isActive={active === "projects"}
+          onClick={go(() => navigate({ to: "/projects" }))}
+        />
         {pullRequestsSupported ? (
           <SidebarNavRailItem
             icon={<PullRequestGlyph.pullRequest />}
@@ -184,6 +196,12 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
           label="Scheduled tasks"
           isActive={active === "scheduled-tasks"}
           onClick={go(() => navigate({ to: "/scheduled-tasks" }))}
+        />
+        <SidebarNavRailItem
+          icon={<NotebookPenIcon />}
+          label="ThreadPage"
+          isActive={active === "thread-page"}
+          onClick={go(() => navigate({ to: "/thread-page" }))}
         />
       </SidebarMenu>
       <SidebarMenu className="items-center">

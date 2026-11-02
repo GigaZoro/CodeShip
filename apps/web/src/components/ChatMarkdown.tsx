@@ -147,6 +147,7 @@ import {
 } from "../markdownFileHostPath";
 import { isMarkdownFileLinkLabel } from "@t3tools/shared/markdownLinks";
 import { isElectron } from "../env";
+import { useOpenThreadPageLink } from "./threadPage/threadPageLinks";
 import { readLocalApi } from "../localApi";
 import { cn } from "../lib/utils";
 import { resolveRemoteOpenState, useRemoteOpenResolution } from "../remoteOpen";
@@ -691,6 +692,7 @@ function useChatMarkdownState({
   };
   const openChangeRequestLink = useOpenChangeRequestLink(threadRef, pullRequestPanelRef);
   const openDeferredMarkdownLink = useOpenLink(threadRef);
+  const openThreadPageLink = useOpenThreadPageLink();
   // Subscribe so hydrated settings apply before the anchor synchronously decides whether to intercept _blank.
   const linkTargetPreference = useClientSettings((settings) => settings.browserLinkTarget);
   const mathEnabled = useClientSettings((settings) => settings.mathRenderingEnabled);
@@ -964,6 +966,7 @@ function useChatMarkdownState({
     openDeferredMarkdownLink,
     openExternalLinkInPreview,
     openMarkdownMedia,
+    openThreadPageLink,
     projects,
     linkedThreadPullRequestFor,
     resolveThreadPullRequest,
@@ -1118,6 +1121,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       openDeferredMarkdownLink,
       linkTargetPreference,
       openExternalLinkInPreview,
+      openThreadPageLink,
       projects,
       linkedThreadPullRequestFor,
       resolveThreadPullRequest,
@@ -1229,6 +1233,17 @@ const CHAT_MARKDOWN_COMPONENTS = {
               return;
             }
             if (event.defaultPrevented) return;
+            if (
+              !event.metaKey &&
+              !event.ctrlKey &&
+              !event.shiftKey &&
+              !event.altKey &&
+              openThreadPageLink(href)
+            ) {
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
             if (
               resolveLinkTarget({
                 url: href,

@@ -18,10 +18,12 @@ import { Route as ChatRouteImport } from './routes/_chat'
 import { Route as ChatIndexRouteImport } from './routes/_chat.index'
 import { Route as ProjectsProjectKeyRouteImport } from './routes/projects.$projectKey'
 import { Route as ChatUsageRouteImport } from './routes/_chat.usage'
+import { Route as ChatThreadPageRouteImport } from './routes/_chat.thread-page'
 import { Route as ChatSkillsRouteImport } from './routes/_chat.skills'
 import { Route as ChatSettingsRouteImport } from './routes/_chat.settings'
 import { Route as ChatScheduledTasksRouteImport } from './routes/_chat.scheduled-tasks'
 import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests'
+import { Route as ChatProjectsRouteImport } from './routes/_chat.projects'
 import { Route as ChatNewRouteImport } from './routes/_chat.new'
 import { Route as ChatArtifactsRouteImport } from './routes/_chat.artifacts'
 import { Route as ChatSettingsWorktreesRouteImport } from './routes/_chat.settings.worktrees'
@@ -97,6 +99,11 @@ const ChatUsageRoute = ChatUsageRouteImport.update({
   path: '/usage',
   getParentRoute: () => ChatRoute,
 } as any)
+const ChatThreadPageRoute = ChatThreadPageRouteImport.update({
+  id: '/thread-page',
+  path: '/thread-page',
+  getParentRoute: () => ChatRoute,
+} as any)
 const ChatSkillsRoute = ChatSkillsRouteImport.update({
   id: '/skills',
   path: '/skills',
@@ -115,6 +122,11 @@ const ChatScheduledTasksRoute = ChatScheduledTasksRouteImport.update({
 const ChatPullRequestsRoute = ChatPullRequestsRouteImport.update({
   id: '/pull-requests',
   path: '/pull-requests',
+  getParentRoute: () => ChatRoute,
+} as any)
+const ChatProjectsRoute = ChatProjectsRouteImport.update({
+  id: '/projects',
+  path: '/projects',
   getParentRoute: () => ChatRoute,
 } as any)
 const ChatNewRoute = ChatNewRouteImport.update({
@@ -282,10 +294,12 @@ export interface FileRoutesByFullPath {
   '/welcome': typeof WelcomeRoute
   '/artifacts': typeof ChatArtifactsRoute
   '/new': typeof ChatNewRoute
+  '/projects': typeof ChatProjectsRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/scheduled-tasks': typeof ChatScheduledTasksRoute
   '/settings': typeof ChatSettingsRouteWithChildren
   '/skills': typeof ChatSkillsRoute
+  '/thread-page': typeof ChatThreadPageRoute
   '/usage': typeof ChatUsageRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
@@ -325,10 +339,12 @@ export interface FileRoutesByTo {
   '/welcome': typeof WelcomeRoute
   '/artifacts': typeof ChatArtifactsRoute
   '/new': typeof ChatNewRoute
+  '/projects': typeof ChatProjectsRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/scheduled-tasks': typeof ChatScheduledTasksRoute
   '/settings': typeof ChatSettingsRouteWithChildren
   '/skills': typeof ChatSkillsRoute
+  '/thread-page': typeof ChatThreadPageRoute
   '/usage': typeof ChatUsageRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
   '/': typeof ChatIndexRoute
@@ -371,10 +387,12 @@ export interface FileRoutesById {
   '/welcome': typeof WelcomeRoute
   '/_chat/artifacts': typeof ChatArtifactsRoute
   '/_chat/new': typeof ChatNewRoute
+  '/_chat/projects': typeof ChatProjectsRoute
   '/_chat/pull-requests': typeof ChatPullRequestsRoute
   '/_chat/scheduled-tasks': typeof ChatScheduledTasksRoute
   '/_chat/settings': typeof ChatSettingsRouteWithChildren
   '/_chat/skills': typeof ChatSkillsRoute
+  '/_chat/thread-page': typeof ChatThreadPageRoute
   '/_chat/usage': typeof ChatUsageRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
   '/_chat/': typeof ChatIndexRoute
@@ -418,10 +436,12 @@ export interface FileRouteTypes {
     | '/welcome'
     | '/artifacts'
     | '/new'
+    | '/projects'
     | '/pull-requests'
     | '/scheduled-tasks'
     | '/settings'
     | '/skills'
+    | '/thread-page'
     | '/usage'
     | '/projects/$projectKey'
     | '/$environmentId/$threadId'
@@ -461,10 +481,12 @@ export interface FileRouteTypes {
     | '/welcome'
     | '/artifacts'
     | '/new'
+    | '/projects'
     | '/pull-requests'
     | '/scheduled-tasks'
     | '/settings'
     | '/skills'
+    | '/thread-page'
     | '/usage'
     | '/projects/$projectKey'
     | '/'
@@ -506,10 +528,12 @@ export interface FileRouteTypes {
     | '/welcome'
     | '/_chat/artifacts'
     | '/_chat/new'
+    | '/_chat/projects'
     | '/_chat/pull-requests'
     | '/_chat/scheduled-tasks'
     | '/_chat/settings'
     | '/_chat/skills'
+    | '/_chat/thread-page'
     | '/_chat/usage'
     | '/projects/$projectKey'
     | '/_chat/'
@@ -618,6 +642,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatUsageRouteImport
       parentRoute: typeof ChatRoute
     }
+    '/_chat/thread-page': {
+      id: '/_chat/thread-page'
+      path: '/thread-page'
+      fullPath: '/thread-page'
+      preLoaderRoute: typeof ChatThreadPageRouteImport
+      parentRoute: typeof ChatRoute
+    }
     '/_chat/skills': {
       id: '/_chat/skills'
       path: '/skills'
@@ -644,6 +675,13 @@ declare module '@tanstack/react-router' {
       path: '/pull-requests'
       fullPath: '/pull-requests'
       preLoaderRoute: typeof ChatPullRequestsRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/_chat/projects': {
+      id: '/_chat/projects'
+      path: '/projects'
+      fullPath: '/projects'
+      preLoaderRoute: typeof ChatProjectsRouteImport
       parentRoute: typeof ChatRoute
     }
     '/_chat/new': {
@@ -924,10 +962,12 @@ const ChatSettingsRouteWithChildren = ChatSettingsRoute._addFileChildren(
 interface ChatRouteChildren {
   ChatArtifactsRoute: typeof ChatArtifactsRoute
   ChatNewRoute: typeof ChatNewRoute
+  ChatProjectsRoute: typeof ChatProjectsRoute
   ChatPullRequestsRoute: typeof ChatPullRequestsRoute
   ChatScheduledTasksRoute: typeof ChatScheduledTasksRoute
   ChatSettingsRoute: typeof ChatSettingsRouteWithChildren
   ChatSkillsRoute: typeof ChatSkillsRoute
+  ChatThreadPageRoute: typeof ChatThreadPageRoute
   ChatUsageRoute: typeof ChatUsageRoute
   ChatIndexRoute: typeof ChatIndexRoute
   ChatEnvironmentIdThreadIdRoute: typeof ChatEnvironmentIdThreadIdRoute
@@ -937,10 +977,12 @@ interface ChatRouteChildren {
 const ChatRouteChildren: ChatRouteChildren = {
   ChatArtifactsRoute: ChatArtifactsRoute,
   ChatNewRoute: ChatNewRoute,
+  ChatProjectsRoute: ChatProjectsRoute,
   ChatPullRequestsRoute: ChatPullRequestsRoute,
   ChatScheduledTasksRoute: ChatScheduledTasksRoute,
   ChatSettingsRoute: ChatSettingsRouteWithChildren,
   ChatSkillsRoute: ChatSkillsRoute,
+  ChatThreadPageRoute: ChatThreadPageRoute,
   ChatUsageRoute: ChatUsageRoute,
   ChatIndexRoute: ChatIndexRoute,
   ChatEnvironmentIdThreadIdRoute: ChatEnvironmentIdThreadIdRoute,

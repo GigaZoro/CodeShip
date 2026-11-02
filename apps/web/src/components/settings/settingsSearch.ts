@@ -336,6 +336,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
+    id: "agent-actions",
+    title: "Ask the agent",
+    to: "/settings/appearance",
+    searchTerms: [
+      "custom actions buttons requests prompts shortcuts commit pull request tests review thread details card command palette",
+    ],
+  },
+  {
     id: "effort-display",
     title: "Effort display",
     to: "/settings/appearance",

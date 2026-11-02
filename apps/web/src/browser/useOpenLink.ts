@@ -7,6 +7,7 @@ import { recordVisitForThread } from "~/browserHistoryStore";
 import { readLocalApi } from "~/localApi";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { useOpenThreadPageLink } from "~/components/threadPage/threadPageLinks";
 
 import {
   canOpenLinksInApp,
@@ -30,11 +31,22 @@ export function useOpenLink(threadRef: ScopedThreadRef | null | undefined): (
   },
 ) => Promise<void> {
   const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: false });
+  const openThreadPageLink = useOpenThreadPageLink();
   return async (url, options = {}) => {
+    const event = options.event ?? NO_MODIFIER;
+    // Before any await, so a web browser still treats its new tab as user-initiated.
+    if (
+      !event.metaKey &&
+      !event.ctrlKey &&
+      options.event?.button !== 1 &&
+      openThreadPageLink(url)
+    ) {
+      return;
+    }
     const targetThreadRef = options.threadRef ?? threadRef;
     const target = resolveLinkTarget({
       url,
-      event: options.event ?? NO_MODIFIER,
+      event,
       preference: await resolveBrowserLinkTargetPreference(),
       canOpenInApp: canOpenLinksInApp(targetThreadRef),
     });

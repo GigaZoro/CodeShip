@@ -31,6 +31,7 @@ import type {
 import type { AsyncResult } from "effect/reactivity";
 import {
   effectiveSnoozed,
+  threadWokeAt,
   type ThreadSnoozeShell,
 } from "@t3tools/client-runtime/state/thread-settled";
 import {
@@ -747,6 +748,37 @@ export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
   return completedAt > lastVisitedAt;
 }
 
+/** A snooze that woke after the user last looked, which rows flag as Woke until they do. */
+export function hasUnseenWake(input: {
+  readonly wokeAt: string | null;
+  readonly lastVisitedAt: string | undefined;
+  readonly settled: boolean;
+}): boolean {
+  if (input.wokeAt === null || input.settled) return false;
+  const wokeAt = Date.parse(input.wokeAt);
+  if (Number.isNaN(wokeAt)) return false;
+  const lastVisitedAt = input.lastVisitedAt === undefined ? NaN : Date.parse(input.lastVisitedAt);
+  return Number.isNaN(lastVisitedAt) || lastVisitedAt < wokeAt;
+}
+
+/**
+ * A woken snooze the user has not opened since, by the server's visits alone, so streaming never
+ * re-renders a list over local ones. Older servers keep no visits, and every wake would look unseen.
+ */
+export function hasUnseenServerWake(
+  thread: ThreadSnoozeShell & { readonly lastVisitedAt?: string | null | undefined },
+  now: string,
+): boolean {
+  return (
+    thread.lastVisitedAt !== undefined &&
+    hasUnseenWake({
+      wokeAt: threadWokeAt(thread, { now }),
+      lastVisitedAt: thread.lastVisitedAt ?? undefined,
+      settled: false,
+    })
+  );
+}
+
 /** Unopened threads' failures still count as unseen, unlike completions. */
 function hasUnseenFailure(thread: ThreadStatusInput): boolean {
   if (thread.latestRun?.status !== "failed") return false;
@@ -949,6 +981,29 @@ export function resolveSidebarFolderDot(
   if (hasUnread) return "unread";
   if (statuses.has("working")) return "working";
   return null;
+}
+
+/** How many threads an open folder lists before the rest fold behind "Show more". */
+export const SIDEBAR_FOLDER_PREVIEW_COUNT = 5;
+
+/**
+ * An open folder's rows: its first `limit` threads, plus any later one `keep`
+ * holds, so folding the rest never hides work that needs the user. A single
+ * leftover stays listed, since a "Show 1 more" row would take its place anyway.
+ */
+export function capSidebarFolderThreads<T>(
+  threads: readonly T[],
+  limit: number,
+  keep: (thread: T) => boolean,
+): { readonly visible: readonly T[]; readonly overflow: readonly T[] } {
+  const all = { visible: threads, overflow: [] };
+  if (threads.length <= limit + 1) return all;
+  const visible: T[] = [];
+  const overflow: T[] = [];
+  for (const [index, thread] of threads.entries()) {
+    (index < limit || keep(thread) ? visible : overflow).push(thread);
+  }
+  return overflow.length > 1 ? { visible, overflow } : all;
 }
 
 /**

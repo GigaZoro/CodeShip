@@ -57,6 +57,8 @@ import {
 } from "@t3tools/contracts";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
+  ChevronsDownUpIcon,
+  ChevronsUpDownIcon,
   ArrowLeftIcon,
   BugIcon,
   CalendarClockIcon,
@@ -68,6 +70,7 @@ import {
   FolderGit2Icon,
   FolderIcon,
   FolderPlusIcon,
+  LayoutGridIcon,
   MessageSquareDashedIcon,
   LinkIcon,
   MessageSquareIcon,
@@ -78,6 +81,7 @@ import {
   ShapesIcon,
   SparklesIcon,
   MonitorIcon,
+  NotebookPenIcon,
   PinIcon,
   PinOffIcon,
   SquarePenIcon,
@@ -269,6 +273,8 @@ import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { readPullRequestListPreferences } from "~/components/pullRequest/pullRequestListPreferences";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
 import { useSideChat } from "./chat/useSideChat";
+import { availableAgentActions, useAgentActionsTarget } from "./chat/agentActions";
+import { useSidebarFolderControls } from "./sidebar/sidebarFolderControls";
 import { threadRecentUse } from "@t3tools/shared/paletteSearch";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
@@ -497,6 +503,9 @@ function OpenCommandPaletteDialog(props: {
         ? scopeThreadRef(activeThread.environmentId, activeThread.id)
         : null;
   const openPanelPullRequestUrl = useOpenPanelPullRequestUrl(referenceThreadRef);
+  const agentActionsTarget = useAgentActionsTarget();
+  const customAgentActions = useClientSettings((settings) => settings.customAgentActions);
+  const sidebarFolderControls = useSidebarFolderControls();
   const activeThreadServerConfig = useServerConfigs().get(
     activeThread?.environmentId ?? ("" as EnvironmentId),
   );
@@ -1510,6 +1519,24 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
+  if (agentActionsTarget !== null && agentActionsTarget.threadKey === activeThreadKey) {
+    const target = agentActionsTarget;
+    for (const action of availableAgentActions(target.isGitRepo, customAgentActions)) {
+      actionItems.push({
+        kind: "action",
+        value: `action:ask-agent:${action.id}`,
+        searchTerms: ["ask", "agent", ...action.searchTerms],
+        title: `Ask the agent: ${action.label}`,
+        description: target.unavailableReason ?? action.preview,
+        disabled: target.unavailableReason !== null,
+        icon: <action.icon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          target.ask(action.prompt);
+        },
+      });
+    }
+  }
+
   if (activeThread !== null && canShareActiveThreadWithGuest) {
     const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
     actionItems.push({
@@ -1682,6 +1709,17 @@ function OpenCommandPaletteDialog(props: {
 
   actionItems.push({
     kind: "action",
+    value: "action:projects",
+    searchTerms: ["projects", "overview", "dashboard", "board", "all threads", "manage"],
+    title: "Open projects",
+    icon: <LayoutGridIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/projects" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
     value: "action:artifacts",
     searchTerms: ["artifacts", "pages", "visual", "charts", "diagrams", "mockups", "renders"],
     title: "Open artifacts",
@@ -1702,6 +1740,28 @@ function OpenCommandPaletteDialog(props: {
     },
   });
 
+  if (sidebarFolderControls !== null) {
+    const controls = sidebarFolderControls;
+    for (const expanded of [false, true]) {
+      actionItems.push({
+        kind: "action",
+        value: expanded ? "action:sidebar-expand-folders" : "action:sidebar-collapse-folders",
+        searchTerms: expanded
+          ? ["expand", "open", "unfold", "sidebar", "folders", "projects", "all"]
+          : ["collapse", "close", "fold", "sidebar", "folders", "projects", "all"],
+        title: expanded ? "Expand all sidebar folders" : "Collapse all sidebar folders",
+        icon: expanded ? (
+          <ChevronsUpDownIcon className={ITEM_ICON_CLASS} />
+        ) : (
+          <ChevronsDownUpIcon className={ITEM_ICON_CLASS} />
+        ),
+        run: async () => {
+          controls.setAllExpanded(expanded);
+        },
+      });
+    }
+  }
+
   actionItems.push({
     kind: "action",
     value: "action:scheduled-tasks",
@@ -1710,6 +1770,17 @@ function OpenCommandPaletteDialog(props: {
     icon: <CalendarClockIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
       await navigate({ to: "/scheduled-tasks" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:thread-page",
+    searchTerms: ["threadpage", "thread.page", "notes", "notebook", "work log", "decisions"],
+    title: "Open ThreadPage",
+    icon: <NotebookPenIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/thread-page" });
     },
   });
 

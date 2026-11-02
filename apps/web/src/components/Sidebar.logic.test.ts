@@ -6,6 +6,7 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import {
+  capSidebarFolderThreads,
   newThreadAsksForProject,
   deleteSelectedThreadEntries,
   getFallbackThreadIdAfterDelete,
@@ -1708,6 +1709,21 @@ describe("resolveSidebarScopedProjectKeys", () => {
     expect(resolve([], [remoteEnvironmentId])).toEqual(["environment-remote:t3code-remote"]);
     expect(resolve([t3code], [localEnvironmentId])).toEqual(["environment-local:t3code"]);
     expect(resolve([fleet], [remoteEnvironmentId])).toEqual([]);
+  });
+});
+
+describe("capSidebarFolderThreads", () => {
+  it("lists the newest threads and keeps later ones the user needs", () => {
+    const ids = ["a", "b", "c", "d", "e"];
+    const keep = (id: string) => id === "e";
+
+    expect(capSidebarFolderThreads(ids, 5, keep)).toEqual({ visible: ids, overflow: [] });
+    expect(capSidebarFolderThreads(ids, 2, keep)).toEqual({
+      visible: ["a", "b", "e"],
+      overflow: ["c", "d"],
+    });
+    // Folding one thread would only swap it for a "Show 1 more" row.
+    expect(capSidebarFolderThreads(ids, 3, keep)).toEqual({ visible: ids, overflow: [] });
   });
 });
 
