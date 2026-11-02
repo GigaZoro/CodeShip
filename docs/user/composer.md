@@ -242,6 +242,11 @@ directory.
 The slash menu also includes skills unless you turn off **Settings → Chat →
 Show skills in slash menu**, under Advanced. Only skills enabled for the provider are listed.
 
+On web and desktop, **Skills** in the sidebar rail lists every provider's skills
+on each connected machine, with what each one does and where its `SKILL.md`
+lives. Project skills appear once a thread has used that project with the
+provider.
+
 After you add or change skills, plugins, or MCP servers, use **Restart agent
 session** in the command palette on web and desktop. The conversation continues,
 and your next message starts the agent again with the new setup.

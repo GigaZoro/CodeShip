@@ -3532,6 +3532,7 @@ export const ORCHESTRATION_V2_WS_METHODS = {
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   getThreadFamily: "orchestration.getThreadFamily",
   getWorktreeThreadIds: "orchestration.getWorktreeThreadIds",
+  listHtmlRenders: "orchestration.listHtmlRenders",
   getOlderSettledThreads: "orchestration.getOlderSettledThreads",
   getThreadProjection: "orchestration.getThreadProjection",
   getWorkflowScript: "orchestration.getWorkflowScript",
@@ -3659,6 +3660,40 @@ export const OrchestrationV2GetWorktreeThreadIdsInput = Schema.Struct({
 });
 export type OrchestrationV2GetWorktreeThreadIdsInput =
   typeof OrchestrationV2GetWorktreeThreadIdsInput.Type;
+
+export const ORCHESTRATION_V2_HTML_RENDER_LIST_MAX = 200;
+
+export const OrchestrationV2ListHtmlRendersInput = Schema.Struct({
+  limit: Schema.Int.check(
+    Schema.isBetween({ minimum: 1, maximum: ORCHESTRATION_V2_HTML_RENDER_LIST_MAX }),
+  ),
+});
+export type OrchestrationV2ListHtmlRendersInput = typeof OrchestrationV2ListHtmlRendersInput.Type;
+
+/** The newest version of a page an agent published with html_render, and the thread that owns it. */
+export const OrchestrationV2HtmlRenderListItem = Schema.Struct({
+  attachmentId: TrimmedNonEmptyString,
+  title: Schema.String,
+  height: Schema.Number,
+  heights: Schema.optionalKey(Schema.Array(Schema.Tuple([Schema.Number, Schema.Number]))),
+  /** This page and the earlier versions it replaced. */
+  versions: PositiveInt,
+  threadId: ThreadId,
+  threadTitle: Schema.String,
+  archived: Schema.Boolean,
+  projectId: ProjectId,
+  projectTitle: Schema.NullOr(Schema.String),
+  providerInstanceId: Schema.NullOr(ProviderInstanceId),
+  publishedAt: IsoDateTime,
+});
+export type OrchestrationV2HtmlRenderListItem = typeof OrchestrationV2HtmlRenderListItem.Type;
+
+/** Newest first. `truncated` means older pages exist past the limit. */
+export const OrchestrationV2HtmlRenderList = Schema.Struct({
+  renders: Schema.Array(OrchestrationV2HtmlRenderListItem),
+  truncated: Schema.Boolean,
+});
+export type OrchestrationV2HtmlRenderList = typeof OrchestrationV2HtmlRenderList.Type;
 
 /**
  * The client's thread search. With `olderSettledBefore`, the result also carries the rows of the
@@ -3879,6 +3914,14 @@ export class OrchestrationV2GetThreadProjectionError extends Schema.TaggedError<
 
 export class OrchestrationV2GetShellSnapshotError extends Schema.TaggedError<OrchestrationV2GetShellSnapshotError>()(
   "OrchestrationV2GetShellSnapshotError",
+  {
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
+export class OrchestrationV2ListHtmlRendersError extends Schema.TaggedError<OrchestrationV2ListHtmlRendersError>()(
+  "OrchestrationV2ListHtmlRendersError",
   {
     message: Schema.String,
     cause: Schema.optional(Schema.Defect()),
@@ -4132,6 +4175,10 @@ export const OrchestrationV2RpcSchemas = {
   getWorktreeThreadIds: {
     input: OrchestrationV2GetWorktreeThreadIdsInput,
     output: OrchestrationV2WorktreeThreadIds,
+  },
+  listHtmlRenders: {
+    input: OrchestrationV2ListHtmlRendersInput,
+    output: OrchestrationV2HtmlRenderList,
   },
   getOlderSettledThreads: {
     input: OrchestrationV2GetOlderSettledThreadsInput,

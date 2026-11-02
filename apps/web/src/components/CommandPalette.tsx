@@ -73,6 +73,8 @@ import {
   PaletteIcon,
   RotateCcwIcon,
   SettingsIcon,
+  ShapesIcon,
+  SparklesIcon,
   MonitorIcon,
   SquarePenIcon,
   TextSearchIcon,
@@ -1589,6 +1591,28 @@ function OpenCommandPaletteDialog(props: {
       },
     });
   }
+
+  actionItems.push({
+    kind: "action",
+    value: "action:artifacts",
+    searchTerms: ["artifacts", "pages", "visual", "charts", "diagrams", "mockups", "renders"],
+    title: "Open artifacts",
+    icon: <ShapesIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/artifacts" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:skills",
+    searchTerms: ["skills", "agent skills", "plugins", "capabilities"],
+    title: "Open skills",
+    icon: <SparklesIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/skills" });
+    },
+  });
 
   actionItems.push({
     kind: "action",

@@ -4,6 +4,8 @@ import {
   ChartNoAxesColumnIcon,
   MessagesSquareIcon,
   SettingsIcon,
+  ShapesIcon,
+  SparklesIcon,
 } from "lucide-react";
 import { tightestLimitWindow } from "@t3tools/shared/usageLimits";
 import { memo, useState, type ReactNode } from "react";
@@ -28,10 +30,19 @@ import {
 import { isSettingsPage, useNavigateToMainApp } from "./mainAppLocation";
 import { SidebarUpdatePill } from "./SidebarUpdatePill";
 
-type SidebarNavDestination = "threads" | "pull-requests" | "scheduled-tasks" | "usage" | "settings";
+type SidebarNavDestination =
+  | "threads"
+  | "pull-requests"
+  | "artifacts"
+  | "skills"
+  | "scheduled-tasks"
+  | "usage"
+  | "settings";
 
 function resolveActiveDestination(pathname: string): SidebarNavDestination {
   if (pathname === "/pull-requests") return "pull-requests";
+  if (pathname === "/artifacts") return "artifacts";
+  if (pathname === "/skills") return "skills";
   if (pathname === "/usage") return "usage";
   if (pathname === "/scheduled-tasks") return "scheduled-tasks";
   if (isSettingsPage(pathname)) return "settings";
@@ -156,6 +167,18 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
             )}
           />
         ) : null}
+        <SidebarNavRailItem
+          icon={<ShapesIcon />}
+          label="Artifacts"
+          isActive={active === "artifacts"}
+          onClick={go(() => navigate({ to: "/artifacts" }))}
+        />
+        <SidebarNavRailItem
+          icon={<SparklesIcon />}
+          label="Skills"
+          isActive={active === "skills"}
+          onClick={go(() => navigate({ to: "/skills" }))}
+        />
         <SidebarNavRailItem
           icon={<CalendarClockIcon />}
           label="Scheduled tasks"

@@ -225,6 +225,7 @@ import {
   OrchestrationV2GetShellSnapshotError,
   OrchestrationV2CommandOutputError,
   OrchestrationV2GetThreadProjectionError,
+  OrchestrationV2ListHtmlRendersError,
   OrchestrationV2RpcSchemas,
   OrchestrationV2ThreadLaunchError,
 } from "./orchestrationV2.ts";
@@ -1749,6 +1750,12 @@ const WsOrchestrationV2GetWorktreeThreadIdsRpc = Rpc.make(
   },
 );
 
+const WsOrchestrationV2ListHtmlRendersRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.listHtmlRenders, {
+  payload: OrchestrationV2RpcSchemas.listHtmlRenders.input,
+  success: OrchestrationV2RpcSchemas.listHtmlRenders.output,
+  error: Schema.Union([OrchestrationV2ListHtmlRendersError, EnvironmentAuthorizationError]),
+});
+
 const WsOrchestrationV2GetOlderSettledThreadsRpc = Rpc.make(
   ORCHESTRATION_V2_WS_METHODS.getOlderSettledThreads,
   {
@@ -2148,6 +2155,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2GetArchivedShellSnapshotRpc,
   WsOrchestrationV2GetThreadFamilyRpc,
   WsOrchestrationV2GetWorktreeThreadIdsRpc,
+  WsOrchestrationV2ListHtmlRendersRpc,
   WsOrchestrationV2GetOlderSettledThreadsRpc,
   WsOrchestrationV2GetThreadProjectionRpc,
   WsOrchestrationV2LaunchThreadRpc,

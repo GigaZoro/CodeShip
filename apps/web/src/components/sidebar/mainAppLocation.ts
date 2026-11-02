@@ -11,6 +11,8 @@ export function isSettingsPage(pathname: string) {
 export function isSidebarSectionPage(pathname: string) {
   return (
     pathname === "/pull-requests" ||
+    pathname === "/artifacts" ||
+    pathname === "/skills" ||
     pathname === "/scheduled-tasks" ||
     pathname === "/usage" ||
     isSettingsPage(pathname)

@@ -1,9 +1,6 @@
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
 import type { ComposerPathSearchTarget } from "@t3tools/client-runtime/state/threads";
-import {
-  resolveProviderSkillSourceKind,
-  type ProviderSkillSourceKind,
-} from "@t3tools/client-runtime/providerSkills";
+import { resolveProviderSkillSourceKind } from "@t3tools/client-runtime/providerSkills";
 import {
   type EnvironmentId,
   type EnvironmentMachineKind,
@@ -14,20 +11,12 @@ import {
   type ServerProviderSkill,
   type ServerProviderSlashCommand,
 } from "@t3tools/contracts";
-import {
-  BlocksIcon,
-  FolderIcon,
-  MessagesSquareIcon,
-  PackageIcon,
-  SettingsIcon,
-  UserRoundIcon,
-  type LucideIcon,
-} from "lucide-react";
+import { MessagesSquareIcon } from "lucide-react";
 import { memo, useLayoutEffect, useRef } from "react";
 
 import { type ComposerSlashCommand, type ComposerTriggerKind } from "../../composer-logic";
 import { cn } from "~/lib/utils";
-import { Badge } from "../ui/badge";
+import { SkillSourceBadge } from "./SkillSourceBadge";
 import { Command, CommandGroup, CommandItem, CommandList } from "../ui/command";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { PierreEntryIcon } from "./PierreEntryIcon";
@@ -244,6 +233,7 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
         </span>
         {skillSourceKind ? (
           <SkillSourceBadge
+            className="ms-auto"
             kind={skillSourceKind}
             showSkillSuffix={props.triggerKind === "skill"}
           />
@@ -264,32 +254,3 @@ const LISTBOX_LABEL_BY_TRIGGER: Record<ComposerTriggerKind, string> = {
   "slash-command": "Commands",
   skill: "Skills",
 };
-
-const SKILL_SOURCE_ICON_BY_KIND: Record<ProviderSkillSourceKind, LucideIcon> = {
-  app: BlocksIcon,
-  repo: FolderIcon,
-  project: FolderIcon,
-  personal: UserRoundIcon,
-  system: SettingsIcon,
-  other: PackageIcon,
-};
-
-const SKILL_SOURCE_LABEL_BY_KIND: Record<ProviderSkillSourceKind, string> = {
-  app: "App",
-  repo: "Repo",
-  project: "Project",
-  personal: "Personal",
-  system: "System",
-  other: "Provider",
-};
-
-function SkillSourceBadge(props: { kind: ProviderSkillSourceKind; showSkillSuffix: boolean }) {
-  const Icon = SKILL_SOURCE_ICON_BY_KIND[props.kind];
-  return (
-    <Badge className="ms-auto" variant="secondary">
-      <Icon aria-hidden="true" className="text-current" />
-      {SKILL_SOURCE_LABEL_BY_KIND[props.kind]}
-      {props.showSkillSuffix ? " Skill" : null}
-    </Badge>
-  );
-}
