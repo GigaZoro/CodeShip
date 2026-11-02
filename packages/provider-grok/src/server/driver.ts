@@ -29,6 +29,7 @@ import {
 } from "@t3tools/provider-core/server/driver";
 import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIdentity";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import { makeGrokPluginManagement } from "./plugins.ts";
 import { discoverGrokSkills } from "./skills.ts";
 import {
   homebrewOwnershipFromCommandPath,
@@ -167,6 +168,13 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv, Path.Path> 
       ),
     );
     const textGeneration = yield* makeGrokTextGeneration(effectiveConfig, processEnv);
+    const plugins = yield* makeGrokPluginManagement({
+      instanceId,
+      binaryPath: effectiveConfig.binaryPath,
+      environment: processEnv,
+      // A project folder would add that project's plugins to the machine's list.
+      cwd: host.paths.stateDir,
+    });
 
     const checkProvider = checkGrokProviderStatus(effectiveConfig, processEnv, cwd).pipe(
       Effect.filterOrElse(
@@ -252,6 +260,7 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv, Path.Path> 
       displayName,
       accentColor,
       enabled,
+      plugins,
       snapshot,
       snapshotForCwd,
       orchestrationAdapter,

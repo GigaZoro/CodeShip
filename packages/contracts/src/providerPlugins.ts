@@ -7,7 +7,7 @@ export const PROVIDER_PLUGINS_PAGE_SIZE = 50;
 const PROVIDER_PLUGINS_MAX_LIMIT = 500;
 const PROVIDER_PLUGIN_DESCRIPTION_MAX_LENGTH = 500;
 
-/** The provider's own plugin id, `name@marketplace` for both Claude and Codex. */
+/** The provider's own plugin id, `name@marketplace`; just the name for a Grok plugin from a git URL or folder. */
 export const ProviderPluginId = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
 export type ProviderPluginId = typeof ProviderPluginId.Type;
 

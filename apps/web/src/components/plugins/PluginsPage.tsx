@@ -95,9 +95,11 @@ function PluginRow(props: {
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
           <span className="min-w-0 truncate font-medium text-sm">{pluginLabel(plugin)}</span>
-          <Badge size="sm" variant="outline">
-            {props.marketplaceLabel}
-          </Badge>
+          {props.marketplaceLabel ? (
+            <Badge size="sm" variant="outline">
+              {props.marketplaceLabel}
+            </Badge>
+          ) : null}
           {version ? <span className="text-muted-foreground text-xs">{version}</span> : null}
           {plugin.installCount ? (
             <span className="text-muted-foreground text-xs tabular-nums">
@@ -636,8 +638,8 @@ export function PluginsPage() {
               </EmptyMedia>
               <EmptyTitle>No provider installs plugins here</EmptyTitle>
               <EmptyDescription>
-                Claude and Codex install plugins from their marketplaces. Turn one on in Settings to
-                browse and install them here.
+                Claude, Codex, and Grok install plugins from their marketplaces. Turn one on in
+                Settings to browse and install them here.
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
