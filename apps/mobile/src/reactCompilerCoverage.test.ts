@@ -208,8 +208,7 @@ describe("React Compiler coverage", () => {
     if (typeof result === "object" && result !== null && "ast" in result) {
       walkAst(result.ast, (node, ancestors) => {
         if (node.type !== "CallExpression" || !isAstNode(node.callee)) return;
-        const property = node.callee.property;
-        if (!isAstNode(property) || property.name !== "observe") return;
+        if (node.callee.name !== "observeInbox") return;
         const guard = ancestors.findLast(
           (ancestor, index) =>
             ancestor.type === "IfStatement" && ancestors[index + 1] === ancestor.consequent,

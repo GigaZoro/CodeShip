@@ -16,6 +16,7 @@ vi.mock("@effect/atom-react", () => ({ useAtomValue: () => state.environments })
 vi.mock("@t3tools/client-runtime/state/usage", () => ({
   needsCursorKeychainAccess: () => false,
   refreshUsage: vi.fn(),
+  usageSummaryInput: (input: unknown) => input,
 }));
 vi.mock("../rpc/atomRegistry", () => ({ appAtomRegistry: {} }));
 vi.mock("./presentation", () => ({ environmentPresentations: {} }));
