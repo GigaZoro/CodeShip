@@ -1,18 +1,19 @@
-import {
-  type EditorId,
-  type EnvironmentId,
-  type PreviewAnnotationPayload,
-  type ProjectId,
-  type ResolvedKeybindingsConfig,
-  type ScopedThreadRef,
-  ThreadId,
-  type ThreadLinkedPullRequest,
-  type ThreadPullRequestLink,
+import type {
+  EditorId,
+  EnvironmentId,
+  PreviewAnnotationPayload,
+  ProjectId,
+  ResolvedKeybindingsConfig,
+  ScopedThreadRef,
+  ThreadLinkedPullRequest,
+  ThreadPullRequestLink,
 } from "@t3tools/contracts";
-import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { lazy, Suspense } from "react";
+import SideChatPane from "./SideChatPane";
 import type { ComposerImageAttachment, DraftId } from "../../composerDraftStore";
 import type { ShortcutMatchContext } from "../../keybindings";
+import type { SideChatParentPanel } from "../../lib/sideChatPane";
 import { type RightPanelSurface, useRightPanelStore } from "../../rightPanelStore";
 import {
   PersistentThreadTerminalPanel,
@@ -40,9 +41,6 @@ const DevicePanel = lazy(() =>
   import("../device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
 );
 const FilePreviewPanel = lazy(() => import("../files/FilePreviewPanel"));
-const SideChatPanel = lazy(() =>
-  import("./SideChatPanel").then((module) => ({ default: module.SideChatPanel })),
-);
 
 type RightPanelTerminalProps = Omit<
   PersistentThreadTerminalPanelProps,
@@ -57,11 +55,6 @@ interface RightPanelPullRequestProps {
   readonly linkedPullRequest: ThreadLinkedPullRequest | null;
   readonly branchPullRequest: ThreadLinkedPullRequest | null | undefined;
   readonly onBack: (() => void) | undefined;
-}
-
-interface RightPanelSideChatProps {
-  readonly onOpenAsThread: (threadId: string) => void;
-  readonly onOpenThread: (threadId: ThreadId) => void;
 }
 
 interface RightPanelFileProps {
@@ -89,12 +82,12 @@ export function RightPanelSurfaceContent(props: {
     image: ComposerImageAttachment | null,
   ) => void;
   readonly onCloseSurface: (surface: RightPanelSurface) => void;
-  readonly sideChat: RightPanelSideChatProps;
   readonly terminal: RightPanelTerminalProps;
   readonly pullRequest: RightPanelPullRequestProps;
   readonly files: RightPanelFileProps;
+  readonly sideChatParentPanel: SideChatParentPanel;
 }) {
-  const { surface, threadRef, visible } = props;
+  const { surface, threadRef, visible, onCloseSurface } = props;
   if (surface === null) return null;
   switch (surface.kind) {
     case "preview":
@@ -183,23 +176,22 @@ export function RightPanelSurfaceContent(props: {
         </Suspense>
       );
     }
-    case "side-chat":
-      return (
-        <Suspense fallback={null}>
-          <SideChatPanel
-            key={surface.id}
-            threadRef={scopeThreadRef(threadRef.environmentId, ThreadId.make(surface.threadId))}
-            visible={visible}
-            onOpenAsThread={() => props.sideChat.onOpenAsThread(surface.threadId)}
-            onOpenThread={props.sideChat.onOpenThread}
-          />
-        </Suspense>
-      );
     case "pull-requests":
       return (
         <Suspense fallback={<PullRequestListGhost />}>
           <ThreadPullRequestsPanel threadRef={threadRef} />
         </Suspense>
+      );
+    case "side-chat":
+      // Not lazy: revealing a suspended tiptap editor tears down its view and crashes the composer.
+      return (
+        <SideChatPane
+          key={surface.id}
+          parentRef={threadRef}
+          threadId={surface.threadId}
+          parentPanel={props.sideChatParentPanel}
+          onClose={() => onCloseSurface(surface)}
+        />
       );
     case "device":
       return (

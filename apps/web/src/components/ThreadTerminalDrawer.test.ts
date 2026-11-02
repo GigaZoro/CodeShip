@@ -99,8 +99,8 @@ it("reports an attach failure that leaves the output unchanged", () => {
   const terminal = {
     resetAndWrite: vi.fn(),
     write: vi.fn(),
-    getSelection: vi.fn(() => ""),
-    getSelectionCellCount: vi.fn(() => 0),
+    getSelection: vi.fn(() => "selected"),
+    getSelectionCellCount: vi.fn(() => 8),
     clearSelection: vi.fn(),
   };
   const previous = { ...EMPTY_TERMINAL_BUFFER_STATE, error: null };
@@ -111,5 +111,7 @@ it("reports an attach failure that leaves the output unchanged", () => {
   ).toBe(INITIAL_TERMINAL_OUTPUT_CURSOR);
   expect(terminal.write).toHaveBeenCalledWith("\r\n[terminal] Terminal attach failed\r\n");
   expect(terminal.resetAndWrite).not.toHaveBeenCalled();
+  expect(terminal.getSelection).not.toHaveBeenCalled();
+  expect(terminal.getSelectionCellCount).not.toHaveBeenCalled();
   expect(terminal.clearSelection).not.toHaveBeenCalled();
 });

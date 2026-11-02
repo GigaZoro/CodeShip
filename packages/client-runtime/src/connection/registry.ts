@@ -836,19 +836,16 @@ export const make = Effect.gen(function* () {
   });
 
   const reconcileLock = yield* Semaphore.make(1);
-  const appliedPlatformRegistrations = yield* Ref.make(
-    Option.none<ReadonlyArray<PlatformConnectionRegistration>>(),
-  );
+  let appliedPlatformRegistrations: ReadonlyArray<PlatformConnectionRegistration> | undefined;
   // Untraced: platforms repeat unchanged registrations every few seconds, and a
   // span per poll would make idle clients export traces continuously.
   const reconcilePlatform = Effect.fnUntraced(function* (
     platformRegistrations: ReadonlyArray<PlatformConnectionRegistration>,
   ) {
-    const applied = yield* Ref.get(appliedPlatformRegistrations);
-    if (Option.isSome(applied) && Equal.equals(applied.value, platformRegistrations)) return;
-    yield* Ref.set(appliedPlatformRegistrations, Option.none());
+    if (Equal.equals(appliedPlatformRegistrations, platformRegistrations)) return;
+    appliedPlatformRegistrations = undefined;
     if (yield* applyPlatformRegistrations(platformRegistrations)) {
-      yield* Ref.set(appliedPlatformRegistrations, Option.some(platformRegistrations));
+      appliedPlatformRegistrations = platformRegistrations;
     }
   }, reconcileLock.withPermits(1));
 

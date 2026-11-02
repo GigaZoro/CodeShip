@@ -453,7 +453,7 @@ export function SidebarUpdateRunCapsule() {
         : { status: "waiting" };
 
   return (
-    <SidebarMenuItem className="ml-auto flex min-w-0 flex-1">
+    <SidebarMenuItem className="ml-auto flex flex-1">
       <SidebarUpdateCapsule
         run={run}
         local={local}

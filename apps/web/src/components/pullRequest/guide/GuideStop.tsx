@@ -271,7 +271,7 @@ export function GuideStop({
         <footer className="flex flex-wrap items-center justify-end gap-3 border-t border-border/60 pt-4">
           {nextTitle !== null ? (
             <Button size="multiline" className="max-w-full" onClick={() => onStep(1)}>
-              <span className="min-w-0">Next: {nextTitle}</span>
+              <span className="min-w-0 break-words">Next: {nextTitle}</span>
               <ArrowRightIcon aria-hidden />
             </Button>
           ) : onFinish !== null ? (

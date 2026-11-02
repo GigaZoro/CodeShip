@@ -61,53 +61,66 @@ export function ComposerBannerStack({
 
 const SUBPIXEL_ROUNDING = 0.001;
 
-/**
- * Text that grows an info button when it truncates. `slotClassName` styles the span holding both;
- * give it a width that ignores its content when the button would otherwise reflow the row.
- */
 export function NoticeText({
   children,
   className,
   detailsLabel,
-  slotClassName = "contents",
 }: {
   readonly children: ReactNode;
   readonly className: string;
   readonly detailsLabel: string;
-  readonly slotClassName?: string;
 }) {
   const textRef = useRef<HTMLSpanElement>(null);
   const detailsRef = useRef<HTMLButtonElement>(null);
-  const [showDetails, setShowDetails] = useState(false);
+  const [detailsAtWidth, setDetailsAtWidth] = useState<number | null>(null);
+  const showDetails = detailsAtWidth !== null;
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- measures text overflow in the DOM via ResizeObserver and MutationObserver to show the details button
   useLayoutEffect(() => {
     const text = textRef.current;
     if (!text) return;
+    const banner = text.closest("[data-slot=composer-banner]");
     const range = document.createRange();
     const measure = () => {
       // Ignore the space taken by the details button itself so it cannot
       // sustain its own overflow after the text would otherwise fit.
       const recoveredWidth = detailsRef.current ? detailsRef.current.offsetWidth + 4 : 0;
       const hidden = getComputedStyle(text).position === "absolute";
-      setShowDetails(
+      const overflowing =
         hidden ||
-          [text, ...text.querySelectorAll("*")].some((element) => {
-            // A range spans laid-out content only; scrollWidth also counts positioned layers
-            // such as a link's touch hit area, which overflow without cutting any text.
-            // The two rects can disagree by float rounding (~0.00001px on phones); real
-            // overflow is at least one layout unit, 1/64 of a device pixel.
-            range.selectNodeContents(element);
-            return (
-              range.getBoundingClientRect().width >
-              element.getBoundingClientRect().width + recoveredWidth + SUBPIXEL_ROUNDING
-            );
-          }),
+        [text, ...text.querySelectorAll("*")].some((element) => {
+          // A range spans laid-out content only; scrollWidth also counts positioned layers
+          // such as a link's touch hit area, which overflow without cutting any text.
+          // The two rects can disagree by float rounding (~0.00001px on phones); real
+          // overflow is at least one layout unit, 1/64 of a device pixel.
+          range.selectNodeContents(element);
+          return (
+            range.getBoundingClientRect().width >
+            element.getBoundingClientRect().width + recoveredWidth + SUBPIXEL_ROUNDING
+          );
+        });
+      // The button's width can wrap the banner's actions onto a second row, which gives
+      // the text room and removes the button, which unwraps the row again. Once shown,
+      // the button stays until the banner itself gets wider than where it appeared.
+      const width = banner?.clientWidth ?? text.clientWidth;
+      setDetailsAtWidth((shownAt) =>
+        overflowing
+          ? (shownAt ?? width)
+          : banner && shownAt !== null && width <= shownAt
+            ? shownAt
+            : null,
       );
     };
     measure();
-    const stopObserving = observeResize(text, measure);
-    const mutations = new MutationObserver(measure);
+    const stopObserving = observeResize([text, banner ?? text], measure);
+    let content = text.textContent;
+    const mutations = new MutationObserver(() => {
+      if (text.textContent !== content) {
+        content = text.textContent;
+        setDetailsAtWidth(null);
+      }
+      measure();
+    });
     mutations.observe(text, { childList: true, subtree: true, characterData: true });
     return () => {
       stopObserving();
@@ -116,7 +129,7 @@ export function NoticeText({
   }, []);
 
   return (
-    <span className={slotClassName}>
+    <span className="contents">
       <span ref={textRef} className={className}>
         {children}
       </span>
@@ -142,9 +155,7 @@ export function NoticeText({
             side="top"
             className="max-w-[min(30rem,calc(100vw-2rem))] whitespace-normal wrap-anywhere [--inline-button-text-align:start] [--inline-button-white-space:normal] [&_[data-slot=inline-button]]:max-w-full"
           >
-            <ComposerBanner.Scroll className="max-h-[min(var(--available-height),24rem,40dvh)]">
-              {children}
-            </ComposerBanner.Scroll>
+            <ComposerBanner.Scroll>{children}</ComposerBanner.Scroll>
           </PopoverPopup>
         </Popover>
       ) : null}
@@ -189,17 +200,14 @@ function NoticeCard({
                   ? `Show details: ${item.title}`
                   : "Show notice details"
               }
-              // A fixed-minimum slot keeps the info button out of the row's wrap decision;
-              // otherwise showing it wraps the actions, the text fits, and it hides again.
-              slotClassName="flex w-0 min-w-7 grow items-center gap-1 sm:min-w-6"
-              className="min-w-0 truncate text-muted-foreground @max-[400px]:sr-only"
+              className="w-0 min-w-0 grow truncate text-muted-foreground @max-[400px]:sr-only"
             >
               {item.description}
             </NoticeText>
           ) : null}
         </ComposerBanner.Content>
         {item.actions || item.onDismiss ? (
-          <ComposerBanner.Actions>
+          <ComposerBanner.Actions className="min-w-14 sm:min-w-12">
             {item.actions}
             {item.onDismiss ? (
               <ComposerBanner.Dismiss

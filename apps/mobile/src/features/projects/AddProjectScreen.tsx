@@ -24,6 +24,7 @@ import {
   getNewProjectPublishTarget,
   getNewProjectPublishTargets,
   getNewProjectRepository,
+  githubIncompleteOwnerRepositoryMessage,
   defaultHostCloneUrl,
   normalizePastedCloneUrl,
   parseAddProjectRemoteSource,
@@ -47,6 +48,7 @@ import {
   inferProjectTitleFromPath,
   isWindowsPlatform,
 } from "@t3tools/client-runtime/state/projects";
+import { resolvePastedPath } from "@t3tools/shared/path";
 import {
   AuthOrchestrationOperateScope,
   AuthSourceControlWriteScope,
@@ -283,7 +285,7 @@ function ProjectPathInput(props: {
     <TextInput
       className="h-12 min-h-12 rounded-[24px] px-4 py-0 text-base leading-snug"
       value={props.value}
-      onChangeText={props.onChangeText}
+      onChangeText={(text) => props.onChangeText(resolvePastedPath(props.value, text))}
       autoCapitalize="none"
       autoCorrect={false}
       placeholder="~/projects/my-app"
@@ -723,6 +725,9 @@ function useCreateProject(environment: EnvironmentOption | null) {
   const openNewTaskDraft = useOpenNewTaskDraft();
   const navigation = useNavigation();
   const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
+  const updateProject = useAtomCommand(projectEnvironment.update, {
+    label: "project unarchive",
+  });
   const projects = useProjects();
 
   return async (workspaceRoot: string, originRoute = getActiveRoute(navigation)) => {
@@ -744,7 +749,19 @@ function useCreateProject(environment: EnvironmentOption | null) {
       path: workspaceRoot,
     });
     if (existing) {
-      Dialog.alert("Project already exists", existing.title);
+      // Adding an archived project's folder again brings the project back.
+      const unarchived =
+        existing.archivedAt == null ||
+        (
+          await updateProject({
+            environmentId: existing.environmentId,
+            input: { projectId: existing.id, archived: false },
+          })
+        )._tag === "Success";
+      Dialog.alert(
+        "Project already exists",
+        unarchived ? existing.title : `${existing.title} is still archived. Try again later.`,
+      );
       openNewTaskDraft(
         {
           environmentId: existing.environmentId,
@@ -818,6 +835,11 @@ export function AddProjectRepositoryScreen(props: {
 
   const lookupRepository = async () => {
     if (!environment || repositoryInput.trim().length === 0 || isSubmitting) return;
+    const incompleteOwnerMessage = githubIncompleteOwnerRepositoryMessage(source, repositoryInput);
+    if (incompleteOwnerMessage) {
+      setError(incompleteOwnerMessage);
+      return;
+    }
     setError(null);
     setIsSubmitting(true);
     const provider = addProjectRemoteSourceProvider(source);

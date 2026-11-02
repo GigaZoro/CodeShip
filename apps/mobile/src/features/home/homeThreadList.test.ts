@@ -243,6 +243,8 @@ describe("home thread list grouping", () => {
         environmentId: project.environmentId,
         projectId: project.id,
       })),
+      pinned: false,
+      archived: false,
     });
     const api = makeProject({ environmentId: studio, id: ProjectId.make("api"), title: "api" });
     const apiCopy = makeProject({

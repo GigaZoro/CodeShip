@@ -62,6 +62,7 @@ import {
   makeClaudeContinuationGroupKey,
   makeClaudeEnvironment,
   mergeClaudeInstanceEnvironment,
+  mergeClaudeProcessEnvironment,
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -138,10 +139,17 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     const modelCatalog = catalogService
       .current(DRIVER_KIND)
       .pipe(Effect.map(resolveClaudeModelCatalog));
-    const processEnv = yield* mergeClaudeInstanceEnvironment(
+    // An added account drops the machine's sign-in token; re-applying only the instance's own
+    // entrypoint keeps it ahead of CodeShip's label.
+    const instanceEnv = yield* mergeClaudeInstanceEnvironment(
       instanceId,
       environment,
       yield* HostProcess.Environment,
+    );
+    const processEnv = yield* mergeClaudeProcessEnvironment(
+      config,
+      environment.filter((variable) => variable.name === "CLAUDE_CODE_ENTRYPOINT"),
+      instanceEnv,
     );
     const fallbackContinuationIdentity = defaultProviderContinuationIdentity({
       driverKind: DRIVER_KIND,

@@ -1,7 +1,7 @@
 # CodeShip Mobile
 
-> [!WARNING]
-> CodeShip Mobile is currently in development and is not distributed yet. If you want to try it out, you can build it from source.
+> [!NOTE]
+> To install the released app from the App Store or Google Play, see [Mobile app](../../docs/user/install.md#mobile-app). This guide covers building it from source.
 
 ## Quickstart
 

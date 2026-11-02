@@ -8,6 +8,7 @@ import { HttpServer, HttpServerError } from "effect/http";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as NetService from "@t3tools/shared/Net";
 
 import * as ServerConfig from "./config.ts";
 import { layerHttpServer } from "./server.ts";
@@ -44,6 +45,7 @@ const httpServerWithConfig = (
         Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-server-bind-test-" })),
       ),
     ),
+    Layer.provide(NetService.layer),
     Layer.provide(NodeServices.layer),
   );
 

@@ -2,7 +2,6 @@ import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   type ModelSelection,
-  OnePasswordAccount,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -37,6 +36,12 @@ const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const FOLDED_SERVER_SETTINGS = { ...DEFAULT_SERVER_SETTINGS, projectSettingsFolded: true };
 
 describe("fallbackTextGenerationModelSelection", () => {
+  it("uses Big Pickle when only OpenCode is enabled", () => {
+    expect(
+      fallbackTextGenerationModelSelection({}, (instanceId) => instanceId === "opencode"),
+    ).toEqual({ instanceId: "opencode", model: "opencode/big-pickle" });
+  });
+
   it("replaces and clears the fallback without carrying model options", () => {
     const fallbackModelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "new" };
     const settings = applyServerSettingsPatch(
@@ -679,7 +684,7 @@ describe("serverSettings helpers", () => {
     const onePassword = (label: string, account: string) => ({
       kind: SecretProviderKind.make("one_password"),
       label,
-      config: { account: OnePasswordAccount.make(account) },
+      config: { account },
     });
     const current = {
       ...DEFAULT_SERVER_SETTINGS,

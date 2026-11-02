@@ -414,7 +414,7 @@ const pngSize = (base64: string) => {
  * A page's display ratio and CSS viewport, read in an isolated world since page script can
  * reassign `devicePixelRatio`, `innerWidth`, and `innerHeight` in its own, and its page zoom.
  */
-export const readPageMetrics = async (cdp: CDPSession) => {
+const readPageMetrics = async (cdp: CDPSession) => {
   const { frameTree } = await cdp.send("Page.getFrameTree");
   const { executionContextId } = await cdp.send("Page.createIsolatedWorld", {
     frameId: frameTree.frame.id,
@@ -895,7 +895,8 @@ const NET_ERROR_CODES: Readonly<Record<string, number>> = {
 };
 
 export const parseNetError = (errorText: string) => {
-  const description = /ERR_[A-Z_]+/.exec(errorText)?.[0] ?? errorText;
+  // Names can hold digits, as in ERR_HTTP2_PROTOCOL_ERROR.
+  const description = /ERR_[A-Z\d_]+/.exec(errorText)?.[0] ?? errorText;
   return { description, code: NET_ERROR_CODES[description] ?? -2 };
 };
 

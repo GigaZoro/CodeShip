@@ -13,6 +13,7 @@ import { extractOmpElicitationForm } from "./ompAcp.ts";
 import {
   copilotClientCapabilitiesMeta,
   extractCopilotSubagentUpdate,
+  isCopilotLostSessionError,
   makeCopilotSubagentRouting,
 } from "./copilotAcp.ts";
 import { defaultInstanceIdForDriver, ProviderDriverKind } from "@t3tools/contracts";
@@ -228,6 +229,8 @@ export const makeAcpRegistryAdapterV2 = Effect.fn("makeAcpRegistryAdapterV2")(fu
       : isOmp
         ? { extractElicitationForm: extractOmpElicitationForm }
         : {}),
+    // glm-acp-agent is the one agent whose per-turn usage a live probe has verified.
+    ...(registryAgentId === "glm-acp-agent" ? { reportsPerTurnPromptUsage: true } : {}),
     ...(registryAgentId === "mistral-vibe"
       ? { registerExtensions: registerMistralVibeAcpExtensions }
       : {}),
@@ -254,9 +257,12 @@ export const makeAcpRegistryAdapterV2 = Effect.fn("makeAcpRegistryAdapterV2")(fu
       ? {}
       : {
           clientCapabilitiesMeta: copilotClientCapabilitiesMeta,
+          // Copilot CLI 1.0.105 rejects stdio MCP servers from the client.
+          mcpOverHttp: true,
           registerExtensions: copilotRouting.registerExtensions,
           normalizeSessionUpdate: copilotRouting.normalizeSessionUpdate,
           extractSubagentUpdate: extractCopilotSubagentUpdate,
+          restartRuntimeAfterPromptError: isCopilotLostSessionError,
         }),
     makeRuntime: options.makeRuntime ?? makeAcpRegistryRuntime(runtimeOptions, catalog),
     ...(runtimeCoordinator === undefined

@@ -23,6 +23,7 @@ import {
   type ClipboardEvent,
   type FormEvent,
   type KeyboardEvent,
+  type MouseEvent,
   type PointerEvent,
   type Ref,
   useEffect,
@@ -98,6 +99,10 @@ const buttonOf = (button: number): PreviewStreamMouseButton =>
 const pressedButtonOf = (buttons: number): PreviewStreamMouseButton =>
   buttons & 1 ? "left" : buttons & 2 ? "right" : buttons & 4 ? "middle" : "none";
 
+// Mouse thumb buttons: `button === 3` is Back, `button === 4` is Forward.
+const historyDeltaOf = (button: number): -1 | 1 | null =>
+  button === 3 ? -1 : button === 4 ? 1 : null;
+
 /** Browsers may refuse a write that arrives after the key press; a toast button is a fresh gesture. */
 async function copyPageText(text: string) {
   try {
@@ -167,7 +172,6 @@ export function ServerBrowserSurface(props: {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const keySentRef = useRef(false);
-  const clipboardKeySentRef = useRef(false);
   const clientRef = useRef<PreviewStreamClient | null>(null);
   const viewportRef = useRef<PreviewStreamViewport | null>(null);
   const sizeRef = useRef<{ width: number; height: number } | null>(null);
@@ -230,7 +234,7 @@ export function ServerBrowserSurface(props: {
     mouseClicksRef.current = { left: 1, middle: 1, right: 1, none: 1 };
     lastClickRef.current = null;
     touchRef.current = probeRef.current = lastProbeRef.current = null;
-    keySentRef.current = clipboardKeySentRef.current = false;
+    keySentRef.current = false;
     if (inputRef.current) inputRef.current.value = INPUT_SENTINEL;
     inputRef.current?.blur();
   };
@@ -495,6 +499,8 @@ export function ServerBrowserSurface(props: {
 
   const handlePointer = (event: PointerEvent<HTMLCanvasElement>) => {
     if (controlRef.current?.controller !== "you") return;
+    // Thumb buttons drive this tab's history in handleMouseUp, never the page.
+    if (historyDeltaOf(event.button) !== null) return;
     const { type, pointerId, clientX, clientY } = event;
     const cancelled = type === "pointercancel";
     const touch = touchRef.current;
@@ -631,9 +637,18 @@ export function ServerBrowserSurface(props: {
     }
   };
 
+  // Chromium runs a thumb button's back/forward on mouseup in this document, which
+  // would move the app's router. Cancel it and send the press to the preview, as
+  // the toolbar does.
+  const handleMouseUp = (event: MouseEvent<HTMLDivElement>) => {
+    const delta = historyDeltaOf(event.button);
+    if (delta === null) return;
+    event.preventDefault();
+    send({ type: "history", delta });
+  };
+
   const resetInput = (textarea: HTMLTextAreaElement) => {
     keySentRef.current = false;
-    clipboardKeySentRef.current = false;
     textarea.value = INPUT_SENTINEL;
     textarea.setSelectionRange(INPUT_SENTINEL.length, INPUT_SENTINEL.length);
   };
@@ -650,15 +665,13 @@ export function ServerBrowserSurface(props: {
   const handleClipboard = (key: typeof COPY | typeof CUT, event: ClipboardEvent) => {
     // Keep the sentinel off the clipboard.
     event.preventDefault();
-    const keyWasSent = clipboardKeySentRef.current;
-    clipboardKeySentRef.current = false;
-    if (controlRef.current?.controller !== "you" || keyWasSent) return;
+    if (controlRef.current?.controller !== "you") return;
     sendKeyPress(key, CTRL);
   };
 
   const handleKey = (action: "down" | "up", event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (controlRef.current?.controller !== "you") return;
-    keySentRef.current = clipboardKeySentRef.current = false;
+    keySentRef.current = false;
     if (
       event.nativeEvent.isComposing ||
       event.keyCode === 229 ||
@@ -698,9 +711,15 @@ export function ServerBrowserSurface(props: {
       action === "down" &&
       !shortcut &&
       (text !== undefined || event.key === "Backspace" || event.key === "Delete");
-    // The browser fires copy or cut for this key too; the page already has it.
-    clipboardKeySentRef.current =
-      action === "down" && shortcut && ["c", "x"].includes(event.key.toLowerCase());
+    // The key copies or cuts in the page, so stop the browser's own copy or cut repeating it.
+    if (
+      event.ctrlKey !== event.metaKey &&
+      !event.altKey &&
+      !event.shiftKey &&
+      ["c", "x"].includes(event.key.toLowerCase())
+    ) {
+      event.preventDefault();
+    }
     if (shortcut) return;
     event.preventDefault();
     event.stopPropagation();
@@ -725,6 +744,7 @@ export function ServerBrowserSurface(props: {
     <div
       className={cn("relative flex flex-col overflow-hidden", className)}
       data-server-browser-surface={tabId}
+      onMouseUp={handleMouseUp}
     >
       <div
         className={cn(

@@ -2,26 +2,10 @@ import type { ServerProviderSkill } from "@t3tools/contracts";
 
 export type InlineSkill = Pick<ServerProviderSkill, "name" | "displayName">;
 
-function titleCaseWords(value: string): string {
-  const words: string[] = [];
-  for (const segment of value.split(/[\s:_-]+/)) {
-    if (segment.length === 0) continue;
-    words.push(segment.charAt(0).toUpperCase() + segment.slice(1));
-  }
-  return words.join(" ");
-}
-
 export function formatProviderSkillDisplayName(
   skill: Pick<ServerProviderSkill, "name"> & { readonly displayName?: string | null | undefined },
 ): string {
-  const displayName = skill.displayName?.trim();
-  if (displayName) {
-    return displayName;
-  }
-  const separator = skill.name.indexOf(":");
-  const namespace = skill.name.slice(0, separator);
-  const rest = skill.name.slice(separator + 1);
-  return titleCaseWords(separator > 0 && namespace === rest ? rest : skill.name);
+  return skill.displayName?.trim() || skill.name;
 }
 
 const SKILL_TOKEN_REGEX =

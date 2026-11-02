@@ -4,7 +4,7 @@ import {
   INITIAL_TERMINAL_OUTPUT_CURSOR,
   nextTerminalAttachSeedState,
 } from "@t3tools/client-runtime/state/terminal";
-import { synchronizeTerminalOutput } from "../../components/ThreadTerminalDrawer";
+import { synchronizeTerminalSession } from "../../components/ThreadTerminalDrawer";
 
 import { GhosttyTerminalCore, type GhosttyCell, type GhosttyRow } from "./core";
 import {
@@ -445,7 +445,8 @@ describe("GhosttyTerminalSurface visibility", () => {
   it("keeps a selection through redraws until the selected text changes", async () => {
     const harness = createHarness();
     const surface = await harness.create();
-    let state = applyTerminalAttachStreamEvent(nextTerminalAttachSeedState(), {
+    const seed = nextTerminalAttachSeedState();
+    let state = applyTerminalAttachStreamEvent(seed, {
       type: "snapshot",
       snapshot: {
         threadId: "thread",
@@ -461,7 +462,7 @@ describe("GhosttyTerminalSurface visibility", () => {
         updatedAt: "2026-10-20T00:00:00.000Z",
       },
     });
-    let cursor = synchronizeTerminalOutput(surface, state, INITIAL_TERMINAL_OUTPUT_CURSOR);
+    let cursor = synchronizeTerminalSession(surface, seed, state, INITIAL_TERMINAL_OUTPUT_CURSOR);
     harness.flushFrame();
     harness.pointer("pointerdown", 5, 1);
     harness.pointer("pointermove", 85, 1);
@@ -470,13 +471,14 @@ describe("GhosttyTerminalSurface visibility", () => {
 
     // A TUI repaints its spinner line in place, the way Claude Code redraws.
     const redraw = (data: string) => {
+      const previous = state;
       state = applyTerminalAttachStreamEvent(state, {
         type: "output",
         threadId: "thread",
         terminalId: "term-1",
         data,
       });
-      cursor = synchronizeTerminalOutput(surface, state, cursor);
+      cursor = synchronizeTerminalSession(surface, previous, state, cursor);
     };
     redraw("\r\x1b[2K* Working |");
     expect(surface.getSelection()).toBe("* Working |");

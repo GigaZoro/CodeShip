@@ -17,7 +17,6 @@ import { act, useLayoutEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
 import type { ComposerDraft } from "../../state/use-composer-drafts";
-import type { QueuedThreadMessage } from "../../state/thread-outbox";
 
 const mocks = vi.hoisted(() => ({
   projects: vi.fn(),
@@ -33,9 +32,6 @@ const mocks = vi.hoisted(() => ({
   retargetDraft: vi.fn(),
   writeSettings: vi.fn(),
   writeText: vi.fn(),
-  queuedMessages: vi.fn(),
-  outboxAtom: vi.fn(),
-  flushEdit: vi.fn(),
 }));
 vi.mock("../../state/atom-registry", () => ({
   appAtomRegistry: {
@@ -78,23 +74,6 @@ vi.mock("../../state/use-remote-environment-registry", () => ({
   useSavedRemoteConnections: () => ({ savedConnectionsById: {} }),
   useRemoteConnectionStatus: () => ({ connectedEnvironments: [] }),
   setPendingConnectionError: vi.fn(),
-}));
-vi.mock("../../state/thread-outbox", () => ({
-  flattenQueuedThreadMessages: mocks.queuedMessages,
-  threadOutboxManager: {
-    get queuedMessagesByThreadKeyAtom() {
-      return mocks.outboxAtom();
-    },
-  },
-}));
-vi.mock("../../state/use-thread-outbox", () => ({
-  holdEditingQueuedMessage: vi.fn(),
-  releaseEditingQueuedMessage: vi.fn(),
-  useThreadOutboxMessages: () => ({}),
-}));
-vi.mock("../../state/pending-task-editor-writes", () => ({
-  capturePendingTaskEditorWriteBaseline: () => Promise.resolve(0),
-  flushPendingTaskEditorWrite: mocks.flushEdit,
 }));
 vi.mock("../../state/use-model-option-memory", () => ({
   rememberModelOptions: vi.fn(),
@@ -159,10 +138,6 @@ function setup() {
     isReady: true,
     presentation: { connection: { phase: "connected", error: null } },
   });
-  const queued: QueuedThreadMessage[] = [];
-  mocks.queuedMessages.mockImplementation(() => queued);
-  mocks.outboxAtom.mockReturnValue(Atom.make({}));
-  mocks.flushEdit.mockResolvedValue(false);
   const events: string[] = [];
   let checkout = "main";
   let checkoutIsRepo = true;
@@ -230,7 +205,9 @@ function setup() {
     write(key, { project: target });
     return key;
   });
-  mocks.retargetDraft.mockImplementation((key, target) => write(key, { project: target }));
+  mocks.retargetDraft.mockImplementation((key, target) =>
+    write(key, { project: target, workspaceSelection: undefined }),
+  );
   mocks.writeSettings.mockImplementation(write);
   mocks.writeText.mockImplementation((key, text) => write(key, { text }));
   let current: ReturnType<typeof useNewTaskFlow>;
@@ -244,7 +221,6 @@ function setup() {
   const root = createRoot(document.createElement("div"));
   return {
     projects,
-    queued,
     events,
     checkout(branch: string, isRepo = true) {
       checkout = branch;
@@ -302,18 +278,7 @@ it("owns a status stream only while the draft is active, retaining draft choices
   await screen.render(true);
   expect(screen.events).toEqual(["start:/a"]);
   const draftKey = screen.current.draftKey!;
-  act(() => {
-    screen.current.setPrompt("keep this draft");
-    screen.current.setWorkspaceMode("worktree");
-    screen.current.selectBranch({
-      name: "feature",
-      current: false,
-      isDefault: false,
-      worktreePath: null,
-    });
-    screen.current.setStartFromOrigin(true);
-  });
-  const chosenWorkspace = screen.snapshot(draftKey).workspaceSelection;
+  act(() => screen.current.setPrompt("keep this draft"));
 
   await act(async () => screen.current.setProject(screen.projects[1]!));
   expect(screen.current.prompt).toBe("keep this draft");
@@ -329,6 +294,24 @@ it("owns a status stream only while the draft is active, retaining draft choices
   // A late old-project result cannot replace the current environment's checkout.
   await screen.emit("/a", "stale-branch");
   expect(screen.current.currentCheckoutBranchName).toBe("main");
+  expect(screen.snapshot(draftKey).workspaceSelection).toBeUndefined();
+  act(() => screen.current.setWorkspaceMode("worktree"));
+  act(() =>
+    screen.current.selectBranch({
+      name: "feature",
+      current: false,
+      isDefault: false,
+      worktreePath: null,
+    }),
+  );
+  act(() => screen.current.setStartFromOrigin(true));
+  const chosenWorkspace = screen.snapshot(draftKey).workspaceSelection;
+  expect(chosenWorkspace).toEqual({
+    mode: "worktree",
+    branch: "feature",
+    worktreePath: null,
+    startFromOrigin: true,
+  });
 
   await screen.render(false);
   const settingsWrites = mocks.writeSettings.mock.calls.length;

@@ -190,22 +190,30 @@ thread that needs you is listed under **Needs you** instead. A machine that is o
 When two machines share a name, their folders add the address. While threads are grouped, active
 threads are ordered by their latest message, so you cannot move them by hand.
 
+On web and desktop, pinned projects get the top folders, and keep them even with no active
+threads. An archived project's folder comes last and shows only while it has active threads. Pin
+or unpin a project by right-clicking its folder; see
+[Pin and archive projects](project-settings.md#pin-and-archive-projects) for the other ways.
+
 On web and desktop, drag a project folder up or down to reorder your projects, or right-click it and
 choose **Move up** or **Move down**. Inside a machine folder, a project moves among that machine's
-projects. Moving a folder sets **Settings → General → Project order** to **Manual**, so new activity
-no longer reshuffles your projects; choose another order there to go back.
+projects, and pinned projects stay above the rest. Moving a folder sets **Settings → General →
+Project order** to **Manual**, so new activity no longer reshuffles your projects; choose another
+order there to go back.
 
 Use the pen button on a project folder to start a thread in that project; inside a machine folder
 it starts on that machine. The pen button on a machine folder lists that machine's projects to
 start in. On web and desktop, you can also right-click a project folder. **New thread** and its
-shortcut start in the current project when folders are by project, and ask which project
-otherwise. In project folders, threads on another machine show that machine's icon. You can drag
-a grouped thread onto the composer to mention it, but not within the sidebar.
+shortcut start in the current project when folders are by project, and otherwise ask which project
+unless only one project is open. In project folders, threads on another machine show that
+machine's icon. You can drag a grouped thread onto the composer to mention it, but not within the
+sidebar.
 
 The same menu filters the sidebar. Click a machine or project to show only its threads, or
 shift-click to add more. Machines appear when you have more than one. Choosing both a machine
-and a project shows that project's threads on that machine. A project or machine you filter to
-keeps its folder even with no active threads, so you can start one there.
+and a project shows that project's threads on that machine. Archived projects are not listed. A
+project or machine you filter to keeps its folder even with no active threads, so you can start
+one there.
 
 ## Settle finished work
 
@@ -303,8 +311,9 @@ from its context menu, or **Copy thread** from its long-press menu on mobile.
 **Limited** means the provider stopped on a usage or rate limit. The conversation
 keeps the provider's explanation. Retry after the limit resets, or switch to
 another provider instance.
-On web and desktop, press **Resume** in an empty composer to continue a limited
-or interrupted turn manually.
+Press **Resume** in an empty composer to continue a limited or interrupted turn
+manually. Do this when the provider reports no reset time, because nothing
+continues the turn on its own.
 Queued messages stay saved while the limit blocks the thread. They run after
 the continuation finishes. If the queue was held by a restart, resume it then.
 
@@ -346,9 +355,10 @@ Expand a tool call in the conversation to see its full command and output.
 Summaries shorten shell wrappers and can still describe the latest call after it
 finishes; the call's own result shows its status.
 
-On web and desktop, the thread details card lists the web servers that the
-thread's terminals or its Claude agent started, with their ports. A server the
-agent started stays listed after the agent's turn ends.
+On web and desktop, the thread details card lists the local servers that the
+thread's terminals or its Claude agent started, with their ports. Not every one
+serves a web page. A server the agent started stays listed after the agent's
+turn ends.
 Select a server to open it in the browser panel. **Stop** ends the server's job
 and keeps the agent, the terminal, and CodeShip running. Stop needs terminal
 access to the environment and is not available on Windows.
@@ -363,6 +373,31 @@ To choose what the thread details card shows, right-click the card or open
 **Settings → Appearance → Thread details**. Hidden rows keep their keyboard
 shortcuts, such as Open in editor and project scripts. **Reset to default** brings
 back the standard rows.
+
+## Side chats
+
+A side chat lets you ask a question about a thread without adding to it. It starts
+with what the thread knows, and the thread keeps working while you ask.
+
+On web and desktop, start a message with `/side` or `/btw`, then your question.
+You can also press `mod+;`, choose **Side chat** from the **+** menu in the right
+panel, or run **Start side chat** from the command palette. The side chat opens as
+a tab there, with its own composer. Side chats do not show in the
+sidebar. Find one again under **Side chats** in thread details.
+
+A side chat works in the same folder as the thread. Its first reply asks before it
+edits files or runs commands. After that, it uses the permission mode you choose
+in its composer.
+
+To use what you learned, choose **Bring back**. The thread gets the side chat with
+your next message there. Bring back is available while the thread is idle.
+
+Closing a side chat you never sent a message in deletes it. To delete one you used,
+choose **Delete** at the top of the side chat. Deleting a thread also deletes its
+side chats.
+
+On mobile, a thread lists its side chats above the composer. Tap one to open it and
+answer its questions.
 
 ## Snooze until later
 

@@ -18,7 +18,7 @@ import { MessageSquareIcon } from "lucide-react";
 import { useState } from "react";
 
 import { useProviderEntryByEnvironmentAndInstanceId } from "../hooks/useEnvironmentProviderEntries";
-import { useThreadShells } from "../state/entities";
+import { useVisibleThreadShells } from "../state/entities";
 import { useEnvironments } from "../state/environments";
 import { useThreadSearch } from "../state/queries";
 import { threadEnvironment } from "../state/threads";
@@ -67,7 +67,7 @@ export function useCommandPaletteThreadItems(input: {
 }) {
   const { activeThread, threadSearchQuery } = input;
   const navigate = useNavigate();
-  const threads = useThreadShells();
+  const threads = useVisibleThreadShells();
   const { projectEnvironmentLocationById } = useEnvironmentLookups();
   const providerEntryByEnvironmentAndInstanceId = useProviderEntryByEnvironmentAndInstanceId();
   const messageSearch = useConnectedThreadSearch(threadSearchQuery);

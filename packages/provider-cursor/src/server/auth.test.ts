@@ -13,7 +13,9 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
 import { makeCursorAuth, type CursorAuthOptions } from "./auth.ts";
-import { AuthenticationError, InMemoryCredentialStore } from "./sdk.ts";
+import { loadCursorSdk } from "./sdk.ts";
+
+const { AuthenticationError, InMemoryCredentialStore } = loadCursorSdk();
 
 const instanceId = ProviderInstanceId.make("cursor-personal");
 const owner = "owner-client";

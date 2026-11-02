@@ -15,6 +15,7 @@ import {
   remainingPercent,
 } from "@t3tools/shared/usageLimits";
 import type { Popover as PopoverPrimitive } from "@base-ui/react/popover";
+import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
 import { AlertTriangleIcon, ExternalLinkIcon, TicketIcon } from "lucide-react";
 import {
   createContext,
@@ -515,7 +516,7 @@ function PoolBar({
               window={member.window}
               reset={restores.get(member.account.key)}
               refillPercent={member.refillPercent}
-              color={color}
+              color={normalizeProviderAccentColor(member.account.accentColor) ?? color}
               now={now}
               index={position + 1}
               showAccountName={pool.columns.length > 1}
@@ -664,15 +665,12 @@ export function UsageLimitsPooled({
             ) : null}
             <div className="min-w-0 space-y-1">
               <h2 className="text-sm font-medium">{link.label}</h2>
-              <ul className="text-xs text-foreground">
-                {link.accounts.map((account) => (
-                  <li key={account}>{account}</li>
-                ))}
-              </ul>
+              <p className="text-xs break-words text-muted-foreground">
+                {link.accounts.join(", ")}
+              </p>
               {link.url === CHATGPT_USAGE_URL ? (
                 <p className="text-xs text-muted-foreground">
-                  ChatGPT tracks the limits of accounts you sign in to with ChatGPT, so they have no
-                  bar here. Open it with the account you connected.
+                  View usage in ChatGPT with your connected account.
                 </p>
               ) : link.message ? (
                 <p className="max-w-xl text-xs text-muted-foreground">{link.message}</p>

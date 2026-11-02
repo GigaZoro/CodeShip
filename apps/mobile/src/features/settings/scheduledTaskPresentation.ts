@@ -68,8 +68,20 @@ export const SCHEDULED_TASK_WEEKDAYS = [
   { index: 0, label: "Sun" },
 ] as const;
 
+export function formatRunAtDate(value: Date): string {
+  return value.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+}
+
+export function formatRunAtTime(value: Date): string {
+  return value.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
 export function describeSchedule(task: Pick<ScheduledTask, "schedule">): string {
   if (task.schedule.type === "webhook") return "On webhook";
+  if (task.schedule.type === "once") {
+    const runAt = new Date(task.schedule.runAt);
+    return `Once, ${formatRunAtDate(runAt)} at ${formatRunAtTime(runAt)}`;
+  }
   if (task.schedule.type === "interval") return formatScheduledTaskInterval(task.schedule.everyMs);
   const days = task.schedule.weekdays?.length ? repeatLabel(task.schedule.weekdays) : "Every day";
   return `${days} at ${formatScheduledTaskTime(task.schedule.timeOfDay)}`;

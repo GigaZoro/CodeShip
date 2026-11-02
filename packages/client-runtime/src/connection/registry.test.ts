@@ -1592,6 +1592,44 @@ describe("EnvironmentRegistry", () => {
     }),
   );
 
+  it.effect("applies overlapping platform snapshots in order", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const resume = yield* Deferred.make<void>();
+      const harness = yield* makeHarness([TARGET]);
+      const permissions = yield* makePullRequestRoutingPermissions({
+        read: Effect.succeed([
+          { environmentId: TARGET.environmentId, connectionKey: "saved", permission: "read-write" },
+        ]),
+        write: () =>
+          Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(resume))),
+      });
+
+      yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        const installing = yield* registry
+          .reconcilePlatform([new PrimaryConnectionRegistration({ target: TARGET })])
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(started);
+        const removing = yield* registry
+          .reconcilePlatform([])
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.succeed(resume, undefined);
+        yield* Fiber.join(installing);
+        yield* Fiber.join(removing);
+
+        expect((yield* SubscriptionRef.get(registry.entries)).has(TARGET.environmentId)).toBe(
+          false,
+        );
+        expect(yield* registrySpanNames(registry.reconcilePlatform([]))).toEqual([]);
+      }).pipe(
+        Effect.provide(harness.layer),
+        Effect.provideService(PullRequestRoutingPermissions, permissions),
+        Effect.scoped,
+      );
+    }),
+  );
+
   it.effect("gives platform registrations precedence over persisted registrations", () =>
     Effect.gen(function* () {
       for (const registration of [
@@ -2046,6 +2084,38 @@ describe("EnvironmentRegistry routes", () => {
 
         expect(routesOf(yield* Ref.get(harness.storedTargets), LAN_TARGET.environmentId)).toEqual([
           repaired,
+          RELAY_TARGET,
+        ]);
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("re-pairing at another loopback address prefers the new route", () =>
+    Effect.gen(function* () {
+      const loopback = (connectionId: string, host: string) =>
+        [
+          new BearerConnectionTarget({ ...LAN_TARGET, connectionId }),
+          new BearerConnectionProfile({
+            ...LAN_PROFILE,
+            connectionId,
+            httpBaseUrl: `http://${host}:3773/`,
+            wsBaseUrl: `ws://${host}:3773/`,
+          }),
+        ] as const;
+      const [savedTarget, savedProfile] = loopback("bearer:ip", "127.0.0.1");
+      const [pastedTarget, pastedProfile] = loopback("bearer:localhost", "localhost");
+      const harness = yield* makeHarness(
+        [savedTarget, RELAY_TARGET],
+        [savedProfile],
+        [[savedTarget.connectionId, BEARER_CREDENTIAL]],
+      );
+      yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        yield* registry.register(lanRegistration(pastedTarget, pastedProfile));
+
+        expect(routesOf(yield* Ref.get(harness.storedTargets), LAN_TARGET.environmentId)).toEqual([
+          pastedTarget,
+          savedTarget,
           RELAY_TARGET,
         ]);
       }).pipe(Effect.provide(harness.layer), Effect.scoped);

@@ -56,7 +56,6 @@ function WorkflowMemberRow({
   providerEntries,
   driver,
   onOpen,
-  isThreadAvailable,
 }: {
   member: RuntimeSubagent;
   providerInstanceId: ProviderInstanceId;
@@ -65,10 +64,9 @@ function WorkflowMemberRow({
   providerEntries: ReadonlyArray<ProviderInstanceEntry>;
   driver: ProviderDriverKind | undefined;
   onOpen: (threadId: string) => void;
-  isThreadAvailable: (threadId: string) => boolean;
 }) {
   const threadId = member.childThreadId;
-  const canOpen = threadId !== null && isThreadAvailable(threadId);
+  const canOpen = threadId !== null;
   return (
     <li>
       <Tooltip>
@@ -126,7 +124,6 @@ export function ThreadLineageWorkflowRow({
   providerEntries,
   driver,
   onOpenThread,
-  isThreadAvailable,
   onStop,
   stopping,
   stopDisabled,
@@ -139,7 +136,6 @@ export function ThreadLineageWorkflowRow({
   readonly providerEntries: ReadonlyArray<ProviderInstanceEntry>;
   readonly driver: ProviderDriverKind | undefined;
   readonly onOpenThread: (threadId: string) => void;
-  readonly isThreadAvailable: (threadId: string) => boolean;
   readonly onStop?: (() => void) | undefined;
   readonly stopping: boolean;
   readonly stopDisabled: boolean;
@@ -238,7 +234,6 @@ export function ThreadLineageWorkflowRow({
                         providerEntries={providerEntries}
                         driver={driver}
                         onOpen={onOpenThread}
-                        isThreadAvailable={isThreadAvailable}
                       />
                     ))}
                   </ul>
@@ -256,7 +251,6 @@ export function ThreadLineageWorkflowRow({
               providerEntries={providerEntries}
               driver={driver}
               onOpen={onOpenThread}
-              isThreadAvailable={isThreadAvailable}
             />
           ))}
           {phases.length === 0 && group.unphasedMembers.length === 0 ? (

@@ -24,6 +24,7 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopClerkTokenFile from "./DesktopClerkTokenFile.ts";
 import * as DesktopUserData from "./DesktopUserData.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
+import { openClerkTokenStorage } from "./ClerkTokenStore.ts";
 import * as DesktopWebLinks from "./DesktopWebLinks.ts";
 
 declare const __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: string | undefined;
@@ -92,9 +93,14 @@ const AppPackageMetadata = Schema.Struct({
 });
 const decodeAppPackageMetadata = Schema.decodeEffect(Schema.fromJsonString(AppPackageMetadata));
 
-function createDesktopClerkBridge(tokenStorage: TokenStorage, isDevelopment: boolean) {
+function createDesktopClerkBridge(
+  stateDir: string,
+  isDevelopment: boolean,
+  userDataPath: string,
+  createTokenStorage: (directory: string) => TokenStorage,
+) {
   return createClerkBridge({
-    storage: tokenStorage,
+    storage: openClerkTokenStorage(stateDir, createTokenStorage, userDataPath),
     manageSingleInstanceLock: false,
     passkeys: true,
     renderer: {
@@ -154,10 +160,12 @@ export const make = Effect.gen(function* () {
     Effect.try({
       try: () =>
         createDesktopClerkBridge(
-          keychainForgetsUpdates
-            ? DesktopClerkTokenFile.make(environment.stateDir)
-            : storage({ path: environment.stateDir }),
+          environment.stateDir,
           environment.isDevelopment,
+          userDataPath,
+          keychainForgetsUpdates
+            ? DesktopClerkTokenFile.make
+            : (directory) => storage({ path: directory }),
         ),
       catch: (cause) =>
         new DesktopClerkBridgeInitializationError({
