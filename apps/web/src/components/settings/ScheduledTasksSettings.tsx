@@ -350,7 +350,7 @@ function relativeLabel(value: string | null, nowMs: number): string {
 }
 
 // Use the label's minute tick because the compiler caches render-time Date.now() on the timestamp.
-function ScheduledRelativeLabel(props: { value: string | null }) {
+export function ScheduledRelativeLabel(props: { value: string | null }) {
   const nowMinute = useNowMinute();
   return relativeLabel(props.value, Date.parse(`${nowMinute}:00.000Z`));
 }

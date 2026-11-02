@@ -10,6 +10,7 @@ import {
   type RuntimeMode,
   type ProviderInteractionMode,
   type ServerSettings,
+  type ThreadId,
 } from "@t3tools/contracts";
 import {
   parseMaxDeliveryAge,
@@ -40,6 +41,32 @@ export function matchesScheduledTaskScope(
     );
   }
   return true;
+}
+
+/**
+ * The automations a thread shows: those bound to it, and those whose runs started it or sent it a
+ * prompt. A task that starts a fresh thread each run names only its newest one, so the loaded
+ * prompts find it in older threads.
+ */
+export function threadScheduledTasks(
+  tasks: ReadonlyArray<ScheduledTask>,
+  threadId: ThreadId,
+  turnItems: ReadonlyArray<{
+    readonly type: string;
+    readonly scheduledTaskId?: ScheduledTaskId | undefined;
+  }>,
+): ReadonlyArray<ScheduledTask> {
+  const promptedBy = new Set(
+    turnItems.flatMap((item) =>
+      item.type === "user_message" && item.scheduledTaskId !== undefined
+        ? [item.scheduledTaskId]
+        : [],
+    ),
+  );
+  return tasks.filter(
+    (task) =>
+      task.threadId === threadId || task.lastRunThreadId === threadId || promptedBy.has(task.id),
+  );
 }
 
 export function validateScheduledTasksSearch(raw: Record<string, unknown>) {

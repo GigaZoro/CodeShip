@@ -6,6 +6,7 @@ import {
   ProviderInstanceId,
   ScheduledTaskId,
   type ScheduledTask,
+  ThreadId,
 } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -22,6 +23,7 @@ import {
   matchesScheduledTaskScope,
   scheduleFromDraft,
   taskToDraft,
+  threadScheduledTasks,
 } from "./scheduledTasksSettings.logic";
 
 const laptopId = EnvironmentId.make("laptop");
@@ -167,6 +169,32 @@ describe("editing scheduled task branch settings", () => {
     const draft = taskToDraft(legacyTask);
     expect(draft.baseRef).toBe("release");
     expect(draft.startFromOrigin).toBe(false);
+  });
+});
+
+describe("a thread's automations", () => {
+  it("lists tasks bound to the thread, that last ran in it, or that sent it a prompt", () => {
+    const threadId = ThreadId.make("thread");
+    const task = (id: string, fields: Partial<ScheduledTask> = {}): ScheduledTask => ({
+      ...legacyTask,
+      id: ScheduledTaskId.make(id),
+      ...fields,
+    });
+    const tasks = [
+      task("bound", { threadId }),
+      task("latest-run", { lastRunThreadId: threadId }),
+      task("started-it", { lastRunThreadId: ThreadId.make("newer") }),
+      task("elsewhere", { threadId: ThreadId.make("other") }),
+    ];
+    const turnItems = [
+      { type: "user_message", scheduledTaskId: ScheduledTaskId.make("started-it") },
+      { type: "assistant_message" },
+    ];
+    expect(threadScheduledTasks(tasks, threadId, turnItems).map((entry) => entry.id)).toEqual([
+      "bound",
+      "latest-run",
+      "started-it",
+    ]);
   });
 });
 
