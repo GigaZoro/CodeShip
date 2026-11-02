@@ -252,7 +252,10 @@ Show skills in slash menu**, under Advanced. Only skills enabled for the provide
 On web and desktop, **Skills** in the sidebar rail lists every provider's skills
 on each connected machine, with what each one does and where its `SKILL.md`
 lives. Project skills appear once a thread has used that project with the
-provider.
+provider. With several machines, each gets its own column, and a skill that the
+same provider lacks on another shown machine is marked **Not on** that machine.
+**Filters** narrows the page by provider, source, status, and machine, or to
+just those differences.
 
 After you add or change skills, plugins, or MCP servers, use **Restart agent
 session** in the command palette on web and desktop. The conversation continues,
