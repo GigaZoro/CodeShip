@@ -79,6 +79,7 @@ import {
   ShapesIcon,
   SparklesIcon,
   MonitorIcon,
+  NotebookPenIcon,
   SquarePenIcon,
   TextSearchIcon,
   UserPlusIcon,
@@ -1681,6 +1682,17 @@ function OpenCommandPaletteDialog(props: {
     icon: <CalendarClockIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
       await navigate({ to: "/scheduled-tasks" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:thread-page",
+    searchTerms: ["threadpage", "thread.page", "notes", "notebook", "work log", "decisions"],
+    title: "Open ThreadPage",
+    icon: <NotebookPenIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/thread-page" });
     },
   });
 

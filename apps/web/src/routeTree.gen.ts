@@ -18,6 +18,7 @@ import { Route as ChatRouteImport } from './routes/_chat'
 import { Route as ChatIndexRouteImport } from './routes/_chat.index'
 import { Route as ProjectsProjectKeyRouteImport } from './routes/projects.$projectKey'
 import { Route as ChatUsageRouteImport } from './routes/_chat.usage'
+import { Route as ChatThreadPageRouteImport } from './routes/_chat.thread-page'
 import { Route as ChatSkillsRouteImport } from './routes/_chat.skills'
 import { Route as ChatSettingsRouteImport } from './routes/_chat.settings'
 import { Route as ChatScheduledTasksRouteImport } from './routes/_chat.scheduled-tasks'
@@ -96,6 +97,11 @@ const ProjectsProjectKeyRoute = ProjectsProjectKeyRouteImport.update({
 const ChatUsageRoute = ChatUsageRouteImport.update({
   id: '/usage',
   path: '/usage',
+  getParentRoute: () => ChatRoute,
+} as any)
+const ChatThreadPageRoute = ChatThreadPageRouteImport.update({
+  id: '/thread-page',
+  path: '/thread-page',
   getParentRoute: () => ChatRoute,
 } as any)
 const ChatSkillsRoute = ChatSkillsRouteImport.update({
@@ -293,6 +299,7 @@ export interface FileRoutesByFullPath {
   '/scheduled-tasks': typeof ChatScheduledTasksRoute
   '/settings': typeof ChatSettingsRouteWithChildren
   '/skills': typeof ChatSkillsRoute
+  '/thread-page': typeof ChatThreadPageRoute
   '/usage': typeof ChatUsageRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
@@ -337,6 +344,7 @@ export interface FileRoutesByTo {
   '/scheduled-tasks': typeof ChatScheduledTasksRoute
   '/settings': typeof ChatSettingsRouteWithChildren
   '/skills': typeof ChatSkillsRoute
+  '/thread-page': typeof ChatThreadPageRoute
   '/usage': typeof ChatUsageRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
   '/': typeof ChatIndexRoute
@@ -384,6 +392,7 @@ export interface FileRoutesById {
   '/_chat/scheduled-tasks': typeof ChatScheduledTasksRoute
   '/_chat/settings': typeof ChatSettingsRouteWithChildren
   '/_chat/skills': typeof ChatSkillsRoute
+  '/_chat/thread-page': typeof ChatThreadPageRoute
   '/_chat/usage': typeof ChatUsageRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
   '/_chat/': typeof ChatIndexRoute
@@ -432,6 +441,7 @@ export interface FileRouteTypes {
     | '/scheduled-tasks'
     | '/settings'
     | '/skills'
+    | '/thread-page'
     | '/usage'
     | '/projects/$projectKey'
     | '/$environmentId/$threadId'
@@ -476,6 +486,7 @@ export interface FileRouteTypes {
     | '/scheduled-tasks'
     | '/settings'
     | '/skills'
+    | '/thread-page'
     | '/usage'
     | '/projects/$projectKey'
     | '/'
@@ -522,6 +533,7 @@ export interface FileRouteTypes {
     | '/_chat/scheduled-tasks'
     | '/_chat/settings'
     | '/_chat/skills'
+    | '/_chat/thread-page'
     | '/_chat/usage'
     | '/projects/$projectKey'
     | '/_chat/'
@@ -628,6 +640,13 @@ declare module '@tanstack/react-router' {
       path: '/usage'
       fullPath: '/usage'
       preLoaderRoute: typeof ChatUsageRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/_chat/thread-page': {
+      id: '/_chat/thread-page'
+      path: '/thread-page'
+      fullPath: '/thread-page'
+      preLoaderRoute: typeof ChatThreadPageRouteImport
       parentRoute: typeof ChatRoute
     }
     '/_chat/skills': {
@@ -948,6 +967,7 @@ interface ChatRouteChildren {
   ChatScheduledTasksRoute: typeof ChatScheduledTasksRoute
   ChatSettingsRoute: typeof ChatSettingsRouteWithChildren
   ChatSkillsRoute: typeof ChatSkillsRoute
+  ChatThreadPageRoute: typeof ChatThreadPageRoute
   ChatUsageRoute: typeof ChatUsageRoute
   ChatIndexRoute: typeof ChatIndexRoute
   ChatEnvironmentIdThreadIdRoute: typeof ChatEnvironmentIdThreadIdRoute
@@ -962,6 +982,7 @@ const ChatRouteChildren: ChatRouteChildren = {
   ChatScheduledTasksRoute: ChatScheduledTasksRoute,
   ChatSettingsRoute: ChatSettingsRouteWithChildren,
   ChatSkillsRoute: ChatSkillsRoute,
+  ChatThreadPageRoute: ChatThreadPageRoute,
   ChatUsageRoute: ChatUsageRoute,
   ChatIndexRoute: ChatIndexRoute,
   ChatEnvironmentIdThreadIdRoute: ChatEnvironmentIdThreadIdRoute,

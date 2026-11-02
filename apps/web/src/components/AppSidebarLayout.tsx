@@ -203,9 +203,8 @@ function registerWorkspaceFocusCommands(router: AnyRouter): () => void {
   };
 }
 
-// Escape leaves a sidebar section (Pull requests, Scheduled tasks, Usage,
-// Settings) for the last thread when no scope (a selection, a dialog, a drag)
-// claimed it, so it observes after every other scope.
+// Escape leaves a sidebar section page for the last thread when no scope (a
+// selection, a dialog, a drag) claimed it, so it observes after every other scope.
 function registerSectionEscapeCommand(router: AnyRouter): () => void {
   return registerCommands(
     {},

@@ -4,6 +4,7 @@ import {
   ChartNoAxesColumnIcon,
   LayoutGridIcon,
   MessagesSquareIcon,
+  NotebookPenIcon,
   SettingsIcon,
   ShapesIcon,
   SparklesIcon,
@@ -38,6 +39,7 @@ type SidebarNavDestination =
   | "artifacts"
   | "skills"
   | "scheduled-tasks"
+  | "thread-page"
   | "usage"
   | "settings";
 
@@ -48,6 +50,7 @@ function resolveActiveDestination(pathname: string): SidebarNavDestination {
   if (pathname === "/skills") return "skills";
   if (pathname === "/usage") return "usage";
   if (pathname === "/scheduled-tasks") return "scheduled-tasks";
+  if (pathname === "/thread-page") return "thread-page";
   if (isSettingsPage(pathname)) return "settings";
   return "threads";
 }
@@ -193,6 +196,12 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
           label="Scheduled tasks"
           isActive={active === "scheduled-tasks"}
           onClick={go(() => navigate({ to: "/scheduled-tasks" }))}
+        />
+        <SidebarNavRailItem
+          icon={<NotebookPenIcon />}
+          label="ThreadPage"
+          isActive={active === "thread-page"}
+          onClick={go(() => navigate({ to: "/thread-page" }))}
         />
       </SidebarMenu>
       <SidebarMenu className="items-center">
