@@ -78,6 +78,7 @@ import {
   MessagesSquareIcon,
   PaletteIcon,
   RotateCcwIcon,
+  ServerIcon,
   SettingsIcon,
   ShapesIcon,
   SparklesIcon,
@@ -1744,11 +1745,22 @@ function OpenCommandPaletteDialog(props: {
   actionItems.push({
     kind: "action",
     value: "action:plugins",
-    searchTerms: ["plugins", "extensions", "marketplace", "install", "add-ons", "mcp"],
+    searchTerms: ["plugins", "extensions", "marketplace", "install", "add-ons"],
     title: "Open plugins",
     icon: <BlocksIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
       await navigate({ to: "/plugins" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:mcp",
+    searchTerms: ["mcp", "mcp servers", "model context protocol", "tools", "connectors"],
+    title: "Open MCP servers",
+    icon: <ServerIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/model-context-servers" });
     },
   });
 

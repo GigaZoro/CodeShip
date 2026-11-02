@@ -1,0 +1,376 @@
+import {
+  boundedProviderMcpMessage,
+  displayProviderMcpCommand,
+  displayProviderMcpUrl,
+  PROVIDER_MCP_NEW_SERVER_NAME_PATTERN,
+  ProviderMcpError,
+  type ProviderInstanceId,
+  type ProviderMcpOperation,
+  type ProviderMcpServer,
+  type ProviderMcpServerConfig,
+  type ProviderMcpServerStatus,
+  splitProviderPluginId,
+} from "@t3tools/contracts";
+import type { ProviderMcpManagement } from "@t3tools/provider-core/server/driver";
+import type * as CodexClient from "effect-codex-app-server/client";
+import type * as CodexErrors from "effect-codex-app-server/errors";
+import type * as CodexSchema from "effect-codex-app-server/schema";
+import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
+import { HttpClient } from "effect/http";
+
+const CONFIG_TIMEOUT = Duration.seconds(30);
+// Listing connects to every server, and local ones may take a while to start.
+const STATUS_TIMEOUT = Duration.minutes(1);
+const CLI_TIMEOUT = Duration.seconds(30);
+const CALLBACK_TIMEOUT = Duration.seconds(15);
+// Codex keeps its callback page open this long; ProviderMcp gives up at the same time.
+const SIGN_IN_TIMEOUT_SECONDS = 300;
+const STATUS_PAGE_SIZE = 100;
+const STATUS_MAX_PAGES = 5;
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
+const MANAGED_CONFIG_LAYERS = new Set([
+  "enterpriseManaged",
+  "mdm",
+  "legacyManagedConfigTomlFromFile",
+  "legacyManagedConfigTomlFromMdm",
+]);
+
+const CodexMcpServerEntry = Schema.Struct({
+  url: Schema.optional(Schema.String),
+  command: Schema.optional(Schema.String),
+  args: Schema.optional(Schema.Array(Schema.String)),
+  enabled: Schema.optional(Schema.Boolean),
+});
+type CodexMcpServerEntry = typeof CodexMcpServerEntry.Type;
+const decodeServerEntry = Schema.decodeUnknownOption(CodexMcpServerEntry);
+
+export interface CodexConfiguredMcpServer extends CodexMcpServerEntry {
+  /** Only servers in the user's own config.toml can be removed here. */
+  readonly userConfig: boolean;
+  readonly managed: boolean;
+}
+
+type CodexMcpStatus = CodexSchema.V2ListMcpServerStatusResponse["data"][number];
+
+/** The servers in Codex's effective config, keyed by name. */
+export function codexConfiguredMcpServers(
+  response: CodexSchema.V2ConfigReadResponse,
+): ReadonlyMap<string, CodexConfiguredMcpServer> {
+  const table: unknown = Reflect.get(response.config, "mcp_servers");
+  const servers = new Map<string, CodexConfiguredMcpServer>();
+  if (typeof table !== "object" || table === null) return servers;
+  for (const [name, value] of Object.entries(table)) {
+    const entry = decodeServerEntry(value);
+    if (Option.isNone(entry)) continue;
+    const origin =
+      response.origins[`mcp_servers.${name}.url`] ??
+      response.origins[`mcp_servers.${name}.command`];
+    servers.set(name, {
+      ...entry.value,
+      userConfig: origin === undefined || origin.name.type === "user",
+      managed: origin !== undefined && MANAGED_CONFIG_LAYERS.has(origin.name.type),
+    });
+  }
+  return servers;
+}
+
+function codexStatus(
+  entry: CodexConfiguredMcpServer | undefined,
+  status: CodexMcpStatus | undefined,
+): ProviderMcpServerStatus {
+  if (entry?.enabled === false) return "disabled";
+  if (status?.authStatus === "notLoggedIn") return "needsAuth";
+  if (status === undefined || status.toolsError) return "failed";
+  return "connected";
+}
+
+export function codexMcpServers(
+  configured: ReadonlyMap<string, CodexConfiguredMcpServer>,
+  statuses: ReadonlyArray<CodexMcpStatus>,
+): ReadonlyArray<ProviderMcpServer> {
+  const statusByName = new Map(statuses.map((status) => [status.name, status]));
+  const names = new Set([...configured.keys(), ...statusByName.keys()]);
+  return [...names].map((name): ProviderMcpServer => {
+    const entry = configured.get(name);
+    const status = statusByName.get(name);
+    const serverStatus = codexStatus(entry, status);
+    const target = entry?.url
+      ? displayProviderMcpUrl(entry.url)
+      : entry?.command
+        ? displayProviderMcpCommand(entry.command, entry.args ?? [])
+        : (status?.httpOrigin ?? undefined);
+    const transport = entry?.url
+      ? "http"
+      : entry?.command
+        ? "stdio"
+        : status?.httpOrigin
+          ? "http"
+          : undefined;
+    const message =
+      serverStatus !== "failed"
+        ? undefined
+        : status === undefined
+          ? "Codex did not report this server."
+          : boundedProviderMcpMessage(status.toolsError);
+    const plugin = status?.pluginId ? splitProviderPluginId(status.pluginId).name : undefined;
+    return {
+      name,
+      ...(transport ? { transport } : {}),
+      ...(target ? { target } : {}),
+      status: serverStatus,
+      ...(message ? { message } : {}),
+      ...(serverStatus === "connected" && status
+        ? { toolCount: Object.keys(status.tools).length }
+        : {}),
+      origin: entry?.managed ? "managed" : entry ? "config" : plugin ? "plugin" : "builtIn",
+      ...(plugin ? { plugin } : {}),
+      canSignIn: serverStatus === "needsAuth",
+      canSignOut: status?.authStatus === "oAuth",
+      removable: entry?.userConfig === true,
+    };
+  });
+}
+
+/** The `[mcp_servers.<name>]` table Codex reads, without empty header or environment tables. */
+function codexMcpServerEntry(server: ProviderMcpServerConfig) {
+  if (server.transport === "http") {
+    return {
+      url: server.url,
+      ...(Object.keys(server.headers).length > 0 ? { http_headers: { ...server.headers } } : {}),
+    };
+  }
+  return {
+    command: server.command,
+    args: [...server.args],
+    ...(Object.keys(server.env).length > 0 ? { env: { ...server.env } } : {}),
+  };
+}
+
+export interface CodexMcpRedirect {
+  readonly redirect: URL;
+  readonly state: string;
+}
+
+/** The loopback page Codex's sign-in returns to, read from the URL it hands the user. */
+export function codexMcpRedirect(authorizationUrl: string): CodexMcpRedirect | undefined {
+  try {
+    const url = new URL(authorizationUrl);
+    const redirectUri = url.searchParams.get("redirect_uri");
+    const state = url.searchParams.get("state");
+    if (!redirectUri || !state) return undefined;
+    const redirect = new URL(redirectUri);
+    if (redirect.protocol !== "http:" || !LOOPBACK_HOSTS.has(redirect.hostname)) return undefined;
+    return { redirect, state };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Accepts only the callback for this sign-in, so a pasted address cannot send the server's
+ * request anywhere but Codex's own loopback page.
+ */
+export function codexMcpCallbackUrl(pasted: string, expected: CodexMcpRedirect) {
+  const value = pasted.trim();
+  let callback: URL;
+  try {
+    // Browsers can hide `http://` in the address bar.
+    callback = new URL(
+      /^[a-z][a-z\d+.-]*:\/\//iu.test(value) ? value : `${expected.redirect.protocol}//${value}`,
+    );
+  } catch {
+    return undefined;
+  }
+  const states = callback.searchParams.getAll("state");
+  const codes = callback.searchParams.getAll("code");
+  const errors = callback.searchParams.getAll("error");
+  const answered =
+    (codes.length === 1 && Boolean(codes[0]) && errors.length === 0) ||
+    (errors.length === 1 && Boolean(errors[0]) && codes.length === 0);
+  if (
+    callback.origin !== expected.redirect.origin ||
+    callback.pathname !== expected.redirect.pathname ||
+    callback.username ||
+    callback.password ||
+    states.length !== 1 ||
+    states[0] !== expected.state ||
+    !answered
+  ) {
+    return undefined;
+  }
+  return callback.toString();
+}
+
+/** Manages the MCP servers in a Codex home through its app server, which owns `config.toml`. */
+export const makeCodexMcpManagement = Effect.fn("makeCodexMcpManagement")(function* <
+  OpenError,
+  CliError,
+>(options: {
+  readonly instanceId: ProviderInstanceId;
+  /** An initialized app server for this instance's Codex home, closed with the scope. */
+  readonly openClient: Effect.Effect<
+    CodexClient.CodexAppServerClient["Service"],
+    OpenError,
+    Scope.Scope
+  >;
+  /** Runs the Codex CLI against the same home, for what the app server cannot do. */
+  readonly runCli: (
+    args: ReadonlyArray<string>,
+  ) => Effect.Effect<
+    { readonly code: number; readonly stdout: string; readonly stderr: string },
+    CliError
+  >;
+}) {
+  const http = yield* HttpClient.HttpClient;
+  // Codex rewrites config.toml for every change.
+  const writes = yield* Semaphore.make(1);
+
+  const failure = (operation: ProviderMcpOperation, providerMessage?: string, cause?: unknown) =>
+    new ProviderMcpError({
+      operation,
+      instanceId: options.instanceId,
+      reason: "providerFailed",
+      ...(providerMessage ? { providerMessage } : {}),
+      ...(cause === undefined ? {} : { cause }),
+    });
+  // JSON-RPC errors carry Codex's own reason, such as a name it does not know.
+  const failed = (operation: ProviderMcpOperation) => (cause: unknown) =>
+    failure(
+      operation,
+      cause instanceof Error ? boundedProviderMcpMessage(cause.message) : undefined,
+      cause,
+    );
+
+  const withClient = <A>(
+    operation: ProviderMcpOperation,
+    timeout: Duration.Input,
+    use: (
+      client: CodexClient.CodexAppServerClient["Service"],
+    ) => Effect.Effect<A, CodexErrors.CodexAppServerError>,
+  ) =>
+    options.openClient.pipe(
+      Effect.flatMap(use),
+      Effect.scoped,
+      Effect.timeout(timeout),
+      Effect.mapError(failed(operation)),
+    );
+
+  const readConfigured = (client: CodexClient.CodexAppServerClient["Service"]) =>
+    client.request("config/read", {}).pipe(Effect.map(codexConfiguredMcpServers));
+
+  const readStatuses = Effect.fn("CodexMcp.readStatuses")(function* (
+    client: CodexClient.CodexAppServerClient["Service"],
+  ) {
+    const statuses: Array<CodexMcpStatus> = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < STATUS_MAX_PAGES; page += 1) {
+      const response = yield* client.request("mcpServerStatus/list", {
+        detail: "toolsAndAuthOnly",
+        limit: STATUS_PAGE_SIZE,
+        ...(cursor ? { cursor } : {}),
+      });
+      statuses.push(...response.data);
+      if (!response.nextCursor) break;
+      cursor = response.nextCursor;
+    }
+    return statuses;
+  });
+
+  const write = (operation: ProviderMcpOperation, params: CodexSchema.V2ConfigValueWriteParams) =>
+    withClient(operation, CONFIG_TIMEOUT, (client) =>
+      client.request("config/value/write", params),
+    ).pipe(Effect.asVoid);
+
+  const forwardCallback = (redirect: CodexMcpRedirect | undefined, pasted: string) => {
+    const callbackUrl = redirect ? codexMcpCallbackUrl(pasted, redirect) : undefined;
+    if (callbackUrl === undefined) {
+      return Effect.fail(failure("signIn", "This address does not belong to the current sign-in."));
+    }
+    return http.get(callbackUrl).pipe(
+      Effect.timeout(CALLBACK_TIMEOUT),
+      Effect.mapError((cause) =>
+        failure("signIn", "Codex is no longer waiting for this sign-in. Start it again.", cause),
+      ),
+      Effect.flatMap((response) =>
+        response.status < 400
+          ? Effect.void
+          : Effect.fail(failure("signIn", "Codex did not accept this address.")),
+      ),
+    );
+  };
+
+  return {
+    list: withClient("list", STATUS_TIMEOUT, (client) =>
+      Effect.all([readConfigured(client), readStatuses(client)]),
+    ).pipe(Effect.map(([configured, statuses]) => codexMcpServers(configured, statuses))),
+    add: (name, server) =>
+      withClient("add", CONFIG_TIMEOUT, readConfigured).pipe(
+        Effect.flatMap((configured) =>
+          configured.has(name)
+            ? Effect.fail(failure("add", `Codex already has an MCP server named ${name}.`))
+            : write("add", {
+                keyPath: "mcp_servers",
+                value: { [name]: codexMcpServerEntry(server) },
+                mergeStrategy: "upsert",
+              }),
+        ),
+        writes.withPermits(1),
+      ),
+    remove: (name) =>
+      // A dotted key path cannot address a name with dots or spaces.
+      PROVIDER_MCP_NEW_SERVER_NAME_PATTERN.test(name)
+        ? write("remove", {
+            keyPath: `mcp_servers.${name}`,
+            value: null,
+            mergeStrategy: "replace",
+          }).pipe(writes.withPermits(1))
+        : Effect.fail(failure("remove", "Remove this server from config.toml by hand.")),
+    signOut: (name) =>
+      options.runCli(["mcp", "logout", name]).pipe(
+        Effect.timeout(CLI_TIMEOUT),
+        Effect.mapError(failed("signOut")),
+        Effect.flatMap((result) =>
+          result.code === 0
+            ? Effect.void
+            : Effect.fail(
+                failure(
+                  "signOut",
+                  boundedProviderMcpMessage(result.stderr) ??
+                    boundedProviderMcpMessage(result.stdout),
+                ),
+              ),
+        ),
+      ),
+    signIn: Effect.fn("CodexMcp.signIn")(function* (name) {
+      // The app server hosts the callback page, so it stays open for the whole sign-in.
+      const client = yield* options.openClient.pipe(Effect.mapError(failed("signIn")));
+      const completed = yield* Deferred.make<void, ProviderMcpError>();
+      yield* client.handleServerNotification("mcpServer/oauthLogin/completed", (event) =>
+        event.name !== name
+          ? Effect.void
+          : event.success
+            ? Deferred.succeed(completed, undefined).pipe(Effect.asVoid)
+            : Deferred.fail(
+                completed,
+                failure("signIn", boundedProviderMcpMessage(event.error)),
+              ).pipe(Effect.asVoid),
+      );
+      const { authorizationUrl } = yield* client
+        .request("mcpServer/oauth/login", { name, timeoutSecs: SIGN_IN_TIMEOUT_SECONDS })
+        .pipe(Effect.timeout(CONFIG_TIMEOUT), Effect.mapError(failed("signIn")));
+      const redirect = codexMcpRedirect(authorizationUrl);
+      return {
+        authorizationUrl,
+        completed: Deferred.await(completed),
+        submitCallbackUrl: (callbackUrl) => forwardCallback(redirect, callbackUrl),
+      };
+    }),
+  } satisfies ProviderMcpManagement;
+});

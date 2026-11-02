@@ -666,6 +666,33 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   } satisfies CodexAppServerProviderSnapshot;
 });
 
+/** Runs the Codex CLI against an instance's home, for what the app server has no method for. */
+export const runCodexCli = Effect.fn("runCodexCli")(function* (
+  input: {
+    readonly binaryPath: string;
+    readonly homePath?: string | undefined;
+    readonly cwd: string;
+    readonly environment?: NodeJS.ProcessEnv | undefined;
+  },
+  args: ReadonlyArray<string>,
+) {
+  const environment = yield* codexProcessEnvironment(input);
+  const spawnCommand = yield* resolveSpawnCommand(input.binaryPath, args, {
+    env: environment,
+    extendEnv: true,
+  });
+  return yield* spawnAndCollect(
+    input.binaryPath,
+    ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+      cwd: input.cwd,
+      env: environment,
+      extendEnv: true,
+      forceKillAfter: CODEX_APP_SERVER_PROBE_FORCE_KILL_AFTER,
+      shell: spawnCommand.shell,
+    }),
+  );
+});
+
 // Old CLIs can exit before initialize reports the version needed for compatibility advice.
 const probeCodexCliVersion = Effect.fn("probeCodexCliVersion")(
   function* (input: {
@@ -674,21 +701,7 @@ const probeCodexCliVersion = Effect.fn("probeCodexCliVersion")(
     readonly cwd: string;
     readonly environment?: NodeJS.ProcessEnv | undefined;
   }) {
-    const environment = yield* codexProcessEnvironment(input);
-    const spawnCommand = yield* resolveSpawnCommand(input.binaryPath, ["--version"], {
-      env: environment,
-      extendEnv: true,
-    });
-    const result = yield* spawnAndCollect(
-      input.binaryPath,
-      ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-        cwd: input.cwd,
-        env: environment,
-        extendEnv: true,
-        forceKillAfter: CODEX_APP_SERVER_PROBE_FORCE_KILL_AFTER,
-        shell: spawnCommand.shell,
-      }),
-    );
+    const result = yield* runCodexCli(input, ["--version"]);
     if (result.code !== 0) return null;
     return CODEX_CLI_VERSION_PATTERN.exec(result.stdout)?.[1] ?? null;
   },

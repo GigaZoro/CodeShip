@@ -55,15 +55,20 @@ describe("RPC authorization scopes", () => {
     );
   });
 
-  it("lets readers browse plugins and keeps changing them, which adds hooks and MCP servers, behind provider management", () => {
-    expect(requiredScopeForRpcMethod(WS_METHODS.providerPluginsList)).toBe(
-      AuthOrchestrationReadScope,
-    );
+  it("lets readers browse plugins and MCP servers and keeps changing them, which runs commands and reaches services, behind provider management", () => {
+    for (const method of [WS_METHODS.providerPluginsList, WS_METHODS.providerMcpList]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    }
     for (const method of [
       WS_METHODS.providerPluginsInstall,
       WS_METHODS.providerPluginsUninstall,
       WS_METHODS.providerPluginsSetEnabled,
       WS_METHODS.providerPluginsAddMarketplace,
+      WS_METHODS.providerMcpAdd,
+      WS_METHODS.providerMcpRemove,
+      WS_METHODS.providerMcpSignIn,
+      WS_METHODS.providerMcpCompleteSignIn,
+      WS_METHODS.providerMcpSignOut,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthProvidersManageScope);
     }

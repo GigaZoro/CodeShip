@@ -173,6 +173,7 @@ import { userFacingDispatchErrorMessage } from "./orchestration-v2/UserFacingErr
 import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
 import * as ProviderInstanceRegistry from "./provider/ProviderInstanceRegistry.ts";
 import * as ProviderPlugins from "./provider/ProviderPlugins.ts";
+import * as ProviderMcp from "./provider/ProviderMcp.ts";
 import * as AcpRegistrySupport from "@t3tools/provider-acp-registry/server/AcpRegistrySupport";
 import * as AcpRegistryRuntimeCoordinator from "@t3tools/provider-acp-registry/server/AcpRegistryRuntimeCoordinator";
 import * as ModelManifest from "./provider/ModelManifest.ts";
@@ -1383,6 +1384,7 @@ export const layerWsRpc = (
       const providerAuth = yield* ProviderAuthService.ProviderAuthService;
       const providerInstallation = yield* makeProviderInstallation();
       const providerPlugins = yield* ProviderPlugins.ProviderPlugins;
+      const providerMcp = yield* ProviderMcp.ProviderMcp;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const npmRelease = yield* NpmRelease.NpmRelease;
       const config = yield* ServerConfig.ServerConfig;
@@ -2554,6 +2556,12 @@ export const layerWsRpc = (
         [WS_METHODS.providerPluginsSetEnabled]: (input) => providerPlugins.setEnabled(input),
         [WS_METHODS.providerPluginsAddMarketplace]: (input) =>
           providerPlugins.addMarketplace(input),
+        [WS_METHODS.providerMcpList]: (input) => providerMcp.list(input),
+        [WS_METHODS.providerMcpAdd]: (input) => providerMcp.add(input),
+        [WS_METHODS.providerMcpRemove]: (input) => providerMcp.remove(input),
+        [WS_METHODS.providerMcpSignIn]: (input) => providerMcp.signIn(input),
+        [WS_METHODS.providerMcpCompleteSignIn]: (input) => providerMcp.completeSignIn(input),
+        [WS_METHODS.providerMcpSignOut]: (input) => providerMcp.signOut(input),
         [WS_METHODS.serverUpdateServer]: (input) => serverSelfUpdate.update(input),
         [WS_METHODS.serverGetNpmRelease]: (input) => npmRelease.get(input),
         [WS_METHODS.serverUpdateServerWithProgress]: (input) =>

@@ -20,8 +20,10 @@ import {
   checkCodexProviderStatus,
   makePendingCodexProvider,
   probeCodexSkillsForCwd,
+  runCodexCli,
   withCodexAppServerClient,
 } from "../CodexProvider.ts";
+import { makeCodexMcpManagement } from "../CodexMcp.ts";
 import { makeCodexPluginManagement } from "../CodexPlugins.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
@@ -242,22 +244,40 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     Effect.forkScoped,
   );
   const resolveRuntime = runtime.auth.controller.withAccess!(runtime.resolve);
-  const plugins = yield* makeCodexPluginManagement({
-    instanceId,
-    openClient: resolveRuntime.pipe(
-      Effect.flatMap((effective) =>
-        withCodexAppServerClient({
-          binaryPath: effective.config.binaryPath,
-          homePath: effective.config.homePath,
-          launchArgs: effective.config.launchArgs,
-          cwd: process.cwd(),
-          environment: effective.environment,
-        }),
-      ),
-      Effect.map(({ client }) => client),
-      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+  const openAppServerClient = resolveRuntime.pipe(
+    Effect.flatMap((effective) =>
+      withCodexAppServerClient({
+        binaryPath: effective.config.binaryPath,
+        homePath: effective.config.homePath,
+        launchArgs: effective.config.launchArgs,
+        cwd: process.cwd(),
+        environment: effective.environment,
+      }),
     ),
-  });
+    Effect.map(({ client }) => client),
+    Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+  );
+  const plugins = yield* makeCodexPluginManagement({ instanceId, openClient: openAppServerClient });
+  const mcp = yield* makeCodexMcpManagement({
+    instanceId,
+    openClient: openAppServerClient,
+    runCli: (args) =>
+      resolveRuntime.pipe(
+        Effect.flatMap((effective) =>
+          runCodexCli(
+            {
+              binaryPath: effective.config.binaryPath,
+              homePath: effective.config.homePath,
+              cwd: process.cwd(),
+              environment: effective.environment,
+            },
+            args,
+          ),
+        ),
+        Effect.scoped,
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      ),
+  }).pipe(Effect.provideService(HttpClient.HttpClient, http));
   // Launch settings bind the refresh command to the signed-in profile. The registry
   // already wraps openSession in withAccess, so resolve without re-entering it.
   const orchestrationAdapter = yield* createCodexAdapterV2(input, {
@@ -315,6 +335,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     textGeneration,
     auth: runtime.auth.controller,
     plugins,
+    mcp,
     snapshotForCwd: (cwd: string) =>
       enabled
         ? resolveRuntime.pipe(

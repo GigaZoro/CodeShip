@@ -43,6 +43,15 @@ import {
   ProviderPluginsListInput,
   ProviderPluginsListResult,
 } from "./providerPlugins.ts";
+import {
+  ProviderMcpAddInput,
+  ProviderMcpCompleteSignInInput,
+  ProviderMcpError,
+  ProviderMcpListInput,
+  ProviderMcpListResult,
+  ProviderMcpServerInput,
+  ProviderMcpSignInState,
+} from "./providerMcp.ts";
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
@@ -466,6 +475,12 @@ export const WS_METHODS = {
   providerPluginsUninstall: "provider.plugins.uninstall",
   providerPluginsSetEnabled: "provider.plugins.setEnabled",
   providerPluginsAddMarketplace: "provider.plugins.addMarketplace",
+  providerMcpList: "provider.mcp.list",
+  providerMcpAdd: "provider.mcp.add",
+  providerMcpRemove: "provider.mcp.remove",
+  providerMcpSignIn: "provider.mcp.signIn",
+  providerMcpCompleteSignIn: "provider.mcp.completeSignIn",
+  providerMcpSignOut: "provider.mcp.signOut",
 
   vcsPull: "vcs.pull",
   vcsRefreshStatus: "vcs.refreshStatus",
@@ -800,6 +815,42 @@ const WsProviderPluginsAddMarketplaceRpc = Rpc.make(WS_METHODS.providerPluginsAd
   payload: ProviderPluginAddMarketplaceInput,
   success: ProviderPluginAddMarketplaceResult,
   error: ProviderPluginRpcError,
+});
+
+const ProviderMcpRpcError = Schema.Union([ProviderMcpError, EnvironmentAuthorizationError]);
+
+const WsProviderMcpListRpc = Rpc.make(WS_METHODS.providerMcpList, {
+  payload: ProviderMcpListInput,
+  success: ProviderMcpListResult,
+  error: ProviderMcpRpcError,
+});
+
+const WsProviderMcpAddRpc = Rpc.make(WS_METHODS.providerMcpAdd, {
+  payload: ProviderMcpAddInput,
+  error: ProviderMcpRpcError,
+});
+
+const WsProviderMcpRemoveRpc = Rpc.make(WS_METHODS.providerMcpRemove, {
+  payload: ProviderMcpServerInput,
+  error: ProviderMcpRpcError,
+});
+
+// The sign-in lives as long as the subscription; unsubscribing cancels it.
+const WsProviderMcpSignInRpc = Rpc.make(WS_METHODS.providerMcpSignIn, {
+  payload: ProviderMcpServerInput,
+  success: ProviderMcpSignInState,
+  error: ProviderMcpRpcError,
+  stream: true,
+});
+
+const WsProviderMcpCompleteSignInRpc = Rpc.make(WS_METHODS.providerMcpCompleteSignIn, {
+  payload: ProviderMcpCompleteSignInInput,
+  error: ProviderMcpRpcError,
+});
+
+const WsProviderMcpSignOutRpc = Rpc.make(WS_METHODS.providerMcpSignOut, {
+  payload: ProviderMcpServerInput,
+  error: ProviderMcpRpcError,
 });
 
 const WsServerGetNpmReleaseRpc = Rpc.make(WS_METHODS.serverGetNpmRelease, {
@@ -2073,6 +2124,12 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderPluginsUninstallRpc,
   WsProviderPluginsSetEnabledRpc,
   WsProviderPluginsAddMarketplaceRpc,
+  WsProviderMcpListRpc,
+  WsProviderMcpAddRpc,
+  WsProviderMcpRemoveRpc,
+  WsProviderMcpSignInRpc,
+  WsProviderMcpCompleteSignInRpc,
+  WsProviderMcpSignOutRpc,
   WsServerUpdateServerRpc,
   WsServerGetNpmReleaseRpc,
   WsServerUpdateServerWithProgressRpc,

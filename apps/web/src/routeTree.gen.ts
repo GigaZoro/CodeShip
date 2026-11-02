@@ -26,6 +26,7 @@ import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-reques
 import { Route as ChatProjectsRouteImport } from './routes/_chat.projects'
 import { Route as ChatPluginsRouteImport } from './routes/_chat.plugins'
 import { Route as ChatNewRouteImport } from './routes/_chat.new'
+import { Route as ChatModelContextServersRouteImport } from './routes/_chat.model-context-servers'
 import { Route as ChatArtifactsRouteImport } from './routes/_chat.artifacts'
 import { Route as ChatSettingsWorktreesRouteImport } from './routes/_chat.settings.worktrees'
 import { Route as ChatSettingsThreadsRouteImport } from './routes/_chat.settings.threads'
@@ -138,6 +139,11 @@ const ChatPluginsRoute = ChatPluginsRouteImport.update({
 const ChatNewRoute = ChatNewRouteImport.update({
   id: '/new',
   path: '/new',
+  getParentRoute: () => ChatRoute,
+} as any)
+const ChatModelContextServersRoute = ChatModelContextServersRouteImport.update({
+  id: '/model-context-servers',
+  path: '/model-context-servers',
   getParentRoute: () => ChatRoute,
 } as any)
 const ChatArtifactsRoute = ChatArtifactsRouteImport.update({
@@ -299,6 +305,7 @@ export interface FileRoutesByFullPath {
   '/pair': typeof PairRoute
   '/welcome': typeof WelcomeRoute
   '/artifacts': typeof ChatArtifactsRoute
+  '/model-context-servers': typeof ChatModelContextServersRoute
   '/new': typeof ChatNewRoute
   '/plugins': typeof ChatPluginsRoute
   '/projects': typeof ChatProjectsRoute
@@ -345,6 +352,7 @@ export interface FileRoutesByTo {
   '/pair': typeof PairRoute
   '/welcome': typeof WelcomeRoute
   '/artifacts': typeof ChatArtifactsRoute
+  '/model-context-servers': typeof ChatModelContextServersRoute
   '/new': typeof ChatNewRoute
   '/plugins': typeof ChatPluginsRoute
   '/projects': typeof ChatProjectsRoute
@@ -394,6 +402,7 @@ export interface FileRoutesById {
   '/pair': typeof PairRoute
   '/welcome': typeof WelcomeRoute
   '/_chat/artifacts': typeof ChatArtifactsRoute
+  '/_chat/model-context-servers': typeof ChatModelContextServersRoute
   '/_chat/new': typeof ChatNewRoute
   '/_chat/plugins': typeof ChatPluginsRoute
   '/_chat/projects': typeof ChatProjectsRoute
@@ -444,6 +453,7 @@ export interface FileRouteTypes {
     | '/pair'
     | '/welcome'
     | '/artifacts'
+    | '/model-context-servers'
     | '/new'
     | '/plugins'
     | '/projects'
@@ -490,6 +500,7 @@ export interface FileRouteTypes {
     | '/pair'
     | '/welcome'
     | '/artifacts'
+    | '/model-context-servers'
     | '/new'
     | '/plugins'
     | '/projects'
@@ -538,6 +549,7 @@ export interface FileRouteTypes {
     | '/pair'
     | '/welcome'
     | '/_chat/artifacts'
+    | '/_chat/model-context-servers'
     | '/_chat/new'
     | '/_chat/plugins'
     | '/_chat/projects'
@@ -708,6 +720,13 @@ declare module '@tanstack/react-router' {
       path: '/new'
       fullPath: '/new'
       preLoaderRoute: typeof ChatNewRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/_chat/model-context-servers': {
+      id: '/_chat/model-context-servers'
+      path: '/model-context-servers'
+      fullPath: '/model-context-servers'
+      preLoaderRoute: typeof ChatModelContextServersRouteImport
       parentRoute: typeof ChatRoute
     }
     '/_chat/artifacts': {
@@ -980,6 +999,7 @@ const ChatSettingsRouteWithChildren = ChatSettingsRoute._addFileChildren(
 
 interface ChatRouteChildren {
   ChatArtifactsRoute: typeof ChatArtifactsRoute
+  ChatModelContextServersRoute: typeof ChatModelContextServersRoute
   ChatNewRoute: typeof ChatNewRoute
   ChatPluginsRoute: typeof ChatPluginsRoute
   ChatProjectsRoute: typeof ChatProjectsRoute
@@ -996,6 +1016,7 @@ interface ChatRouteChildren {
 
 const ChatRouteChildren: ChatRouteChildren = {
   ChatArtifactsRoute: ChatArtifactsRoute,
+  ChatModelContextServersRoute: ChatModelContextServersRoute,
   ChatNewRoute: ChatNewRoute,
   ChatPluginsRoute: ChatPluginsRoute,
   ChatProjectsRoute: ChatProjectsRoute,

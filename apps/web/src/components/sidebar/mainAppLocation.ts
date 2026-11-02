@@ -15,6 +15,7 @@ export function isSidebarSectionPage(pathname: string) {
     pathname === "/artifacts" ||
     pathname === "/skills" ||
     pathname === "/plugins" ||
+    pathname === "/model-context-servers" ||
     pathname === "/scheduled-tasks" ||
     pathname === "/thread-page" ||
     pathname === "/usage" ||

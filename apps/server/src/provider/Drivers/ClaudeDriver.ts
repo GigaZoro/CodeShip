@@ -57,6 +57,7 @@ import {
 } from "@t3tools/provider-core/server/snapshotSettings";
 import { claudeAccountHomePath, materializeClaudeAccountHome } from "./ClaudeAccountHome.ts";
 import { makeClaudeAuth } from "./ClaudeAuth.ts";
+import { makeClaudeMcpManagement } from "./ClaudeMcp.ts";
 import { makeClaudePluginManagement } from "./ClaudePlugins.ts";
 import {
   makeClaudeCapabilitiesCacheKey,
@@ -208,6 +209,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       canLogout: accountHome !== undefined,
     });
     const plugins = yield* makeClaudePluginManagement({
+      instanceId,
+      binaryPath: effectiveConfig.binaryPath,
+      environment: claudeEnvironment,
+      cwd: stateDir,
+    });
+    const mcp = yield* makeClaudeMcpManagement({
       instanceId,
       binaryPath: effectiveConfig.binaryPath,
       environment: claudeEnvironment,
@@ -467,6 +474,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       enabled,
       auth: auth.controller,
       plugins,
+      mcp,
       snapshot,
       invalidateCaches: Cache.invalidateAll(capabilitiesProbeCache),
       snapshotForCwd: (cwd: string) =>

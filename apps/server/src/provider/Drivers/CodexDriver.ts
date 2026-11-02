@@ -24,9 +24,11 @@ import {
   checkCodexProviderStatus,
   makePendingCodexProvider,
   probeCodexSkillsForCwd,
+  runCodexCli,
   withCodexAppServerClient,
 } from "../CodexProvider.ts";
 import { resolveCodexLaunchArgs } from "../codexLaunchArgs.ts";
+import { makeCodexMcpManagement } from "../CodexMcp.ts";
 import { makeCodexPluginManagement } from "../CodexPlugins.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
@@ -309,19 +311,34 @@ export const CodexDriver: ProviderDriver<
             ),
           );
 
+    const openAppServerClient = withCodexAppServerClient({
+      binaryPath: effectiveConfig.binaryPath,
+      homePath: effectiveConfig.homePath,
+      launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+      cwd: process.cwd(),
+      environment: processEnv,
+    }).pipe(
+      Effect.map(({ client }) => client),
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    );
     const plugins = yield* makeCodexPluginManagement({
       instanceId,
-      openClient: withCodexAppServerClient({
-        binaryPath: effectiveConfig.binaryPath,
-        homePath: effectiveConfig.homePath,
-        launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
-        cwd: process.cwd(),
-        environment: processEnv,
-      }).pipe(
-        Effect.map(({ client }) => client),
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-      ),
+      openClient: openAppServerClient,
     });
+    const mcp = yield* makeCodexMcpManagement({
+      instanceId,
+      openClient: openAppServerClient,
+      runCli: (args) =>
+        runCodexCli(
+          {
+            binaryPath: effectiveConfig.binaryPath,
+            homePath: effectiveConfig.homePath,
+            cwd: process.cwd(),
+            environment: processEnv,
+          },
+          args,
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+    }).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
 
     // Redemption spends account credit; serialize by the auth.json directory, keep one idempotency key
     // until the outcome, and bound the wait so a hung app-server cannot hold the account lock.
@@ -392,6 +409,7 @@ export const CodexDriver: ProviderDriver<
       snapshotForCwd,
       consumeResetCredit,
       plugins,
+      mcp,
       orchestrationAdapter,
       textGeneration,
     } satisfies ProviderInstance;

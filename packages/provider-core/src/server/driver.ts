@@ -13,6 +13,9 @@ import type {
   ProviderPluginError,
   ProviderPluginInstallResult,
   ProviderPluginMarketplace,
+  ProviderMcpError,
+  ProviderMcpServer,
+  ProviderMcpServerConfig,
   ServerProvider,
   ServerProviderWorkspaceSnapshot,
 } from "@t3tools/contracts";
@@ -58,6 +61,7 @@ export interface ProviderInstance {
   readonly textGeneration: ProviderTextGeneration;
   readonly auth?: ProviderAuthController;
   readonly plugins?: ProviderPluginManagement;
+  readonly mcp?: ProviderMcpManagement;
   readonly acpSessionManagement?: {
     readonly listSessions: (input: {
       readonly cwd: string;
@@ -105,6 +109,30 @@ export interface ProviderPluginManagement {
   readonly addMarketplace: (
     source: string,
   ) => Effect.Effect<ProviderPluginAddMarketplaceResult, ProviderPluginError>;
+}
+
+/** A sign-in to one MCP server that stays open until its scope closes. */
+export interface ProviderMcpSignIn {
+  /** Absent when the provider signed in without asking the user. */
+  readonly authorizationUrl: string | undefined;
+  /** Succeeds once the provider holds a token for the server. */
+  readonly completed: Effect.Effect<void, ProviderMcpError>;
+  /** Hands over the address the provider's local callback page would have received. */
+  readonly submitCallbackUrl: (callbackUrl: string) => Effect.Effect<void, ProviderMcpError>;
+}
+
+/** MCP servers in the provider's own config, through its own CLI or protocol. */
+export interface ProviderMcpManagement {
+  readonly list: Effect.Effect<ReadonlyArray<ProviderMcpServer>, ProviderMcpError>;
+  readonly add: (
+    name: string,
+    server: ProviderMcpServerConfig,
+  ) => Effect.Effect<void, ProviderMcpError>;
+  readonly remove: (name: string) => Effect.Effect<void, ProviderMcpError>;
+  readonly signIn: (
+    name: string,
+  ) => Effect.Effect<ProviderMcpSignIn, ProviderMcpError, Scope.Scope>;
+  readonly signOut: (name: string) => Effect.Effect<void, ProviderMcpError>;
 }
 
 export interface ProviderContinuationIdentity {

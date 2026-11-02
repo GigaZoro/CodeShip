@@ -6,6 +6,7 @@ import {
   LayoutGridIcon,
   MessagesSquareIcon,
   NotebookPenIcon,
+  ServerIcon,
   SettingsIcon,
   ShapesIcon,
   SparklesIcon,
@@ -40,6 +41,7 @@ type SidebarNavDestination =
   | "artifacts"
   | "skills"
   | "plugins"
+  | "mcp"
   | "scheduled-tasks"
   | "thread-page"
   | "usage"
@@ -51,6 +53,7 @@ function resolveActiveDestination(pathname: string): SidebarNavDestination {
   if (pathname === "/artifacts") return "artifacts";
   if (pathname === "/skills") return "skills";
   if (pathname === "/plugins") return "plugins";
+  if (pathname === "/model-context-servers") return "mcp";
   if (pathname === "/usage") return "usage";
   if (pathname === "/scheduled-tasks") return "scheduled-tasks";
   if (pathname === "/thread-page") return "thread-page";
@@ -199,6 +202,12 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
           label="Plugins"
           isActive={active === "plugins"}
           onClick={go(() => navigate({ to: "/plugins" }))}
+        />
+        <SidebarNavRailItem
+          icon={<ServerIcon />}
+          label="MCP servers"
+          isActive={active === "mcp"}
+          onClick={go(() => navigate({ to: "/model-context-servers" }))}
         />
         <SidebarNavRailItem
           icon={<CalendarClockIcon />}

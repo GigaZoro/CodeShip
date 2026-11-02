@@ -319,7 +319,12 @@ const correlateSnapshotWithSource = (
       ),
     );
   }
-  return Effect.succeed(source.supportsPlugins ? { ...snapshot, supportsPlugins: true } : snapshot);
+  if (!source.supportsPlugins && !source.supportsMcpServers) return Effect.succeed(snapshot);
+  return Effect.succeed({
+    ...snapshot,
+    ...(source.supportsPlugins ? { supportsPlugins: true } : {}),
+    ...(source.supportsMcpServers ? { supportsMcpServers: true } : {}),
+  });
 };
 
 const snapshotInstanceKey = (provider: ServerProvider): ProviderInstanceId => {
@@ -334,6 +339,7 @@ const buildSnapshotSource = (instance: ProviderInstance): ProviderSnapshotSource
   refresh: instance.snapshot.refresh,
   streamChanges: instance.snapshot.streamChanges,
   supportsPlugins: instance.plugins !== undefined,
+  supportsMcpServers: instance.mcp !== undefined,
 });
 
 export const layer = Layer.effect(

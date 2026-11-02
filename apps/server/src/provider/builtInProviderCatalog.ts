@@ -9,4 +9,5 @@ export type ProviderSnapshotSource = {
   readonly refresh: ManagedServerProvider["refresh"];
   readonly streamChanges: Stream.Stream<ServerProvider>;
   readonly supportsPlugins?: boolean;
+  readonly supportsMcpServers?: boolean;
 };

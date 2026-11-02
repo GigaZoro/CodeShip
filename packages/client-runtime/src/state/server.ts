@@ -1331,6 +1331,53 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:provider:plugins:add-marketplace",
       tag: WS_METHODS.providerPluginsAddMarketplace,
     }),
+    // Listing starts the provider and connects to every server; the server keeps a short copy.
+    providerMcpServers: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:provider:mcp",
+      tag: WS_METHODS.providerMcpList,
+      staleTimeMs: 30_000,
+    }),
+    refreshProviderMcpServers: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:mcp:refresh",
+      tag: WS_METHODS.providerMcpList,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.instanceId]),
+      },
+    }),
+    addProviderMcpServer: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:mcp:add",
+      tag: WS_METHODS.providerMcpAdd,
+    }),
+    removeProviderMcpServer: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:mcp:remove",
+      tag: WS_METHODS.providerMcpRemove,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.instanceId, input.name]),
+      },
+    }),
+    signOutProviderMcpServer: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:mcp:sign-out",
+      tag: WS_METHODS.providerMcpSignOut,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.instanceId, input.name]),
+      },
+    }),
+    providerMcpSignIn: createEnvironmentSubscriptionAtomFamily(runtime, {
+      label: "environment-data:provider:mcp:sign-in",
+      // A reconnect must not start a second sign-in with a new link.
+      subscribe: (input: EnvironmentRpcInput<typeof WS_METHODS.providerMcpSignIn>) =>
+        runStream(WS_METHODS.providerMcpSignIn, input),
+      idleTtlMs: 0,
+    }),
+    completeProviderMcpSignIn: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:mcp:complete-sign-in",
+      tag: WS_METHODS.providerMcpCompleteSignIn,
+    }),
     traceDiagnostics: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:trace-diagnostics",
       tag: WS_METHODS.serverGetTraceDiagnostics,
