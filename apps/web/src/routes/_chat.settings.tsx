@@ -10,7 +10,7 @@ import { SidebarInset } from "../components/ui/sidebar";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { SettingsBreadcrumb } from "../components/settings/SettingsBreadcrumb";
 import { SettingsSidebarNav } from "../components/settings/SettingsSidebarNav";
-import { useSettingsNavInSidebar } from "../components/sidebar/mainAppLocation";
+import { useSidebarPanel } from "../components/sidebar/mainAppLocation";
 import {
   SettingsScopeProvider,
   useSettingsScope,
@@ -118,7 +118,7 @@ function SettingsContentLayout() {
       ? environment?.environmentId
       : JSON.stringify(search);
   const [restoreSignal, setRestoreSignal] = useState(0);
-  const settingsNavInSidebar = useSettingsNavInSidebar();
+  const settingsNavInSidebar = useSidebarPanel() === "settings";
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">

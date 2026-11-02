@@ -42,11 +42,7 @@ import { HistorySwipeNavigation } from "./HistorySwipeNavigation";
 import ThreadSidebar from "./Sidebar";
 import { SidebarBrandWidthProbe, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { SidebarNavRail } from "./sidebar/SidebarNavRail";
-import {
-  isSidebarSectionPage,
-  readMainAppHref,
-  useSettingsNavInSidebar,
-} from "./sidebar/mainAppLocation";
+import { isSidebarSectionPage, readMainAppHref, useSidebarPanel } from "./sidebar/mainAppLocation";
 import { SettingsSidebarNav } from "./settings/SettingsSidebarNav";
 import type { SidebarRouteReveal } from "./sidebar/routeReveal";
 import { useSidebarStageBackdropVariant } from "./SidebarStageBackdrop";
@@ -56,6 +52,7 @@ import {
   resolveThreadSidebarMaximumWidth,
   resolveThreadSidebarMinimumWidth,
   THREAD_MAIN_CONTENT_MIN_WIDTH,
+  THREAD_SIDEBAR_NAV_RAIL_WIDTH,
   THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
 } from "./threadSidebarWidth";
 import {
@@ -400,8 +397,9 @@ function SidebarControl() {
 }
 
 export function AppSidebarLayout({ children }: { children: ReactNode }) {
-  const settingsNavInSidebar = useSettingsNavInSidebar();
-  const sidebarLabel = settingsNavInSidebar ? "Settings" : "Threads";
+  const sidebarPanel = useSidebarPanel();
+  const railOnly = sidebarPanel === "none";
+  const sidebarLabel = sidebarPanel === "settings" ? "Settings" : railOnly ? "Sidebar" : "Threads";
   const sidebarArea = workspaceAreaProps("sidebar", 0, sidebarLabel);
   const [sidebarRouteReveal] = useState<SidebarRouteReveal>(() => ({
     observedKey: null,
@@ -437,7 +435,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
       : {}
   ) as CSSProperties;
   const sidebarProviderStyle = {
-    "--sidebar-width": `${clampThreadSidebarWidth(sidebarWidth, sidebarMinimumWidth, sidebarMaximumWidth)}px`,
+    "--sidebar-width": `${railOnly ? THREAD_SIDEBAR_NAV_RAIL_WIDTH : clampThreadSidebarWidth(sidebarWidth, sidebarMinimumWidth, sidebarMaximumWidth)}px`,
     "--panel-animation-duration": `${panelAnimationDurationMs}ms`,
     ...windowControlsInsetStyle,
   } as CSSProperties;
@@ -448,6 +446,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
         className="h-dvh! min-h-0!"
         data-panel-animations={routePanelAnimationsActive ? "true" : "false"}
         data-window-fullscreen={isWindowFullscreen ? "" : undefined}
+        data-sidebar-rail-only={railOnly ? "" : undefined}
         defaultOpen
         style={sidebarProviderStyle}
       >
@@ -470,16 +469,20 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
           }}
           style={windowControlsInsetStyle}
         >
-          <SidebarChromeHeader isElectron={isElectron} />
+          <SidebarChromeHeader isElectron={isElectron} railOnly={railOnly} />
           <div className="flex min-h-0 flex-1">
             <SidebarNavRail />
-            {settingsNavInSidebar ? <SettingsSidebarNav pathname={pathname} inSidebar /> : null}
+            {sidebarPanel === "settings" ? (
+              <SettingsSidebarNav pathname={pathname} inSidebar />
+            ) : null}
             {/* Hidden, not unmounted: it owns the thread shortcuts and keeps its scroll. */}
-            <div className={cn("flex min-w-0 flex-1 flex-col", settingsNavInSidebar && "hidden")}>
+            <div
+              className={cn("flex min-w-0 flex-1 flex-col", sidebarPanel !== "threads" && "hidden")}
+            >
               <ThreadSidebar routeReveal={sidebarRouteReveal} />
             </div>
           </div>
-          <SidebarRail onDoubleClick={resetSidebarWidth} />
+          {railOnly ? null : <SidebarRail onDoubleClick={resetSidebarWidth} />}
         </Sidebar>
         {children}
         <BackgroundThreadAnnouncer />

@@ -21,14 +21,23 @@ export function isSidebarSectionPage(pathname: string) {
   );
 }
 
+/** What the sidebar shows beside the rail. "none" leaves the sidebar to the rail alone. */
+export type SidebarPanel = "threads" | "settings" | "none";
+
+function sidebarPanelFor(pathname: string): SidebarPanel {
+  if (isSettingsPage(pathname)) return "settings";
+  return isSidebarSectionPage(pathname) ? "none" : "threads";
+}
+
 /**
- * Settings sections replace the thread list in the sidebar. Below md the sidebar
- * is a sheet, so Settings keeps its own section nav on the page.
+ * Only thread pages list threads beside the rail; Settings lists its sections. Below md
+ * the sidebar is a sheet over the page, so it keeps the thread list and Settings keeps
+ * its own section nav on the page.
  */
-export function useSettingsNavInSidebar() {
-  const onSettingsPage = useLocation({ select: (location) => isSettingsPage(location.pathname) });
+export function useSidebarPanel(): SidebarPanel {
+  const panel = useLocation({ select: (location) => sidebarPanelFor(location.pathname) });
   const sidebarIsSheet = useMediaQuery("max-md");
-  return onSettingsPage && !sidebarIsSheet;
+  return sidebarIsSheet ? "threads" : panel;
 }
 
 // Pages the root route always renders without the app shell, so they are never
