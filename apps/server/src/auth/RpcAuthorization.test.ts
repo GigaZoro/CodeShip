@@ -55,6 +55,20 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("lets readers browse plugins and keeps changing them, which adds hooks and MCP servers, behind provider management", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerPluginsList)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    for (const method of [
+      WS_METHODS.providerPluginsInstall,
+      WS_METHODS.providerPluginsUninstall,
+      WS_METHODS.providerPluginsSetEnabled,
+      WS_METHODS.providerPluginsAddMarketplace,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthProvidersManageScope);
+    }
+  });
+
   it("separates passive terminal observation from operations that can change a shell", () => {
     for (const method of [WS_METHODS.terminalObserve, WS_METHODS.subscribeTerminalMetadata]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthTerminalReadScope);

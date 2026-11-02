@@ -107,6 +107,7 @@ import * as ProviderAdapterRegistry from "./orchestration-v2/ProviderAdapterRegi
 import * as ProviderAutoUpdate from "./provider/ProviderAutoUpdate.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
+import * as ProviderPlugins from "./provider/ProviderPlugins.ts";
 import * as ProviderUsageLimitsIngestion from "./provider/ProviderUsageLimitsIngestion.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
@@ -721,6 +722,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(
     Layer.mergeAll(Keybindings.layer, EnvironmentTheme.layer, UsageLimitSources.layer),
   ),
+  Layer.provideMerge(ProviderPlugins.layer),
   // One runner for the server, so every client and the launch job share its update locks.
   Layer.provideMerge(ProviderMaintenanceRunner.layer),
   Layer.provideMerge(ProviderRegistry.layer),

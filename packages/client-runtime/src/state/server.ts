@@ -1290,6 +1290,47 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:provider:install-remove",
       tag: WS_METHODS.providerInstallRemove,
     }),
+    // Searches re-read the catalog the server keeps for five minutes; changes drop it there.
+    providerPlugins: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:provider:plugins",
+      tag: WS_METHODS.providerPluginsList,
+      staleTimeMs: 60_000,
+    }),
+    // Re-reads the provider's marketplaces into the server's copy; the query then reads it.
+    refreshProviderPlugins: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:plugins:refresh",
+      tag: WS_METHODS.providerPluginsList,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.instanceId]),
+      },
+    }),
+    installProviderPlugin: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:plugins:install",
+      tag: WS_METHODS.providerPluginsInstall,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.instanceId, input.pluginId]),
+      },
+    }),
+    uninstallProviderPlugin: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:plugins:uninstall",
+      tag: WS_METHODS.providerPluginsUninstall,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.instanceId, input.pluginId]),
+      },
+    }),
+    setProviderPluginEnabled: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:plugins:set-enabled",
+      tag: WS_METHODS.providerPluginsSetEnabled,
+    }),
+    addProviderPluginMarketplace: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:plugins:add-marketplace",
+      tag: WS_METHODS.providerPluginsAddMarketplace,
+    }),
     traceDiagnostics: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:trace-diagnostics",
       tag: WS_METHODS.serverGetTraceDiagnostics,

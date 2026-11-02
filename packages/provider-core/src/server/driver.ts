@@ -8,6 +8,11 @@ import type {
   ProviderDriverKind,
   ResolvedProviderInstanceEnvironment,
   ProviderInstanceId,
+  ProviderPlugin,
+  ProviderPluginAddMarketplaceResult,
+  ProviderPluginError,
+  ProviderPluginInstallResult,
+  ProviderPluginMarketplace,
   ServerProvider,
   ServerProviderWorkspaceSnapshot,
 } from "@t3tools/contracts";
@@ -52,6 +57,7 @@ export interface ProviderInstance {
   readonly orchestrationAdapter: ProviderAdapter.ProviderAdapterV2["Service"];
   readonly textGeneration: ProviderTextGeneration;
   readonly auth?: ProviderAuthController;
+  readonly plugins?: ProviderPluginManagement;
   readonly acpSessionManagement?: {
     readonly listSessions: (input: {
       readonly cwd: string;
@@ -75,6 +81,30 @@ export interface ProviderInstance {
       readonly providerId: string;
     }) => Effect.Effect<void, AcpRegistryOperationError>;
   };
+}
+
+export interface ProviderPluginCatalog {
+  readonly plugins: ReadonlyArray<ProviderPlugin>;
+  readonly marketplaces: ReadonlyArray<ProviderPluginMarketplace>;
+  readonly warnings: ReadonlyArray<string>;
+  /** Ids the provider features; browsing lists them before the rest. */
+  readonly featuredIds?: ReadonlyArray<string>;
+}
+
+/** Plugins in the provider's own home, through its own CLI or protocol. */
+export interface ProviderPluginManagement {
+  readonly catalog: Effect.Effect<ProviderPluginCatalog, ProviderPluginError>;
+  readonly install: (
+    pluginId: string,
+  ) => Effect.Effect<ProviderPluginInstallResult, ProviderPluginError>;
+  readonly uninstall: (pluginId: string) => Effect.Effect<void, ProviderPluginError>;
+  readonly setEnabled: (
+    pluginId: string,
+    enabled: boolean,
+  ) => Effect.Effect<void, ProviderPluginError>;
+  readonly addMarketplace: (
+    source: string,
+  ) => Effect.Effect<ProviderPluginAddMarketplaceResult, ProviderPluginError>;
 }
 
 export interface ProviderContinuationIdentity {

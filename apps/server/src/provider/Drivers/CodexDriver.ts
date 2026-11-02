@@ -27,6 +27,7 @@ import {
   withCodexAppServerClient,
 } from "../CodexProvider.ts";
 import { resolveCodexLaunchArgs } from "../codexLaunchArgs.ts";
+import { makeCodexPluginManagement } from "../CodexPlugins.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
 import { applyCodexModelCatalog } from "../codexModelCatalog.ts";
@@ -308,6 +309,20 @@ export const CodexDriver: ProviderDriver<
             ),
           );
 
+    const plugins = yield* makeCodexPluginManagement({
+      instanceId,
+      openClient: withCodexAppServerClient({
+        binaryPath: effectiveConfig.binaryPath,
+        homePath: effectiveConfig.homePath,
+        launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+        cwd: process.cwd(),
+        environment: processEnv,
+      }).pipe(
+        Effect.map(({ client }) => client),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      ),
+    });
+
     // Redemption spends account credit; serialize by the auth.json directory, keep one idempotency key
     // until the outcome, and bound the wait so a hung app-server cannot hold the account lock.
     // Auth overlays use effectiveHomePath; the continuation key would conflate them with shared homes.
@@ -376,6 +391,7 @@ export const CodexDriver: ProviderDriver<
       snapshot,
       snapshotForCwd,
       consumeResetCredit,
+      plugins,
       orchestrationAdapter,
       textGeneration,
     } satisfies ProviderInstance;

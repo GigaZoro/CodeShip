@@ -1,0 +1,31 @@
+# Plugins
+
+Plugins add skills, commands, agents, hooks, and MCP servers to Claude and Codex. Open **Plugins** in
+the sidebar rail, or **Open plugins** from the command palette, to browse what their marketplaces
+offer and install, turn off, or remove plugins. With more than one Claude or Codex account or
+machine, pick which one to change at the top of the page; each keeps its own plugins.
+
+New sessions load your changes. A thread that is already running keeps the plugins it started with
+until its session restarts.
+
+## Add a marketplace
+
+Claude starts with Anthropic's plugin directory, and Codex with OpenAI's catalog and the
+marketplaces in its `config.toml`. Choose **Add marketplace** and enter a GitHub repository such as
+`owner/repo`, a git or https URL, or a folder path on the machine that runs the provider. Its
+plugins then appear under **Available**.
+
+A Codex marketplace, such as a local Dale marketplace, is not a Claude marketplace, so add each
+marketplace to the provider it was made for.
+
+## Things to know
+
+- Some Codex plugins connect to apps such as Gmail or Google Drive. After installing one, connect
+  the app from the notice CodeShip shows, or in ChatGPT, before the plugin can use it.
+- Plugins marked **Managed** are installed by the provider itself, such as plugins synced from your
+  claude.ai account. You can turn them off but not remove them here.
+- Removing a Claude plugin keeps its saved data, so installing it again picks up where it left off.
+- A Claude plugin that runs its own setup command installs only from a terminal with
+  `claude plugin install`, where you can review the command first.
+- Changing plugins needs permission to manage providers on that environment. Without it the page is
+  read-only.

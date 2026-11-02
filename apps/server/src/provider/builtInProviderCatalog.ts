@@ -8,4 +8,5 @@ export type ProviderSnapshotSource = {
   readonly getSnapshot: ManagedServerProvider["getSnapshot"];
   readonly refresh: ManagedServerProvider["refresh"];
   readonly streamChanges: Stream.Stream<ServerProvider>;
+  readonly supportsPlugins?: boolean;
 };

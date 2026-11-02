@@ -24,6 +24,7 @@ import { Route as ChatSettingsRouteImport } from './routes/_chat.settings'
 import { Route as ChatScheduledTasksRouteImport } from './routes/_chat.scheduled-tasks'
 import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests'
 import { Route as ChatProjectsRouteImport } from './routes/_chat.projects'
+import { Route as ChatPluginsRouteImport } from './routes/_chat.plugins'
 import { Route as ChatNewRouteImport } from './routes/_chat.new'
 import { Route as ChatArtifactsRouteImport } from './routes/_chat.artifacts'
 import { Route as ChatSettingsWorktreesRouteImport } from './routes/_chat.settings.worktrees'
@@ -127,6 +128,11 @@ const ChatPullRequestsRoute = ChatPullRequestsRouteImport.update({
 const ChatProjectsRoute = ChatProjectsRouteImport.update({
   id: '/projects',
   path: '/projects',
+  getParentRoute: () => ChatRoute,
+} as any)
+const ChatPluginsRoute = ChatPluginsRouteImport.update({
+  id: '/plugins',
+  path: '/plugins',
   getParentRoute: () => ChatRoute,
 } as any)
 const ChatNewRoute = ChatNewRouteImport.update({
@@ -294,6 +300,7 @@ export interface FileRoutesByFullPath {
   '/welcome': typeof WelcomeRoute
   '/artifacts': typeof ChatArtifactsRoute
   '/new': typeof ChatNewRoute
+  '/plugins': typeof ChatPluginsRoute
   '/projects': typeof ChatProjectsRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/scheduled-tasks': typeof ChatScheduledTasksRoute
@@ -339,6 +346,7 @@ export interface FileRoutesByTo {
   '/welcome': typeof WelcomeRoute
   '/artifacts': typeof ChatArtifactsRoute
   '/new': typeof ChatNewRoute
+  '/plugins': typeof ChatPluginsRoute
   '/projects': typeof ChatProjectsRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/scheduled-tasks': typeof ChatScheduledTasksRoute
@@ -387,6 +395,7 @@ export interface FileRoutesById {
   '/welcome': typeof WelcomeRoute
   '/_chat/artifacts': typeof ChatArtifactsRoute
   '/_chat/new': typeof ChatNewRoute
+  '/_chat/plugins': typeof ChatPluginsRoute
   '/_chat/projects': typeof ChatProjectsRoute
   '/_chat/pull-requests': typeof ChatPullRequestsRoute
   '/_chat/scheduled-tasks': typeof ChatScheduledTasksRoute
@@ -436,6 +445,7 @@ export interface FileRouteTypes {
     | '/welcome'
     | '/artifacts'
     | '/new'
+    | '/plugins'
     | '/projects'
     | '/pull-requests'
     | '/scheduled-tasks'
@@ -481,6 +491,7 @@ export interface FileRouteTypes {
     | '/welcome'
     | '/artifacts'
     | '/new'
+    | '/plugins'
     | '/projects'
     | '/pull-requests'
     | '/scheduled-tasks'
@@ -528,6 +539,7 @@ export interface FileRouteTypes {
     | '/welcome'
     | '/_chat/artifacts'
     | '/_chat/new'
+    | '/_chat/plugins'
     | '/_chat/projects'
     | '/_chat/pull-requests'
     | '/_chat/scheduled-tasks'
@@ -682,6 +694,13 @@ declare module '@tanstack/react-router' {
       path: '/projects'
       fullPath: '/projects'
       preLoaderRoute: typeof ChatProjectsRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/_chat/plugins': {
+      id: '/_chat/plugins'
+      path: '/plugins'
+      fullPath: '/plugins'
+      preLoaderRoute: typeof ChatPluginsRouteImport
       parentRoute: typeof ChatRoute
     }
     '/_chat/new': {
@@ -962,6 +981,7 @@ const ChatSettingsRouteWithChildren = ChatSettingsRoute._addFileChildren(
 interface ChatRouteChildren {
   ChatArtifactsRoute: typeof ChatArtifactsRoute
   ChatNewRoute: typeof ChatNewRoute
+  ChatPluginsRoute: typeof ChatPluginsRoute
   ChatProjectsRoute: typeof ChatProjectsRoute
   ChatPullRequestsRoute: typeof ChatPullRequestsRoute
   ChatScheduledTasksRoute: typeof ChatScheduledTasksRoute
@@ -977,6 +997,7 @@ interface ChatRouteChildren {
 const ChatRouteChildren: ChatRouteChildren = {
   ChatArtifactsRoute: ChatArtifactsRoute,
   ChatNewRoute: ChatNewRoute,
+  ChatPluginsRoute: ChatPluginsRoute,
   ChatProjectsRoute: ChatProjectsRoute,
   ChatPullRequestsRoute: ChatPullRequestsRoute,
   ChatScheduledTasksRoute: ChatScheduledTasksRoute,

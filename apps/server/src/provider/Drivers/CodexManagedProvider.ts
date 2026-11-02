@@ -20,7 +20,9 @@ import {
   checkCodexProviderStatus,
   makePendingCodexProvider,
   probeCodexSkillsForCwd,
+  withCodexAppServerClient,
 } from "../CodexProvider.ts";
+import { makeCodexPluginManagement } from "../CodexPlugins.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import {
@@ -240,6 +242,22 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     Effect.forkScoped,
   );
   const resolveRuntime = runtime.auth.controller.withAccess!(runtime.resolve);
+  const plugins = yield* makeCodexPluginManagement({
+    instanceId,
+    openClient: resolveRuntime.pipe(
+      Effect.flatMap((effective) =>
+        withCodexAppServerClient({
+          binaryPath: effective.config.binaryPath,
+          homePath: effective.config.homePath,
+          launchArgs: effective.config.launchArgs,
+          cwd: process.cwd(),
+          environment: effective.environment,
+        }),
+      ),
+      Effect.map(({ client }) => client),
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    ),
+  });
   // Launch settings bind the refresh command to the signed-in profile. The registry
   // already wraps openSession in withAccess, so resolve without re-entering it.
   const orchestrationAdapter = yield* createCodexAdapterV2(input, {
@@ -296,6 +314,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     orchestrationAdapter,
     textGeneration,
     auth: runtime.auth.controller,
+    plugins,
     snapshotForCwd: (cwd: string) =>
       enabled
         ? resolveRuntime.pipe(

@@ -60,6 +60,7 @@ import {
   ChevronsDownUpIcon,
   ChevronsUpDownIcon,
   ArrowLeftIcon,
+  BlocksIcon,
   BugIcon,
   CalendarClockIcon,
   ChartNoAxesColumnIcon,
@@ -1732,11 +1733,22 @@ function OpenCommandPaletteDialog(props: {
   actionItems.push({
     kind: "action",
     value: "action:skills",
-    searchTerms: ["skills", "agent skills", "plugins", "capabilities"],
+    searchTerms: ["skills", "agent skills", "capabilities"],
     title: "Open skills",
     icon: <SparklesIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
       await navigate({ to: "/skills" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:plugins",
+    searchTerms: ["plugins", "extensions", "marketplace", "install", "add-ons", "mcp"],
+    title: "Open plugins",
+    icon: <BlocksIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/plugins" });
     },
   });
 

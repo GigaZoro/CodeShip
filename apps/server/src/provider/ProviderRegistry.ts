@@ -319,7 +319,7 @@ const correlateSnapshotWithSource = (
       ),
     );
   }
-  return Effect.succeed(snapshot);
+  return Effect.succeed(source.supportsPlugins ? { ...snapshot, supportsPlugins: true } : snapshot);
 };
 
 const snapshotInstanceKey = (provider: ServerProvider): ProviderInstanceId => {
@@ -333,6 +333,7 @@ const buildSnapshotSource = (instance: ProviderInstance): ProviderSnapshotSource
   getSnapshot: instance.snapshot.getSnapshot,
   refresh: instance.snapshot.refresh,
   streamChanges: instance.snapshot.streamChanges,
+  supportsPlugins: instance.plugins !== undefined,
 });
 
 export const layer = Layer.effect(

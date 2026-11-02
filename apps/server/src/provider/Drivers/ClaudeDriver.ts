@@ -57,6 +57,7 @@ import {
 } from "@t3tools/provider-core/server/snapshotSettings";
 import { claudeAccountHomePath, materializeClaudeAccountHome } from "./ClaudeAccountHome.ts";
 import { makeClaudeAuth } from "./ClaudeAuth.ts";
+import { makeClaudePluginManagement } from "./ClaudePlugins.ts";
 import {
   makeClaudeCapabilitiesCacheKey,
   makeClaudeContinuationGroupKey,
@@ -196,14 +197,21 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         ? configDir
         : undefined,
     );
+    const claudeEnvironment = yield* makeClaudeEnvironment(effectiveConfig, processEnv);
     const auth = yield* makeClaudeAuth({
       instanceId,
       binaryPath: effectiveConfig.binaryPath,
       cwd: stateDir,
-      environment: yield* makeClaudeEnvironment(effectiveConfig, processEnv),
+      environment: claudeEnvironment,
       configDir,
       prepare: prepareAccountHome,
       canLogout: accountHome !== undefined,
+    });
+    const plugins = yield* makeClaudePluginManagement({
+      instanceId,
+      binaryPath: effectiveConfig.binaryPath,
+      environment: claudeEnvironment,
+      cwd: stateDir,
     });
     const stampBaseIdentity = withInstanceIdentity({
       instanceId,
@@ -458,6 +466,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       accentColor,
       enabled,
       auth: auth.controller,
+      plugins,
       snapshot,
       invalidateCaches: Cache.invalidateAll(capabilitiesProbeCache),
       snapshotForCwd: (cwd: string) =>
