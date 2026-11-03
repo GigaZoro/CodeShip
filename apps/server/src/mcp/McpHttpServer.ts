@@ -22,6 +22,7 @@ import {
   RuntimeMode,
   ThreadId,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import packageJson from "../../package.json" with { type: "json" };
 import { parseBearerToken } from "../auth/EnvironmentAuth.ts";
@@ -77,6 +78,8 @@ import {
   DeviceStandardToolkit,
 } from "./toolkits/device/tools.ts";
 import * as HtmlHandlers from "./toolkits/html/handlers.ts";
+import * as VisualStudioHandlers from "./toolkits/visualStudio/handlers.ts";
+import { VisualStudioToolkit } from "./toolkits/visualStudio/tools.ts";
 import { HtmlPreviewTool, HtmlPreviewToolkit, HtmlRenderToolkit } from "./toolkits/html/tools.ts";
 
 const mcpResourceMetadataUrl = (request: HttpServerRequest.HttpServerRequest) =>
@@ -1147,6 +1150,18 @@ export const layerDeviceToolkit = Layer.mergeAll(
   layerDeviceScreenshotRegistration,
 );
 
+const layerVisualStudioRegistration = toolkitRegistration(
+  VisualStudioToolkit,
+  VisualStudioHandlers.layer,
+);
+
+// Visual Studio exists only on Windows; other hosts keep its tools out of every agent's context.
+const layerVisualStudioToolkit = Layer.unwrap(
+  Effect.map(HostProcess.Platform, (platform) =>
+    platform === "win32" ? layerVisualStudioRegistration : Layer.empty,
+  ),
+);
+
 export const layerMcpTransport = McpServer.layerHttp({
   name: "CodeShip",
   version: packageJson.version,
@@ -1168,6 +1183,7 @@ export const layerTools = Layer.mergeAll(
   layerPullRequestsToolkit,
   layerDeviceToolkit,
   layerHtmlToolkit,
+  layerVisualStudioToolkit,
 );
 
 export const layer = layerTools.pipe(Layer.provideMerge(layerMcpTransport));

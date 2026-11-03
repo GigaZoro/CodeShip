@@ -16,6 +16,7 @@
 - [Import browser sessions](./user/browser-import.md)
 - [Use CodeShip as your default browser](./user/default-browser.md)
 - [Devices](./user/devices.md)
+- [Visual Studio debugging](./user/visual-studio.md)
 - [Usage and limits](./user/usage.md)
 - [ThreadPage notes](./user/threadpage.md)
 - [Plugins](./user/plugins.md)

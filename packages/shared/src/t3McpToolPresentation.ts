@@ -68,7 +68,8 @@ export type T3McpToolSummaryAction =
   | "browser"
   | "device"
   | "html-preview"
-  | "html-render";
+  | "html-render"
+  | "visual-studio";
 
 export interface T3McpToolDefinition {
   readonly displayName: string;
@@ -286,6 +287,22 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "device",
   ),
   device_close: tool(["Close", "Closing", "Closed", "a device"], "device", "device"),
+  visual_studio_status: tool(
+    ["Check", "Checking", "Checked", "Visual Studio debugging"],
+    "visual-studio",
+  ),
+  visual_studio_eval: tool(
+    ["Evaluate", "Evaluating", "Evaluated", "an expression in Visual Studio"],
+    "visual-studio",
+  ),
+  visual_studio_control: tool(
+    ["Control", "Controlling", "Controlled", "Visual Studio debugging"],
+    "visual-studio",
+  ),
+  visual_studio_auto_continue: tool(
+    ["Set", "Setting", "Set", "Visual Studio auto-continue"],
+    "visual-studio",
+  ),
   run_scheduled_task_now: tool(
     ["Run", "Running", "Requested a run of", "a scheduled task"],
     "schedule-run",
