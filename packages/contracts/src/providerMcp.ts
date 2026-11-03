@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { ProviderInstanceId } from "./providerInstance.ts";
+import { ProviderInstanceEnvironmentVariableName, ProviderInstanceId } from "./providerInstance.ts";
 
 const PROVIDER_MCP_MAX_SERVERS = 500;
 const PROVIDER_MCP_MESSAGE_MAX_LENGTH = 500;
@@ -31,6 +31,8 @@ export const ProviderMcpServerStatus = Schema.Literals([
   "failed",
   "starting",
   "disabled",
+  /** A plugin left the address blank, so the server never starts. */
+  "notConfigured",
 ]);
 export type ProviderMcpServerStatus = typeof ProviderMcpServerStatus.Type;
 
@@ -54,11 +56,13 @@ export const ProviderMcpServer = Schema.Struct({
     Schema.String.check(Schema.isMaxLength(PROVIDER_MCP_TARGET_MAX_LENGTH)),
   ),
   status: ProviderMcpServerStatus,
-  /** The provider's reason a server failed to connect. */
+  /** The provider's reason a server failed to connect, or what a server that is not set up needs. */
   message: Schema.optionalKey(
     Schema.String.check(Schema.isMaxLength(PROVIDER_MCP_MESSAGE_MAX_LENGTH)),
   ),
   toolCount: Schema.optionalKey(NonNegativeInt),
+  /** An environment variable the server's config names but the provider does not have. */
+  missingVariable: Schema.optionalKey(ProviderInstanceEnvironmentVariableName),
   origin: ProviderMcpServerOrigin,
   plugin: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(256))),
   canSignIn: Schema.Boolean,

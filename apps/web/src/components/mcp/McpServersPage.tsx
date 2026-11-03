@@ -7,10 +7,12 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, ProviderMcpServer } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
+import { useNavigate } from "@tanstack/react-router";
 import {
   CircleAlertIcon,
   CircleCheckIcon,
   CircleDashedIcon,
+  CircleMinusIcon,
   CircleOffIcon,
   ExternalLinkIcon,
   KeyRoundIcon,
@@ -88,6 +90,8 @@ function reportFailure(title: string, result: AtomCommandResult<unknown, unknown
 
 const serverLabel = (server: ProviderMcpServer) => server.displayName ?? server.name;
 
+const CLAUDE_CONNECTORS_URL = "https://claude.ai/settings/connectors";
+
 function openInBrowser(url: string) {
   void readLocalApi()
     ?.shell.openExternal(url)
@@ -113,6 +117,7 @@ const STATUS_LOOKS: Record<
   },
   starting: { label: "Still starting", icon: CircleDashedIcon, className: "text-muted-foreground" },
   disabled: { label: "Turned off", icon: CircleOffIcon, className: "text-muted-foreground" },
+  notConfigured: { label: "Not set up", icon: CircleMinusIcon, className: "text-muted-foreground" },
 };
 
 function ServerStatus(props: { readonly server: ProviderMcpServer }) {
@@ -176,7 +181,13 @@ function ServerRow(props: {
           <p className="truncate font-mono text-muted-foreground text-xs">{server.target}</p>
         ) : null}
         {server.message ? (
-          <p className="line-clamp-2 text-destructive-foreground text-xs">{server.message}</p>
+          <p
+            className={`line-clamp-2 text-xs ${
+              server.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground"
+            }`}
+          >
+            {server.message}
+          </p>
         ) : null}
       </div>
       <div className="flex min-h-7 shrink-0 items-center gap-2">{props.actions}</div>
@@ -608,6 +619,7 @@ function ProviderMcpPanel(props: { readonly target: McpTarget }) {
   const [refreshing, setRefreshing] = useState(false);
   const [adding, setAdding] = useState(false);
   const [signingIn, setSigningIn] = useState<ProviderMcpServer | null>(null);
+  const navigate = useNavigate();
 
   const remove = useAtomCommand(serverEnvironment.removeProviderMcpServer, {
     reportFailure: false,
@@ -678,6 +690,34 @@ function ProviderMcpPanel(props: { readonly target: McpTarget }) {
     return (
       <>
         {busy ? <Spinner size="sm" tone="muted" /> : null}
+        {server.status === "notConfigured" ? (
+          <Button
+            size="compact"
+            variant="outline"
+            aria-label={`Connect ${serverLabel(server)} on claude.ai`}
+            onClick={() => {
+              void readLocalApi()
+                ?.shell.openExternal(CLAUDE_CONNECTORS_URL)
+                .catch(() => undefined);
+            }}
+          >
+            Connect on claude.ai
+            <ExternalLinkIcon aria-hidden />
+          </Button>
+        ) : null}
+        {server.missingVariable ? (
+          <Button
+            size="compact"
+            variant="outline"
+            disabled={!canManage}
+            aria-label={`Add ${server.missingVariable} to ${providerName}`}
+            onClick={() =>
+              void navigate({ to: "/settings/providers", search: { environmentId, instanceId } })
+            }
+          >
+            Add variable
+          </Button>
+        ) : null}
         {server.canSignIn ? (
           <Button
             size="compact"

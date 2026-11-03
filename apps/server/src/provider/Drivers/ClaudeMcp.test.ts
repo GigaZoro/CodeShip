@@ -56,6 +56,26 @@ const statuses: ReadonlyArray<McpServerStatus> = [
   },
   { name: "slow", status: "pending", scope: "user", config: { command: "slow" } },
   {
+    name: "plugin:engineering:gmail",
+    status: "failed",
+    scope: "dynamic",
+    source: "plugin",
+    config: { type: "http", url: "" },
+    error: "No URL configured for this server",
+  },
+  {
+    name: "plugin:github:github",
+    status: "failed",
+    scope: "dynamic",
+    source: "plugin",
+    config: {
+      type: "http",
+      url: "https://api.githubcopilot.com/mcp/",
+      headers: { Authorization: "Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}" },
+    },
+    error: "Error POSTing to endpoint: bad request: Authorization header is badly formatted\n",
+  },
+  {
     name: "t3-code",
     status: "connected",
     scope: "dynamic",
@@ -113,6 +133,27 @@ it("claudeMcpServers offers sign-in only where Claude signs in, and removal only
     removable: false,
   });
   assert.equal(byName.get("slow")?.status, "starting");
+  // A blank slot for a claude.ai connector is not a broken server.
+  assert.deepEqual(
+    [
+      byName.get("plugin:engineering:gmail")?.status,
+      byName.get("plugin:engineering:gmail")?.message,
+    ],
+    [
+      "notConfigured",
+      "The plugin leaves its address blank. Connect the matching connector on claude.ai instead.",
+    ],
+  );
+  assert.deepEqual(
+    [
+      byName.get("plugin:github:github")?.missingVariable,
+      byName.get("plugin:github:github")?.message,
+    ],
+    [
+      "GITHUB_PERSONAL_ACCESS_TOKEN",
+      "Claude has no GITHUB_PERSONAL_ACCESS_TOKEN to send. Add it to this provider's environment variables.",
+    ],
+  );
 });
 
 it("claudeMcpServerJson leaves out empty header and environment tables", () => {

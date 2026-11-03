@@ -39,6 +39,12 @@ bar, paste it into the dialog, and choose **Finish sign-in**.
 - Servers marked **Plugin**, **claude.ai**, **Managed**, or **Built in** come from a plugin, your
   claude.ai connectors, your organization, or the provider itself. Manage plugins on the Plugins
   page and connectors on claude.ai.
+- A plugin server marked **Not set up** has no address. Some Claude plugins, such as Anthropic's
+  `engineering`, leave Gmail and Google Calendar blank for claude.ai to fill. Choose **Connect on
+  claude.ai**, connect them there, and they appear here as **claude.ai** servers.
+- Some plugin servers need a key in an environment variable, such as the GitHub plugin's
+  `GITHUB_PERSONAL_ACCESS_TOKEN`. **Add variable** opens the provider's settings, where you can add
+  it and mark it sensitive. Each Claude or Codex account keeps its own variables.
 - Servers in a project's own `.mcp.json` belong to that project and are not listed here.
 - Changing servers needs permission to manage providers on that environment. Without it the page is
   read-only.

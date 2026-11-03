@@ -92,11 +92,40 @@ function claudeOrigin(status: ClaudeMcpServerStatus): ProviderMcpServerOrigin {
 const hasAuthorizationHeader = (headers: Record<string, string> | undefined) =>
   Object.keys(headers ?? {}).some((name) => name.toLowerCase() === "authorization");
 
+// Bounded to the longest name a provider instance can store.
+const UNSET_VARIABLE = /\$\{([A-Za-z_][A-Za-z0-9_]{0,127})\}/u;
+
+/** Claude sends `${NAME}` as written when NAME is unset, and the server rejects it. */
+function unsetVariable(values: ReadonlyArray<string>) {
+  for (const value of values) {
+    const name = UNSET_VARIABLE.exec(value)?.[1];
+    if (name) return name;
+  }
+  return undefined;
+}
+
+function claudeMcpMessage(
+  serverStatus: ProviderMcpServerStatus,
+  error: string | undefined,
+  missingVariable: string | undefined,
+) {
+  if (serverStatus === "notConfigured") {
+    return "The plugin leaves its address blank. Connect the matching connector on claude.ai instead.";
+  }
+  if (serverStatus !== "failed") return undefined;
+  return missingVariable
+    ? `Claude has no ${missingVariable} to send. Add it to this provider's environment variables.`
+    : boundedProviderMcpMessage(error);
+}
+
 /** How a server is reached, and whether a fixed Authorization header stands in for a sign-in. */
 function describeClaudeMcpConfig(config: ClaudeMcpServerStatus["config"]): {
   readonly transport?: ProviderMcpTransport;
   readonly target?: string | undefined;
   readonly headerAuth?: boolean;
+  /** Plugins such as Anthropic's `engineering` leave a slot blank for a claude.ai connector. */
+  readonly blankUrl?: boolean;
+  readonly unsetVariable?: string | undefined;
 } {
   if (config === undefined || config.type === "claudeai-proxy" || config.type === "sdk") return {};
   if (config.type === "http" || config.type === "sse") {
@@ -104,6 +133,8 @@ function describeClaudeMcpConfig(config: ClaudeMcpServerStatus["config"]): {
       transport: config.type,
       target: displayProviderMcpUrl(config.url),
       headerAuth: hasAuthorizationHeader(config.headers),
+      blankUrl: config.url.trim() === "",
+      unsetVariable: unsetVariable([config.url, ...Object.values(config.headers ?? {})]),
     };
   }
   return {
@@ -121,9 +152,10 @@ export function claudeMcpServers(
     if (status.source === "sdk" || config?.type === "sdk") return [];
     const origin = claudeOrigin(status);
     const plugin = origin === "plugin" ? splitPluginServerName(status.name) : undefined;
-    const { transport, target, headerAuth = false } = describeClaudeMcpConfig(config);
-    const serverStatus = CLAUDE_STATUSES[status.status];
-    const message = serverStatus === "failed" ? boundedProviderMcpMessage(status.error) : undefined;
+    const { transport, target, headerAuth = false, ...described } = describeClaudeMcpConfig(config);
+    const serverStatus = described.blankUrl ? "notConfigured" : CLAUDE_STATUSES[status.status];
+    const missingVariable = serverStatus === "failed" ? described.unsetVariable : undefined;
+    const message = claudeMcpMessage(serverStatus, status.error, missingVariable);
     const signsInHere = (transport === "http" || transport === "sse") && origin !== "connector";
     return [
       {
@@ -134,6 +166,7 @@ export function claudeMcpServers(
         status: serverStatus,
         ...(message ? { message } : {}),
         ...(serverStatus === "connected" && status.tools ? { toolCount: status.tools.length } : {}),
+        ...(missingVariable ? { missingVariable } : {}),
         origin,
         canSignIn: signsInHere && serverStatus === "needsAuth",
         // A server sent a fixed Authorization header has no sign-in to clear.
