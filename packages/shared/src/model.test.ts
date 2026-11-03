@@ -7,9 +7,11 @@ import {
   buildProviderOptionSelectionsFromDescriptors,
   createModelCapabilities,
   createModelSelection,
+  draftModelPickMatchesThread,
   getProviderOptionCurrentLabel,
   getProviderOptionDescriptors,
   readCustomModelEntries,
+  modelPicksEqual,
   modelSelectionsEqual,
 } from "./model.ts";
 
@@ -111,6 +113,19 @@ describe("descriptor helpers", () => {
       }),
     ).toBe(false);
     expect(modelSelectionsEqual(left, { ...reordered, model: "gpt-5.5" })).toBe(false);
+    // The account choice is not part of the run, but it is part of the pick.
+    expect(modelSelectionsEqual(left, { ...reordered, autoAccount: true })).toBe(true);
+    expect(modelPicksEqual(left, { ...reordered, autoAccount: true })).toBe(false);
+  });
+
+  it("matches an auto-account draft pick to whichever account the thread runs on", () => {
+    const pick = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4");
+    const thread = { ...pick, instanceId: ProviderInstanceId.make("codex_personal") };
+    expect(draftModelPickMatchesThread(pick, thread)).toBe(false);
+    expect(
+      draftModelPickMatchesThread({ ...pick, autoAccount: true }, { ...thread, autoAccount: true }),
+    ).toBe(true);
+    expect(draftModelPickMatchesThread({ ...pick, autoAccount: true }, pick)).toBe(false);
   });
 });
 

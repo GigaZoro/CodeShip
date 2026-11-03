@@ -43,6 +43,7 @@ import {
   createModelSelection,
   draftModelPickMatchesThread,
   normalizeModelSlug,
+  withModelSelectionOptions,
 } from "@t3tools/shared/model";
 import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
 import * as Option from "effect/Option";
@@ -634,6 +635,8 @@ interface ComposerDraftStoreState {
 export interface EffectiveComposerModelState {
   selectedModel: string;
   modelOptions: ProviderOptionSelectionsByProvider | null;
+  /** The server picks the account; see `ModelSelection.autoAccount`. */
+  autoAccount: boolean;
 }
 
 interface ComposerDraftModelState {
@@ -994,9 +997,13 @@ function normalizeModelSelection(
   if (!model) {
     return null;
   }
+  const autoAccount = candidate?.autoAccount === true ? { autoAccount: true as const } : {};
   if (Array.isArray(candidate?.options)) {
     const selections = coerceProviderOptionSelections(candidate.options);
-    return createModelSelection(instanceId, model, selections) as NormalizedModelSelection;
+    return {
+      ...createModelSelection(instanceId, model, selections),
+      ...autoAccount,
+    } as NormalizedModelSelection;
   }
   const kindForLegacyOptions = normalizeProviderDriverKind(instanceId);
   const modelOptions = kindForLegacyOptions
@@ -1007,7 +1014,10 @@ function normalizeModelSelection(
       )
     : null;
   const options = kindForLegacyOptions ? modelOptions?.[kindForLegacyOptions] : undefined;
-  return createModelSelection(instanceId, model, options) as NormalizedModelSelection;
+  return {
+    ...createModelSelection(instanceId, model, options),
+    ...autoAccount,
+  } as NormalizedModelSelection;
 }
 
 type NormalizedModelSelection = Omit<ModelSelection, "instanceId"> & {
@@ -1167,6 +1177,10 @@ export function deriveEffectiveComposerModelState(input: {
       selectionsByInstance(input.projectModelSelection),
     ].find((selections) => modelSelectionByProviderToOptions(selections) !== null) ?? null;
   const modelOptions = modelSelectionByProviderToOptions(optionSelections);
+  // A draft pick decides alone: picking a model on one account pins the thread to it.
+  const autoAccount =
+    (activeSelection ?? input.threadModelSelection ?? input.projectModelSelection)?.autoAccount ===
+    true;
 
   return {
     selectedModel,
@@ -1176,6 +1190,7 @@ export function deriveEffectiveComposerModelState(input: {
       optionSelections,
       selectedModel,
     }),
+    autoAccount,
   };
 }
 
@@ -2887,7 +2902,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const nextSelection =
               normalized.options !== undefined
                 ? normalized
-                : createModelSelection(normalized.instanceId, normalized.model, current?.options);
+                : withModelSelectionOptions(normalized as ModelSelection, current?.options);
             const nextMap: Partial<Record<ProviderInstanceId, ModelSelection>> = {
               ...state.stickyModelSelectionByProvider,
               [normalized.instanceId]: nextSelection,
@@ -3009,9 +3024,8 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               if (normalized.options !== undefined || opts?.replaceOptions) {
                 nextMap[normalized.instanceId] = normalized as ModelSelection;
               } else {
-                nextMap[normalized.instanceId] = createModelSelection(
-                  normalized.instanceId,
-                  normalized.model,
+                nextMap[normalized.instanceId] = withModelSelectionOptions(
+                  normalized as ModelSelection,
                   current?.options,
                 );
               }

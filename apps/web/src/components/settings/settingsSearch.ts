@@ -853,7 +853,25 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Account switching",
     to: "/settings/providers",
     searchTerms: [
-      "switch accounts failover usage limit quota rate limit multiple accounts order priority second account continue",
+      "switch accounts failover usage limit quota rate limit multiple accounts order priority second account continue auto account primary",
+    ],
+    providerSettingsOnly: true,
+  },
+  {
+    id: "final-review",
+    title: "Final review",
+    to: "/settings/providers",
+    searchTerms: [
+      "final review reviewer cross model second opinion gates checks quality pre-merge code review after request",
+    ],
+    providerSettingsOnly: true,
+  },
+  {
+    id: "delegated-task-models",
+    title: "Delegated tasks",
+    to: "/settings/providers",
+    searchTerms: [
+      "delegate subagent child task coordinator implementer implementation research review design test role primary secondary model provider",
     ],
     providerSettingsOnly: true,
   },

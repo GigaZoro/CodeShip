@@ -1,4 +1,5 @@
 import { ActiveNewTaskContext } from "../../state/active-new-task";
+import { keepAutoAccount, withAutoAccount } from "@t3tools/shared/model";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { resolveInheritedDefaultModelSelection } from "@t3tools/shared/serverSettings";
 import { useNowMinuteMs } from "../../lib/clock";
@@ -214,6 +215,7 @@ type NewTaskFlowContextValue = {
   readonly setSelectedModelOptions: (
     value: ReadonlyArray<ProviderOptionSelection> | undefined,
   ) => void;
+  readonly setSelectedAutoAccount: (value: boolean) => void;
   readonly setExpandedProvider: (value: string | null) => void;
 };
 
@@ -505,8 +507,9 @@ export function NewTaskFlowProvider(
     if (!option) {
       return;
     }
-    const selection = withRememberedModelOptions(
-      options ? { ...option.selection, options } : option.selection,
+    const selection = keepAutoAccount(
+      selectedModel,
+      withRememberedModelOptions(options ? { ...option.selection, options } : option.selection),
     );
     const provider = selectedEnvironmentServerConfig?.providers.find(
       (candidate) => candidate.instanceId === selection.instanceId,
@@ -524,15 +527,19 @@ export function NewTaskFlowProvider(
       return;
     }
     rememberModelOptions(selectedModel.instanceId, selectedModel.model, options ?? []);
-    const nextSelection: ModelSelection = options
-      ? { ...selectedModel, options }
-      : {
-          instanceId: selectedModel.instanceId,
-          model: selectedModel.model,
-        };
+    const { options: _previous, ...withoutOptions } = selectedModel;
+    const nextSelection: ModelSelection = options ? { ...selectedModel, options } : withoutOptions;
     updateComposerDraftSettings(selectedProjectDraftKey, {
       modelSelection: nextSelection,
     });
+    setStickyComposerModelSelection(nextSelection);
+  };
+  const setSelectedAutoAccount = (autoAccount: boolean) => {
+    if (!selectedModel || !selectedProjectDraftKey) {
+      return;
+    }
+    const nextSelection = withAutoAccount(selectedModel, autoAccount);
+    updateComposerDraftSettings(selectedProjectDraftKey, { modelSelection: nextSelection });
     setStickyComposerModelSelection(nextSelection);
   };
 
@@ -916,6 +923,7 @@ export function NewTaskFlowProvider(
     setRuntimeMode,
     setInteractionMode,
     setSelectedModelOptions,
+    setSelectedAutoAccount,
     setExpandedProvider: (value: string | null) => updateFlow({ expandedProvider: value }),
   } satisfies NewTaskFlowContextValue;
 

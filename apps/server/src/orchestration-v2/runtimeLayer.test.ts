@@ -1165,9 +1165,12 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         messageId: MessageId.make("runtime-delivery-intent-first"),
         text: "Start work.",
         attachments: [],
+        // Only the account choice changes; the thread still keeps it.
+        modelSelection: { ...modelSelection, autoAccount: true },
         dispatchMode: { type: "start_immediately" },
       });
       const initial = yield* orchestrator.getThreadProjection(threadId);
+      assert.isTrue(initial.thread.modelSelection.autoAccount);
       const run = initial.runs[0]!;
       const providerThread = initial.providerThreads[0]!;
       const now = yield* DateTime.now;

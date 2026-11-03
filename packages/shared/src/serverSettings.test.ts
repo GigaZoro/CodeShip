@@ -60,6 +60,29 @@ describe("fallbackTextGenerationModelSelection", () => {
       applyServerSettingsPatch(settings, { fallbackModelSelection: null }).fallbackModelSelection,
     ).toBeNull();
   });
+
+  it("replaces and clears one delegated task role without touching the others", () => {
+    const codex = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.5" };
+    const claude = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "opus" };
+    const settings = applyServerSettingsPatch(
+      {
+        ...DEFAULT_SERVER_SETTINGS,
+        delegatedTaskModelSelections: {
+          implementation: { ...codex, options: [{ id: "effort", value: "high" }] },
+          review: claude,
+        },
+      },
+      { delegatedTaskModelSelections: { implementation: { ...codex, autoAccount: true } } },
+    );
+    expect(settings.delegatedTaskModelSelections).toEqual({
+      implementation: { ...codex, autoAccount: true },
+      review: claude,
+    });
+    expect(
+      applyServerSettingsPatch(settings, { delegatedTaskModelSelections: { review: null } })
+        .delegatedTaskModelSelections,
+    ).toEqual({ implementation: { ...codex, autoAccount: true } });
+  });
   it("ignores a configured non-default instance at machine scope, matching no fallback", () => {
     const configured = ProviderInstanceId.make("codex_work");
     const providerInstances = {

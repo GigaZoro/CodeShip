@@ -3282,6 +3282,104 @@ describe("OrchestratorMcpService provider resolution", () => {
     }),
   );
 
+  it.effect("starts a task on its role's model, keeping the Auto account settings chose", () =>
+    Effect.gen(function* () {
+      const claudeInstanceId = ProviderInstanceId.make("claude_work");
+      const commands: Array<{ readonly modelSelection?: unknown }> = [];
+      const task = {
+        id: taskId,
+        threadId: parentThreadId,
+        origin: "app_owned",
+        childThreadId,
+        providerInstanceId: codexInstanceId,
+        model: "gpt-5.4",
+        status: "running",
+        result: null,
+      };
+      const dependencies = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
+          assertProviderInstanceEnabled: () => Effect.void,
+          isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+          getThreadRecords: (threadId) =>
+            Effect.succeed(
+              threadId === parentThreadId
+                ? parentProjection(commands.length > 0 ? [task] : [])
+                : childProjection,
+            ),
+          dispatch: (command) =>
+            Effect.sync(() => {
+              commands.push(command as { readonly modelSelection?: unknown });
+              return {
+                sequence: 1,
+                storedEvents: [{ event: { type: "subagent.updated", payload: task } }],
+              } as never;
+            }),
+        }),
+        ServerSettings.layerTest({
+          delegatedTaskModelSelections: {
+            implementation: {
+              instanceId: claudeInstanceId,
+              model: "claude-opus",
+              autoAccount: true,
+            },
+            // An account that is gone falls back to the parent's model.
+            review: { instanceId: ProviderInstanceId.make("claude_removed"), model: "claude-opus" },
+          },
+          finalReviewModelSelections: [
+            { instanceId: claudeInstanceId, model: "claude-opus", autoAccount: true },
+          ],
+        }),
+        providerRegistryLayer([
+          providerSnapshot({
+            instanceId: codexInstanceId,
+            driver: ProviderDriverKind.make("codex"),
+            model: "gpt-5.4",
+          }),
+          providerSnapshot({
+            instanceId: claudeInstanceId,
+            driver: ProviderDriverKind.make("claudeAgent"),
+            model: "claude-opus",
+          }),
+        ]),
+        adapterRegistryLayer([codexInstanceId, claudeInstanceId]),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        for (const [role, target] of [
+          ["implementation", undefined],
+          ["implementation", { model: "gpt-5.4" }],
+          ["review", undefined],
+          // A reviewer named by account keeps the Auto account its setting chose.
+          ["review", { providerInstanceId: claudeInstanceId, model: "claude-opus" }],
+        ] as const) {
+          yield* service.delegateTask(scope, {
+            task: "Do the work.",
+            role,
+            ...(target === undefined ? {} : { target: yield* decodeTarget(target) }),
+            mode: "async",
+            clientRequestId: `${role}:${target?.model ?? "role"}:${target && "providerInstanceId" in target ? "account" : ""}`,
+          });
+        }
+        assert.deepEqual(
+          commands.map((command) => command.modelSelection),
+          [
+            { instanceId: claudeInstanceId, model: "claude-opus", autoAccount: true },
+            // A model the agent names wins over the role's.
+            { instanceId: codexInstanceId, model: "gpt-5.4" },
+            { instanceId: codexInstanceId, model: "gpt-5.4" },
+            { instanceId: claudeInstanceId, model: "claude-opus", autoAccount: true },
+          ],
+        );
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
+    }),
+  );
+
   describe("resolveRuntimeMode", () => {
     const muse = {
       modelSelection: { instanceId: ProviderInstanceId.make("muse"), model: "muse-model" },

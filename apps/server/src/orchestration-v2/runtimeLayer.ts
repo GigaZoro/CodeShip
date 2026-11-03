@@ -30,6 +30,8 @@ import * as EventStore from "./EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import * as AccountRouting from "./AccountRouting.ts";
+import * as FinalReview from "./FinalReview.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectStore from "./ProjectStore.ts";
@@ -393,6 +395,9 @@ export const layerProduction = Layer.mergeAll(
       ),
     ),
   ),
+  FinalReview.layer.pipe(
+    Layer.provide(Layer.mergeAll(layerThreadManagementProvided, layerOrchestratorProvided)),
+  ),
   layerProviderContinuationWorkerProvided,
   layerAgentSessionScannerProvided,
   layerAgentSessionImporterProvided,
@@ -402,6 +407,8 @@ export const layerProduction = Layer.mergeAll(
   // Outside ResourceCleanupService, which builds the memoized session manager first: it
   // reads ProjectService optionally, and without it project overrides fail closed.
   Layer.provide(layerProjectService),
+  // ThreadManagementService reads it optionally; without it auto-account turns keep their account.
+  Layer.provide(AccountRouting.layer.pipe(Layer.provide(ProjectionStore.layer))),
   Layer.provide(Scheduler.layer),
   Layer.provideMerge(layerEventInfrastructure),
 );

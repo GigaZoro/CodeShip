@@ -10,6 +10,7 @@ import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import {
   modelPreferencesMigrationPatch,
   resolveModelPreferences,
+  supportsAccountFailover,
 } from "@t3tools/shared/serverSettings";
 import type {
   EnvironmentId,
@@ -29,6 +30,8 @@ import {
   getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
+  keepAutoAccount,
+  withAutoAccount,
 } from "@t3tools/shared/model";
 import {
   useNavigation,
@@ -98,6 +101,7 @@ import { updateThreadDraftModelSelection } from "../../state/use-thread-composer
 import { useThreadSelection } from "../../state/use-thread-selection";
 import { threadAllowsProviderSwitch } from "../../state/thread-provider-switching";
 import { environmentServerConfigsAtom, serverEnvironment } from "../../state/server";
+import { threadEnvironment } from "../../state/threads";
 import { mobilePreferencesAtom } from "../../state/preferences";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useNewTaskFlow } from "./new-task-flow-provider";
@@ -285,6 +289,13 @@ type ThreadSettingsSessionProps = {
   readonly onUpdateOptionSelections: (selections: ReadonlyArray<ProviderOptionSelection>) => void;
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
+  /** Lets the server pick the account; offered for providers that can switch accounts. */
+  readonly onUpdateAutoAccount?: (autoAccount: boolean) => void;
+  /** An existing thread's Final review switch, where its server runs Final review. */
+  readonly finalReview?: {
+    readonly checked: boolean;
+    readonly onCheckedChange: (enabled: boolean) => void;
+  };
 };
 
 /** The composer draft the sheet edits: the thread's own, or a queued message being edited. */
@@ -298,6 +309,9 @@ type ThreadSettingsSessionValue = {
   readonly environmentId: EnvironmentId | null;
   readonly providerInstanceId?: ProviderInstanceId;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
+  readonly appliedModelSelection: ModelSelection | null;
+  readonly onUpdateAutoAccount: ((autoAccount: boolean) => void) | undefined;
+  readonly finalReview: ThreadSettingsSessionProps["finalReview"];
   readonly favoriteKeys: ReadonlySet<string>;
   readonly favoritesLoaded: boolean;
   readonly toggleFavorite: (option: ModelOption) => void;
@@ -610,6 +624,9 @@ function ThreadSettingsSessionProvider(
     environmentId: props.environmentId,
     providerInstanceId: props.providerInstanceId,
     providerGroups,
+    appliedModelSelection: props.selectedModel,
+    onUpdateAutoAccount: props.onUpdateAutoAccount,
+    finalReview: props.finalReview,
     manageHidden,
     setManageHidden,
     toggleHidden,
@@ -834,13 +851,26 @@ function ThreadSettingsOptionsItem(props: {
   const insets = useSafeAreaInsets();
   const session = useThreadSettingsSession();
   const configs = useAtomValue(environmentServerConfigsAtom);
-  const selectedProvider = session.environmentId
-    ? (configs
-        .get(session.environmentId)
-        ?.providers.find((provider) => provider.instanceId === session.providerInstanceId) ?? null)
-    : null;
+  const config = session.environmentId ? configs.get(session.environmentId) : undefined;
+  const providers = config?.providers ?? [];
+  const selectedProvider =
+    providers.find((provider) => provider.instanceId === session.providerInstanceId) ?? null;
   // Both iOS search layouts float a bottom toolbar over the list's last rows.
   const bottomToolbarInset = Platform.OS === "ios" ? NATIVE_MAIL_SEARCH_TOOLBAR_CONTENT_INSET : 0;
+  const autoAccountChecked = session.appliedModelSelection?.autoAccount === true;
+  // Hidden while a picked model waits to apply; it applies to the model the thread will run.
+  const autoAccount =
+    session.onUpdateAutoAccount !== undefined &&
+    config?.environment.capabilities.autoAccountRouting === true &&
+    session.pendingModel === null &&
+    selectedProvider !== null &&
+    supportsAccountFailover(selectedProvider.driver) &&
+    (autoAccountChecked ||
+      providers.filter(
+        (provider) => provider.driver === selectedProvider.driver && provider.enabled,
+      ).length > 1)
+      ? { checked: autoAccountChecked, onCheckedChange: session.onUpdateAutoAccount }
+      : null;
 
   return (
     <View style={{ paddingBottom: insets.bottom + bottomToolbarInset + 12 }}>
@@ -893,6 +923,24 @@ function ThreadSettingsOptionsItem(props: {
             </Animated.View>
           );
         })}
+        {autoAccount ? (
+          <Animated.View layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}>
+            <SwitchRow
+              label="Auto account"
+              value={autoAccount.checked}
+              onValueChange={autoAccount.onCheckedChange}
+            />
+          </Animated.View>
+        ) : null}
+        {session.finalReview ? (
+          <Animated.View layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}>
+            <SwitchRow
+              label="Final review"
+              value={session.finalReview.checked}
+              onValueChange={session.finalReview.onCheckedChange}
+            />
+          </Animated.View>
+        ) : null}
         <Animated.View layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}>
           <DisclosureRow
             isLast
@@ -1521,6 +1569,7 @@ export function ExistingThreadSettingsRouteScreen({
   // A queued edit can end while the sheet is open; the prompt then belongs to the thread's draft.
   const draftKey = activeComposerDraftKey(threadKey, route.params.draftKey, queuedRunEdit);
   const prompt = useComposerDraft(draftKey).text;
+  const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata);
 
   if (!selectedThread) {
     return <View className="flex-1 bg-sheet" />;
@@ -1548,6 +1597,17 @@ export function ExistingThreadSettingsRouteScreen({
     ) ?? null;
   const updateModelSelection = (selection: ModelSelection) =>
     updateThreadDraftModelSelection(threadKey, selection, serverConfig?.providers ?? []);
+  const finalReview =
+    serverConfig?.environment.capabilities.finalReview === true
+      ? {
+          checked: selectedThread.finalReview ?? serverConfig.settings.finalReviewByDefault,
+          onCheckedChange: (enabled: boolean) =>
+            void updateThreadMetadata({
+              environmentId: selectedThread.environmentId,
+              input: { threadId: selectedThread.id, finalReview: enabled },
+            }),
+        }
+      : undefined;
 
   return (
     <ThreadSettingsPickerScreen
@@ -1560,7 +1620,15 @@ export function ExistingThreadSettingsRouteScreen({
       prompt={prompt}
       onPromptChange={(text) => setComposerDraftText(draftKey, text)}
       reportedModelSelection={reportedModelSelection}
-      onSelectModel={(option) => updateModelSelection(withRememberedModelOptions(option.selection))}
+      onSelectModel={(option) =>
+        updateModelSelection(
+          keepAutoAccount(modelSelection, withRememberedModelOptions(option.selection)),
+        )
+      }
+      onUpdateAutoAccount={(autoAccount) =>
+        updateModelSelection(withAutoAccount(modelSelection, autoAccount))
+      }
+      {...(finalReview === undefined ? {} : { finalReview })}
       restoreSelection={withRememberedModelOptions}
       optionDescriptors={resolveProviderOptionDescriptors({
         capabilities: currentModelOption?.capabilities,
@@ -1596,6 +1664,7 @@ export function NewTaskThreadSettingsRouteScreen() {
       prompt={flow.prompt}
       onPromptChange={flow.setPrompt}
       onSelectModel={(option) => flow.setSelectedModelKey(option.key, option.selection.options)}
+      onUpdateAutoAccount={flow.setSelectedAutoAccount}
       restoreSelection={withRememberedModelOptions}
       optionDescriptors={optionDescriptors}
       onUpdateOptionSelections={flow.setSelectedModelOptions}

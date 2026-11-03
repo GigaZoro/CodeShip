@@ -369,6 +369,28 @@ signed in to an account another provider already uses is unavailable until you
 sign it in to a different account. Some providers' terms forbid using extra
 accounts to get around limits.
 
+To let CodeShip choose the account, turn on **Auto account** in the model
+picker, or under the default model in settings for new threads. A new thread
+starts on the first account in the account order that has usage left. A thread
+keeps its account until that account hits a limit, then continues on the next
+one, even with **Switch accounts at usage limits** off. Choosing a model on
+another account pins the thread to that account.
+
+To run delegated work on other models, set **Delegated tasks** in **Settings →
+Providers** on web or desktop. Each role, such as implementation or review, can
+have its own model, including Auto account. When an agent hands off a task
+without naming a model, the task runs on the model set for its role; unset roles
+use the thread's model.
+
+**Final review** has other models check what a request changed. Add reviewers
+under **Final review** in **Settings → Providers** on web or desktop, and turn on
+**Review new threads** to review every thread. Turn it on or off for one thread
+from the thread's menu on web and desktop, or its settings sheet on mobile. After
+a request you send changes files, the thread's agent starts one read-only review
+task per reviewer, then checks their findings and fixes the ones that hold up.
+Those fixes are not reviewed again. **Review instructions** are added to every
+reviewer's brief. Reviews use turns on the reviewers' accounts.
+
 On web and desktop, use **Agents** to follow work delegated to subagents.
 On mobile, open a subagent from its conversation card or **Agents**. On iOS
 layouts with an inspector, its thread opens beside the parent. Maximize it to

@@ -41,7 +41,7 @@ import {
   scopeProjectRef,
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
-import { createModelSelection } from "@t3tools/shared/model";
+import { withModelSelectionOptions } from "@t3tools/shared/model";
 import { type SetStateAction, useLayoutEffect, useRef } from "react";
 import { flushSync } from "react-dom";
 import { useNavigate } from "@tanstack/react-router";
@@ -1250,9 +1250,11 @@ export function useComposerSend(input: ComposerSendInput) {
       attachments: composerAttachmentsSnapshot,
       fallbackLabels: sendTitleFallbackLabels(sendSnapshot),
     });
-    const threadCreateModelSelection = createModelSelection(
-      ctxSelectedModelSelection.instanceId,
-      ctxSelectedModel || activeProjectDefaultModelSelection?.model || DEFAULT_MODEL,
+    const threadCreateModelSelection = withModelSelectionOptions(
+      {
+        ...ctxSelectedModelSelection,
+        model: ctxSelectedModel || activeProjectDefaultModelSelection?.model || DEFAULT_MODEL,
+      },
       ctxSelectedModelSelection.options,
     );
 

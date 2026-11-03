@@ -14,6 +14,9 @@ export type ThreadActionMenuId =
   | "auto-settle"
   | "auto-settle:enabled"
   | "auto-settle:disabled"
+  | "final-review"
+  | "final-review:on"
+  | "final-review:off"
   | "snooze"
   | `snooze:${string}`
   | "unsnooze"
@@ -78,6 +81,8 @@ export interface ThreadActionMenuState {
   readonly isPinned: boolean;
   readonly isSettled: boolean;
   readonly autoSettleEnabled: boolean;
+  /** The thread's own choice, else the environment default. */
+  readonly finalReviewEnabled: boolean;
   readonly isSnoozed: boolean;
   readonly canSnoozeNow: boolean;
   readonly isRegeneratingTitle: boolean;
@@ -86,6 +91,7 @@ export interface ThreadActionMenuState {
   readonly supports: {
     readonly settlement: boolean;
     readonly autoSettleOptOut: boolean;
+    readonly finalReview: boolean;
     readonly snooze: boolean;
     readonly pinning: boolean;
     readonly titleRegeneration: boolean;
@@ -219,6 +225,19 @@ export function buildThreadActionMenuItems(
                 label: "Disabled",
                 checked: !state.autoSettleEnabled,
               },
+            ],
+          },
+        ]
+      : []),
+    ...(state.supports.finalReview
+      ? [
+          {
+            id: "final-review" as const,
+            label: "Final review",
+            icon: "circle-check",
+            children: [
+              { id: "final-review:on" as const, label: "On", checked: state.finalReviewEnabled },
+              { id: "final-review:off" as const, label: "Off", checked: !state.finalReviewEnabled },
             ],
           },
         ]

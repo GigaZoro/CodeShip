@@ -31,6 +31,7 @@ import {
   type OrchestratorMcpScheduleTaskInput,
   type OrchestratorMcpScheduleTaskResult,
   type OrchestratorMcpTarget,
+  type OrchestratorMcpTaskRole,
   type OrchestratorMcpTaskCancelInput,
   type OrchestratorMcpTaskCancelResult,
   type OrchestratorMcpUpdateScheduledTaskInput,
@@ -1327,6 +1328,42 @@ const make = Effect.gen(function* () {
     );
   };
 
+  const readSettings = serverSettings.getSettings.pipe(
+    Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
+  );
+
+  /** The model settings pick for a delegated task's role, used when the agent names none. */
+  const delegatedTaskRoleSelection = Effect.fn("OrchestratorMcpService.delegatedTaskRoleSelection")(
+    function* (input: {
+      readonly role?: OrchestratorMcpTaskRole | undefined;
+      readonly target?: OrchestratorMcpTarget | undefined;
+    }) {
+      if (
+        input.target?.providerInstanceId !== undefined ||
+        input.target?.driverKind !== undefined ||
+        input.target?.model !== undefined
+      )
+        return undefined;
+      const settings = yield* readSettings;
+      return settings.delegatedTaskModelSelections[input.role ?? "general"];
+    },
+  );
+
+  const isConfiguredAutoAccount = (instanceId: ModelSelection["instanceId"], model: string) =>
+    readSettings.pipe(
+      Effect.map((settings) =>
+        [
+          ...settings.finalReviewModelSelections,
+          ...Object.values(settings.delegatedTaskModelSelections),
+        ].some(
+          (selection) =>
+            selection.autoAccount === true &&
+            selection.instanceId === instanceId &&
+            selection.model === model,
+        ),
+      ),
+    );
+
   const resolveTarget = Effect.fn("OrchestratorMcpService.resolveTarget")(function* (input: {
     readonly parent: Pick<OrchestrationV2ThreadProjection, "thread">;
     readonly target: OrchestratorMcpTarget | undefined;
@@ -1464,7 +1501,18 @@ const make = Effect.gen(function* () {
       options = [...selections.values()];
     }
     return {
-      modelSelection: { instanceId, model, ...(options === undefined ? {} : { options }) },
+      modelSelection: {
+        instanceId,
+        model,
+        ...(options === undefined ? {} : { options }),
+        // A child on its parent's account picks accounts the way its parent does. A model the
+        // user set to Auto account, as a reviewer or a role's model, keeps that choice.
+        ...((instanceId === inheritedSelection.instanceId &&
+          inheritedSelection.autoAccount === true) ||
+        (yield* isConfiguredAutoAccount(instanceId, slug))
+          ? { autoAccount: true }
+          : {}),
+      },
       supportedRuntimeModes: provider.supportedRuntimeModes,
     };
   });
@@ -2288,9 +2336,7 @@ const make = Effect.gen(function* () {
       const { parent, limits } = yield* loadCaller(scope);
       const providers = yield* loadProviders;
       const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
-      const settings = yield* serverSettings.getSettings.pipe(
-        Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
-      );
+      const settings = yield* readSettings;
       const inherited = parent?.thread.modelSelection;
       const searchTerms = input.search?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
       return {
@@ -2408,12 +2454,29 @@ const make = Effect.gen(function* () {
         operation: "delegate-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
-      const target = yield* resolveTargetRechecking({
-        parent,
-        target: input.target,
-        providers,
-        skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
-      });
+      const resolveDelegateTarget = (base: Pick<OrchestrationV2ThreadProjection, "thread">) =>
+        resolveTargetRechecking({
+          parent: base,
+          target: input.target,
+          providers,
+          skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
+        });
+      const roleSelection = yield* delegatedTaskRoleSelection(input);
+      // The role's model stands in for the parent's, so the child inherits it the same way.
+      const target =
+        roleSelection === undefined
+          ? yield* resolveDelegateTarget(parent)
+          : yield* resolveDelegateTarget({
+              thread: { ...parent.thread, modelSelection: roleSelection },
+            }).pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("orchestrator-mcp.delegated-task-role-model-unavailable", {
+                  role: input.role ?? "general",
+                  instanceId: roleSelection.instanceId,
+                  cause,
+                }).pipe(Effect.andThen(resolveDelegateTarget(parent))),
+              ),
+            );
       const runtimeMode = yield* resolveRuntimeMode(
         parent.thread.runtimeMode,
         input.runtimeMode,

@@ -364,6 +364,14 @@ export function readEnvironmentSupportsAutoSettleOptOut(environmentId: Environme
   );
 }
 
+/** Null where the server cannot run Final review; otherwise its default for threads without a choice. */
+export function readEnvironmentFinalReviewDefault(environmentId: EnvironmentId): boolean | null {
+  const config = appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId);
+  return config?.environment.capabilities.finalReview === true
+    ? config.settings.finalReviewByDefault
+    : null;
+}
+
 export function readEnvironmentSupportsUnmergedWork(environmentId: EnvironmentId): boolean {
   return (
     appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities

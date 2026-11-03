@@ -75,7 +75,7 @@ import {
   TrimmedNonEmptyString,
   managedRuntimeModeCeilingMessage,
 } from "@t3tools/contracts";
-import { modelSelectionsEqual } from "@t3tools/shared/model";
+import { modelPicksEqual, modelSelectionsEqual } from "@t3tools/shared/model";
 import { modelSwitchSince } from "./modelSwitch.ts";
 import { recordThreadOpen } from "@t3tools/shared/paletteSearch";
 import {
@@ -2151,7 +2151,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
       yield* writeSystemEvents(
         [
-          ...(selectionChanged
+          ...(!modelPicksEqual(projection.thread.modelSelection, queuedRun.modelSelection)
             ? [
                 {
                   type:
@@ -3630,6 +3630,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 : {}),
             ...(command.branch === undefined ? {} : { branch: command.branch }),
             ...(command.worktreePath === undefined ? {} : { worktreePath: command.worktreePath }),
+            ...(command.finalReview === undefined ? {} : { finalReview: command.finalReview }),
             ...(command.linkedPullRequest === undefined
               ? {}
               : {
@@ -4921,7 +4922,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (
         input.delegatedCompletion === undefined &&
         (instanceChanged ||
-          !modelSelectionsEqual(input.projection.thread.modelSelection, input.modelSelection))
+          !modelPicksEqual(input.projection.thread.modelSelection, input.modelSelection))
       ) {
         yield* emitEvent({
           type: instanceChanged ? "thread.provider-switched" : "thread.model-selection-updated",
@@ -6201,7 +6202,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
     const now = yield* DateTime.now;
     if (
-      !modelSelectionsEqual(projection.thread.modelSelection, modelSelection) ||
+      !modelPicksEqual(projection.thread.modelSelection, modelSelection) ||
       projection.thread.providerInstanceId !== modelSelection.instanceId
     ) {
       yield* emit(

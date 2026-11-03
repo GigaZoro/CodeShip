@@ -30,6 +30,7 @@ import {
   DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
   ProviderOptionSelections,
 } from "./model.ts";
+import { DelegatedTaskRole } from "./delegatedTaskRole.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { ProjectScript, type ProjectMutation } from "./project.ts";
 import { DEFAULT_RUNTIME_MODE, RuntimeMode } from "./providerPolicy.ts";
@@ -1328,6 +1329,18 @@ export const ServerSettings = Schema.Struct({
   providerInstanceFailoverOrder: Schema.Array(ProviderInstanceId).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  /** Threads without their own Final review choice follow this. */
+  finalReviewByDefault: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** Each reviews a finished request's changes as its own read-only task. */
+  finalReviewModelSelections: Schema.Array(ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  finalReviewInstructions: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  /** Model for a task an agent delegates without naming one. Unlisted roles run on the parent's model. */
+  delegatedTaskModelSelections: Schema.Record(
+    DelegatedTaskRole,
+    Schema.optionalKey(ModelSelection),
+  ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   snoozePresets: SnoozePresetSettings.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SNOOZE_PRESETS)),
   ),
@@ -1740,6 +1753,13 @@ export const ServerSettingsPatch = Schema.Struct({
   snoozeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   failoverLimitedThreads: Schema.optionalKey(Schema.Boolean),
   providerInstanceFailoverOrder: Schema.optionalKey(Schema.Array(ProviderInstanceId)),
+  finalReviewByDefault: Schema.optionalKey(Schema.Boolean),
+  finalReviewModelSelections: Schema.optionalKey(Schema.Array(ModelSelection)),
+  finalReviewInstructions: Schema.optionalKey(TrimmedString),
+  /** Per role; null clears a role back to the parent's model. */
+  delegatedTaskModelSelections: Schema.optionalKey(
+    Schema.Record(DelegatedTaskRole, Schema.optionalKey(Schema.NullOr(ModelSelection))),
+  ),
   snoozePresets: Schema.optionalKey(SnoozePresetSettings),
   hiddenThreadTags: Schema.optionalKey(Schema.Array(Schema.String)),
   hideTaggedThreads: Schema.optionalKey(Schema.Boolean),

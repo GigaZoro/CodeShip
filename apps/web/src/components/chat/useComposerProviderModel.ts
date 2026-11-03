@@ -92,6 +92,7 @@ export function useComposerProviderModel(
     selectedProviderModels,
     composerModelOptions: modelState.modelOptions,
     selectedModel: modelState.selectedModel,
+    selectedAutoAccount: modelState.autoAccount,
     composerProviderState,
   };
 }

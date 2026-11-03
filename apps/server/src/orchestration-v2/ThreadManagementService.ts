@@ -56,6 +56,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import * as AccountRouting from "./AccountRouting.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -575,6 +576,8 @@ const make = Effect.gen(function* () {
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+  // Optional so test runtimes without provider state keep every selection as sent.
+  const accountRouting = yield* Effect.serviceOption(AccountRouting.AccountRouting);
 
   const assertProviderInstanceEnabled: ThreadManagementServiceShape["assertProviderInstanceEnabled"] =
     (input) =>
@@ -746,10 +749,64 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const dispatch: ThreadManagementServiceShape["dispatch"] = (command) =>
-    ensureCommandTranscripts(command).pipe(
-      Effect.andThen(assertDispatchTargetEnabled(command)),
-      Effect.andThen(orchestrator.dispatch(command)),
+  /** Puts an auto-account turn on the account it should run on, before anything checks the target. */
+  const routeDispatchAccount = (
+    command: OrchestrationV2ServerCommand,
+  ): Effect.Effect<OrchestrationV2ServerCommand, Orchestrator.OrchestratorV2Error> => {
+    if (Option.isNone(accountRouting)) return Effect.succeed(command);
+    const routing = accountRouting.value;
+    const route = Effect.fn("ThreadManagementService.routeDispatchAccount")(function* (input: {
+      readonly threadId: ThreadId;
+      readonly selection: ModelSelection | undefined;
+      /** A delegated task's thread does not exist yet, so it starts like a new thread. */
+      readonly newThread: boolean;
+    }) {
+      if (input.selection !== undefined && input.selection.autoAccount !== true) return command;
+      // A retried command keeps the account its first attempt chose.
+      const receipt = yield* receipts
+        .getByCommandId(command.commandId)
+        .pipe(Effect.orElseSucceed(Option.none));
+      if (Option.isSome(receipt)) return command;
+      const { thread } = yield* orchestrator.getThreadRecords(input.threadId, []);
+      const selection = input.selection ?? thread.modelSelection;
+      if (selection.autoAccount !== true) return command;
+      const routed = yield* routing.route({
+        selection,
+        projectId: thread.projectId,
+        // A thread that never ran starts on the highest account in the order.
+        currentInstanceId:
+          input.newThread || thread.activeProviderThreadId === null
+            ? null
+            : thread.providerInstanceId,
+      });
+      return routed === selection ? command : { ...command, modelSelection: routed };
+    });
+    switch (command.type) {
+      case "message.dispatch":
+        return route({
+          threadId: command.threadId,
+          selection: command.modelSelection,
+          newThread: false,
+        });
+      case "delegated_task.request":
+        return route({
+          threadId: command.parentThreadId,
+          selection: command.modelSelection,
+          newThread: true,
+        });
+      default:
+        return Effect.succeed(command);
+    }
+  };
+
+  const dispatch: ThreadManagementServiceShape["dispatch"] = (sent) =>
+    routeDispatchAccount(sent).pipe(
+      Effect.flatMap((command) =>
+        ensureCommandTranscripts(command).pipe(
+          Effect.andThen(assertDispatchTargetEnabled(command)),
+          Effect.andThen(orchestrator.dispatch(command)),
+        ),
+      ),
     );
 
   const getProjectThreadRecords: ThreadManagementServiceShape["getProjectThreadRecords"] = (

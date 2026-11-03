@@ -445,6 +445,7 @@ export function applyServerSettingsPatch(
     sourceControlHosts: sourceControlHostsPatch,
     usagePriceOverrides: usagePriceOverridesPatch,
     usageModelAliases: usageModelAliasesPatch,
+    delegatedTaskModelSelections: delegatedTaskModelSelectionsPatch,
     // Entry replacement: deepMerge would keep keys the client meant to clear.
     projectSettingsOverrides: projectSettingsOverridesPatch,
     projectAgentBrowserAccessOverrides: _legacyBrowserAccess,
@@ -655,6 +656,15 @@ export function applyServerSettingsPatch(
           usageModelAliases: mergeSettingsEntries(
             current.usageModelAliases,
             usageModelAliasesPatch,
+          ),
+        }
+      : {}),
+    ...(delegatedTaskModelSelectionsPatch !== undefined
+      ? {
+          // A role's selection is replaced whole, so stale options or auto account never linger.
+          delegatedTaskModelSelections: mergeSettingsEntries(
+            current.delegatedTaskModelSelections,
+            delegatedTaskModelSelectionsPatch,
           ),
         }
       : {}),

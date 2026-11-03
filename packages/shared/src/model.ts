@@ -102,6 +102,7 @@ function canonicalModelSelectionOptions(
   );
 }
 
+/** Same model run. `autoAccount` picks the account rather than configuring the run, so it is ignored. */
 export function modelSelectionsEqual(left: ModelSelection, right: ModelSelection): boolean {
   if (left.instanceId !== right.instanceId || left.model !== right.model) {
     return false;
@@ -116,18 +117,54 @@ export function modelSelectionsEqual(left: ModelSelection, right: ModelSelection
   );
 }
 
+/** Same pick, including whether the server chooses the account. */
+export function modelPicksEqual(left: ModelSelection, right: ModelSelection): boolean {
+  return (
+    (left.autoAccount === true) === (right.autoAccount === true) &&
+    modelSelectionsEqual(left, right)
+  );
+}
+
+/** `selection` with the server picking its account, or pinned to the account it names. */
+export function withAutoAccount(selection: ModelSelection, autoAccount: boolean): ModelSelection {
+  const { autoAccount: _previous, ...pinned } = selection;
+  return autoAccount ? { ...pinned, autoAccount: true } : pinned;
+}
+
+/** A newly picked model stays on auto only when picked on the current account; another account pins it. */
+export function keepAutoAccount(
+  current: ModelSelection | null | undefined,
+  next: ModelSelection,
+): ModelSelection {
+  return withAutoAccount(
+    next,
+    current?.autoAccount === true && current.instanceId === next.instanceId,
+  );
+}
+
+/** Keeps every field of `selection`, such as `autoAccount`, while replacing its options. */
+export function withModelSelectionOptions(
+  selection: ModelSelection,
+  options: ReadonlyArray<ProviderOptionSelection> | null | undefined,
+): ModelSelection {
+  const next = createModelSelection(selection.instanceId, selection.model, options);
+  return selection.autoAccount === true ? { ...next, autoAccount: true } : next;
+}
+
 /**
  * Whether a composer's draft model pick is what the thread already runs. Web sends
  * `fastMode: false` for models with a fast toggle while mobile omits it, so off counts as unset.
+ * An auto-account pick matches whichever account the server put the thread on.
  */
 export function draftModelPickMatchesThread(pick: ModelSelection, thread: ModelSelection): boolean {
   const withoutFastModeOff = (selection: ModelSelection) =>
-    createModelSelection(
-      selection.instanceId,
-      selection.model,
+    withModelSelectionOptions(
+      pick.autoAccount === true && thread.autoAccount === true
+        ? { ...selection, instanceId: thread.instanceId }
+        : selection,
       selection.options?.filter((option) => option.id !== "fastMode" || option.value !== false),
     );
-  return modelSelectionsEqual(withoutFastModeOff(pick), withoutFastModeOff(thread));
+  return modelPicksEqual(withoutFastModeOff(pick), withoutFastModeOff(thread));
 }
 
 function resolveDescriptorChoiceValue(

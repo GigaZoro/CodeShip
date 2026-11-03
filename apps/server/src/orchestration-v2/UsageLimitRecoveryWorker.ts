@@ -1,34 +1,24 @@
 import {
   CommandId,
-  isProviderAvailable,
   MessageId,
   type OrchestrationV2Command,
   type OrchestrationV2DomainEvent,
-  type ProviderInstanceId,
-  resolveProjectProviderInstanceEnabled,
-  type ServerProvider,
-  type ServerSettings as ServerSettingsValue,
 } from "@t3tools/contracts";
-import { resolveSelectableModel } from "@t3tools/shared/model";
-import {
-  orderProviderInstancesForFailover,
-  supportsAccountFailover,
-} from "@t3tools/shared/serverSettings";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { type AccountRoutingContext, accountsWithRoom } from "./AccountRouting.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
-// Pay-per-token instances bill every continued turn instead of drawing on another subscription.
-const METERED_AUTH_TYPES = new Set(["apiKey", "api-key", "bedrock"]);
 // A cooldown this short is cheaper to wait out than to move the thread to another account for good.
 const MIN_FAILOVER_WAIT_MS = 5 * 60_000;
 
@@ -98,24 +88,12 @@ export function limitRecoveryCommand(
   };
 }
 
-const usageExhausted = (provider: ServerProvider, nowMs: number) =>
-  provider.usageLimits?.windows.some(
-    (window) =>
-      window.usedPercent >= 100 &&
-      (window.resetsAt === undefined || Date.parse(window.resetsAt) > nowMs),
-  ) === true;
-
 /** Moves a thread stopped by a usage limit to the first account of its driver with room left. */
-export function limitFailoverCommand(input: {
-  readonly thread: ProjectionStore.ProjectionLimitRecoveryCandidate;
-  readonly settings: Pick<
-    ServerSettingsValue,
-    "providerInstanceFailoverOrder" | "providerInstances" | "projectSettingsOverrides"
-  >;
-  readonly providers: ReadonlyArray<ServerProvider>;
-  readonly limitedInstanceIds: ReadonlySet<ProviderInstanceId>;
-  readonly nowMs: number;
-}): Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> | null {
+export function limitFailoverCommand(
+  input: AccountRoutingContext & {
+    readonly thread: ProjectionStore.ProjectionLimitRecoveryCandidate;
+  },
+): Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> | null {
   const { thread, nowMs } = input;
   const resetMs = Date.parse(thread.usageLimitResetAt ?? "");
   if (
@@ -137,33 +115,13 @@ export function limitFailoverCommand(input: {
   const current = input.providers.find(
     (provider) => provider.instanceId === thread.providerInstanceId,
   );
-  if (current === undefined || !supportsAccountFailover(current.driver)) return null;
-  const eligible = input.providers.flatMap((provider) => {
-    if (
-      provider.driver !== current.driver ||
-      provider.instanceId === current.instanceId ||
-      !provider.enabled ||
-      !provider.installed ||
-      provider.status === "error" ||
-      provider.auth.status === "unauthenticated" ||
-      (provider.auth.type !== undefined && METERED_AUTH_TYPES.has(provider.auth.type)) ||
-      !isProviderAvailable(provider) ||
-      input.limitedInstanceIds.has(provider.instanceId) ||
-      usageExhausted(provider, nowMs) ||
-      !resolveProjectProviderInstanceEnabled(input.settings, thread.projectId, provider.instanceId)
-    )
-      return [];
-    const model = resolveSelectableModel(
-      provider.driver,
-      thread.modelSelection.model,
-      provider.models,
-    );
-    return model === null ? [] : [{ instanceId: provider.instanceId, model }];
-  });
-  const target = orderProviderInstancesForFailover(
-    input.settings.providerInstanceFailoverOrder,
-    eligible,
-  )[0];
+  if (current === undefined) return null;
+  const target = accountsWithRoom({
+    ...input,
+    driver: current.driver,
+    projectId: thread.projectId,
+    model: thread.modelSelection.model,
+  }).find((account) => account.instanceId !== current.instanceId);
   if (target === undefined) return null;
   // The target is part of the id so a refused switch does not block trying another account.
   const identity = `${thread.id}:${thread.latestRunId}:${target.instanceId}`;
@@ -209,12 +167,14 @@ const makeSweep = Effect.gen(function* () {
     ),
   );
   yield* forkParked(Stream.runForEach(settings.streamChanges, () => due.invalidate));
+  // Set by each sweep: a limited auto-account thread waits for an account with room.
+  const autoAccountWaiting = yield* Ref.make(false);
   // Another account signing in, regaining room, or being enabled can take a waiting thread.
   yield* forkParked(
     Stream.runForEach(providerRegistry.streamChanges, () =>
-      settings.getSettings.pipe(
-        Effect.flatMap((current) =>
-          current.failoverLimitedThreads ? due.invalidate : Effect.void,
+      Effect.all([settings.getSettings, Ref.get(autoAccountWaiting)]).pipe(
+        Effect.flatMap(([current, waiting]) =>
+          current.failoverLimitedThreads || waiting ? due.invalidate : Effect.void,
         ),
       ),
     ),
@@ -231,19 +191,27 @@ const makeSweep = Effect.gen(function* () {
       snooze: preferences.snoozeLimitedThreads,
       failover: preferences.failoverLimitedThreads,
     });
-    const failover =
-      preferences.failoverLimitedThreads && candidates.length > 0
-        ? {
-            settings: preferences,
-            providers: yield* providerRegistry.getProviders,
-            limitedInstanceIds: yield* projections.getUsageLimitedProviderInstanceIds(now),
-            nowMs,
-          }
-        : null;
+    // Auto-account threads chose to switch accounts; others follow the setting.
+    const switchesAccounts = (thread: ProjectionStore.ProjectionLimitRecoveryCandidate) =>
+      preferences.failoverLimitedThreads || thread.modelSelection.autoAccount === true;
+    const failover = candidates.some(switchesAccounts)
+      ? {
+          settings: preferences,
+          providers: yield* providerRegistry.getProviders,
+          limitedInstanceIds: yield* projections.getUsageLimitedProviderInstanceIds(now),
+          nowMs,
+        }
+      : null;
+    yield* Ref.set(
+      autoAccountWaiting,
+      candidates.some((thread) => thread.modelSelection.autoAccount === true),
+    );
     let acted = false;
     for (const thread of candidates) {
       const failoverCommand =
-        failover === null ? null : limitFailoverCommand({ ...failover, thread });
+        failover === null || !switchesAccounts(thread)
+          ? null
+          : limitFailoverCommand({ ...failover, thread });
       if (failoverCommand !== null) {
         const outcome = yield* threads.dispatch(failoverCommand).pipe(
           Effect.as("switched" as const),

@@ -199,68 +199,85 @@ describe("limitFailoverCommand", () => {
   });
 });
 
-it.effect("idle sweeps skip SQL until the next wake time or a relevant event", () =>
-  Effect.gen(function* () {
-    yield* TestClock.setTime(Date.parse("2026-07-01T09:00:00.000Z"));
-    const startMs = Date.parse("2026-07-01T09:00:00.000Z");
-    const queries = yield* Queue.unbounded<number>();
-    const events = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
-    const providerChanges = yield* Queue.unbounded<ReadonlyArray<ServerProvider>>();
-    const layer = UsageLimitRecoveryWorker.layer.pipe(
-      Layer.provide(
-        Layer.mergeAll(
-          Scheduler.layer,
-          Layer.mock(ProjectionStore.ProjectionStoreV2)({
-            getLimitRecoveryCandidates: () =>
-              Clock.currentTimeMillis.pipe(
-                Effect.flatMap((nowMs) => Queue.offer(queries, nowMs - startMs)),
-                Effect.as([]),
-              ),
-            // One armed thread resets at 60s.
-            getLimitRecoveryWakeAt: (now) =>
-              Effect.succeed(
-                DateTime.toEpochMillis(now) < startMs + 60_000 ? startMs + 60_000 : null,
-              ),
-          }),
-          Layer.mock(ThreadManagement.ThreadManagementService)({}),
-          Layer.mock(Orchestrator.OrchestratorV2)({
-            streamDomainEvents: Stream.fromQueue(events),
-          }),
-          Layer.mock(ServerSettings.ServerSettingsService)({
-            getSettings: Effect.succeed({
-              autoResumeLimitedThreads: true,
-              snoozeLimitedThreads: false,
-              failoverLimitedThreads: true,
-            } as never),
-            streamChanges: Stream.never,
-          }),
-          Layer.mock(ProviderRegistry.ProviderRegistry)({
-            getProviders: Effect.succeed([]),
-            streamChanges: Stream.fromQueue(providerChanges),
-          }),
+// An auto-account thread whose stop already waits for its reset, so a sweep leaves it alone.
+const waitingAutoAccountThread: ProjectionStore.ProjectionLimitRecoveryCandidate = {
+  ...thread,
+  modelSelection: { ...thread.modelSelection, autoAccount: true },
+  limitRecovery: { runId, resetAt, autoResume: true },
+};
+
+it.effect.each([
+  { switching: "on", failoverLimitedThreads: true, candidates: [] },
+  {
+    switching: "off with an auto-account thread waiting",
+    failoverLimitedThreads: false,
+    candidates: [waitingAutoAccountThread],
+  },
+])(
+  "idle sweeps skip SQL until the next wake time or a relevant event (switching $switching)",
+  ({ failoverLimitedThreads, candidates }) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-07-01T09:00:00.000Z"));
+      const startMs = Date.parse("2026-07-01T09:00:00.000Z");
+      const queries = yield* Queue.unbounded<number>();
+      const events = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
+      const providerChanges = yield* Queue.unbounded<ReadonlyArray<ServerProvider>>();
+      const layer = UsageLimitRecoveryWorker.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Scheduler.layer,
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              getLimitRecoveryCandidates: () =>
+                Clock.currentTimeMillis.pipe(
+                  Effect.flatMap((nowMs) => Queue.offer(queries, nowMs - startMs)),
+                  Effect.as(candidates),
+                ),
+              getUsageLimitedProviderInstanceIds: () => Effect.succeed(new Set()),
+              // One armed thread resets at 60s.
+              getLimitRecoveryWakeAt: (now) =>
+                Effect.succeed(
+                  DateTime.toEpochMillis(now) < startMs + 60_000 ? startMs + 60_000 : null,
+                ),
+            }),
+            Layer.mock(ThreadManagement.ThreadManagementService)({}),
+            Layer.mock(Orchestrator.OrchestratorV2)({
+              streamDomainEvents: Stream.fromQueue(events),
+            }),
+            Layer.mock(ServerSettings.ServerSettingsService)({
+              getSettings: Effect.succeed({
+                autoResumeLimitedThreads: true,
+                snoozeLimitedThreads: false,
+                failoverLimitedThreads,
+              } as never),
+              streamChanges: Stream.never,
+            }),
+            Layer.mock(ProviderRegistry.ProviderRegistry)({
+              getProviders: Effect.succeed([]),
+              streamChanges: Stream.fromQueue(providerChanges),
+            }),
+          ),
         ),
-      ),
-    );
-    yield* Effect.gen(function* () {
-      assert.equal(yield* Queue.take(queries), 0);
-      // Eleven idle ticks before the recorded wake time, then the wake tick itself.
-      yield* TestClock.adjust("60 seconds");
-      assert.equal(yield* Queue.take(queries), 60_000);
-      yield* Queue.offer(events, {
-        type: "turn-item.updated",
-        payload: { type: "assistant_message" },
-      } as never);
-      yield* TestClock.adjust("30 seconds");
-      yield* Queue.offer(events, { type: "run.updated", payload: { status: "failed" } } as never);
-      yield* TestClock.adjust("5 seconds");
-      // A streaming item at 90s does not wake it; the failed run does on the 95s tick.
-      assert.equal(yield* Queue.take(queries), 95_000);
-      // With account switching on, an account change can free a waiting thread.
-      yield* Queue.offer(providerChanges, []);
-      yield* TestClock.adjust("5 seconds");
-      assert.equal(yield* Queue.take(queries), 100_000);
-    }).pipe(Effect.provide(layer));
-  }),
+      );
+      yield* Effect.gen(function* () {
+        assert.equal(yield* Queue.take(queries), 0);
+        // Eleven idle ticks before the recorded wake time, then the wake tick itself.
+        yield* TestClock.adjust("60 seconds");
+        assert.equal(yield* Queue.take(queries), 60_000);
+        yield* Queue.offer(events, {
+          type: "turn-item.updated",
+          payload: { type: "assistant_message" },
+        } as never);
+        yield* TestClock.adjust("30 seconds");
+        yield* Queue.offer(events, { type: "run.updated", payload: { status: "failed" } } as never);
+        yield* TestClock.adjust("5 seconds");
+        // A streaming item at 90s does not wake it; the failed run does on the 95s tick.
+        assert.equal(yield* Queue.take(queries), 95_000);
+        // An account change can free a thread that may switch accounts.
+        yield* Queue.offer(providerChanges, []);
+        yield* TestClock.adjust("5 seconds");
+        assert.equal(yield* Queue.take(queries), 100_000);
+      }).pipe(Effect.provide(layer));
+    }),
 );
 
 const HOUR_MS = 60 * 60 * 1000;

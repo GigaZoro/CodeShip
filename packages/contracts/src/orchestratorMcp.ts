@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { AuthMcpClientAccess } from "./auth.ts";
+import { DelegatedTaskRole } from "./delegatedTaskRole.ts";
 import {
   ContextTransferId,
   EnvironmentId,
@@ -135,15 +136,8 @@ export const OrchestratorMcpInteractionMode = Schema.Union([
 ]);
 export type OrchestratorMcpInteractionMode = typeof OrchestratorMcpInteractionMode.Type;
 
-export const OrchestratorMcpTaskRole = Schema.Literals([
-  "implementation",
-  "research",
-  "review",
-  "design",
-  "test",
-  "general",
-]);
-export type OrchestratorMcpTaskRole = typeof OrchestratorMcpTaskRole.Type;
+export const OrchestratorMcpTaskRole = DelegatedTaskRole;
+export type OrchestratorMcpTaskRole = DelegatedTaskRole;
 
 export const OrchestratorMcpDelegatedTaskStatus = Schema.Literals([
   "queued",

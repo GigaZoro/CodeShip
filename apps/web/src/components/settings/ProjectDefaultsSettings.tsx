@@ -4,7 +4,12 @@ import {
   type WorktreeSubmodules,
   managedRuntimeModeDenial,
 } from "@t3tools/contracts";
-import { createModelSelection } from "@t3tools/shared/model";
+import {
+  createModelSelection,
+  keepAutoAccount,
+  withAutoAccount,
+  withModelSelectionOptions,
+} from "@t3tools/shared/model";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { useNavigate } from "@tanstack/react-router";
 
@@ -186,8 +191,17 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                   });
               }}
               onInstanceModelChange={(instanceId, model) =>
-                setModel(createModelSelection(instanceId, model))
+                setModel(keepAutoAccount(selection, createModelSelection(instanceId, model)))
               }
+              {...(mixedModel
+                ? {}
+                : {
+                    autoAccount: {
+                      checked: selection.autoAccount === true,
+                      onCheckedChange: (checked: boolean) =>
+                        setModel(withAutoAccount(selection, checked)),
+                    },
+                  })}
             />
             {!mixedModel && activeEntry && !effortDisabledReason ? (
               <TraitsPicker
@@ -199,7 +213,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                 planModeEnabled={settings.planModeEnabled}
                 triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                 onModelOptionsChange={(options) =>
-                  setModel(createModelSelection(selection.instanceId, selection.model, options))
+                  setModel(withModelSelectionOptions(selection, options))
                 }
               />
             ) : null}

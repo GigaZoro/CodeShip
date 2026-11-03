@@ -81,6 +81,30 @@ describe("new thread model fallback", () => {
     ["no fallback", { fallbackSelection: null }, selection],
     ["expired window", { now: Date.parse("2026-09-04T00:00:00Z") }, selection],
     [
+      "auto-account default with another account left",
+      {
+        defaultSelection: { ...selection, autoAccount: true },
+        providers: [
+          limited,
+          available,
+          provider({ instanceId: ProviderInstanceId.make("codex_2") }),
+        ],
+      },
+      { ...selection, autoAccount: true },
+    ],
+    [
+      "auto-account default with every account out",
+      {
+        defaultSelection: { ...selection, autoAccount: true },
+        providers: [
+          limited,
+          available,
+          { ...limited, instanceId: ProviderInstanceId.make("codex_2") },
+        ],
+      },
+      fallback,
+    ],
+    [
       "environment disabled",
       {
         settings: {

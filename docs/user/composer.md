@@ -113,7 +113,8 @@ instance:
 
 CodeShip remembers your provider, model, and model options for new threads. A
 project's configured model takes precedence; resetting that project setting
-returns to the remembered selection.
+returns to the remembered selection. With more than one account for a provider,
+[Auto account](./thread-sidebar.md#inspect-agent-work) picks the account for you.
 
 Leaving reasoning level or service tier unset uses the provider's own configuration.
 

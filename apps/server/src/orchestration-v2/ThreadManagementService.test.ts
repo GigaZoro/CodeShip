@@ -32,6 +32,7 @@ import { AgentScope } from "@t3tools/shared/AgentScope";
 
 import * as ServerSettings from "../serverSettings.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as AccountRouting from "./AccountRouting.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
@@ -82,7 +83,14 @@ const layerReceiptsTest = CommandReceiptStore.layer.pipe(
 );
 
 const layerDispatchChokepointTest =
-  (settingsLayer: ReturnType<typeof ServerSettings.layerTest>) => (dispatched: Array<string>) =>
+  (
+    settingsLayer: ReturnType<typeof ServerSettings.layerTest>,
+    options: {
+      readonly autoAccount?: boolean;
+      readonly accountRouting?: Layer.Layer<AccountRouting.AccountRouting>;
+    } = {},
+  ) =>
+  (dispatched: Array<OrchestrationV2ServerCommand>) =>
     ThreadManagementService.layer.pipe(
       Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
       Layer.provide(
@@ -92,20 +100,24 @@ const layerDispatchChokepointTest =
               thread: {
                 id: ThreadId.make("thread:thread-management:chokepoint"),
                 projectId: ProjectId.make("project:thread-management:chokepoint"),
+                providerInstanceId: ProviderInstanceId.make("codex_work"),
+                activeProviderThreadId: null,
                 deletedAt: null,
                 modelSelection: {
                   instanceId: ProviderInstanceId.make("codex_work"),
                   model: "test",
+                  ...(options.autoAccount ? { autoAccount: true } : {}),
                 },
               },
             } as unknown as OrchestrationV2ThreadProjection),
           dispatch: (command) =>
             Effect.sync(() => {
-              dispatched.push(command.type);
+              dispatched.push(command);
               return { sequence: 1, storedEvents: [] } as never;
             }),
         }),
       ),
+      Layer.provide(options.accountRouting ?? Layer.empty),
       Layer.provide(settingsLayer),
       Layer.provideMerge(layerReceiptsTest),
     );
@@ -117,7 +129,7 @@ it.effect(
     const threadId = ThreadId.make("thread:thread-management:chokepoint");
     const instanceId = ProviderInstanceId.make("codex_work");
     const commandId = CommandId.make("command:thread-management:chokepoint-disabled");
-    const dispatched: Array<string> = [];
+    const dispatched: Array<OrchestrationV2ServerCommand> = [];
     const layerTest = layerDispatchChokepointTest(
       ServerSettings.layerTest({
         providerInstances: { [instanceId]: { driver: "codex", enabled: true } },
@@ -159,7 +171,7 @@ it.effect(
     const threadId = ThreadId.make("thread:thread-management:chokepoint");
     const instanceId = ProviderInstanceId.make("codex_work");
     const commandId = CommandId.make("command:thread-management:chokepoint-replay");
-    const dispatched: Array<string> = [];
+    const dispatched: Array<OrchestrationV2ServerCommand> = [];
     const layerTest = layerDispatchChokepointTest(
       ServerSettings.layerTest({
         providerInstances: { [instanceId]: { driver: "codex", enabled: true } },
@@ -194,7 +206,68 @@ it.effect(
         creationSource: "server",
       });
 
-      expect(dispatched).toEqual(["message.dispatch"]);
+      expect(dispatched.map((command) => command.type)).toEqual(["message.dispatch"]);
+    }).pipe(Effect.provide(layerTest));
+  },
+);
+
+it.effect(
+  "the dispatch chokepoint checks an auto-account message against the account routing picks",
+  () => {
+    const projectId = ProjectId.make("project:thread-management:chokepoint");
+    const threadId = ThreadId.make("thread:thread-management:chokepoint");
+    const limited = ProviderInstanceId.make("codex_work");
+    const routed = ProviderInstanceId.make("codex_personal");
+    const dispatched: Array<OrchestrationV2ServerCommand> = [];
+    const routeInputs: Array<unknown> = [];
+    const layerTest = layerDispatchChokepointTest(
+      ServerSettings.layerTest({
+        providerInstances: {
+          [limited]: { driver: "codex", enabled: true },
+          [routed]: { driver: "codex", enabled: true },
+        },
+        // The thread's own account would be refused; the routed one is not.
+        projectSettingsOverrides: {
+          [projectId]: { providerInstances: { [limited]: { enabled: false } } },
+        },
+      }),
+      {
+        autoAccount: true,
+        accountRouting: Layer.succeed(AccountRouting.AccountRouting, {
+          route: (input) =>
+            Effect.sync(() => {
+              routeInputs.push(input);
+              return { ...input.selection, instanceId: routed };
+            }),
+        }),
+      },
+    )(dispatched);
+
+    return Effect.gen(function* () {
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:thread-management:chokepoint-auto"),
+        threadId,
+        messageId: MessageId.make("message:thread-management:chokepoint-auto"),
+        text: "First message",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+
+      // A thread that never ran has no account of its own to stay on.
+      expect(routeInputs).toEqual([
+        {
+          selection: { instanceId: limited, model: "test", autoAccount: true },
+          projectId,
+          currentInstanceId: null,
+        },
+      ]);
+      expect(dispatched).toMatchObject([
+        { type: "message.dispatch", modelSelection: { instanceId: routed, autoAccount: true } },
+      ]);
     }).pipe(Effect.provide(layerTest));
   },
 );

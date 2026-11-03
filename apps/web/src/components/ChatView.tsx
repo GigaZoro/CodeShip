@@ -2602,7 +2602,9 @@ export default function ChatView(props: ChatViewProps) {
               resetsAt: fallback.resetsAt,
               timestampFormat,
               onUseDefault: () =>
-                onProviderModelSelectStable(defaultSelection.instanceId, defaultSelection.model),
+                onProviderModelSelectStable(defaultSelection.instanceId, defaultSelection.model, {
+                  autoAccount: defaultSelection.autoAccount === true,
+                }),
               onDismiss: () => setDismissedFallbackWindow(fallbackWindow),
             }),
           ]

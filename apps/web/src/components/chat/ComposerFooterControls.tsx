@@ -4,7 +4,7 @@ import type {
   ProviderInteractionMode,
   RuntimeMode,
 } from "@t3tools/contracts";
-import { createModelSelection } from "@t3tools/shared/model";
+import { createModelSelection, keepAutoAccount } from "@t3tools/shared/model";
 import { BotIcon, PencilRulerIcon } from "lucide-react";
 import { type ComponentProps, memo, useId, useRef, useState } from "react";
 
@@ -355,7 +355,7 @@ export function ComposerModelPicker({
   readonly onProviderModelSelect: (
     instanceId: ProviderInstanceId,
     model: string,
-    options?: { focusComposer?: boolean },
+    options?: { focusComposer?: boolean; autoAccount?: boolean },
   ) => void;
 }) {
   const { instanceEntries, modelOptionsByInstance } = pickerProps;
@@ -398,8 +398,24 @@ export function ComposerModelPicker({
         : {})}
       onInstanceModelChange={(instanceId, model) => {
         onMultipleModelSelectionsChange(null);
-        onProviderModelSelect(instanceId, model);
+        onProviderModelSelect(instanceId, model, {
+          autoAccount:
+            keepAutoAccount(selectedModelSelection, { instanceId, model }).autoAccount === true,
+        });
       }}
+      {...(multipleModelSelections === null
+        ? {
+            autoAccount: {
+              checked: selectedModelSelection.autoAccount === true,
+              onCheckedChange: (checked: boolean) =>
+                onProviderModelSelect(
+                  selectedModelSelection.instanceId,
+                  selectedModelSelection.model,
+                  { focusComposer: false, autoAccount: checked },
+                ),
+            },
+          }
+        : {})}
     />
   );
 }

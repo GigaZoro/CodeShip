@@ -76,23 +76,31 @@ export function resolveNewThreadModelSelection(input: {
   if (input.explicitSelection || !selection || !input.fallbackSelection) return unchanged;
   const provider = input.providers.find((entry) => entry.instanceId === selection.instanceId);
   const window = exhaustedUsageWindow(provider, input.now, selection.model);
+  const usable = (entry: ServerProvider | undefined, model: string): entry is ServerProvider =>
+    entry !== undefined &&
+    entry.enabled &&
+    entry.installed &&
+    entry.auth.status !== "unauthenticated" &&
+    isProviderAvailable(entry) &&
+    !exhaustedUsageWindow(entry, input.now, model) &&
+    (!input.settings ||
+      resolveProjectProviderInstanceEnabled(
+        input.settings,
+        input.projectId ?? null,
+        entry.instanceId,
+      ));
   const fallback = input.providers.find(
     (entry) => entry.instanceId === input.fallbackSelection?.instanceId,
   );
   if (
     !provider ||
     !window ||
-    !fallback?.enabled ||
-    !fallback.installed ||
-    fallback.auth.status === "unauthenticated" ||
-    !isProviderAvailable(fallback) ||
-    exhaustedUsageWindow(fallback, input.now, input.fallbackSelection.model) ||
-    (input.settings &&
-      !resolveProjectProviderInstanceEnabled(
-        input.settings,
-        input.projectId ?? null,
-        fallback.instanceId,
-      ))
+    // The server starts an auto-account thread on another account of the same provider.
+    (selection.autoAccount === true &&
+      input.providers.some(
+        (entry) => entry.driver === provider.driver && usable(entry, selection.model),
+      )) ||
+    !usable(fallback, input.fallbackSelection.model)
   )
     return unchanged;
   return {

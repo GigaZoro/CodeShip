@@ -1,7 +1,8 @@
 import type { MenuAction } from "@react-native-menu/menu";
 import { useAtomValue } from "@effect/atom-react";
-import type { ServerSettingsPatch } from "@t3tools/contracts";
-import { modelSelectionsEqual } from "@t3tools/shared/model";
+import { PROVIDER_DISPLAY_NAMES, type ServerSettingsPatch } from "@t3tools/contracts";
+import { keepAutoAccount, modelPicksEqual, withAutoAccount } from "@t3tools/shared/model";
+import { supportsAccountFailover } from "@t3tools/shared/serverSettings";
 
 import { ListRowLayout } from "../../../components/ui/ListRowLayout";
 import { Menu } from "../../../components/ui/Menu";
@@ -9,6 +10,7 @@ import { buildModelOptions, groupByProvider } from "../../../lib/modelOptions";
 import { environmentPresentations } from "../../../state/presentation";
 import type { ScopedMobileSettingsTarget } from "../settings-scoped-server";
 import { SettingsSection } from "./SettingsSection";
+import { SettingsSwitchRow } from "./SettingsSwitchRow";
 
 export function DefaultModelSettings(props: {
   readonly targets: readonly ScopedMobileSettingsTarget[];
@@ -20,7 +22,7 @@ export function DefaultModelSettings(props: {
   const mixed = props.targets.some(({ settings }) =>
     selection === null || settings.defaultModelSelection === null
       ? selection !== settings.defaultModelSelection
-      : !modelSelectionsEqual(selection, settings.defaultModelSelection),
+      : !modelPicksEqual(selection, settings.defaultModelSelection),
   );
   const optionsByTarget = props.targets.map((target) =>
     buildModelOptions(
@@ -71,6 +73,30 @@ export function DefaultModelSettings(props: {
     })),
   ];
   const row = <ListRowLayout label="Model" detail={label} disabled={props.disabled} />;
+  const accountProviders = props.targets[0]
+    ? (providersByEnvironment.get(props.targets[0].environment.environmentId) ?? [])
+    : [];
+  const autoAccountDriver = accountProviders.find(
+    (provider) => provider.instanceId === selection?.instanceId,
+  )?.driver;
+  const autoAccountProviderName = autoAccountDriver
+    ? (PROVIDER_DISPLAY_NAMES[autoAccountDriver] ?? autoAccountDriver)
+    : "";
+  const autoAccountChecked = selection?.autoAccount === true;
+  // Stays visible while on, so a removed second account cannot strand the setting.
+  const showAutoAccount =
+    !mixed &&
+    props.targets.every(
+      (target) =>
+        target.environment.serverConfig.environment.capabilities.autoAccountRouting === true,
+    ) &&
+    selection !== null &&
+    autoAccountDriver !== undefined &&
+    supportsAccountFailover(autoAccountDriver) &&
+    (autoAccountChecked ||
+      accountProviders.filter(
+        (provider) => provider.driver === autoAccountDriver && provider.enabled,
+      ).length > 1);
   return (
     <SettingsSection
       title="Default model"
@@ -97,12 +123,27 @@ export function DefaultModelSettings(props: {
             const option = options.find(
               (candidate) => `model:${candidate.key}` === nativeEvent.event,
             );
-            if (option) props.onChange({ defaultModelSelection: option.selection });
+            if (option)
+              props.onChange({
+                defaultModelSelection: keepAutoAccount(selection, option.selection),
+              });
           }}
         >
           {row}
         </Menu>
       )}
+      {showAutoAccount ? (
+        <SettingsSwitchRow
+          label="Auto account"
+          subtitle={`Start on the first ${autoAccountProviderName} account in your account order with usage left. Set the order on web or desktop.`}
+          value={autoAccountChecked}
+          disabled={props.disabled}
+          onValueChange={(value) => {
+            if (selection)
+              props.onChange({ defaultModelSelection: withAutoAccount(selection, value) });
+          }}
+        />
+      ) : null}
     </SettingsSection>
   );
 }

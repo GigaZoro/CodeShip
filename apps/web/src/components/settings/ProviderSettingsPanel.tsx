@@ -94,6 +94,8 @@ import { ExpandableText } from "./ExpandableText";
 import { IntervalSecondsField } from "./IntervalSecondsField";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { AccountFailoverSettings } from "./AccountFailoverSettings";
+import { DelegatedTaskModelSettings } from "./DelegatedTaskModelSettings";
+import { FinalReviewSettings } from "./FinalReviewSettings";
 import { useSecretSources } from "./SecretSourceInput";
 import { UsageProviderSettings } from "./UsageProviderSettings";
 import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
@@ -557,6 +559,14 @@ export function EnvironmentProviderSettings({
   const serverSupportsAccountFailover = useAtomValue(
     serverEnvironment.configValueAtom(environmentId),
     (config) => config?.environment.capabilities.usageLimitAccountFailover === true,
+  );
+  const serverSupportsFinalReview = useAtomValue(
+    serverEnvironment.configValueAtom(environmentId),
+    (config) => config?.environment.capabilities.finalReview === true,
+  );
+  const serverSupportsDelegatedTaskModels = useAtomValue(
+    serverEnvironment.configValueAtom(environmentId),
+    (config) => config?.environment.capabilities.delegatedTaskModels === true,
   );
   // Hide overrides on older servers that silently ignore providerInstances patches.
   const supportsProjectProviderOverrides = useAtomValue(
@@ -1075,6 +1085,24 @@ export function EnvironmentProviderSettings({
 
       {serverSupportsAccountFailover ? (
         <AccountFailoverSettings
+          environmentId={environmentId}
+          settings={settings}
+          providers={serverProviders}
+          readOnly={readOnly || !canWriteSettings}
+        />
+      ) : null}
+
+      {serverSupportsDelegatedTaskModels ? (
+        <DelegatedTaskModelSettings
+          environmentId={environmentId}
+          settings={settings}
+          providers={serverProviders}
+          readOnly={readOnly || !canWriteSettings}
+        />
+      ) : null}
+
+      {serverSupportsFinalReview ? (
+        <FinalReviewSettings
           environmentId={environmentId}
           settings={settings}
           providers={serverProviders}
