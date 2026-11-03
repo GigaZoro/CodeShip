@@ -38,9 +38,11 @@ import { advertisedJsonSchema } from "../../apps/server/src/mcp/advertisedJsonSc
 import {
   EnvironmentId,
   ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
+  ProviderDriverKind,
   PullRequestState,
   ThreadId,
 } from "@t3tools/contracts";
+import { autoCoordinatorInstructions } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { buildCodexAdditionalContext } from "../../apps/server/src/provider/CodexDeveloperInstructions.ts";
@@ -151,7 +153,7 @@ const PriorToolCall = Schema.Struct({
 });
 
 /**
- * One expected call. `args` match partially: `~text` is a case-insensitive substring,
+ * One expected call. `args` match partially: `~text` is a case-insensitive substring (`~a|b`: any one),
  * `"<=N"` / `">=N"` bound a number, and keys may be dotted paths.
  */
 const McpToolUseCall = Schema.Struct({
@@ -277,6 +279,8 @@ export const McpToolUseCase = Schema.Struct({
     sideChat: Schema.optional(
       Schema.Struct({ parentThreadId: Schema.String, digest: Schema.Array(Schema.String) }),
     ),
+    /** The turn runs in Auto mode: T3 puts the coordinator brief ahead of `prompt`. */
+    autoMode: Schema.optional(Schema.Boolean),
   }),
   prompt: Schema.String,
   /** Records for the context chips `prompt` links, projected as T3 sends them. */
@@ -926,16 +930,28 @@ export const buildMessages = (sample: Sample) => {
       ? testCase.prompt
       : projectComposerContextForProvider({ text: testCase.prompt, ...testCase.promptContext });
   const sideChat = testCase.setup.sideChat;
-  const prompt =
+  const driver = base.codex ? "codex" : "claudeAgent";
+  const autoBrief = testCase.setup.autoMode
+    ? autoCoordinatorInstructions({
+        driver: ProviderDriverKind.make(driver),
+        model: base.model,
+        models: (
+          PROVIDERS.find((provider) => provider.providerInstanceId === driver)?.models ?? []
+        ).map((model) => ({ slug: model.id, name: model.id })),
+      })
+    : null;
+  const promptContext = [
     sideChat === undefined
-      ? userText
-      : withInlineContext(
-          makeSideChatContext({
-            parentThreadId: ThreadId.make(sideChat.parentThreadId),
-            digest: sideChat.digest,
-          }),
-          userText,
-        );
+      ? ""
+      : makeSideChatContext({
+          parentThreadId: ThreadId.make(sideChat.parentThreadId),
+          digest: sideChat.digest,
+        }),
+    autoBrief ?? "",
+  ]
+    .filter((part) => part !== "")
+    .join("\n\n");
+  const prompt = withInlineContext(promptContext, userText);
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
   push("user", text(role === "delegated-child" ? childPrompt() : prompt));
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.
@@ -1434,7 +1450,12 @@ const matches = (expected: unknown, actual: unknown): boolean => {
     return typeof actual === "number" && (bound[1] === "<=" ? actual <= limit : actual >= limit);
   }
   if (typeof expected === "string" && expected.startsWith("~")) {
-    return valueText(actual).toLowerCase().includes(expected.slice(1).toLowerCase());
+    const text = valueText(actual).toLowerCase();
+    return expected
+      .slice(1)
+      .toLowerCase()
+      .split("|")
+      .some((part) => text.includes(part));
   }
   if (Array.isArray(expected)) {
     return (

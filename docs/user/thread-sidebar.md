@@ -371,14 +371,19 @@ accounts to get around limits.
 
 **Auto** picks the model and the account for you. Set it up in **Settings →
 Providers** on web or desktop: turn on **Switch accounts at usage limits**, pick a
-primary provider under **Auto mode**, and choose the model and effort Auto runs
+primary provider under **Auto mode**, and choose the coordinator model and effort
 for each provider, such as Claude Opus at Max. Then pick **Auto** at the top of the
 model picker, or turn on **Auto** under the default model in settings for new
 threads. A new thread starts on the primary provider's first account in its
 account order that has usage left, and switches accounts at usage limits. A thread
-that already ran stays with its provider and runs that provider's Auto model.
-Changing an Auto model moves Auto threads to it on their next message. Picking a
-model in the picker turns Auto off for that thread.
+that already ran stays with its provider and runs that provider's coordinator.
+Changing a coordinator model moves Auto threads to it on their next message.
+Picking a model in the picker turns Auto off for that thread.
+
+On Claude and Codex, the coordinator does small requests itself and hands larger
+work to a subagent on a cheaper model of the same provider, such as Sonnet or
+Haiku, within the same turn. It checks the subagent's result before it replies, so
+Opus is not spent on routine edits.
 
 To run delegated work on other models, set **Delegated tasks** in **Settings →
 Providers** on web or desktop. Each role, such as implementation or review, can

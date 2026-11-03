@@ -302,6 +302,11 @@ function makeLocalCommandHarness(input: {
     readonly nativeForkFrom?: "idle" | "busy";
     readonly switchedProvider?: boolean;
   };
+  /** Opens a session and starts an ordinary provider turn, like a prompt. */
+  readonly nativeTurn?: boolean;
+  readonly autoAccount?: boolean;
+  /** The thread is a delegated task's child. */
+  readonly delegatedChild?: boolean;
 }) {
   const settledRuns: Array<string> = [];
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
@@ -321,7 +326,11 @@ function makeLocalCommandHarness(input: {
     threadId,
     ordinal: 2,
     providerInstanceId: newInstanceId,
-    modelSelection: { instanceId: newInstanceId, model: "gpt-5.4" },
+    modelSelection: {
+      instanceId: newInstanceId,
+      model: "gpt-5.4",
+      ...(input.autoAccount ? { autoAccount: true } : {}),
+    },
     providerThreadId,
     userMessageId: messageId,
     rootNodeId,
@@ -371,7 +380,13 @@ function makeLocalCommandHarness(input: {
       projectId: ProjectId.make("project-native-account-command"),
       branch: input.worktreePath === undefined ? null : "feature/restore",
       worktreePath: input.worktreePath ?? null,
-      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+      lineage: input.delegatedChild
+        ? {
+            parentThreadId: ThreadId.make("thread-parent"),
+            relationshipToParent: "subagent",
+            rootThreadId: ThreadId.make("thread-parent"),
+          }
+        : { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
     } as OrchestrationV2ThreadProjection["thread"],
     runs: [
       ...(input.previousNativeSession
@@ -761,39 +776,47 @@ function makeLocalCommandHarness(input: {
   const open = vi.fn(() =>
     input.sideChat !== undefined
       ? Effect.succeed(sideChatSession as never)
-      : input.interruptOpen === true
-        ? Effect.interrupt
-        : "historyReadFailureAfterFallback" in input
-          ? Effect.succeed(resumeFallbackSession as never)
-          : "ensureThreadFailure" in input
-            ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
-            : "openFailure" in input
-              ? Effect.sync(() => {
-                  if (input.interruptRunBeforeOpenFailure === true) interruptRun();
-                }).pipe(
-                  Effect.andThen(
-                    Effect.fail(
-                      new ProviderSessionManager.ProviderSessionOpenError({
-                        instanceId: newInstanceId,
-                        providerSessionId,
-                        cause: input.openFailure,
-                      }),
+      : input.nativeTurn === true
+        ? Effect.succeed({
+            driver: providerThread.driver,
+            providerSession,
+            ensureThread: () => Effect.succeed(providerThread),
+            resumeThread: () => Effect.succeed(providerThread),
+            startTurn,
+          } as never)
+        : input.interruptOpen === true
+          ? Effect.interrupt
+          : "historyReadFailureAfterFallback" in input
+            ? Effect.succeed(resumeFallbackSession as never)
+            : "ensureThreadFailure" in input
+              ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
+              : "openFailure" in input
+                ? Effect.sync(() => {
+                    if (input.interruptRunBeforeOpenFailure === true) interruptRun();
+                  }).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new ProviderSessionManager.ProviderSessionOpenError({
+                          instanceId: newInstanceId,
+                          providerSessionId,
+                          cause: input.openFailure,
+                        }),
+                      ),
                     ),
-                  ),
-                )
-              : input.failReadsAfterRunning === true || input.previousTurn !== undefined
-                ? Effect.succeed({
-                    driver: providerThread.driver,
-                    providerSession,
-                    ensureThread: () => Effect.succeed(providerThread),
-                    resumeThread: () => Effect.succeed(projection.providerThreads[0]),
-                  } as never)
-                : Effect.die("A local command must not open a native session."),
+                  )
+                : input.failReadsAfterRunning === true || input.previousTurn !== undefined
+                  ? Effect.succeed({
+                      driver: providerThread.driver,
+                      providerSession,
+                      ensureThread: () => Effect.succeed(providerThread),
+                      resumeThread: () => Effect.succeed(projection.providerThreads[0]),
+                    } as never)
+                  : Effect.die("A local command must not open a native session."),
   );
   const startRootRun = vi.fn<
     (input: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
   >((runInput) =>
-    input.sideChat !== undefined
+    input.sideChat !== undefined || input.nativeTurn === true
       ? runInput.session.startTurn(runInput as never).pipe(Effect.orDie)
       : input.failReadsAfterRunning === true || input.previousTurn !== undefined
         ? Effect.suspend(() =>
@@ -1250,6 +1273,24 @@ effectIt.effect.each([
           delivery: { nativeThreadId: "side-chat-native", status: "inline" },
         },
       ]);
+    }),
+);
+
+effectIt.effect.each([
+  { autoAccount: true, text: "Add a retry to the upload client", briefed: true },
+  { autoAccount: false, text: "Add a retry to the upload client", briefed: false },
+  { autoAccount: true, delegatedChild: true, text: "Add a retry", briefed: false },
+] as const)(
+  "briefs Auto's coordinator only on a top-level Auto prompt: %j",
+  ({ briefed, ...turn }) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({ ...turn, nativeTurn: true });
+
+      yield* harness.start;
+
+      const sent = harness.startTurn.mock.calls[0]?.[0].message.text ?? "";
+      expect(sent.includes("<t3_auto_mode>")).toBe(briefed);
+      expect(sent.endsWith(turn.text)).toBe(true);
     }),
 );
 

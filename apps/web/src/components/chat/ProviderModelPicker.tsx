@@ -9,6 +9,11 @@ import {
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { describeModelPick } from "@t3tools/client-runtime/model-traits";
+import {
+  activeAutoModeProvider,
+  supportsAccountFailover,
+  supportsAutoCoordinator,
+} from "@t3tools/shared/serverSettings";
 import { createContext, memo, type ReactNode, useRef, useState } from "react";
 import { Badge } from "../ui/badge";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
@@ -159,12 +164,15 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     : triggerTitle;
   const showInstanceBadge =
     activeEntry !== null && shouldShowInstanceBadge(activeEntry, props.instanceEntries);
-  const autoModeSupported = useAtomValue(
-    serverEnvironment.configValueAtom(props.environmentId),
-    (config) => config?.environment.capabilities.autoMode === true,
+  const autoMode = useAtomValue(serverEnvironment.configValueAtom(props.environmentId), (config) =>
+    config?.environment.capabilities.autoMode !== true
+      ? "unsupported"
+      : activeAutoModeProvider(config.settings) === null
+        ? "off"
+        : "on",
   );
-  const autoPick =
-    autoModeSupported && props.selectedModels === undefined ? props.auto?.pick : null;
+  const offersAuto = autoMode !== "unsupported" && props.selectedModels === undefined;
+  const autoPick = offersAuto ? props.auto?.pick : null;
   const autoEntry = autoPick
     ? props.instanceEntries.find((entry) => entry.instanceId === autoPick.instanceId)
     : undefined;
@@ -175,8 +183,18 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           onSelect: props.auto.onSelect,
           detail: describeModelPick(autoPick, autoEntry.models),
           providerName: PROVIDER_DISPLAY_NAMES[autoEntry.driverKind] ?? autoEntry.driverKind,
+          coordinates: supportsAutoCoordinator(autoEntry.driverKind),
         }
       : null;
+  // Off, the Auto tab stays where Auto could run here, so the picker shows how to turn it on.
+  const autoSetup =
+    offersAuto &&
+    autoMode === "off" &&
+    props.auto !== undefined &&
+    (props.lockedProvider === null || supportsAccountFailover(props.lockedProvider)) &&
+    props.instanceEntries.some(
+      (entry) => entry.enabled && supportsAccountFailover(entry.driverKind),
+    );
   const autoLabel = auto?.checked ? "Auto" : null;
 
   const setIsMenuOpen = (open: boolean) => {
@@ -319,6 +337,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             },
           }
         : {})}
+      autoSetup={autoSetup}
       {...(docked
         ? {
             docked,

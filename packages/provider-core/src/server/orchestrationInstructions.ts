@@ -1,4 +1,5 @@
-import type { ProviderInteractionMode } from "@t3tools/contracts";
+import type { ProviderDriverKind, ProviderInteractionMode } from "@t3tools/contracts";
+import { supportsAutoCoordinator } from "@t3tools/shared/serverSettings";
 
 // Codex truncates entries over 4,000 bytes; keep each section self-contained and below that limit.
 export const T3_CODE_ORCHESTRATION_SECTIONS: ReadonlyArray<string> = [
@@ -28,6 +29,36 @@ export const T3_CODE_ORCHESTRATION_INSTRUCTIONS = `
 
 ${T3_CODE_ORCHESTRATION_SECTIONS.join("\n\n")}
 `;
+
+// One per `supportsAutoCoordinator` driver: the native subagent tool and how it takes a model.
+const AUTO_COORDINATOR_SUBAGENT_TOOLS: ReadonlyMap<string, string> = new Map([
+  ["claudeAgent", "Claude `Agent` with `model`"],
+  ["codex", "Codex `spawn_agent` with `model`, then wait"],
+]);
+
+const MAX_AUTO_COORDINATOR_MODELS = 8;
+
+/** The brief for one Auto turn, or null where the provider's subagents cannot pick a model. */
+export function autoCoordinatorInstructions(input: {
+  readonly driver: ProviderDriverKind;
+  readonly model: string;
+  /** The account's models in catalog order; empty when unknown. */
+  readonly models: ReadonlyArray<{ readonly slug: string; readonly name: string }>;
+}): string | null {
+  const tool = AUTO_COORDINATOR_SUBAGENT_TOOLS.get(input.driver);
+  if (tool === undefined || !supportsAutoCoordinator(input.driver)) return null;
+  const own = input.models.find((model) => model.slug === input.model)?.name ?? input.model;
+  const models = input.models
+    .slice(0, MAX_AUTO_COORDINATOR_MODELS)
+    .map((model) => `${model.name} (\`${model.slug}\`${model.slug === input.model ? ", you" : ""})`)
+    .join(", ");
+  return `<t3_auto_mode>
+You coordinate this request in CodeShip Auto mode, as ${own}. Spend your own model on judgment and cheaper models on routine work.
+- Size the request first. Do a tiny one yourself: a question, an explanation, a one-line edit.
+- Otherwise run the work as a native subagent (${tool}) and set its model to the cheapest one that can do it well, even where the tool prefers your own: a small model for searches, mechanical edits and test runs, a mid-size model for ordinary features and fixes. Keep your own model for design, subtle bugs, and work a cheaper model got wrong. Brief the subagent with the goal, the files, the constraints, and how to check the result.
+- Check every result before you reply: read the diff, run the relevant checks, and compare it with the request. Fix small problems yourself; send bigger ones back with your findings, or take the work over.${models === "" ? "" : `\n- Models on this account: ${models}.`}
+</t3_auto_mode>`;
+}
 
 export const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `
 

@@ -110,6 +110,12 @@ const ACCOUNT_FAILOVER_DRIVERS: ReadonlySet<string> = new Set(["codex", "claudeA
 export const supportsAccountFailover = (driver: ProviderDriverKind): boolean =>
   ACCOUNT_FAILOVER_DRIVERS.has(driver);
 
+// Their native subagent tools take a model, so Auto's coordinator can hand work to a cheaper one.
+const AUTO_COORDINATOR_DRIVERS: ReadonlySet<string> = new Set(["codex", "claudeAgent"]);
+
+export const supportsAutoCoordinator = (driver: ProviderDriverKind): boolean =>
+  AUTO_COORDINATOR_DRIVERS.has(driver);
+
 /** Saved failover order first, then the instances it does not list in their given order. */
 export function orderProviderInstancesForFailover<
   T extends { readonly instanceId: ProviderInstanceId },
@@ -136,7 +142,7 @@ type AutoModeAccount = {
 };
 
 /** Auto's primary provider, or null while Auto mode is off. Auto needs account switching on. */
-function activeAutoModeProvider(settings: AutoModeSettings): ProviderDriverKind | null {
+export function activeAutoModeProvider(settings: AutoModeSettings): ProviderDriverKind | null {
   const driver = settings.failoverLimitedThreads ? settings.autoModeProvider : null;
   return driver !== null && supportsAccountFailover(driver) ? driver : null;
 }

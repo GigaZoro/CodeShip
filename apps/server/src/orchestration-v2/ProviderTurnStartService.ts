@@ -11,6 +11,7 @@ import {
   type OrchestrationV2RunAttempt,
   type OrchestrationV2TurnItem,
   isCompactionCommandMessage,
+  isListedThreadLineage,
   parseGoalCommand,
   RunId,
   ThreadId,
@@ -30,6 +31,7 @@ import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
 import * as EventSink from "./EventSink.ts";
@@ -46,6 +48,7 @@ import {
   latestNativeContextUsage,
 } from "@t3tools/provider-core/server/handoffBudget";
 import { deliverContextHandoffs, withInlineContext } from "./ContextHandoffDelivery.ts";
+import { autoCoordinatorInstructions } from "@t3tools/provider-core/server/orchestrationInstructions";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -161,6 +164,8 @@ export const layer: Layer.Layer<
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
+    // Only lists the account's models in Auto's brief; without it the brief names none.
+    const providerRegistry = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
 
     const resolveRecreateBase = Effect.fn("ProviderTurnStartService.resolveRecreateBase")(
@@ -891,6 +896,13 @@ export const layer: Layer.Layer<
         restartCancelledWork.length === 0
           ? ""
           : restartCancelledBackgroundWorkNote(restartCancelledWork);
+      // Rides on every top-level Auto prompt, so a change to Auto applies to the next message.
+      const autoBriefed =
+        run.modelSelection.autoAccount === true &&
+        !goalCommand &&
+        !userText.trimStart().startsWith("/") &&
+        isListedThreadLineage(projection.thread.lineage) &&
+        projection.thread.delegatedFrom === undefined;
       const tokenCap = yield* handoffTokenCapConfig.pipe(
         Effect.orElseSucceed(() => DEFAULT_HANDOFF_TOKEN_CAP),
       );
@@ -1599,7 +1611,20 @@ export const layer: Layer.Layer<
             sideChatHandoff === undefined || compact || goalCommand
               ? ""
               : sideChatHandoff.summaryText;
-          const context = [delivery.context, sideChatContext, restartNote]
+          const selection = turnInput.modelSelection;
+          const autoBrief =
+            !autoBriefed || compact
+              ? null
+              : autoCoordinatorInstructions({
+                  driver: session.driver,
+                  model: selection.model,
+                  models: Option.isNone(providerRegistry)
+                    ? []
+                    : ((yield* providerRegistry.value.getProviders)
+                        .find((provider) => provider.instanceId === selection.instanceId)
+                        ?.models.filter((model) => model.isLegacy !== true) ?? []),
+                });
+          const context = [delivery.context, sideChatContext, restartNote, autoBrief ?? ""]
             .filter((part) => part !== "")
             .join("\n\n");
           const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
@@ -1667,6 +1692,7 @@ export const layer: Layer.Layer<
         retryHandoff.length === 0 &&
         sideChatHandoff === undefined &&
         restartNote === "" &&
+        !autoBriefed &&
         !noteContinuation
           ? session
           : makeDeliverySession(session, startWithHandoffs);

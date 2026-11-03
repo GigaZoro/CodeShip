@@ -256,19 +256,24 @@ function ModelPickerProviderNotices({
   );
 }
 
-function AutoModeNote(props: { providerName: string; onRequestClose: (() => void) | undefined }) {
+/** With `auto` null, Auto mode is off and the note says how to turn it on. */
+function AutoModeNote(props: {
+  auto: { readonly providerName: string; readonly coordinates: boolean } | null;
+  onRequestClose: (() => void) | undefined;
+}) {
   const navigate = useNavigate();
   return (
     <p className="shrink-0 border-t border-border/70 px-3 py-2 text-xs leading-snug text-muted-foreground">
-      Starts on the first {props.providerName} account with usage left and switches accounts at
-      usage limits.{" "}
+      {props.auto === null
+        ? "Auto runs a coordinator model you choose. It hands routine work to cheaper models, checks the result, and switches accounts at usage limits."
+        : `${props.auto.coordinates ? `Hands routine work to cheaper ${props.auto.providerName} models and checks the result. ` : ""}Starts on the first ${props.auto.providerName} account with usage left and switches accounts at usage limits.`}{" "}
       <InlineButton
         onClick={() => {
           props.onRequestClose?.();
-          void navigate({ to: "/settings/providers" });
+          void navigate({ to: "/settings/providers", hash: "account-failover" });
         }}
       >
-        Change in Settings
+        {props.auto === null ? "Turn on in Settings" : "Change in Settings"}
       </InlineButton>
     </p>
   );
@@ -397,9 +402,13 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     /** What Auto runs here, such as "Claude Opus 5.5 · Max". */
     readonly detail: string;
     readonly providerName: string;
+    /** Its coordinator hands routine work to cheaper models of the provider. */
+    readonly coordinates: boolean;
     readonly checked: boolean;
     readonly onSelect: () => void;
   };
+  /** Auto mode is off here: the Auto tab says how to turn it on instead of offering Auto. */
+  autoSetup?: boolean;
 }) {
   const {
     searchInputRef,
@@ -754,7 +763,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     selectedInstanceId === "favorites" || selectedInstanceId === "auto"
       ? undefined
       : entryByInstanceId.get(selectedInstanceId);
-  const showAutoTab = props.auto !== undefined && selectedInstanceId === "auto" && !isSearching;
+  const offersAuto = props.auto !== undefined || props.autoSetup === true;
+  const showAutoTab = offersAuto && selectedInstanceId === "auto" && !isSearching;
   const providerSetupEntries =
     !isSearching && !showAutoTab && canOpenProviderSetup
       ? instanceEntries.filter(
@@ -792,7 +802,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     ),
   ])();
   const filteredItemKeys = ((): string[] => {
-    if (showAutoTab) return [AUTO_KEY];
+    if (showAutoTab) return props.auto ? [AUTO_KEY] : [];
     const modelKeys = visibleModels.map((model) =>
       modelPickerModelKey(model.instanceId, model.slug),
     );
@@ -845,7 +855,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       const next = adjacentModelPickerProvider({
         entries: sidebarInstanceEntries,
         selectedInstanceId,
-        showAuto: props.auto !== undefined,
+        showAuto: offersAuto,
         direction: command === "modelPicker.nextProvider" ? 1 : -1,
         disabledInstanceIds: lockedDisabledInstanceIds,
         selectableUnavailableInstanceIds,
@@ -912,7 +922,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
             onSelectInstance={handleSelectInstance}
             onFocusSearch={focusSearchInput}
             instanceEntries={sidebarInstanceEntries}
-            showAuto={props.auto !== undefined}
+            showAuto={offersAuto}
             showFavorites
             {...(selectableUnavailableInstanceIds ? { selectableUnavailableInstanceIds } : {})}
             {...(lockedDisabledInstanceIds
@@ -1160,18 +1170,17 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
               setupEntries={providerSetupEntries}
               updateRequiredNotices={updateRequiredNotices}
               emptyLabel={
-                selectedInstanceId === "favorites" && !isSearching
-                  ? "No favorites yet"
-                  : "No models found"
+                showAutoTab
+                  ? "Auto mode is off"
+                  : selectedInstanceId === "favorites" && !isSearching
+                    ? "No favorites yet"
+                    : "No models found"
               }
               onRequestClose={onRequestClose}
               onOpenProviderSetup={onOpenProviderSetup}
             />
-            {showAutoTab && props.auto ? (
-              <AutoModeNote
-                providerName={props.auto.providerName}
-                onRequestClose={onRequestClose}
-              />
+            {showAutoTab ? (
+              <AutoModeNote auto={props.auto ?? null} onRequestClose={onRequestClose} />
             ) : null}
             {props.listFooter}
           </div>

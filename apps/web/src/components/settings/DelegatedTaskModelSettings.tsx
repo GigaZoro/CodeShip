@@ -2,6 +2,7 @@ import {
   type DelegatedTaskRole,
   type EnvironmentId,
   type ModelSelection,
+  PROVIDER_DISPLAY_NAMES,
   type ServerProvider,
   type UnifiedSettings,
 } from "@t3tools/contracts";
@@ -39,7 +40,7 @@ export function SettingsModelSelectionControl({
   label,
   selection,
   emptyLabel,
-  offerAuto = true,
+  autoModeModel = false,
   onChange,
 }: {
   readonly environmentId: EnvironmentId;
@@ -49,15 +50,22 @@ export function SettingsModelSelectionControl({
   readonly label: string;
   readonly selection: ModelSelection | null;
   readonly emptyLabel?: string;
-  /** Off for Auto's own models. */
-  readonly offerAuto?: boolean;
+  /** Picks a provider's Auto model: no Auto option, and no account, since Auto picks that. */
+  readonly autoModeModel?: boolean;
   readonly onChange: (selection: ModelSelection) => void;
 }) {
-  const entries = providerInstanceEntriesFor(providers, settings, null);
+  const instanceEntries = providerInstanceEntriesFor(providers, settings, null);
+  const entries = autoModeModel
+    ? instanceEntries.map((entry) => ({
+        ...entry,
+        displayName: PROVIDER_DISPLAY_NAMES[entry.driverKind] ?? entry.displayName,
+        accentColor: undefined,
+      }))
+    : instanceEntries;
   const fallbackEntry = entries.find(isProviderInstancePickerReady);
-  const autoPick = offerAuto
-    ? autoModePick({ settings, accounts: providers, lockedDriver: null })
-    : null;
+  const autoPick = autoModeModel
+    ? null
+    : autoModePick({ settings, accounts: providers, lockedDriver: null });
   const isAuto = selection?.autoAccount === true && autoPick !== null;
   const resolved =
     selection &&
@@ -92,13 +100,17 @@ export function SettingsModelSelectionControl({
         onInstanceModelChange={(instanceId, model) =>
           onChange(createModelSelection(instanceId, model))
         }
-        auto={{
-          pick: autoPick,
-          checked: isAuto,
-          onSelect: () => {
-            if (autoPick) onChange(autoPick);
-          },
-        }}
+        {...(autoModeModel
+          ? {}
+          : {
+              auto: {
+                pick: autoPick,
+                checked: isAuto,
+                onSelect: () => {
+                  if (autoPick) onChange(autoPick);
+                },
+              },
+            })}
       />
       {selection !== null && entry && !isAuto ? (
         <TraitsPicker

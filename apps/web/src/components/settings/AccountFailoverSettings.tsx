@@ -11,6 +11,7 @@ import {
   autoModeModelFor,
   orderProviderInstancesForFailover,
   supportsAccountFailover,
+  supportsAutoCoordinator,
 } from "@t3tools/shared/serverSettings";
 import { createModelSelection } from "@t3tools/shared/model";
 import { groupBy } from "effect/Array";
@@ -104,7 +105,7 @@ export function AccountFailoverSettings({
           title="Auto mode"
           description={
             switching
-              ? "Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's first account with usage left and runs its Auto model, set below. Pick Auto in the model picker to use it."
+              ? "Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's first account with usage left and runs its coordinator model, set below. Pick Auto in the model picker to use it."
               : "Pick a primary provider to enable Auto mode. It needs Switch accounts at usage limits on."
           }
           control={
@@ -164,7 +165,15 @@ export function AccountFailoverSettings({
           const driver = accounts[0]!.driver;
           const name = providerName(driver);
           const autoModel = autoModeModelFor(settings, driver);
+          // Auto's model belongs to the provider, so the picker lists one usable account's models.
+          const modelAccount =
+            accounts.find(
+              (account) => account.status === "ready" && account.auth.status !== "unauthenticated",
+            ) ?? accounts[0]!;
           const storedAutoModel = settings.autoModeModels[driver];
+          const runsModel = supportsAutoCoordinator(driver)
+            ? `Auto's coordinator: it does small requests itself, hands routine work to cheaper ${name} models, and checks the result.`
+            : "Auto runs this model.";
           return (
             <SettingsRow
               key={driver}
@@ -173,13 +182,13 @@ export function AccountFailoverSettings({
                 !supportsAutoMode
                   ? "A limited thread continues on the highest account in this list that still has usage left."
                   : accounts.length > 1
-                    ? "Auto runs this model on whichever account takes the turn. Accounts are tried from the top, and a limited thread continues on the highest one with usage left."
-                    : "Auto runs this model. Add a second account to switch accounts at usage limits."
+                    ? `${runsModel} Accounts are tried from the top, and a limited thread continues on the highest one with usage left.`
+                    : `${runsModel} Add a second account to switch accounts at usage limits.`
               }
               resetAction={
                 supportsAutoMode && storedAutoModel !== undefined && !readOnly ? (
                   <SettingResetButton
-                    label={`${name} Auto model`}
+                    label={`${name} coordinator model`}
                     tooltip="Use the default model"
                     onClick={() => updateSettings({ autoModeModels: { [driver]: null } })}
                   />
@@ -190,19 +199,19 @@ export function AccountFailoverSettings({
                   <SettingsModelSelectionControl
                     environmentId={environmentId}
                     settings={settings}
-                    providers={accounts}
+                    providers={[modelAccount]}
                     readOnly={readOnly || !switching}
-                    label={`${name} Auto model`}
+                    label={`${name} coordinator model`}
                     selection={
                       autoModel &&
                       createModelSelection(
-                        accounts[0]!.instanceId,
+                        modelAccount.instanceId,
                         autoModel.model,
                         autoModel.options,
                       )
                     }
                     emptyLabel="Choose a model"
-                    offerAuto={false}
+                    autoModeModel
                     onChange={(selection) =>
                       updateSettings({
                         autoModeModels: {
