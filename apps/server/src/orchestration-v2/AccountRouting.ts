@@ -8,13 +8,10 @@ import {
   type ServerProvider,
   type ServerSettings as ServerSettingsValue,
 } from "@t3tools/contracts";
-import {
-  modelPicksEqual,
-  resolveAutoModelSelection,
-  resolveSelectableModel,
-} from "@t3tools/shared/model";
+import { modelPicksEqual, resolveSelectableModel } from "@t3tools/shared/model";
 import {
   orderProviderInstancesForFailover,
+  resolveAutoModelSelection,
   supportsAccountFailover,
 } from "@t3tools/shared/serverSettings";
 import * as Context from "effect/Context";
@@ -35,7 +32,9 @@ export interface AccountRoutingContext {
     | "providerInstanceFailoverOrder"
     | "providerInstances"
     | "projectSettingsOverrides"
-    | "autoModelSelection"
+    | "failoverLimitedThreads"
+    | "autoModeProvider"
+    | "autoModeModels"
   >;
   readonly providers: ReadonlyArray<ServerProvider>;
   /** Accounts that stopped a run on a usage limit whose reset is still ahead. */
@@ -88,10 +87,10 @@ export function accountsWithRoom(
 }
 
 /**
- * Where an Auto selection runs: the Auto model, on an account the server picks. A thread stays
- * on its account while that account has room, so a switch never restarts its session
- * needlessly. A new thread, or one whose account ran out, takes the highest account in the
- * order with room. With none left, it stays put.
+ * Where an Auto selection runs: its provider's Auto model, on an account the server picks. A
+ * thread stays on its account while that account has room, so a switch never restarts its
+ * session needlessly. A new thread, or one whose account ran out, takes the highest account in
+ * the order with room. With none left, it stays put. With Auto mode off, it runs as it names.
  */
 export function routeAutoAccount(
   input: AccountRoutingContext & {
@@ -106,10 +105,11 @@ export function routeAutoAccount(
   if (input.selection.autoAccount !== true) return input.selection;
   const selection = resolveAutoModelSelection({
     selection: input.selection,
-    autoModel: input.settings.autoModelSelection,
-    providers: input.providers,
+    settings: input.settings,
+    accounts: input.providers,
     started: input.started,
   });
+  if (selection === input.selection) return selection;
   const driver = input.providers.find(
     (provider) => provider.instanceId === selection.instanceId,
   )?.driver;

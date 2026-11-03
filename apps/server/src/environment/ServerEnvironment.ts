@@ -247,7 +247,7 @@ export const make = Effect.gen(function* () {
       usageLimitSources: true,
       usageLimitAccountFailover: true,
       mcpSignInSharing: true,
-      autoModel: true,
+      autoMode: true,
       delegatedTaskModels: true,
       finalReview: true,
       providerWorkspaceSnapshotsOnDemand: true,

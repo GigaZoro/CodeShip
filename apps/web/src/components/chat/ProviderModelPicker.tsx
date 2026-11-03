@@ -1,27 +1,24 @@
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   type ModelSelection,
+  PROVIDER_DISPLAY_NAMES,
   type ProviderInstanceId,
   type EnvironmentId,
   type ProviderDriverKind,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
+import { describeModelPick } from "@t3tools/client-runtime/model-traits";
 import { createContext, memo, type ReactNode, useRef, useState } from "react";
 import { Badge } from "../ui/badge";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
 import { ModelPickerContent, resolveModelPickerSelectedModel } from "./ModelPickerContent";
-import { AutoModeControl } from "./AutoModeControl";
 import { ChatGptSharingControl } from "./ChatGptSharingControl";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { ModelEsque, getDisplayModelName, getTriggerDisplayModelName } from "./providerIconUtils";
-import {
-  isProviderInstancePickerReady,
-  shouldShowInstanceBadge,
-  type ProviderInstanceEntry,
-} from "../../providerInstances";
+import { shouldShowInstanceBadge, type ProviderInstanceEntry } from "../../providerInstances";
 import { ComposerControl, type ComposerControlSize } from "./ComposerControl";
 import { takeOpenTarget, useComposerMenuProps } from "./composerEventScope";
 import { shortcutLabelForCommand } from "../../keybindings";
@@ -120,11 +117,13 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
    */
   effortColumn?: ReactNode;
   footer?: ReactNode;
-  /** Auto mode: runs the Auto model from Settings, on an account the server picks. */
+  /** Auto mode: runs its provider's Auto model from Settings, on an account the server picks. */
   auto?: {
-    readonly model: ModelSelection | null;
+    /** What picking Auto runs here; null where Auto is off or cannot run. */
+    readonly pick: ModelSelection | null;
+    /** The selection is Auto. */
     readonly checked: boolean;
-    readonly onCheckedChange: (checked: boolean) => void;
+    readonly onSelect: () => void;
   };
 }) {
   const composerFloatingLayerProps = useComposerMenuProps();
@@ -160,35 +159,22 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     : triggerTitle;
   const showInstanceBadge =
     activeEntry !== null && shouldShowInstanceBadge(activeEntry, props.instanceEntries);
-  const autoModelSupported = useAtomValue(
+  const autoModeSupported = useAtomValue(
     serverEnvironment.configValueAtom(props.environmentId),
-    (config) => config?.environment.capabilities.autoModel === true,
+    (config) => config?.environment.capabilities.autoMode === true,
   );
-  const autoModelEntry = props.auto?.model
-    ? props.instanceEntries.find((entry) => entry.instanceId === props.auto?.model?.instanceId)
+  const autoPick =
+    autoModeSupported && props.selectedModels === undefined ? props.auto?.pick : null;
+  const autoEntry = autoPick
+    ? props.instanceEntries.find((entry) => entry.instanceId === autoPick.instanceId)
     : undefined;
-  const autoModel =
-    props.auto?.model && autoModelEntry
-      ? resolveModelPickerSelectedModel({
-          driverKind: autoModelEntry.driverKind,
-          model: props.auto.model.model,
-          options: props.modelOptionsByInstance.get(autoModelEntry.instanceId) ?? [],
-        })
-      : undefined;
-  // Stays visible while on, so a cleared Auto model cannot strand a pick on it.
   const auto =
-    props.auto !== undefined &&
-    autoModelSupported &&
-    props.selectedModels === undefined &&
-    (props.auto.checked ||
-      (autoModelEntry !== undefined &&
-        isProviderInstancePickerReady(autoModelEntry) &&
-        (props.lockedProvider === null || autoModelEntry.driverKind === props.lockedProvider)))
+    props.auto && autoPick && autoEntry
       ? {
-          ...props.auto,
-          modelLabel: autoModel
-            ? getDisplayModelName(autoModel)
-            : (props.auto.model?.model ?? triggerLabel),
+          checked: props.auto.checked,
+          onSelect: props.auto.onSelect,
+          detail: describeModelPick(autoPick, autoEntry.models),
+          providerName: PROVIDER_DISPLAY_NAMES[autoEntry.driverKind] ?? autoEntry.driverKind,
         }
       : null;
   const autoLabel = auto?.checked ? "Auto" : null;
@@ -293,18 +279,6 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     "data-chat-provider-model-picker-label": "true",
   } as const;
 
-  const autoControl = auto ? (
-    <AutoModeControl
-      modelLabel={auto.modelLabel}
-      checked={auto.checked}
-      onCheckedChange={(checked) => {
-        if (props.disabled) return;
-        auto.onCheckedChange(checked);
-        if (checked && !docked) setIsMenuOpen(false);
-      }}
-    />
-  ) : null;
-
   const picker = (
     <ModelPickerContent
       searchInputRef={searchInputRef}
@@ -333,6 +307,18 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           : (props.getModelDisabledReason?.(instanceId, model) ?? null)
       }
       onInstanceModelChange={handleInstanceModelChange}
+      {...(auto
+        ? {
+            auto: {
+              ...auto,
+              onSelect: () => {
+                if (props.disabled) return;
+                auto.onSelect();
+                if (!docked) setIsMenuOpen(false);
+              },
+            },
+          }
+        : {})}
       {...(docked
         ? {
             docked,
@@ -340,12 +326,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             // Inside the fixed height, so switching to or from a ChatGPT plan never resizes it.
             ...(props.selectedModels === undefined
               ? {
-                  listFooter: (
-                    <>
-                      {autoControl}
-                      <ChatGptSharingControl provider={activeEntry?.snapshot ?? null} />
-                    </>
-                  ),
+                  listFooter: <ChatGptSharingControl provider={activeEntry?.snapshot ?? null} />,
                 }
               : {}),
           }
@@ -519,10 +500,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           picker
         )}
         {props.selectedModels === undefined && !docked ? (
-          <>
-            {autoControl}
-            <ChatGptSharingControl provider={activeEntry?.snapshot ?? null} />
-          </>
+          <ChatGptSharingControl provider={activeEntry?.snapshot ?? null} />
         ) : null}
       </PopoverPopup>
     </Popover>

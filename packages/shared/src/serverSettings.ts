@@ -1,4 +1,4 @@
-import type { ModelPreferences } from "@t3tools/contracts/settings";
+import type { AutoModeModel, ModelPreferences } from "@t3tools/contracts/settings";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_TEXT_GENERATION_MODEL,
@@ -122,6 +122,91 @@ export function orderProviderInstancesForFailover<
     }))
     .sort((left, right) => left.rank - right.rank)
     .map(({ instance }) => instance);
+}
+
+type AutoModeSettings = Pick<
+  ServerSettings,
+  "failoverLimitedThreads" | "autoModeProvider" | "autoModeModels" | "providerInstanceFailoverOrder"
+>;
+
+type AutoModeAccount = {
+  readonly instanceId: ProviderInstanceId;
+  readonly driver: ProviderDriverKind;
+  readonly enabled: boolean;
+};
+
+/** Auto's primary provider, or null while Auto mode is off. Auto needs account switching on. */
+function activeAutoModeProvider(settings: AutoModeSettings): ProviderDriverKind | null {
+  const driver = settings.failoverLimitedThreads ? settings.autoModeProvider : null;
+  return driver !== null && supportsAccountFailover(driver) ? driver : null;
+}
+
+/** What Auto runs on `driver`: its Auto model, else the provider's default model. */
+export function autoModeModelFor(
+  settings: Pick<ServerSettings, "autoModeModels">,
+  driver: ProviderDriverKind,
+): AutoModeModel | null {
+  const model = settings.autoModeModels[driver] ?? DEFAULT_MODEL_BY_PROVIDER[driver];
+  return model === undefined ? null : typeof model === "string" ? { model } : model;
+}
+
+/**
+ * The selection an Auto pick runs, or null while Auto cannot run. It takes the primary
+ * provider, or `lockedDriver` for a thread that already ran, and that provider's first account.
+ */
+export function autoModePick(input: {
+  readonly settings: AutoModeSettings;
+  readonly accounts: ReadonlyArray<AutoModeAccount>;
+  readonly lockedDriver: ProviderDriverKind | null;
+}): ModelSelection | null {
+  const primary = activeAutoModeProvider(input.settings);
+  const driver = primary === null ? null : (input.lockedDriver ?? primary);
+  if (driver === null || !supportsAccountFailover(driver)) return null;
+  const auto = autoModeModelFor(input.settings, driver);
+  const account = orderProviderInstancesForFailover(
+    input.settings.providerInstanceFailoverOrder,
+    input.accounts.filter((candidate) => candidate.enabled && candidate.driver === driver),
+  )[0];
+  if (auto === null || account === undefined) return null;
+  return {
+    ...createModelSelection(account.instanceId, auto.model, auto.options),
+    autoAccount: true,
+  };
+}
+
+/**
+ * What turning Auto on for `selection` runs, or null where Auto cannot run. A new thread starts
+ * on the primary provider's first account; a thread that already ran keeps its provider and
+ * account. Either way it runs that provider's Auto model and options from settings.
+ */
+export function autoModeTarget(input: {
+  readonly selection: ModelSelection;
+  readonly settings: AutoModeSettings;
+  readonly accounts: ReadonlyArray<AutoModeAccount>;
+  readonly started: boolean;
+}): ModelSelection | null {
+  const ownDriver = input.accounts.find(
+    (account) => account.instanceId === input.selection.instanceId,
+  )?.driver;
+  if (input.started && ownDriver === undefined) return null;
+  const pick = autoModePick({
+    settings: input.settings,
+    accounts: input.accounts,
+    lockedDriver: input.started ? (ownDriver ?? null) : null,
+  });
+  if (pick === null) return null;
+  return input.started ? { ...pick, instanceId: input.selection.instanceId } : pick;
+}
+
+/** What an Auto pick runs (see `autoModeTarget`); with Auto mode off, it runs as it names. */
+export function resolveAutoModelSelection(input: {
+  readonly selection: ModelSelection;
+  readonly settings: AutoModeSettings;
+  readonly accounts: ReadonlyArray<AutoModeAccount>;
+  readonly started: boolean;
+}): ModelSelection {
+  if (input.selection.autoAccount !== true) return input.selection;
+  return autoModeTarget(input) ?? input.selection;
 }
 
 /**
@@ -446,6 +531,7 @@ export function applyServerSettingsPatch(
     usagePriceOverrides: usagePriceOverridesPatch,
     usageModelAliases: usageModelAliasesPatch,
     delegatedTaskModelSelections: delegatedTaskModelSelectionsPatch,
+    autoModeModels: autoModeModelsPatch,
     // Entry replacement: deepMerge would keep keys the client meant to clear.
     projectSettingsOverrides: projectSettingsOverridesPatch,
     projectAgentBrowserAccessOverrides: _legacyBrowserAccess,
@@ -666,6 +752,12 @@ export function applyServerSettingsPatch(
             current.delegatedTaskModelSelections,
             delegatedTaskModelSelectionsPatch,
           ),
+        }
+      : {}),
+    ...(autoModeModelsPatch !== undefined
+      ? {
+          // A provider's model is replaced whole, so a cleared effort never lingers.
+          autoModeModels: mergeSettingsEntries(current.autoModeModels, autoModeModelsPatch),
         }
       : {}),
     ...(patch.sourceControlWriterModelSelection !== undefined

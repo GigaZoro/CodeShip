@@ -118,9 +118,14 @@ describe("descriptor helpers", () => {
     expect(modelPicksEqual(left, { ...reordered, autoAccount: true })).toBe(false);
   });
 
-  it("matches an auto-account draft pick to whichever account the thread runs on", () => {
+  it("matches an Auto draft pick to whichever model and account Auto put the thread on", () => {
     const pick = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4");
-    const thread = { ...pick, instanceId: ProviderInstanceId.make("codex_personal") };
+    const thread = {
+      ...pick,
+      instanceId: ProviderInstanceId.make("codex_personal"),
+      model: "gpt-6-astra",
+      options: [{ id: "reasoningEffort", value: "xhigh" }],
+    };
     expect(draftModelPickMatchesThread(pick, thread)).toBe(false);
     expect(
       draftModelPickMatchesThread({ ...pick, autoAccount: true }, { ...thread, autoAccount: true }),

@@ -1,7 +1,7 @@
 import { Toolbar } from "@base-ui/react/toolbar";
 import { type ProviderInstanceId } from "@t3tools/contracts";
-import { memo, useLayoutEffect, useRef, useState } from "react";
-import { StarIcon } from "lucide-react";
+import { memo, type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { SparklesIcon, StarIcon } from "lucide-react";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
@@ -29,17 +29,56 @@ function describeUnavailableInstance(entry: ProviderInstanceEntry): string {
 const PICKER_TOOLTIP_SIDE = "left" as const;
 const PICKER_TOOLTIP_SIDE_OFFSET = 8;
 
+/** A rail tab: Auto, Favorites, or one provider account. */
+export type ModelPickerTab = ProviderInstanceId | "favorites" | "auto";
+
+function RailTab(props: {
+  tab: "favorites" | "auto";
+  label: string;
+  selected: boolean;
+  onSelect: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="relative w-full" data-model-picker-provider={props.tab}>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Toolbar.Button
+              className="relative isolate flex w-full cursor-pointer aspect-square items-center justify-center rounded-md transition-colors hover:bg-foreground/10 focus-visible:bg-foreground/10 focus-visible:outline-none"
+              onClick={props.onSelect}
+              type="button"
+              aria-label={props.label}
+              aria-pressed={props.selected}
+            >
+              {props.children}
+            </Toolbar.Button>
+          }
+        />
+        <TooltipPopup
+          side={PICKER_TOOLTIP_SIDE}
+          sideOffset={PICKER_TOOLTIP_SIDE_OFFSET}
+          align="center"
+        >
+          {props.label}
+        </TooltipPopup>
+      </Tooltip>
+    </div>
+  );
+}
+
 export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
-  selectedInstanceId: ProviderInstanceId | "favorites";
-  onSelectInstance: (instanceId: ProviderInstanceId | "favorites") => void;
+  selectedInstanceId: ModelPickerTab;
+  onSelectInstance: (instanceId: ModelPickerTab) => void;
   onFocusSearch: () => void;
   instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
+  showAuto?: boolean;
   showFavorites?: boolean;
   disabledInstanceIds?: ReadonlySet<ProviderInstanceId>;
   selectableUnavailableInstanceIds?: ReadonlySet<ProviderInstanceId>;
   getDisabledInstanceTooltip?: (entry: ProviderInstanceEntry) => string;
 }) {
-  const handleSelect = (instanceId: ProviderInstanceId | "favorites") => {
+  const handleSelect = (instanceId: ModelPickerTab) => {
     props.onSelectInstance(instanceId);
   };
   const showFavorites = props.showFavorites ?? true;
@@ -65,6 +104,7 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
     props.instanceEntries,
     props.selectedInstanceId,
     showFavorites,
+    props.showAuto,
   ]);
 
   return (
@@ -91,36 +131,28 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
               style={{ top: selectedIndicatorTop }}
             />
           ) : null}
+          {props.showAuto ? (
+            <RailTab
+              tab="auto"
+              label="Auto"
+              selected={props.selectedInstanceId === "auto"}
+              onSelect={() => handleSelect("auto")}
+            >
+              <SparklesIcon className="size-5 shrink-0" aria-hidden />
+            </RailTab>
+          ) : null}
           {showFavorites ? (
-            <>
-              <div className="relative w-full" data-model-picker-provider="favorites">
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <Toolbar.Button
-                        className={cn(
-                          "relative isolate flex w-full cursor-pointer aspect-square items-center justify-center rounded-md transition-colors hover:bg-foreground/10 focus-visible:bg-foreground/10 focus-visible:outline-none",
-                        )}
-                        onClick={() => handleSelect("favorites")}
-                        type="button"
-                        aria-label="Favorites"
-                        aria-pressed={props.selectedInstanceId === "favorites"}
-                      >
-                        <StarIcon className="size-5 fill-current shrink-0" aria-hidden />
-                      </Toolbar.Button>
-                    }
-                  />
-                  <TooltipPopup
-                    side={PICKER_TOOLTIP_SIDE}
-                    sideOffset={PICKER_TOOLTIP_SIDE_OFFSET}
-                    align="center"
-                  >
-                    Favorites
-                  </TooltipPopup>
-                </Tooltip>
-              </div>
-              <div className="border-b border-border/70" aria-hidden="true" />
-            </>
+            <RailTab
+              tab="favorites"
+              label="Favorites"
+              selected={props.selectedInstanceId === "favorites"}
+              onSelect={() => handleSelect("favorites")}
+            >
+              <StarIcon className="size-5 fill-current shrink-0" aria-hidden />
+            </RailTab>
+          ) : null}
+          {props.showAuto || showFavorites ? (
+            <div className="border-b border-border/70" aria-hidden="true" />
           ) : null}
 
           {props.instanceEntries.map((entry) => {

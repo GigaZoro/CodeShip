@@ -357,6 +357,13 @@ export type ChatWidth = typeof ChatWidth.Type;
 export const EffortDisplay = Schema.Literals(["label", "bars"]);
 export type EffortDisplay = typeof EffortDisplay.Type;
 
+/** The model and options Auto runs on one provider. */
+export const AutoModeModel = Schema.Struct({
+  model: TrimmedNonEmptyString,
+  options: Schema.optionalKey(ProviderOptionSelections),
+});
+export type AutoModeModel = typeof AutoModeModel.Type;
+
 export const ModelFavorite = Schema.Struct({
   provider: ProviderInstanceId,
   model: TrimmedNonEmptyString,
@@ -1331,9 +1338,16 @@ export const ServerSettings = Schema.Struct({
   providerInstanceFailoverOrder: Schema.Array(ProviderInstanceId).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
-  /** What an Auto pick (`ModelSelection.autoAccount`) runs; null runs each pick's own model. */
-  autoModelSelection: Schema.NullOr(ModelSelection).pipe(
+  /**
+   * Auto mode's provider: an Auto pick (`ModelSelection.autoAccount`) starts there. Honored only
+   * while `failoverLimitedThreads` is on; null turns Auto off.
+   */
+  autoModeProvider: Schema.NullOr(ProviderDriverKind).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /** What Auto runs on each provider, whichever account takes the turn. Unset runs its default model. */
+  autoModeModels: Schema.Record(ProviderDriverKind, AutoModeModel).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
   ),
   /** Threads without their own Final review choice follow this. */
   finalReviewByDefault: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -1760,7 +1774,11 @@ export const ServerSettingsPatch = Schema.Struct({
   failoverLimitedThreads: Schema.optionalKey(Schema.Boolean),
   shareMcpSignIns: Schema.optionalKey(Schema.Boolean),
   providerInstanceFailoverOrder: Schema.optionalKey(Schema.Array(ProviderInstanceId)),
-  autoModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  autoModeProvider: Schema.optionalKey(Schema.NullOr(ProviderDriverKind)),
+  /** Per provider; null clears it back to the provider's default model. */
+  autoModeModels: Schema.optionalKey(
+    Schema.Record(ProviderDriverKind, Schema.NullOr(AutoModeModel)),
+  ),
   finalReviewByDefault: Schema.optionalKey(Schema.Boolean),
   finalReviewModelSelections: Schema.optionalKey(Schema.Array(ModelSelection)),
   finalReviewInstructions: Schema.optionalKey(TrimmedString),

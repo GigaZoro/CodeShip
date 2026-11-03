@@ -34,12 +34,15 @@ const provider = (instanceId: ProviderInstanceId, overrides: Partial<ServerProvi
     ...overrides,
   }) satisfies ServerProvider;
 
+const claude = ProviderDriverKind.make("claudeAgent");
 const settings = (order: ReadonlyArray<ProviderInstanceId>) => ({
   ...DEFAULT_SERVER_SETTINGS,
   providerInstances: Object.fromEntries(
-    order.map((instanceId) => [instanceId, { driver: ProviderDriverKind.make("claudeAgent") }]),
+    order.map((instanceId) => [instanceId, { driver: claude }]),
   ),
   providerInstanceFailoverOrder: order,
+  failoverLimitedThreads: true,
+  autoModeProvider: claude,
 });
 
 const auto: ModelSelection = { instanceId: third, model: "claude-opus-5-5", autoAccount: true };
@@ -99,20 +102,15 @@ describe("routeAutoAccount", () => {
     assert.equal(exhausted("2026-11-03T11:00:00.000Z"), primary);
   });
 
-  describe("with an Auto model", () => {
+  describe("Auto models", () => {
     const codex = ProviderInstanceId.make("codex_main");
+    const codexDriver = ProviderDriverKind.make("codex");
     const effort = (value: string) => [{ id: "effort", value }];
-    const sonnet: ModelSelection = {
-      instanceId: primary,
-      model: "claude-sonnet-5-5",
-      options: effort("high"),
-    };
     const models = [
       { slug: "claude-opus-5-5", name: "Claude Opus 5.5", isCustom: false, capabilities: null },
       { slug: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", isCustom: false, capabilities: null },
     ];
     const routeWith = (input: {
-      readonly autoModel: ModelSelection;
       readonly selection: ModelSelection;
       readonly currentInstanceId: ProviderInstanceId | null;
     }) =>
@@ -125,53 +123,64 @@ describe("routeAutoAccount", () => {
           provider(primary, { models }),
           provider(second, { models }),
           provider(codex, {
-            driver: ProviderDriverKind.make("codex"),
-            models: [{ slug: "gpt-5.5", name: "GPT-5.5", isCustom: false, capabilities: null }],
+            driver: codexDriver,
+            models: [
+              { slug: "gpt-6-astra", name: "GPT-6 Astra", isCustom: false, capabilities: null },
+            ],
           }),
         ],
-        settings: { ...settings([primary, second]), autoModelSelection: input.autoModel },
+        settings: {
+          ...settings([primary, second]),
+          autoModeModels: {
+            [claude]: { model: "claude-sonnet-5-5", options: effort("max") },
+            [codexDriver]: { model: "gpt-6-astra", options: effort("ultra") },
+          },
+        },
         limitedInstanceIds: new Set([primary]),
         nowMs,
       });
 
     it.each([
       [
-        "a new thread runs the Auto model and its effort on the first account with room",
-        sonnet,
-        { instanceId: primary, model: "claude-opus-5-5", autoAccount: true },
+        "a new thread runs the primary's Auto model and effort on the first account with room",
+        { instanceId: codex, model: "gpt-5.5", autoAccount: true },
         null,
-        { ...sonnet, instanceId: second, autoAccount: true },
+        { instanceId: second, model: "claude-sonnet-5-5", options: effort("max") },
       ],
       [
-        "a pick on the Auto model keeps its own effort",
-        sonnet,
-        { ...sonnet, instanceId: second, options: effort("low"), autoAccount: true },
-        second,
-        { ...sonnet, instanceId: second, options: effort("low"), autoAccount: true },
-      ],
-      [
-        "a thread moves to a changed Auto model on its own account",
-        sonnet,
+        "a thread runs its provider's Auto model, not an effort of its own",
         { instanceId: second, model: "claude-opus-5-5", options: effort("low"), autoAccount: true },
         second,
-        { ...sonnet, instanceId: second, autoAccount: true },
-      ],
-      [
-        "a new thread follows an Auto model on another provider",
-        { instanceId: codex, model: "gpt-5.5" },
-        { instanceId: primary, model: "claude-opus-5-5", autoAccount: true },
-        null,
-        { instanceId: codex, model: "gpt-5.5", autoAccount: true },
+        { instanceId: second, model: "claude-sonnet-5-5", options: effort("max") },
       ],
       [
         "a thread that already ran keeps its provider",
-        { instanceId: codex, model: "gpt-5.5" },
-        { instanceId: second, model: "claude-opus-5-5", autoAccount: true },
-        second,
-        { instanceId: second, model: "claude-opus-5-5", autoAccount: true },
+        { instanceId: codex, model: "gpt-5.5", autoAccount: true },
+        codex,
+        { instanceId: codex, model: "gpt-6-astra", options: effort("ultra") },
       ],
-    ] as const)("%s", (_, autoModel, selection, currentInstanceId, expected) => {
-      assert.deepEqual(routeWith({ autoModel, selection, currentInstanceId }), expected);
+    ] as const)("%s", (_, selection, currentInstanceId, expected) => {
+      assert.deepEqual(routeWith({ selection, currentInstanceId }), {
+        ...expected,
+        autoAccount: true,
+      });
+    });
+
+    it("leaves an Auto pick as it names while account switching is off", () => {
+      const selection: ModelSelection = { ...auto, instanceId: primary };
+      assert.strictEqual(
+        routeAutoAccount({
+          selection,
+          projectId,
+          currentInstanceId: null,
+          started: false,
+          providers: [provider(primary), provider(second)],
+          settings: { ...settings([primary, second]), failoverLimitedThreads: false },
+          limitedInstanceIds: new Set([primary]),
+          nowMs,
+        }),
+        selection,
+      );
     });
   });
 

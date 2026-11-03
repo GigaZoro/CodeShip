@@ -1,4 +1,5 @@
 import {
+  describeModelPick,
   getPromptControlledTraits,
   getTraitSelectChange,
 } from "@t3tools/client-runtime/model-traits";
@@ -8,7 +9,9 @@ import * as Dialog from "../../components/ui/Dialog";
 import { createV5StackNavigator as createNativeStackNavigator } from "../../native/createV5StackNavigator";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import {
+  autoModeTarget,
   modelPreferencesMigrationPatch,
+  resolveAutoModelSelection,
   resolveModelPreferences,
 } from "@t3tools/shared/serverSettings";
 import type {
@@ -30,7 +33,6 @@ import {
   getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
-  resolveAutoModelSelection,
   withAutoAccount,
 } from "@t3tools/shared/model";
 import {
@@ -289,7 +291,7 @@ type ThreadSettingsSessionProps = {
   readonly onUpdateOptionSelections: (selections: ReadonlyArray<ProviderOptionSelection>) => void;
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
-  /** Auto: runs the Auto model from settings, on an account the server picks. */
+  /** Auto: runs its provider's Auto model from settings, on an account the server picks. */
   readonly auto?: AutoSwitch;
   /** An existing thread's Final review switch, where its server runs Final review. */
   readonly finalReview?: {
@@ -859,6 +861,8 @@ function ThreadSettingsOptionsItem(props: {
   const bottomToolbarInset = Platform.OS === "ios" ? NATIVE_MAIL_SEARCH_TOOLBAR_CONTENT_INSET : 0;
   // Hidden while a picked model waits to apply; it applies to the model the thread will run.
   const auto = session.pendingModel === null ? session.auto : undefined;
+  // Auto runs the options set in Settings, so it offers none of its own.
+  const descriptors = auto?.checked ? [] : session.displayedDescriptors;
 
   return (
     <View style={{ paddingBottom: insets.bottom + bottomToolbarInset + 12 }}>
@@ -868,7 +872,7 @@ function ThreadSettingsOptionsItem(props: {
         className="mx-4 overflow-hidden rounded-2xl bg-grouped-card"
         layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}
       >
-        {session.displayedDescriptors.map((descriptor) => {
+        {descriptors.map((descriptor) => {
           if (descriptor.type === "select") {
             return (
               <Animated.View
@@ -1537,7 +1541,7 @@ type AutoSwitch = {
   readonly onCheckedChange: (checked: boolean) => void;
 };
 
-/** The sheet's Auto switch, where the server runs Auto and the Auto model can run here. */
+/** The sheet's Auto switch, where the server runs Auto and Auto can run this thread. */
 function withAutoSwitch(input: {
   readonly serverConfig: Pick<ServerConfig, "environment" | "settings" | "providers"> | null;
   readonly selection: ModelSelection | null;
@@ -1545,35 +1549,22 @@ function withAutoSwitch(input: {
   readonly onChange: (selection: ModelSelection) => void;
 }): { readonly auto?: AutoSwitch } {
   const { serverConfig, selection } = input;
-  if (serverConfig?.environment.capabilities.autoModel !== true || selection === null) return {};
-  const autoModel = serverConfig.settings.autoModelSelection;
-  const providerOf = (instanceId: ProviderInstanceId | undefined) =>
-    serverConfig.providers.find((provider) => provider.instanceId === instanceId);
-  const autoProvider = providerOf(autoModel?.instanceId);
-  const checked = selection.autoAccount === true;
-  // Stays visible while on, so a cleared Auto model cannot strand the thread on it.
-  const available =
-    autoProvider !== undefined &&
-    (!input.started || autoProvider.driver === providerOf(selection.instanceId)?.driver);
-  if (!checked && !available) return {};
+  if (serverConfig?.environment.capabilities.autoMode !== true || selection === null) return {};
+  const pick = autoModeTarget({
+    selection,
+    settings: serverConfig.settings,
+    accounts: serverConfig.providers,
+    started: input.started,
+  });
+  if (pick === null) return {};
+  const models =
+    serverConfig.providers.find((provider) => provider.instanceId === pick.instanceId)?.models ??
+    [];
   return {
     auto: {
-      modelLabel:
-        autoProvider?.models.find((model) => model.slug === autoModel?.model)?.name ??
-        autoModel?.model ??
-        null,
-      checked,
-      onCheckedChange: (value) =>
-        input.onChange(
-          value
-            ? resolveAutoModelSelection({
-                selection: withAutoAccount(selection, true),
-                autoModel,
-                providers: serverConfig.providers,
-                started: input.started,
-              })
-            : withAutoAccount(selection, false),
-        ),
+      modelLabel: describeModelPick(pick, models),
+      checked: selection.autoAccount === true,
+      onCheckedChange: (value) => input.onChange(value ? pick : withAutoAccount(selection, false)),
     },
   };
 }
@@ -1615,13 +1606,16 @@ export function ExistingThreadSettingsRouteScreen({
     thread: selectedThread,
     projection: structure?.projection,
   });
-  // An Auto thread shows the Auto model its next turn runs, as the server resolves it.
-  const modelSelection = resolveAutoModelSelection({
-    selection: draftSettings.modelSelection ?? selectedThread.modelSelection,
-    autoModel: serverConfig?.settings.autoModelSelection,
-    providers: serverConfig?.providers ?? [],
-    started,
-  });
+  // An Auto thread shows the model and account its next turn runs, as the server resolves it.
+  const storedModelSelection = draftSettings.modelSelection ?? selectedThread.modelSelection;
+  const modelSelection = serverConfig
+    ? resolveAutoModelSelection({
+        selection: storedModelSelection,
+        settings: serverConfig.settings,
+        accounts: serverConfig.providers,
+        started,
+      })
+    : storedModelSelection;
   const lockedProviderInstanceId = started ? modelSelection.instanceId : undefined;
   const modelOptions = buildModelOptions(
     serverConfig,

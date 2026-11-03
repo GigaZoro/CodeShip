@@ -369,15 +369,16 @@ signed in to an account another provider already uses is unavailable until you
 sign it in to a different account. Some providers' terms forbid using extra
 accounts to get around limits.
 
-**Auto** runs one model for you and picks the account. Choose that model and
-its effort as **Auto model** in **Settings → Providers** on web or desktop, then
-turn on **Auto** in the model picker, or under the default model in settings for
-new threads. A new thread starts on the first account in the account order that
-has usage left. A thread keeps its account until that account hits a limit, then
-continues on the next one, even with **Switch accounts at usage limits** off.
-Changing the Auto model moves Auto threads to it on their next message; a thread
-that already ran stays with its provider. Picking a model in the picker turns
-Auto off for that thread.
+**Auto** picks the model and the account for you. Set it up in **Settings →
+Providers** on web or desktop: turn on **Switch accounts at usage limits**, pick a
+primary provider under **Auto mode**, and choose the model and effort Auto runs
+for each provider, such as Claude Opus at Max. Then pick **Auto** at the top of the
+model picker, or turn on **Auto** under the default model in settings for new
+threads. A new thread starts on the primary provider's first account in its
+account order that has usage left, and switches accounts at usage limits. A thread
+that already ran stays with its provider and runs that provider's Auto model.
+Changing an Auto model moves Auto threads to it on their next message. Picking a
+model in the picker turns Auto off for that thread.
 
 To run delegated work on other models, set **Delegated tasks** in **Settings →
 Providers** on web or desktop. Each role, such as implementation or review, can

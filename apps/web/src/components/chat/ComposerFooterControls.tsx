@@ -4,11 +4,7 @@ import type {
   ProviderInteractionMode,
   RuntimeMode,
 } from "@t3tools/contracts";
-import {
-  createModelSelection,
-  resolveAutoModelSelection,
-  withAutoAccount,
-} from "@t3tools/shared/model";
+import { createModelSelection } from "@t3tools/shared/model";
 import { BotIcon, PencilRulerIcon } from "lucide-react";
 import { type ComponentProps, memo, useId, useRef, useState } from "react";
 
@@ -344,7 +340,7 @@ export function ComposerModelPicker({
   multipleModelSelections,
   onMultipleModelSelectionsChange,
   selectedModelSelection,
-  autoModelSelection,
+  autoPick,
   onProviderModelSelect,
   ...pickerProps
 }: Omit<
@@ -357,7 +353,8 @@ export function ComposerModelPicker({
     selections: ReadonlyArray<ModelSelection> | null,
   ) => void;
   readonly selectedModelSelection: ModelSelection;
-  readonly autoModelSelection: ModelSelection | null;
+  /** What picking Auto runs here; null where Auto is off or cannot run. */
+  readonly autoPick: ModelSelection | null;
   readonly onProviderModelSelect: (
     instanceId: ProviderInstanceId,
     model: string,
@@ -413,23 +410,15 @@ export function ComposerModelPicker({
       {...(multipleModelSelections === null
         ? {
             auto: {
-              model: autoModelSelection,
+              pick: autoPick,
               checked: selectedModelSelection.autoAccount === true,
-              onCheckedChange: (checked: boolean) => {
-                // Off pins the model and account the thread shows now; on keeps a started
-                // thread's account.
-                const pick = checked
-                  ? resolveAutoModelSelection({
-                      selection: withAutoAccount(selectedModelSelection, true),
-                      autoModel: autoModelSelection,
-                      providers: instanceEntries.map((entry) => entry.snapshot),
-                      started: pickerProps.lockedProvider !== null,
-                    })
-                  : selectedModelSelection;
-                onProviderModelSelect(pick.instanceId, pick.model, {
+              onSelect: () => {
+                if (autoPick === null) return;
+                // Auto's own options, never the model's remembered ones.
+                onProviderModelSelect(autoPick.instanceId, autoPick.model, {
                   focusComposer: false,
-                  autoAccount: checked,
-                  modelOptions: pick.options,
+                  autoAccount: true,
+                  modelOptions: autoPick.options ?? [],
                 });
               },
             },

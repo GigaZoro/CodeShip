@@ -20,11 +20,13 @@ import { createModelSelection } from "./model.ts";
 import { resolveProjectScripts } from "./projectScripts.ts";
 import {
   applyServerSettingsPatch,
+  autoModePick,
   fallbackTextGenerationModelSelection,
   modelPreferencesMigrationPatch,
   resolveModelPreferences,
   isModelSelectionProviderEnabled,
   parsePersistedServerObservabilitySettings,
+  resolveAutoModelSelection,
   resolveInheritedDefaultModelSelection,
   resolveSourceControlWriterModelSelection,
   supportsAccountFailover,
@@ -938,6 +940,111 @@ describe("supportsAccountFailover", () => {
     ["acpRegistry", false],
   ])("%s -> %s", (driver, supported) => {
     expect(supportsAccountFailover(ProviderDriverKind.make(driver))).toBe(supported);
+  });
+});
+
+describe("Auto mode", () => {
+  const claude = ProviderDriverKind.make("claudeAgent");
+  const codex = ProviderDriverKind.make("codex");
+  const account = (instanceId: string, driver: ProviderDriverKind) => ({
+    instanceId: ProviderInstanceId.make(instanceId),
+    driver,
+    enabled: true,
+  });
+  const accounts = [
+    account("claude_second", claude),
+    account("claude_first", claude),
+    account("codex_main", codex),
+  ];
+  const max = [{ id: "effort", value: "max" }];
+  const ultra = [{ id: "reasoningEffort", value: "ultra" }];
+  const settings: ServerSettings = {
+    ...DEFAULT_SERVER_SETTINGS,
+    failoverLimitedThreads: true,
+    autoModeProvider: claude,
+    autoModeModels: {
+      [claude]: { model: "claude-opus-5-5", options: max },
+      [codex]: { model: "gpt-6-astra", options: ultra },
+    },
+    providerInstanceFailoverOrder: [ProviderInstanceId.make("claude_first")],
+  };
+  const resolve = (
+    selection: ModelSelection,
+    started: boolean,
+    overrides: Partial<ServerSettings> = {},
+  ) =>
+    resolveAutoModelSelection({
+      selection,
+      settings: { ...settings, ...overrides },
+      accounts,
+      started,
+    });
+  const auto = (instanceId: string, model = "claude-sonnet-5-5"): ModelSelection => ({
+    instanceId: ProviderInstanceId.make(instanceId),
+    model,
+    options: [{ id: "effort", value: "low" }],
+    autoAccount: true,
+  });
+
+  it.each([
+    [
+      "a new thread starts on the primary provider's first account",
+      auto("codex_main", "gpt-5.5"),
+      false,
+      { instanceId: "claude_first", model: "claude-opus-5-5", options: max },
+    ],
+    [
+      "a new thread on the primary provider moves to its first account and Auto model",
+      auto("claude_second"),
+      false,
+      { instanceId: "claude_first", model: "claude-opus-5-5", options: max },
+    ],
+    [
+      "a thread that already ran keeps its account",
+      auto("claude_second"),
+      true,
+      { instanceId: "claude_second", model: "claude-opus-5-5", options: max },
+    ],
+    [
+      "a thread that already ran keeps its provider and runs that provider's Auto model",
+      auto("codex_main", "gpt-5.5"),
+      true,
+      { instanceId: "codex_main", model: "gpt-6-astra", options: ultra },
+    ],
+  ] as const)("%s", (_, selection, started, expected) => {
+    expect(resolve(selection, started)).toEqual({ ...expected, autoAccount: true });
+  });
+
+  it("runs a provider with no Auto model on its default model", () => {
+    expect(resolve(auto("claude_second"), false, { autoModeModels: {} })).toEqual({
+      instanceId: "claude_first",
+      model: "claude-opus-5-5",
+      autoAccount: true,
+    });
+  });
+
+  it.each([
+    ["switching accounts is off", { failoverLimitedThreads: false }],
+    ["no primary provider is picked", { autoModeProvider: null }],
+  ] as const)("leaves Auto picks as they are while %s", (_, overrides) => {
+    const selection = auto("claude_second");
+    expect(resolve(selection, false, overrides)).toBe(selection);
+    expect(
+      autoModePick({ settings: { ...settings, ...overrides }, accounts, lockedDriver: null }),
+    ).toBeNull();
+  });
+
+  it("replaces and clears one provider's Auto model without touching the others", () => {
+    const next = applyServerSettingsPatch(settings, {
+      autoModeModels: { [claude]: { model: "claude-sonnet-5-5" } },
+    });
+    expect(next.autoModeModels).toEqual({
+      [claude]: { model: "claude-sonnet-5-5" },
+      [codex]: { model: "gpt-6-astra", options: ultra },
+    });
+    expect(
+      applyServerSettingsPatch(next, { autoModeModels: { [codex]: null } }).autoModeModels,
+    ).toEqual({ [claude]: { model: "claude-sonnet-5-5" } });
   });
 });
 

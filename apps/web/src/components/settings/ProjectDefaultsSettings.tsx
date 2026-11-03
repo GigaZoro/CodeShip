@@ -4,13 +4,8 @@ import {
   type WorktreeSubmodules,
   managedRuntimeModeDenial,
 } from "@t3tools/contracts";
-import {
-  autoModelPick,
-  createModelSelection,
-  resolveAutoModelSelection,
-  withAutoAccount,
-  withModelSelectionOptions,
-} from "@t3tools/shared/model";
+import { createModelSelection, withModelSelectionOptions } from "@t3tools/shared/model";
+import { autoModePick, resolveAutoModelSelection } from "@t3tools/shared/serverSettings";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { useNavigate } from "@tanstack/react-router";
 
@@ -85,16 +80,17 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
           providers,
           settings.defaultModelSelection ?? inheritedSelection,
         );
-  const storedAuto = storedSelection?.autoAccount === true;
-  // An Auto default shows the Auto model it starts threads on, and takes its effort from it.
+  const autoPick = autoModePick({ settings, accounts: providers, lockedDriver: null });
+  const storedAuto = storedSelection?.autoAccount === true && autoPick !== null;
+  // An Auto default shows the model and account Auto starts threads on.
   const selection = storedSelection
     ? resolveEffectiveDefaultModelSelection(
         settings,
         providers,
         resolveAutoModelSelection({
           selection: storedSelection,
-          autoModel: settings.autoModelSelection,
-          providers,
+          settings,
+          accounts: providers,
           started: false,
         }),
       )
@@ -209,14 +205,11 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                 ? {}
                 : {
                     auto: {
-                      model: settings.autoModelSelection,
+                      pick: autoPick,
                       checked: storedAuto,
-                      onCheckedChange: (checked: boolean) =>
-                        setModel(
-                          checked && settings.autoModelSelection
-                            ? autoModelPick(settings.autoModelSelection, { withEffort: false })
-                            : withAutoAccount(selection, false),
-                        ),
+                      onSelect: () => {
+                        if (autoPick) setModel(autoPick);
+                      },
                     },
                   })}
             />

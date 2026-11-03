@@ -560,9 +560,9 @@ export function EnvironmentProviderSettings({
     serverEnvironment.configValueAtom(environmentId),
     (config) => config?.environment.capabilities.usageLimitAccountFailover === true,
   );
-  const serverSupportsAutoModel = useAtomValue(
+  const serverSupportsAutoMode = useAtomValue(
     serverEnvironment.configValueAtom(environmentId),
-    (config) => config?.environment.capabilities.autoModel === true,
+    (config) => config?.environment.capabilities.autoMode === true,
   );
   const serverSupportsMcpSignInSharing = useAtomValue(
     serverEnvironment.configValueAtom(environmentId),
@@ -1097,7 +1097,7 @@ export function EnvironmentProviderSettings({
           settings={settings}
           providers={serverProviders}
           readOnly={readOnly || !canWriteSettings}
-          supportsAutoModel={serverSupportsAutoModel}
+          supportsAutoMode={serverSupportsAutoMode}
           supportsMcpSignInSharing={serverSupportsMcpSignInSharing}
         />
       ) : null}

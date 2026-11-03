@@ -1,4 +1,5 @@
 import {
+  type ModelCapabilities,
   type ModelSelection,
   type ProviderDriverKind,
   type ProviderOptionDescriptor,
@@ -8,6 +9,7 @@ import {
   buildProviderOptionSelectionsFromDescriptors,
   getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
+  getProviderOptionDescriptors,
   isClaudeUltrathinkPrompt,
 } from "@t3tools/shared/model";
 
@@ -28,6 +30,26 @@ export function isReasoningSelect(
   descriptor: ProviderOptionDescriptor,
 ): descriptor is Extract<ProviderOptionDescriptor, { type: "select" }> {
   return descriptor.type === "select" && isReasoningControl(descriptor);
+}
+
+/** A pick's model name and reasoning level on one line, such as "Claude Opus 5.5 · Max". */
+export function describeModelPick(
+  selection: ModelSelection,
+  models: ReadonlyArray<{
+    readonly slug: string;
+    readonly name: string;
+    readonly capabilities?: ModelCapabilities | null | undefined;
+  }>,
+): string {
+  const model = models.find((candidate) => candidate.slug === selection.model);
+  const reasoning = model?.capabilities
+    ? getProviderOptionDescriptors({
+        caps: model.capabilities,
+        selections: selection.options,
+      }).find(isReasoningSelect)
+    : undefined;
+  const level = getProviderOptionCurrentLabel(reasoning, selection);
+  return [model?.name ?? selection.model, level].filter(Boolean).join(" · ");
 }
 
 export function replaceDescriptorCurrentValue(

@@ -1,7 +1,9 @@
 import { ActiveNewTaskContext } from "../../state/active-new-task";
-import { resolveAutoModelSelection } from "@t3tools/shared/model";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
-import { resolveInheritedDefaultModelSelection } from "@t3tools/shared/serverSettings";
+import {
+  resolveAutoModelSelection,
+  resolveInheritedDefaultModelSelection,
+} from "@t3tools/shared/serverSettings";
 import { useNowMinuteMs } from "../../lib/clock";
 import * as Dialog from "../../components/ui/Dialog";
 import React, { useEffect, useRef, useState } from "react";
@@ -449,15 +451,16 @@ export function NewTaskFlowProvider(
           preferredEnvironmentId: null,
         })
       : null);
-  // An Auto default shows the Auto model the server will start the thread on.
+  // An Auto default shows the model and account the server will start the thread on.
   const projectDefaultModelSelection =
-    storedDefaultModelSelection &&
-    resolveAutoModelSelection({
-      selection: storedDefaultModelSelection,
-      autoModel: selectedEnvironmentServerConfig?.settings.autoModelSelection,
-      providers: selectedEnvironmentServerConfig?.providers ?? [],
-      started: false,
-    });
+    storedDefaultModelSelection && selectedEnvironmentServerConfig
+      ? resolveAutoModelSelection({
+          selection: storedDefaultModelSelection,
+          settings: selectedEnvironmentServerConfig.settings,
+          accounts: selectedEnvironmentServerConfig.providers,
+          started: false,
+        })
+      : storedDefaultModelSelection;
   const stickyModelSelection = resolveDefaultableModelSelection(
     selectedEnvironmentServerConfig,
     storedStickyModelSelection,

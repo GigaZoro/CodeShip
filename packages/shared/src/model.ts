@@ -131,43 +131,6 @@ export function withAutoAccount(selection: ModelSelection, autoAccount: boolean)
   return autoAccount ? { ...pinned, autoAccount: true } : pinned;
 }
 
-/** An Auto pick of `autoModel`: settings store it without effort, so it follows the Auto model's. */
-export function autoModelPick(
-  autoModel: ModelSelection,
-  options: { readonly withEffort: boolean },
-): ModelSelection {
-  const { autoAccount: _auto, options: effort, ...model } = autoModel;
-  return options.withEffort && effort !== undefined
-    ? { ...model, options: effort, autoAccount: true }
-    : { ...model, autoAccount: true };
-}
-
-/**
- * What an Auto pick runs: the Auto model, on the pick's own account when that is the same
- * provider. A pick of that model with its own effort keeps it, and a thread that already ran
- * keeps its provider. Without an Auto model, the pick runs as it names.
- */
-export function resolveAutoModelSelection(input: {
-  readonly selection: ModelSelection;
-  readonly autoModel: ModelSelection | null | undefined;
-  readonly providers: ReadonlyArray<{
-    readonly instanceId: ProviderInstanceId;
-    readonly driver: ProviderDriverKind;
-  }>;
-  readonly started: boolean;
-}): ModelSelection {
-  const { selection, autoModel } = input;
-  if (selection.autoAccount !== true || !autoModel) return selection;
-  const driverOf = (instanceId: ProviderInstanceId) =>
-    input.providers.find((provider) => provider.instanceId === instanceId)?.driver;
-  const sameDriver = driverOf(selection.instanceId) === driverOf(autoModel.instanceId);
-  if (!sameDriver && input.started) return selection;
-  if (sameDriver && selection.model === autoModel.model && (selection.options?.length ?? 0) > 0)
-    return selection;
-  const pick = autoModelPick(autoModel, { withEffort: true });
-  return sameDriver ? { ...pick, instanceId: selection.instanceId } : pick;
-}
-
 /** Keeps every field of `selection`, such as `autoAccount`, while replacing its options. */
 export function withModelSelectionOptions(
   selection: ModelSelection,
@@ -180,14 +143,13 @@ export function withModelSelectionOptions(
 /**
  * Whether a composer's draft model pick is what the thread already runs. Web sends
  * `fastMode: false` for models with a fast toggle while mobile omits it, so off counts as unset.
- * An auto-account pick matches whichever account the server put the thread on.
+ * Two Auto picks match: the server runs both on the model and account Auto settles on.
  */
 export function draftModelPickMatchesThread(pick: ModelSelection, thread: ModelSelection): boolean {
+  if (pick.autoAccount === true && thread.autoAccount === true) return true;
   const withoutFastModeOff = (selection: ModelSelection) =>
     withModelSelectionOptions(
-      pick.autoAccount === true && thread.autoAccount === true
-        ? { ...selection, instanceId: thread.instanceId }
-        : selection,
+      selection,
       selection.options?.filter((option) => option.id !== "fastMode" || option.value !== false),
     );
   return modelPicksEqual(withoutFastModeOff(pick), withoutFastModeOff(thread));

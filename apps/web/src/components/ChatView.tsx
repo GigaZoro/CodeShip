@@ -104,11 +104,8 @@ import {
   scopeProjectRef,
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
-import {
-  formatModelSlugName,
-  resolveAutoModelSelection,
-  resolveSelectableModel,
-} from "@t3tools/shared/model";
+import { formatModelSlugName, resolveSelectableModel } from "@t3tools/shared/model";
+import { resolveAutoModelSelection } from "@t3tools/shared/serverSettings";
 import { projectScriptCwd, resolveProjectScripts } from "@t3tools/shared/projectScripts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { resolveThreadReferenceCopyTarget } from "@t3tools/client-runtime/thread-reference";
@@ -784,8 +781,8 @@ export default function ChatView(props: ChatViewProps) {
     draftThread && draftDefaultSelection
       ? resolveAutoModelSelection({
           selection: draftDefaultSelection,
-          autoModel: settings.autoModelSelection,
-          providers: providersByEnvironment.get(draftThread.environmentId) ?? [],
+          settings,
+          accounts: providersByEnvironment.get(draftThread.environmentId) ?? [],
           started: false,
         })
       : draftDefaultSelection;

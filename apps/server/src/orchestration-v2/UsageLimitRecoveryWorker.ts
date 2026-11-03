@@ -7,7 +7,6 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as DueHint from "../scheduling/DueHint.ts";
@@ -167,14 +166,12 @@ const makeSweep = Effect.gen(function* () {
     ),
   );
   yield* forkParked(Stream.runForEach(settings.streamChanges, () => due.invalidate));
-  // Set by each sweep: a limited auto-account thread waits for an account with room.
-  const autoAccountWaiting = yield* Ref.make(false);
   // Another account signing in, regaining room, or being enabled can take a waiting thread.
   yield* forkParked(
     Stream.runForEach(providerRegistry.streamChanges, () =>
-      Effect.all([settings.getSettings, Ref.get(autoAccountWaiting)]).pipe(
-        Effect.flatMap(([current, waiting]) =>
-          current.failoverLimitedThreads || waiting ? due.invalidate : Effect.void,
+      settings.getSettings.pipe(
+        Effect.flatMap((current) =>
+          current.failoverLimitedThreads ? due.invalidate : Effect.void,
         ),
       ),
     ),
@@ -191,27 +188,19 @@ const makeSweep = Effect.gen(function* () {
       snooze: preferences.snoozeLimitedThreads,
       failover: preferences.failoverLimitedThreads,
     });
-    // Auto-account threads chose to switch accounts; others follow the setting.
-    const switchesAccounts = (thread: ProjectionStore.ProjectionLimitRecoveryCandidate) =>
-      preferences.failoverLimitedThreads || thread.modelSelection.autoAccount === true;
-    const failover = candidates.some(switchesAccounts)
-      ? {
-          settings: preferences,
-          providers: yield* providerRegistry.getProviders,
-          limitedInstanceIds: yield* projections.getUsageLimitedProviderInstanceIds(now),
-          nowMs,
-        }
-      : null;
-    yield* Ref.set(
-      autoAccountWaiting,
-      candidates.some((thread) => thread.modelSelection.autoAccount === true),
-    );
+    const failover =
+      preferences.failoverLimitedThreads && candidates.length > 0
+        ? {
+            settings: preferences,
+            providers: yield* providerRegistry.getProviders,
+            limitedInstanceIds: yield* projections.getUsageLimitedProviderInstanceIds(now),
+            nowMs,
+          }
+        : null;
     let acted = false;
     for (const thread of candidates) {
       const failoverCommand =
-        failover === null || !switchesAccounts(thread)
-          ? null
-          : limitFailoverCommand({ ...failover, thread });
+        failover === null ? null : limitFailoverCommand({ ...failover, thread });
       if (failoverCommand !== null) {
         const outcome = yield* threads.dispatch(failoverCommand).pipe(
           Effect.as("switched" as const),

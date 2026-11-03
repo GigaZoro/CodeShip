@@ -23,6 +23,7 @@ import type { EffortDisplay } from "@t3tools/contracts/settings";
 import { cn } from "~/lib/utils";
 import { resolveComposerTraitsInput } from "./composerProviderState";
 import {
+  ComposerAutoEffortColumn,
   ComposerEffortColumn,
   ComposerPickerFooter,
   describeComposerEffort,
@@ -76,7 +77,8 @@ export function ComposerControlsBar(props: {
   multipleModelSelections: ChatComposerProps["multipleModelSelections"];
   onMultipleModelSelectionsChange: ChatComposerProps["onMultipleModelSelectionsChange"];
   selectedModelSelection: ModelSelection;
-  autoModelSelection: ModelSelection | null;
+  /** What picking Auto runs here; null where Auto is off or cannot run. */
+  autoPick: ModelSelection | null;
   onProviderModelSelect: ChatComposerProps["onProviderModelSelect"];
   activeThreadModelSelection: ChatComposerProps["activeThreadModelSelection"];
   selectedModelForPickerWithCustomFallback: string;
@@ -126,7 +128,7 @@ export function ComposerControlsBar(props: {
     multipleModelSelections,
     onMultipleModelSelectionsChange,
     selectedModelSelection,
-    autoModelSelection,
+    autoPick,
     onProviderModelSelect,
     activeThreadModelSelection,
     selectedModelForPickerWithCustomFallback,
@@ -170,6 +172,8 @@ export function ComposerControlsBar(props: {
     planModeEnabled,
   });
   const effort = describeComposerEffort(traitsInput, props.effortDisplay, controlSize);
+  // Auto takes its model and options from Settings, so the picker offers none of its own.
+  const autoOn = autoPick !== null && selectedModelSelection.autoAccount === true;
   const restingBlockDefs = showModeBlock
     ? [
         {
@@ -204,7 +208,7 @@ export function ComposerControlsBar(props: {
       multipleModelSelections={multipleModelSelections}
       onMultipleModelSelectionsChange={onMultipleModelSelectionsChange}
       selectedModelSelection={selectedModelSelection}
-      autoModelSelection={autoModelSelection}
+      autoPick={autoPick}
       onProviderModelSelect={onProviderModelSelect}
       activeInstanceId={
         providerCatalogPending
@@ -232,10 +236,12 @@ export function ComposerControlsBar(props: {
       triggerShortcuts={
         pickerOwnsModeShortcut ? "composer.effort composer.mode" : "composer.effort"
       }
-      effortColumn={<ComposerEffortColumn traits={traitsInput} />}
+      effortColumn={
+        autoOn ? <ComposerAutoEffortColumn /> : <ComposerEffortColumn traits={traitsInput} />
+      }
       footer={
         <ComposerPickerFooter
-          traits={traitsInput}
+          traits={autoOn ? null : traitsInput}
           runtimeMode={compatibleRuntimeMode}
           runtimeModeOptions={compatibleRuntimeModeOptions}
           onRuntimeModeChange={handleRuntimeModeChange}

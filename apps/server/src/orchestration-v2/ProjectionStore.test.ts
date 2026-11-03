@@ -5082,17 +5082,6 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           (row) => row.id === threadId,
         ),
       );
-      // An auto-account thread switches accounts without the setting.
-      yield* sql`UPDATE orchestration_v2_projection_threads
-        SET payload_json = json_set(payload_json, '$.modelSelection.autoAccount', json('true'))
-        WHERE thread_id = ${threadId}`;
-      assert.isDefined(
-        (yield* store.getLimitRecoveryCandidates(recoveryOptions)).find(
-          (row) => row.id === threadId,
-        ),
-      );
-      yield* sql`UPDATE orchestration_v2_projection_threads
-        SET payload_json = ${originalRow!.payload_json} WHERE thread_id = ${threadId}`;
       assert.isUndefined(
         (yield* store.getLimitRecoveryCandidates({
           ...recoveryOptions,

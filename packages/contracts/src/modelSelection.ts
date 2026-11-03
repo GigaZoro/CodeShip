@@ -11,9 +11,9 @@ const ModelSelectionWire = Schema.Struct({
   model: TrimmedNonEmptyString,
   options: Schema.optionalKey(ProviderOptionSelections),
   /**
-   * Auto: runs the `autoModelSelection` setting's model (see `resolveAutoModelSelection`) on the
-   * first account in the saved account order with usage left. `instanceId` names the account
-   * the selection last ran on.
+   * Auto: runs the `autoModeModels` entry for Auto's provider (see `resolveAutoModelSelection`)
+   * on the first account in the saved account order with usage left. `instanceId` names the
+   * account the selection last ran on.
    */
   autoAccount: Schema.optionalKey(Schema.Boolean),
 });

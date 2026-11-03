@@ -5,13 +5,8 @@ import {
   type ServerProvider,
   type UnifiedSettings,
 } from "@t3tools/contracts";
-import {
-  autoModelPick,
-  createModelSelection,
-  resolveAutoModelSelection,
-  withAutoAccount,
-  withModelSelectionOptions,
-} from "@t3tools/shared/model";
+import { createModelSelection, withModelSelectionOptions } from "@t3tools/shared/model";
+import { autoModePick, resolveAutoModelSelection } from "@t3tools/shared/serverSettings";
 
 import { useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
@@ -35,10 +30,7 @@ const ROLES: ReadonlyArray<{ readonly role: DelegatedTaskRole; readonly title: s
   { role: "general", title: "Other tasks" },
 ];
 
-/**
- * A settings model choice with its effort, or Auto; `selection` null shows `emptyLabel`. Auto is
- * stored without an effort, so it follows the Auto model's.
- */
+/** A settings model choice with its effort, or Auto; `selection` null shows `emptyLabel`. */
 export function SettingsModelSelectionControl({
   environmentId,
   settings,
@@ -57,21 +49,19 @@ export function SettingsModelSelectionControl({
   readonly label: string;
   readonly selection: ModelSelection | null;
   readonly emptyLabel?: string;
-  /** Off for the Auto model itself. */
+  /** Off for Auto's own models. */
   readonly offerAuto?: boolean;
   readonly onChange: (selection: ModelSelection) => void;
 }) {
   const entries = providerInstanceEntriesFor(providers, settings, null);
   const fallbackEntry = entries.find(isProviderInstancePickerReady);
-  const isAuto = selection?.autoAccount === true;
+  const autoPick = offerAuto
+    ? autoModePick({ settings, accounts: providers, lockedDriver: null })
+    : null;
+  const isAuto = selection?.autoAccount === true && autoPick !== null;
   const resolved =
     selection &&
-    resolveAutoModelSelection({
-      selection,
-      autoModel: settings.autoModelSelection,
-      providers,
-      started: false,
-    });
+    resolveAutoModelSelection({ selection, settings, accounts: providers, started: false });
   const shown =
     resolved ??
     (fallbackEntry === undefined
@@ -102,20 +92,13 @@ export function SettingsModelSelectionControl({
         onInstanceModelChange={(instanceId, model) =>
           onChange(createModelSelection(instanceId, model))
         }
-        {...(offerAuto
-          ? {
-              auto: {
-                model: settings.autoModelSelection,
-                checked: isAuto,
-                onCheckedChange: (checked: boolean) => {
-                  if (checked && settings.autoModelSelection)
-                    onChange(autoModelPick(settings.autoModelSelection, { withEffort: false }));
-                  // Off keeps what Auto runs now, effort included.
-                  else if (!checked && resolved) onChange(withAutoAccount(resolved, false));
-                },
-              },
-            }
-          : {})}
+        auto={{
+          pick: autoPick,
+          checked: isAuto,
+          onSelect: () => {
+            if (autoPick) onChange(autoPick);
+          },
+        }}
       />
       {selection !== null && entry && !isAuto ? (
         <TraitsPicker
@@ -124,6 +107,7 @@ export function SettingsModelSelectionControl({
           model={selection.model}
           modelOptions={selection.options ?? []}
           allowPromptInjectedEffort={false}
+          disabled={readOnly}
           planModeEnabled={settings.planModeEnabled}
           triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
           onModelOptionsChange={(options) =>

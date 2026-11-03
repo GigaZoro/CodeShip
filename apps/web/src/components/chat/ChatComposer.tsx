@@ -51,11 +51,8 @@ import { isPasteAsTextShortcut } from "@t3tools/client-runtime/text-paste";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { folderDropTarget, resolveDroppedFolderPath } from "./folderDrop";
 import { splitTransferredFiles } from "./workspaceFileDrop";
-import {
-  createModelSelection,
-  normalizeModelSlug,
-  resolveAutoModelSelection,
-} from "@t3tools/shared/model";
+import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
+import { autoModeTarget, resolveAutoModelSelection } from "@t3tools/shared/serverSettings";
 import { USAGE_LIMITS_COMMAND } from "@t3tools/shared/usageLimits";
 import {
   memo,
@@ -884,8 +881,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadModelSelection &&
     resolveAutoModelSelection({
       selection: activeThreadModelSelection,
-      autoModel: settings.autoModelSelection,
-      providers: providerStatuses,
+      settings,
+      accounts: providerStatuses,
       started: lockedProvider !== null,
     });
 
@@ -1001,6 +998,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ...createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
     ...(selectedAutoAccount ? { autoAccount: true } : {}),
   };
+  const autoPick = autoModeTarget({
+    selection: selectedModelSelection,
+    settings,
+    accounts: providerStatuses,
+    started: lockedProvider !== null,
+  });
   const selectedModelForPicker = selectedModel;
   const modelOptionsByInstance = new Map<ProviderInstanceId, ReadonlyArray<AppModelOption>>();
   for (const entry of providerInstanceEntries) {
@@ -2381,7 +2384,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       multipleModelSelections={multipleModelSelections}
       onMultipleModelSelectionsChange={setMultipleModelSelections}
       selectedModelSelection={selectedModelSelection}
-      autoModelSelection={settings.autoModelSelection}
+      autoPick={autoPick}
       onProviderModelSelect={onProviderModelSelect}
       activeThreadModelSelection={activeThreadModelSelection}
       selectedModelForPickerWithCustomFallback={selectedModelForPickerWithCustomFallback}

@@ -1,12 +1,9 @@
 import type { MenuAction } from "@react-native-menu/menu";
 import { useAtomValue } from "@effect/atom-react";
 import type { ServerSettingsPatch } from "@t3tools/contracts";
-import {
-  autoModelPick,
-  modelPicksEqual,
-  resolveAutoModelSelection,
-  withAutoAccount,
-} from "@t3tools/shared/model";
+import { describeModelPick } from "@t3tools/client-runtime/model-traits";
+import { modelPicksEqual, withAutoAccount } from "@t3tools/shared/model";
+import { autoModePick, resolveAutoModelSelection } from "@t3tools/shared/serverSettings";
 
 import { ListRowLayout } from "../../../components/ui/ListRowLayout";
 import { Menu } from "../../../components/ui/Menu";
@@ -51,17 +48,21 @@ export function DefaultModelSettings(props: {
   const accountProviders = props.targets[0]
     ? (providersByEnvironment.get(props.targets[0].environment.environmentId) ?? [])
     : [];
-  const autoModel = props.targets[0]?.settings.autoModelSelection ?? null;
-  const autoChecked = selection?.autoAccount === true;
-  // An Auto default shows the Auto model it starts threads on.
+  const accountSettings = props.targets[0]?.settings;
+  const autoPick = accountSettings
+    ? autoModePick({ settings: accountSettings, accounts: accountProviders, lockedDriver: null })
+    : null;
+  const autoChecked = selection?.autoAccount === true && autoPick !== null;
+  // An Auto default shows the model and account Auto starts threads on.
   const shown =
-    selection &&
-    resolveAutoModelSelection({
-      selection,
-      autoModel,
-      providers: accountProviders,
-      started: false,
-    });
+    selection && accountSettings
+      ? resolveAutoModelSelection({
+          selection,
+          settings: accountSettings,
+          accounts: accountProviders,
+          started: false,
+        })
+      : selection;
   const findOption = (target: typeof selection) =>
     options.find(
       (option) =>
@@ -69,7 +70,6 @@ export function DefaultModelSettings(props: {
         option.selection.model === target.model,
     );
   const selectedOption = findOption(shown);
-  const autoModelOption = findOption(autoModel);
   const label = mixed
     ? "Mixed"
     : shown === null
@@ -96,13 +96,19 @@ export function DefaultModelSettings(props: {
     })),
   ];
   const row = <ListRowLayout label="Model" detail={label} disabled={props.disabled} />;
-  // Stays visible while on, so a cleared Auto model cannot strand the setting.
   const showAuto =
     !mixed &&
     props.targets.every(
-      (target) => target.environment.serverConfig.environment.capabilities.autoModel === true,
+      (target) => target.environment.serverConfig.environment.capabilities.autoMode === true,
     ) &&
-    (autoChecked || autoModelOption !== undefined);
+    autoPick !== null;
+  const autoDetail = autoPick
+    ? describeModelPick(
+        autoPick,
+        accountProviders.find((provider) => provider.instanceId === autoPick.instanceId)?.models ??
+          [],
+      )
+    : null;
   return (
     <SettingsSection
       title="Default model"
@@ -138,18 +144,11 @@ export function DefaultModelSettings(props: {
       {showAuto ? (
         <SettingsSwitchRow
           label="Auto"
-          subtitle={
-            autoModelOption
-              ? `${autoModelOption.label}. Set the Auto model and account order on web or desktop.`
-              : "Set the Auto model on web or desktop."
-          }
+          subtitle={`Runs ${autoDetail}. Set Auto mode in Settings › Providers on web or desktop.`}
           value={autoChecked}
           disabled={props.disabled}
           onValueChange={(value) => {
-            if (value && autoModel)
-              props.onChange({
-                defaultModelSelection: autoModelPick(autoModel, { withEffort: false }),
-              });
+            if (value && autoPick) props.onChange({ defaultModelSelection: autoPick });
             else if (!value && shown)
               props.onChange({ defaultModelSelection: withAutoAccount(shown, false) });
           }}

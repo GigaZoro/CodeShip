@@ -3942,11 +3942,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 AND (
                   ${booleanInt(options.autoResume)}
                   OR (
-                    (
-                      ${booleanInt(options.snooze)}
-                      OR ${booleanInt(options.failover === true)}
-                      OR json_extract(t.payload_json, '$.modelSelection.autoAccount') = 1
-                    )
+                    (${booleanInt(options.snooze)} OR ${booleanInt(options.failover === true)})
                     AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(options.now)})
                   )
                 )

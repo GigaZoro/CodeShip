@@ -22,7 +22,7 @@ import {
   type RefObject,
 } from "react";
 import { ModelListRow } from "./ModelListRow";
-import { ModelPickerSidebar } from "./ModelPickerSidebar";
+import { type ModelPickerTab, ModelPickerSidebar } from "./ModelPickerSidebar";
 import { getProviderStatusMessage, hasProviderSetup } from "./ProviderStatusBanner";
 import {
   modelPickerLegacySectionKey,
@@ -57,6 +57,7 @@ import { cn } from "~/lib/utils";
 import { getVirtualizedScrollFadeClassName } from "../ui/scroll-area";
 import { TooltipProvider } from "../ui/tooltip";
 import { InlineButton } from "../ui/button";
+import { CheckIcon, SparklesIcon } from "lucide-react";
 import {
   isProviderInstancePickerReady,
   isProviderInstancePickerVisible,
@@ -133,14 +134,19 @@ function shouldOfferModelPickerSetup(
   );
 }
 
+// No model key starts with it, so it never parses as a model or a legacy section.
+const AUTO_KEY = "auto";
+
 function adjacentModelPickerProvider(input: {
   entries: ReadonlyArray<ProviderInstanceEntry>;
-  selectedInstanceId: ProviderInstanceId | "favorites";
+  selectedInstanceId: ModelPickerTab;
+  showAuto: boolean;
   direction: 1 | -1;
   disabledInstanceIds: ReadonlySet<ProviderInstanceId> | undefined;
   selectableUnavailableInstanceIds: ReadonlySet<ProviderInstanceId> | undefined;
 }) {
-  const providers: Array<ProviderInstanceId | "favorites"> = [
+  const providers: Array<ModelPickerTab> = [
+    ...(input.showAuto ? ["auto" as const] : []),
     "favorites",
     ...input.entries
       .filter(
@@ -247,6 +253,24 @@ function ModelPickerProviderNotices({
         </p>
       ))}
     </>
+  );
+}
+
+function AutoModeNote(props: { providerName: string; onRequestClose: (() => void) | undefined }) {
+  const navigate = useNavigate();
+  return (
+    <p className="shrink-0 border-t border-border/70 px-3 py-2 text-xs leading-snug text-muted-foreground">
+      Starts on the first {props.providerName} account with usage left and switches accounts at
+      usage limits.{" "}
+      <InlineButton
+        onClick={() => {
+          props.onRequestClose?.();
+          void navigate({ to: "/settings/providers" });
+        }}
+      >
+        Change in Settings
+      </InlineButton>
+    </p>
   );
 }
 
@@ -368,6 +392,14 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   onFocusEffort?: () => void;
   /** Closes the list column, inside the popup's fixed height. */
   listFooter?: ReactNode;
+  /** Auto, offered as its own rail tab: runs Auto's model from Settings on an account it picks. */
+  auto?: {
+    /** What Auto runs here, such as "Claude Opus 5.5 · Max". */
+    readonly detail: string;
+    readonly providerName: string;
+    readonly checked: boolean;
+    readonly onSelect: () => void;
+  };
 }) {
   const {
     searchInputRef,
@@ -430,29 +462,28 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       activeEntry,
       modelOptionsByInstance.get(props.activeInstanceId) ?? [],
     );
-  const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | "favorites">(
-    () => {
-      // An unusable selection has no tab of its own; open where a working model can be picked.
-      if (activeEntry === undefined || !isProviderInstancePickerVisible(activeEntry)) {
-        if (favorites.length > 0) return "favorites";
-        return (
-          instanceEntries.find(
-            (entry) =>
-              isProviderInstancePickerReady(entry) &&
-              (props.lockedProvider === null || entry.driverKind === props.lockedProvider),
-          )?.instanceId ?? props.activeInstanceId
-        );
-      }
-      if (
-        props.lockedProvider !== null ||
-        activeInstanceHasSelectableUnavailableModel ||
-        activeInstanceNeedsSetup
-      ) {
-        return props.activeInstanceId;
-      }
-      return favorites.length > 0 ? "favorites" : props.activeInstanceId;
-    },
-  );
+  const [selectedInstanceId, setSelectedInstanceId] = useState<ModelPickerTab>(() => {
+    if (props.auto?.checked) return "auto";
+    // An unusable selection has no tab of its own; open where a working model can be picked.
+    if (activeEntry === undefined || !isProviderInstancePickerVisible(activeEntry)) {
+      if (favorites.length > 0) return "favorites";
+      return (
+        instanceEntries.find(
+          (entry) =>
+            isProviderInstancePickerReady(entry) &&
+            (props.lockedProvider === null || entry.driverKind === props.lockedProvider),
+        )?.instanceId ?? props.activeInstanceId
+      );
+    }
+    if (
+      props.lockedProvider !== null ||
+      activeInstanceHasSelectableUnavailableModel ||
+      activeInstanceNeedsSetup
+    ) {
+      return props.activeInstanceId;
+    }
+    return favorites.length > 0 ? "favorites" : props.activeInstanceId;
+  });
   const favoritesSet = new Set(favorites.map((fav) => providerModelKey(fav.provider, fav.model)));
   const [expandedLegacyInstances, setExpandedLegacyInstances] = useState(
     () =>
@@ -472,7 +503,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     searchInputRef.current?.focus({ preventScroll: true });
   };
 
-  const handleSelectInstance = (instanceId: ProviderInstanceId | "favorites") => {
+  const handleSelectInstance = (instanceId: ModelPickerTab) => {
     setSelectedInstanceId(instanceId);
     window.requestAnimationFrame(() => {
       focusSearchInput();
@@ -598,8 +629,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const isSearching = searchQuery.trim().length > 0;
   // Fit the tallest tab so switching tabs never resizes the popup and moves the rail under the cursor.
   const tallestTabUnits = (() => {
-    const unitsByTab = new Map<ProviderInstanceId | "favorites", number>();
-    const addRow = (tab: ProviderInstanceId | "favorites") => {
+    const unitsByTab = new Map<ModelPickerTab, number>();
+    const addRow = (tab: ModelPickerTab) => {
       const previous = unitsByTab.get(tab);
       unitsByTab.set(
         tab,
@@ -688,7 +719,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   })();
 
   const legacySection = (() => {
-    if (isSearching || selectedInstanceId === "favorites") {
+    if (isSearching || selectedInstanceId === "favorites" || selectedInstanceId === "auto") {
       return null;
     }
     const currentModels: ModelPickerItem[] = [];
@@ -720,9 +751,12 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   })();
 
   const selectedEntry =
-    selectedInstanceId === "favorites" ? undefined : entryByInstanceId.get(selectedInstanceId);
+    selectedInstanceId === "favorites" || selectedInstanceId === "auto"
+      ? undefined
+      : entryByInstanceId.get(selectedInstanceId);
+  const showAutoTab = props.auto !== undefined && selectedInstanceId === "auto" && !isSearching;
   const providerSetupEntries =
-    !isSearching && canOpenProviderSetup
+    !isSearching && !showAutoTab && canOpenProviderSetup
       ? instanceEntries.filter(
           (entry) =>
             matchesLockedProvider(entry) &&
@@ -749,6 +783,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     .slice(0, MODEL_PICKER_JUMP_KEYBINDING_COMMANDS.length)
     .map((model) => modelPickerModelKey(model.instanceId, model.slug));
   const allItemKeys = ((): string[] => [
+    ...(props.auto ? [AUTO_KEY] : []),
     ...flatModels.map((model) => modelPickerModelKey(model.instanceId, model.slug)),
     ...new Set(
       flatModels
@@ -757,6 +792,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     ),
   ])();
   const filteredItemKeys = ((): string[] => {
+    if (showAutoTab) return [AUTO_KEY];
     const modelKeys = visibleModels.map((model) =>
       modelPickerModelKey(model.instanceId, model.slug),
     );
@@ -809,6 +845,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       const next = adjacentModelPickerProvider({
         entries: sidebarInstanceEntries,
         selectedInstanceId,
+        showAuto: props.auto !== undefined,
         direction: command === "modelPicker.nextProvider" ? 1 : -1,
         disabledInstanceIds: lockedDisabledInstanceIds,
         selectableUnavailableInstanceIds,
@@ -816,7 +853,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       setSearchQuery("");
       handleSelectInstance(next);
       announce(
-        next === "favorites" ? "Favorites" : (entryByInstanceId.get(next)?.displayName ?? next),
+        next === "favorites"
+          ? "Favorites"
+          : next === "auto"
+            ? "Auto"
+            : (entryByInstanceId.get(next)?.displayName ?? next),
         "model-picker",
       );
       return;
@@ -871,6 +912,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
             onSelectInstance={handleSelectInstance}
             onFocusSearch={focusSearchInput}
             instanceEntries={sidebarInstanceEntries}
+            showAuto={props.auto !== undefined}
             showFavorites
             {...(selectableUnavailableInstanceIds ? { selectableUnavailableInstanceIds } : {})}
             {...(lockedDisabledInstanceIds
@@ -892,7 +934,13 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           open
           virtualized
           multiple={onToggleModel !== undefined}
-          value={onToggleModel ? [...selectedModelKeySet] : activeModelKey}
+          value={
+            onToggleModel
+              ? [...selectedModelKeySet]
+              : props.auto?.checked
+                ? AUTO_KEY
+                : activeModelKey
+          }
           onItemHighlighted={(modelKey, eventDetails) => {
             highlightedModelKeyRef.current = typeof modelKey === "string" ? modelKey : null;
             if (eventDetails.reason === "keyboard" && eventDetails.index >= 0) {
@@ -908,6 +956,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                 [...selectedModelKeySet].find((key) => !value.includes(key)))
               : value;
             if (typeof modelKey !== "string") {
+              return;
+            }
+            if (modelKey === AUTO_KEY) {
+              props.auto?.onSelect();
               return;
             }
             const legacyInstanceId = parseModelPickerLegacySectionKey(modelKey);
@@ -986,6 +1038,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                   e.stopPropagation();
                   // The column shows the selected model's effort, so a highlighted model is picked
                   // first; the owning popup then moves focus to that model's levels.
+                  if (highlightedModelKeyRef.current === AUTO_KEY && !props.auto?.checked) {
+                    props.auto?.onSelect();
+                    return;
+                  }
                   const highlighted = highlightedModelKeyRef.current
                     ? parseModelPickerModelKey(highlightedModelKeyRef.current)
                     : null;
@@ -1000,6 +1056,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                   (e as typeof e & { preventBaseUIHandler?: () => void }).preventBaseUIHandler?.();
                   e.preventDefault();
                   e.stopPropagation();
+                  if (highlightedModelKeyRef.current === AUTO_KEY) {
+                    props.auto?.onSelect();
+                    return;
+                  }
                   const legacyInstanceId = parseModelPickerLegacySectionKey(
                     highlightedModelKeyRef.current,
                   );
@@ -1024,6 +1084,27 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
               itemKeys={filteredItemKeys}
               extraData={modelListExtraData}
               renderItem={({ item: modelKey, index }) => {
+                if (modelKey === AUTO_KEY && props.auto) {
+                  return (
+                    <ComboboxItem
+                      hideIndicator
+                      selectedFill={false}
+                      index={index}
+                      value={AUTO_KEY}
+                      className="group w-full !min-w-0 max-w-full cursor-pointer"
+                    >
+                      <SparklesIcon className="size-4 shrink-0" aria-hidden />
+                      <span className="shrink-0 text-sm leading-snug">Auto</span>
+                      <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                        {props.auto.detail}
+                      </span>
+                      <CheckIcon
+                        className={cn("size-3.5 shrink-0", !props.auto.checked && "invisible")}
+                        aria-hidden="true"
+                      />
+                    </ComboboxItem>
+                  );
+                }
                 if (legacySection?.key === modelKey) {
                   return (
                     <ComboboxItem
@@ -1062,7 +1143,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                     isSelected={
                       selectedModelKeys !== undefined
                         ? selectedModelKeySet.has(modelKey)
-                        : modelKey === activeModelKey
+                        : !props.auto?.checked && modelKey === activeModelKey
                     }
                     favoriteStarOnHover={selectedInstanceId === "favorites" && !isSearching}
                     showInstanceBadge={badgedInstanceIds.has(model.instanceId)}
@@ -1086,6 +1167,12 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
               onRequestClose={onRequestClose}
               onOpenProviderSetup={onOpenProviderSetup}
             />
+            {showAutoTab && props.auto ? (
+              <AutoModeNote
+                providerName={props.auto.providerName}
+                onRequestClose={onRequestClose}
+              />
+            ) : null}
             {props.listFooter}
           </div>
         </Combobox>

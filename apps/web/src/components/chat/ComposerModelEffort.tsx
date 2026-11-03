@@ -523,6 +523,22 @@ export function ComposerEffortColumn(props: { traits: TraitsSelectionInput | nul
   );
 }
 
+/** The effort column while Auto is on: Auto runs the model and options set in Settings. */
+export function ComposerAutoEffortColumn() {
+  return (
+    <>
+      <div className="shrink-0 px-3 pt-2.5">
+        <div className="flex h-8.25 -translate-y-px items-center border-b border-border/70 pb-1.5 text-sm text-muted-foreground">
+          Effort
+        </div>
+      </div>
+      <p className="px-3 pt-2.5 text-xs leading-snug text-muted-foreground">
+        Auto runs the model and effort set for each provider in Settings › Providers.
+      </p>
+    </>
+  );
+}
+
 const FOOTER_SEGMENT =
   "flex h-6 cursor-pointer items-center justify-center gap-1 px-2 text-muted-foreground text-xs outline-none first:rounded-l-md last:rounded-r-md hover:text-foreground data-checked:bg-input/72 data-checked:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset";
 
