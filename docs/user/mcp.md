@@ -5,8 +5,11 @@ documentation search. Open **MCP servers** in the sidebar rail, or **Open MCP se
 command palette, to see each provider's servers, add new ones, sign in to them, and remove them.
 With more than one account or machine, pick which one to manage at the top of the page. Claude and
 Codex accounts on the same machine share their servers, so adding or removing a server on one
-changes it on the others, unless you gave an account its own config directory. Each Claude account
-signs in to a server on its own.
+changes it on the others, unless you gave an account its own config directory. They share
+sign-ins too: signing in to a server, or out of one, on one account does it on the others. To have
+each added Claude or Codex account sign in on its own, turn off **Share MCP sign-ins** in
+**Settings > Providers**. Antigravity accounts all load the servers in
+`~/.gemini/config/mcp_config.json`.
 
 New sessions load your changes. To use them in a thread that is already running, choose **Restart
 agent session** in the command palette.
@@ -32,7 +35,8 @@ returns to the provider and the dialog finishes on its own. When CodeShip runs o
 the browser shows a connection error after you approve instead. Copy the address from its address
 bar, paste it into the dialog, and choose **Finish sign-in**.
 
-**Sign out** removes the provider's saved sign-in for that server.
+**Sign out** removes the provider's saved sign-in for that server, on every account that shares
+it.
 
 ## Things to know
 

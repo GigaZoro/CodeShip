@@ -110,6 +110,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   usageLimitSources: Schema.optionalKey(Schema.Boolean),
   /** Hide account switching when absent; older servers drop its settings. */
   usageLimitAccountFailover: Schema.optionalKey(Schema.Boolean),
+  /** Honors `shareMcpSignIns`; hide that setting where it is absent. */
+  mcpSignInSharing: Schema.optionalKey(Schema.Boolean),
   /** Honors `autoModelSelection` and `ModelSelection.autoAccount`; hide Auto where it is absent. */
   autoModel: Schema.optionalKey(Schema.Boolean),
   /** Honors `delegatedTaskModelSelections`; hide that setting where it is absent. */

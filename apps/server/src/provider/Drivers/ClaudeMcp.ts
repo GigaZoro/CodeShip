@@ -209,6 +209,8 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
   /** Carries `CLAUDE_CONFIG_DIR` for an added account's own folder. */
   readonly environment: NodeJS.ProcessEnv;
   readonly cwd: string;
+  /** Gives every account the same sign-ins; a server named here just signed in on this one. */
+  readonly shareSignIns: (signedInServer?: string) => Effect.Effect<void>;
   /** An added account copies the shared config's servers, so its changes go to that config. */
   readonly sharedConfig?: {
     readonly environment: NodeJS.ProcessEnv;
@@ -358,6 +360,7 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
 
   return {
     list: (shared?.copyServers ?? Effect.void).pipe(
+      Effect.andThen(options.shareSignIns()),
       Effect.andThen(openSession("list")),
       Effect.flatMap(settledStatuses),
       Effect.map(claudeMcpServers),
@@ -385,7 +388,8 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
         ),
       );
     },
-    signOut: (name) => mutate("signOut", ["mcp", "logout", name]),
+    signOut: (name) =>
+      mutate("signOut", ["mcp", "logout", name]).pipe(Effect.andThen(options.shareSignIns())),
     signIn: Effect.fn("ClaudeMcp.signIn")(function* (name) {
       const query = yield* openSession("signIn");
       if (!hasMcpAuthControls(query)) {
@@ -412,7 +416,7 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
       if (response.requiresUserAction === false) {
         return {
           authorizationUrl: undefined,
-          completed: Effect.void,
+          completed: options.shareSignIns(name),
           submitCallbackUrl: () => Effect.void,
         };
       }
@@ -420,7 +424,7 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
         return yield* failure("signIn", "Claude did not return a sign-in page.");
       return {
         authorizationUrl: response.authUrl,
-        completed: awaitConnected(query, name),
+        completed: awaitConnected(query, name).pipe(Effect.andThen(options.shareSignIns(name))),
         submitCallbackUrl: (callbackUrl) =>
           Effect.tryPromise({
             try: () => query.mcpSubmitOAuthCallbackUrl(name, callbackUrl),

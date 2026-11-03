@@ -2,7 +2,11 @@ import * as NodeAssert from "node:assert/strict";
 
 import { describe, it } from "vite-plus/test";
 
-import { codexAppServerArgs, codexExecLaunchArgs } from "./codexLaunchArgs.ts";
+import {
+  codexAppServerArgs,
+  codexExecLaunchArgs,
+  withPrivateMcpSignIns,
+} from "./codexLaunchArgs.ts";
 
 describe("codexAppServerArgs", () => {
   it("preserves escaped TOML quotes in config values", () => {
@@ -10,6 +14,12 @@ describe("codexAppServerArgs", () => {
       codexAppServerArgs(String.raw`--config model=\"gpt-6.1-sol\" --strict-config`),
       ["app-server", "--config", 'model="gpt-6.1-sol"', "--strict-config"],
     );
+    NodeAssert.deepStrictEqual(codexAppServerArgs(withPrivateMcpSignIns("--strict-config", true)), [
+      "app-server",
+      "--strict-config",
+      "-c",
+      'mcp_oauth_credentials_store="file"',
+    ]);
   });
 });
 

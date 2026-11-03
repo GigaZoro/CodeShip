@@ -188,6 +188,7 @@ function withFakeCodexEnv<A, E, R>(
             config,
             environment: input.environment ?? process.env,
             revision: "test",
+            privateMcpSignIns: false,
           })
         : undefined,
     );

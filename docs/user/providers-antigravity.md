@@ -101,6 +101,11 @@ Skills for every project go in `~/.gemini/config/skills` or
 `~/.gemini/antigravity-cli/skills`. Antigravity does not read `~/.agents/skills`,
 so a skill there only appears when the project itself is your home directory.
 
+Every Antigravity account loads the MCP servers in `~/.gemini/config/mcp_config.json`
+on the environment's machine; edit that file to add or remove them. While it lists
+any servers, CodeShip stops using Antigravity to write thread titles and commit
+messages, because those servers start before CodeShip can block their tools.
+
 Antigravity receives images and audio directly, and reads PDFs and text files as
 documents. With the managed runtime on macOS and Linux, an MP4 video up to 20 MiB
 is sent as video to Gemini models. Other attachments, and videos for other models, are passed as a

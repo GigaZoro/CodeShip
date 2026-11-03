@@ -107,7 +107,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
     Effect.gen(function* () {
       const instanceId = ProviderInstanceId.make("restored-managed-account");
       const credentials = new Map<string, Uint8Array>();
-      const catalogTokens: Array<string | undefined> = [];
+      const catalogTokens: Array<string> = [];
       const probeEntered = yield* Deferred.make<void>();
       const resumeProbe = yield* Deferred.make<void>();
       const secrets = ServerSecretStore.ServerSecretStore.of({
@@ -242,13 +242,17 @@ it.layer(layerTest)("CodexDriver", (it) => {
         }
         const restored = yield* Fiber.join(refresh);
         if (replacementTiming === "during-probe") {
-          expect(catalogTokens).toEqual([]);
+          // Launch settings fetched Codex's catalog before the account changed; the listing never ran.
+          expect(catalogTokens).toEqual(["launch:Bearer dummy-owned-access"]);
           expect(restored.models).toEqual([]);
           expect(restored.auth.email).toBe("replacement@example.test");
           expect(restored.auth.profileId).toBe("oaiapp_replacement");
           return;
         }
-        expect(catalogTokens).toEqual(["Bearer dummy-owned-access"]);
+        expect(catalogTokens).toEqual([
+          "launch:Bearer dummy-owned-access",
+          "listing:Bearer dummy-owned-access",
+        ]);
         expect(restored.auth.email).toBe("account@example.test");
         expect(restored.runtimePaths?.homePath).toBe(sharedHome);
         expect(restored.runtimePaths?.shadowHomePath).toContain(
@@ -309,7 +313,9 @@ it.layer(layerTest)("CodexDriver", (it) => {
                 "https://api.openai.com/v1/models",
               ]).toContain(request.url);
               if (request.url.endsWith("/models")) {
-                catalogTokens.push(request.headers.authorization);
+                // Only the launch catalog asks as Codex, with Codex's originator header.
+                const kind = request.headers.originator === undefined ? "listing" : "launch";
+                catalogTokens.push(`${kind}:${request.headers.authorization}`);
                 return HttpClientResponse.fromWeb(request, Response.json({ models: [] }));
               }
               return HttpClientResponse.fromWeb(

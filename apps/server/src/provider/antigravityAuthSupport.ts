@@ -18,6 +18,7 @@ import * as AcpErrors from "effect-acp/errors";
 
 import { collectUint8StreamText } from "@t3tools/provider-core/server/collectStreamText";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
+import { linkPath } from "./Drivers/ClaudeAccountHome.ts";
 import {
   antigravityUserSkillDirectories,
   resolveAntigravityUserHome,
@@ -230,7 +231,7 @@ function antigravityEnvironment(
   };
 }
 
-/** Private GEMINI_HOME isolates credentials/hooks/MCP; link global skills from the real ~/.gemini. */
+/** Private GEMINI_HOME isolates credentials and hooks; link global skills from the real ~/.gemini. */
 const linkAntigravityUserSkills = Effect.fn("linkAntigravityUserSkills")(function* (input: {
   readonly profileDirectory: string;
   readonly userHome: string;
@@ -284,6 +285,41 @@ const linkAntigravityUserSkills = Effect.fn("linkAntigravityUserSkills")(functio
       ),
     );
   }
+});
+
+/** Every account loads the user's own MCP servers, as Claude and Codex accounts do. */
+const linkAntigravityUserMcpServers = Effect.fn("linkAntigravityUserMcpServers")(function* (input: {
+  readonly profileDirectory: string;
+  readonly userHome: string;
+  readonly platform: NodeJS.Platform;
+}): Effect.fn.Return<void, never, FileSystem.FileSystem | Path.Path> {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const link = path.join(input.profileDirectory, "config", "mcp_config.json");
+  const target = path.join(input.userHome, ".gemini", "config", "mcp_config.json");
+  yield* Effect.gen(function* () {
+    // undefined: nothing there; null: a file this profile wrote, which stays.
+    const existing = yield* fs.readLink(link).pipe(
+      Effect.map((value): string | null | undefined => path.resolve(path.dirname(link), value)),
+      Effect.catchReason("PlatformError", "NotFound", () => Effect.undefined),
+      Effect.orElseSucceed(() => null),
+    );
+    if (existing === null) return;
+    const present = yield* fs.exists(target);
+    if (present && existing === target) return;
+    if (existing !== undefined) yield* fs.remove(link);
+    if (!present) return;
+    yield* fs.makeDirectory(path.dirname(link), { recursive: true });
+    yield* linkPath(target, link, input.platform, false);
+  }).pipe(
+    Effect.catch((error) =>
+      Effect.logWarning("Antigravity's MCP servers are not linked into the profile.", {
+        link,
+        target,
+        error,
+      }),
+    ),
+  );
 });
 
 export const prepareAntigravityProfile = Effect.fn("prepareAntigravityProfile")(function* (input: {
@@ -433,6 +469,7 @@ export const prepareAntigravityProfile = Effect.fn("prepareAntigravityProfile")(
       ),
     );
   yield* linkAntigravityUserSkills({ profileDirectory: geminiHome, userHome, platform });
+  yield* linkAntigravityUserMcpServers({ profileDirectory: geminiHome, userHome, platform });
   return profile;
 });
 

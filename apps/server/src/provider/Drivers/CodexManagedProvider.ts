@@ -32,6 +32,7 @@ import {
   type ProviderInstance,
 } from "@t3tools/provider-core/server/driver";
 import { codexContinuationIdentity } from "./CodexHomeLayout.ts";
+import { privateMcpSignInArgs } from "../codexLaunchArgs.ts";
 import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIdentity";
 import { HttpClient } from "effect/http";
 const DRIVER = ProviderDriverKind.make("codex");
@@ -50,6 +51,14 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     enabled,
     config,
     environment: yield* mergeProviderInstanceEnvironment(input.environment),
+    shareMcpSignIns: host.settings.get.pipe(
+      Effect.map((settings) => settings.shareMcpSignIns),
+      Effect.catch((error) =>
+        Effect.logWarning("Codex MCP sign-ins stay shared: settings could not be read.", {
+          error,
+        }).pipe(Effect.as(true)),
+      ),
+    ),
   });
   const continuationIdentity = codexContinuationIdentity(runtime.homeLayout);
   const stamp = withInstanceIdentity({
@@ -271,7 +280,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
               cwd: process.cwd(),
               environment: effective.environment,
             },
-            args,
+            [...privateMcpSignInArgs(effective.privateMcpSignIns), ...args],
           ),
         ),
         Effect.scoped,

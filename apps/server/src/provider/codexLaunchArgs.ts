@@ -9,6 +9,21 @@ export const resolveCodexLaunchArgs = (
 
 const codexLaunchArgv = (launchArgs?: string): ReadonlyArray<string> => tokenizeCliArgs(launchArgs);
 
+// Codex keeps MCP sign-ins in the keychain by server, so every account shares them; the file store
+// keeps an account's own in `.credentials.json` in its CODEX_HOME.
+const PRIVATE_MCP_SIGN_IN_ARGS = ["-c", 'mcp_oauth_credentials_store="file"'] as const;
+
+export const privateMcpSignInArgs = (privateSignIns: boolean): ReadonlyArray<string> =>
+  privateSignIns ? PRIVATE_MCP_SIGN_IN_ARGS : [];
+
+/** Launch args, as one string, that keep this account's MCP sign-ins to itself when asked. */
+export const withPrivateMcpSignIns = (launchArgs: string, privateSignIns: boolean) =>
+  privateSignIns
+    ? [launchArgs.trim(), ...PRIVATE_MCP_SIGN_IN_ARGS.map((arg) => JSON.stringify(arg))]
+        .filter((arg) => arg !== "")
+        .join(" ")
+    : launchArgs;
+
 export const codexAppServerArgs = (launchArgs?: string) => [
   "app-server",
   ...codexLaunchArgv(launchArgs),

@@ -12,6 +12,7 @@ import * as CodexInstallation from "./CodexInstallation.ts";
 import { makeCodexChatGptAuth } from "./CodexChatGptAuth.ts";
 import { COMMAND_TIMEOUT_MS } from "./CodexManagedTokenProtocol.ts";
 import { materializeCodexShadowHome } from "./Drivers/CodexHomeLayout.ts";
+import { withPrivateMcpSignIns } from "./codexLaunchArgs.ts";
 import { chatGptCodexCatalog } from "./CodexChatGptModels.ts";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { HttpClient } from "effect/http";
@@ -20,6 +21,8 @@ export interface CodexEffectiveRuntime {
   readonly config: CodexSettings;
   readonly environment: NodeJS.ProcessEnv;
   readonly revision: string;
+  /** This account keeps its MCP sign-ins in its own home instead of the shared keychain. */
+  readonly privateMcpSignIns: boolean;
 }
 const decodeSettings = Schema.decodeSync(CodexSettings);
 const encodeCatalog = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -44,6 +47,7 @@ export const makeCodexManagedRuntime = Effect.fn("makeCodexManagedRuntime")(func
   readonly enabled: boolean;
   readonly environment: NodeJS.ProcessEnv;
   readonly config: CodexSettings;
+  readonly shareMcpSignIns: Effect.Effect<boolean>;
 }) {
   const installation = yield* CodexInstallation.CodexInstallation;
   const config = yield* ServerConfig.ServerConfig;
@@ -137,7 +141,9 @@ export const makeCodexManagedRuntime = Effect.fn("makeCodexManagedRuntime")(func
       environmentId,
       profileKey,
     ]);
-    yield* materializeCodexShadowHome(homeLayout).pipe(
+    const shareMcpSignIns = yield* options.shareMcpSignIns;
+    const privateMcpSignIns = !shareMcpSignIns && homeLayout.mode === "authOverlay";
+    yield* materializeCodexShadowHome(homeLayout, { shareMcpSignIns }).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(Path.Path, path),
       Effect.mapError(
@@ -174,10 +180,14 @@ export const makeCodexManagedRuntime = Effect.fn("makeCodexManagedRuntime")(func
         setupMode: "managed",
         binaryPath: executable.executablePath,
         homePath,
-        launchArgs: managedCodexLaunchArgs(invocation.command, authArgs, catalogPath),
+        launchArgs: withPrivateMcpSignIns(
+          managedCodexLaunchArgs(invocation.command, authArgs, catalogPath),
+          privateMcpSignIns,
+        ),
       }),
       environment,
       revision: profileKey,
+      privateMcpSignIns,
     } satisfies CodexEffectiveRuntime;
   });
   return { auth, resolve, installation, homePath, homeLayout };

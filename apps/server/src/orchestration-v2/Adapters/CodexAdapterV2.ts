@@ -119,7 +119,11 @@ import {
   shouldPersistProviderEvent,
 } from "../../provider/EventNdjsonLogger.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
-import { codexAppServerArgs, resolveCodexLaunchArgs } from "../../provider/codexLaunchArgs.ts";
+import {
+  codexAppServerArgs,
+  resolveCodexLaunchArgs,
+  withPrivateMcpSignIns,
+} from "../../provider/codexLaunchArgs.ts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -1328,6 +1332,7 @@ export interface CodexAppServerClientFactoryShape {
     readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
     readonly settings: CodexSettings;
     readonly environment: NodeJS.ProcessEnv;
+    readonly privateMcpSignIns?: boolean;
   }) => Effect.Effect<
     CodexClient.CodexAppServerClient["Service"],
     ProviderAdapter.ProviderAdapterOpenSessionError,
@@ -1548,7 +1553,10 @@ export const layerAppServerClientFactory: Layer.Layer<
         const command = yield* makeCodexAppServerSpawnCommand({
           command: input.settings.binaryPath || "codex",
           args: codexAppServerArgs(
-            resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
+            withPrivateMcpSignIns(
+              resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
+              input.privateMcpSignIns === true,
+            ),
           ),
           env: environment,
           threadId: input.threadId,
@@ -1597,7 +1605,13 @@ export type CodexAdapterV2DriverEnv =
 
 export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapterV2")(function* (
   { instanceId, environment, enabled, config }: ProviderAdapterDriverCreateInput<CodexSettings>,
-  hooks: Pick<CodexAdapterV2Options, "onUsageLimits" | "resolveRuntime" | "compatibility"> = {},
+  hooks: Pick<
+    CodexAdapterV2Options,
+    "onUsageLimits" | "resolveRuntime" | "compatibility" | "prepareMcpSignIns"
+  > & {
+    /** Whether MCP sign-ins are shared when the adapter is built. */
+    readonly shareMcpSignIns?: boolean;
+  } = {},
 ) {
   const clientFactory = yield* CodexAppServerClientFactory;
   const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
@@ -1608,7 +1622,8 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
   const serverConfig = yield* ServerConfig;
   const homeLayout = yield* resolveCodexHomeLayout(config);
 
-  yield* materializeCodexShadowHome(homeLayout).pipe(
+  const { shareMcpSignIns, ...adapterHooks } = hooks;
+  yield* materializeCodexShadowHome(homeLayout, { shareMcpSignIns }).pipe(
     Effect.mapError(
       (cause) =>
         new ProviderAdapterDriverCreateError({
@@ -1637,7 +1652,7 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
     idAllocator,
     serverConfig,
     continuationRequests,
-    ...hooks,
+    ...adapterHooks,
   });
 });
 
@@ -1648,6 +1663,8 @@ export interface CodexAdapterV2Options {
   readonly clientFactory: CodexAppServerClientFactoryShape;
   readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
   readonly resolveRuntime?: Effect.Effect<CodexEffectiveRuntime, ProviderSetupError, Scope.Scope>;
+  /** Runs before each session; true keeps this account's MCP sign-ins in its own home. */
+  readonly prepareMcpSignIns?: Effect.Effect<boolean>;
   readonly compatibility?: (
     version: string,
   ) => Effect.Effect<ServerProviderCompatibilityAdvisory | undefined>;
@@ -1705,6 +1722,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           runtimePolicy: input.runtimePolicy,
           settings: resolvedRuntime?.config ?? adapterOptions.settings,
           environment: resolvedRuntime?.environment ?? adapterOptions.environment,
+          privateMcpSignIns: yield* adapterOptions.prepareMcpSignIns ?? Effect.succeed(false),
         });
         const additionalContextByThread = yield* Ref.make(
           new Map<

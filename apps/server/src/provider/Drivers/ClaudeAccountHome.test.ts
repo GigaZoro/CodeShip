@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
@@ -28,9 +29,12 @@ it.layer(NodeServices.layer)("materializeClaudeAccountHome", (it) => {
       }
       yield* fs.makeDirectory(path.join(sharedHome, "backups"));
       yield* fs.makeDirectory(path.join(sharedHome, ".claude.json.lock"));
+      yield* fs.makeDirectory(path.join(sharedHome, ".storage-write.lock"));
       yield* fs.makeDirectory(accountHome, { recursive: true });
       yield* fs.writeFileString(path.join(accountHome, "settings.json"), "account's own");
       yield* fs.symlink(path.join(root, "elsewhere"), path.join(accountHome, "CLAUDE.md"));
+      const releasedLock = path.join(accountHome, ".storage-write.lock");
+      yield* fs.symlink(path.join(sharedHome, "released.lock"), releasedLock);
 
       for (let run = 0; run < 2; run++) {
         yield* materializeClaudeAccountHome({ sharedHome, accountHome });
@@ -56,11 +60,13 @@ it.layer(NodeServices.layer)("materializeClaudeAccountHome", (it) => {
         ".credentials.json",
         ".claude.json",
         ".claude.json.lock",
+        ".storage-write.lock",
         "remote-settings.json",
         "backups",
       ]) {
         assert.isFalse(yield* fs.exists(path.join(accountHome, name)), name);
       }
+      assert.isTrue(Option.isNone(yield* fs.readLink(releasedLock).pipe(Effect.option)));
     }),
   );
 

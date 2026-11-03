@@ -111,6 +111,7 @@ it.live.each(
           enabled: true,
           config: decodeSettings({ setupMode: "managed", homePath: sharedHome }),
           environment: ambient,
+          shareMcpSignIns: Effect.succeed(false),
         });
         yield* Effect.gen(function* () {
           const effective = yield* runtime.resolve;
@@ -141,6 +142,8 @@ it.live.each(
           assert.isUndefined(effective.environment.T3CODE_CODEX_LAUNCH_ARGS);
           const args = codexAppServerArgs(effective.config.launchArgs);
           assert.include(args, 'model_provider="openai_token_sharing"');
+          // With sharing off, only an added account keeps MCP sign-ins out of the shared keychain.
+          assert.equal(args.includes('mcp_oauth_credentials_store="file"'), account !== "primary");
           const provider = args.find((arg) =>
             arg.startsWith("model_providers.openai_token_sharing="),
           )!;

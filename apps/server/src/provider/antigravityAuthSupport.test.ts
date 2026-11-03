@@ -582,7 +582,7 @@ it.layer(NodeServices.layer)("Antigravity profile preparation", (it) => {
   );
 
   it.effect.skipIf(!symlinksSupported)(
-    "links only the user's existing global skill directories without touching real content",
+    "links the user's existing global skills and MCP servers without touching real content",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -605,9 +605,15 @@ it.layer(NodeServices.layer)("Antigravity profile preparation", (it) => {
         expect(yield* fs.readLink(configLink)).toBe(configSkills);
         expect(yield* isLink(cliLink)).toBe(false);
         expect(yield* fs.exists(path.join(configLink, "review"))).toBe(true);
-        expect(yield* fs.exists(path.join(profileDirectory, "config", "mcp_config.json"))).toBe(
-          false,
-        );
+        const mcpLink = path.join(profileDirectory, "config", "mcp_config.json");
+        const userMcpConfig = path.join(userHome, ".gemini", "config", "mcp_config.json");
+        expect(yield* isLink(mcpLink)).toBe(false);
+        yield* fs.writeFileString(userMcpConfig, '{"mcpServers":{}}');
+        yield* prepareAntigravityProfile({ profileDirectory, userHome });
+        expect(yield* fs.readLink(mcpLink)).toBe(userMcpConfig);
+        yield* fs.remove(userMcpConfig);
+        yield* prepareAntigravityProfile({ profileDirectory, userHome });
+        expect(yield* isLink(mcpLink)).toBe(false);
 
         // The harness leaves an empty folder where the link was skipped.
         yield* fs.makeDirectory(cliLink, { recursive: true });

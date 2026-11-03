@@ -41,6 +41,7 @@ export function AccountFailoverSettings({
   providers,
   readOnly,
   supportsAutoModel,
+  supportsMcpSignInSharing,
 }: {
   readonly environmentId: EnvironmentId;
   readonly settings: UnifiedSettings;
@@ -48,6 +49,8 @@ export function AccountFailoverSettings({
   readonly readOnly: boolean;
   /** Older servers drop `autoModelSelection`. */
   readonly supportsAutoModel: boolean;
+  /** Older servers drop `shareMcpSignIns`. */
+  readonly supportsMcpSignInSharing: boolean;
 }) {
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
   const groups = failoverGroups(settings.providerInstanceFailoverOrder, providers);
@@ -109,6 +112,20 @@ export function AccountFailoverSettings({
           />
         }
       />
+      {supportsMcpSignInSharing ? (
+        <SettingsRow
+          title="Share MCP sign-ins"
+          description="Accounts of the same provider on this machine use one sign-in per MCP server, so signing in or out on one account does it on all of them. Off, each added Claude and Codex account signs in on its own."
+          control={
+            <Switch
+              aria-label="Share MCP sign-ins"
+              checked={settings.shareMcpSignIns}
+              disabled={readOnly}
+              onCheckedChange={(checked) => updateSettings({ shareMcpSignIns: checked })}
+            />
+          }
+        />
+      ) : null}
       {groups.length === 0 ? (
         <SettingsRow
           title="Account order"

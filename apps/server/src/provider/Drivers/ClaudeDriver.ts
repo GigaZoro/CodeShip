@@ -63,6 +63,7 @@ import {
 } from "./ClaudeAccountHome.ts";
 import { makeClaudeAuth } from "./ClaudeAuth.ts";
 import { makeClaudeMcpManagement } from "./ClaudeMcp.ts";
+import * as ClaudeMcpSignIns from "./ClaudeMcpSignIns.ts";
 import { makeClaudePluginManagement } from "./ClaudePlugins.ts";
 import {
   makeClaudeCapabilitiesCacheKey,
@@ -107,6 +108,7 @@ export type ClaudeDriverEnv =
   | ProviderHost.ProviderHost
   | ChildProcessSpawner.ChildProcessSpawner
   | ResetCreditCoordinator.ResetCreditCoordinator
+  | ClaudeMcpSignIns.ClaudeMcpSignIns
   | Crypto.Crypto
   | FileSystem.FileSystem
   | HttpClient.HttpClient
@@ -216,6 +218,38 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         : undefined,
     );
     const claudeEnvironment = yield* makeClaudeEnvironment(effectiveConfig, processEnv);
+    const mcpSignIns = yield* ClaudeMcpSignIns.ClaudeMcpSignIns;
+    const { settings: serverSettings } = yield* ProviderHost.ProviderHost;
+    const makeCredentialStore = (env: NodeJS.ProcessEnv) =>
+      ClaudeMcpSignIns.makeClaudeCredentialStore(env).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
+    const credentialStore = yield* makeCredentialStore(claudeEnvironment);
+    // An added account shares the main folder's login store; any other provider is its own.
+    const mainCredentialStore =
+      accountHome === undefined ? credentialStore : yield* makeCredentialStore(processEnv);
+    if (accountHome !== undefined) yield* mcpSignIns.join(mainCredentialStore, credentialStore);
+    const shareMcpSignIns = (signedInServer?: string) =>
+      serverSettings.get.pipe(
+        Effect.map((current) => current.shareMcpSignIns),
+        Effect.catch((error) =>
+          Effect.logWarning("Claude MCP sign-ins are not shared: settings could not be read.", {
+            error,
+          }).pipe(Effect.as(false)),
+        ),
+        Effect.flatMap((enabled) =>
+          enabled
+            ? mcpSignIns.share(
+                mainCredentialStore,
+                signedInServer === undefined
+                  ? undefined
+                  : { store: credentialStore.key, serverName: signedInServer },
+              )
+            : mcpSignIns.forget(mainCredentialStore),
+        ),
+      );
     const auth = yield* makeClaudeAuth({
       instanceId,
       binaryPath: effectiveConfig.binaryPath,
@@ -236,6 +270,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       binaryPath: effectiveConfig.binaryPath,
       environment: claudeEnvironment,
       cwd: stateDir,
+      shareSignIns: shareMcpSignIns,
       ...(accountHome === undefined
         ? {}
         : {
@@ -277,7 +312,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       {
         scopedLimitNames,
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
-        prepareHome: copyMcpServers,
+        prepareHome: copyMcpServers.pipe(Effect.andThen(shareMcpSignIns())),
       },
     ).pipe(
       Effect.mapError(

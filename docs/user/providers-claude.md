@@ -16,9 +16,12 @@ provider keeps its login in a folder CodeShip creates for it, and that folder li
 to everything else in `~/.claude`: CLAUDE.md, skills, settings, plugins, and past
 sessions, so threads can move between accounts. Claude saves MCP servers with the
 login, so before Claude starts, CodeShip copies the servers in `~/.claude.json`, such
-as ones added with `claude mcp add --scope user`, into each account. Each account
-signs in to those servers on its own. **Sign out** signs that account out; sign the
-first provider out with `claude auth logout` in a terminal.
+as ones added with `claude mcp add --scope user`, into each account. The accounts
+also share MCP sign-ins, so signing in to a server on one signs in all of them; turn
+off **Share MCP sign-ins** in **Settings > Providers** to keep each account's own. On
+Windows, an account that keeps its login in the Windows Credential Manager signs in on
+its own. **Sign out** signs that account out; sign the first provider out with
+`claude auth logout` in a terminal.
 
 A provider signed in to the same account as another provider is unavailable until
 you sign it in to a different account. A Claude provider signed in with a

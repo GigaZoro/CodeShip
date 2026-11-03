@@ -853,7 +853,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Auto model and accounts",
     to: "/settings/providers",
     searchTerms: [
-      "auto mode auto model primary model default switch accounts failover usage limit quota rate limit multiple accounts order priority second account continue",
+      "auto mode auto model primary model default switch accounts failover usage limit quota rate limit multiple accounts order priority second account continue mcp server sign in share oauth",
     ],
     providerSettingsOnly: true,
   },
