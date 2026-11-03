@@ -1,12 +1,11 @@
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
-  PROVIDER_DISPLAY_NAMES,
+  type ModelSelection,
   type ProviderInstanceId,
   type EnvironmentId,
   type ProviderDriverKind,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
-import { supportsAccountFailover } from "@t3tools/shared/serverSettings";
 import { useAtomValue } from "@effect/atom-react";
 import { createContext, memo, type ReactNode, useRef, useState } from "react";
 import { Badge } from "../ui/badge";
@@ -14,7 +13,7 @@ import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
 import { ModelPickerContent, resolveModelPickerSelectedModel } from "./ModelPickerContent";
-import { AutoAccountControl } from "./AutoAccountControl";
+import { AutoModeControl } from "./AutoModeControl";
 import { ChatGptSharingControl } from "./ChatGptSharingControl";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { ModelEsque, getDisplayModelName, getTriggerDisplayModelName } from "./providerIconUtils";
@@ -121,8 +120,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
    */
   effortColumn?: ReactNode;
   footer?: ReactNode;
-  /** Lets the server pick the account; offered for providers that can switch accounts. */
-  autoAccount?: {
+  /** Auto mode: runs the Auto model from Settings, on an account the server picks. */
+  auto?: {
+    readonly model: ModelSelection | null;
     readonly checked: boolean;
     readonly onCheckedChange: (checked: boolean) => void;
   };
@@ -160,28 +160,38 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     : triggerTitle;
   const showInstanceBadge =
     activeEntry !== null && shouldShowInstanceBadge(activeEntry, props.instanceEntries);
-  const autoAccountRouting = useAtomValue(
+  const autoModelSupported = useAtomValue(
     serverEnvironment.configValueAtom(props.environmentId),
-    (config) => config?.environment.capabilities.autoAccountRouting === true,
+    (config) => config?.environment.capabilities.autoModel === true,
   );
-  // Stays visible while on, so a removed second account cannot strand the setting.
-  const autoAccount =
-    props.autoAccount !== undefined &&
-    autoAccountRouting &&
+  const autoModelEntry = props.auto?.model
+    ? props.instanceEntries.find((entry) => entry.instanceId === props.auto?.model?.instanceId)
+    : undefined;
+  const autoModel =
+    props.auto?.model && autoModelEntry
+      ? resolveModelPickerSelectedModel({
+          driverKind: autoModelEntry.driverKind,
+          model: props.auto.model.model,
+          options: props.modelOptionsByInstance.get(autoModelEntry.instanceId) ?? [],
+        })
+      : undefined;
+  // Stays visible while on, so a cleared Auto model cannot strand a pick on it.
+  const auto =
+    props.auto !== undefined &&
+    autoModelSupported &&
     props.selectedModels === undefined &&
-    activeEntry !== null &&
-    supportsAccountFailover(activeEntry.driverKind) &&
-    (props.autoAccount.checked ||
-      props.instanceEntries.filter(
-        (entry) =>
-          entry.driverKind === activeEntry.driverKind && isProviderInstancePickerReady(entry),
-      ).length > 1)
+    (props.auto.checked ||
+      (autoModelEntry !== undefined &&
+        isProviderInstancePickerReady(autoModelEntry) &&
+        (props.lockedProvider === null || autoModelEntry.driverKind === props.lockedProvider)))
       ? {
-          ...props.autoAccount,
-          providerName: PROVIDER_DISPLAY_NAMES[activeEntry.driverKind] ?? activeEntry.driverKind,
+          ...props.auto,
+          modelLabel: autoModel
+            ? getDisplayModelName(autoModel)
+            : (props.auto.model?.model ?? triggerLabel),
         }
       : null;
-  const autoAccountLabel = autoAccount?.checked ? "Auto account" : null;
+  const autoLabel = auto?.checked ? "Auto" : null;
 
   const setIsMenuOpen = (open: boolean) => {
     props.onOpenChange?.(open);
@@ -265,15 +275,15 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     ? selectedEntries.map((selection) => selection.fullLabel).join(", ") || "Choose models"
     : undefined;
   const triggerTooltipContent = [
+    autoLabel,
     props.triggerLabel ?? allModelNames ?? triggerLabel,
-    autoAccountLabel,
     props.triggerDetail,
     shortcutLabel,
   ]
     .filter(Boolean)
     .join(" · ");
 
-  const triggerText = props.triggerLabel ?? multipleLabel ?? triggerTitle;
+  const triggerText = props.triggerLabel ?? multipleLabel ?? autoLabel ?? triggerTitle;
   const triggerTextProps = {
     className: cn(
       "min-w-0 flex-1 overflow-hidden truncate",
@@ -283,12 +293,14 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     "data-chat-provider-model-picker-label": "true",
   } as const;
 
-  const autoAccountControl = autoAccount ? (
-    <AutoAccountControl
-      providerName={autoAccount.providerName}
-      checked={autoAccount.checked}
+  const autoControl = auto ? (
+    <AutoModeControl
+      modelLabel={auto.modelLabel}
+      checked={auto.checked}
       onCheckedChange={(checked) => {
-        if (!props.disabled) autoAccount.onCheckedChange(checked);
+        if (props.disabled) return;
+        auto.onCheckedChange(checked);
+        if (checked && !docked) setIsMenuOpen(false);
       }}
     />
   ) : null;
@@ -330,7 +342,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
               ? {
                   listFooter: (
                     <>
-                      {autoAccountControl}
+                      {autoControl}
                       <ChatGptSharingControl provider={activeEntry?.snapshot ?? null} />
                     </>
                   ),
@@ -362,7 +374,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             ref={triggerRef}
             aria-label={[
               props.triggerAriaLabel ?? props.triggerLabel ?? allModelNames ?? triggerLabel,
-              autoAccountLabel,
+              autoLabel,
               props.triggerDetail,
             ]
               .filter(Boolean)
@@ -508,7 +520,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         )}
         {props.selectedModels === undefined && !docked ? (
           <>
-            {autoAccountControl}
+            {autoControl}
             <ChatGptSharingControl provider={activeEntry?.snapshot ?? null} />
           </>
         ) : null}

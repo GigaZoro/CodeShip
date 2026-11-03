@@ -3282,7 +3282,7 @@ describe("OrchestratorMcpService provider resolution", () => {
     }),
   );
 
-  it.effect("starts a task on its role's model, keeping the Auto account settings chose", () =>
+  it.effect("starts a task on its role's model, keeping the Auto settings chose", () =>
     Effect.gen(function* () {
       const claudeInstanceId = ProviderInstanceId.make("claude_work");
       const commands: Array<{ readonly modelSelection?: unknown }> = [];
@@ -3355,7 +3355,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           ["implementation", undefined],
           ["implementation", { model: "gpt-5.4" }],
           ["review", undefined],
-          // A reviewer named by account keeps the Auto account its setting chose.
+          // A reviewer named by account keeps the Auto its setting chose.
           ["review", { providerInstanceId: claudeInstanceId, model: "claude-opus" }],
         ] as const) {
           yield* service.delegateTask(scope, {

@@ -110,8 +110,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   usageLimitSources: Schema.optionalKey(Schema.Boolean),
   /** Hide account switching when absent; older servers drop its settings. */
   usageLimitAccountFailover: Schema.optionalKey(Schema.Boolean),
-  /** Honors `ModelSelection.autoAccount`; hide Auto account where it is absent. */
-  autoAccountRouting: Schema.optionalKey(Schema.Boolean),
+  /** Honors `autoModelSelection` and `ModelSelection.autoAccount`; hide Auto where it is absent. */
+  autoModel: Schema.optionalKey(Schema.Boolean),
   /** Honors `delegatedTaskModelSelections`; hide that setting where it is absent. */
   delegatedTaskModels: Schema.optionalKey(Schema.Boolean),
   /** Runs Final review and honors the thread `finalReview` flag; hide its controls where absent. */

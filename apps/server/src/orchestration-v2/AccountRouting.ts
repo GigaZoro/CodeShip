@@ -8,7 +8,11 @@ import {
   type ServerProvider,
   type ServerSettings as ServerSettingsValue,
 } from "@t3tools/contracts";
-import { resolveSelectableModel } from "@t3tools/shared/model";
+import {
+  modelPicksEqual,
+  resolveAutoModelSelection,
+  resolveSelectableModel,
+} from "@t3tools/shared/model";
 import {
   orderProviderInstancesForFailover,
   supportsAccountFailover,
@@ -28,7 +32,10 @@ const METERED_AUTH_TYPES = new Set(["apiKey", "api-key", "bedrock"]);
 export interface AccountRoutingContext {
   readonly settings: Pick<
     ServerSettingsValue,
-    "providerInstanceFailoverOrder" | "providerInstances" | "projectSettingsOverrides"
+    | "providerInstanceFailoverOrder"
+    | "providerInstances"
+    | "projectSettingsOverrides"
+    | "autoModelSelection"
   >;
   readonly providers: ReadonlyArray<ServerProvider>;
   /** Accounts that stopped a run on a usage limit whose reset is still ahead. */
@@ -81,9 +88,10 @@ export function accountsWithRoom(
 }
 
 /**
- * Where an auto-account selection runs. A thread stays on its account while that account has
- * room, so a switch never restarts its session needlessly. A new thread, or one whose account
- * ran out, takes the highest account in the order with room. With none left, it stays put.
+ * Where an Auto selection runs: the Auto model, on an account the server picks. A thread stays
+ * on its account while that account has room, so a switch never restarts its session
+ * needlessly. A new thread, or one whose account ran out, takes the highest account in the
+ * order with room. With none left, it stays put.
  */
 export function routeAutoAccount(
   input: AccountRoutingContext & {
@@ -91,10 +99,17 @@ export function routeAutoAccount(
     readonly projectId: ProjectId;
     /** The account the thread already runs on; null for a thread with no run yet. */
     readonly currentInstanceId: ProviderInstanceId | null;
+    /** A thread that already ran keeps its provider. */
+    readonly started: boolean;
   },
 ): ModelSelection {
-  const { selection } = input;
-  if (selection.autoAccount !== true) return selection;
+  if (input.selection.autoAccount !== true) return input.selection;
+  const selection = resolveAutoModelSelection({
+    selection: input.selection,
+    autoModel: input.settings.autoModelSelection,
+    providers: input.providers,
+    started: input.started,
+  });
   const driver = input.providers.find(
     (provider) => provider.instanceId === selection.instanceId,
   )?.driver;
@@ -114,20 +129,23 @@ export function routeAutoAccount(
       : { instanceId: current.instanceId, model: selection.model };
   };
   const target = pickTarget();
-  return target === undefined ||
+  const routed =
+    target === undefined ||
     (target.instanceId === selection.instanceId && target.model === selection.model)
-    ? selection
-    : { ...selection, instanceId: target.instanceId, model: target.model };
+      ? selection
+      : { ...selection, instanceId: target.instanceId, model: target.model };
+  return modelPicksEqual(routed, input.selection) ? input.selection : routed;
 }
 
 export class AccountRouting extends Context.Service<
   AccountRouting,
   {
-    /** Resolves an auto-account selection to the account its next turn runs on. */
+    /** Resolves an Auto selection to the model and account its next turn runs on. */
     readonly route: (input: {
       readonly selection: ModelSelection;
       readonly projectId: ProjectId;
       readonly currentInstanceId: ProviderInstanceId | null;
+      readonly started: boolean;
     }) => Effect.Effect<ModelSelection>;
   }
 >()("t3/orchestration-v2/AccountRouting") {}

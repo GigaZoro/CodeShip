@@ -1505,10 +1505,9 @@ const make = Effect.gen(function* () {
         instanceId,
         model,
         ...(options === undefined ? {} : { options }),
-        // A child on its parent's account picks accounts the way its parent does. A model the
-        // user set to Auto account, as a reviewer or a role's model, keeps that choice.
-        ...((instanceId === inheritedSelection.instanceId &&
-          inheritedSelection.autoAccount === true) ||
+        // A child on its parent's Auto model is Auto too; a model the agent names instead is
+        // not. A model the user set to Auto, as a reviewer or a role's model, keeps that choice.
+        ...((inheritsOptions && inheritedSelection.autoAccount === true) ||
         (yield* isConfiguredAutoAccount(instanceId, slug))
           ? { autoAccount: true }
           : {}),

@@ -12,6 +12,7 @@ import {
   ProviderSessionId,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2ThreadShell,
   ProjectId,
   ProviderInstanceId,
   RunId,
@@ -90,26 +91,27 @@ const layerDispatchChokepointTest =
       readonly accountRouting?: Layer.Layer<AccountRouting.AccountRouting>;
     } = {},
   ) =>
-  (dispatched: Array<OrchestrationV2ServerCommand>) =>
-    ThreadManagementService.layer.pipe(
+  (dispatched: Array<OrchestrationV2ServerCommand>) => {
+    const thread = {
+      id: ThreadId.make("thread:thread-management:chokepoint"),
+      projectId: ProjectId.make("project:thread-management:chokepoint"),
+      providerInstanceId: ProviderInstanceId.make("codex_work"),
+      activeProviderThreadId: null,
+      latestRunId: null,
+      deletedAt: null,
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex_work"),
+        model: "test",
+        ...(options.autoAccount ? { autoAccount: true } : {}),
+      },
+    };
+    return ThreadManagementService.layer.pipe(
       Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
       Layer.provide(
         Layer.mock(Orchestrator.OrchestratorV2)({
           getThreadRecords: () =>
-            Effect.succeed({
-              thread: {
-                id: ThreadId.make("thread:thread-management:chokepoint"),
-                projectId: ProjectId.make("project:thread-management:chokepoint"),
-                providerInstanceId: ProviderInstanceId.make("codex_work"),
-                activeProviderThreadId: null,
-                deletedAt: null,
-                modelSelection: {
-                  instanceId: ProviderInstanceId.make("codex_work"),
-                  model: "test",
-                  ...(options.autoAccount ? { autoAccount: true } : {}),
-                },
-              },
-            } as unknown as OrchestrationV2ThreadProjection),
+            Effect.succeed({ thread } as unknown as OrchestrationV2ThreadProjection),
+          getThreadShell: () => Effect.succeed(thread as unknown as OrchestrationV2ThreadShell),
           dispatch: (command) =>
             Effect.sync(() => {
               dispatched.push(command);
@@ -121,6 +123,7 @@ const layerDispatchChokepointTest =
       Layer.provide(settingsLayer),
       Layer.provideMerge(layerReceiptsTest),
     );
+  };
 
 it.effect(
   "the dispatch chokepoint refuses a continuation message.dispatch on a project-disabled instance before reaching the orchestrator",
@@ -263,6 +266,7 @@ it.effect(
           selection: { instanceId: limited, model: "test", autoAccount: true },
           projectId,
           currentInstanceId: null,
+          started: false,
         },
       ]);
       expect(dispatched).toMatchObject([

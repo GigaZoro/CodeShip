@@ -1,8 +1,12 @@
 import type { MenuAction } from "@react-native-menu/menu";
 import { useAtomValue } from "@effect/atom-react";
-import { PROVIDER_DISPLAY_NAMES, type ServerSettingsPatch } from "@t3tools/contracts";
-import { keepAutoAccount, modelPicksEqual, withAutoAccount } from "@t3tools/shared/model";
-import { supportsAccountFailover } from "@t3tools/shared/serverSettings";
+import type { ServerSettingsPatch } from "@t3tools/contracts";
+import {
+  autoModelPick,
+  modelPicksEqual,
+  resolveAutoModelSelection,
+  withAutoAccount,
+} from "@t3tools/shared/model";
 
 import { ListRowLayout } from "../../../components/ui/ListRowLayout";
 import { Menu } from "../../../components/ui/Menu";
@@ -44,18 +48,37 @@ export function DefaultModelSettings(props: {
       ),
     ),
   );
-  const selectedOption = options.find(
-    (option) =>
-      option.selection.instanceId === selection?.instanceId &&
-      option.selection.model === selection.model,
-  );
+  const accountProviders = props.targets[0]
+    ? (providersByEnvironment.get(props.targets[0].environment.environmentId) ?? [])
+    : [];
+  const autoModel = props.targets[0]?.settings.autoModelSelection ?? null;
+  const autoChecked = selection?.autoAccount === true;
+  // An Auto default shows the Auto model it starts threads on.
+  const shown =
+    selection &&
+    resolveAutoModelSelection({
+      selection,
+      autoModel,
+      providers: accountProviders,
+      started: false,
+    });
+  const findOption = (target: typeof selection) =>
+    options.find(
+      (option) =>
+        option.selection.instanceId === target?.instanceId &&
+        option.selection.model === target.model,
+    );
+  const selectedOption = findOption(shown);
+  const autoModelOption = findOption(autoModel);
   const label = mixed
     ? "Mixed"
-    : selection === null
+    : shown === null
       ? "Automatic"
       : selectedOption
-        ? `${selectedOption.providerLabel} · ${selectedOption.label}`
-        : selection.model;
+        ? autoChecked
+          ? `Auto · ${selectedOption.label}`
+          : `${selectedOption.providerLabel} · ${selectedOption.label}`
+        : shown.model;
   const actions: MenuAction[] = [
     {
       id: "automatic",
@@ -73,30 +96,13 @@ export function DefaultModelSettings(props: {
     })),
   ];
   const row = <ListRowLayout label="Model" detail={label} disabled={props.disabled} />;
-  const accountProviders = props.targets[0]
-    ? (providersByEnvironment.get(props.targets[0].environment.environmentId) ?? [])
-    : [];
-  const autoAccountDriver = accountProviders.find(
-    (provider) => provider.instanceId === selection?.instanceId,
-  )?.driver;
-  const autoAccountProviderName = autoAccountDriver
-    ? (PROVIDER_DISPLAY_NAMES[autoAccountDriver] ?? autoAccountDriver)
-    : "";
-  const autoAccountChecked = selection?.autoAccount === true;
-  // Stays visible while on, so a removed second account cannot strand the setting.
-  const showAutoAccount =
+  // Stays visible while on, so a cleared Auto model cannot strand the setting.
+  const showAuto =
     !mixed &&
     props.targets.every(
-      (target) =>
-        target.environment.serverConfig.environment.capabilities.autoAccountRouting === true,
+      (target) => target.environment.serverConfig.environment.capabilities.autoModel === true,
     ) &&
-    selection !== null &&
-    autoAccountDriver !== undefined &&
-    supportsAccountFailover(autoAccountDriver) &&
-    (autoAccountChecked ||
-      accountProviders.filter(
-        (provider) => provider.driver === autoAccountDriver && provider.enabled,
-      ).length > 1);
+    (autoChecked || autoModelOption !== undefined);
   return (
     <SettingsSection
       title="Default model"
@@ -123,24 +129,29 @@ export function DefaultModelSettings(props: {
             const option = options.find(
               (candidate) => `model:${candidate.key}` === nativeEvent.event,
             );
-            if (option)
-              props.onChange({
-                defaultModelSelection: keepAutoAccount(selection, option.selection),
-              });
+            if (option) props.onChange({ defaultModelSelection: option.selection });
           }}
         >
           {row}
         </Menu>
       )}
-      {showAutoAccount ? (
+      {showAuto ? (
         <SettingsSwitchRow
-          label="Auto account"
-          subtitle={`Start on the first ${autoAccountProviderName} account in your account order with usage left. Set the order on web or desktop.`}
-          value={autoAccountChecked}
+          label="Auto"
+          subtitle={
+            autoModelOption
+              ? `${autoModelOption.label}. Set the Auto model and account order on web or desktop.`
+              : "Set the Auto model on web or desktop."
+          }
+          value={autoChecked}
           disabled={props.disabled}
           onValueChange={(value) => {
-            if (selection)
-              props.onChange({ defaultModelSelection: withAutoAccount(selection, value) });
+            if (value && autoModel)
+              props.onChange({
+                defaultModelSelection: autoModelPick(autoModel, { withEffort: false }),
+              });
+            else if (!value && shown)
+              props.onChange({ defaultModelSelection: withAutoAccount(shown, false) });
           }}
         />
       ) : null}

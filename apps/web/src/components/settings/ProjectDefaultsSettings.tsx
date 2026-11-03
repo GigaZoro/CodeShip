@@ -5,8 +5,9 @@ import {
   managedRuntimeModeDenial,
 } from "@t3tools/contracts";
 import {
+  autoModelPick,
   createModelSelection,
-  keepAutoAccount,
+  resolveAutoModelSelection,
   withAutoAccount,
   withModelSelectionOptions,
 } from "@t3tools/shared/model";
@@ -84,8 +85,19 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
           providers,
           settings.defaultModelSelection ?? inheritedSelection,
         );
+  const storedAuto = storedSelection?.autoAccount === true;
+  // An Auto default shows the Auto model it starts threads on, and takes its effort from it.
   const selection = storedSelection
-    ? resolveEffectiveDefaultModelSelection(settings, providers, storedSelection)
+    ? resolveEffectiveDefaultModelSelection(
+        settings,
+        providers,
+        resolveAutoModelSelection({
+          selection: storedSelection,
+          autoModel: settings.autoModelSelection,
+          providers,
+          started: false,
+        }),
+      )
     : null;
   const entries = providerInstanceEntriesFor(providers, settings, target?.projectId ?? null);
   const modelOptions = getCustomModelOptionsByInstance(
@@ -191,19 +203,24 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                   });
               }}
               onInstanceModelChange={(instanceId, model) =>
-                setModel(keepAutoAccount(selection, createModelSelection(instanceId, model)))
+                setModel(createModelSelection(instanceId, model))
               }
               {...(mixedModel
                 ? {}
                 : {
-                    autoAccount: {
-                      checked: selection.autoAccount === true,
+                    auto: {
+                      model: settings.autoModelSelection,
+                      checked: storedAuto,
                       onCheckedChange: (checked: boolean) =>
-                        setModel(withAutoAccount(selection, checked)),
+                        setModel(
+                          checked && settings.autoModelSelection
+                            ? autoModelPick(settings.autoModelSelection, { withEffort: false })
+                            : withAutoAccount(selection, false),
+                        ),
                     },
                   })}
             />
-            {!mixedModel && activeEntry && !effortDisabledReason ? (
+            {!mixedModel && activeEntry && !effortDisabledReason && !storedAuto ? (
               <TraitsPicker
                 provider={activeEntry.driverKind}
                 models={activeEntry.models}

@@ -560,6 +560,10 @@ export function EnvironmentProviderSettings({
     serverEnvironment.configValueAtom(environmentId),
     (config) => config?.environment.capabilities.usageLimitAccountFailover === true,
   );
+  const serverSupportsAutoModel = useAtomValue(
+    serverEnvironment.configValueAtom(environmentId),
+    (config) => config?.environment.capabilities.autoModel === true,
+  );
   const serverSupportsFinalReview = useAtomValue(
     serverEnvironment.configValueAtom(environmentId),
     (config) => config?.environment.capabilities.finalReview === true,
@@ -1089,6 +1093,7 @@ export function EnvironmentProviderSettings({
           settings={settings}
           providers={serverProviders}
           readOnly={readOnly || !canWriteSettings}
+          supportsAutoModel={serverSupportsAutoModel}
         />
       ) : null}
 

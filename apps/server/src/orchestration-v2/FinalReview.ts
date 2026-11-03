@@ -27,7 +27,7 @@ type FinalReviewSettings = Pick<
   "finalReviewByDefault" | "finalReviewModelSelections" | "finalReviewInstructions"
 >;
 
-/** How the coordinator names a reviewer for `delegate_task`; Auto account rides on the settings match. */
+/** How the coordinator names a reviewer for `delegate_task`; Auto rides on the settings match. */
 function reviewerTarget(selection: ModelSelection) {
   return {
     providerInstanceId: selection.instanceId,

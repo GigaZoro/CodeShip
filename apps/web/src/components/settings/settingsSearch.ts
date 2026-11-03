@@ -850,10 +850,10 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "account-failover",
-    title: "Account switching",
+    title: "Auto model and accounts",
     to: "/settings/providers",
     searchTerms: [
-      "switch accounts failover usage limit quota rate limit multiple accounts order priority second account continue auto account primary",
+      "auto mode auto model primary model default switch accounts failover usage limit quota rate limit multiple accounts order priority second account continue",
     ],
     providerSettingsOnly: true,
   },

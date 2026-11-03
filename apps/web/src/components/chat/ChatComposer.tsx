@@ -51,8 +51,11 @@ import { isPasteAsTextShortcut } from "@t3tools/client-runtime/text-paste";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { folderDropTarget, resolveDroppedFolderPath } from "./folderDrop";
 import { splitTransferredFiles } from "./workspaceFileDrop";
-import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
-import { supportsAccountFailover } from "@t3tools/shared/serverSettings";
+import {
+  createModelSelection,
+  normalizeModelSlug,
+  resolveAutoModelSelection,
+} from "@t3tools/shared/model";
 import { USAGE_LIMITS_COMMAND } from "@t3tools/shared/usageLimits";
 import {
   memo,
@@ -487,7 +490,11 @@ export interface ChatComposerProps {
   onProviderModelSelect: (
     instanceId: ProviderInstanceId,
     model: string,
-    options?: { focusComposer?: boolean; autoAccount?: boolean },
+    options?: {
+      focusComposer?: boolean;
+      autoAccount?: boolean;
+      modelOptions?: ModelSelection["options"];
+    },
   ) => void;
   onOpenProviderSetup: (instanceId: ProviderInstanceId) => void;
   getModelDisabledReason: (instanceId: ProviderInstanceId, model: string) => string | null;
@@ -872,6 +879,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     maxFileAttachmentBytes,
     supportsAttachmentUploads,
   ]);
+  // An Auto thread shows the Auto model its next turn runs, as the server resolves it.
+  const shownThreadModelSelection =
+    activeThreadModelSelection &&
+    resolveAutoModelSelection({
+      selection: activeThreadModelSelection,
+      autoModel: settings.autoModelSelection,
+      providers: providerStatuses,
+      started: lockedProvider !== null,
+    });
 
   const {
     providerInstanceEntries,
@@ -890,13 +906,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     settings,
     activeProjectId,
     threadRef: composerDraftTarget,
-    threadModelSelection: activeThreadModelSelection,
+    threadModelSelection: shownThreadModelSelection,
     projectModelSelection: activeProjectDefaultModelSelection,
     promptInjectionState: getComposerPromptInjectionState(prompt),
     candidateInstanceIds: [
       composerDraft.activeProvider ?? null,
       activeThread?.runtime?.providerInstanceId,
-      activeThreadModelSelection?.instanceId,
+      shownThreadModelSelection?.instanceId,
       activeProjectDefaultModelSelection?.instanceId,
     ],
     lockedProvider,
@@ -983,9 +999,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   });
   const selectedModelSelection: ModelSelection = {
     ...createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
-    ...(selectedAutoAccount && supportsAccountFailover(selectedProvider)
-      ? { autoAccount: true }
-      : {}),
+    ...(selectedAutoAccount ? { autoAccount: true } : {}),
   };
   const selectedModelForPicker = selectedModel;
   const modelOptionsByInstance = new Map<ProviderInstanceId, ReadonlyArray<AppModelOption>>();
@@ -2367,6 +2381,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       multipleModelSelections={multipleModelSelections}
       onMultipleModelSelectionsChange={setMultipleModelSelections}
       selectedModelSelection={selectedModelSelection}
+      autoModelSelection={settings.autoModelSelection}
       onProviderModelSelect={onProviderModelSelect}
       activeThreadModelSelection={activeThreadModelSelection}
       selectedModelForPickerWithCustomFallback={selectedModelForPickerWithCustomFallback}

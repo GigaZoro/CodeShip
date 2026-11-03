@@ -142,7 +142,12 @@ export function useComposerSelection(input: ComposerSelectionInput) {
   const onProviderModelSelect = (
     instanceId: ProviderInstanceId,
     model: string,
-    options?: { focusComposer?: boolean; autoAccount?: boolean },
+    options?: {
+      focusComposer?: boolean;
+      autoAccount?: boolean;
+      /** The effort to pick with, such as the Auto model's, instead of the model's remembered one. */
+      modelOptions?: ModelSelection["options"];
+    },
   ) => {
     if (!activeThread) return;
     const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
@@ -184,6 +189,7 @@ export function useComposerSelection(input: ComposerSelectionInput) {
       return;
     }
     const rememberedOptions =
+      options?.modelOptions ??
       useComposerDraftStore.getState().stickyOptionsByModelByProvider[instanceId]?.[resolvedModel];
     const nextModelSelection: ModelSelection = {
       instanceId,

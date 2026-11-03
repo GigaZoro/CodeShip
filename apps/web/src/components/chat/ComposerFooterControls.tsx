@@ -4,7 +4,11 @@ import type {
   ProviderInteractionMode,
   RuntimeMode,
 } from "@t3tools/contracts";
-import { createModelSelection, keepAutoAccount } from "@t3tools/shared/model";
+import {
+  createModelSelection,
+  resolveAutoModelSelection,
+  withAutoAccount,
+} from "@t3tools/shared/model";
 import { BotIcon, PencilRulerIcon } from "lucide-react";
 import { type ComponentProps, memo, useId, useRef, useState } from "react";
 
@@ -340,11 +344,12 @@ export function ComposerModelPicker({
   multipleModelSelections,
   onMultipleModelSelectionsChange,
   selectedModelSelection,
+  autoModelSelection,
   onProviderModelSelect,
   ...pickerProps
 }: Omit<
   ComponentProps<typeof ProviderModelPicker>,
-  "selectedModels" | "onToggleModel" | "onInstanceModelChange"
+  "selectedModels" | "onToggleModel" | "onInstanceModelChange" | "auto"
 > & {
   readonly multipleModelsEnabled: boolean;
   readonly multipleModelSelections: ReadonlyArray<ModelSelection> | null;
@@ -352,10 +357,15 @@ export function ComposerModelPicker({
     selections: ReadonlyArray<ModelSelection> | null,
   ) => void;
   readonly selectedModelSelection: ModelSelection;
+  readonly autoModelSelection: ModelSelection | null;
   readonly onProviderModelSelect: (
     instanceId: ProviderInstanceId,
     model: string,
-    options?: { focusComposer?: boolean; autoAccount?: boolean },
+    options?: {
+      focusComposer?: boolean;
+      autoAccount?: boolean;
+      modelOptions?: ModelSelection["options"];
+    },
   ) => void;
 }) {
   const { instanceEntries, modelOptionsByInstance } = pickerProps;
@@ -398,21 +408,30 @@ export function ComposerModelPicker({
         : {})}
       onInstanceModelChange={(instanceId, model) => {
         onMultipleModelSelectionsChange(null);
-        onProviderModelSelect(instanceId, model, {
-          autoAccount:
-            keepAutoAccount(selectedModelSelection, { instanceId, model }).autoAccount === true,
-        });
+        onProviderModelSelect(instanceId, model);
       }}
       {...(multipleModelSelections === null
         ? {
-            autoAccount: {
+            auto: {
+              model: autoModelSelection,
               checked: selectedModelSelection.autoAccount === true,
-              onCheckedChange: (checked: boolean) =>
-                onProviderModelSelect(
-                  selectedModelSelection.instanceId,
-                  selectedModelSelection.model,
-                  { focusComposer: false, autoAccount: checked },
-                ),
+              onCheckedChange: (checked: boolean) => {
+                // Off pins the model and account the thread shows now; on keeps a started
+                // thread's account.
+                const pick = checked
+                  ? resolveAutoModelSelection({
+                      selection: withAutoAccount(selectedModelSelection, true),
+                      autoModel: autoModelSelection,
+                      providers: instanceEntries.map((entry) => entry.snapshot),
+                      started: pickerProps.lockedProvider !== null,
+                    })
+                  : selectedModelSelection;
+                onProviderModelSelect(pick.instanceId, pick.model, {
+                  focusComposer: false,
+                  autoAccount: checked,
+                  modelOptions: pick.options,
+                });
+              },
             },
           }
         : {})}

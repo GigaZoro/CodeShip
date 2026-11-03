@@ -53,6 +53,7 @@ const route = (input: {
     selection: input.selection ?? auto,
     projectId,
     currentInstanceId: input.currentInstanceId,
+    started: input.currentInstanceId !== null,
     // Listed out of settings order, so the saved order decides.
     providers: [provider(third), provider(second), provider(primary)],
     settings: settings([primary, second, third]),
@@ -92,9 +93,86 @@ describe("routeAutoAccount", () => {
         settings: settings([primary, second]),
         limitedInstanceIds: new Set(),
         nowMs,
+        started: false,
       }).instanceId;
     assert.equal(exhausted("2026-11-03T13:00:00.000Z"), second);
     assert.equal(exhausted("2026-11-03T11:00:00.000Z"), primary);
+  });
+
+  describe("with an Auto model", () => {
+    const codex = ProviderInstanceId.make("codex_main");
+    const effort = (value: string) => [{ id: "effort", value }];
+    const sonnet: ModelSelection = {
+      instanceId: primary,
+      model: "claude-sonnet-5-5",
+      options: effort("high"),
+    };
+    const models = [
+      { slug: "claude-opus-5-5", name: "Claude Opus 5.5", isCustom: false, capabilities: null },
+      { slug: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", isCustom: false, capabilities: null },
+    ];
+    const routeWith = (input: {
+      readonly autoModel: ModelSelection;
+      readonly selection: ModelSelection;
+      readonly currentInstanceId: ProviderInstanceId | null;
+    }) =>
+      routeAutoAccount({
+        selection: input.selection,
+        projectId,
+        currentInstanceId: input.currentInstanceId,
+        started: input.currentInstanceId !== null,
+        providers: [
+          provider(primary, { models }),
+          provider(second, { models }),
+          provider(codex, {
+            driver: ProviderDriverKind.make("codex"),
+            models: [{ slug: "gpt-5.5", name: "GPT-5.5", isCustom: false, capabilities: null }],
+          }),
+        ],
+        settings: { ...settings([primary, second]), autoModelSelection: input.autoModel },
+        limitedInstanceIds: new Set([primary]),
+        nowMs,
+      });
+
+    it.each([
+      [
+        "a new thread runs the Auto model and its effort on the first account with room",
+        sonnet,
+        { instanceId: primary, model: "claude-opus-5-5", autoAccount: true },
+        null,
+        { ...sonnet, instanceId: second, autoAccount: true },
+      ],
+      [
+        "a pick on the Auto model keeps its own effort",
+        sonnet,
+        { ...sonnet, instanceId: second, options: effort("low"), autoAccount: true },
+        second,
+        { ...sonnet, instanceId: second, options: effort("low"), autoAccount: true },
+      ],
+      [
+        "a thread moves to a changed Auto model on its own account",
+        sonnet,
+        { instanceId: second, model: "claude-opus-5-5", options: effort("low"), autoAccount: true },
+        second,
+        { ...sonnet, instanceId: second, autoAccount: true },
+      ],
+      [
+        "a new thread follows an Auto model on another provider",
+        { instanceId: codex, model: "gpt-5.5" },
+        { instanceId: primary, model: "claude-opus-5-5", autoAccount: true },
+        null,
+        { instanceId: codex, model: "gpt-5.5", autoAccount: true },
+      ],
+      [
+        "a thread that already ran keeps its provider",
+        { instanceId: codex, model: "gpt-5.5" },
+        { instanceId: second, model: "claude-opus-5-5", autoAccount: true },
+        second,
+        { instanceId: second, model: "claude-opus-5-5", autoAccount: true },
+      ],
+    ] as const)("%s", (_, autoModel, selection, currentInstanceId, expected) => {
+      assert.deepEqual(routeWith({ autoModel, selection, currentInstanceId }), expected);
+    });
   });
 
   it("leaves a pinned selection on the account it names", () => {

@@ -10,11 +10,11 @@ import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import {
   modelPreferencesMigrationPatch,
   resolveModelPreferences,
-  supportsAccountFailover,
 } from "@t3tools/shared/serverSettings";
 import type {
   EnvironmentId,
   ModelSelection,
+  ServerConfig,
   ProjectId,
   ProviderInstanceId,
   ProviderOptionDescriptor,
@@ -30,7 +30,7 @@ import {
   getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
-  keepAutoAccount,
+  resolveAutoModelSelection,
   withAutoAccount,
 } from "@t3tools/shared/model";
 import {
@@ -289,8 +289,8 @@ type ThreadSettingsSessionProps = {
   readonly onUpdateOptionSelections: (selections: ReadonlyArray<ProviderOptionSelection>) => void;
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
-  /** Lets the server pick the account; offered for providers that can switch accounts. */
-  readonly onUpdateAutoAccount?: (autoAccount: boolean) => void;
+  /** Auto: runs the Auto model from settings, on an account the server picks. */
+  readonly auto?: AutoSwitch;
   /** An existing thread's Final review switch, where its server runs Final review. */
   readonly finalReview?: {
     readonly checked: boolean;
@@ -310,7 +310,7 @@ type ThreadSettingsSessionValue = {
   readonly providerInstanceId?: ProviderInstanceId;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
   readonly appliedModelSelection: ModelSelection | null;
-  readonly onUpdateAutoAccount: ((autoAccount: boolean) => void) | undefined;
+  readonly auto: AutoSwitch | undefined;
   readonly finalReview: ThreadSettingsSessionProps["finalReview"];
   readonly favoriteKeys: ReadonlySet<string>;
   readonly favoritesLoaded: boolean;
@@ -625,7 +625,7 @@ function ThreadSettingsSessionProvider(
     providerInstanceId: props.providerInstanceId,
     providerGroups,
     appliedModelSelection: props.selectedModel,
-    onUpdateAutoAccount: props.onUpdateAutoAccount,
+    auto: props.auto,
     finalReview: props.finalReview,
     manageHidden,
     setManageHidden,
@@ -857,20 +857,8 @@ function ThreadSettingsOptionsItem(props: {
     providers.find((provider) => provider.instanceId === session.providerInstanceId) ?? null;
   // Both iOS search layouts float a bottom toolbar over the list's last rows.
   const bottomToolbarInset = Platform.OS === "ios" ? NATIVE_MAIL_SEARCH_TOOLBAR_CONTENT_INSET : 0;
-  const autoAccountChecked = session.appliedModelSelection?.autoAccount === true;
   // Hidden while a picked model waits to apply; it applies to the model the thread will run.
-  const autoAccount =
-    session.onUpdateAutoAccount !== undefined &&
-    config?.environment.capabilities.autoAccountRouting === true &&
-    session.pendingModel === null &&
-    selectedProvider !== null &&
-    supportsAccountFailover(selectedProvider.driver) &&
-    (autoAccountChecked ||
-      providers.filter(
-        (provider) => provider.driver === selectedProvider.driver && provider.enabled,
-      ).length > 1)
-      ? { checked: autoAccountChecked, onCheckedChange: session.onUpdateAutoAccount }
-      : null;
+  const auto = session.pendingModel === null ? session.auto : undefined;
 
   return (
     <View style={{ paddingBottom: insets.bottom + bottomToolbarInset + 12 }}>
@@ -923,12 +911,12 @@ function ThreadSettingsOptionsItem(props: {
             </Animated.View>
           );
         })}
-        {autoAccount ? (
+        {auto ? (
           <Animated.View layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}>
             <SwitchRow
-              label="Auto account"
-              value={autoAccount.checked}
-              onValueChange={autoAccount.onCheckedChange}
+              label={auto.modelLabel ? `Auto · ${auto.modelLabel}` : "Auto"}
+              value={auto.checked}
+              onValueChange={auto.onCheckedChange}
             />
           </Animated.View>
         ) : null}
@@ -1543,6 +1531,53 @@ function ThreadSettingsPickerNavigator(props: ThreadSettingsPickerPresentation) 
   );
 }
 
+type AutoSwitch = {
+  readonly modelLabel: string | null;
+  readonly checked: boolean;
+  readonly onCheckedChange: (checked: boolean) => void;
+};
+
+/** The sheet's Auto switch, where the server runs Auto and the Auto model can run here. */
+function withAutoSwitch(input: {
+  readonly serverConfig: Pick<ServerConfig, "environment" | "settings" | "providers"> | null;
+  readonly selection: ModelSelection | null;
+  readonly started: boolean;
+  readonly onChange: (selection: ModelSelection) => void;
+}): { readonly auto?: AutoSwitch } {
+  const { serverConfig, selection } = input;
+  if (serverConfig?.environment.capabilities.autoModel !== true || selection === null) return {};
+  const autoModel = serverConfig.settings.autoModelSelection;
+  const providerOf = (instanceId: ProviderInstanceId | undefined) =>
+    serverConfig.providers.find((provider) => provider.instanceId === instanceId);
+  const autoProvider = providerOf(autoModel?.instanceId);
+  const checked = selection.autoAccount === true;
+  // Stays visible while on, so a cleared Auto model cannot strand the thread on it.
+  const available =
+    autoProvider !== undefined &&
+    (!input.started || autoProvider.driver === providerOf(selection.instanceId)?.driver);
+  if (!checked && !available) return {};
+  return {
+    auto: {
+      modelLabel:
+        autoProvider?.models.find((model) => model.slug === autoModel?.model)?.name ??
+        autoModel?.model ??
+        null,
+      checked,
+      onCheckedChange: (value) =>
+        input.onChange(
+          value
+            ? resolveAutoModelSelection({
+                selection: withAutoAccount(selection, true),
+                autoModel,
+                providers: serverConfig.providers,
+                started: input.started,
+              })
+            : withAutoAccount(selection, false),
+        ),
+    },
+  };
+}
+
 export function ThreadSettingsPickerScreen(
   props: ThreadSettingsSessionProps & { readonly onClose: () => void },
 ) {
@@ -1576,13 +1611,18 @@ export function ExistingThreadSettingsRouteScreen({
   }
 
   const serverConfig = selectedEnvironmentRuntime?.serverConfig ?? null;
-  const modelSelection = draftSettings.modelSelection ?? selectedThread.modelSelection;
-  const lockedProviderInstanceId = threadAllowsProviderSwitch({
+  const started = !threadAllowsProviderSwitch({
     thread: selectedThread,
     projection: structure?.projection,
-  })
-    ? undefined
-    : modelSelection.instanceId;
+  });
+  // An Auto thread shows the Auto model its next turn runs, as the server resolves it.
+  const modelSelection = resolveAutoModelSelection({
+    selection: draftSettings.modelSelection ?? selectedThread.modelSelection,
+    autoModel: serverConfig?.settings.autoModelSelection,
+    providers: serverConfig?.providers ?? [],
+    started,
+  });
+  const lockedProviderInstanceId = started ? modelSelection.instanceId : undefined;
   const modelOptions = buildModelOptions(
     serverConfig,
     modelSelection,
@@ -1620,14 +1660,13 @@ export function ExistingThreadSettingsRouteScreen({
       prompt={prompt}
       onPromptChange={(text) => setComposerDraftText(draftKey, text)}
       reportedModelSelection={reportedModelSelection}
-      onSelectModel={(option) =>
-        updateModelSelection(
-          keepAutoAccount(modelSelection, withRememberedModelOptions(option.selection)),
-        )
-      }
-      onUpdateAutoAccount={(autoAccount) =>
-        updateModelSelection(withAutoAccount(modelSelection, autoAccount))
-      }
+      onSelectModel={(option) => updateModelSelection(withRememberedModelOptions(option.selection))}
+      {...withAutoSwitch({
+        serverConfig,
+        selection: modelSelection,
+        started,
+        onChange: updateModelSelection,
+      })}
       {...(finalReview === undefined ? {} : { finalReview })}
       restoreSelection={withRememberedModelOptions}
       optionDescriptors={resolveProviderOptionDescriptors({
@@ -1664,7 +1703,12 @@ export function NewTaskThreadSettingsRouteScreen() {
       prompt={flow.prompt}
       onPromptChange={flow.setPrompt}
       onSelectModel={(option) => flow.setSelectedModelKey(option.key, option.selection.options)}
-      onUpdateAutoAccount={flow.setSelectedAutoAccount}
+      {...withAutoSwitch({
+        serverConfig: flow.serverConfig,
+        selection: flow.selectedModel,
+        started: false,
+        onChange: flow.setSelectedModelSelection,
+      })}
       restoreSelection={withRememberedModelOptions}
       optionDescriptors={optionDescriptors}
       onUpdateOptionSelections={flow.setSelectedModelOptions}

@@ -131,15 +131,41 @@ export function withAutoAccount(selection: ModelSelection, autoAccount: boolean)
   return autoAccount ? { ...pinned, autoAccount: true } : pinned;
 }
 
-/** A newly picked model stays on auto only when picked on the current account; another account pins it. */
-export function keepAutoAccount(
-  current: ModelSelection | null | undefined,
-  next: ModelSelection,
+/** An Auto pick of `autoModel`: settings store it without effort, so it follows the Auto model's. */
+export function autoModelPick(
+  autoModel: ModelSelection,
+  options: { readonly withEffort: boolean },
 ): ModelSelection {
-  return withAutoAccount(
-    next,
-    current?.autoAccount === true && current.instanceId === next.instanceId,
-  );
+  const { autoAccount: _auto, options: effort, ...model } = autoModel;
+  return options.withEffort && effort !== undefined
+    ? { ...model, options: effort, autoAccount: true }
+    : { ...model, autoAccount: true };
+}
+
+/**
+ * What an Auto pick runs: the Auto model, on the pick's own account when that is the same
+ * provider. A pick of that model with its own effort keeps it, and a thread that already ran
+ * keeps its provider. Without an Auto model, the pick runs as it names.
+ */
+export function resolveAutoModelSelection(input: {
+  readonly selection: ModelSelection;
+  readonly autoModel: ModelSelection | null | undefined;
+  readonly providers: ReadonlyArray<{
+    readonly instanceId: ProviderInstanceId;
+    readonly driver: ProviderDriverKind;
+  }>;
+  readonly started: boolean;
+}): ModelSelection {
+  const { selection, autoModel } = input;
+  if (selection.autoAccount !== true || !autoModel) return selection;
+  const driverOf = (instanceId: ProviderInstanceId) =>
+    input.providers.find((provider) => provider.instanceId === instanceId)?.driver;
+  const sameDriver = driverOf(selection.instanceId) === driverOf(autoModel.instanceId);
+  if (!sameDriver && input.started) return selection;
+  if (sameDriver && selection.model === autoModel.model && (selection.options?.length ?? 0) > 0)
+    return selection;
+  const pick = autoModelPick(autoModel, { withEffort: true });
+  return sameDriver ? { ...pick, instanceId: selection.instanceId } : pick;
 }
 
 /** Keeps every field of `selection`, such as `autoAccount`, while replacing its options. */

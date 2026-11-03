@@ -1,5 +1,5 @@
 import { ActiveNewTaskContext } from "../../state/active-new-task";
-import { keepAutoAccount, withAutoAccount } from "@t3tools/shared/model";
+import { resolveAutoModelSelection } from "@t3tools/shared/model";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { resolveInheritedDefaultModelSelection } from "@t3tools/shared/serverSettings";
 import { useNowMinuteMs } from "../../lib/clock";
@@ -12,6 +12,7 @@ import type {
   ProviderInteractionMode,
   ProviderOptionSelection,
   RuntimeMode,
+  ServerConfig,
   ServerProvider,
 } from "@t3tools/contracts";
 import {
@@ -215,7 +216,9 @@ type NewTaskFlowContextValue = {
   readonly setSelectedModelOptions: (
     value: ReadonlyArray<ProviderOptionSelection> | undefined,
   ) => void;
-  readonly setSelectedAutoAccount: (value: boolean) => void;
+  readonly setSelectedModelSelection: (selection: ModelSelection) => void;
+  /** The selected environment's server config, for its Auto model and providers. */
+  readonly serverConfig: Pick<ServerConfig, "environment" | "settings" | "providers"> | null;
   readonly setExpandedProvider: (value: string | null) => void;
 };
 
@@ -436,7 +439,7 @@ export function NewTaskFlowProvider(
     selectedProject?.id ?? null,
   );
   // Mobile has no machine of its own, so no machine's default outranks another's here.
-  const projectDefaultModelSelection =
+  const storedDefaultModelSelection =
     projectSettings.settings.defaultModelSelection ??
     (selectedProject
       ? resolveInheritedDefaultModelSelection({
@@ -446,6 +449,15 @@ export function NewTaskFlowProvider(
           preferredEnvironmentId: null,
         })
       : null);
+  // An Auto default shows the Auto model the server will start the thread on.
+  const projectDefaultModelSelection =
+    storedDefaultModelSelection &&
+    resolveAutoModelSelection({
+      selection: storedDefaultModelSelection,
+      autoModel: selectedEnvironmentServerConfig?.settings.autoModelSelection,
+      providers: selectedEnvironmentServerConfig?.providers ?? [],
+      started: false,
+    });
   const stickyModelSelection = resolveDefaultableModelSelection(
     selectedEnvironmentServerConfig,
     storedStickyModelSelection,
@@ -507,9 +519,8 @@ export function NewTaskFlowProvider(
     if (!option) {
       return;
     }
-    const selection = keepAutoAccount(
-      selectedModel,
-      withRememberedModelOptions(options ? { ...option.selection, options } : option.selection),
+    const selection = withRememberedModelOptions(
+      options ? { ...option.selection, options } : option.selection,
     );
     const provider = selectedEnvironmentServerConfig?.providers.find(
       (candidate) => candidate.instanceId === selection.instanceId,
@@ -534,13 +545,12 @@ export function NewTaskFlowProvider(
     });
     setStickyComposerModelSelection(nextSelection);
   };
-  const setSelectedAutoAccount = (autoAccount: boolean) => {
-    if (!selectedModel || !selectedProjectDraftKey) {
+  const setSelectedModelSelection = (selection: ModelSelection) => {
+    if (!selectedProjectDraftKey) {
       return;
     }
-    const nextSelection = withAutoAccount(selectedModel, autoAccount);
-    updateComposerDraftSettings(selectedProjectDraftKey, { modelSelection: nextSelection });
-    setStickyComposerModelSelection(nextSelection);
+    updateComposerDraftSettings(selectedProjectDraftKey, { modelSelection: selection });
+    setStickyComposerModelSelection(selection);
   };
 
   const providerGroups = groupByProvider(modelOptions);
@@ -923,7 +933,8 @@ export function NewTaskFlowProvider(
     setRuntimeMode,
     setInteractionMode,
     setSelectedModelOptions,
-    setSelectedAutoAccount,
+    setSelectedModelSelection,
+    serverConfig: selectedEnvironmentServerConfig ?? null,
     setExpandedProvider: (value: string | null) => updateFlow({ expandedProvider: value }),
   } satisfies NewTaskFlowContextValue;
 

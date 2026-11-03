@@ -369,16 +369,19 @@ signed in to an account another provider already uses is unavailable until you
 sign it in to a different account. Some providers' terms forbid using extra
 accounts to get around limits.
 
-To let CodeShip choose the account, turn on **Auto account** in the model
-picker, or under the default model in settings for new threads. A new thread
-starts on the first account in the account order that has usage left. A thread
-keeps its account until that account hits a limit, then continues on the next
-one, even with **Switch accounts at usage limits** off. Choosing a model on
-another account pins the thread to that account.
+**Auto** runs one model for you and picks the account. Choose that model and
+its effort as **Auto model** in **Settings → Providers** on web or desktop, then
+turn on **Auto** in the model picker, or under the default model in settings for
+new threads. A new thread starts on the first account in the account order that
+has usage left. A thread keeps its account until that account hits a limit, then
+continues on the next one, even with **Switch accounts at usage limits** off.
+Changing the Auto model moves Auto threads to it on their next message; a thread
+that already ran stays with its provider. Picking a model in the picker turns
+Auto off for that thread.
 
 To run delegated work on other models, set **Delegated tasks** in **Settings →
 Providers** on web or desktop. Each role, such as implementation or review, can
-have its own model, including Auto account. When an agent hands off a task
+have its own model, including Auto. When an agent hands off a task
 without naming a model, the task runs on the model set for its role; unset roles
 use the thread's model.
 

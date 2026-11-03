@@ -3,6 +3,7 @@ import {
   PROVIDER_DISPLAY_NAMES,
   type ServerProvider,
   type ServerSettings,
+  type UnifiedSettings,
 } from "@t3tools/contracts";
 import { resolveProviderInstanceDisplayName } from "@t3tools/client-runtime/state/provider-instance-display";
 import {
@@ -16,8 +17,9 @@ import { useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
+import { SettingsModelSelectionControl } from "./DelegatedTaskModelSettings";
 import { searchableSetting } from "./settingsSearch";
-import { SettingsRow, SettingsSection } from "./settingsLayout";
+import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
 
 /** Drivers with two or more enabled accounts, each listed in the order failover tries them. */
 function failoverGroups(
@@ -38,14 +40,14 @@ export function AccountFailoverSettings({
   settings,
   providers,
   readOnly,
+  supportsAutoModel,
 }: {
   readonly environmentId: EnvironmentId;
-  readonly settings: Pick<
-    ServerSettings,
-    "failoverLimitedThreads" | "providerInstanceFailoverOrder"
-  >;
+  readonly settings: UnifiedSettings;
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly readOnly: boolean;
+  /** Older servers drop `autoModelSelection`. */
+  readonly supportsAutoModel: boolean;
 }) {
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
   const groups = failoverGroups(settings.providerInstanceFailoverOrder, providers);
@@ -68,6 +70,33 @@ export function AccountFailoverSettings({
 
   return (
     <SettingsSection {...searchableSetting("account-failover")}>
+      {supportsAutoModel ? (
+        <SettingsRow
+          title="Auto model"
+          description="What Auto runs when you turn it on in the model picker. Auto starts on the first account in the account order with usage left, and moves to the next when that account hits its limit."
+          resetAction={
+            settings.autoModelSelection !== null && !readOnly ? (
+              <SettingResetButton
+                label="Auto model"
+                onClick={() => updateSettings({ autoModelSelection: null })}
+              />
+            ) : null
+          }
+          control={
+            <SettingsModelSelectionControl
+              environmentId={environmentId}
+              settings={settings}
+              providers={providers}
+              readOnly={readOnly}
+              label="Auto model"
+              selection={settings.autoModelSelection}
+              emptyLabel="None"
+              offerAuto={false}
+              onChange={(selection) => updateSettings({ autoModelSelection: selection })}
+            />
+          }
+        />
+      ) : null}
       <SettingsRow
         title="Switch accounts at usage limits"
         description="When an account hits its usage limit, the thread continues on the first signed-in subscription account of the same provider that still has usage left. API-key and Bedrock accounts are never used. Some providers' terms forbid using extra accounts to get around limits."

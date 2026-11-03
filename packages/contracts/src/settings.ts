@@ -1329,6 +1329,10 @@ export const ServerSettings = Schema.Struct({
   providerInstanceFailoverOrder: Schema.Array(ProviderInstanceId).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  /** What an Auto pick (`ModelSelection.autoAccount`) runs; null runs each pick's own model. */
+  autoModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   /** Threads without their own Final review choice follow this. */
   finalReviewByDefault: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Each reviews a finished request's changes as its own read-only task. */
@@ -1753,6 +1757,7 @@ export const ServerSettingsPatch = Schema.Struct({
   snoozeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   failoverLimitedThreads: Schema.optionalKey(Schema.Boolean),
   providerInstanceFailoverOrder: Schema.optionalKey(Schema.Array(ProviderInstanceId)),
+  autoModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   finalReviewByDefault: Schema.optionalKey(Schema.Boolean),
   finalReviewModelSelections: Schema.optionalKey(Schema.Array(ModelSelection)),
   finalReviewInstructions: Schema.optionalKey(TrimmedString),

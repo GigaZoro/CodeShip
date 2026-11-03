@@ -76,6 +76,7 @@ export function ComposerControlsBar(props: {
   multipleModelSelections: ChatComposerProps["multipleModelSelections"];
   onMultipleModelSelectionsChange: ChatComposerProps["onMultipleModelSelectionsChange"];
   selectedModelSelection: ModelSelection;
+  autoModelSelection: ModelSelection | null;
   onProviderModelSelect: ChatComposerProps["onProviderModelSelect"];
   activeThreadModelSelection: ChatComposerProps["activeThreadModelSelection"];
   selectedModelForPickerWithCustomFallback: string;
@@ -125,6 +126,7 @@ export function ComposerControlsBar(props: {
     multipleModelSelections,
     onMultipleModelSelectionsChange,
     selectedModelSelection,
+    autoModelSelection,
     onProviderModelSelect,
     activeThreadModelSelection,
     selectedModelForPickerWithCustomFallback,
@@ -202,6 +204,7 @@ export function ComposerControlsBar(props: {
       multipleModelSelections={multipleModelSelections}
       onMultipleModelSelectionsChange={onMultipleModelSelectionsChange}
       selectedModelSelection={selectedModelSelection}
+      autoModelSelection={autoModelSelection}
       onProviderModelSelect={onProviderModelSelect}
       activeInstanceId={
         providerCatalogPending

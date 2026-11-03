@@ -104,7 +104,11 @@ import {
   scopeProjectRef,
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
-import { formatModelSlugName, resolveSelectableModel } from "@t3tools/shared/model";
+import {
+  formatModelSlugName,
+  resolveAutoModelSelection,
+  resolveSelectableModel,
+} from "@t3tools/shared/model";
 import { projectScriptCwd, resolveProjectScripts } from "@t3tools/shared/projectScripts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { resolveThreadReferenceCopyTarget } from "@t3tools/client-runtime/thread-reference";
@@ -768,13 +772,23 @@ export default function ChatView(props: ChatViewProps) {
     draftThread?.environmentId ?? null,
     draftThread?.projectId ?? null,
   );
-  const draftDefaultModelSelection = draftThread
+  const draftDefaultSelection = draftThread
     ? (resolveProjectSettings(
         settings,
         fallbackDraftProject?.id ?? null,
         fallbackDraftProject ?? undefined,
       ).settings.defaultModelSelection ?? inheritedDraftModelSelection)
     : null;
+  // An Auto default shows the Auto model the server will start the thread on.
+  const draftDefaultModelSelection =
+    draftThread && draftDefaultSelection
+      ? resolveAutoModelSelection({
+          selection: draftDefaultSelection,
+          autoModel: settings.autoModelSelection,
+          providers: providersByEnvironment.get(draftThread.environmentId) ?? [],
+          started: false,
+        })
+      : draftDefaultSelection;
   const draftModelResolution = draftThread
     ? resolveNewThreadModelSelection({
         defaultSelection:
@@ -2604,6 +2618,9 @@ export default function ChatView(props: ChatViewProps) {
               onUseDefault: () =>
                 onProviderModelSelectStable(defaultSelection.instanceId, defaultSelection.model, {
                   autoAccount: defaultSelection.autoAccount === true,
+                  ...(defaultSelection.autoAccount === true
+                    ? { modelOptions: defaultSelection.options }
+                    : {}),
                 }),
               onDismiss: () => setDismissedFallbackWindow(fallbackWindow),
             }),

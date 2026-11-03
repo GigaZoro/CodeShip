@@ -749,7 +749,7 @@ const make = Effect.gen(function* () {
     }
   };
 
-  /** Puts an auto-account turn on the account it should run on, before anything checks the target. */
+  /** Puts an Auto turn on its model and account, before anything checks the target. */
   const routeDispatchAccount = (
     command: OrchestrationV2ServerCommand,
   ): Effect.Effect<OrchestrationV2ServerCommand, Orchestrator.OrchestratorV2Error> => {
@@ -767,7 +767,8 @@ const make = Effect.gen(function* () {
         .getByCommandId(command.commandId)
         .pipe(Effect.orElseSucceed(Option.none));
       if (Option.isSome(receipt)) return command;
-      const { thread } = yield* orchestrator.getThreadRecords(input.threadId, []);
+      const thread = yield* orchestrator.getThreadShell(input.threadId);
+      if (thread === null) return command;
       const selection = input.selection ?? thread.modelSelection;
       if (selection.autoAccount !== true) return command;
       const routed = yield* routing.route({
@@ -778,6 +779,7 @@ const make = Effect.gen(function* () {
           input.newThread || thread.activeProviderThreadId === null
             ? null
             : thread.providerInstanceId,
+        started: !input.newThread && thread.latestRunId !== null,
       });
       return routed === selection ? command : { ...command, modelSelection: routed };
     });

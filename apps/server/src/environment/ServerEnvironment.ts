@@ -246,7 +246,7 @@ export const make = Effect.gen(function* () {
       environmentThemes: true,
       usageLimitSources: true,
       usageLimitAccountFailover: true,
-      autoAccountRouting: true,
+      autoModel: true,
       delegatedTaskModels: true,
       finalReview: true,
       providerWorkspaceSnapshotsOnDemand: true,
