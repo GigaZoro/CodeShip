@@ -43,6 +43,23 @@ export class ProviderInstanceRegistry extends Context.Service<
   }
 >()("t3/provider/ProviderInstanceRegistry") {}
 
+/** Accounts on one provider home share its plugins and MCP servers, so a change reaches them all. */
+export function instancesSharingHome(
+  instances: ReadonlyArray<ProviderInstance>,
+  instanceId: ProviderInstanceId,
+): ReadonlyArray<ProviderInstanceId> {
+  const changed = instances.find((instance) => instance.instanceId === instanceId);
+  if (changed === undefined) return [instanceId];
+  const { driverKind, continuationKey } = changed.continuationIdentity;
+  return instances
+    .filter(
+      (instance) =>
+        instance.continuationIdentity.driverKind === driverKind &&
+        instance.continuationIdentity.continuationKey === continuationKey,
+    )
+    .map((instance) => instance.instanceId);
+}
+
 interface InstanceSecrets {
   readonly environment: ResolvedProviderInstanceEnvironment;
   readonly config: Readonly<Record<string, string>>;

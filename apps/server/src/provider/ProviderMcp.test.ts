@@ -19,6 +19,7 @@ import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import * as ProviderMcp from "./ProviderMcp.ts";
 
 const instanceId = ProviderInstanceId.make("claudeAgent");
+const siblingInstanceId = ProviderInstanceId.make("claudeAgent_work");
 const otherInstanceId = ProviderInstanceId.make("codex");
 
 const server = (
@@ -55,15 +56,37 @@ const makeHarness = Effect.gen(function* () {
       }),
   };
   // Only the fields ProviderMcp reads; the rest of an instance is irrelevant here.
+  const claudeHome = {
+    driverKind: "claudeAgent",
+    continuationKey: "claude:home:/Users/me/.claude",
+  };
   const instances = {
-    claudeAgent: { instanceId, mcp } as unknown as ProviderInstance,
-    codex: { instanceId: otherInstanceId, mcp } as unknown as ProviderInstance,
+    claudeAgent: {
+      instanceId,
+      mcp,
+      continuationIdentity: claudeHome,
+    } as unknown as ProviderInstance,
+    claudeAgent_work: {
+      instanceId: siblingInstanceId,
+      mcp,
+      continuationIdentity: claudeHome,
+    } as unknown as ProviderInstance,
+    codex: {
+      instanceId: otherInstanceId,
+      mcp,
+      continuationIdentity: { driverKind: "codex", continuationKey: "codex:home:/Users/me/.codex" },
+    } as unknown as ProviderInstance,
     cursor: { instanceId: ProviderInstanceId.make("cursor") } as unknown as ProviderInstance,
   };
   const layer = ProviderMcp.layer.pipe(
     Layer.provide(
       Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
         getInstance: (id) => Effect.succeed(instances[id as keyof typeof instances]),
+        listInstances: Effect.succeed([
+          instances.claudeAgent,
+          instances.claudeAgent_work,
+          instances.codex,
+        ]),
       }),
     ),
     Layer.provide(NodeCrypto.layer),
@@ -83,10 +106,16 @@ it.effect("ProviderMcp lists config servers first and reads again after a change
       );
       yield* service.list({ instanceId });
       assert.equal(yield* Ref.get(harness.listReads), 1);
+      yield* service.list({ instanceId: siblingInstanceId });
+      yield* service.list({ instanceId: otherInstanceId });
+      assert.equal(yield* Ref.get(harness.listReads), 3);
 
+      // Accounts on the same home share its servers, so the change reaches each of their lists.
       yield* service.remove({ instanceId, name: "alpha" });
       yield* service.list({ instanceId });
-      assert.equal(yield* Ref.get(harness.listReads), 2);
+      yield* service.list({ instanceId: siblingInstanceId });
+      yield* service.list({ instanceId: otherInstanceId });
+      assert.equal(yield* Ref.get(harness.listReads), 5);
 
       const unsupported = yield* service
         .list({ instanceId: ProviderInstanceId.make("cursor") })

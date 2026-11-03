@@ -3,8 +3,13 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 
-import { materializeClaudeAccountHome } from "./ClaudeAccountHome.ts";
+import { materializeClaudeAccountHome, shareClaudeMcpServers } from "./ClaudeAccountHome.ts";
+
+const Json = Schema.fromJsonString(Schema.Unknown);
+const encodeJson = Schema.encodeEffect(Json);
+const decodeJson = Schema.decodeUnknownEffect(Json);
 
 it.layer(NodeServices.layer)("materializeClaudeAccountHome", (it) => {
   it.effect("shares every Claude file with the account except its own login", () =>
@@ -22,6 +27,7 @@ it.layer(NodeServices.layer)("materializeClaudeAccountHome", (it) => {
         yield* fs.writeFileString(path.join(sharedHome, name), "shared login");
       }
       yield* fs.makeDirectory(path.join(sharedHome, "backups"));
+      yield* fs.makeDirectory(path.join(sharedHome, ".claude.json.lock"));
       yield* fs.makeDirectory(accountHome, { recursive: true });
       yield* fs.writeFileString(path.join(accountHome, "settings.json"), "account's own");
       yield* fs.symlink(path.join(root, "elsewhere"), path.join(accountHome, "CLAUDE.md"));
@@ -46,9 +52,72 @@ it.layer(NodeServices.layer)("materializeClaudeAccountHome", (it) => {
         yield* fs.readFileString(path.join(accountHome, "settings.json")),
         "account's own",
       );
-      for (const name of [".credentials.json", ".claude.json", "remote-settings.json", "backups"]) {
+      for (const name of [
+        ".credentials.json",
+        ".claude.json",
+        ".claude.json.lock",
+        "remote-settings.json",
+        "backups",
+      ]) {
         assert.isFalse(yield* fs.exists(path.join(accountHome, name)), name);
       }
+    }),
+  );
+
+  it.effect("keeps the account's MCP servers in step with the shared config", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-" }));
+      const sharedConfigPath = path.join(root, ".claude.json");
+      const accountHome = path.join(root, "account", "home");
+      const accountConfigPath = path.join(accountHome, ".claude.json");
+      const writeJson = (file: string, value: unknown) =>
+        encodeJson(value).pipe(Effect.flatMap((text) => fs.writeFileString(file, text)));
+      const accountConfig = fs.readFileString(accountConfigPath).pipe(Effect.flatMap(decodeJson));
+      const share = shareClaudeMcpServers({ sharedConfigPath, accountHome });
+      yield* fs.makeDirectory(accountHome, { recursive: true });
+
+      // Claude has not written the account's config yet.
+      yield* writeJson(sharedConfigPath, {
+        mcpServers: { docs: { type: "http", url: "https://a" } },
+      });
+      yield* share;
+      assert.isFalse(yield* fs.exists(accountConfigPath));
+
+      yield* writeJson(accountConfigPath, {
+        oauthAccount: { emailAddress: "work@example.com" },
+        mcpServers: {
+          local: { type: "stdio", command: "own-server", args: [] },
+          docs: { type: "http", url: "https://old" },
+        },
+      });
+      yield* share;
+      assert.deepStrictEqual(yield* accountConfig, {
+        oauthAccount: { emailAddress: "work@example.com" },
+        mcpServers: {
+          docs: { type: "http", url: "https://a" },
+          local: { type: "stdio", command: "own-server", args: [] },
+        },
+      });
+
+      yield* writeJson(sharedConfigPath, {
+        mcpServers: { tracker: { type: "http", url: "https://b" } },
+      });
+      yield* share;
+      const expected = {
+        oauthAccount: { emailAddress: "work@example.com" },
+        mcpServers: {
+          tracker: { type: "http", url: "https://b" },
+          local: { type: "stdio", command: "own-server", args: [] },
+        },
+      };
+      assert.deepStrictEqual(yield* accountConfig, expected);
+
+      // A config Claude is halfway through writing copies nothing.
+      yield* fs.writeFileString(sharedConfigPath, '{"mcpServers": {');
+      yield* share;
+      assert.deepStrictEqual(yield* accountConfig, expected);
     }),
   );
 });

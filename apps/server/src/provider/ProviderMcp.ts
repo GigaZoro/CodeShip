@@ -107,7 +107,17 @@ const make = Effect.gen(function* () {
   ) =>
     management(instanceId, operation).pipe(
       Effect.flatMap(run),
-      Effect.ensuring(Cache.invalidate(lists, instanceId)),
+      Effect.ensuring(
+        instances.listInstances.pipe(
+          Effect.flatMap((all) =>
+            Effect.forEach(
+              ProviderInstanceRegistry.instancesSharingHome(all, instanceId),
+              (id) => Cache.invalidate(lists, id),
+              { discard: true },
+            ),
+          ),
+        ),
+      ),
     );
 
   const openSignIn = Effect.fn("ProviderMcp.openSignIn")(function* (input: ProviderMcpServerInput) {

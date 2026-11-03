@@ -136,22 +136,34 @@ const make = Effect.gen(function* () {
     },
   );
 
-  /** Runs a change, then drops the stale catalog and lets the provider pick up new skills. */
-  const change = <A>(
+  /** Runs a change, then drops stale catalogs and lets each provider on the home pick up new skills. */
+  const change = Effect.fn("ProviderPlugins.change")(function* <A>(
     instanceId: ProviderInstanceId,
     operation: ProviderPluginOperation,
     run: (plugins: ProviderPluginManagement) => Effect.Effect<A, ProviderPluginError>,
-  ) =>
-    management(instanceId, operation).pipe(
-      Effect.flatMap(run),
-      Effect.ensuring(Cache.invalidate(catalogs, instanceId)),
+  ) {
+    const plugins = yield* management(instanceId, operation);
+    const sharing = ProviderInstanceRegistry.instancesSharingHome(
+      yield* instances.listInstances,
+      instanceId,
+    );
+    return yield* run(plugins).pipe(
+      Effect.ensuring(
+        Effect.forEach(sharing, (id) => Cache.invalidate(catalogs, id), { discard: true }),
+      ),
       Effect.tap(() =>
-        // The provider refresh outlives the request, whose scope would interrupt it.
-        providers
-          .refreshInstance(instanceId)
-          .pipe(Effect.ignoreCause({ log: true }), Effect.forkIn(scope)),
+        Effect.forEach(
+          sharing,
+          (id) =>
+            // The provider refresh outlives the request, whose scope would interrupt it.
+            providers
+              .refreshInstance(id)
+              .pipe(Effect.ignoreCause({ log: true }), Effect.forkIn(scope)),
+          { discard: true },
+        ),
       ),
     );
+  });
 
   return ProviderPlugins.of({
     list: Effect.fn("ProviderPlugins.list")(function* (input) {

@@ -3,8 +3,10 @@
 MCP servers give Claude and Codex tools from other apps and services, such as an issue tracker or a
 documentation search. Open **MCP servers** in the sidebar rail, or **Open MCP servers** from the
 command palette, to see each provider's servers, add new ones, sign in to them, and remove them.
-With more than one Claude or Codex account or machine, pick which one to change at the top of the
-page; each keeps its own servers.
+With more than one account or machine, pick which one to manage at the top of the page. Claude and
+Codex accounts on the same machine share their servers, so adding or removing a server on one
+changes it on the others, unless you gave an account its own config directory. Each Claude account
+signs in to a server on its own.
 
 New sessions load your changes. To use them in a thread that is already running, choose **Restart
 agent session** in the command palette.
@@ -20,7 +22,8 @@ Choose **Add server**, give it a name, then pick a type:
   `npx -y @upstash/context7-mcp`. Add environment variables for any keys it needs.
 
 Claude adds the server for all of your projects. Both providers keep headers and environment
-variables in their own config file, `~/.claude.json` for Claude and `config.toml` for Codex.
+variables in their own config file, `~/.claude.json` for Claude and `config.toml` for Codex. Each
+Claude account you add in CodeShip keeps a copy of those servers in its own folder.
 
 ## Sign in
 

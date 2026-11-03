@@ -4,9 +4,12 @@ import * as NodeFSP from "node:fs/promises";
 import type { ProviderInstanceId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+import { lock } from "proper-lockfile";
 
 /** An added Claude account keeps its own login here; CodeShip creates the folder and links the rest. */
 export const claudeAccountHomePath = (
@@ -23,6 +26,9 @@ const PRIVATE_ENTRIES = new Set([
   "remote-settings.json",
   ".DS_Store",
 ]);
+// Claude's lock and pending writes beside its config belong to that config.
+const isPrivateEntry = (entry: string) =>
+  PRIVATE_ENTRIES.has(entry) || entry.startsWith(".claude.json.");
 // Created in the shared folder first, so every account's sessions land in one place and threads can move between accounts.
 const SHARED_DIRECTORIES = ["projects"];
 
@@ -82,7 +88,7 @@ export const materializeClaudeAccountHome = Effect.fn("materializeClaudeAccountH
         });
       }
       for (const entry of yield* fileSystem.readDirectory(input.sharedHome)) {
-        if (PRIVATE_ENTRIES.has(entry)) continue;
+        if (isPrivateEntry(entry)) continue;
         yield* linkEntry(entry).pipe(
           Effect.catch((error) =>
             Effect.logWarning("A shared Claude file is not linked into the account's folder.", {
@@ -102,3 +108,173 @@ export const materializeClaudeAccountHome = Effect.fn("materializeClaudeAccountH
     );
   },
 );
+
+const ClaudeConfigObject = Schema.Record(Schema.String, Schema.Unknown);
+// Claude indents its config the same way.
+const ClaudeConfigJson = Schema.fromJsonString(ClaudeConfigObject, { space: 2 });
+const CopiedNamesJson = Schema.fromJsonString(Schema.Array(Schema.String));
+const decodeClaudeConfig = Schema.decodeUnknownOption(ClaudeConfigJson);
+const encodeClaudeConfig = Schema.encodeSync(ClaudeConfigJson);
+const decodeMcpServers = Schema.decodeUnknownOption(Schema.UndefinedOr(ClaudeConfigObject));
+const decodeCopiedNames = Schema.decodeUnknownOption(CopiedNamesJson);
+const encodeCopiedNames = Schema.encodeSync(CopiedNamesJson);
+
+// Beside the account's folder, where Claude never looks.
+const COPIED_MCP_SERVERS_FILE = "shared-mcp-servers.json";
+
+interface ClaudeConfigFile {
+  readonly config: Readonly<Record<string, unknown>>;
+  readonly servers: Readonly<Record<string, unknown>>;
+}
+
+const parseClaudeConfig = (text: string): Option.Option<ClaudeConfigFile> =>
+  decodeClaudeConfig(text).pipe(
+    Option.flatMap((config) =>
+      decodeMcpServers(config.mcpServers).pipe(
+        Option.map((servers) => ({ config, servers: servers ?? {} })),
+      ),
+    ),
+  );
+
+/** A missing config has no servers; one that is not valid JSON is none. */
+const readClaudeConfig = Effect.fn("ClaudeAccountHome.readClaudeConfig")(function* (
+  configPath: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  return yield* fileSystem.readFileString(configPath).pipe(
+    Effect.map(parseClaudeConfig),
+    Effect.catchReason("PlatformError", "NotFound", () =>
+      Effect.succeedSome<ClaudeConfigFile>({ config: {}, servers: {} }),
+    ),
+  );
+});
+
+/** The user MCP servers in a Claude config, or none when it cannot be read. */
+export const readClaudeMcpServerNames = Effect.fn("readClaudeMcpServerNames")(function* (
+  configPath: string,
+): Effect.fn.Return<ReadonlySet<string>, never, FileSystem.FileSystem> {
+  const config = yield* readClaudeConfig(configPath).pipe(
+    Effect.catch((error) =>
+      Effect.logWarning("The Claude config could not be read.", { path: configPath, error }).pipe(
+        Effect.as(Option.none<ClaudeConfigFile>()),
+      ),
+    ),
+  );
+  return new Set(Option.isSome(config) ? Object.keys(config.value.servers) : []);
+});
+
+const readCopiedNames = Effect.fn("ClaudeAccountHome.readCopiedNames")(function* (
+  copiedNamesPath: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  return yield* fileSystem.readFileString(copiedNamesPath).pipe(
+    Effect.map((text) => new Set(Option.getOrElse(decodeCopiedNames(text), () => []))),
+    Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(new Set<string>())),
+  );
+});
+
+/** Renames over the config so Claude never reads half of it; a linked config keeps its link. */
+const writeClaudeConfig = Effect.fn("ClaudeAccountHome.writeClaudeConfig")(function* (
+  configPath: string,
+  config: Readonly<Record<string, unknown>>,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const target = yield* fileSystem.realPath(configPath);
+  const pending = `${target}.t3code-pending`;
+  yield* fileSystem.writeFileString(pending, encodeClaudeConfig(config), { mode: 0o600 });
+  yield* fileSystem
+    .rename(pending, target)
+    .pipe(Effect.onError(() => fileSystem.remove(pending).pipe(Effect.ignore)));
+});
+
+/** Claude holds this lock to read and rewrite its config, so a copy never lands between the two. */
+const withClaudeConfigLock = <A, E, R>(configPath: string, task: Effect.Effect<A, E, R>) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const services = yield* Effect.context<never>();
+      yield* Effect.acquireRelease(
+        Effect.tryPromise(() =>
+          lock(configPath, {
+            lockfilePath: `${configPath}.lock`,
+            realpath: false,
+            retries: { retries: 20, factor: 1, minTimeout: 100, maxTimeout: 100 },
+            onCompromised: (error) =>
+              Effect.runSyncWith(services)(
+                Effect.logWarning("Claude's config lock was taken during a copy.", {
+                  configPath,
+                  error,
+                }),
+              ),
+          }),
+        ),
+        (release) => Effect.tryPromise(() => release()).pipe(Effect.ignoreCause({ log: true })),
+      );
+      return yield* task;
+    }),
+  );
+
+/**
+ * Claude keeps user MCP servers in `.claude.json` with the account's login, so an added account
+ * gets a copy of the shared config's servers instead of a link. A server only the account has
+ * stays; one that left the shared config leaves the account too.
+ */
+export const shareClaudeMcpServers = Effect.fn("shareClaudeMcpServers")(function* (input: {
+  readonly sharedConfigPath: string;
+  readonly accountHome: string;
+}): Effect.fn.Return<void, never, FileSystem.FileSystem | Path.Path> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const accountConfigPath = path.join(input.accountHome, ".claude.json");
+  const copiedNamesPath = path.join(path.dirname(input.accountHome), COPIED_MCP_SERVERS_FILE);
+  yield* Effect.gen(function* () {
+    const shared = yield* readClaudeConfig(input.sharedConfigPath);
+    if (Option.isNone(shared)) {
+      return yield* Effect.logWarning(
+        "The shared Claude config is not valid JSON, so its MCP servers are not copied.",
+        { path: input.sharedConfigPath },
+      );
+    }
+    // Claude writes the account's config on its first run; until then there is nothing to copy into.
+    if (!(yield* fileSystem.exists(accountConfigPath))) return;
+    yield* withClaudeConfigLock(
+      accountConfigPath,
+      Effect.gen(function* () {
+        const account = parseClaudeConfig(yield* fileSystem.readFileString(accountConfigPath));
+        if (Option.isNone(account)) {
+          return yield* Effect.logWarning(
+            "The Claude account's config is not valid JSON, so MCP servers are not copied into it.",
+            { path: accountConfigPath },
+          );
+        }
+        const copied = yield* readCopiedNames(copiedNamesPath);
+        const sharedServers = shared.value.servers;
+        const servers = Object.fromEntries([
+          ...Object.entries(sharedServers),
+          ...Object.entries(account.value.servers).filter(
+            ([name]) => !Object.hasOwn(sharedServers, name) && !copied.has(name),
+          ),
+        ]);
+        if (!Equal.equals(servers, account.value.servers)) {
+          yield* writeClaudeConfig(accountConfigPath, {
+            ...account.value.config,
+            mcpServers: servers,
+          });
+        }
+        const names = Object.keys(sharedServers);
+        if (names.length !== copied.size || names.some((name) => !copied.has(name))) {
+          yield* fileSystem.writeFileString(copiedNamesPath, encodeCopiedNames(names));
+        }
+      }),
+    );
+  }).pipe(
+    Effect.catch((error) =>
+      Effect.logWarning(
+        "The shared Claude MCP servers were not copied into the account's config.",
+        {
+          accountHome: input.accountHome,
+          error,
+        },
+      ),
+    ),
+  );
+});

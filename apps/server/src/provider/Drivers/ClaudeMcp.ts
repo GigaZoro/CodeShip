@@ -176,6 +176,12 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
   /** Carries `CLAUDE_CONFIG_DIR` for an added account's own folder. */
   readonly environment: NodeJS.ProcessEnv;
   readonly cwd: string;
+  /** An added account copies the shared config's servers, so its changes go to that config. */
+  readonly sharedConfig?: {
+    readonly environment: NodeJS.ProcessEnv;
+    readonly serverNames: Effect.Effect<ReadonlySet<string>>;
+    readonly copyServers: Effect.Effect<void>;
+  };
 }) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const executablePath = yield* resolveClaudeSdkExecutablePath(
@@ -201,14 +207,18 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
     );
 
   const run = Effect.fn("ClaudeMcp.run")(
-    function* (_operation: ProviderMcpOperation, args: ReadonlyArray<string>) {
+    function* (
+      _operation: ProviderMcpOperation,
+      args: ReadonlyArray<string>,
+      environment: NodeJS.ProcessEnv,
+    ) {
       const spawnCommand = yield* resolveSpawnCommand(options.binaryPath, args, {
-        env: options.environment,
+        env: environment,
       });
       return yield* spawnAndCollect(
         options.binaryPath,
         ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-          env: options.environment,
+          env: environment,
           shell: spawnCommand.shell,
           cwd: options.cwd,
         }),
@@ -222,8 +232,12 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
       ),
   );
 
-  const mutate = (operation: ProviderMcpOperation, args: ReadonlyArray<string>) =>
-    run(operation, args).pipe(
+  const mutate = (
+    operation: ProviderMcpOperation,
+    args: ReadonlyArray<string>,
+    environment = options.environment,
+  ) =>
+    run(operation, args, environment).pipe(
       Effect.flatMap((result) =>
         result.code === 0
           ? Effect.void
@@ -307,8 +321,11 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
     }
   });
 
+  const shared = options.sharedConfig;
+
   return {
-    list: openSession("list").pipe(
+    list: (shared?.copyServers ?? Effect.void).pipe(
+      Effect.andThen(openSession("list")),
       Effect.flatMap(settledStatuses),
       Effect.map(claudeMcpServers),
       Effect.scoped,
@@ -317,9 +334,24 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
         orElse: () => Effect.fail(failure("list", "Claude did not list its MCP servers in time.")),
       }),
     ),
-    add: (name, server) =>
-      mutate("add", ["mcp", "add-json", "--scope", "user", name, claudeMcpServerJson(server)]),
-    remove: (name) => mutate("remove", ["mcp", "remove", "--scope", "user", name]),
+    add: (name, server) => {
+      const args = ["mcp", "add-json", "--scope", "user", name, claudeMcpServerJson(server)];
+      return shared === undefined
+        ? mutate("add", args)
+        : mutate("add", args, shared.environment).pipe(Effect.andThen(shared.copyServers));
+    },
+    remove: (name) => {
+      const args = ["mcp", "remove", "--scope", "user", name];
+      if (shared === undefined) return mutate("remove", args);
+      // A server only this account has is removed from its own config.
+      return shared.serverNames.pipe(
+        Effect.flatMap((names) =>
+          names.has(name)
+            ? mutate("remove", args, shared.environment).pipe(Effect.andThen(shared.copyServers))
+            : mutate("remove", args),
+        ),
+      );
+    },
     signOut: (name) => mutate("signOut", ["mcp", "logout", name]),
     signIn: Effect.fn("ClaudeMcp.signIn")(function* (name) {
       const query = yield* openSession("signIn");

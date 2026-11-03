@@ -6,9 +6,9 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import type { ProviderInstance, ProviderPluginCatalog } from "@t3tools/provider-core/server/driver";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
@@ -69,10 +69,11 @@ it("searchProviderPlugins ranks name matches, then featured picks, then populari
 });
 
 const instanceId = ProviderInstanceId.make("claudeAgent");
+const siblingInstanceId = ProviderInstanceId.make("claudeAgent_work");
 
 const makeHarness = Effect.gen(function* () {
   const catalogReads = yield* Ref.make(0);
-  const refreshed = yield* Deferred.make<ProviderInstanceId>();
+  const refreshed = yield* Queue.unbounded<ProviderInstanceId>();
   const installed = yield* Ref.make<ReadonlyArray<string>>([]);
   const plugins: NonNullable<ProviderInstance["plugins"]> = {
     catalog: Ref.update(catalogReads, (count) => count + 1).pipe(Effect.as(catalog)),
@@ -94,20 +95,34 @@ const makeHarness = Effect.gen(function* () {
     addMarketplace: (source) => Effect.succeed({ marketplace: source }),
   };
   // Only the fields ProviderPlugins reads; the rest of an instance is irrelevant here.
+  const claudeHome = {
+    driverKind: "claudeAgent",
+    continuationKey: "claude:home:/Users/me/.claude",
+  };
   const instances = {
-    claudeAgent: { instanceId, plugins } as unknown as ProviderInstance,
+    claudeAgent: {
+      instanceId,
+      plugins,
+      continuationIdentity: claudeHome,
+    } as unknown as ProviderInstance,
+    claudeAgent_work: {
+      instanceId: siblingInstanceId,
+      plugins,
+      continuationIdentity: claudeHome,
+    } as unknown as ProviderInstance,
     cursor: { instanceId: ProviderInstanceId.make("cursor") } as unknown as ProviderInstance,
   };
   const layer = ProviderPlugins.layer.pipe(
     Layer.provide(
       Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
         getInstance: (id) => Effect.succeed(instances[id as keyof typeof instances]),
+        listInstances: Effect.succeed([instances.claudeAgent, instances.claudeAgent_work]),
       }),
     ),
     Layer.provide(
       Layer.mock(ProviderRegistry.ProviderRegistry)({
         refreshInstance: (id) =>
-          Deferred.succeed(refreshed, id).pipe(Effect.as<ReadonlyArray<ServerProvider>>([])),
+          Queue.offer(refreshed, id).pipe(Effect.as<ReadonlyArray<ServerProvider>>([])),
       }),
     ),
   );
@@ -122,13 +137,20 @@ it.effect("ProviderPlugins reuses the catalog until a change or an explicit refr
       yield* service.list({ instanceId, query: "" });
       yield* service.list({ instanceId, query: "review" });
       assert.equal(yield* Ref.get(harness.catalogReads), 1);
+      yield* service.list({ instanceId: siblingInstanceId, query: "" });
+      assert.equal(yield* Ref.get(harness.catalogReads), 2);
 
       yield* service.install({ instanceId, pluginId: "popular@market" });
       assert.deepEqual(yield* Ref.get(harness.installed), ["popular@market"]);
-      // New plugin skills reach the provider snapshot.
-      assert.equal(yield* Deferred.await(harness.refreshed), instanceId);
+      // Accounts on the same home share its plugins, so each reads again and picks up new skills.
       yield* service.list({ instanceId, query: "" });
-      assert.equal(yield* Ref.get(harness.catalogReads), 2);
+      yield* service.list({ instanceId: siblingInstanceId, query: "" });
+      assert.equal(yield* Ref.get(harness.catalogReads), 4);
+      const refreshed = [
+        yield* Queue.take(harness.refreshed),
+        yield* Queue.take(harness.refreshed),
+      ];
+      assert.sameMembers(refreshed, [instanceId, siblingInstanceId]);
 
       // A failed change may still have touched the provider's files.
       const failed = yield* service
@@ -136,10 +158,10 @@ it.effect("ProviderPlugins reuses the catalog until a change or an explicit refr
         .pipe(Effect.flip);
       assert.equal(failed.message, "Plugin not found in marketplace");
       yield* service.list({ instanceId, query: "" });
-      assert.equal(yield* Ref.get(harness.catalogReads), 3);
+      assert.equal(yield* Ref.get(harness.catalogReads), 5);
 
       yield* service.list({ instanceId, query: "", refresh: true });
-      assert.equal(yield* Ref.get(harness.catalogReads), 4);
+      assert.equal(yield* Ref.get(harness.catalogReads), 6);
     }).pipe(Effect.provide(harness.layer));
   }),
 );

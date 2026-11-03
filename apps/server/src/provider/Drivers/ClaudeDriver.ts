@@ -55,7 +55,12 @@ import {
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
 } from "@t3tools/provider-core/server/snapshotSettings";
-import { claudeAccountHomePath, materializeClaudeAccountHome } from "./ClaudeAccountHome.ts";
+import {
+  claudeAccountHomePath,
+  materializeClaudeAccountHome,
+  readClaudeMcpServerNames,
+  shareClaudeMcpServers,
+} from "./ClaudeAccountHome.ts";
 import { makeClaudeAuth } from "./ClaudeAuth.ts";
 import { makeClaudeMcpManagement } from "./ClaudeMcp.ts";
 import { makeClaudePluginManagement } from "./ClaudePlugins.ts";
@@ -166,10 +171,22 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       !environment.some((variable) => variable.name === "CLAUDE_CONFIG_DIR")
         ? claudeAccountHomePath(path, stateDir, instanceId)
         : undefined;
+    const sharedConfigPath = yield* ClaudeResetCredits.claudeAccountConfigPath(
+      processEnv.CLAUDE_CONFIG_DIR?.trim() ? sharedHome : undefined,
+    );
+    // Runs before each Claude process too, so servers added in a terminal reach every account.
+    const copyMcpServers =
+      accountHome === undefined
+        ? Effect.void
+        : shareClaudeMcpServers({ sharedConfigPath, accountHome }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+          );
     const prepareAccountHome =
       accountHome === undefined
         ? Effect.void
         : materializeClaudeAccountHome({ sharedHome, accountHome }).pipe(
+            Effect.andThen(copyMcpServers),
             Effect.provideService(FileSystem.FileSystem, fileSystem),
             Effect.provideService(Path.Path, path),
           );
@@ -219,6 +236,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       binaryPath: effectiveConfig.binaryPath,
       environment: claudeEnvironment,
       cwd: stateDir,
+      ...(accountHome === undefined
+        ? {}
+        : {
+            sharedConfig: {
+              // Without the account's CLAUDE_CONFIG_DIR, `claude mcp` edits the shared config.
+              environment: processEnv,
+              serverNames: readClaudeMcpServerNames(sharedConfigPath).pipe(
+                Effect.provideService(FileSystem.FileSystem, fileSystem),
+              ),
+              copyServers: copyMcpServers,
+            },
+          }),
     });
     const stampBaseIdentity = withInstanceIdentity({
       instanceId,
@@ -245,7 +274,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         enabled,
         config: { ...config, homePath: effectiveConfig.homePath },
       },
-      { scopedLimitNames, onUsageLimits: (update) => snapshot.applyUsageLimits(update) },
+      {
+        scopedLimitNames,
+        onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+        prepareHome: copyMcpServers,
+      },
     ).pipe(
       Effect.mapError(
         (cause) =>
