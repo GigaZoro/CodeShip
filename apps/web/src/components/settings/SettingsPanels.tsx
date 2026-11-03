@@ -37,6 +37,7 @@ import { MobileAppSettingsRow } from "./MobileAppSettingsRow";
 import {
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateDisabledReason,
+  getDesktopUpdateDownloadedVersion,
   getDesktopUpdateInstallConfirmationMessage,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
@@ -112,6 +113,8 @@ import { canUpdateServer } from "../ServerUpdateAction";
 import { useUpdateEverythingRun } from "../sidebar/updateEverythingRun";
 import { awaitsTrackSwitch, channelSwitchLabel } from "../sidebar/updateEverything.logic";
 import { isHostedByThisApp } from "../sidebar/useUpdateEverything";
+import { SafeUpdateDialog, useThisAppRunningThreads } from "../sidebar/SafeUpdateDialog";
+import { installLocalUpdate } from "../sidebar/SidebarUpdatePill";
 
 const RESPONSE_STREAMING_MODE_LABELS: Record<ResponseStreamingMode, string> = {
   turn: "Wait for the full response",
@@ -154,6 +157,10 @@ function AboutVersionSection() {
   const updateState = useDesktopUpdateState();
   const [switchChannel, setSwitchChannel] = useState<DesktopUpdateChannel | null>(null);
   const [isUpdateActionPending, setIsUpdateActionPending] = useState(false);
+  const [isConfirmingSafeUpdate, setIsConfirmingSafeUpdate] = useState(false);
+  const thisAppThreads = useThisAppRunningThreads(
+    resolveDesktopUpdatePendingAction(updateState) === "install",
+  );
   const { environments } = useEnvironments();
   const sessionStates = useAtomValue(
     environmentSessionStatesAtom(
@@ -213,6 +220,10 @@ function AboutVersionSection() {
 
     if (action === "install") {
       if (isUpdateActionPending) return;
+      if (thisAppThreads.count > 0) {
+        setIsConfirmingSafeUpdate(true);
+        return;
+      }
       setIsUpdateActionPending(true);
       let confirmed = false;
       try {
@@ -236,19 +247,16 @@ function AboutVersionSection() {
         setIsUpdateActionPending(false);
         return;
       }
-      void bridge
-        .installUpdate()
-        .catch((error: unknown) => {
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Could not install update",
-              description: error instanceof Error ? error.message : "Install failed.",
-            }),
-          );
-        })
-        .finally(() => setIsUpdateActionPending(false));
+      void installLocalUpdate(bridge).finally(() => setIsUpdateActionPending(false));
     }
+  };
+
+  const confirmSafeUpdate = () => {
+    const bridge = window.desktopBridge;
+    setIsConfirmingSafeUpdate(false);
+    if (!bridge) return;
+    setIsUpdateActionPending(true);
+    void installLocalUpdate(bridge).finally(() => setIsUpdateActionPending(false));
   };
 
   // Updates are checked automatically, so the button appears only for an update to act on.
@@ -392,6 +400,15 @@ function AboutVersionSection() {
       {switchChannel === null ? null : (
         <UpdateTrackSwitchDialog channel={switchChannel} onClose={() => setSwitchChannel(null)} />
       )}
+      {hasDesktopBridge ? (
+        <SafeUpdateDialog
+          open={isConfirmingSafeUpdate}
+          onOpenChange={setIsConfirmingSafeUpdate}
+          version={updateState ? getDesktopUpdateDownloadedVersion(updateState) : null}
+          environmentIds={thisAppThreads.key}
+          onConfirm={confirmSafeUpdate}
+        />
+      ) : null}
     </>
   );
 }

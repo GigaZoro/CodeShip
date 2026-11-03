@@ -38,6 +38,16 @@ The confirmation counts the running threads that the restarts will interrupt,
 and how many can resume afterwards. See **Continue threads after restarts**
 below.
 
+## Safe update with running chats
+
+When chats are running on the desktop app's own server, installing its update
+from the update button or **Settings → About** becomes a **Safe update**. The
+confirmation lists the chats that resume after the restart, and any waiting for
+your answer, which stop and need a reply. CodeShip saves where each running chat
+is, installs the update, restarts, and resumes them, even when **Continue
+threads after restarts** is off. An update another device starts follows that
+setting instead.
+
 ## Switch between Stable and Nightly
 
 In the desktop app, change **Settings → About → Update track**. CodeShip shows each

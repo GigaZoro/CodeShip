@@ -33,3 +33,6 @@ export type DesktopBackendBootstrap = typeof DesktopBackendBootstrap.Type;
 
 /** Written to `<t3Home>/runtime` before update shutdown so the backend retains its managed tunnel. */
 export const DESKTOP_UPDATE_RESTART_MARKER_FILE = "desktop-update-restart";
+
+/** Written beside the restart marker by a safe update: running threads resume whatever the setting. */
+export const DESKTOP_UPDATE_RESUME_THREADS_MARKER_FILE = "desktop-update-resume-threads";

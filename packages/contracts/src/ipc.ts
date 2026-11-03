@@ -1126,8 +1126,11 @@ export interface DesktopBridge {
   ) => Promise<DesktopUpdateState>;
   checkForUpdate: () => Promise<DesktopUpdateCheckResult>;
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
-  /** With a version, installs only that downloaded build. */
-  installUpdate: (expectedVersion?: string) => Promise<DesktopUpdateActionResult>;
+  /** With a version, installs only that downloaded build. `resumeThreads` makes it a safe update. */
+  installUpdate: (
+    expectedVersion?: string,
+    options?: { readonly resumeThreads?: boolean },
+  ) => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
   cliCommand: {
     getState: () => Promise<DesktopCliCommandState>;

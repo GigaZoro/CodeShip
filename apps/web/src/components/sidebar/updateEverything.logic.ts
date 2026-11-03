@@ -54,7 +54,10 @@ export function collectRestartingMachines(
     return [
       {
         environmentId: machine.environmentId,
-        continuesThreads: config.settings.continueThreadsAfterServerUpdate === true,
+        // This app's own installs ask its servers to resume their threads.
+        continuesThreads:
+          (installsLocal && machine.hostedByThisApp) ||
+          config.settings.continueThreadsAfterServerUpdate === true,
       },
     ];
   });

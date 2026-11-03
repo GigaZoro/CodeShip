@@ -1,5 +1,6 @@
 import {
   DESKTOP_UPDATE_RESTART_MARKER_FILE,
+  DESKTOP_UPDATE_RESUME_THREADS_MARKER_FILE,
   DesktopUpdateChannelSchema,
   type DesktopRuntimeInfo,
   type DesktopUpdateActionResult,
@@ -62,6 +63,13 @@ type UpdateAction = "check" | "download" | "install" | "install-recovery" | "cha
 
 interface DesktopPreparedUpdateInstallResult extends DesktopUpdateActionResult {
   readonly failed: boolean;
+}
+
+export interface DesktopUpdateInstallOptions {
+  /** Installs only that downloaded build, never one that replaced it. */
+  readonly expectedVersion?: string | undefined;
+  /** Running threads resume after the restart even where the setting would stop them. */
+  readonly resumeThreads?: boolean | undefined;
 }
 
 const AppUpdateYmlConfig = Schema.Record(Schema.String, Schema.String);
@@ -209,7 +217,9 @@ export class DesktopUpdates extends Context.Service<
       options?: { readonly allowDowngrade?: boolean },
     ) => Effect.Effect<DesktopUpdateCheckResult>;
     readonly download: Effect.Effect<DesktopUpdateActionResult>;
-    readonly install: Effect.Effect<DesktopUpdateActionResult>;
+    readonly install: (
+      options?: DesktopUpdateInstallOptions,
+    ) => Effect.Effect<DesktopUpdateActionResult>;
     readonly installPrepared: (
       expectedVersion: string,
     ) => Effect.Effect<DesktopPreparedUpdateInstallResult>;
@@ -666,6 +676,20 @@ export const make = Effect.gen(function* () {
     .remove(updateRestartMarkerPath, { force: true })
     .pipe(Effect.ignore);
 
+  const resumeThreadsMarkerPath = environment.path.join(
+    updateRestartMarkerDir,
+    DESKTOP_UPDATE_RESUME_THREADS_MARKER_FILE,
+  );
+  const removeResumeThreadsMarker = fileSystem
+    .remove(resumeThreadsMarkerPath, { force: true })
+    .pipe(Effect.ignore);
+  // A plain install clears an earlier safe update's marker. A safe update that cannot write it
+  // fails the install rather than restart without the resume it promised.
+  const writeResumeThreadsMarker = (resumeThreads: boolean) =>
+    resumeThreads
+      ? fileSystem.writeFileString(resumeThreadsMarkerPath, "").pipe(Effect.orDie)
+      : removeResumeThreadsMarker;
+
   const installRecordPath = environment.path.join(
     updateRestartMarkerDir,
     DESKTOP_UPDATE_INSTALL_RECORD_FILE,
@@ -716,6 +740,7 @@ export const make = Effect.gen(function* () {
       Ref.set(desktopState.quitting, false),
       Ref.set(installRunningBackendsRef, []),
       removeUpdateRestartMarker,
+      removeResumeThreadsMarker,
       removeInstallRecord,
     ],
     { discard: true },
@@ -733,6 +758,7 @@ export const make = Effect.gen(function* () {
 
     yield* Ref.set(desktopState.quitting, false);
     yield* removeUpdateRestartMarker;
+    yield* removeResumeThreadsMarker;
     yield* removeInstallRecord;
     yield* Effect.gen(function* () {
       const runningInstances = yield* Ref.getAndSet(installRunningBackendsRef, []);
@@ -755,7 +781,10 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  const installDownloadedUpdate = (expectedVersion?: string) =>
+  const installDownloadedUpdate = ({
+    expectedVersion,
+    resumeThreads,
+  }: DesktopUpdateInstallOptions) =>
     Effect.scoped(
       Effect.gen(function* () {
         const actionCompletions = yield* PubSub.subscribe(finishedUpdateActions);
@@ -808,6 +837,7 @@ export const make = Effect.gen(function* () {
 
         return yield* Effect.gen(function* () {
           yield* writeUpdateRestartMarker;
+          yield* writeResumeThreadsMarker(resumeThreads === true);
           const { downloadedVersion } = yield* Ref.get(updateStateRef);
           if (downloadedVersion !== null) yield* writeInstallRecord(downloadedVersion);
           // Stop pooled backends before quitAndInstall can outrun their scope finalizers.
@@ -863,9 +893,10 @@ export const make = Effect.gen(function* () {
       }),
     ).pipe(Effect.withSpan("desktop.updates.installDownloadedUpdate"));
 
-  const installWithExpectedVersion = Effect.fn("desktop.updates.install")(function* (
-    expectedVersion?: string,
+  const installWithOptions = Effect.fn("desktop.updates.install")(function* (
+    options: DesktopUpdateInstallOptions,
   ) {
+    yield* Effect.annotateCurrentSpan({ resumeThreads: options.resumeThreads === true });
     if (yield* Ref.get(desktopState.quitting)) {
       return {
         accepted: false,
@@ -874,7 +905,7 @@ export const make = Effect.gen(function* () {
         state: yield* Ref.get(updateStateRef),
       };
     }
-    const result = yield* installDownloadedUpdate(expectedVersion);
+    const result = yield* installDownloadedUpdate(options);
     return {
       accepted: result.accepted,
       completed: result.completed,
@@ -1283,11 +1314,13 @@ export const make = Effect.gen(function* () {
         state: yield* Ref.get(updateStateRef),
       };
     }).pipe(Effect.withSpan("desktop.updates.download")),
-    install: installWithExpectedVersion().pipe(
-      Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
-    ),
+    install: Effect.fn("DesktopUpdates.install")(function (options = {}) {
+      return installWithOptions(options).pipe(
+        Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
+      );
+    }),
     installPrepared: Effect.fn("DesktopUpdates.installPrepared")(function (expectedVersion) {
-      return installWithExpectedVersion(expectedVersion);
+      return installWithOptions({ expectedVersion });
     }),
   });
 });

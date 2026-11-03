@@ -1,5 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
-import { DESKTOP_UPDATE_RESTART_MARKER_FILE } from "@t3tools/contracts";
+import {
+  DESKTOP_UPDATE_RESTART_MARKER_FILE,
+  DESKTOP_UPDATE_RESUME_THREADS_MARKER_FILE,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -164,7 +167,7 @@ describe("DesktopUpdates", () => {
             const checkFiber = yield* updates.check("manual").pipe(Effect.forkScoped);
             yield* Deferred.await(checkStarted);
 
-            const installResult = yield* updates.install;
+            const installResult = yield* updates.install();
             assert.isFalse(installResult.accepted);
 
             yield* Deferred.succeed(releaseCheck, undefined);
@@ -196,7 +199,7 @@ describe("DesktopUpdates", () => {
           harness.emit("update-downloaded", { version: "1.2.4" });
           yield* flushCallbacks;
 
-          const installFiber = yield* updates.install.pipe(Effect.forkScoped);
+          const installFiber = yield* updates.install().pipe(Effect.forkScoped);
           yield* Deferred.await(installStarted);
 
           const checkResult = yield* updates.check("manual");
@@ -229,7 +232,7 @@ describe("DesktopUpdates", () => {
         assert.equal(state.downloadedVersion, "1.2.4");
         assert.isNull(state.errorContext);
 
-        const result = yield* updates.install;
+        const result = yield* updates.install();
         assert.isTrue(result.accepted);
       }),
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
@@ -374,7 +377,7 @@ describe("DesktopUpdates", () => {
         harness.emit("update-downloaded", { version: "1.2.4" });
         yield* flushCallbacks;
 
-        const result = yield* updates.install;
+        const result = yield* updates.install();
         assert.isTrue(result.accepted);
         assert.isFalse(result.completed);
         assert.isFalse(yield* Ref.get(desktopState.quitting));
@@ -390,7 +393,18 @@ describe("DesktopUpdates", () => {
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 
-  it.effect("marks the backend stop for an install as an update restart", () => {
+  it.effect.each([
+    {
+      label: "a plain install",
+      resumeThreads: false,
+      markers: [DESKTOP_UPDATE_RESTART_MARKER_FILE],
+    },
+    {
+      label: "a safe update",
+      resumeThreads: true,
+      markers: [DESKTOP_UPDATE_RESTART_MARKER_FILE, DESKTOP_UPDATE_RESUME_THREADS_MARKER_FILE],
+    },
+  ])("marks the backend stop for $label", ({ resumeThreads, markers }) => {
     let markersAtStop: ReadonlyArray<string> = [];
     const harness = makeHarness({
       stopBackend: Effect.sync(() => {
@@ -405,11 +419,20 @@ describe("DesktopUpdates", () => {
         yield* updates.configure;
         harness.emit("update-downloaded", { version: "1.2.4" });
         yield* flushCallbacks;
+        // A plain install must not inherit an earlier safe update's resume.
+        harness.updateRestartMarkers.add(
+          environment.path.join(
+            environment.baseDir,
+            "runtime",
+            DESKTOP_UPDATE_RESUME_THREADS_MARKER_FILE,
+          ),
+        );
 
-        assert.isTrue((yield* updates.install).accepted);
-        assert.deepEqual(markersAtStop, [
-          environment.path.join(environment.baseDir, "runtime", DESKTOP_UPDATE_RESTART_MARKER_FILE),
-        ]);
+        assert.isTrue((yield* updates.install({ resumeThreads })).accepted);
+        assert.deepEqual(
+          [...markersAtStop].sort(),
+          markers.map((marker) => environment.path.join(environment.baseDir, "runtime", marker)),
+        );
       }),
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
@@ -429,7 +452,7 @@ describe("DesktopUpdates", () => {
         harness.emit("update-downloaded", { version: "1.2.4" });
         yield* flushCallbacks;
 
-        assert.isTrue((yield* updates.install).accepted);
+        assert.isTrue((yield* updates.install()).accepted);
         assert.deepEqual(
           recordsAtStop.map((record) => JSON.parse(record)),
           [{ fromVersion: "1.2.3", targetVersion: "1.2.4" }],
@@ -475,7 +498,7 @@ describe("DesktopUpdates", () => {
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 
-  it.effect("drops the update restart marker when an install is interrupted", () =>
+  it.effect("drops the update markers when an install is interrupted", () =>
     Effect.gen(function* () {
       const stopping = yield* Deferred.make<void>();
       const harness = makeHarness({
@@ -489,9 +512,11 @@ describe("DesktopUpdates", () => {
           harness.emit("update-downloaded", { version: "1.2.4" });
           yield* flushCallbacks;
 
-          const installFiber = yield* updates.install.pipe(Effect.forkScoped);
+          const installFiber = yield* updates
+            .install({ resumeThreads: true })
+            .pipe(Effect.forkScoped);
           yield* Deferred.await(stopping);
-          assert.equal(harness.updateRestartMarkers.size, 1);
+          assert.equal(harness.updateRestartMarkers.size, 2);
 
           yield* Fiber.interrupt(installFiber);
           assert.equal(harness.updateRestartMarkers.size, 0);
@@ -520,7 +545,7 @@ describe("DesktopUpdates", () => {
         harness.emit("update-downloaded", { version: "1.2.4" });
         yield* flushCallbacks;
 
-        const result = yield* updates.install;
+        const result = yield* updates.install();
         assert.isTrue(result.accepted);
         assert.isFalse(yield* Ref.get(desktopState.quitting));
         assert.deepEqual(harness.installSteps, ["quitAndInstall", "startBackend"]);
@@ -551,7 +576,7 @@ describe("DesktopUpdates", () => {
         harness.emit("update-downloaded", { version: "1.2.4" });
         yield* flushCallbacks;
 
-        const result = yield* updates.install;
+        const result = yield* updates.install();
         assert.equal(result.state.errorContext, "install");
         assert.deepEqual(harness.installSteps, ["quitAndInstall"]);
         assert.isFalse((yield* (yield* pool.primary).snapshot).desiredRunning);
@@ -598,7 +623,7 @@ describe("DesktopUpdates", () => {
         harness.emit("update-downloaded", { version: "1.2.4" });
         yield* flushCallbacks;
 
-        yield* updates.install;
+        yield* updates.install();
         assert.sameMembers(stops, [primary.id, wsl.id]);
         assert.isFalse((yield* wsl.snapshot).desiredRunning);
         const { changes } = yield* updates.subscribe;
@@ -638,11 +663,11 @@ describe("DesktopUpdates", () => {
         harness.emit("update-downloaded", { version: "1.2.4" });
         yield* flushCallbacks;
 
-        const failedInstall = yield* updates.install.pipe(Effect.forkChild);
+        const failedInstall = yield* updates.install().pipe(Effect.forkChild);
         yield* Deferred.await(recoveryStarted);
         assert.isFalse(yield* updates.isInstallActive);
 
-        const overlappingInstall = yield* updates.install;
+        const overlappingInstall = yield* updates.install();
         assert.isFalse(overlappingInstall.accepted);
         assert.equal(harness.quitAndInstalls(), 1);
         harness.emit("error", new Error("duplicate native installer error"));
@@ -653,7 +678,7 @@ describe("DesktopUpdates", () => {
         const failedResult = yield* Fiber.join(failedInstall);
         assert.equal(failedResult.state.errorContext, "install");
 
-        const retry = yield* updates.install;
+        const retry = yield* updates.install();
         assert.isTrue(retry.accepted);
         assert.equal(harness.quitAndInstalls(), 2);
       }),

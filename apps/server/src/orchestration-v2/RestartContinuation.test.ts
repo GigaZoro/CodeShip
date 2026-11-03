@@ -19,7 +19,11 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ServerSettings from "../serverSettings.ts";
-import { restartContinuationRun, continueRestartedRun } from "./RestartContinuation.ts";
+import {
+  restartContinuationRun,
+  continueRestartedRun,
+  RestartResumeRequest,
+} from "./RestartContinuation.ts";
 import { continuationStartRetryDelayMs } from "./RestartBackgroundNote.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
@@ -236,18 +240,22 @@ it.effect.each(["completed", "waiting", "cancelled"] as const)(
 );
 
 it.effect.each([
-  [false, undefined],
-  [true, undefined],
-  [false, true],
-  [true, false],
+  [false, undefined, false],
+  [true, undefined, false],
+  [false, true, false],
+  [true, false, false],
+  [false, false, true],
 ] as const)(
-  "atomically records restart intent with cancellation when opt-in is %s and project override is %s",
-  ([enabled, projectOverride]) =>
+  "atomically records restart intent with cancellation when opt-in is %s, project override is %s and a safe update is %s",
+  ([enabled, projectOverride, resumeRequested]) =>
     Effect.gen(function* () {
       let committed: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0] | undefined;
+      const prepared: Array<EffectOutbox.PendingOrchestrationEffectV2> = [];
+      const continues = resumeRequested || (projectOverride ?? enabled);
       const recovery = yield* ProviderRuntimeRecovery.make.pipe(
         Effect.provide(
           Layer.mergeAll(
+            Layer.succeed(RestartResumeRequest, Effect.succeed(resumeRequested)),
             ServerSettings.layerTest({
               continueThreadsAfterServerUpdate: enabled,
               projectSettingsOverrides:
@@ -264,6 +272,11 @@ it.effect.each([
               getRuntimeRecoveryProjection: () => Effect.succeed(makeProjection()),
             }),
             Layer.mock(EventSink.EventSinkV2)({
+              writeWithEffects: (input) =>
+                Effect.sync(() => {
+                  prepared.push(...input.effects);
+                  return [];
+                }),
               commitCommand: (input) => {
                 committed = input;
                 return Effect.succeed({ committed: true, cancelledEffectCount: 1 } as never);
@@ -279,6 +292,8 @@ it.effect.each([
           ),
         ),
       );
+      yield* recovery.prepareForShutdown;
+      assert.lengthOf(prepared, continues ? 1 : 0);
       yield* recovery.reconcile("startup");
       assert.isDefined(committed);
       assert.isTrue(
@@ -286,8 +301,8 @@ it.effect.each([
           (event) => event.type === "run.updated" && event.payload.status === "cancelled",
         ),
       );
-      assert.lengthOf(committed!.effects, (projectOverride ?? enabled) ? 1 : 0);
-      if (projectOverride ?? enabled)
+      assert.lengthOf(committed!.effects, continues ? 1 : 0);
+      if (continues)
         assert.deepEqual(committed!.effects[0]?.request, {
           type: "provider-runtime.continue",
           sourceRunId: runId,
@@ -428,65 +443,72 @@ it.effect.each(["running", "waiting"])(
     }),
 );
 
-it.effect("does not duplicate delivery and yields to newer user work or opt-out", () =>
-  Effect.gen(function* () {
-    let projection = makeProjection();
-    projection = { ...projection, runs: [{ ...projection.runs[0]!, status: "cancelled" }] };
-    const commands: Parameters<
-      ThreadManagementService.ThreadManagementService["Service"]["dispatch"]
-    >[0][] = [];
-    const layerThreads = Layer.mock(ThreadManagementService.ThreadManagementService)({
-      getThreadRecords: () => Effect.succeed(projection),
-      recoverDelegatedTask: () => Effect.void,
-      dispatch: (command) => {
-        commands.push(command);
-        if (command.type === "message.dispatch")
-          projection = { ...projection, messages: [{ id: command.messageId } as never] };
-        return Effect.succeed({} as never);
-      },
-    });
-    const layerEnabled = Layer.merge(
-      layerThreads,
-      ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
-    );
-    yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
-      Effect.provide(layerEnabled),
-    );
-    yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
-      Effect.provide(layerEnabled),
-    );
-    assert.lengthOf(commands, 1);
-    assert.match(String(commands[0]!.commandId), /run:restart$/);
-    if (commands[0]!.type === "message.dispatch")
-      assert.equal(commands[0]!.restartContinuationOfRunId, runId);
-    projection = {
-      ...projection,
-      messages: [],
-      runs: [
-        ...projection.runs,
-        {
-          ...projection.runs[0]!,
-          id: RunId.make("run:user-newer"),
-          ordinal: 2,
-          status: "completed",
+it.effect(
+  "does not duplicate delivery and yields to newer user work or opt-out unless resume was asked",
+  () =>
+    Effect.gen(function* () {
+      let projection = makeProjection();
+      projection = { ...projection, runs: [{ ...projection.runs[0]!, status: "cancelled" }] };
+      const commands: Parameters<
+        ThreadManagementService.ThreadManagementService["Service"]["dispatch"]
+      >[0][] = [];
+      const layerThreads = Layer.mock(ThreadManagementService.ThreadManagementService)({
+        getThreadRecords: () => Effect.succeed(projection),
+        recoverDelegatedTask: () => Effect.void,
+        dispatch: (command) => {
+          commands.push(command);
+          if (command.type === "message.dispatch")
+            projection = { ...projection, messages: [{ id: command.messageId } as never] };
+          return Effect.succeed({} as never);
         },
-      ],
-    };
-    yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
-      Effect.provide(layerEnabled),
-    );
-    assert.lengthOf(commands, 1);
-    projection = { ...projection, runs: [projection.runs[0]!] };
-    yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
-      Effect.provide(
-        Layer.merge(
-          layerThreads,
-          ServerSettings.layerTest({ continueThreadsAfterServerUpdate: false }),
-        ),
-      ),
-    );
-    assert.lengthOf(commands, 1);
-  }),
+      });
+      const layerEnabled = Layer.merge(
+        layerThreads,
+        ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
+      );
+      yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
+        Effect.provide(layerEnabled),
+      );
+      yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
+        Effect.provide(layerEnabled),
+      );
+      assert.lengthOf(commands, 1);
+      assert.match(String(commands[0]!.commandId), /run:restart$/);
+      if (commands[0]!.type === "message.dispatch")
+        assert.equal(commands[0]!.restartContinuationOfRunId, runId);
+      projection = {
+        ...projection,
+        messages: [],
+        runs: [
+          ...projection.runs,
+          {
+            ...projection.runs[0]!,
+            id: RunId.make("run:user-newer"),
+            ordinal: 2,
+            status: "completed",
+          },
+        ],
+      };
+      yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
+        Effect.provide(layerEnabled),
+      );
+      assert.lengthOf(commands, 1);
+      projection = { ...projection, runs: [projection.runs[0]!] };
+      const layerOptedOut = Layer.merge(
+        layerThreads,
+        ServerSettings.layerTest({ continueThreadsAfterServerUpdate: false }),
+      );
+      yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
+        Effect.provide(layerOptedOut),
+      );
+      assert.lengthOf(commands, 1);
+      // A safe update asked for the resume, so it outranks the opt-out.
+      yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
+        Effect.provide(layerOptedOut),
+        Effect.provideService(RestartResumeRequest, Effect.succeed(true)),
+      );
+      assert.lengthOf(commands, 2);
+    }),
 );
 
 it.effect("prepares no continuation for background work another provider thread launched", () =>

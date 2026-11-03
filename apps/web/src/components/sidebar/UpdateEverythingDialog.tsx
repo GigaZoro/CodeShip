@@ -1,11 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
-import { EnvironmentId } from "@t3tools/contracts";
-import { Atom } from "effect/reactivity";
+import type { EnvironmentId } from "@t3tools/contracts";
 import { ChevronRightIcon } from "lucide-react";
 import { Fragment, type RefObject, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
-import { environmentThreadShells } from "~/state/threads";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -27,25 +25,7 @@ import {
   type UpdateEverythingSelection,
   updateRowKey,
 } from "./updateEverything.logic";
-
-const isRunning = (status: string) =>
-  status === "preparing" || status === "starting" || status === "running";
-
-const runningThreadCountAtom = Atom.family((environmentIds: string) =>
-  Atom.make((get) =>
-    environmentIds
-      .split("\n")
-      .filter((id) => id !== "")
-      .reduce(
-        (count, id) =>
-          count +
-          get(environmentThreadShells.environmentThreadsAtom(EnvironmentId.make(id))).filter(
-            (thread) => isRunning(thread.status),
-          ).length,
-        0,
-      ),
-  ).pipe(Atom.withLabel(`update-everything-running-threads:${environmentIds}`)),
-);
+import { runningThreadCountAtom } from "./runningThreads";
 
 interface UpdateEverythingDialogProps {
   readonly open: boolean;
@@ -107,7 +87,7 @@ function UpdateEverythingDialogContent({
   selectable = false,
   cancelRef,
   title,
-  confirmLabel = "Update",
+  confirmLabel,
   notes = [],
   disabledReason = null,
   busy = false,
@@ -268,7 +248,7 @@ function UpdateEverythingDialogContent({
         ) : running > 0 ? (
           <p className="self-center text-muted-foreground text-sm max-sm:order-1 max-sm:text-center sm:mr-auto">
             {stopped === 0
-              ? `${threads} will be interrupted and can resume after the restart.`
+              ? `${threads} will pause and resume after the restart.`
               : continuing === 0
                 ? `${threads} will be interrupted.`
                 : `${threads} will be interrupted. ${continuing} can resume after the restart.`}
@@ -281,7 +261,7 @@ function UpdateEverythingDialogContent({
           disabled={disabledReason !== null || busy || selected.length === 0}
           onClick={() => onConfirm(selection)}
         >
-          {confirmLabel}
+          {confirmLabel ?? (running > 0 && stopped === 0 ? "Safe update" : "Update")}
         </Button>
       </AlertDialogFooter>
     </>

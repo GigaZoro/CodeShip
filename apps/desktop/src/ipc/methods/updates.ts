@@ -46,14 +46,14 @@ export const downloadUpdate = DesktopIpc.makeIpcMethod({
 
 export const installUpdate = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.UPDATE_INSTALL_CHANNEL,
-  /** A version installs only that downloaded build, never one that replaced it. */
-  payload: Schema.UndefinedOr(Schema.String),
+  payload: Schema.Struct({
+    expectedVersion: Schema.optional(Schema.String),
+    resumeThreads: Schema.optional(Schema.Boolean),
+  }),
   result: DesktopUpdateActionResultSchema,
-  handler: Effect.fn("desktop.ipc.updates.install")(function* (expectedVersion) {
+  handler: Effect.fn("desktop.ipc.updates.install")(function* (options) {
     const updates = yield* DesktopUpdates.DesktopUpdates;
-    if (expectedVersion === undefined) return yield* updates.install;
-    const { accepted, completed, state } = yield* updates.installPrepared(expectedVersion);
-    return { accepted, completed, state };
+    return yield* updates.install(options);
   }),
 });
 

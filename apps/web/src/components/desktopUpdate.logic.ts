@@ -22,7 +22,9 @@ function desktopReleaseRepositoryUrl(repository: string | undefined): string {
 }
 
 /** The download RPC can beat the updater's downloadedVersion event; fall back to the requested version. */
-export function getDesktopUpdateDownloadedVersion(state: DesktopUpdateState): string | null {
+export function getDesktopUpdateDownloadedVersion(
+  state: Pick<DesktopUpdateState, "availableVersion" | "downloadedVersion">,
+): string | null {
   return state.downloadedVersion ?? state.availableVersion;
 }
 
@@ -132,6 +134,15 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
     return state.message ?? "Update failed";
   }
   return "Up to date";
+}
+
+export function getSafeUpdateButtonTooltip(
+  state: Pick<DesktopUpdateState, "availableVersion" | "downloadedVersion">,
+  runningThreads: number,
+): string {
+  const version = getDesktopUpdateDownloadedVersion(state);
+  const chats = `${runningThreads} running ${runningThreads === 1 ? "chat" : "chats"}`;
+  return `Update${version ? ` ${version}` : ""} downloaded. Click for a safe update: ${chats} resume after the restart.`;
 }
 
 export function getDesktopUpdateInstallConfirmationMessage(

@@ -413,7 +413,7 @@ describe("DesktopRemoteUpdates", () => {
           ["ready-to-install"],
         );
 
-        const localInstall = yield* updates.install.pipe(Effect.forkChild);
+        const localInstall = yield* updates.install().pipe(Effect.forkChild);
         yield* Deferred.await(installStarted);
         yield* Queue.offer(commits, {
           version: 1,

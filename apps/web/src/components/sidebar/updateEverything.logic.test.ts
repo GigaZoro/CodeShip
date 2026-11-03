@@ -294,7 +294,8 @@ describe("collectRestartingMachines", () => {
       };
     };
     const machines = [
-      withContinuation("this-app", { hostedByThisApp: true }, true),
+      // Opted out, but this app's own install resumes its threads anyway.
+      withContinuation("this-app", { hostedByThisApp: true }, false),
       withContinuation("alvin", {}, true),
       withContinuation("opted-out", {}, false),
       machine("old", "0.0.40", "boot-service"),

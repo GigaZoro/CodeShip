@@ -15,6 +15,7 @@ import {
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateDownloadedVersion,
   getDesktopUpdateInstallConfirmationMessage,
+  getSafeUpdateButtonTooltip,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
   resolveDesktopUpdatePendingAction,
@@ -31,6 +32,7 @@ import {
   type DesktopUpdateStatusIconState,
 } from "./DesktopUpdateStatusIcon";
 import { SidebarUpdateReleaseNotes } from "./SidebarUpdateReleaseNotes";
+import { SafeUpdateDialog, useThisAppRunningThreads } from "./SafeUpdateDialog";
 import { SidebarUpdateCapsule } from "./SidebarUpdateCapsule";
 import { UpdateEverythingDialog } from "./UpdateEverythingDialog";
 import type {
@@ -157,7 +159,8 @@ export async function installLocalUpdate(
   expectedVersion?: string,
 ): Promise<boolean> {
   try {
-    const result = await bridge.installUpdate(expectedVersion);
+    // Every install started here resumes running threads, whatever the restart setting says.
+    const result = await bridge.installUpdate(expectedVersion, { resumeThreads: true });
     if (!result.accepted) {
       showDesktopUpdateDownloadedToast(bridge, result.state);
       return false;
@@ -185,6 +188,7 @@ function SidebarUpdateControl() {
   const state = useDesktopUpdateState();
   const [isActionPending, setIsActionPending] = useState(false);
   const [isConfirmingEverything, setIsConfirmingEverything] = useState(false);
+  const [isConfirmingSafeUpdate, setIsConfirmingSafeUpdate] = useState(false);
   const [releaseNotesPopoverHandle] = useState(() => PopoverCreateHandle());
   const suppressReleaseNotesFocusOpen = useRef(false);
   const releaseNotesPopupRef = useRef<HTMLDivElement>(null);
@@ -192,6 +196,7 @@ function SidebarUpdateControl() {
 
   const action = state ? resolveDesktopUpdateButtonAction(state) : "none";
   const pendingAction = resolveDesktopUpdatePendingAction(state);
+  const thisAppThreads = useThisAppRunningThreads(pendingAction === "install");
   // The updater holds a found update until its background recheck finishes.
   const isWaitingOnRecheck = state?.status === "checking" && pendingAction !== "none";
   const isDownloading = state?.status === "downloading";
@@ -210,9 +215,11 @@ function SidebarUpdateControl() {
   const tooltip =
     runsEverything && !isWaitingOnRecheck
       ? everything.summary
-      : state
-        ? getDesktopUpdateButtonTooltip(state)
-        : "Update available";
+      : state && action === "install" && thisAppThreads.count > 0
+        ? getSafeUpdateButtonTooltip(state, thisAppThreads.count)
+        : state
+          ? getDesktopUpdateButtonTooltip(state)
+          : "Update available";
   const disabled = isWaitingOnRecheck || isDesktopUpdateButtonDisabled(state);
   const isInteractionDisabled = disabled || isActionPending || isRunningEverything;
   const showReleaseNotesPopover =
@@ -238,6 +245,10 @@ function SidebarUpdateControl() {
     }
 
     if (!bridge || !state || action === "none") return;
+    if (action === "install" && thisAppThreads.count > 0) {
+      setIsConfirmingSafeUpdate(true);
+      return;
+    }
     setIsActionPending(true);
 
     if (action === "download") {
@@ -308,15 +319,30 @@ function SidebarUpdateControl() {
     <DesktopUpdateStatusIcon downloadPercent={state?.downloadPercent ?? null} status={iconStatus} />
   );
   const confirmDialog = (
-    <UpdateEverythingDialog
-      open={isConfirmingEverything}
-      onOpenChange={setIsConfirmingEverything}
-      version={everything.version}
-      rows={everything.rows}
-      restarts={everything.restarts}
-      selectable
-      onConfirm={(selection) => void runEverything(selection)}
-    />
+    <>
+      <UpdateEverythingDialog
+        open={isConfirmingEverything}
+        onOpenChange={setIsConfirmingEverything}
+        version={everything.version}
+        rows={everything.rows}
+        restarts={everything.restarts}
+        selectable
+        onConfirm={(selection) => void runEverything(selection)}
+      />
+      <SafeUpdateDialog
+        open={isConfirmingSafeUpdate}
+        onOpenChange={setIsConfirmingSafeUpdate}
+        version={state ? getDesktopUpdateDownloadedVersion(state) : null}
+        environmentIds={thisAppThreads.key}
+        onConfirm={() => {
+          const bridge = window.desktopBridge;
+          setIsConfirmingSafeUpdate(false);
+          if (!bridge) return;
+          setIsActionPending(true);
+          void installLocalUpdate(bridge).finally(() => setIsActionPending(false));
+        }}
+      />
+    </>
   );
 
   // A run shows its progress in the sidebar footer, where the text fits.
