@@ -81,10 +81,9 @@ export function accountsWithRoom(
 }
 
 /**
- * Where an Auto selection runs: its provider's Auto model, on an account the server picks. A
- * thread stays on its account while that account has room, so a switch never restarts its
- * session needlessly. A new thread, or one whose account ran out, takes the highest account in
- * the order with room. With none left, it stays put. With Auto mode off, it runs as it names.
+ * Where an Auto selection runs: its provider's Auto model. With account switching on, a thread
+ * keeps its account while it has room, so its session never restarts needlessly; otherwise it
+ * takes the highest account in the order with room, else stays put. Auto off runs it as named.
  */
 export function routeAutoAccount(
   input: AccountRoutingContext & {
@@ -122,7 +121,7 @@ export function routeAutoAccount(
       ? undefined
       : { instanceId: current.instanceId, model: selection.model };
   };
-  const target = pickTarget();
+  const target = input.settings.failoverLimitedThreads ? pickTarget() : undefined;
   const routed =
     target === undefined ||
     (target.instanceId === selection.instanceId && target.model === selection.model)

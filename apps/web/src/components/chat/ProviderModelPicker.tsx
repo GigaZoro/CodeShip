@@ -171,6 +171,10 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         ? "off"
         : "on",
   );
+  const switchesAccounts = useAtomValue(
+    serverEnvironment.configValueAtom(props.environmentId),
+    (config) => config?.settings.failoverLimitedThreads === true,
+  );
   const offersAuto = autoMode !== "unsupported" && props.selectedModels === undefined;
   const autoPick = offersAuto ? props.auto?.pick : null;
   const autoEntry = autoPick
@@ -184,6 +188,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           detail: describeModelPick(autoPick, autoEntry.models),
           providerName: PROVIDER_DISPLAY_NAMES[autoEntry.driverKind] ?? autoEntry.driverKind,
           coordinates: supportsAutoCoordinator(autoEntry.driverKind),
+          switchesAccounts,
         }
       : null;
   // Off, the Auto tab stays where Auto could run here, so the picker shows how to turn it on.

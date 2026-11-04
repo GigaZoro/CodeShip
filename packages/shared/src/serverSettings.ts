@@ -132,7 +132,7 @@ export function orderProviderInstancesForFailover<
 
 type AutoModeSettings = Pick<
   ServerSettings,
-  "failoverLimitedThreads" | "autoModeProvider" | "autoModeModels" | "providerInstanceFailoverOrder"
+  "autoModeProvider" | "autoModeModels" | "providerInstanceFailoverOrder"
 >;
 
 type AutoModeAccount = {
@@ -141,9 +141,9 @@ type AutoModeAccount = {
   readonly enabled: boolean;
 };
 
-/** Auto's primary provider, or null while Auto mode is off. Auto needs account switching on. */
+/** Auto's primary provider, or null while Auto mode is off. */
 export function activeAutoModeProvider(settings: AutoModeSettings): ProviderDriverKind | null {
-  const driver = settings.failoverLimitedThreads ? settings.autoModeProvider : null;
+  const driver = settings.autoModeProvider;
   return driver !== null && supportsAccountFailover(driver) ? driver : null;
 }
 

@@ -103,15 +103,11 @@ export function AccountFailoverSettings({
       {supportsAutoMode ? (
         <SettingsRow
           title="Auto mode"
-          description={
-            switching
-              ? "Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's first account with usage left and runs its coordinator model, set below. Pick Auto in the model picker to use it."
-              : "Pick a primary provider to enable Auto mode. It needs Switch accounts at usage limits on."
-          }
+          description={`Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's first account${switching ? " with usage left" : ""} and runs its coordinator model, set below. Pick Auto in the model picker to use it.`}
           control={
             <Select
               value={autoProvider ?? AUTO_MODE_OFF}
-              disabled={readOnly || !switching}
+              disabled={readOnly}
               onValueChange={(value) => {
                 const driver = autoProviders.find((candidate) => candidate === value) ?? null;
                 if (value === AUTO_MODE_OFF || driver !== null)
@@ -181,9 +177,11 @@ export function AccountFailoverSettings({
               description={
                 !supportsAutoMode
                   ? "A limited thread continues on the highest account in this list that still has usage left."
-                  : accounts.length > 1
-                    ? `${runsModel} Accounts are tried from the top, and a limited thread continues on the highest one with usage left.`
-                    : `${runsModel} Add a second account to switch accounts at usage limits.`
+                  : accounts.length === 1
+                    ? `${runsModel} Add a second account to switch accounts at usage limits.`
+                    : switching
+                      ? `${runsModel} Accounts are tried from the top, and a limited thread continues on the highest one with usage left.`
+                      : `${runsModel} New Auto chats start on the top account.`
               }
               resetAction={
                 supportsAutoMode && storedAutoModel !== undefined && !readOnly ? (
@@ -200,7 +198,7 @@ export function AccountFailoverSettings({
                     environmentId={environmentId}
                     settings={settings}
                     providers={[modelAccount]}
-                    readOnly={readOnly || !switching}
+                    readOnly={readOnly}
                     label={`${name} coordinator model`}
                     selection={
                       autoModel &&

@@ -94,7 +94,6 @@ const clientLaunchHarness = (input: {
       ...(input.autoModeProvider === undefined
         ? {}
         : {
-            failoverLimitedThreads: true,
             autoModeProvider: input.autoModeProvider,
             autoModeModels: { [input.autoModeProvider]: { model: "claude-sonnet" } },
           }),

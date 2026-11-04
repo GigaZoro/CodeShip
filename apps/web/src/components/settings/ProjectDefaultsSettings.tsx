@@ -201,17 +201,14 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
               onInstanceModelChange={(instanceId, model) =>
                 setModel(createModelSelection(instanceId, model))
               }
-              {...(mixedModel
-                ? {}
-                : {
-                    auto: {
-                      pick: autoPick,
-                      checked: storedAuto,
-                      onSelect: () => {
-                        if (autoPick) setModel(autoPick);
-                      },
-                    },
-                  })}
+              auto={{
+                pick: autoPick,
+                checked: !mixedModel && storedAuto,
+                // Each machine starts Auto threads on its own primary provider and account.
+                onSelect: () => {
+                  if (autoPick) setModel(autoPick);
+                },
+              }}
             />
             {!mixedModel && activeEntry && !effortDisabledReason && !storedAuto ? (
               <TraitsPicker

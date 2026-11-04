@@ -3407,7 +3407,6 @@ describe("OrchestratorMcpService provider resolution", () => {
             }),
         }),
         ServerSettings.layerTest({
-          failoverLimitedThreads: true,
           autoModeProvider: ProviderDriverKind.make("claudeAgent"),
           autoModeModels: { [ProviderDriverKind.make("claudeAgent")]: { model: "claude-opus" } },
         }),

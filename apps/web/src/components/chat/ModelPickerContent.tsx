@@ -258,15 +258,19 @@ function ModelPickerProviderNotices({
 
 /** With `auto` null, Auto mode is off and the note says how to turn it on. */
 function AutoModeNote(props: {
-  auto: { readonly providerName: string; readonly coordinates: boolean } | null;
+  auto: {
+    readonly providerName: string;
+    readonly coordinates: boolean;
+    readonly switchesAccounts: boolean;
+  } | null;
   onRequestClose: (() => void) | undefined;
 }) {
   const navigate = useNavigate();
   return (
     <p className="shrink-0 border-t border-border/70 px-3 py-2 text-xs leading-snug text-muted-foreground">
       {props.auto === null
-        ? "Auto runs a coordinator model you choose. It hands routine work to cheaper models, checks the result, and switches accounts at usage limits."
-        : `${props.auto.coordinates ? `Hands routine work to cheaper ${props.auto.providerName} models and checks the result. ` : ""}Starts on the first ${props.auto.providerName} account with usage left and switches accounts at usage limits.`}{" "}
+        ? "Auto runs a coordinator model you choose. It hands routine work to cheaper models and checks the result."
+        : `${props.auto.coordinates ? `Hands routine work to cheaper ${props.auto.providerName} models and checks the result. ` : ""}Starts on the first ${props.auto.providerName} account${props.auto.switchesAccounts ? " with usage left and switches accounts at usage limits" : ""}.`}{" "}
       <InlineButton
         onClick={() => {
           props.onRequestClose?.();
@@ -404,6 +408,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     readonly providerName: string;
     /** Its coordinator hands routine work to cheaper models of the provider. */
     readonly coordinates: boolean;
+    /** Switch accounts at usage limits is on, so Auto moves limited threads to another account. */
+    readonly switchesAccounts: boolean;
     readonly checked: boolean;
     readonly onSelect: () => void;
   };

@@ -1339,8 +1339,8 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   /**
-   * Auto mode's provider: an Auto pick (`ModelSelection.autoAccount`) starts there. Honored only
-   * while `failoverLimitedThreads` is on; null turns Auto off.
+   * Auto mode's provider: an Auto pick (`ModelSelection.autoAccount`) starts there; null turns
+   * Auto off. Auto moves between accounts only while `failoverLimitedThreads` is on.
    */
   autoModeProvider: Schema.NullOr(ProviderDriverKind).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),

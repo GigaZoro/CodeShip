@@ -322,6 +322,9 @@ export function defaultModelSelectionsAreMixed(
     providers: ReadonlyArray<ServerProvider>;
   }>,
 ): boolean {
+  // Auto is one choice, though each machine runs its own Auto model on its own account.
+  if (targets.every(({ settings }) => settings.defaultModelSelection?.autoAccount === true))
+    return false;
   const selections = targets.map(({ projectId, settings, providers }) => {
     const stored = settings.defaultModelSelection;
     const selection =

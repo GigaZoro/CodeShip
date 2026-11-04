@@ -960,7 +960,8 @@ describe("Auto mode", () => {
   const ultra = [{ id: "reasoningEffort", value: "ultra" }];
   const settings: ServerSettings = {
     ...DEFAULT_SERVER_SETTINGS,
-    failoverLimitedThreads: true,
+    // Auto runs without account switching.
+    failoverLimitedThreads: false,
     autoModeProvider: claude,
     autoModeModels: {
       [claude]: { model: "claude-opus-5-5", options: max },
@@ -1023,10 +1024,8 @@ describe("Auto mode", () => {
     });
   });
 
-  it.each([
-    ["switching accounts is off", { failoverLimitedThreads: false }],
-    ["no primary provider is picked", { autoModeProvider: null }],
-  ] as const)("leaves Auto picks as they are while %s", (_, overrides) => {
+  it("leaves Auto picks as they are while no primary provider is picked", () => {
+    const overrides = { autoModeProvider: null };
     const selection = auto("claude_second");
     expect(resolve(selection, false, overrides)).toBe(selection);
     expect(

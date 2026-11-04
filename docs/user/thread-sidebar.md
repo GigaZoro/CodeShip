@@ -370,17 +370,17 @@ sign it in to a different account. Some providers' terms forbid using extra
 accounts to get around limits.
 
 **Auto** picks the model and the account for you. Set it up in **Settings →
-Providers** on web or desktop: turn on **Switch accounts at usage limits**, pick a
-primary provider under **Auto mode**, and choose the coordinator model and effort
-for each provider, such as Claude Opus at Max. Then pick **Auto** at the top of the
-model picker, or turn on **Auto** under the default model in settings for new
-threads. A scheduled task's model can be Auto too, and an agent you ask to start a
-thread in Auto, or `t3 thread start --auto`, starts it there. A new thread starts
-on the primary provider's first account in its account order that has usage left,
-and switches accounts at usage limits. A thread that already ran stays with its
-provider and runs that provider's coordinator. Changing a coordinator model moves
-Auto threads to it on their next message. Picking a model in the picker turns Auto
-off for that thread.
+Providers** on web or desktop: pick a primary provider under **Auto mode**, and
+choose the coordinator model and effort for each provider, such as Claude Opus at
+Max. Then pick **Auto** at the top of the model picker, or turn on **Auto** under
+the default model in settings for new threads. A scheduled task's model can be Auto
+too, and an agent you ask to start a thread in Auto, or `t3 thread start --auto`,
+starts it there. A new thread starts on the primary provider's first account in its
+account order. With **Switch accounts at usage limits** on, it starts on the first
+one that has usage left and switches accounts at usage limits. A thread that
+already ran stays with its provider and runs that provider's coordinator. Changing
+a coordinator model moves Auto threads to it on their next message. Picking a model
+in the picker turns Auto off for that thread.
 
 On Claude and Codex, the coordinator does small requests itself and hands larger
 work to a subagent on a cheaper model of the same provider, such as Sonnet or

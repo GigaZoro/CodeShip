@@ -51,6 +51,7 @@ const route = (input: {
   readonly selection?: ModelSelection;
   readonly currentInstanceId: ProviderInstanceId | null;
   readonly limited?: ReadonlyArray<ProviderInstanceId>;
+  readonly switching?: boolean;
 }) =>
   routeAutoAccount({
     selection: input.selection ?? auto,
@@ -59,7 +60,10 @@ const route = (input: {
     started: input.currentInstanceId !== null,
     // Listed out of settings order, so the saved order decides.
     providers: [provider(third), provider(second), provider(primary)],
-    settings: settings([primary, second, third]),
+    settings: {
+      ...settings([primary, second, third]),
+      failoverLimitedThreads: input.switching ?? true,
+    },
     limitedInstanceIds: new Set(input.limited ?? []),
     nowMs,
   });
@@ -77,6 +81,19 @@ describe("routeAutoAccount", () => {
       instanceId: expected,
     });
   });
+
+  it.each([
+    ["a new thread starts on the primary account", null, primary],
+    ["a thread stays on its account", third, third],
+  ] as const)(
+    "while account switching is off, %s even when it is limited",
+    (_, current, expected) => {
+      assert.deepEqual(
+        route({ currentInstanceId: current, limited: [primary, third], switching: false }),
+        { ...auto, instanceId: expected },
+      );
+    },
+  );
 
   it("skips an account whose usage window is used up until it resets", () => {
     const exhausted = (resetsAt: string, id = "5h") =>
@@ -166,23 +183,6 @@ describe("routeAutoAccount", () => {
         ...expected,
         autoAccount: true,
       });
-    });
-
-    it("leaves an Auto pick as it names while account switching is off", () => {
-      const selection: ModelSelection = { ...auto, instanceId: primary };
-      assert.strictEqual(
-        routeAutoAccount({
-          selection,
-          projectId,
-          currentInstanceId: null,
-          started: false,
-          providers: [provider(primary), provider(second)],
-          settings: { ...settings([primary, second]), failoverLimitedThreads: false },
-          limitedInstanceIds: new Set([primary]),
-          nowMs,
-        }),
-        selection,
-      );
     });
   });
 

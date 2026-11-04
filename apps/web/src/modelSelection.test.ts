@@ -213,6 +213,29 @@ describe("scoped default model selections", () => {
         },
       ]),
     ).toBe(true);
+    const auto = (instanceId: string, model: string) => ({
+      projectId: null,
+      providers,
+      settings: {
+        ...DEFAULT_UNIFIED_SETTINGS,
+        defaultModelSelection: {
+          ...createModelSelection(ProviderInstanceId.make(instanceId), model),
+          autoAccount: true,
+        },
+      },
+    });
+    expect(
+      defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [
+        auto("codex", "gpt-6-astra"),
+        auto("claude_work", "claude-opus-5-5"),
+      ]),
+    ).toBe(false);
+    expect(
+      defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [
+        auto("codex", "gpt-6-astra"),
+        selected,
+      ]),
+    ).toBe(true);
   });
 });
 
