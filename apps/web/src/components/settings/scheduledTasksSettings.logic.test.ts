@@ -402,6 +402,18 @@ describe("scheduled task model defaults", () => {
       }),
     ).toEqual({ instanceId: "unavailable", model: "missing" });
   });
+  it("prefers the scheduled tasks model over the project default", () => {
+    const tasksModel = { instanceId: ProviderInstanceId.make("claude"), model: "opus" };
+    expect(
+      resolve(
+        { ...config, settings: { ...config.settings, scheduledTaskModelSelection: tasksModel } },
+        {
+          id: projectId,
+          defaultModelSelection: { instanceId, model: "project-default" },
+        },
+      ),
+    ).toEqual(tasksModel);
+  });
 });
 
 it("rejects dedupe templates without a request placeholder", () => {

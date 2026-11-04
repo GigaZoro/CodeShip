@@ -71,6 +71,18 @@ export function resolveProjectSettings(
   return projectFile === undefined ? resolved : applyProjectFile(resolved, projectFile);
 }
 
+/** What a scheduled task that follows the default runs; null keeps the task's own stored model. */
+export function resolveScheduledTaskDefaultModelSelection(
+  settings: ServerSettings,
+  projectId: ProjectId | null,
+  project?: LegacyProjectSettingsFields | null,
+): ModelSelection | null {
+  return (
+    settings.scheduledTaskModelSelection ??
+    resolveProjectSettings(settings, projectId, project).settings.defaultModelSelection
+  );
+}
+
 function applyProjectFile(
   resolved: ResolvedProjectSettings,
   projectFile: T3ProjectFile | null,

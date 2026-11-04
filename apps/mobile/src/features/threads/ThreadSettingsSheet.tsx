@@ -93,6 +93,7 @@ import { scopedThreadKey } from "../../lib/scopedEntities";
 import { useThreadReportedModelSelection } from "../../state/entities";
 import {
   setComposerDraftText,
+  setStickyComposerModelSelection,
   updateComposerDraftSettings,
   useComposerDraft,
   useComposerDraftSettings,
@@ -1629,8 +1630,10 @@ export function ExistingThreadSettingsRouteScreen({
         option.selection.instanceId === modelSelection.instanceId &&
         option.selection.model === modelSelection.model,
     ) ?? null;
-  const updateModelSelection = (selection: ModelSelection) =>
+  const updateModelSelection = (selection: ModelSelection) => {
     updateThreadDraftModelSelection(threadKey, selection, serverConfig?.providers ?? []);
+    setStickyComposerModelSelection(selection);
+  };
   const finalReview =
     serverConfig?.environment.capabilities.finalReview === true
       ? {

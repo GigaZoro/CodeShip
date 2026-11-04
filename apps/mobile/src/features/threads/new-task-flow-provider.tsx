@@ -463,26 +463,38 @@ export function NewTaskFlowProvider(
       : storedDefaultModelSelection;
   const stickyModelSelection = resolveDefaultableModelSelection(
     selectedEnvironmentServerConfig,
-    storedStickyModelSelection,
+    storedStickyModelSelection && selectedEnvironmentServerConfig
+      ? resolveAutoModelSelection({
+          selection: storedStickyModelSelection,
+          settings: selectedEnvironmentServerConfig.settings,
+          accounts: selectedEnvironmentServerConfig.providers,
+          started: false,
+        })
+      : storedStickyModelSelection,
     selectedProject?.id ?? null,
   );
+  const newTaskDefaultModelSelection =
+    selectedEnvironmentServerConfig?.settings.newThreadsUseLastModel === true &&
+    stickyModelSelection !== null
+      ? null
+      : projectDefaultModelSelection;
   const modelOptions = buildModelOptions(
     selectedEnvironmentServerConfig,
-    draftModelSelection ?? projectDefaultModelSelection ?? stickyModelSelection,
+    draftModelSelection ?? newTaskDefaultModelSelection ?? stickyModelSelection,
     undefined,
     selectedProject?.id ?? null,
   );
 
   const selectedDefaultModel = resolveNewTaskModelSelection({
     draftSelection: draftModelSelection,
-    projectDefaultSelection: projectDefaultModelSelection,
+    projectDefaultSelection: newTaskDefaultModelSelection,
     stickySelection: stickyModelSelection,
     modelOptions,
   });
   const selectedModel = resolveNewThreadModelSelection({
     defaultSelection: selectedDefaultModel,
     explicitSelection:
-      draftModelSelection ?? (projectDefaultModelSelection ? null : stickyModelSelection),
+      draftModelSelection ?? (newTaskDefaultModelSelection ? null : stickyModelSelection),
     fallbackSelection: selectedEnvironmentServerConfig?.settings.fallbackModelSelection ?? null,
     providers: selectedEnvironmentServerConfig?.providers ?? [],
     ...(selectedEnvironmentServerConfig

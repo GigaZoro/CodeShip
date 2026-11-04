@@ -655,15 +655,31 @@ function TaskForm({
   const config = useEnvironmentServerConfig(environmentId);
   const serverConfigs = useServerConfigs();
   const modelOptions = buildModelOptions(config, null, undefined, draft.projectId);
+  // A task bound to a thread runs that thread's model, so the default does not apply to it.
+  const offersDefaultModel =
+    config?.environment.capabilities.scheduledTaskDefaultModel === true && !draft.task?.threadId;
+  const followsDefaultModel = offersDefaultModel && draft.followsDefaultModel;
+  const taskModel = followsDefaultModel
+    ? (scheduledTaskDefaultModel(
+        config,
+        projects.find((project) => project.id === draft.projectId) ?? null,
+        resolveInheritedDefaultModelSelection({
+          configs: serverConfigs,
+          environmentId,
+          projectId: draft.projectId,
+          preferredEnvironmentId: null,
+        }),
+      ) ?? draft.modelSelection)
+    : draft.modelSelection;
   const modelLabel =
     modelOptions.find(
       (option) =>
-        option.selection.instanceId === draft.modelSelection?.instanceId &&
-        option.selection.model === draft.modelSelection?.model,
-    )?.label ?? draft.modelSelection?.model;
+        option.selection.instanceId === taskModel?.instanceId &&
+        option.selection.model === taskModel?.model,
+    )?.label ?? taskModel?.model;
   // With Auto mode off, an Auto task runs the model it names.
   const autoOn =
-    draft.modelSelection?.autoAccount === true &&
+    taskModel?.autoAccount === true &&
     config?.environment.capabilities.autoMode === true &&
     autoModePick({ settings: config.settings, accounts: config.providers, lockedDriver: null }) !==
       null;
@@ -746,7 +762,7 @@ function TaskForm({
       !draft.title.trim() ||
       !draft.prompt.trim() ||
       !draft.projectId ||
-      !draft.modelSelection ||
+      !taskModel ||
       !schedule ||
       (draft.workspace === "existing_worktree" && !draft.checkoutPath.trim())
     ) {
@@ -765,7 +781,8 @@ function TaskForm({
       title: draft.title.trim(),
       prompt: draft.prompt.trim(),
       projectId: draft.projectId,
-      modelSelection: draft.modelSelection,
+      modelSelection: taskModel,
+      ...(offersDefaultModel ? { followsDefaultModel } : {}),
       schedule,
       enabled: draft.enabled,
       threadId: draft.task?.threadId ?? null,
@@ -898,6 +915,24 @@ function TaskForm({
               });
             }}
           />
+          {offersDefaultModel ? (
+            <View className="min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3">
+              <View className="min-w-0 flex-1">
+                <Text textRole="body" className="text-foreground">
+                  Use default model
+                </Text>
+                <Text className="text-sm text-foreground-muted">
+                  Runs the scheduled tasks model from Settings › Threads.
+                </Text>
+              </View>
+              <ThemedSwitch
+                accessibilityLabel="Use default model"
+                value={draft.followsDefaultModel}
+                disabled={saving || dictationPending || environmentUnavailable}
+                onValueChange={(value) => setDraft({ ...draft, followsDefaultModel: value })}
+              />
+            </View>
+          ) : null}
           <PickerRow
             label="Model"
             borderTop
@@ -911,7 +946,7 @@ function TaskForm({
                   : modelLabel
             }
             onPress={() => navigation.navigate("SettingsScheduledTaskModel")}
-            disabled={saving || dictationPending || environmentUnavailable}
+            disabled={saving || dictationPending || environmentUnavailable || followsDefaultModel}
           />
         </SettingsSection>
 

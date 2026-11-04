@@ -71,6 +71,7 @@ import {
   withLegacyUltracodeEffort,
 } from "@t3tools/shared/model";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
+import { resolveScheduledTaskDefaultModelSelection } from "@t3tools/shared/projectSettings";
 import { autoModePick } from "@t3tools/shared/serverSettings";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
@@ -2079,8 +2080,11 @@ const make = Effect.gen(function* () {
             : "bindToCurrentThread binds to this thread, which belongs to a different project.",
         );
       }
+      // Runs follow the scheduled tasks default; this is the model kept for when none is set.
       const modelSelection =
-        parent?.thread.modelSelection ?? (yield* projectDefaultModelSelection(project));
+        parent?.thread.modelSelection ??
+        resolveScheduledTaskDefaultModelSelection(yield* readSettings, projectId, project) ??
+        (yield* projectDefaultModelSelection(project));
       const derivedTitle = input.prompt.split("\n")[0]?.trim() ?? "";
       const title =
         input.title ?? (derivedTitle.length > 0 ? derivedTitle.slice(0, 80) : "Scheduled task");
@@ -2120,6 +2124,7 @@ const make = Effect.gen(function* () {
         threadId: bindToCurrentThread && parent !== undefined ? parent.thread.id : null,
         workspaceStrategy: yield* scheduledTaskWorkspaceStrategy(bindToCurrentThread, projectId),
         modelSelection,
+        followsDefaultModel: true,
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
         createdBy: "agent",

@@ -277,6 +277,10 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
     RUNTIME_MODE_CHOICES,
     targets.map((target) => target.environment.serverConfig.managedPolicy),
   );
+  const everyTargetSupports = (capability: "lastPickedModel" | "scheduledTaskDefaultModel") =>
+    displayTargets.every(
+      (target) => target.environment.serverConfig.environment.capabilities[capability] === true,
+    );
   const disabledFor = (key: string) =>
     disabled ||
     managed(key) !== undefined ||
@@ -324,8 +328,24 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                   <DefaultModelSettings
                     targets={displayTargets}
                     disabled={disabledFor("defaultModelSelection")}
+                    {...(!projectSelected && everyTargetSupports("lastPickedModel")
+                      ? {
+                          lastPicked: {
+                            value: uniform("newThreadsUseLastModel"),
+                            disabled: disabledFor("newThreadsUseLastModel"),
+                          },
+                        }
+                      : {})}
                     onChange={write}
                   />
+                  {!projectSelected && everyTargetSupports("scheduledTaskDefaultModel") ? (
+                    <DefaultModelSettings
+                      targets={displayTargets}
+                      setting="scheduledTaskModelSelection"
+                      disabled={disabledFor("scheduledTaskModelSelection")}
+                      onChange={write}
+                    />
+                  ) : null}
                   <SettingsSection
                     title="Default workspace"
                     footer={managed("defaultThreadEnvMode")}

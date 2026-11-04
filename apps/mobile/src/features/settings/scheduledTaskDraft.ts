@@ -18,7 +18,7 @@ import {
   type WebhookFilterDraft,
 } from "@t3tools/client-runtime/scheduled-task-webhook";
 import {
-  resolveProjectSettings,
+  resolveScheduledTaskDefaultModelSelection,
   type LegacyProjectSettingsFields,
 } from "@t3tools/shared/projectSettings";
 import { buildModelOptions, resolveNewTaskModelSelection } from "../../lib/modelOptions";
@@ -30,8 +30,7 @@ export function scheduledTaskDefaultModel(
 ): ModelSelection | null {
   const settings = config?.settings ?? DEFAULT_SERVER_SETTINGS;
   const projectDefaultSelection =
-    resolveProjectSettings(settings, project?.id ?? null, project).settings.defaultModelSelection ??
-    inherited;
+    resolveScheduledTaskDefaultModelSelection(settings, project?.id ?? null, project) ?? inherited;
   return resolveNewTaskModelSelection({
     draftSelection: null,
     projectDefaultSelection,
@@ -198,6 +197,8 @@ export type ScheduledTaskDraft = {
   readonly projectId: ProjectId | null;
   readonly modelSelection: ModelSelection | null;
   readonly modelSelectionIsExplicit: boolean;
+  /** Runs the scheduled tasks default model instead of `modelSelection`. */
+  readonly followsDefaultModel: boolean;
   readonly schedule: ScheduleDraft;
   readonly workspace: Workspace;
   readonly baseRef: string;
@@ -218,6 +219,7 @@ function draftSignature(draft: ScheduledTaskDraft): string {
     [...(draft.modelSelection?.options ?? [])]
       .sort((a, b) => a.id.localeCompare(b.id))
       .map((option) => [option.id, option.value]),
+    draft.followsDefaultModel,
     draft.schedule.mode,
     draft.schedule.timeOfDay,
     draft.schedule.runAt,
@@ -255,6 +257,7 @@ export function createDraft(
     projectId,
     modelSelection,
     modelSelectionIsExplicit: false,
+    followsDefaultModel: true,
     schedule: DEFAULT_SCHEDULE,
     workspace: "worktree",
     baseRef: "main",
@@ -273,6 +276,7 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     projectId: task.projectId,
     modelSelection: task.modelSelection,
     modelSelectionIsExplicit: true,
+    followsDefaultModel: task.followsDefaultModel === true,
     schedule: scheduleDraftForTask(task),
     workspace: task.workspaceStrategy.type,
     baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "main",

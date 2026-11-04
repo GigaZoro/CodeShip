@@ -21,7 +21,7 @@ import {
 } from "@t3tools/client-runtime/scheduled-task-webhook";
 
 import {
-  resolveProjectSettings,
+  resolveScheduledTaskDefaultModelSelection,
   type LegacyProjectSettingsFields,
 } from "@t3tools/shared/projectSettings";
 import { isProviderInstancePickerReady, type ProviderInstanceEntry } from "../../providerInstances";
@@ -108,6 +108,8 @@ export interface DraftState {
   readonly interactionMode: ProviderInteractionMode;
   /** Retain the source selection's provider options when the picker leaves instanceId:model unchanged. */
   readonly baseModelSelection: ModelSelection | null;
+  /** Runs the scheduled tasks default model instead of the one picked here. */
+  readonly followsDefaultModel: boolean;
   readonly signatureEnabled: boolean;
   readonly signatureHeader: string;
   readonly signatureEncoding: "hex" | "base64";
@@ -297,6 +299,7 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     runtimeMode: task.runtimeMode,
     interactionMode: task.interactionMode,
     baseModelSelection: task.modelSelection,
+    followsDefaultModel: task.followsDefaultModel === true,
     ...(schedule.type === "webhook" && schedule.signature !== null
       ? {
           signatureEnabled: true,
@@ -328,8 +331,7 @@ export function scheduledTaskDefaultModel(
   inherited: ModelSelection | null,
 ): ModelSelection | null {
   const configured =
-    resolveProjectSettings(settings, project?.id ?? null, project).settings.defaultModelSelection ??
-    inherited;
+    resolveScheduledTaskDefaultModelSelection(settings, project?.id ?? null, project) ?? inherited;
   if (configured) return configured;
   const available = entries.filter(isProviderInstancePickerReady);
   const models = available.flatMap((entry) =>

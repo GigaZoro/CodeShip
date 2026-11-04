@@ -51,8 +51,20 @@ or **Settings → Threads → Default model** on mobile. A machine with no saved
 default saved on another connected machine, with its effort level, when it has that provider;
 otherwise CodeShip automatically uses an available provider. Reset the web or desktop model
 setting, or select **Automatic** on mobile, to restore that behavior. A saved choice stays selected
-if its provider becomes unavailable; set up that provider again or choose another model. New
-scheduled tasks use the same default.
+if its provider becomes unavailable; set up that provider again or choose another model.
+
+Turn on **Use last picked model** under the model to start each new thread on the model you
+last picked on that device, Auto included. Until you pick one there, new threads use the default
+model. Scheduled tasks and threads that agents start are not affected.
+
+Scheduled tasks have their own default in **Settings → Threads → Scheduled tasks** on web or
+desktop, or **Scheduled tasks model** on mobile: Auto, a model, or **Same as new threads**, which
+follows the model above and its project overrides. A task with **Use default model** turned on,
+which is how new tasks start, runs this model on every run, so changing it here changes all of
+them. Turn the switch off in a task to pick a model for that task alone. Tasks an agent schedules
+use the default too. When some tasks still run their own model, **Use default for all** under the
+setting switches them over; **Undo** brings their own models back. A task that posts into an
+existing thread always runs that thread's model.
 
 When the default model's provider is out of usage, new threads start on the **Fallback model**
 instead, at the default model's effort level when the fallback model offers it. A default model

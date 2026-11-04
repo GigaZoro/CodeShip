@@ -114,6 +114,10 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   mcpSignInSharing: Schema.optionalKey(Schema.Boolean),
   /** Honors `autoModeProvider`, `autoModeModels` and `ModelSelection.autoAccount`; hide Auto where absent. */
   autoMode: Schema.optionalKey(Schema.Boolean),
+  /** Stores `newThreadsUseLastModel`; hide its switch where absent. */
+  lastPickedModel: Schema.optionalKey(Schema.Boolean),
+  /** Honors `scheduledTaskModelSelection` and a task's `followsDefaultModel`; hide both where absent. */
+  scheduledTaskDefaultModel: Schema.optionalKey(Schema.Boolean),
   /** Honors `delegatedTaskModelSelections`; hide that setting where it is absent. */
   delegatedTaskModels: Schema.optionalKey(Schema.Boolean),
   /** Runs Final review and honors the thread `finalReview` flag; hide its controls where absent. */

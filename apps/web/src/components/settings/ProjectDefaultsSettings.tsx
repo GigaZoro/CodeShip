@@ -33,6 +33,7 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { toastManager } from "../ui/toast";
 import { Switch } from "../ui/switch";
 import type { ProjectSettingsCategory } from "./ProjectSettingsPanel";
+import { ScheduledTasksOwnModelRow } from "./ScheduledTasksOwnModelRow";
 import { searchableSetting } from "./settingsSearch";
 import { useSettingsScope } from "./SettingsScopeContext";
 import {
@@ -115,6 +116,26 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
     targets.length > 0 &&
     targets.every((candidate) => candidate.settings.defaultModelSelection === null);
   const mixedFallback = useScopedSettingsMixed(["fallbackModelSelection"]);
+  const mixedLastModel = useScopedSettingsMixed(["newThreadsUseLastModel"]);
+  const mixedTaskModel = useScopedSettingsMixed(["scheduledTaskModelSelection"]);
+  const storedTaskModel = settings.scheduledTaskModelSelection;
+  const taskModelAuto = storedTaskModel?.autoAccount === true && autoPick !== null;
+  // Empty follows the new-thread model, so it shows that model.
+  const taskSelection = storedTaskModel
+    ? resolveAutoModelSelection({
+        selection: storedTaskModel,
+        settings,
+        accounts: providers,
+        started: false,
+      })
+    : selection;
+  const taskEntry = entries.find((entry) => entry.instanceId === taskSelection?.instanceId);
+  const taskModelOptions = getCustomModelOptionsByInstance(
+    settings,
+    providers,
+    taskSelection?.instanceId,
+    taskSelection?.model,
+  );
   const fallbackSelection = settings.fallbackModelSelection ?? selection;
   const fallbackEntry = entries.find((entry) => entry.instanceId === fallbackSelection?.instanceId);
   const fallbackModelOptions = getCustomModelOptionsByInstance(
@@ -141,14 +162,30 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
     ? modelDisabledReason(selection.instanceId, selection.model)
     : null;
 
-  const setModel = (value: ModelSelection | null) => {
-    const reason = value ? modelDisabledReason(value.instanceId, value.model) : null;
-    if (reason) {
-      toastManager.add({ type: "error", title: "Default model not saved", description: reason });
-      return;
-    }
-    updateSettings({ defaultModelSelection: value });
-  };
+  const saveModel =
+    (failureTitle: string, save: (value: ModelSelection | null) => void) =>
+    (value: ModelSelection | null) => {
+      const reason = value ? modelDisabledReason(value.instanceId, value.model) : null;
+      if (reason) {
+        toastManager.add({ type: "error", title: failureTitle, description: reason });
+        return;
+      }
+      save(value);
+    };
+  const setModel = saveModel("Default model not saved", (value) =>
+    updateSettings({ defaultModelSelection: value }),
+  );
+  const setFallbackModel = saveModel("Fallback model not saved", (value) =>
+    updateSettings({ fallbackModelSelection: value }),
+  );
+  const setTaskModel = saveModel("Scheduled tasks model not saved", (value) =>
+    updateSettings({ scheduledTaskModelSelection: value }),
+  );
+  const everyEnvironmentSupports = (capability: "lastPickedModel" | "scheduledTaskDefaultModel") =>
+    connectedEnvironments.length > 0 &&
+    connectedEnvironments.every(
+      (environment) => environment.serverConfig?.environment.capabilities[capability] === true,
+    );
 
   const modelRow = (
     <SettingsRow
@@ -281,6 +318,107 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
     />
   );
 
+  const lastModelRow =
+    !isProjectScope && everyEnvironmentSupports("lastPickedModel") ? (
+      <SettingsRow
+        serverScoped
+        settingKeys={["newThreadsUseLastModel"]}
+        mixed={mixedLastModel}
+        {...searchableSetting("last-picked-model")}
+        description="New threads start on the model you last picked on this device, Auto included. Until you pick one, they use the model above. Scheduled tasks are not affected."
+        resetAction={
+          settings.newThreadsUseLastModel ? (
+            <SettingResetButton
+              label="last picked model"
+              tooltip="Start new threads on the model above"
+              onClick={() => updateSettings({ newThreadsUseLastModel: false })}
+            />
+          ) : null
+        }
+        control={
+          <Switch
+            aria-label="Use last picked model"
+            mixed={mixedLastModel}
+            checked={mixedLastModel ? false : settings.newThreadsUseLastModel}
+            onCheckedChange={(enabled) => updateSettings({ newThreadsUseLastModel: enabled })}
+          />
+        }
+      />
+    ) : null;
+
+  const taskModelRows =
+    !isProjectScope && everyEnvironmentSupports("scheduledTaskDefaultModel") ? (
+      <>
+        <SettingsRow
+          serverScoped
+          settingKeys={["scheduledTaskModelSelection"]}
+          mixed={mixedTaskModel}
+          {...searchableSetting("scheduled-task-model")}
+          description="Runs scheduled tasks that use the default model. Same as new threads follows the model above, including project overrides."
+          resetAction={
+            storedTaskModel !== null ? (
+              <SettingResetButton
+                label="scheduled tasks model"
+                tooltip="Same as new threads"
+                onClick={() => setTaskModel(null)}
+              />
+            ) : null
+          }
+          control={
+            taskSelection && entries.length > 0 ? (
+              <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
+                <ProviderModelPicker
+                  environmentId={representative?.environmentId ?? null}
+                  activeInstanceId={taskSelection.instanceId}
+                  model={taskSelection.model}
+                  lockedProvider={null}
+                  instanceEntries={entries}
+                  modelOptionsByInstance={taskModelOptions}
+                  triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                  triggerAriaLabel="Scheduled tasks model"
+                  {...(mixedTaskModel
+                    ? { triggerLabel: "Mixed" }
+                    : storedTaskModel === null
+                      ? { triggerLabel: "Same as new threads" }
+                      : {})}
+                  getModelDisabledReason={modelDisabledReason}
+                  onInstanceModelChange={(instanceId, model) =>
+                    setTaskModel(createModelSelection(instanceId, model))
+                  }
+                  auto={{
+                    pick: autoPick,
+                    checked: !mixedTaskModel && taskModelAuto,
+                    onSelect: () => {
+                      if (autoPick) setTaskModel(autoPick);
+                    },
+                  }}
+                />
+                {!mixedTaskModel && storedTaskModel !== null && taskEntry && !taskModelAuto ? (
+                  <TraitsPicker
+                    provider={taskEntry.driverKind}
+                    models={taskEntry.models}
+                    model={taskSelection.model}
+                    modelOptions={taskSelection.options ?? []}
+                    allowPromptInjectedEffort={false}
+                    planModeEnabled={settings.planModeEnabled}
+                    triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                    onModelOptionsChange={(options) =>
+                      setTaskModel(withModelSelectionOptions(taskSelection, options))
+                    }
+                  />
+                ) : null}
+              </div>
+            ) : (
+              <span className="text-sm text-muted-foreground">
+                {mixedTaskModel ? "Mixed" : "No providers available"}
+              </span>
+            )
+          }
+        />
+        <ScheduledTasksOwnModelRow />
+      </>
+    ) : null;
+
   const fallbackRow = !isProjectScope ? (
     <SettingsRow
       serverScoped
@@ -314,18 +452,9 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                   ? { triggerLabel: "None" }
                   : {})}
               getModelDisabledReason={modelDisabledReason}
-              onInstanceModelChange={(instanceId, model) => {
-                const reason = modelDisabledReason(instanceId, model);
-                if (reason) {
-                  toastManager.add({
-                    type: "error",
-                    title: "Fallback model not saved",
-                    description: reason,
-                  });
-                  return;
-                }
-                updateSettings({ fallbackModelSelection: createModelSelection(instanceId, model) });
-              }}
+              onInstanceModelChange={(instanceId, model) =>
+                setFallbackModel(createModelSelection(instanceId, model))
+              }
             />
             {settings.fallbackModelSelection !== null && fallbackEntry && !mixedFallback ? (
               <TraitsPicker
@@ -363,13 +492,16 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
       {category === "project" ? (
         <>
           {modelRow}
+          {lastModelRow}
           {fallbackRow}
           {workspaceRow}
         </>
       ) : category === "general" ? (
         <>
           {modelRow}
+          {lastModelRow}
           {fallbackRow}
+          {taskModelRows}
           <SettingsRow
             serverScoped
             settingKeys={["defaultRuntimeMode"]}

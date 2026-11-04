@@ -250,6 +250,8 @@ export const ScheduledTask = Schema.Struct({
   pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** The thread the last successful run used: the bound thread, or the one it started. */
   lastRunThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  /** Runs the scheduled tasks default model, already resolved into `modelSelection`. */
+  followsDefaultModel: Schema.optional(Schema.Boolean),
   /** Why the task cannot run regardless of `enabled`, such as a managed policy refusing webhooks. */
   blockedByPolicy: Schema.optionalKey(Schema.String),
 });
@@ -277,6 +279,9 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   threadId: Schema.optional(Schema.NullOr(ThreadId)),
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
   modelSelection: ModelSelection,
+  followsDefaultModel: Schema.optional(Schema.Boolean).annotate({
+    description: "Run the scheduled tasks default model. Omitted keeps the stored choice.",
+  }),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
@@ -295,6 +300,20 @@ export const ScheduledTaskSetPinnedInput = Schema.Struct({
   pinned: Schema.Boolean,
 });
 export type ScheduledTaskSetPinnedInput = typeof ScheduledTaskSetPinnedInput.Type;
+
+export const ScheduledTaskSetFollowsDefaultModelInput = Schema.Struct({
+  ids: Schema.Array(ScheduledTaskId).check(Schema.isMinLength(1)),
+  followsDefaultModel: Schema.Boolean,
+});
+export type ScheduledTaskSetFollowsDefaultModelInput =
+  typeof ScheduledTaskSetFollowsDefaultModelInput.Type;
+
+export const ScheduledTaskSetFollowsDefaultModelResult = Schema.Struct({
+  /** The tasks that changed; a task already in that state or since deleted is left out. */
+  ids: Schema.Array(ScheduledTaskId),
+});
+export type ScheduledTaskSetFollowsDefaultModelResult =
+  typeof ScheduledTaskSetFollowsDefaultModelResult.Type;
 
 export const ScheduledTaskDeleteInput = Schema.Struct({
   id: ScheduledTaskId,

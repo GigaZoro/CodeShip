@@ -31,6 +31,7 @@ import {
 } from "../state/entities";
 import {
   hasExplicitComposerModelSelection,
+  keepsLastPickedModel,
   resolveNewDraftStartFromOrigin,
   resolveNewThreadModelSelectionOverride,
 } from "../lib/chatThreadActions";
@@ -172,6 +173,10 @@ export function createNewThreadHandler(router: AnyRouter) {
     const defaultRuntimeMode = projectSettings.settings.defaultRuntimeMode;
     const resolveModelSelectionOverride = (destinationDraftId: DraftId) =>
       resolveNewThreadModelSelectionOverride({
+        keepLastPicked: keepsLastPickedModel(
+          targetServerSettings,
+          useComposerDraftStore.getState(),
+        ),
         projectDefaultSelection: projectDefaultModelSelection ?? null,
         carrySelection: carryModelSelection,
         carrySourceDraftId:

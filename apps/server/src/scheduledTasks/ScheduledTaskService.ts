@@ -22,7 +22,10 @@ import {
   type ScheduledTaskRunNowInput,
   type ScheduledTaskRunNowResult,
   type ScheduledTaskSetEnabledInput,
+  type ScheduledTaskSetFollowsDefaultModelInput,
+  type ScheduledTaskSetFollowsDefaultModelResult,
   type ScheduledTaskSetPinnedInput,
+  type ServerSettings as ServerSettingsValue,
   type ScheduledTaskUpsertInput,
   managedPolicyDeniedMessage,
   managedRuntimeModeDenial,
@@ -53,6 +56,7 @@ import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import { resolveScheduledTaskDefaultModelSelection } from "@t3tools/shared/projectSettings";
 import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -216,6 +220,7 @@ interface ScheduledTaskRow {
   /** From scheduled_task_sidebar; absent where a query does not join it. */
   readonly pinned_at?: string | null;
   readonly last_run_thread_id?: string | null;
+  readonly follows_default_model?: number;
 }
 
 interface WebhookDeliveryRow {
@@ -250,6 +255,9 @@ export class ScheduledTaskService extends Context.Service<
     readonly setPinned: (
       input: ScheduledTaskSetPinnedInput,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
+    readonly setFollowsDefaultModel: (
+      input: ScheduledTaskSetFollowsDefaultModelInput,
+    ) => Effect.Effect<ScheduledTaskSetFollowsDefaultModelResult, ScheduledTaskError>;
     readonly delete: (
       input: ScheduledTaskDeleteInput,
     ) => Effect.Effect<ScheduledTaskDeleteResult, ScheduledTaskError>;
@@ -394,6 +402,9 @@ const decodeRow = Effect.fnUntraced(
       ...(webhook === undefined ? {} : { webhook }),
       ...(row.pinned_at === undefined ? {} : { pinnedAt: row.pinned_at }),
       ...(row.last_run_thread_id === undefined ? {} : { lastRunThreadId: row.last_run_thread_id }),
+      ...(row.follows_default_model === undefined
+        ? {}
+        : { followsDefaultModel: row.follows_default_model === 1 }),
     });
   },
   (effect, row, _origin?) =>
@@ -500,6 +511,26 @@ export const layer = Layer.effect(
         last_run_thread_id TEXT
       )
     `;
+    // A row means the task runs the scheduled tasks default model instead of its own.
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS scheduled_task_default_model (task_id TEXT PRIMARY KEY)
+    `;
+
+    const readSettings = serverSettings.getSettings.pipe(
+      Effect.mapError((cause) => taskError("Could not read server settings.", { cause })),
+    );
+    // Clients show, and runs launch, the model a following task will run, so resolve it on read.
+    const withDefaultModel =
+      (settings: ServerSettingsValue) =>
+      (task: ScheduledTask): ScheduledTask =>
+        task.followsDefaultModel === true
+          ? {
+              ...task,
+              modelSelection:
+                resolveScheduledTaskDefaultModelSelection(settings, task.projectId) ??
+                task.modelSelection,
+            }
+          : task;
 
     const selectAllRows = () =>
       sql<ScheduledTaskRow>`
@@ -529,7 +560,9 @@ export const layer = Layer.effect(
         (SELECT pinned_at FROM scheduled_task_sidebar s
           WHERE s.task_id = scheduled_tasks.task_id) AS pinned_at,
         (SELECT last_run_thread_id FROM scheduled_task_sidebar s
-          WHERE s.task_id = scheduled_tasks.task_id) AS last_run_thread_id
+          WHERE s.task_id = scheduled_tasks.task_id) AS last_run_thread_id,
+        EXISTS (SELECT 1 FROM scheduled_task_default_model d
+          WHERE d.task_id = scheduled_tasks.task_id) AS follows_default_model
       FROM scheduled_tasks
       -- Not updated_at: toggles, runs and edits rewrite it, and clients render
       -- this order as-is, so rows would move under the pointer.
@@ -539,9 +572,10 @@ export const layer = Layer.effect(
     const listRows = Effect.fn("ScheduledTaskService.listRows")(function* () {
       const rows = yield* selectAllRows();
       const origin = yield* readWebhookOrigin;
+      const resolveModel = withDefaultModel(yield* readSettings);
       return yield* Effect.forEach(
         rows,
-        (row) => decodeRow(row, origin).pipe(Effect.map(withPolicy)),
+        (row) => decodeRow(row, origin).pipe(Effect.map((task) => resolveModel(withPolicy(task)))),
         { concurrency: 1 },
       );
     });
@@ -574,7 +608,9 @@ export const layer = Layer.effect(
         (SELECT pinned_at FROM scheduled_task_sidebar s
           WHERE s.task_id = scheduled_tasks.task_id) AS pinned_at,
         (SELECT last_run_thread_id FROM scheduled_task_sidebar s
-          WHERE s.task_id = scheduled_tasks.task_id) AS last_run_thread_id
+          WHERE s.task_id = scheduled_tasks.task_id) AS last_run_thread_id,
+        EXISTS (SELECT 1 FROM scheduled_task_default_model d
+          WHERE d.task_id = scheduled_tasks.task_id) AS follows_default_model
       FROM scheduled_tasks
       WHERE task_id = ${id}
     `.pipe(NodeSqliteClient.readOnly);
@@ -587,7 +623,8 @@ export const layer = Layer.effect(
       );
       const row = rows[0];
       if (row === undefined) return null;
-      return withPolicy(yield* decodeRow(row, yield* readWebhookOrigin));
+      const task = withPolicy(yield* decodeRow(row, yield* readWebhookOrigin));
+      return withDefaultModel(yield* readSettings)(task);
     });
 
     const findWebhookCredentials = (id: ScheduledTaskId) =>
@@ -731,6 +768,7 @@ export const layer = Layer.effect(
         .withTransaction(
           sql`DELETE FROM scheduled_task_webhook_deliveries WHERE task_id = ${id}`.pipe(
             Effect.andThen(sql`DELETE FROM scheduled_task_sidebar WHERE task_id = ${id}`),
+            Effect.andThen(sql`DELETE FROM scheduled_task_default_model WHERE task_id = ${id}`),
             Effect.andThen(sql`DELETE FROM scheduled_tasks WHERE task_id = ${id}`),
           ),
         )
@@ -1397,33 +1435,42 @@ export const layer = Layer.effect(
             taskError("Could not read schedule task settings.", { taskId: id, cause }),
           ),
         )).automaticallyPinScheduledTasks;
-      const save = saveTask(
-        task,
-        input.requireExisting === true,
-        scheduleUnchanged ? existingTask.schedule : null,
-        webhook,
-      );
-      yield* automaticallyPin
-        ? sql
-            .withTransaction(
+      // Omitted keeps the stored choice, so a client that predates it can re-save a task.
+      const followsDefaultModel =
+        input.followsDefaultModel ?? existingTask?.followsDefaultModel ?? false;
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            if (automaticallyPin) {
               // Check creation in the transaction so a replay cannot undo a concurrent unpin.
-              sql`
+              yield* sql`
                 INSERT INTO scheduled_task_sidebar (task_id, pinned_at)
                 SELECT ${id}, ${iso(now)}
                 WHERE NOT EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${id})
                 ON CONFLICT (task_id) DO NOTHING
-              `.pipe(Effect.andThen(save)),
-            )
-            .pipe(
-              Effect.mapError((cause) =>
-                isScheduledTaskError(cause)
-                  ? cause
-                  : taskError("Could not save schedule task.", { taskId: id, cause }),
-              ),
-            )
-        : save;
+              `;
+            }
+            yield* saveTask(
+              task,
+              input.requireExisting === true,
+              scheduleUnchanged ? existingTask.schedule : null,
+              webhook,
+            );
+            yield* followsDefaultModel
+              ? sql`INSERT INTO scheduled_task_default_model (task_id) VALUES (${id})
+                    ON CONFLICT (task_id) DO NOTHING`
+              : sql`DELETE FROM scheduled_task_default_model WHERE task_id = ${id}`;
+          }),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            isScheduledTaskError(cause)
+              ? cause
+              : taskError("Could not save schedule task.", { taskId: id, cause }),
+          ),
+        );
       yield* notifyChanged;
-      return { task: (yield* findTask(id)) ?? task };
+      return { task: (yield* findTask(id)) ?? { ...task, followsDefaultModel } };
     });
 
     const setEnabled: ScheduledTaskService["Service"]["setEnabled"] = Effect.fn(
@@ -1499,6 +1546,29 @@ export const layer = Layer.effect(
       return { task: { ...existing, pinnedAt } };
     });
 
+    const setFollowsDefaultModel: ScheduledTaskService["Service"]["setFollowsDefaultModel"] =
+      Effect.fn("ScheduledTaskService.setFollowsDefaultModel")(function* (input) {
+        // Only the flag changes: a task's own model stays stored, so turning it off restores it.
+        const changed = yield* (
+          input.followsDefaultModel
+            ? sql<{ task_id: ScheduledTaskId }>`
+                INSERT INTO scheduled_task_default_model (task_id)
+                SELECT task_id FROM scheduled_tasks WHERE task_id IN ${sql.in(input.ids)}
+                ON CONFLICT (task_id) DO NOTHING
+                RETURNING task_id
+              `
+            : sql<{ task_id: ScheduledTaskId }>`
+                DELETE FROM scheduled_task_default_model
+                WHERE task_id IN ${sql.in(input.ids)}
+                RETURNING task_id
+              `
+        ).pipe(
+          Effect.mapError((cause) => taskError("Could not update schedule tasks.", { cause })),
+        );
+        if (changed.length > 0) yield* notifyChanged;
+        return { ids: changed.map((row) => row.task_id) };
+      });
+
     const forgetWebhookTask = (id: ScheduledTaskId) =>
       Effect.all(
         [
@@ -1552,6 +1622,10 @@ export const layer = Layer.effect(
           `;
             yield* sql`
             DELETE FROM scheduled_task_sidebar
+            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
+          `;
+            yield* sql`
+            DELETE FROM scheduled_task_default_model
             WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
           `;
             return yield* sql<{ task_id: ScheduledTaskId }>`
@@ -2495,12 +2569,30 @@ export const layer = Layer.effect(
     });
     yield* scheduler.register("webhook-coalescing", dispatchPending());
 
+    // Following tasks list the model settings resolve for them, so default changes re-send it.
+    yield* serverSettings.streamChanges.pipe(
+      Stream.map((settings) =>
+        JSON.stringify([
+          settings.scheduledTaskModelSelection,
+          settings.defaultModelSelection,
+          Object.entries(settings.projectSettingsOverrides).map(([projectId, overrides]) => [
+            projectId,
+            overrides.defaultModelSelection,
+          ]),
+        ]),
+      ),
+      Stream.changes,
+      Stream.runForEach(() => PubSub.publish(changesPubSub, undefined)),
+      Effect.forkIn(serviceScope),
+    );
+
     return ScheduledTaskService.of({
       list,
       subscribeList,
       upsert,
       setEnabled,
       setPinned,
+      setFollowsDefaultModel,
       delete: deleteTask,
       deleteForThread,
       moveThreadTasks,

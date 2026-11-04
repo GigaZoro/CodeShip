@@ -3,7 +3,9 @@ import type {
   EnvironmentId,
   ModelSelection,
   ProjectId,
+  ProviderInstanceId,
   ScopedProjectRef,
+  ServerSettings,
 } from "@t3tools/contracts";
 import type { ComposerThreadDraftState, DraftThreadEnvMode } from "../composerDraftStore";
 
@@ -43,12 +45,29 @@ export function resolveNewDraftStartFromOrigin(input: {
   return input.envMode === "worktree" && input.newWorktreesStartFromOrigin;
 }
 
+export function keepsLastPickedModel(
+  settings: Pick<ServerSettings, "newThreadsUseLastModel"> | undefined,
+  sticky: {
+    readonly stickyActiveProvider: ProviderInstanceId | null;
+    readonly stickyModelSelectionByProvider: Partial<Record<ProviderInstanceId, ModelSelection>>;
+  },
+): boolean {
+  return (
+    settings?.newThreadsUseLastModel === true &&
+    sticky.stickyActiveProvider !== null &&
+    sticky.stickyModelSelectionByProvider[sticky.stickyActiveProvider] !== undefined
+  );
+}
+
+/** Null leaves the draft on the sticky pick applied before this override. */
 export function resolveNewThreadModelSelectionOverride(input: {
+  readonly keepLastPicked: boolean;
   readonly projectDefaultSelection: ModelSelection | null;
   readonly carrySelection: ModelSelection | null;
   readonly carrySourceDraftId: string | null;
   readonly destinationDraftId: string;
 }): ModelSelection | null {
+  if (input.keepLastPicked) return null;
   return (
     input.projectDefaultSelection ??
     (input.carrySourceDraftId === input.destinationDraftId ? null : input.carrySelection)

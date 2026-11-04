@@ -175,6 +175,7 @@ const EMPTY_DRAFT: DraftState = {
   runtimeMode: "full-access",
   interactionMode: "default",
   baseModelSelection: null,
+  followsDefaultModel: true,
   signatureEnabled: false,
   ...WEBHOOK_SIGNATURE_DEFAULTS,
   signatureSecret: "",
@@ -536,8 +537,9 @@ const scheduledTaskCreatePermissionsAtom = environmentAtomList(
   serverEnvironment.upsertScheduledTask.permissionAtom,
 );
 
-const scheduledTasksListAtom = environmentAtomList("web-scheduled-tasks-list", (environmentId) =>
-  serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
+export const scheduledTasksListAtom = environmentAtomList(
+  "web-scheduled-tasks-list",
+  (environmentId) => serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
 );
 
 function ScheduledTaskEnvironmentList({
@@ -1454,24 +1456,32 @@ function ScheduledTaskEditorForm({
   );
   const firstInstance = instanceEntries[0];
   const draftSelection = draft.modelKey ? splitModelKey(draft.modelKey) : null;
-  const activeSelection =
+  const defaultSelection = scheduledTaskDefaultModel(
+    settings,
+    selectedProject ?? null,
+    instanceEntries,
+    inheritedDefaultModel,
+  );
+  // A task bound to a thread runs that thread's model, so the default does not apply to it.
+  const offersDefaultModel =
+    environment?.serverConfig?.environment.capabilities.scheduledTaskDefaultModel === true &&
+    !draft.threadId;
+  const followsDefaultModel = offersDefaultModel && draft.followsDefaultModel;
+  const ownSelection =
     draftSelection &&
     instanceEntries.some((entry) => entry.instanceId === draftSelection.instanceId && entry.enabled)
       ? draftSelection
-      : scheduledTaskDefaultModel(
-          settings,
-          selectedProject ?? null,
-          instanceEntries,
-          inheritedDefaultModel,
-        );
+      : defaultSelection;
+  const activeSelection = followsDefaultModel ? defaultSelection : ownSelection;
   // The source selection keeps its options and Auto while the picker leaves instanceId:model as is.
   const chosenSelection =
-    activeSelection !== null &&
-    draft.baseModelSelection !== null &&
-    draft.baseModelSelection.instanceId === activeSelection.instanceId &&
-    draft.baseModelSelection.model === activeSelection.model
-      ? draft.baseModelSelection
-      : activeSelection;
+    followsDefaultModel ||
+    activeSelection === null ||
+    draft.baseModelSelection === null ||
+    draft.baseModelSelection.instanceId !== activeSelection.instanceId ||
+    draft.baseModelSelection.model !== activeSelection.model
+      ? activeSelection
+      : draft.baseModelSelection;
   const autoPick = autoModePick({ settings, accounts: providers, lockedDriver: null });
   const activeInstanceId =
     activeSelection?.instanceId ?? firstInstance?.instanceId ?? ("" as ProviderInstanceId);
@@ -1584,6 +1594,7 @@ function ScheduledTaskEditorForm({
       threadId: draft.threadId ? (draft.threadId as ThreadId) : null,
       workspaceStrategy,
       modelSelection: selection,
+      ...(offersDefaultModel ? { followsDefaultModel } : {}),
       // Tasks have no mode picker; a mode above the administrator's ceiling would fail every run.
       runtimeMode:
         clampManagedRuntimeMode(environment?.serverConfig?.managedPolicy, draft.runtimeMode) ??
@@ -1813,10 +1824,33 @@ function ScheduledTaskEditorForm({
           </Field>
 
           <Field label="Model">
-            <div>
+            <div className="space-y-3">
+              {offersDefaultModel ? (
+                <div className="flex items-center justify-between gap-4">
+                  <div className="min-w-0 space-y-1">
+                    <Label htmlFor="scheduled-task-default-model">Use default model</Label>
+                    <p
+                      id="scheduled-task-default-model-description"
+                      className="text-sm text-muted-foreground"
+                    >
+                      Runs the scheduled tasks model from Settings › Threads, and follows it when it
+                      changes.
+                    </p>
+                  </div>
+                  <Switch
+                    id="scheduled-task-default-model"
+                    aria-describedby="scheduled-task-default-model-description"
+                    checked={draft.followsDefaultModel}
+                    disabled={saving || !connected}
+                    onCheckedChange={(checked) =>
+                      setDraft((current) => ({ ...current, followsDefaultModel: checked }))
+                    }
+                  />
+                </div>
+              ) : null}
               <ProviderModelPicker
                 environmentId={environmentId}
-                disabled={saving || !connected}
+                disabled={saving || !connected || followsDefaultModel}
                 activeInstanceId={activeInstanceId}
                 model={activeModel}
                 lockedProvider={null}

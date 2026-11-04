@@ -1,6 +1,6 @@
 import type { MenuAction } from "@react-native-menu/menu";
 import { useAtomValue } from "@effect/atom-react";
-import type { ServerSettingsPatch } from "@t3tools/contracts";
+import type { ModelSelection, ServerSettingsPatch } from "@t3tools/contracts";
 import { describeModelPick } from "@t3tools/client-runtime/model-traits";
 import { modelPicksEqual, withAutoAccount } from "@t3tools/shared/model";
 import { autoModePick, resolveAutoModelSelection } from "@t3tools/shared/serverSettings";
@@ -13,17 +13,44 @@ import type { ScopedMobileSettingsTarget } from "../settings-scoped-server";
 import { SettingsSection } from "./SettingsSection";
 import { SettingsSwitchRow } from "./SettingsSwitchRow";
 
+const MODEL_SETTINGS = {
+  defaultModelSelection: {
+    title: "Default model",
+    unsetLabel: "Automatic",
+    footer:
+      "Automatically use an available provider, or choose a model for new threads and new scheduled tasks.",
+  },
+  scheduledTaskModelSelection: {
+    title: "Scheduled tasks model",
+    unsetLabel: "Same as new threads",
+    footer:
+      "Runs scheduled tasks that use the default model. Same as new threads follows the default model above.",
+  },
+} as const;
+
 export function DefaultModelSettings(props: {
   readonly targets: readonly ScopedMobileSettingsTarget[];
+  /** Default: the new-thread model. */
+  readonly setting?: keyof typeof MODEL_SETTINGS;
   readonly disabled: boolean;
+  /** Absent where a project is selected or a server cannot store the setting. */
+  readonly lastPicked?: { readonly value: boolean | null; readonly disabled: boolean };
   readonly onChange: (patch: ServerSettingsPatch) => void;
 }) {
   const providersByEnvironment = useAtomValue(environmentPresentations.providersByEnvironmentAtom);
-  const selection = props.targets[0]?.settings.defaultModelSelection ?? null;
+  const key = props.setting ?? "defaultModelSelection";
+  const copy = MODEL_SETTINGS[key];
+  const write = (value: ModelSelection | null) =>
+    props.onChange(
+      key === "defaultModelSelection"
+        ? { defaultModelSelection: value }
+        : { scheduledTaskModelSelection: value },
+    );
+  const selection = props.targets[0]?.settings[key] ?? null;
   const mixed = props.targets.some(({ settings }) =>
-    selection === null || settings.defaultModelSelection === null
-      ? selection !== settings.defaultModelSelection
-      : !modelPicksEqual(selection, settings.defaultModelSelection),
+    selection === null || settings[key] === null
+      ? selection !== settings[key]
+      : !modelPicksEqual(selection, settings[key]),
   );
   const optionsByTarget = props.targets.map((target) =>
     buildModelOptions(
@@ -73,7 +100,7 @@ export function DefaultModelSettings(props: {
   const label = mixed
     ? "Mixed"
     : shown === null
-      ? "Automatic"
+      ? copy.unsetLabel
       : selectedOption
         ? autoChecked
           ? `Auto · ${selectedOption.label}`
@@ -82,7 +109,7 @@ export function DefaultModelSettings(props: {
   const actions: MenuAction[] = [
     {
       id: "automatic",
-      title: "Automatic",
+      title: copy.unsetLabel,
       state: !mixed && selection === null ? "on" : "off",
     },
     ...groupByProvider(options).map((group) => ({
@@ -111,11 +138,11 @@ export function DefaultModelSettings(props: {
     : null;
   return (
     <SettingsSection
-      title="Default model"
+      title={copy.title}
       footer={
         props.targets.length > 1 && options.length === 0
-          ? "Select one environment to choose from its models. Automatic uses an available provider on each environment."
-          : "Automatically use an available provider, or choose a model for new threads and scheduled tasks."
+          ? `Select one environment to choose from its models. ${copy.unsetLabel} applies on each environment.`
+          : copy.footer
       }
     >
       {props.disabled ? (
@@ -124,18 +151,18 @@ export function DefaultModelSettings(props: {
         <Menu
           accessible
           accessibilityRole="button"
-          accessibilityLabel={`Default model: ${label}`}
-          title="Default model"
+          accessibilityLabel={`${copy.title}: ${label}`}
+          title={copy.title}
           actions={actions}
           onPressAction={({ nativeEvent }) => {
             if (nativeEvent.event === "automatic") {
-              props.onChange({ defaultModelSelection: null });
+              write(null);
               return;
             }
             const option = options.find(
               (candidate) => `model:${candidate.key}` === nativeEvent.event,
             );
-            if (option) props.onChange({ defaultModelSelection: option.selection });
+            if (option) write(option.selection);
           }}
         >
           {row}
@@ -148,10 +175,18 @@ export function DefaultModelSettings(props: {
           value={autoChecked}
           disabled={props.disabled}
           onValueChange={(value) => {
-            if (value && autoPick) props.onChange({ defaultModelSelection: autoPick });
-            else if (!value && shown)
-              props.onChange({ defaultModelSelection: withAutoAccount(shown, false) });
+            if (value && autoPick) write(autoPick);
+            else if (!value && shown) write(withAutoAccount(shown, false));
           }}
+        />
+      ) : null}
+      {props.lastPicked ? (
+        <SettingsSwitchRow
+          label="Use last picked model"
+          subtitle="New threads start on the model you last picked on this device, Auto included. Until you pick one, they use the model above. Scheduled tasks are not affected."
+          value={props.lastPicked.value}
+          disabled={props.lastPicked.disabled}
+          onValueChange={(value) => props.onChange({ newThreadsUseLastModel: value })}
         />
       ) : null}
     </SettingsSection>

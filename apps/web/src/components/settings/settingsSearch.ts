@@ -271,6 +271,22 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["new thread project provider reasoning effort"],
   },
   {
+    id: "last-picked-model",
+    title: "Use last picked model",
+    to: "/settings/threads",
+    scope: "environment-defaults",
+    searchTerms: ["remember sticky recent previous model new threads default"],
+    environmentOnly: true,
+  },
+  {
+    id: "scheduled-task-model",
+    title: "Scheduled tasks",
+    to: "/settings/threads",
+    scope: "environment-defaults",
+    searchTerms: ["scheduled task automation model default all tasks same as new threads"],
+    environmentOnly: true,
+  },
+  {
     id: "fallback-model",
     title: "Fallback model",
     to: "/settings/threads",

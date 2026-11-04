@@ -1647,6 +1647,12 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
+    setScheduledTasksFollowDefaultModel: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:scheduled-task:set-follows-default-model",
+      tag: WS_METHODS.scheduledTasksSetFollowsDefaultModel,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
     deleteScheduledTask: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:delete",
       tag: WS_METHODS.scheduledTasksDelete,

@@ -16,7 +16,7 @@ import { useProjectPin } from "~/hooks/useProjectGroupUpdate";
 import { useScratchProject } from "~/hooks/useScratchProject";
 import { isTriagePrompt } from "~/hooks/useStartTriage";
 import { useClientSettings } from "~/hooks/useSettings";
-import { hasExplicitComposerModelSelection } from "~/lib/chatThreadActions";
+import { hasExplicitComposerModelSelection, keepsLastPickedModel } from "~/lib/chatThreadActions";
 import {
   deriveLogicalProjectKeyFromSettings,
   pickableProjectGroups,
@@ -240,7 +240,10 @@ export function DraftHeroHeadline({
       const defaultModelSelection = fallbackResolution.fallback
         ? fallbackResolution.selection
         : defaultSelection;
-      if (defaultModelSelection) {
+      if (
+        defaultModelSelection &&
+        !keepsLastPickedModel(environmentSettings, useComposerDraftStore.getState())
+      ) {
         setModelSelection(draftId, defaultModelSelection, {
           replaceOptions: true,
         });

@@ -4,10 +4,13 @@ import * as NodeUtil from "node:util";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it, vi } from "@effect/vitest";
 import {
+  DEFAULT_SERVER_SETTINGS,
+  type ModelSelection,
   ProjectId,
   ProviderInstanceId,
   ScheduledTaskError,
   ScheduledTaskId,
+  type ServerSettings as ServerSettingsValue,
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -20,6 +23,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import * as Deferred from "effect/Deferred";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
@@ -563,6 +567,110 @@ it.effect("a pin and the last run's thread survive edits and leave with the task
       const missing = yield* service.setPinned({ id: task.id, pinned: true }).pipe(Effect.flip);
       assert.equal(missing.message, "Schedule task not found.");
     }).pipe(Effect.provide(layer.pipe(Layer.provideMerge(ServerSettings.layerTest()))));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("a task that follows the default runs the scheduled tasks model and keeps its own", () =>
+  Effect.gen(function* () {
+    const ownModel: ModelSelection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.4",
+    };
+    const settingsRef = yield* Ref.make<ServerSettingsValue>({
+      ...DEFAULT_SERVER_SETTINGS,
+      defaultModelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-new" },
+    });
+    const settingsChanges = yield* Queue.unbounded<ServerSettingsValue>();
+    const setSettings = (patch: Partial<ServerSettingsValue>) =>
+      Ref.updateAndGet(settingsRef, (current) => ({ ...current, ...patch })).pipe(
+        Effect.flatMap((next) => Queue.offer(settingsChanges, next)),
+      );
+    const launched = yield* Ref.make<ModelSelection | null>(null);
+    const layer = ScheduledTaskService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(ServerSettings.ServerSettingsService)({
+            getSettings: Ref.get(settingsRef),
+            streamChanges: Stream.fromQueue(settingsChanges),
+          }),
+          ManagedPolicy.layerTest(),
+          Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+            launch: (input) =>
+              Ref.set(launched, input.modelSelection).pipe(
+                Effect.as({ threadId: ThreadId.make("thread:run") } as never),
+              ),
+          }),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+            namedProjectsRoot: "/projects",
+            isScratchProject: () => Effect.succeed(false),
+          }),
+          NodeCrypto.layer,
+          Scheduler.layer,
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const upsert = (followsDefaultModel?: boolean) =>
+        service.upsert({
+          id: ScheduledTaskId.make("task:default-model"),
+          title: "Nightly review",
+          prompt: "Review today's changes",
+          enabled: true,
+          schedule: { type: "interval", everyMs: 300_000 },
+          projectId: ProjectId.make("project:test"),
+          workspaceStrategy: { type: "root" },
+          modelSelection: ownModel,
+          ...(followsDefaultModel === undefined ? {} : { followsDefaultModel }),
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        });
+      const { task } = yield* upsert(true);
+      // With no scheduled tasks model, it runs the new-thread default.
+      assert.equal(task.modelSelection.model, "gpt-new");
+      const listedModel = () =>
+        service
+          .list()
+          .pipe(
+            Effect.map(({ tasks }) => tasks.find(({ id }) => id === task.id)?.modelSelection.model),
+          );
+
+      const firstList = yield* Deferred.make<void>();
+      const listedModels = yield* service.subscribeList().pipe(
+        Stream.tap(() => Deferred.succeed(firstList, undefined)),
+        Stream.map(({ tasks }) => tasks.find(({ id }) => id === task.id)?.modelSelection.model),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Deferred.await(firstList);
+      yield* setSettings({
+        scheduledTaskModelSelection: {
+          instanceId: ProviderInstanceId.make("claude"),
+          model: "opus",
+        },
+      });
+      assert.deepEqual(Array.from(yield* Fiber.join(listedModels)), ["gpt-new", "opus"]);
+
+      yield* service.runNow({ id: task.id });
+      assert.equal((yield* Ref.get(launched))?.model, "opus");
+
+      // A client that predates the flag keeps it when re-saving.
+      yield* upsert();
+      assert.equal(yield* listedModel(), "opus");
+
+      const off = { ids: [task.id], followsDefaultModel: false };
+      assert.deepEqual((yield* service.setFollowsDefaultModel(off)).ids, [task.id]);
+      assert.equal(yield* listedModel(), "gpt-5.4");
+      assert.deepEqual((yield* service.setFollowsDefaultModel(off)).ids, []);
+
+      yield* service.setFollowsDefaultModel({ ids: [task.id], followsDefaultModel: true });
+      yield* service.delete({ id: task.id });
+      assert.lengthOf(yield* sql`SELECT task_id FROM scheduled_task_default_model`, 0);
+    }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
