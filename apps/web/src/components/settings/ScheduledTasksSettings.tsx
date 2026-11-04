@@ -89,7 +89,9 @@ import {
   clampManagedRuntimeMode,
   managedCapabilityDenial,
 } from "@t3tools/contracts";
+import { withAutoAccount } from "@t3tools/shared/model";
 import { resolvePastedPath } from "@t3tools/shared/path";
+import { autoModePick } from "@t3tools/shared/serverSettings";
 import { useManagedPolicy } from "~/state/managedPolicy";
 import { ManagedNotice } from "../ManagedPolicy";
 import { readEnvironmentScope } from "~/state/session";
@@ -1462,6 +1464,15 @@ function ScheduledTaskEditorForm({
           instanceEntries,
           inheritedDefaultModel,
         );
+  // The source selection keeps its options and Auto while the picker leaves instanceId:model as is.
+  const chosenSelection =
+    activeSelection !== null &&
+    draft.baseModelSelection !== null &&
+    draft.baseModelSelection.instanceId === activeSelection.instanceId &&
+    draft.baseModelSelection.model === activeSelection.model
+      ? draft.baseModelSelection
+      : activeSelection;
+  const autoPick = autoModePick({ settings, accounts: providers, lockedDriver: null });
   const activeInstanceId =
     activeSelection?.instanceId ?? firstInstance?.instanceId ?? ("" as ProviderInstanceId);
   const activeModel = activeSelection?.model ?? "";
@@ -1492,7 +1503,7 @@ function ScheduledTaskEditorForm({
       tasksQuery.data === null
     )
       return;
-    const selection = activeSelection;
+    const selection = chosenSelection;
     const missing = [
       { missing: !draft.title.trim(), label: "a name", fieldId: "scheduled-task-title" },
       {
@@ -1553,12 +1564,6 @@ function ScheduledTaskEditorForm({
       reportFailure("Checkout path is required", "Enter the path of the checkout to run in.");
       return;
     }
-    const modelSelection =
-      draft.baseModelSelection !== null &&
-      draft.baseModelSelection.instanceId === selection.instanceId &&
-      draft.baseModelSelection.model === selection.model
-        ? draft.baseModelSelection
-        : selection;
     const workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy =
       draft.workspaceMode === "root"
         ? { type: "root" }
@@ -1578,7 +1583,7 @@ function ScheduledTaskEditorForm({
       projectId: selectedProjectId as ProjectId,
       threadId: draft.threadId ? (draft.threadId as ThreadId) : null,
       workspaceStrategy,
-      modelSelection,
+      modelSelection: selection,
       // Tasks have no mode picker; a mode above the administrator's ceiling would fail every run.
       runtimeMode:
         clampManagedRuntimeMode(environment?.serverConfig?.managedPolicy, draft.runtimeMode) ??
@@ -1820,8 +1825,27 @@ function ScheduledTaskEditorForm({
                 isComposerOwned={false}
                 triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                 onInstanceModelChange={(instanceId, model) =>
-                  setDraft((current) => ({ ...current, modelKey: `${instanceId}:${model}` }))
+                  setDraft((current) => ({
+                    ...current,
+                    modelKey: `${instanceId}:${model}`,
+                    // A model picked by name runs as named, even the one Auto ran.
+                    baseModelSelection:
+                      current.baseModelSelection &&
+                      withAutoAccount(current.baseModelSelection, false),
+                  }))
                 }
+                auto={{
+                  pick: autoPick,
+                  checked: chosenSelection?.autoAccount === true,
+                  onSelect: () => {
+                    if (autoPick === null) return;
+                    setDraft((current) => ({
+                      ...current,
+                      modelKey: `${autoPick.instanceId}:${autoPick.model}`,
+                      baseModelSelection: autoPick,
+                    }));
+                  },
+                }}
               />
             </div>
           </Field>

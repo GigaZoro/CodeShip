@@ -24,6 +24,7 @@ import * as Repositories from "../../../sourceControl/SourceControlRepositorySer
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as DateTime from "effect/DateTime";
+import { withAutoAccount } from "@t3tools/shared/model";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { resolveRuntimeMode } from "../../delegatedTaskModes.ts";
@@ -151,6 +152,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             });
           yield* assertProjectWorktree(project.workspaceRoot, input.workspaceStrategy.worktreePath);
         }
+        if (input.auto === true && input.modelSelection !== undefined)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "Pass auto:true or modelSelection, not both.",
+          });
         if (!replaying && input.modelSelection !== undefined) {
           const { instanceId, model } = input.modelSelection;
           const providers = yield* (yield* ProviderRegistry.ProviderRegistry).getProviders;
@@ -158,6 +164,16 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           if (provider !== undefined)
             yield* OrchestrationMcp.requireAdvertisedModel(provider, model);
         }
+        const autoPick =
+          replaying || input.auto !== true
+            ? undefined
+            : yield* OrchestrationMcp.requireAutoModePick(
+                yield* ServerSettings.ServerSettingsService.pipe(
+                  Effect.flatMap((settings) => settings.getSettings),
+                  Effect.mapError(unavailable),
+                ),
+                yield* (yield* ProviderRegistry.ProviderRegistry).getProviders,
+              );
         // Reject unresolved base refs before accepting a launch; worktree provisioning happens later.
         const strategy = input.workspaceStrategy;
         if (!replaying && strategy?.type === "worktree")
@@ -193,9 +209,10 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 ),
               )
             : undefined;
-        const modelSelection =
+        const startingSelection =
           input.modelSelection ??
           launchedModel ??
+          autoPick ??
           caller?.modelSelection ??
           (projectDefaults
             ? resolveNewThreadModelSelection({
@@ -210,6 +227,10 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               }).selection
             : null) ??
           undefined;
+        const modelSelection =
+          input.auto === false && startingSelection !== undefined
+            ? withAutoAccount(startingSelection, false)
+            : startingSelection;
         if (modelSelection === undefined)
           return yield* new OrchestratorMcpFailure({
             code: "invalid_request",

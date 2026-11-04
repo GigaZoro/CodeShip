@@ -5,6 +5,7 @@ import {
   EnvironmentId,
   GitCommandError,
   MessageId,
+  type ModelSelection,
   NodeId,
   ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
   type OrchestratorMcpCapabilitiesResult,
@@ -3377,6 +3378,86 @@ describe("OrchestratorMcpService provider resolution", () => {
           ],
         );
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
+    }),
+  );
+
+  it.effect("creates a thread in Auto mode on auto:true, and none while Auto is off", () =>
+    Effect.gen(function* () {
+      const claudeInstanceId = ProviderInstanceId.make("claude_work");
+      const created: Array<ModelSelection> = [];
+      const dependencies = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
+          assertProviderInstanceEnabled: () => Effect.void,
+          isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+          getThreadRecords: (threadId) =>
+            Effect.succeed(
+              threadId === parentThreadId
+                ? parentProjection([])
+                : ({
+                    ...childProjection,
+                    thread: { ...childProjection.thread, modelSelection: created.at(-1) },
+                  } as unknown as OrchestrationV2ThreadProjection),
+            ),
+          dispatch: (command) =>
+            Effect.sync(() => {
+              if (command.type === "thread.create") created.push(command.modelSelection);
+              return { sequence: 1, storedEvents: [] } as never;
+            }),
+        }),
+        ServerSettings.layerTest({
+          failoverLimitedThreads: true,
+          autoModeProvider: ProviderDriverKind.make("claudeAgent"),
+          autoModeModels: { [ProviderDriverKind.make("claudeAgent")]: { model: "claude-opus" } },
+        }),
+        providerRegistryLayer([
+          providerSnapshot({
+            instanceId: codexInstanceId,
+            driver: ProviderDriverKind.make("codex"),
+            model: "gpt-5.4",
+          }),
+          providerSnapshot({
+            instanceId: claudeInstanceId,
+            driver: ProviderDriverKind.make("claudeAgent"),
+            model: "claude-opus",
+          }),
+        ]),
+        adapterRegistryLayer([codexInstanceId, claudeInstanceId]),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const settings = yield* ServerSettings.ServerSettingsService;
+        const result = yield* service.createThreads(scope, {
+          threads: [{ title: "Auto" }, { title: "Auto", auto: true }],
+          clientRequestId: "auto",
+        });
+        assert.deepEqual(created, [
+          { instanceId: codexInstanceId, model: "gpt-5.4" },
+          { instanceId: claudeInstanceId, model: "claude-opus", autoAccount: true },
+        ]);
+        assert.equal(result.threads[1]?.providerInstanceId, claudeInstanceId);
+
+        const both = yield* service
+          .createThreads(scope, {
+            threads: [{ auto: true, target: { model: "gpt-5.4" } }],
+            clientRequestId: "both",
+          })
+          .pipe(Effect.flip);
+        assert.equal(both.code, "invalid_request");
+
+        yield* settings.updateSettings({ autoModeProvider: null });
+        const off = yield* service
+          .createThreads(scope, { threads: [{ auto: true }], clientRequestId: "off" })
+          .pipe(Effect.flip);
+        assert.equal(off.code, "invalid_request");
+        assert.include(off.message, "Auto mode is off");
+        assert.equal(created.length, 2);
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provideMerge(dependencies))));
     }),
   );
 

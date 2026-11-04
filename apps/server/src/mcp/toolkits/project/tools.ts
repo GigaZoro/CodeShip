@@ -135,6 +135,12 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     ),
     title: TrimmedNonEmptyString,
     modelSelection: Schema.optional(ModelSelection),
+    auto: Schema.optional(
+      Schema.Boolean.annotate({
+        description:
+          "true: Auto mode, on the model and account Settings pick. Not with `modelSelection`. Omit to inherit.",
+      }),
+    ),
     runtimeMode: Schema.optional(RuntimeMode),
     interactionMode: Schema.optional(ProviderInteractionMode),
     workspaceStrategy: Schema.optional(

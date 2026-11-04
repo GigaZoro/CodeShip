@@ -59,7 +59,10 @@ import { usePreparedConnection } from "../../state/session";
 import { buildModelOptions } from "../../lib/modelOptions";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { useProjects, useEnvironmentServerConfig, useServerConfigs } from "../../state/entities";
-import { resolveInheritedDefaultModelSelection } from "@t3tools/shared/serverSettings";
+import {
+  autoModePick,
+  resolveInheritedDefaultModelSelection,
+} from "@t3tools/shared/serverSettings";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -652,6 +655,18 @@ function TaskForm({
   const config = useEnvironmentServerConfig(environmentId);
   const serverConfigs = useServerConfigs();
   const modelOptions = buildModelOptions(config, null, undefined, draft.projectId);
+  const modelLabel =
+    modelOptions.find(
+      (option) =>
+        option.selection.instanceId === draft.modelSelection?.instanceId &&
+        option.selection.model === draft.modelSelection?.model,
+    )?.label ?? draft.modelSelection?.model;
+  // With Auto mode off, an Auto task runs the model it names.
+  const autoOn =
+    draft.modelSelection?.autoAccount === true &&
+    config?.environment.capabilities.autoMode === true &&
+    autoModePick({ settings: config.settings, accounts: config.providers, lockedDriver: null }) !==
+      null;
   // Existing webhook tasks keep the option so they can still switch to a timer.
   const webhookDenial = managedCapabilityDenial(config?.managedPolicy, "webhookTasks");
   const canOperate = useAtomValue(
@@ -887,13 +902,13 @@ function TaskForm({
             label="Model"
             borderTop
             value={
-              modelOptions.find(
-                (option) =>
-                  option.selection.instanceId === draft.modelSelection?.instanceId &&
-                  option.selection.model === draft.modelSelection?.model,
-              )?.label ??
-              draft.modelSelection?.model ??
-              (modelOptions.length ? "Choose model" : "No models available")
+              modelLabel === undefined
+                ? modelOptions.length
+                  ? "Choose model"
+                  : "No models available"
+                : autoOn
+                  ? `Auto · ${modelLabel}`
+                  : modelLabel
             }
             onPress={() => navigation.navigate("SettingsScheduledTaskModel")}
             disabled={saving || dictationPending || environmentUnavailable}

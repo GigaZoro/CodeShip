@@ -214,6 +214,7 @@ function draftSignature(draft: ScheduledTaskDraft): string {
     draft.projectId,
     draft.modelSelection?.instanceId,
     draft.modelSelection?.model,
+    draft.modelSelection?.autoAccount === true,
     [...(draft.modelSelection?.options ?? [])]
       .sort((a, b) => a.id.localeCompare(b.id))
       .map((option) => [option.id, option.value]),

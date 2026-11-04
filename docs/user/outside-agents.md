@@ -105,8 +105,9 @@ t3 thread list
 ```
 
 `.` means the project that contains the current folder; a project id also
-works. A new thread uses the project's default model and permission mode, and
-runs in the project folder unless you pass `--worktree <base-branch>`. `send`
+works. A new thread uses the project's default model and permission mode, or
+[Auto](./thread-sidebar.md#inspect-agent-work) with `--auto`, and runs in the
+project folder unless you pass `--worktree <base-branch>`. `send`
 never interrupts: a busy thread gets the message as its next turn. Pass `-` as
 the message to read it from stdin.
 

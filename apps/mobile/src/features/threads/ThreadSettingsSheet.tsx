@@ -1542,7 +1542,7 @@ type AutoSwitch = {
 };
 
 /** The sheet's Auto switch, where the server runs Auto and Auto can run this thread. */
-function withAutoSwitch(input: {
+export function withAutoSwitch(input: {
   readonly serverConfig: Pick<ServerConfig, "environment" | "settings" | "providers"> | null;
   readonly selection: ModelSelection | null;
   readonly started: boolean;

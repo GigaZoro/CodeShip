@@ -65,8 +65,13 @@ import {
   ThreadId,
   isOrchestrationV2WorkActive,
 } from "@t3tools/contracts";
-import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
+import {
+  getProviderOptionCurrentValue,
+  withAutoAccount,
+  withLegacyUltracodeEffort,
+} from "@t3tools/shared/model";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
+import { autoModePick } from "@t3tools/shared/serverSettings";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
   normalizeThreadPullRequestKey,
@@ -358,6 +363,22 @@ export const requireAdvertisedModel = (provider: ServerProvider, model: string) 
         ),
       )
     : Effect.succeed(advertised);
+};
+
+/** What `auto: true` starts a new thread on; the dispatch then picks the account with room. */
+export const requireAutoModePick = (
+  settings: Parameters<typeof autoModePick>[0]["settings"],
+  providers: ReadonlyArray<ServerProvider>,
+) => {
+  const pick = autoModePick({ settings, accounts: providers, lockedDriver: null });
+  return pick === null
+    ? Effect.fail(
+        failure(
+          "invalid_request",
+          "Auto mode is off, or its provider has no enabled account. The user sets it in Settings > Providers. Name a model instead.",
+        ),
+      )
+    : Effect.succeed(pick);
 };
 
 function providerConstraints(
@@ -2873,24 +2894,45 @@ const make = Effect.gen(function* () {
                 requestKey: key,
                 index,
               });
+              if (request.auto === true && request.target !== undefined) {
+                return yield* failure(
+                  "invalid_request",
+                  `Thread ${index + 1}: pass auto:true or target, not both.`,
+                );
+              }
               const isRetryOfAcceptedCreation = yield* threadManagement.hasReceipt(commandId);
               const committedThread = isRetryOfAcceptedCreation
                 ? yield* threadManagement
                     .getThreadShell(threadId)
                     .pipe(Effect.mapError(threadManagementFailure))
                 : null;
-              const target = yield* resolveTargetRechecking({
+              const autoPick =
+                request.auto === true && committedThread === null
+                  ? yield* requireAutoModePick(yield* readSettings, providers)
+                  : undefined;
+              const resolved = yield* resolveTargetRechecking({
                 parent,
                 target:
-                  committedThread === null
-                    ? request.target
-                    : {
+                  committedThread !== null
+                    ? {
                         ...request.target,
                         providerInstanceId: committedThread.modelSelection.instanceId,
-                      },
+                      }
+                    : autoPick !== undefined
+                      ? { providerInstanceId: autoPick.instanceId }
+                      : request.target,
                 providers,
                 skipProjectEnablementFilter: isRetryOfAcceptedCreation,
               });
+              const target =
+                autoPick !== undefined
+                  ? { ...resolved, modelSelection: autoPick }
+                  : request.auto === false
+                    ? {
+                        ...resolved,
+                        modelSelection: withAutoAccount(resolved.modelSelection, false),
+                      }
+                    : resolved;
               const runtimeMode = yield* resolveRuntimeMode(
                 parent.thread.runtimeMode,
                 request.runtimeMode,

@@ -256,6 +256,12 @@ export const OrchestratorMcpCreateThreadRequest = Schema.Struct({
   prompt: Schema.optional(OrchestratorMcpPrompt),
   title: Schema.optional(OrchestratorMcpTitle),
   target: Schema.optional(OrchestratorMcpTarget),
+  auto: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "true: Auto mode, on the model and account Settings pick. Not with `target`. Omit to inherit.",
+    }),
+  ),
   runtimeMode: Schema.optional(OrchestratorMcpRuntimeMode),
   interactionMode: Schema.optional(OrchestratorMcpInteractionMode),
 });

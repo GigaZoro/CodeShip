@@ -8,7 +8,7 @@ import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
 import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
 import { useDebouncedValue, usePaginatedBranches } from "../../state/queries";
 import { BranchPickerScreen } from "../threads/NewTaskContextPickerScreens";
-import { ThreadSettingsPickerScreen } from "../threads/ThreadSettingsSheet";
+import { ThreadSettingsPickerScreen, withAutoSwitch } from "../threads/ThreadSettingsSheet";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { useScheduledTaskEditor } from "./scheduled-task-editor";
 
@@ -73,6 +73,20 @@ export function ScheduledTaskModelPickerRouteScreen() {
             : current,
         )
       }
+      {...withAutoSwitch({
+        serverConfig: config,
+        selection: selectedModel,
+        started: false,
+        onChange: (modelSelection) =>
+          setEditor((current) =>
+            current
+              ? {
+                  ...current,
+                  draft: { ...current.draft, modelSelection, modelSelectionIsExplicit: true },
+                }
+              : current,
+          ),
+      })}
       optionDescriptors={optionDescriptors}
       onUpdateOptionSelections={(options) =>
         setEditor((current) =>

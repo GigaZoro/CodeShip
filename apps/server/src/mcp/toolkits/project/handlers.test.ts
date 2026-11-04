@@ -77,6 +77,7 @@ const clientLaunchHarness = (input: {
   readonly webOrigin?: string;
   /** The orchestrator refuses the new thread's mode, as under a managed ceiling. */
   readonly refusedByCeiling?: true;
+  readonly autoModeProvider?: ProviderDriverKind;
 }) => {
   const projectId = ProjectId.make("project:client-target");
   const modelSelection = {
@@ -90,6 +91,13 @@ const clientLaunchHarness = (input: {
   const layerDependencies = Layer.mergeAll(
     ServerSettings.layerTest({
       fallbackModelSelection: input.fallbackModel ?? null,
+      ...(input.autoModeProvider === undefined
+        ? {}
+        : {
+            failoverLimitedThreads: true,
+            autoModeProvider: input.autoModeProvider,
+            autoModeModels: { [input.autoModeProvider]: { model: "claude-sonnet" } },
+          }),
       ...(input.defaultRuntimeMode === undefined
         ? {}
         : { defaultRuntimeMode: input.defaultRuntimeMode }),
@@ -358,6 +366,70 @@ it.effect("a launch with a model its provider does not advertise creates no thre
     });
     expect(launched).toHaveLength(2);
   }),
+);
+
+it.effect(
+  "a launch with auto:true starts on Auto's model, and creates nothing while Auto is off",
+  () =>
+    Effect.gen(function* () {
+      const launchWith = Effect.fn("test.launchWith")(function* (
+        autoModeProvider: ProviderDriverKind | undefined,
+        params: {
+          readonly auto: boolean;
+          readonly modelSelection?: ModelSelection;
+          readonly overrideModel?: ModelSelection;
+        },
+      ) {
+        const { overrideModel, ...input } = params;
+        const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+        const { projectId, dependencies } = clientLaunchHarness({
+          runtimeModeCeiling: "full-access",
+          launched,
+          ...(autoModeProvider === undefined ? {} : { autoModeProvider }),
+          ...(overrideModel === undefined ? {} : { overrideModel }),
+        });
+        const toolkit = yield* ProjectToolkit.pipe(
+          Effect.provide(
+            McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+              Layer.provide(dependencies),
+            ),
+          ),
+        );
+        const result = yield* toolkit
+          .handle("t3_thread_launch", { ...input, projectId, title: "Fix", message: "Fix the bug" })
+          .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+        return {
+          result: result.at(-1)?.result,
+          selections: launched.map((launch) => launch.modelSelection),
+        };
+      });
+      const claude = ProviderDriverKind.make("claudeAgent");
+
+      expect((yield* launchWith(claude, { auto: true })).selections).toEqual([
+        { instanceId: "claudeAgent", model: "claude-sonnet", autoAccount: true },
+      ]);
+
+      for (const refused of [
+        yield* launchWith(undefined, { auto: true }),
+        yield* launchWith(claude, {
+          auto: true,
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-settings" },
+        }),
+      ]) {
+        expect(refused.result).toMatchObject({ code: "invalid_request" });
+        expect(refused.selections).toEqual([]);
+      }
+
+      // auto:false runs the Auto default it would inherit as the model it names.
+      const autoDefault = {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-opus",
+        autoAccount: true,
+      };
+      expect(
+        (yield* launchWith(claude, { auto: false, overrideModel: autoDefault })).selections,
+      ).toEqual([{ instanceId: "claudeAgent", model: "claude-opus" }]);
+    }),
 );
 
 it.effect("a launch steps an inherited mode down to the provider's, and refuses one it lacks", () =>
