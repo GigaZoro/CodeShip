@@ -3,6 +3,7 @@ import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
 import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
 import { type EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
+import { SidebarNeedsYouPanel } from "./sidebar/SidebarNeedsYouPanel";
 import {
   dropThreadContext,
   endThreadContextDrag,
@@ -1200,7 +1201,13 @@ function readRouteThreadKey(router: AnyRouter): string | null {
   return ref === null ? null : scopedThreadKey(ref);
 }
 
-export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReveal }) {
+export default function Sidebar({
+  routeReveal,
+  needsYouPanelTarget,
+}: {
+  routeReveal: SidebarRouteReveal;
+  needsYouPanelTarget: HTMLElement | null;
+}) {
   const {
     projects,
     serverConfigs,
@@ -4191,18 +4198,33 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         />,
                       ];
                       if (needsYouThreads.length > 0) {
-                        items.push(
-                          <SidebarNeedsYouHeader
-                            key="needs-you-header"
-                            count={needsYouThreads.length}
-                          />,
-                          ...needsYouThreads.map((thread) => renderThreadRow(thread, "needs-you")),
-                          <li
-                            key="needs-you-divider"
-                            aria-hidden
-                            className="mx-2.5 my-1.5 h-px list-none bg-sidebar-border/60"
-                          />,
+                        const needsYouRows = needsYouThreads.map((thread) =>
+                          renderThreadRow(thread, "needs-you"),
                         );
+                        if (needsYouPanelTarget === null) {
+                          items.push(
+                            <SidebarNeedsYouHeader
+                              key="needs-you-header"
+                              count={needsYouThreads.length}
+                            />,
+                            ...needsYouRows,
+                            <li
+                              key="needs-you-divider"
+                              aria-hidden
+                              className="mx-2.5 my-1.5 h-px list-none bg-sidebar-border/60"
+                            />,
+                          );
+                        } else {
+                          items.push(
+                            <SidebarNeedsYouPanel
+                              key="needs-you-panel"
+                              count={needsYouThreads.length}
+                              target={needsYouPanelTarget}
+                            >
+                              {needsYouRows}
+                            </SidebarNeedsYouPanel>,
+                          );
+                        }
                       }
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {

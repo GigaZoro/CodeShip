@@ -1,3 +1,4 @@
+import * as ServerSettings from "../serverSettings.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no createHmac.
 import * as NodeCrypto from "node:crypto";
 
@@ -252,6 +253,7 @@ const withService = <A, E>(
         ScheduledTaskService.ScheduledTaskWebhookOrigin,
         Effect.succeed({ relayHookBaseUrl: options.relayHookBaseUrl ?? null }),
       ),
+      ServerSettings.layerTest(),
       ManagedPolicy.layerTest(options.policy),
     );
     return yield* Effect.gen(function* () {

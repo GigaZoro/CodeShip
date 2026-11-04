@@ -1,3 +1,4 @@
+import * as ServerSettings from "../serverSettings.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import { ScheduledTaskUpsertInput } from "@t3tools/contracts";
@@ -23,6 +24,7 @@ afterEach(() => vi.unstubAllEnvs());
 const dependencies = Layer.mergeAll(
   NodeCrypto.layer,
   Scheduler.layer,
+  ServerSettings.layerTest(),
   ManagedPolicy.layerTest(),
   Layer.mock(ThreadLaunchService.ThreadLaunchService)({
     launch: () => Effect.die("synthetic dispatch failure"),

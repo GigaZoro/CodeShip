@@ -31,6 +31,7 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import * as ServerSettings from "../serverSettings.ts";
 
 const isScheduledTaskError = Schema.is(ScheduledTaskError);
 
@@ -192,6 +193,7 @@ it.effect(
               ScheduledTaskService.layer,
               Layer.mergeAll(
                 ManagedPolicy.layerTest(),
+                ServerSettings.layerTest(),
                 Layer.mock(ThreadLaunchService.ThreadLaunchService)({
                   launch: () =>
                     Ref.updateAndGet(dispatched, (n) => n + 1).pipe(
@@ -286,6 +288,7 @@ it.effect(
               ScheduledTaskService.layer,
               Layer.mergeAll(
                 ManagedPolicy.layerTest(),
+                ServerSettings.layerTest(),
                 Layer.mock(ThreadLaunchService.ThreadLaunchService)({
                   launch: () =>
                     Ref.updateAndGet(dispatched, (n) => n + 1).pipe(
@@ -351,6 +354,7 @@ it.effect("thread cleanup notifies subscribers and a finishing run cannot recrea
       Layer.provide(
         Layer.mergeAll(
           ManagedPolicy.layerTest(),
+          ServerSettings.layerTest(),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             sendToThread: () =>
@@ -419,6 +423,7 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
       Layer.provide(
         Layer.mergeAll(
           ManagedPolicy.layerTest(),
+          ServerSettings.layerTest(),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             sendToThread: (input) =>
@@ -507,9 +512,10 @@ it.effect("a pin and the last run's thread survive edits and leave with the task
     yield* Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const service = yield* ScheduledTaskService.ScheduledTaskService;
-      const upsert = (title: string) =>
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const upsert = (title: string, id = "task:pinned") =>
         service.upsert({
-          id: ScheduledTaskId.make("task:pinned"),
+          id: ScheduledTaskId.make(id),
           title,
           prompt: "Check progress",
           enabled: true,
@@ -521,8 +527,20 @@ it.effect("a pin and the last run's thread survive edits and leave with the task
           interactionMode: "default",
         });
       const { task } = yield* upsert("Check CI");
+      assert.isNull(task.pinnedAt);
       const listed = () =>
         service.list().pipe(Effect.map(({ tasks }) => tasks.find(({ id }) => id === task.id)));
+
+      yield* settings.updateSettings({ automaticallyPinScheduledTasks: true });
+      assert.isNull((yield* upsert("Existing task")).task.pinnedAt);
+      const automatic = (yield* upsert("New automatic pin", "task:automatic")).task;
+      assert.isNotNull(automatic.pinnedAt);
+      yield* service.setPinned({ id: automatic.id, pinned: false });
+      assert.isNull((yield* upsert("Stay unpinned", automatic.id)).task.pinnedAt);
+      yield* settings.updateSettings({ automaticallyPinScheduledTasks: false });
+      assert.isNull((yield* upsert("New unpinned task", "task:unpinned")).task.pinnedAt);
+      yield* service.delete({ id: automatic.id });
+      yield* service.delete({ id: ScheduledTaskId.make("task:unpinned") });
 
       const pinned = yield* service.setPinned({ id: task.id, pinned: true });
       assert.isNotNull(pinned.task.pinnedAt ?? null);
@@ -544,13 +562,14 @@ it.effect("a pin and the last run's thread survive edits and leave with the task
       assert.lengthOf(leftover, 0);
       const missing = yield* service.setPinned({ id: task.id, pinned: true }).pipe(Effect.flip);
       assert.equal(missing.message, "Schedule task not found.");
-    }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(layer.pipe(Layer.provideMerge(ServerSettings.layerTest()))));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
 it.effect("refuses saving an enabled task above the policy ceiling", () =>
   Effect.gen(function* () {
     const layer = ScheduledTaskService.layer.pipe(
+      Layer.provide(ServerSettings.layerTest()),
       Layer.provide(
         Layer.mergeAll(
           ManagedPolicy.layerTest({
@@ -621,6 +640,7 @@ it.effect("a run interrupted right after it reserves the task does not block the
       Layer.provide(
         Layer.mergeAll(
           ManagedPolicy.layerTest(),
+          ServerSettings.layerTest(),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({
             launch: () =>
               Ref.update(launches, (n) => n + 1).pipe(

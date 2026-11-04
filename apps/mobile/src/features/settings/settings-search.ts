@@ -41,6 +41,8 @@ const SETTINGS_SEARCH_TERMS = {
     "by machine",
     "organization",
     "sidebar",
+    "automatically pin scheduled tasks",
+    "auto pin automations",
     "working section",
     "new threads",
     "last project",

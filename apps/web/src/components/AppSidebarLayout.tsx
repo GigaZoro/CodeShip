@@ -412,6 +412,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const routePanelAnimationsActive = panelAnimationsActive && !panelAnimationsSuppressed;
   const isMacosDesktop = isElectron && isMacPlatform(navigator.platform);
   const [sidebarWidth, setSidebarWidth] = useState(readInitialThreadSidebarWidth);
+  const [needsYouPanelTarget, setNeedsYouPanelTarget] = useState<HTMLDivElement | null>(null);
   // A clamped drag may not change width, so viewport changes need a separate subscription.
   const viewportWidth = useSyncExternalStore(subscribeToViewportWidth, readViewportWidth);
   const [brandWidth, setBrandWidth] = useState(0);
@@ -479,12 +480,19 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
             <div
               className={cn("flex min-w-0 flex-1 flex-col", sidebarPanel !== "threads" && "hidden")}
             >
-              <ThreadSidebar routeReveal={sidebarRouteReveal} />
+              <ThreadSidebar
+                routeReveal={sidebarRouteReveal}
+                needsYouPanelTarget={viewportWidth >= 1280 ? needsYouPanelTarget : null}
+              />
             </div>
           </div>
           {railOnly ? null : <SidebarRail onDoubleClick={resetSidebarWidth} />}
         </Sidebar>
         {children}
+        <div
+          ref={setNeedsYouPanelTarget}
+          className="hidden min-h-0 w-80 shrink-0 flex-col justify-end p-3 has-[>section]:flex"
+        />
         <BackgroundThreadAnnouncer />
         <SidebarControl />
         {isElectron ? <HistorySwipeNavigation /> : null}

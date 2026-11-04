@@ -55,6 +55,7 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import { isMissedFixedTimeRun, isSameSchedule, nextScheduledRunAt } from "./Schedule.ts";
 import {
   redactHeaders,
@@ -450,6 +451,7 @@ export const layer = Layer.effect(
     const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
     const secretRequests = yield* SecretRequests.SecretRequests;
     const scheduler = yield* Scheduler.Scheduler;
+    const serverSettings = yield* ServerSettings.ServerSettingsService;
     const readWebhookOrigin = yield* ScheduledTaskWebhookOrigin;
     const managedPolicy = yield* ManagedPolicy.ManagedPolicy;
     const webhookPolicyOrganization = ManagedPolicy.deniedBy(managedPolicy, "webhookTasks");
@@ -1388,12 +1390,38 @@ export const layer = Layer.effect(
         lastRunError: existingTask?.lastRunError ?? null,
         runCount: existingTask?.runCount ?? 0,
       };
-      yield* saveTask(
+      const automaticallyPin =
+        existingTask === null &&
+        (yield* serverSettings.getSettings.pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not read schedule task settings.", { taskId: id, cause }),
+          ),
+        )).automaticallyPinScheduledTasks;
+      const save = saveTask(
         task,
         input.requireExisting === true,
         scheduleUnchanged ? existingTask.schedule : null,
         webhook,
       );
+      yield* automaticallyPin
+        ? sql
+            .withTransaction(
+              // Check creation in the transaction so a replay cannot undo a concurrent unpin.
+              sql`
+                INSERT INTO scheduled_task_sidebar (task_id, pinned_at)
+                SELECT ${id}, ${iso(now)}
+                WHERE NOT EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${id})
+                ON CONFLICT (task_id) DO NOTHING
+              `.pipe(Effect.andThen(save)),
+            )
+            .pipe(
+              Effect.mapError((cause) =>
+                isScheduledTaskError(cause)
+                  ? cause
+                  : taskError("Could not save schedule task.", { taskId: id, cause }),
+              ),
+            )
+        : save;
       yield* notifyChanged;
       return { task: (yield* findTask(id)) ?? task };
     });

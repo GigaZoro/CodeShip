@@ -13,6 +13,7 @@ import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScroll
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { View } from "react-native";
+import { useState } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
@@ -255,6 +256,51 @@ export function WorkingSectionSettings() {
         moved.
       </Text>
     </View>
+  );
+}
+
+export function ScheduledTaskPinSettings() {
+  const { selectedTargets } = useSettingsEnvironmentFilter();
+  const targets = resolveMobileSettingsTargets(
+    selectedTargets.filter(supportsSharedSettingsSync),
+    null,
+  );
+  const writable = useEnvironmentsWithScope(selectedTargets, AuthSettingsWriteScope);
+  const [pending, setPending] = useState(false);
+  const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
+    label: "automatic scheduled task pinning",
+    reportFailure: true,
+  });
+  const managed = managedSettingReason(targets, "automaticallyPinScheduledTasks");
+
+  return (
+    <SettingsSection title="Scheduled tasks">
+      <SettingsSwitchRow
+        icon="pin"
+        label="Automatically pin scheduled tasks"
+        subtitle={managed ?? "Pin newly created scheduled tasks. Existing pins stay as they are."}
+        value={uniformMobileSetting(targets, "automaticallyPinScheduledTasks")}
+        disabled={
+          pending ||
+          targets.length === 0 ||
+          managed !== undefined ||
+          targets.some((target) => !writable.has(target.environment.environmentId))
+        }
+        onValueChange={async (value) => {
+          setPending(true);
+          await Promise.all(
+            targets.map((target) =>
+              updateSettings({
+                environmentId: target.environment.environmentId,
+                input: { patch: { automaticallyPinScheduledTasks: value } },
+              }),
+            ),
+          ).finally(() => {
+            setPending(false);
+          });
+        }}
+      />
+    </SettingsSection>
   );
 }
 

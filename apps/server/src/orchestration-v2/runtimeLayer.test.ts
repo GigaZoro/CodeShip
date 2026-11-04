@@ -320,6 +320,7 @@ const layerLegacyImportTest = RuntimeLayer.layer.pipe(
 );
 
 const layerScheduledTasksTest = ScheduledTaskService.layer.pipe(
+  Layer.provide(ServerSettings.layerTest()),
   Layer.provide(
     Layer.mergeAll(
       ManagedPolicy.layerTest(),

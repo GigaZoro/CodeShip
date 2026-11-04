@@ -816,6 +816,22 @@ export function GeneralSettingsPanel() {
 
       <SettingsSection id="sidebar" title="Sidebar">
         <SettingsRow
+          {...searchableSetting("automatically-pin-scheduled-tasks")}
+          serverScoped
+          settingKeys={["automaticallyPinScheduledTasks"]}
+          description="Pin newly created scheduled tasks to the sidebar. Existing pins stay as they are."
+          control={
+            <ScopedSwitch
+              settingKeys={["automaticallyPinScheduledTasks"]}
+              checked={settings.automaticallyPinScheduledTasks}
+              onCheckedChange={(checked) =>
+                updateSettings({ automaticallyPinScheduledTasks: checked })
+              }
+              aria-label="Automatically pin scheduled tasks"
+            />
+          }
+        />
+        <SettingsRow
           {...searchableSetting("sidebar-grouping")}
           description="Put active threads in a folder for each project. Working threads show in their folder and in Working; Pinned, Snoozed, and Settled stay shared."
           resetAction={

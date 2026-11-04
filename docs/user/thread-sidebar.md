@@ -57,8 +57,9 @@ and worktree while you stay in the new thread composer. This requires a Git proj
 
 ## See what needs you
 
-Threads waiting on you sit together under **Needs you** at the top of the thread list, below
-pinned tasks: an approval, an answer to a question, a subagent's request, or a guest's message.
+Threads waiting on you sit together under **Needs you** in a box at the bottom right on web
+and desktop. In narrow windows and on mobile, they appear at the top of the thread list,
+below pinned tasks: an approval, an answer to a question, a subagent's request, or a guest's message.
 It lists them from every machine and project, even when the list is filtered to one, the thread's
 folder is closed, or the thread is pinned or settled. Once you answer, the thread returns to its
 usual place.
@@ -69,6 +70,10 @@ Pin a scheduled task to watch it from the thread list. On web and desktop, choos
 **Pin to sidebar** from the task's menu on the **Scheduled tasks** page, or use the pin
 button in a thread's **Automations** card. On mobile, choose **Pin to thread list** from the
 task's menu. Pins are saved on the environment, so every device connected to it shows them.
+
+Tasks are not pinned automatically by default. Turn on **Automatically pin scheduled tasks** in
+**Settings → General** to pin new tasks when they are created. Changing this setting leaves
+existing pins alone, and editing or running a task does not pin it again.
 
 A pinned task shows whether its latest run is still working or needs your input, and counts
 down to its next run. Tasks that repeat on an interval also show a bar for the time left.
