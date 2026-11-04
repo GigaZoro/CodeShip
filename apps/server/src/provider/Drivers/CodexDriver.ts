@@ -1,4 +1,4 @@
-import { CodexSettings, ProviderDriverKind } from "@t3tools/contracts";
+import { CodexSettings, defaultInstanceIdForDriver, ProviderDriverKind } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -6,6 +6,7 @@ import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
@@ -58,6 +59,8 @@ import {
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
 } from "./CodexHomeLayout.ts";
+import { makeCodexCliAuth } from "./CodexCliAuth.ts";
+import { codexAccountShadowHomePath } from "../CodexManagedHome.ts";
 import { makeManagedCodexProvider } from "./CodexManagedProvider.ts";
 import { codexUsageReader } from "./codexUsage.ts";
 import * as CodexInstallation from "../CodexInstallation.ts";
@@ -164,19 +167,37 @@ export const CodexDriver: ProviderDriver<
       yield* HostProcess.Environment,
     );
     const environmentHome = processEnv.CODEX_HOME;
+    const { stateDir } = yield* ServerConfig.ServerConfig;
+    const hasOwnHome = config.homePath.trim() || config.shadowHomePath.trim();
+    // An added account signs in to its own auth folder; the rest links to the shared Codex home.
     const homeLayout = yield* resolveCodexHomeLayout(
-      !config.homePath.trim() && !config.shadowHomePath.trim() && environmentHome?.trim()
-        ? { ...config, homePath: environmentHome }
-        : config,
+      hasOwnHome
+        ? config
+        : environmentHome?.trim()
+          ? { ...config, homePath: environmentHome }
+          : instanceId !== defaultInstanceIdForDriver(DRIVER_KIND)
+            ? {
+                ...config,
+                shadowHomePath: codexAccountShadowHomePath(pathService, stateDir, instanceId),
+              }
+            : config,
     );
     const continuationIdentity = codexContinuationIdentity(homeLayout);
-    const stampIdentity = withInstanceIdentity({
+    const stampBaseIdentity = withInstanceIdentity({
       instanceId,
       driverKind: DRIVER_KIND,
       displayName,
       accentColor,
       continuationGroupKey: continuationIdentity.continuationKey,
     });
+    const canLogout = homeLayout.mode === "authOverlay";
+    const stampIdentity: typeof stampBaseIdentity = (draft) =>
+      stampBaseIdentity({
+        ...draft,
+        setup: { canInstall: false, ...draft.setup, canAuthenticate: true },
+        // The default instance uses the Codex CLI's own login, which a terminal shares.
+        auth: { ...draft.auth, canLogout },
+      });
     const { settings: serverSettings } = yield* ProviderHost.ProviderHost;
     const readShareMcpSignIns = serverSettings.get.pipe(
       Effect.map((settings) => settings.shareMcpSignIns),
@@ -392,6 +413,18 @@ export const CodexDriver: ProviderDriver<
         ),
     }).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
 
+    const auth = yield* makeCodexCliAuth({
+      instanceId,
+      credentialKey: `codex:home:${homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath}`,
+      openClient: openAppServerClient,
+      canLogout,
+    }).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
+    yield* auth.controller.subscribe("codex-account-snapshot").pipe(
+      Stream.filter((state) => ["idle", "succeeded", "failed", "cancelled"].includes(state.phase)),
+      Stream.runForEach(() => snapshot.refresh.pipe(Effect.ignoreCause({ log: true }))),
+      Effect.forkScoped,
+    );
+
     // Redemption spends account credit; serialize by the auth.json directory, keep one idempotency key
     // until the outcome, and bound the wait so a hung app-server cannot hold the account lock.
     // Auth overlays use effectiveHomePath; the continuation key would conflate them with shared homes.
@@ -460,6 +493,7 @@ export const CodexDriver: ProviderDriver<
       snapshot,
       snapshotForCwd,
       consumeResetCredit,
+      auth: auth.controller,
       plugins,
       mcp,
       orchestrationAdapter,
