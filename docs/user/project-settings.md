@@ -55,7 +55,9 @@ if its provider becomes unavailable; set up that provider again or choose anothe
 scheduled tasks use the same default.
 
 When the default model's provider is out of usage, new threads start on the **Fallback model**
-instead, at the default model's effort level when the fallback model offers it.
+instead, at the default model's effort level when the fallback model offers it. A default model
+picked on one account switches even while another account of that provider has usage left; choose
+[Auto](./thread-sidebar.md#inspect-agent-work) as the default to move to that account instead.
 
 ## Pin and archive projects
 

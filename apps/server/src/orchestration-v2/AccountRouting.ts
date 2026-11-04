@@ -14,6 +14,7 @@ import {
   resolveAutoModelSelection,
   supportsAccountFailover,
 } from "@t3tools/shared/serverSettings";
+import { exhaustedUsageWindow } from "@t3tools/shared/usageLimits";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -42,13 +43,6 @@ export interface AccountRoutingContext {
   readonly nowMs: number;
 }
 
-const usageExhausted = (provider: ServerProvider, nowMs: number) =>
-  provider.usageLimits?.windows.some(
-    (window) =>
-      window.usedPercent >= 100 &&
-      (window.resetsAt === undefined || Date.parse(window.resetsAt) > nowMs),
-  ) === true;
-
 /** The model this subscription account would run for `model` now, or null when it cannot take the turn. */
 function modelWithRoom(
   provider: ServerProvider,
@@ -62,11 +56,11 @@ function modelWithRoom(
     (provider.auth.type !== undefined && METERED_AUTH_TYPES.has(provider.auth.type)) ||
     !isProviderAvailable(provider) ||
     input.limitedInstanceIds.has(provider.instanceId) ||
-    usageExhausted(provider, input.nowMs) ||
     !resolveProjectProviderInstanceEnabled(input.settings, input.projectId, provider.instanceId)
   )
     return null;
-  return resolveSelectableModel(provider.driver, input.model, provider.models);
+  const model = resolveSelectableModel(provider.driver, input.model, provider.models);
+  return model === null || exhaustedUsageWindow(provider, input.nowMs, model) ? null : model;
 }
 
 /** Accounts of `driver` that can run `model` now, highest in the saved account order first. */

@@ -36,6 +36,14 @@ export function exhaustedUsageWindow(
   );
   if (model === undefined) return exhausted[0];
   switch (provider?.driver) {
+    case "claudeAgent": {
+      // A `seven_day_<model>` window limits only the model it names, such as Fable.
+      const words = model.toLowerCase().split(/[^a-z0-9]+/);
+      return exhausted.find((window) => {
+        const scope = window.id.match(/^seven_day_(.+)$/)?.[1];
+        return scope === undefined || scope.split("_").every((word) => words.includes(word));
+      });
+    }
     case "cursor": {
       const api = exhausted.find((window) => window.id === "apiPercentUsed");
       const auto = exhausted.find((window) => window.id === "autoPercentUsed");

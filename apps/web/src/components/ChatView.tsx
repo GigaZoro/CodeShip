@@ -2606,7 +2606,13 @@ export default function ChatView(props: ChatViewProps) {
                   .find((provider) => provider.instanceId === fallbackSelection.instanceId)
                   ?.models.find((model) => model.slug === fallbackSelection.model)?.name ??
                 fallbackSelection.model,
-              defaultProviderName: fallback.provider.displayName ?? fallback.provider.driver,
+              limitedAccount: fallback.provider,
+              hasOtherAccounts: providerStatuses.some(
+                (provider) =>
+                  provider.enabled &&
+                  provider.driver === fallback.provider.driver &&
+                  provider.instanceId !== fallback.provider.instanceId,
+              ),
               defaultModelName:
                 fallback.provider.models.find((model) => model.slug === defaultSelection.model)
                   ?.name ?? defaultSelection.model,

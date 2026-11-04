@@ -1,4 +1,5 @@
-import type { EnvironmentId, UsageLimitsReport } from "@t3tools/contracts";
+import { resolveProviderInstanceDisplayName } from "@t3tools/client-runtime/state/provider-instance-display";
+import type { EnvironmentId, ServerProvider, UsageLimitsReport } from "@t3tools/contracts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { limitsNotice } from "@t3tools/shared/usageLimits";
 import { GaugeIcon } from "lucide-react";
@@ -69,9 +70,38 @@ export function usageLimitsBannerItem(
   };
 }
 
+/** Names which account ran out once the provider has several, since the default one is unnamed. */
+function LimitedAccountName({
+  account,
+  hasOtherAccounts,
+}: {
+  readonly account: ServerProvider;
+  readonly hasOtherAccounts: boolean;
+}) {
+  const name = resolveProviderInstanceDisplayName(account);
+  if (!hasOtherAccounts) return name;
+  const driver = providerClients.get(account.driver)?.label ?? String(account.driver);
+  if (name.toLowerCase() !== driver.toLowerCase()) return `${driver} · ${name}`;
+  const email = account.auth.email;
+  if (!email) return name;
+  return (
+    <>
+      {`${driver} · `}
+      <RedactedSensitiveText
+        value={email}
+        ariaLabel="Toggle account email visibility"
+        revealTooltip="Click to reveal account"
+        hideTooltip="Click to hide account"
+        className="max-w-full truncate align-bottom font-sans text-xs leading-normal"
+      />
+    </>
+  );
+}
+
 export function modelFallbackBannerItem({
   fallbackModelName,
-  defaultProviderName,
+  limitedAccount,
+  hasOtherAccounts,
   defaultModelName,
   resetsAt,
   timestampFormat,
@@ -79,7 +109,8 @@ export function modelFallbackBannerItem({
   onDismiss,
 }: {
   readonly fallbackModelName: string;
-  readonly defaultProviderName: string;
+  readonly limitedAccount: ServerProvider;
+  readonly hasOtherAccounts: boolean;
   readonly defaultModelName: string;
   readonly resetsAt: string | null;
   readonly timestampFormat: TimestampFormat;
@@ -91,7 +122,12 @@ export function modelFallbackBannerItem({
     variant: "info",
     icon: <GaugeIcon />,
     title: `Using ${fallbackModelName}`,
-    description: `${defaultProviderName} is out of usage${resetsAt ? ` · resets ${formatUpcomingTimestamp(resetsAt, timestampFormat)}` : ""}`,
+    description: (
+      <>
+        <LimitedAccountName account={limitedAccount} hasOtherAccounts={hasOtherAccounts} />
+        {` is out of usage${resetsAt ? ` · resets ${formatUpcomingTimestamp(resetsAt, timestampFormat)}` : ""}`}
+      </>
+    ),
     actions: (
       <Button size="xs" variant="ghost" onClick={onUseDefault}>
         Use {defaultModelName}

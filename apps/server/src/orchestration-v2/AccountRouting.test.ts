@@ -79,7 +79,7 @@ describe("routeAutoAccount", () => {
   });
 
   it("skips an account whose usage window is used up until it resets", () => {
-    const exhausted = (resetsAt: string) =>
+    const exhausted = (resetsAt: string, id = "5h") =>
       routeAutoAccount({
         selection: { ...auto, instanceId: second },
         projectId,
@@ -88,7 +88,7 @@ describe("routeAutoAccount", () => {
           provider(primary, {
             usageLimits: {
               checkedAt: "2026-11-03T11:59:00.000Z",
-              windows: [{ id: "5h", kind: "session", label: "5h", usedPercent: 100, resetsAt }],
+              windows: [{ id, kind: "session", label: id, usedPercent: 100, resetsAt }],
             },
           }),
           provider(second),
@@ -100,6 +100,8 @@ describe("routeAutoAccount", () => {
       }).instanceId;
     assert.equal(exhausted("2026-11-03T13:00:00.000Z"), second);
     assert.equal(exhausted("2026-11-03T11:00:00.000Z"), primary);
+    // Opus still has room when only the Fable weekly window is full.
+    assert.equal(exhausted("2026-11-03T13:00:00.000Z", "seven_day_fable"), primary);
   });
 
   describe("Auto models", () => {
