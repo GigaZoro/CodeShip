@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  NAVIGATION_TAB_LABELS,
   NAVIGATION_TAB_ORDER,
+  isNavigationPageTab,
   navigationCustomizationAvailable,
   moveNavigationTab,
   overflowNavigationTabs,
@@ -24,8 +26,19 @@ describe("navigation tab order", () => {
   it("fills missing sections and drops removed placeholders, duplicates, and Settings", () => {
     expect(
       resolveNavigationTabOrder(["usage", "home", "issues", "settings", "usage", null]),
-    ).toEqual(["usage", "threads", "pullRequests"]);
+    ).toEqual(["usage", "threads", "scheduledTasks", "pullRequests"]);
     expect(resolveNavigationTabOrder()).toEqual(NAVIGATION_TAB_ORDER);
+  });
+
+  it("lists Tasks right after Threads and names every tab the same on each platform", () => {
+    expect(NAVIGATION_TAB_ORDER).toEqual(["threads", "scheduledTasks", "pullRequests", "usage"]);
+    expect(NAVIGATION_TAB_LABELS).toEqual({
+      threads: "Threads",
+      scheduledTasks: "Tasks",
+      pullRequests: "PRs",
+      usage: "Usage",
+    });
+    expect(NAVIGATION_TAB_ORDER.filter(isNavigationPageTab)).toEqual(["scheduledTasks", "usage"]);
   });
 
   it("moves a section without changing the relative order of the others", () => {
@@ -51,7 +64,11 @@ describe("navigation tab order", () => {
   it("removes hidden sections from navigation and restores their saved positions", () => {
     const order = moveNavigationTab(undefined, "usage", 0);
     const hidden = toggleNavigationTabVisibility([], "usage");
-    expect(enabledNavigationTabs(order, hidden)).toEqual(["threads", "pullRequests"]);
+    expect(enabledNavigationTabs(order, hidden)).toEqual([
+      "threads",
+      "scheduledTasks",
+      "pullRequests",
+    ]);
     expect(toggleNavigationTabVisibility(hidden, "usage")).toEqual([]);
     expect(visibleNavigationTabs(order, [], 5)).toEqual(order);
     expect(enabledNavigationTabs(undefined, ["home", "issues", "settings"])).toEqual(
@@ -60,7 +77,7 @@ describe("navigation tab order", () => {
   });
 
   it("falls back when the selected section is hidden, including when all are hidden", () => {
-    expect(resolveSelectedNavigationTab(undefined, ["threads"], "threads")).toBe("pullRequests");
+    expect(resolveSelectedNavigationTab(undefined, ["threads"], "threads")).toBe("scheduledTasks");
     expect(resolveSelectedNavigationTab(undefined, ["threads"], "usage")).toBe("usage");
     expect(
       resolveSelectedNavigationTab(undefined, NAVIGATION_TAB_ORDER, "threads"),

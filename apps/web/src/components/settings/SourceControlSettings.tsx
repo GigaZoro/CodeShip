@@ -36,6 +36,9 @@ import { SourceControlAppSignInSettings } from "./SourceControlAppSignInSettings
 import { SourceControlTokenSettings } from "./SourceControlTokenSettings";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import { SourceControlWritingSettingsSection } from "./SourceControlWritingSettings";
+import { GitFetchIntervalRow } from "./BackgroundActivitySettings";
+import { PullRequestLinksOpenInAppSetting } from "./IntegrationsSettings";
+import { WorktreesSettingsSections } from "./WorktreesSettings";
 import {
   SettingsPageContainer,
   SettingsSearchTarget,
@@ -522,6 +525,11 @@ export function SourceControlSettingsPanel() {
       )}
 
       <SourceControlWritingSettingsSection />
+      <SettingsSection id="source-control-sync" title="Fetching & links">
+        <GitFetchIntervalRow />
+        <PullRequestLinksOpenInAppSetting />
+      </SettingsSection>
+      <WorktreesSettingsSections />
     </SettingsPageContainer>
   );
 }

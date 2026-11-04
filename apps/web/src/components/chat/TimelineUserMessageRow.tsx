@@ -1082,6 +1082,9 @@ function RevertUserMessageButton({
   const ctx = use(TimelineRowCtx);
   const activity = use(TimelineRowActivityCtx);
 
+  // aria-disabled, not disabled, so the tooltip can still say why.
+  const blocked = activity.isRevertingCheckpoint || activity.isWorking;
+
   return (
     <Tooltip>
       <TooltipTrigger
@@ -1090,15 +1093,19 @@ function RevertUserMessageButton({
             type="button"
             size="xs"
             variant="ghost"
-            disabled={activity.isRevertingCheckpoint || activity.isWorking}
-            onClick={() => ctx.onRevertToTurnCount(turnCount, messageId)}
+            aria-disabled={blocked}
+            onClick={() => {
+              if (!blocked) ctx.onRevertToTurnCount(turnCount, messageId);
+            }}
             aria-label="Edit from here"
           />
         }
       >
         <PencilIcon className="size-3" />
       </TooltipTrigger>
-      <TooltipPopup side="top">Edit from here</TooltipPopup>
+      <TooltipPopup side="top">
+        {activity.isWorking ? "Stop the agent to edit" : "Edit from here"}
+      </TooltipPopup>
     </Tooltip>
   );
 }

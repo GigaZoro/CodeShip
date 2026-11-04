@@ -10,7 +10,7 @@ import { ProviderStatusBanner } from "./ProviderStatusBanner";
 import { dismissThreadErrorBannerForSession, ThreadErrorBanner } from "./ThreadErrorBanner";
 
 /**
- * The banners pinned above the timeline. The dismiss handlers are built here from plain
+ * The banners above the timeline. They take their own row, so they never cover messages. The dismiss handlers are built here from plain
  * values, so a ChatView render that changes neither banner leaves both cached.
  */
 export function ChatBannerLane(props: {
@@ -41,7 +41,7 @@ export function ChatBannerLane(props: {
     setThreadErrorBannerDismissTick,
   } = props;
   return (
-    <div className="chat-banner-lane pointer-events-none absolute top-0 z-30 flex flex-col">
+    <div className="z-30 flex shrink-0 flex-col ps-(--chat-lane-inset-start,0px) pe-(--chat-lane-inset-end,0px) empty:hidden not-empty:pb-2">
       <ProviderStatusBanner
         environmentId={props.environmentId}
         status={providerStatus}

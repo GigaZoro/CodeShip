@@ -1,7 +1,7 @@
 # OpenCode
 
 Install and authenticate OpenCode on the machine running your environment, then
-enable it in **Settings > Providers**. See [provider setup](./install.md#providers).
+enable it in **Settings > Providers & models**. See [provider setup](./install.md#providers).
 CodeShip requires OpenCode 1.14.19 or newer, including when you connect an existing
 OpenCode server.
 
@@ -20,7 +20,7 @@ OpenCode 2 converts the shared OpenCode database to its own format the first tim
 runs. Don't run OpenCode 1.x and 2.x side by side on the same machine. Threads you
 started on 1.x continue on 2.x.
 
-Plan mode uses OpenCode's `plan` agent.
+For planning, choose OpenCode's `plan` agent where the model options offer it.
 
 ## Compaction
 
@@ -61,7 +61,7 @@ does not stop the whole turn.
 ## Refresh models, commands, and skills
 
 After changing an OpenCode login or configuration, use **Refresh provider status**
-in **Settings > Providers** for that environment. On mobile, use **Refresh models**
+in **Settings > Providers & models** for that environment. On mobile, use **Refresh models**
 in the thread settings. Reconnecting also refreshes the catalog; periodic provider
 health checks do not.
 

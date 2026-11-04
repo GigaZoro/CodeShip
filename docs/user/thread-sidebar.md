@@ -87,7 +87,8 @@ starts a new thread for each run marks only the thread from its latest run.
 
 ## Pin and reorder threads
 
-Pin a thread from its menu to keep it above your active work.
+Pin a thread from its menu to keep it above your active work. The command palette offers the same
+actions for the open thread: Pin or Unpin, Settle or Un-settle, Snooze, Rename, and Archive.
 
 On web and desktop, unpinning, settling, snoozing, and archiving a thread each show
 a notification with **Undo** for five seconds. Undo restores the thread's previous
@@ -149,8 +150,8 @@ To generate a fresh title from the conversation, open a thread's menu and choose
 **Regenerate title**. The action is unavailable while title generation is in progress
 or when the connected environment needs a server update.
 
-To change how titles are written, add **Thread title instructions** in **Settings → Threads →
-Text generation**, under Advanced, such as a length limit or an identifier to put first. They apply to new and
+To change how titles are written, add **Thread title instructions** in **Settings → Providers & models →
+Models → Writing**, such as a length limit or an identifier to put first. They apply to new and
 regenerated titles. Select a project to give it its own instructions.
 
 Agents connected through CodeShip can use the same server-owned metadata workflow to
@@ -245,8 +246,8 @@ they were last active.
 
 Each project's menu starts a new thread there and, while the sidebar groups threads by project,
 opens or closes its sidebar folder. **Settle finished threads** settles the project's idle threads
-in one step. Pinned threads and threads marked **Done** because they finished since you last opened
-them are left alone, and **Undo** brings the settled ones back.
+in one step. Pinned threads and threads that finished since you last opened them (shown with a small dot)
+are left alone, and **Undo** brings the settled ones back.
 
 ## Settle finished work
 
@@ -365,7 +366,7 @@ snooze limit stops by default. Providers without a reset time offer manual
 retry and the normal snooze choices.
 
 With two or more accounts for one provider, turn on **Switch accounts at usage
-limits** in **Settings → Providers** and arrange the account order there. When
+limits** in **Settings → Providers & models** and arrange the account order there. When
 an account stops a turn on a limit with a reset time, the thread continues on
 the first other signed-in account of that provider, in that order, that still
 has usage left. An account that hit a limit is skipped until it resets. If none
@@ -399,7 +400,7 @@ without naming a model, the task runs on the model set for its role; unset roles
 use the thread's model.
 
 **Final review** has other models check what a request changed. Add reviewers
-under **Final review** in **Settings → Providers** on web or desktop, and turn on
+under **Final review** in **Settings → Providers & models** on web or desktop, and turn on
 **Review new threads** to review every thread. Turn it on or off for one thread
 from the thread's menu on web and desktop, or its settings sheet on mobile. After
 a request you send changes files, the thread's agent starts one read-only review
@@ -431,8 +432,8 @@ access to the environment and is not available on Windows.
 
 In the desktop app, the card can also open a ChatGPT dot or Claude Duet in the
 browser panel. A browser profile holds one account's sign-in, so add one profile per
-account in **Settings → Browser → Browser profiles** and sign in to ChatGPT or
-Claude there. Then pair each assistant with its profile under **Dots and Duets**
+account in **Settings → Browser & devices → Browser profiles** and sign in to ChatGPT or
+Claude there. Then pair each assistant with its profile under **Web assistants**
 on the same page. Duet opens at claude.ai, where Anthropic hosts it.
 
 Once a thread has started, the top of the thread details card sums up where it works: the
@@ -446,8 +447,7 @@ many steps are done. **Ask the agent** sends a common request as your message: c
 pull request, run the tests, or review the changes. Add your own requests, and set their order, in
 **Settings → Appearance → Ask the agent**, or with the settings button beside **Ask the agent** in
 the card; the command palette lists them all as **Ask the agent** items for the open thread. While the agent is working, the request waits until it finishes. If you are writing a
-message, the request is added to it instead, for you to send. These requests are unavailable in
-plan mode, where the agent only plans. **Your prompts** lists the messages you sent, as far back as
+message, the request is added to it instead, for you to send. **Your prompts** lists the messages you sent, as far back as
 the conversation has loaded; the one on screen is marked, and selecting one scrolls back to it.
 
 To choose what the thread details card shows, right-click the card or open
@@ -483,6 +483,8 @@ answer its questions.
 ## Snooze until later
 
 To change the choices in the snooze menu, open **Settings → Threads → Snooze options**.
+
+Archived threads are not a Settings page. Open them from **Archived threads** in the thread list's filter menu, **Open archived threads** in the command palette, or **View archived** in **Settings → Threads → Behavior**.
 Each option is a duration, such as 3 hours, or a time on a day, such as 9:00 PM
 tomorrow. A weekday means the next one after today. Menus list the options soonest
 first and hide a today option after its time passes. Saved with **All environments**

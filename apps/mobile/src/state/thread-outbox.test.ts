@@ -328,7 +328,6 @@ describe("thread outbox", () => {
         options: [{ id: "reasoningEffort", value: "xhigh" }],
       },
       runtimeMode: "approval-required",
-      interactionMode: "plan",
     } satisfies QueuedThreadMessage;
 
     expect(decodeQueuedThreadMessage(encodeQueuedThreadMessage(selectedMessage))).toEqual(
@@ -338,54 +337,33 @@ describe("thread outbox", () => {
       resolveQueuedThreadSettings(legacyMessage, {
         modelSelection: selectedMessage.modelSelection,
         runtimeMode: selectedMessage.runtimeMode,
-        interactionMode: selectedMessage.interactionMode,
+        interactionMode: "default",
       }),
     ).toEqual({
       modelSelection: selectedMessage.modelSelection,
       runtimeMode: selectedMessage.runtimeMode,
-      interactionMode: selectedMessage.interactionMode,
+      interactionMode: "default",
     });
   });
 
-  it("normalizes queued plan mode against the queued provider, not the current thread", () => {
+  it("keeps the thread's saved interaction mode and ignores a stored message mode", () => {
     const codex = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" };
-    const antigravity = {
-      instanceId: ProviderInstanceId.make("google-personal"),
-      model: "gemini-test-thinking",
-      options: [{ id: "native-option", value: "keep-this-choice" }],
-    };
-    const providers = [
-      { instanceId: codex.instanceId, showInteractionModeToggle: true },
-      { instanceId: antigravity.instanceId, showInteractionModeToggle: false },
-    ];
     const message = {
       ...queuedMessage({ messageId: "queued-plan", createdAt: "2026-09-02T10:00:00.000Z" }),
-      text: "/plan inspect the project",
-      modelSelection: antigravity,
-      interactionMode: "plan",
+      modelSelection: codex,
     } satisfies QueuedThreadMessage;
-
-    expect(
-      resolveQueuedThreadSettings(
-        message,
-        { modelSelection: codex, runtimeMode: "approval-required", interactionMode: "plan" },
-        providers,
-      ),
-    ).toEqual({
-      modelSelection: antigravity,
-      runtimeMode: "approval-required",
-      interactionMode: "default",
+    const storedPlanMessage = decodeQueuedThreadMessage({
+      ...(encodeQueuedThreadMessage(message) as object),
+      interactionMode: "plan",
     });
+
+    expect(storedPlanMessage).toEqual(message);
     expect(
-      resolveQueuedThreadSettings(
-        { ...message, modelSelection: codex },
-        {
-          modelSelection: antigravity,
-          runtimeMode: "approval-required",
-          interactionMode: "default",
-        },
-        providers,
-      ).interactionMode,
+      resolveQueuedThreadSettings(storedPlanMessage, {
+        modelSelection: codex,
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+      }).interactionMode,
     ).toBe("plan");
   });
 

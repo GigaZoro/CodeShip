@@ -1,7 +1,7 @@
 # Plugins
 
 Plugins add skills, commands, agents, hooks, and MCP servers to Claude, Codex, and Grok. Open
-**Plugins** in the sidebar rail, or **Open plugins** from the command palette, to browse what their
+**Extensions** in the sidebar rail and choose the **Plugins** tab, or **Open plugins** from the command palette, to browse what their
 marketplaces offer and install, turn off, or remove plugins. With more than one account or machine,
 pick which one to manage at the top of the page. Claude and Codex accounts on the same machine
 share their plugins, unless you gave an account its own config directory.

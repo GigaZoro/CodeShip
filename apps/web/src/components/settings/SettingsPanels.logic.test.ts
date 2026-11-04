@@ -3,8 +3,10 @@ import * as Duration from "effect/Duration";
 import { describe, expect, it } from "vite-plus/test";
 import {
   backgroundActivitySharedPolicySettings,
+  changedRestorableSettingLabels,
   getChangedBrowserSettingLabels,
   hasChangedBackgroundActivitySettings,
+  restorableSettingsPatch,
 } from "./SettingsPanels.logic";
 
 describe("background activity settings restore", () => {
@@ -86,5 +88,56 @@ describe("getChangedBrowserSettingLabels", () => {
         browserCustomSearchUrl: "https://search.example/?q=%s",
       }),
     ).toEqual(["Search engine"]);
+  });
+});
+
+describe("page reset", () => {
+  const changed = {
+    ...DEFAULT_UNIFIED_SETTINGS,
+    sendShortcut: "mod-enter",
+    diffLayout: "split",
+  } as const;
+
+  it("lists and restores only the settings its page shows", () => {
+    expect(changedRestorableSettingLabels(changed, "/settings/keybindings")).toEqual([
+      "Send shortcut",
+    ]);
+    expect(changedRestorableSettingLabels(changed, "/settings/chat")).toEqual(["Diff layout"]);
+    expect(Object.keys(restorableSettingsPatch("/settings/keybindings")).toSorted()).toEqual([
+      "confirmQuit",
+      "sendShortcut",
+    ]);
+  });
+
+  it("limits a project-scoped reset to settings that scope can store", () => {
+    expect(Object.keys(restorableSettingsPatch("/settings/threads", true))).not.toContain(
+      "snoozeLimitedThreads",
+    );
+    expect(Object.keys(restorableSettingsPatch("/settings/threads", true))).toContain(
+      "sidebarAutoSettleAfterDays",
+    );
+    expect(Object.keys(restorableSettingsPatch("/settings/maintenance", true))).toEqual([
+      "continueThreadsAfterServerUpdate",
+    ]);
+    expect(Object.keys(restorableSettingsPatch("/settings/keybindings", true)).toSorted()).toEqual([
+      "confirmQuit",
+      "sendShortcut",
+    ]);
+    const changedMachineWide = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      snoozeLimitedThreads: !DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads,
+    };
+    expect(changedRestorableSettingLabels(changedMachineWide, "/settings/threads", true)).toEqual(
+      [],
+    );
+    expect(changedRestorableSettingLabels(changedMachineWide, "/settings/threads")).toEqual([
+      "Snooze until limits reset",
+    ]);
+  });
+
+  it("covers every page when resetting everything", () => {
+    expect(changedRestorableSettingLabels(changed, null)).toEqual(
+      expect.arrayContaining(["Send shortcut", "Diff layout"]),
+    );
   });
 });

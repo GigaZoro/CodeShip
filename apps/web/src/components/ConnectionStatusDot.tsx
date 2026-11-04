@@ -17,10 +17,6 @@ export function connectionPhaseDotClassName(phase: EnvironmentConnectionPhase): 
   }
 }
 
-export function connectionPhasePingClassName(phase: EnvironmentConnectionPhase): string | null {
-  return phase === "connecting" || phase === "reconnecting" ? "bg-warning/60 duration-2000" : null;
-}
-
 type ConnectionStatusDotProps = {
   tooltipText?: string | null;
   dotClassName: string;

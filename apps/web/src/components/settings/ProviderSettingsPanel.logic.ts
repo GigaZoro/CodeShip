@@ -43,26 +43,6 @@ export function buildProviderEnvironmentOptions<T extends ProviderEnvironmentOpt
     });
 }
 
-export function resolveSelectedProviderEnvironmentId(
-  environments: ReadonlyArray<ProviderEnvironmentOptionLike>,
-  selectedEnvironmentId: EnvironmentId | null,
-  primaryEnvironmentId: EnvironmentId | null,
-): EnvironmentId | null {
-  if (
-    selectedEnvironmentId !== null &&
-    environments.some((environment) => environment.environmentId === selectedEnvironmentId)
-  ) {
-    return selectedEnvironmentId;
-  }
-  if (
-    primaryEnvironmentId !== null &&
-    environments.some((environment) => environment.environmentId === primaryEnvironmentId)
-  ) {
-    return primaryEnvironmentId;
-  }
-  return environments[0]?.environmentId ?? null;
-}
-
 export type ProviderEnvironmentAccess =
   | { readonly kind: "editable" }
   | { readonly kind: "loading"; readonly reason: "config" | "permissions" }

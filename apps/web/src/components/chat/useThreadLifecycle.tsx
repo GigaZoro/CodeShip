@@ -24,6 +24,7 @@ import {
   RuntimeMode,
 } from "@t3tools/contracts";
 import {
+  canSnooze,
   effectiveSnoozed,
   snoozeWakeLabel,
   threadWokeAt,
@@ -46,6 +47,10 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import { useUiStateStore } from "../../uiStateStore";
+import { useClientSettings } from "../../hooks/useSettings";
+import { openCommandPalette } from "../../commandPaletteBus";
+import { archiveThreadWithConfirm } from "../../lib/archiveThreadWithConfirm";
+import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
 import { type ChatMessage } from "../../types";
 import { AlarmClockIcon, CheckCircle2Icon } from "lucide-react";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -174,7 +179,8 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   } = input;
   const navigate = useNavigate();
   const router = useRouter();
-  const { settleThread, pinThread, confirmAndUnpinThread } = useThreadActions();
+  const { settleThread, pinThread, confirmAndUnpinThread, archiveThread } = useThreadActions();
+  const confirmThreadArchive = useClientSettings((settings) => settings.confirmThreadArchive);
   const canWriteSourceControl = useEnvironmentScope(environmentId, AuthSourceControlWriteScope);
   const switchGitRef = useAtomCommand(vcsEnvironment.switchRef, { reportFailure: false });
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
@@ -675,6 +681,25 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
           activeThreadPinned ? "Failed to unpin thread" : "Failed to pin thread",
         ),
       );
+    },
+    // The snooze presets live in the palette, so the shortcut opens it on them.
+    "thread.snooze": () => {
+      if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return false;
+      if (!activeThreadShell || !serverConfigLoaded || activeThreadSnoozed) return false;
+      if (!canSnooze(activeThreadShell, { now: new Date().toISOString() })) return false;
+      openCommandPalette({ query: ">Snooze" });
+    },
+    "thread.archive": ({ event }) => {
+      if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return false;
+      if (!activeThreadShell || !activeThreadRef) return false;
+      if (!threadRuntimeCanArchive(activeThreadShell.runtime)) return false;
+      if (event.repeat) return;
+      void archiveThreadWithConfirm({
+        threadRef: activeThreadRef,
+        title: activeThreadShell.title,
+        confirm: confirmThreadArchive,
+        archiveThread,
+      });
     },
   } satisfies ChatShortcutCommands;
   return {

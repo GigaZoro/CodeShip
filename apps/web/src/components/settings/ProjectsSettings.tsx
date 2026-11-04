@@ -6,6 +6,7 @@ import { ProjectSettingsPanel } from "./ProjectSettingsPanel";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { SettingsScopeNotice } from "./SettingsScopeNotice";
 import { SettingsPageContainer } from "./settingsLayout";
+import { NewProjectsSettingsSection } from "./SettingsPanels";
 import { ALL_ENVIRONMENTS_VALUE, selectEnvironmentAxis } from "./settingsScopeAxis";
 
 export function ProjectsSettings() {
@@ -46,9 +47,14 @@ export function ProjectsSettings() {
       ) : unavailable ? (
         unavailable
       ) : (
-        <SettingsScopeNotice target="project">
-          Choose a project to manage its name, icon, checkouts and actions.
-        </SettingsScopeNotice>
+        <>
+          <SettingsScopeNotice target="project">
+            Choose a project to manage its name, icon, checkouts and actions.
+          </SettingsScopeNotice>
+          <SettingsPageContainer showScopeSentence={false}>
+            <NewProjectsSettingsSection />
+          </SettingsPageContainer>
+        </>
       )}
     </div>
   );

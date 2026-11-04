@@ -1,5 +1,5 @@
 import { ThreadHoverCard, ThreadHoverCardPopup } from "../ThreadHoverCard";
-import { resolveThreadRowStatus, ThreadRowStatusIcon } from "./threadRowStatus";
+import { resolveThreadRowStatus, ThreadRowStatusContent } from "./threadRowStatus";
 import { ThreadTerminalStatusButton } from "../ThreadStatusIndicators";
 import { ThreadScheduledTaskIndicator } from "./ThreadScheduledTaskIndicator";
 import { discardComposerDraft } from "../../lib/discardComposerDraft";
@@ -1314,8 +1314,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                           topStatus.className,
                         )}
                       >
-                        <ThreadRowStatusIcon icon={topStatus.icon} className="size-3" />
-                        {topStatus.label}
+                        <ThreadRowStatusContent status={topStatus} iconClassName="size-3" />
                         {/* The Working shelf's one-line rows keep the elapsed time its cards showed. */}
                         {variant === "line" && status === "working" ? (
                           <span aria-hidden className="font-normal">
@@ -1508,11 +1507,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                             topStatus.className,
                           )}
                         >
-                          <ThreadRowStatusIcon icon={topStatus.icon} className="size-4" />
                           {/* Not a live region: a collapsed sidebar is inert, so
                             BackgroundThreadAnnouncer and the open thread's
                             timeline speak status changes instead. */}
-                          {topStatus.label}
+                          <ThreadRowStatusContent status={topStatus} iconClassName="size-4" />
                           {status === "working" ? (
                             <span aria-hidden>
                               <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />

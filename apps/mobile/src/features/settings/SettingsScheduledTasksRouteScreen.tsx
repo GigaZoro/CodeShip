@@ -76,7 +76,11 @@ import {
 } from "./components/SettingsEnvironmentFilterHeader";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
-import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
+import {
+  SettingsEnvironmentFilterProvider,
+  useSettingsEnvironmentFilter,
+  type SettingsTarget,
+} from "./settings-environment-filter";
 import {
   editDraft,
   parseIntervalMinutes,
@@ -338,6 +342,23 @@ function PickerRow(props: {
 }
 
 export function SettingsScheduledTasksRouteScreen() {
+  return <ScheduledTasksScreen />;
+}
+
+/**
+ * `workspace` is the Tasks tab. It keeps its own environment and project filter for as long as
+ * the tab is mounted, because the Settings scope resets whenever Settings closes.
+ */
+export function ScheduledTasksScreen(props: { readonly workspace?: boolean }) {
+  if (!props.workspace) return <ScheduledTasksContent />;
+  return (
+    <SettingsEnvironmentFilterProvider open>
+      <ScheduledTasksContent workspace />
+    </SettingsEnvironmentFilterProvider>
+  );
+}
+
+function ScheduledTasksContent(props: { readonly workspace?: boolean }) {
   const [now, setNow] = useState(Date.now);
   useFocusEffect(() => {
     const updateNow = () => setNow(Date.now());
@@ -367,22 +388,24 @@ export function SettingsScheduledTasksRouteScreen() {
     navigation.navigate("SettingsScheduledTaskNew");
   };
 
+  const newTaskHeaderItem = withNativeGlassHeaderItem({
+    type: "button",
+    label: "",
+    accessibilityLabel: "New task",
+    icon: { type: "sfSymbol", name: "plus" } as const,
+    disabled: visibleEnvironments.length === 0,
+    onPress: newTask,
+  });
+
   return (
     <>
-      <SettingsEnvironmentFilterHeader
-        trailingItems={[
-          withNativeGlassHeaderItem({
-            type: "button",
-            label: "",
-            accessibilityLabel: "New task",
-            icon: { type: "sfSymbol", name: "plus" } as const,
-            disabled: visibleEnvironments.length === 0,
-            onPress: newTask,
-          }),
-        ]}
-      />
+      {props.workspace && Platform.OS === "ios" ? (
+        <NativeStackScreenOptions options={{ headerSearchBarOptions: undefined }} />
+      ) : null}
+      <SettingsEnvironmentFilterHeader trailingItems={[newTaskHeaderItem]} />
       <SettingsScreen
         title="Scheduled tasks"
+        workspaceRoot={props.workspace}
         trailing={
           <View className="flex-row items-center">
             <AndroidSettingsEnvironmentFilter />

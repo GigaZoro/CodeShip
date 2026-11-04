@@ -10,4 +10,5 @@ export type ProviderSnapshotSource = {
   readonly streamChanges: Stream.Stream<ServerProvider>;
   readonly supportsPlugins?: boolean;
   readonly supportsMcpServers?: boolean;
+  readonly supportsSkillInstall?: boolean;
 };

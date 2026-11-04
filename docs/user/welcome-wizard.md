@@ -9,7 +9,7 @@ computer. From home, it adds compatible computers linked to your account and
 opens the app.
 
 Close setup while no import is running to go straight to the app. You can connect
-computers and agents later from Settings, or open `/welcome` to run setup again.
+computers and agents later from Settings, or choose **Run setup again** in **Settings → Maintenance & about** (or open `/welcome`).
 Direct links, such as Settings, open normally before setup is done.
 
 ## Connect your computers

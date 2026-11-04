@@ -16,18 +16,20 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import {
   NAVIGATION_TAB_ICONS,
-  WORKSPACE_TAB_LABELS,
+  NAVIGATION_TAB_LABELS,
   useNavigationTabOrder,
   useHiddenNavigationTabs,
   useEnabledNavigationTabs,
 } from "../workspace/navigation-tabs";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
+import { unsupportedNavigationTabs } from "../workspace/native-tab-support";
 import { resolveWorkspaceTabOrder } from "../workspace/workspace-tabs-state";
 
 export function SettingsNavigationRouteScreen() {
   const insets = useSafeAreaInsets();
-  const order = useNavigationTabOrder();
+  const unsupported = unsupportedNavigationTabs();
+  const order = useNavigationTabOrder().filter((tab) => !unsupported.includes(tab));
   const { layout } = useAdaptiveWorkspaceLayout();
   const capacity = Platform.OS === "android" && layout.usesSplitView ? 5 : 4;
   const hidden = useHiddenNavigationTabs();
@@ -57,7 +59,7 @@ export function SettingsNavigationRouteScreen() {
                 tintColorClassName="accent-icon"
               />
               <View className="flex-1">
-                <Text>{WORKSPACE_TAB_LABELS[tab]}</Text>
+                <Text>{NAVIGATION_TAB_LABELS[tab]}</Text>
                 <Text className="text-xs text-foreground-muted">
                   {hidden.includes(tab)
                     ? "Hidden"
@@ -68,7 +70,7 @@ export function SettingsNavigationRouteScreen() {
               </View>
               <IconButton
                 icon={hidden.includes(tab) ? "eye.slash" : "eye"}
-                accessibilityLabel={`${hidden.includes(tab) ? "Show" : "Hide"} ${WORKSPACE_TAB_LABELS[tab]}`}
+                accessibilityLabel={`${hidden.includes(tab) ? "Show" : "Hide"} ${NAVIGATION_TAB_LABELS[tab]}`}
                 disabled={!ready}
                 onPress={() =>
                   save({
@@ -83,7 +85,7 @@ export function SettingsNavigationRouteScreen() {
               />
               <IconButton
                 icon="arrow.up"
-                accessibilityLabel={`Move ${WORKSPACE_TAB_LABELS[tab]} up`}
+                accessibilityLabel={`Move ${NAVIGATION_TAB_LABELS[tab]} up`}
                 disabled={!ready || index === 0}
                 onPress={() =>
                   save({
@@ -99,7 +101,7 @@ export function SettingsNavigationRouteScreen() {
               />
               <IconButton
                 icon="arrow.down"
-                accessibilityLabel={`Move ${WORKSPACE_TAB_LABELS[tab]} down`}
+                accessibilityLabel={`Move ${NAVIGATION_TAB_LABELS[tab]} down`}
                 disabled={!ready || index === order.length - 1}
                 onPress={() =>
                   save({

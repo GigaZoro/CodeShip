@@ -249,6 +249,7 @@ export const make = Effect.gen(function* () {
       mcpSignInSharing: true,
       autoMode: true,
       lastPickedModel: true,
+      providerSkillCopy: true,
       scheduledTaskDefaultModel: true,
       delegatedTaskModels: true,
       finalReview: true,

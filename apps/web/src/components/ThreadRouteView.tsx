@@ -4,10 +4,11 @@ import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entitie
 import { visibilityParentKey } from "@t3tools/client-runtime/state/threads";
 import * as Option from "effect/Option";
 import { Navigate, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import ChatView from "./ChatView";
 import { SidebarInset } from "./ui/sidebar";
+import { toastManager } from "./ui/toast";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useSidebarPendingFileDropStore } from "../sidebarPendingFileDropStore";
 import {
@@ -110,6 +111,42 @@ export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
     draftThreadExists: draftThread !== null,
   });
   const environmentHasAnyThreads = environmentThreadRefs.length > 0 || environmentHasDraftThreads;
+
+  // A thread that was on screen and then vanished left by the user's own action (delete, archive,
+  // filter), so only a route that never showed the thread explains itself.
+  const shownThreadKeyRef = useRef<string | null>(null);
+  const unavailableNotice =
+    target.kind !== "server" || !bootstrapComplete
+      ? null
+      : hiddenByTagFilter || (offShellBlocked && unlistedThread !== null)
+        ? "hidden"
+        : renderState === "missing"
+          ? "missing"
+          : null;
+  const targetThreadKey = target.kind === "server" ? scopedThreadKey(target.threadRef) : null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- records which thread this route has shown, read when the thread later disappears
+  useEffect(() => {
+    if (
+      targetThreadKey !== null &&
+      serverThreadShell !== null &&
+      serverThreadShell.deletedAt == null
+    ) {
+      shownThreadKeyRef.current = targetThreadKey;
+    }
+  }, [serverThreadShell, targetThreadKey]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the user why the router is about to leave a thread they did not open on purpose
+  useEffect(() => {
+    if (unavailableNotice === null || shownThreadKeyRef.current === targetThreadKey) return;
+    if (unavailableNotice === "missing" && !environmentHasAnyThreads) return;
+    toastManager.add({
+      id: "thread-unavailable",
+      type: "info",
+      title:
+        unavailableNotice === "missing"
+          ? "That thread no longer exists"
+          : "That thread isn't available here",
+    });
+  }, [environmentHasAnyThreads, targetThreadKey, unavailableNotice]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- clears pending file drops and navigates the router home once a server thread is confirmed missing
   useEffect(() => {

@@ -2,7 +2,13 @@ import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowLeftIcon, MessageSquareIcon, SearchIcon, ShapesIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  ListFilterIcon,
+  MessageSquareIcon,
+  SearchIcon,
+  ShapesIcon,
+} from "lucide-react";
 import { useRef, useState } from "react";
 
 import { isElectron } from "../../env";
@@ -23,6 +29,15 @@ import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { RefreshIcon } from "../ui/refresh-icon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import {
+  Menu,
+  MenuGroupLabel,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuSeparator,
+  MenuTrigger,
+} from "../ui/menu";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
 import { ScrollArea } from "../ui/scroll-area";
 import { SidebarInset } from "../ui/sidebar";
@@ -34,6 +49,24 @@ import { type Artifact, artifactKey, useArtifacts } from "./artifactsState";
 export interface ArtifactSelection {
   readonly environmentId: EnvironmentId;
   readonly attachmentId: string;
+}
+
+type ArtifactSort = "newest" | "oldest" | "name";
+const ALL_PROJECTS = "all";
+
+const projectKey = (artifact: Pick<Artifact, "environmentId" | "projectId">) =>
+  `${artifact.environmentId}:${artifact.projectId}`;
+
+function sortArtifacts(artifacts: ReadonlyArray<Artifact>, sort: ArtifactSort) {
+  // The list arrives newest first, so only the other orders need a resort.
+  if (sort === "newest") return artifacts;
+  return artifacts.toSorted((left, right) =>
+    sort === "oldest"
+      ? left.publishedAt.localeCompare(right.publishedAt) ||
+        artifactKey(left).localeCompare(artifactKey(right))
+      : left.title.localeCompare(right.title, undefined, { sensitivity: "base" }) ||
+        artifactKey(left).localeCompare(artifactKey(right)),
+  );
 }
 
 function matchesQuery(artifact: Artifact, query: string) {
@@ -195,11 +228,26 @@ export function ArtifactsPage(props: {
   // Agents publish while the page is open, so returning to it reads the list again.
   useLiveRefresh(refresh, { key: "artifacts", enabled: environmentIds.length > 0 });
   const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<ArtifactSort>("newest");
+  const [project, setProject] = useState(ALL_PROJECTS);
   const listRef = useRef<HTMLUListElement>(null);
   const narrow = useMediaQuery("max-lg");
   const providerEntries = useProviderEntryByEnvironmentAndInstanceId();
   const foldedQuery = query.trim().toLocaleLowerCase();
-  const shown = artifacts.filter((artifact) => matchesQuery(artifact, foldedQuery));
+  const projects = new Map<string, string>();
+  for (const artifact of artifacts)
+    projects.set(projectKey(artifact), artifact.projectTitle || "Untitled project");
+  // A project whose pages all went away would otherwise leave the list empty with no way out.
+  const activeProject = projects.has(project) ? project : ALL_PROJECTS;
+  const shown = sortArtifacts(
+    artifacts.filter(
+      (artifact) =>
+        (activeProject === ALL_PROJECTS || projectKey(artifact) === activeProject) &&
+        matchesQuery(artifact, foldedQuery),
+    ),
+    sort,
+  );
+  const filtersActive = sort !== "newest" || activeProject !== ALL_PROJECTS;
   const labelFor = (environmentId: EnvironmentId) => {
     if (environmentIds.length < 2) return undefined;
     const environment = environments.find((candidate) => candidate.environmentId === environmentId);
@@ -223,8 +271,8 @@ export function ArtifactsPage(props: {
     <div
       className={cn("flex min-h-0 flex-col", narrow ? "flex-1" : "w-80 shrink-0 border-r xl:w-96")}
     >
-      <div className="p-3 pb-2">
-        <InputGroup>
+      <div className="flex items-center gap-2 p-3 pb-2">
+        <InputGroup className="min-w-0 flex-1">
           <InputGroupAddon>
             <SearchIcon aria-hidden />
           </InputGroupAddon>
@@ -246,6 +294,41 @@ export function ArtifactsPage(props: {
             }}
           />
         </InputGroup>
+        <Menu>
+          <MenuTrigger
+            render={<Button size="icon" variant="outline" aria-label="Filter and sort" />}
+          >
+            <ListFilterIcon aria-hidden />
+            {filtersActive ? (
+              <span
+                aria-hidden
+                className="absolute top-1 right-1 size-1.5 rounded-full bg-primary"
+              />
+            ) : null}
+          </MenuTrigger>
+          <MenuPopup align="end" className="w-60">
+            {projects.size > 1 ? (
+              <>
+                <MenuRadioGroup value={activeProject} onValueChange={setProject}>
+                  <MenuGroupLabel>Project</MenuGroupLabel>
+                  <MenuRadioItem value={ALL_PROJECTS}>All projects</MenuRadioItem>
+                  {[...projects].map(([key, title]) => (
+                    <MenuRadioItem key={key} value={key}>
+                      {title}
+                    </MenuRadioItem>
+                  ))}
+                </MenuRadioGroup>
+                <MenuSeparator />
+              </>
+            ) : null}
+            <MenuRadioGroup value={sort} onValueChange={(next) => setSort(next as ArtifactSort)}>
+              <MenuGroupLabel>Sort by</MenuGroupLabel>
+              <MenuRadioItem value="newest">Newest</MenuRadioItem>
+              <MenuRadioItem value="oldest">Oldest</MenuRadioItem>
+              <MenuRadioItem value="name">Name</MenuRadioItem>
+            </MenuRadioGroup>
+          </MenuPopup>
+        </Menu>
       </div>
       {failedLabels.length > 0 ? (
         <Alert variant="error" role="status" className="mx-3 mb-2 w-auto">
@@ -263,7 +346,11 @@ export function ArtifactsPage(props: {
         {artifacts.length === 0 && isLoading ? (
           <ArtifactListSkeleton />
         ) : shown.length === 0 && artifacts.length > 0 ? (
-          <p className="px-5 py-6 text-muted-foreground text-sm">No artifacts match “{query}”.</p>
+          <p className="px-5 py-6 text-muted-foreground text-sm">
+            {foldedQuery === ""
+              ? "No artifacts in this project."
+              : `No artifacts match “${query}”.`}
+          </p>
         ) : (
           <ul
             ref={listRef}

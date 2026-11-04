@@ -148,7 +148,7 @@ export function pendingThreadCreationShell(
     providerInstanceId: message.modelSelection.instanceId,
     modelSelection: message.modelSelection,
     runtimeMode: message.runtimeMode ?? DEFAULT_RUNTIME_MODE,
-    interactionMode: message.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE,
+    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
     branch: creation.branch,
     pullRequests: [],
     worktreePath: creation.workspaceMode === "worktree" ? null : creation.worktreePath,

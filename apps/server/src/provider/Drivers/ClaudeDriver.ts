@@ -542,6 +542,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       enabled,
       auth: auth.controller,
       plugins,
+      personalSkillsDirectory: path.join(configDir, "skills"),
       mcp,
       snapshot,
       invalidateCaches: Cache.invalidateAll(capabilitiesProbeCache),

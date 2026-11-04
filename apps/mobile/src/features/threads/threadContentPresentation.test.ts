@@ -28,4 +28,20 @@ describe("thread content presentation", () => {
       detail: "Reconnect this environment to load the conversation.",
     });
   });
+
+  it("offers a retry when loading the conversation failed", () => {
+    expect(
+      projectThreadContentPresentation({
+        hasDetail: false,
+        detailError: "Could not synchronize the thread.",
+        detailDeleted: false,
+        connectionState: "connected",
+      }),
+    ).toEqual({
+      kind: "unavailable",
+      title: "Could not load conversation",
+      detail: "Could not synchronize the thread.",
+      retryable: true,
+    });
+  });
 });

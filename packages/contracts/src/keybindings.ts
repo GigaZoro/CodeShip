@@ -44,6 +44,8 @@ const THREAD_KEYBINDING_COMMANDS = [
   "thread.sideChat",
   "thread.settle",
   "thread.pin",
+  "thread.snooze",
+  "thread.archive",
   "thread.undo",
   ...THREAD_JUMP_KEYBINDING_COMMANDS,
 ] as const;

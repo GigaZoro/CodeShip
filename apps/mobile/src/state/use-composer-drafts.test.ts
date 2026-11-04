@@ -524,7 +524,6 @@ describe("mobile composer drafts", () => {
     updateComposerDraftSettings(key, {
       modelSelection: pick,
       runtimeMode: "approval-required",
-      interactionMode: "plan",
     });
     const before = getComposerDraftSnapshot(key);
     const remoteKey = `environment-remote:${threadId}`;
@@ -1775,7 +1774,6 @@ describe("mobile composer drafts", () => {
         options: [{ id: "reasoningEffort", value: "xhigh" }],
       },
       runtimeMode: "approval-required",
-      interactionMode: "plan",
       workspaceSelection: {
         mode: "worktree",
         branch: "main",
@@ -2537,24 +2535,25 @@ describe("mobile composer drafts", () => {
 
   it("returns merge-written settings to the snapshot but keeps user-edited ones", () => {
     const draftKey = "environment-1:thread-1";
+    const mergedModel = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" };
+    const editedModel = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.5" };
     const snapshot: ComposerDraft = {
       text: "typed before",
       attachments: [],
       runtimeMode: "approval-required",
-      interactionMode: "default",
     };
     const merged: ComposerDraft = {
       text: "typed before\n\nqueued text",
       attachments: [],
       runtimeMode: "full-access",
-      interactionMode: "default",
+      modelSelection: mergedModel,
     };
 
     const edited: ComposerDraft = {
       text: "typed EDITED before\n\nqueued text",
       attachments: [],
       runtimeMode: "full-access",
-      interactionMode: "plan",
+      modelSelection: editedModel,
     };
 
     expect(undoComposerDraftMergeState({ [draftKey]: edited }, draftKey, snapshot, merged)).toEqual(
@@ -2563,7 +2562,7 @@ describe("mobile composer drafts", () => {
           text: "typed EDITED before",
           attachments: [],
           runtimeMode: "approval-required",
-          interactionMode: "plan",
+          modelSelection: editedModel,
         },
       },
     );

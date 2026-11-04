@@ -22,7 +22,7 @@ Choose **Float device over chat** in the toolbar to keep watching and tapping th
 device in a small window while the right panel shows something else; drag the
 window by its handle, resize it from any edge, and use **Open in right panel**
 to bring it back.
-Turn off **Use devices** in **Settings → Devices** to stop the
+Turn off **Use devices** in **Settings → Browser & devices** to stop the
 helper processes; simulators and emulators keep running until you power them
 off.
 
@@ -86,7 +86,7 @@ once per server. Restart an existing agent session after granting access so it
 receives the device CLI environment.
 
 To keep agents away from simulators, turn off **Agents can use devices** in
-**Settings → Devices**. This hides the device tools from agents
+**Settings → Browser & devices**. This hides the device tools from agents
 started from then on; your own Device panel is unaffected.
 
 ## Remote connections
@@ -98,7 +98,7 @@ still-image stream and Android cannot show video, except on EAS Simulator.
 
 ## SSH device hosts
 
-In Settings → Devices, choose the environments that should use
+In Settings → Browser & devices, choose the environments that should use
 the host and choose **Add source → Machine over SSH**. Enter an SSH alias or `user@host`, with
 an optional identity file and port. These resolve on the environment server,
 so use the SSH configuration and keys available there. Password prompts are
@@ -134,8 +134,8 @@ gateway and workers built from Simlock's `main` at
 [6316e10](https://github.com/callstackincubator/simlock/commit/6316e10) or
 later, the first with a lease holder's screen and input.
 
-Turn on **Settings → Labs → Simlock device hosts (alpha)** and **Use devices**
-in Settings → Devices, then choose **Add source → Simlock pool** with an **agent token**
+Turn on **Settings → Browser & devices → Experimental → Simlock device hosts (alpha)** and **Use devices**
+in Settings → Browser & devices, then choose **Add source → Simlock pool** with an **agent token**
 (`simlock --gateway token create --role agent`). Give each T3 server its own
 token: Simlock counts every lease made with one token against the same
 requester, and allows one at a time unless the gateway's
@@ -162,6 +162,6 @@ localhost; use an address its worker can reach.
 
 ## Device tool updates
 
-The connected T3 server manages the device hub and agent tools on its own machine and configured SSH hosts. Required versions install automatically the next time those tools are used. In Settings → Devices, select a version and choose **Check versions** to read installed versions without installing tools or starting devices.
+The connected T3 server manages the device hub and agent tools on its own machine and configured SSH hosts. Required versions install automatically the next time those tools are used. In Settings → Browser & devices, select a version and choose **Check versions** to read installed versions without installing tools or starting devices.
 
 To receive newer tool versions on a remote environment, update that environment's T3 server. Updating only the browser or mobile app does not update the remote server. An offline host keeps its installed files, but an update needs network access before device support can start; T3 does not fall back to an older version. Reconnect the host and use Retry if installation fails. Existing device and agent-access settings are preserved.

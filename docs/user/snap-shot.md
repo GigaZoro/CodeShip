@@ -10,7 +10,7 @@ Wayland. X11 sessions are not supported.
 
 ## Turning it on
 
-Open **Settings** > **SnapShots** and turn the feature on. Setup has two steps: allow capture, then
+Open **Settings** > **Chat & diffs** > **Window capture** and turn the feature on. Setup has two steps: allow capture, then
 choose a shortcut. Each step shows only what your desktop needs. **Finish later** turns capture back
 off but keeps anything you already installed, so you can resume where you left off.
 

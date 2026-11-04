@@ -8,15 +8,9 @@ import {
   type KeyboardEvent,
 } from "react";
 import {
-  ArchiveIcon,
-  FlaskConicalIcon,
   BotIcon,
-  createLucideIcon,
-  FileDiffIcon,
-  FolderTreeIcon,
   GitBranchIcon,
   GlobeIcon,
-  InfoIcon,
   MessageSquareTextIcon,
   MessagesSquareIcon,
   PanelsTopLeftIcon,
@@ -26,8 +20,6 @@ import {
   SearchIcon,
   ServerIcon,
   Settings2Icon,
-  ShieldCheckIcon,
-  SmartphoneIcon,
   WrenchIcon,
   XIcon,
 } from "lucide-react";
@@ -60,18 +52,6 @@ import { validateSettingsScopeSearch } from "./settingsScope";
 import { useSettingsSectionNavigation } from "./useSettingsSectionNavigation";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
 
-const SnapShotIcon = createLucideIcon("snap-shot", [
-  [
-    "path",
-    {
-      d: "M8 3H6a3 3 0 0 0-3 3v2M16 3h2a3 3 0 0 1 3 3v2M21 16v2a3 3 0 0 1-3 3h-2M8 21H6a3 3 0 0 1-3-3v-2",
-      key: "capture-frame",
-    },
-  ],
-  ["rect", { width: "10", height: "8", x: "7", y: "8", rx: "2", key: "window" }],
-  ["circle", { cx: "12", cy: "12", r: "1.5", key: "lens" }],
-]);
-
 const T3ConnectSidebarSignIn = lazy(() =>
   import("../clerk/T3ConnectSidebarSignIn").then((module) => ({
     default: module.T3ConnectSidebarSignIn,
@@ -90,29 +70,21 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/diagnostics": WrenchIcon,
   "/settings/appearance": PaletteIcon,
   "/settings/chat": MessageSquareTextIcon,
-  "/settings/diffs": FileDiffIcon,
   "/settings/projects": PanelsTopLeftIcon,
   "/settings/keybindings": KeyboardIcon,
-  "/settings/snap-shot": SnapShotIcon,
   "/settings/providers": BotIcon,
   "/settings/threads": MessagesSquareIcon,
   "/settings/browser": GlobeIcon,
-  "/settings/devices": SmartphoneIcon,
   "/settings/source-control": GitBranchIcon,
-  "/settings/worktrees": FolderTreeIcon,
   "/settings/connections": ServerIcon,
-  "/settings/access": ShieldCheckIcon,
   "/settings/secrets": KeyRoundIcon,
   "/settings/maintenance": WrenchIcon,
-  "/settings/labs": FlaskConicalIcon,
-  "/settings/about": InfoIcon,
-  "/settings/archived": ArchiveIcon,
 };
 
 // Detail pages without a nav entry highlight the page that links to them.
 const SETTINGS_DETAIL_PAGE_PARENTS: Readonly<Record<string, SettingsPath>> = {
   "/settings/diagnostics": "/settings/maintenance",
-  "/settings/open-source-licenses": "/settings/about",
+  "/settings/open-source-licenses": "/settings/maintenance",
 };
 
 // Attached only to the highlighted result, so it runs whenever the highlight lands on a row.

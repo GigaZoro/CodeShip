@@ -120,7 +120,6 @@ export function SettingsModelSelectionControl({
           modelOptions={selection.options ?? []}
           allowPromptInjectedEffort={false}
           disabled={readOnly}
-          planModeEnabled={settings.planModeEnabled}
           triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
           onModelOptionsChange={(options) =>
             onChange(withModelSelectionOptions(selection, options))

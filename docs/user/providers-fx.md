@@ -11,7 +11,7 @@ CodeShip can run [fx](https://fx.sh). fx uses the login on the machine that runs
    ```
 
 2. Run `fx login` in a terminal on that machine.
-3. Open **Settings → Providers**, enable fx, and refresh the provider.
+3. Open **Settings → Providers & models**, enable fx, and refresh the provider.
 
 If `fx` is not on the server's `PATH`, set **Binary path** to the executable.
 
@@ -50,7 +50,6 @@ fx doesn't pass on a sub-agent's permission requests, so a sub-agent that needs 
 
 ## Not supported yet
 
-- Plan mode.
 - **Full access**.
 - **Auto-accept edits**.
 - Commit messages, pull request text, branch names, and thread titles. Pick another provider for those.

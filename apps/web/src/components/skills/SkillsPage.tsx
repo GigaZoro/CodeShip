@@ -1,3 +1,4 @@
+import { CopySkillToMachineButton } from "./CopySkillToMachineButton";
 import { connectionMayStillAnswer } from "@t3tools/client-runtime/connection";
 import type { ProviderSkillSourceKind } from "@t3tools/client-runtime/providerSkills";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -5,6 +6,7 @@ import {
   AuthOrchestrationOperateScope,
   type EditorId,
   type EnvironmentId,
+  type ProviderInstanceId,
 } from "@t3tools/contracts";
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -18,18 +20,19 @@ import {
   SearchIcon,
   SparklesIcon,
 } from "lucide-react";
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 import { useOpenInPreferredEditor } from "../../editorPreferences";
-import { isElectron } from "../../env";
 import { useEnvironmentProviderEntries } from "../../hooks/useEnvironmentProviderEntries";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { cn } from "../../lib/utils";
-import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import { useEnvironment, useEnvironments } from "../../state/environments";
 import { useEnvironmentScope } from "../../state/session";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
+import { validateExtensionsSearch } from "../extensions/extensionsSearch";
+import { ProviderName } from "../extensions/ProviderTargets";
 import { SkillSourceBadge, skillSourcePresentation } from "../chat/SkillSourceBadge";
 import { DiffFilePathCopyButton } from "../DiffFilePathCopyButton";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
@@ -54,13 +57,10 @@ import {
 } from "../ui/menu";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { ScrollArea } from "../ui/scroll-area";
-import { SidebarInset } from "../ui/sidebar";
 import { Skeleton } from "../ui/skeleton";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../WorkspaceBreadcrumb";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
-import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import {
   buildSkillsView,
   collectProviderSkills,
@@ -70,7 +70,6 @@ import {
   type SkillRowModel,
   type SkillsSearch,
   type SkillsView,
-  validateSkillsSearch,
 } from "./skillsPage.logic";
 
 const COLLAPSED_AGENTS_KEY = "t3code:skills:collapsed-agents";
@@ -117,11 +116,16 @@ function useOpenSkillFile(environmentId: EnvironmentId): ((path: string) => void
 function SkillRow(props: {
   readonly row: SkillRowModel;
   readonly onOpen: ((path: string) => void) | null;
+  readonly environmentId: EnvironmentId;
+  readonly machineLabel: string;
+  /** Instance ids repeat across machines, so the copy lands in the same agent there. */
+  readonly instanceId: ProviderInstanceId;
 }) {
   const { skill, source, missingOn } = props.row;
   const { onOpen } = props;
   const description = skill.shortDescription ?? skill.description;
   const name = formatProviderSkillDisplayName(skill);
+  const [expanded, setExpanded] = useState(false);
   return (
     <li className="relative flex min-w-0 flex-col gap-1 px-4 py-3">
       {onOpen ? (
@@ -144,6 +148,21 @@ function SkillRow(props: {
         </span>
       ) : null}
       <div className={cn("flex min-w-0 flex-wrap items-center gap-1.5", onOpen && "pe-8")}>
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-label={`${expanded ? "Hide" : "Show"} location of ${name}`}
+          className="-ms-1 flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <ChevronRightIcon
+            aria-hidden
+            className={cn(
+              "size-3.5 transition-transform duration-150 motion-reduce:transition-none",
+              expanded && "rotate-90",
+            )}
+          />
+        </button>
         <span className="min-w-0 truncate font-medium text-sm">{name}</span>
         <SkillSourceBadge kind={source} />
         {skill.enabled ? null : (
@@ -158,19 +177,38 @@ function SkillRow(props: {
         ) : null}
         {missingOn.length > 0 ? (
           <Badge size="sm" variant="warning">
-            Not on {missingOn.join(", ")}
+            Not on {missingOn.map((machine) => machine.label).join(", ")}
           </Badge>
         ) : null}
       </div>
+      {missingOn.length > 0 ? (
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          {missingOn.map((machine) => (
+            <CopySkillToMachineButton
+              key={machine.environmentId}
+              sourceEnvironmentId={props.environmentId}
+              sourceMachineLabel={props.machineLabel}
+              sourceInstanceId={props.instanceId}
+              skillPath={skill.path}
+              skillName={name}
+              targetEnvironmentId={machine.environmentId}
+              targetInstanceId={props.instanceId}
+              targetMachineLabel={machine.label}
+            />
+          ))}
+        </div>
+      ) : null}
       {description ? (
         <p className="line-clamp-2 text-muted-foreground text-xs">{description}</p>
       ) : null}
-      <div className="flex min-w-0 items-center gap-1 text-muted-foreground text-xs">
-        <code className="flex min-w-0 font-mono text-2xs">
-          <MiddleTruncate value={skill.path} />
-        </code>
-        <DiffFilePathCopyButton filePath={skill.path} />
-      </div>
+      {expanded ? (
+        <div className="flex min-w-0 items-center gap-1 text-muted-foreground text-xs">
+          <code className="flex min-w-0 font-mono text-2xs">
+            <MiddleTruncate value={skill.path} />
+          </code>
+          <DiffFilePathCopyButton filePath={skill.path} />
+        </div>
+      ) : null}
     </li>
   );
 }
@@ -180,6 +218,8 @@ function SkillAgentSection(props: {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly onOpenFile: ((path: string) => void) | null;
+  readonly environmentId: EnvironmentId;
+  readonly machineLabel: string;
 }) {
   const { group } = props;
   return (
@@ -201,7 +241,7 @@ function SkillAgentSection(props: {
               acpRegistryIconUrl={group.provider.acpRegistryIconUrl}
               size="compact"
             />
-            <span className="min-w-0 truncate">{group.provider.displayName}</span>
+            <ProviderName provider={group.provider} />
             <span className="text-muted-foreground text-xs tabular-nums">
               {group.skills.length}
             </span>
@@ -211,7 +251,14 @@ function SkillAgentSection(props: {
         <CollapsiblePanel animate={false}>
           <ul className="divide-y rounded-lg border">
             {group.skills.map((row) => (
-              <SkillRow key={row.skill.path} row={row} onOpen={props.onOpenFile} />
+              <SkillRow
+                key={row.skill.path}
+                row={row}
+                onOpen={props.onOpenFile}
+                environmentId={props.environmentId}
+                machineLabel={props.machineLabel}
+                instanceId={group.provider.instanceId}
+              />
             ))}
           </ul>
         </CollapsiblePanel>
@@ -222,6 +269,7 @@ function SkillAgentSection(props: {
 
 function SkillAgentSections(props: {
   readonly environmentId: EnvironmentId;
+  readonly machineLabel: string;
   readonly groups: ReadonlyArray<SkillAgentGroup<ProviderInstanceEntry>>;
   readonly collapsed: ReadonlySet<string>;
   readonly onToggle: (agentKey: string, open: boolean) => void;
@@ -234,6 +282,8 @@ function SkillAgentSections(props: {
       open={!props.collapsed.has(group.key)}
       onOpenChange={(open) => props.onToggle(group.key, open)}
       onOpenFile={openFile}
+      environmentId={props.environmentId}
+      machineLabel={props.machineLabel}
     />
   ));
 }
@@ -296,6 +346,7 @@ function SkillMachineColumnView(props: {
       ) : (
         <SkillAgentSections
           environmentId={column.machine.environmentId}
+          machineLabel={column.machine.label}
           groups={column.groups}
           collapsed={props.collapsed}
           onToggle={props.onToggle}
@@ -348,7 +399,7 @@ function SkillFiltersMenu(props: {
                       acpRegistryIconUrl={provider.acpRegistryIconUrl}
                       size="compact"
                     />
-                    <span className="min-w-0 truncate">{provider.displayName}</span>
+                    <ProviderName provider={provider} />
                   </span>
                 </MenuCheckboxItem>
               ))}
@@ -451,11 +502,12 @@ function SkillFiltersMenu(props: {
   );
 }
 
-export function SkillsPage() {
+/** The Skills tab; its search and filters render in `controlsSlot`, the page header's right side. */
+export function SkillsPanel(props: { readonly controlsSlot: HTMLElement | null }) {
   const machines = useSidebarMachines();
   const providerEntries = useEnvironmentProviderEntries();
-  const search = useSearch({ from: "/_chat/skills" });
-  const navigate = useNavigate({ from: "/skills" });
+  const search = useSearch({ from: "/_chat/extensions" });
+  const navigate = useNavigate({ from: "/extensions" });
   // The field keeps what is typed while focused; the address catches up a moment later.
   const [typedQuery, setTypedQuery] = useState<string | null>(null);
   const query = typedQuery ?? search.q ?? "";
@@ -468,7 +520,7 @@ export function SkillsPage() {
 
   const updateSearch: UpdateSearch = (patch) =>
     void navigate({
-      search: (previous) => validateSkillsSearch({ ...previous, ...patch }),
+      search: (previous) => validateExtensionsSearch({ ...previous, ...patch }),
       replace: true,
       resetScroll: false,
     });
@@ -506,142 +558,125 @@ export function SkillsPage() {
           connectionMayStillAnswer(environment.connection.phase),
       ));
 
-  return (
-    <SidebarInset
-      {...workspaceAreaProps("skills", 1, "Skills")}
-      role="main"
-      className="h-dvh min-h-0 overflow-hidden overscroll-y-none"
-    >
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <WorkspacePageHeader electron={isElectron} className="border-b">
-          <WorkspaceBreadcrumb ariaLabel="Skills breadcrumb" className="min-w-0">
-            <WorkspaceBreadcrumbItem current>
-              <h1>Skills</h1>
-            </WorkspaceBreadcrumbItem>
-          </WorkspaceBreadcrumb>
-          {view.total > 0 ? (
-            <div className="ml-auto flex items-center gap-2">
-              <InputGroup className="w-40 sm:w-56">
-                <InputGroupAddon>
-                  <SearchIcon aria-hidden className="size-3" />
-                </InputGroupAddon>
-                <InputGroupInput
-                  type="search"
-                  aria-label="Search skills"
-                  placeholder={`Search ${view.total} skills`}
-                  size="sm"
-                  value={query}
-                  onFocus={() => setTypedQuery(search.q ?? "")}
-                  onBlur={() => setTypedQuery(null)}
-                  onChange={(event) => {
-                    setTypedQuery(event.currentTarget.value);
-                    updateSearch({ q: event.currentTarget.value });
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Escape" || query.length === 0) return;
-                    event.preventDefault();
-                    setTypedQuery("");
-                    updateSearch({ q: undefined });
-                  }}
-                />
-              </InputGroup>
-              <SkillFiltersMenu
-                view={view}
-                machines={machines}
-                search={search}
-                updateSearch={updateSearch}
+  const controls: ReactNode =
+    view.total > 0 ? (
+      <>
+        <InputGroup className="w-40 sm:w-56">
+          <InputGroupAddon>
+            <SearchIcon aria-hidden className="size-3" />
+          </InputGroupAddon>
+          <InputGroupInput
+            type="search"
+            aria-label="Search skills"
+            placeholder={`Search ${view.total} skills`}
+            size="sm"
+            value={query}
+            onFocus={() => setTypedQuery(search.q ?? "")}
+            onBlur={() => setTypedQuery(null)}
+            onChange={(event) => {
+              setTypedQuery(event.currentTarget.value);
+              updateSearch({ q: event.currentTarget.value });
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape" || query.length === 0) return;
+              event.preventDefault();
+              setTypedQuery("");
+              updateSearch({ q: undefined });
+            }}
+          />
+        </InputGroup>
+        <SkillFiltersMenu
+          view={view}
+          machines={machines}
+          search={search}
+          updateSearch={updateSearch}
+        />
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                size="icon-sm"
+                variant="outline"
+                aria-label={allCollapsed ? "Expand all agents" : "Collapse all agents"}
+                onClick={() =>
+                  setCollapsedAgents(allCollapsed ? [] : view.agents.map((agent) => agent.key))
+                }
               />
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      size="icon-sm"
-                      variant="outline"
-                      aria-label={allCollapsed ? "Expand all agents" : "Collapse all agents"}
-                      onClick={() =>
-                        setCollapsedAgents(
-                          allCollapsed ? [] : view.agents.map((agent) => agent.key),
-                        )
-                      }
-                    />
-                  }
+            }
+          >
+            {allCollapsed ? <ChevronsUpDownIcon aria-hidden /> : <ChevronsDownUpIcon aria-hidden />}
+          </TooltipTrigger>
+          <TooltipPopup side="bottom">{allCollapsed ? "Expand all" : "Collapse all"}</TooltipPopup>
+        </Tooltip>
+      </>
+    ) : null;
+
+  return (
+    <>
+      {controls && props.controlsSlot ? createPortal(controls, props.controlsSlot) : null}
+      {loading ? (
+        <ScrollArea className="min-h-0 flex-1">
+          <WorkspacePageContainer width="wide">
+            <SkillsSkeleton />
+          </WorkspacePageContainer>
+        </ScrollArea>
+      ) : view.total === 0 ? (
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <SparklesIcon />
+            </EmptyMedia>
+            <EmptyTitle>No skills found</EmptyTitle>
+            <EmptyDescription>
+              Skills are folders with a SKILL.md that agents load when a task calls for them.
+              Install one for Claude, Codex, or another agent and it shows up here.
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : (
+        <ScrollArea className="min-h-0 flex-1">
+          <WorkspacePageContainer width={multipleMachines ? "full" : "wide"}>
+            {view.shown === 0 && filtered ? (
+              <div role="status" className="flex flex-col items-center gap-3 py-10 text-center">
+                <p className="text-muted-foreground text-sm">
+                  {query.trim() === ""
+                    ? "No skills match these filters."
+                    : `No skills match “${query.trim()}”.`}
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setTypedQuery(null);
+                    void navigate({ search: {}, replace: true, resetScroll: false });
+                  }}
                 >
-                  {allCollapsed ? (
-                    <ChevronsUpDownIcon aria-hidden />
-                  ) : (
-                    <ChevronsDownUpIcon aria-hidden />
-                  )}
-                </TooltipTrigger>
-                <TooltipPopup side="bottom">
-                  {allCollapsed ? "Expand all" : "Collapse all"}
-                </TooltipPopup>
-              </Tooltip>
-            </div>
-          ) : null}
-        </WorkspacePageHeader>
-        {loading ? (
-          <ScrollArea className="min-h-0 flex-1">
-            <WorkspacePageContainer width="wide">
-              <SkillsSkeleton />
-            </WorkspacePageContainer>
-          </ScrollArea>
-        ) : view.total === 0 ? (
-          <Empty>
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <SparklesIcon />
-              </EmptyMedia>
-              <EmptyTitle>No skills found</EmptyTitle>
-              <EmptyDescription>
-                Skills are folders with a SKILL.md that agents load when a task calls for them.
-                Install one for Claude, Codex, or another agent and it shows up here.
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        ) : (
-          <ScrollArea className="min-h-0 flex-1">
-            <WorkspacePageContainer width={multipleMachines ? "full" : "wide"}>
-              {view.shown === 0 && filtered ? (
-                <div role="status" className="flex flex-col items-center gap-3 py-10 text-center">
-                  <p className="text-muted-foreground text-sm">
-                    {query.trim() === ""
-                      ? "No skills match these filters."
-                      : `No skills match “${query.trim()}”.`}
-                  </p>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      setTypedQuery(null);
-                      void navigate({ search: {}, replace: true, resetScroll: false });
-                    }}
-                  >
-                    Clear search and filters
-                  </Button>
-                </div>
-              ) : multipleMachines ? (
-                <div className="grid grid-cols-[repeat(auto-fit,minmax(min(22rem,100%),1fr))] items-start gap-6">
-                  {view.columns.map((column) => (
-                    <SkillMachineColumnView
-                      key={column.machine.environmentId}
-                      column={column}
-                      collapsed={collapsed}
-                      onToggle={toggleAgent}
-                    />
-                  ))}
-                </div>
-              ) : view.columns[0] ? (
-                <SkillAgentSections
-                  environmentId={view.columns[0].machine.environmentId}
-                  groups={view.columns[0].groups}
-                  collapsed={collapsed}
-                  onToggle={toggleAgent}
-                />
-              ) : null}
-            </WorkspacePageContainer>
-          </ScrollArea>
-        )}
-      </div>
-    </SidebarInset>
+                  Clear search and filters
+                </Button>
+              </div>
+            ) : multipleMachines ? (
+              <div className="grid grid-cols-[repeat(auto-fit,minmax(min(22rem,100%),1fr))] items-start gap-6">
+                {view.columns.map((column) => (
+                  <SkillMachineColumnView
+                    key={column.machine.environmentId}
+                    column={column}
+                    collapsed={collapsed}
+                    onToggle={toggleAgent}
+                  />
+                ))}
+              </div>
+            ) : view.columns[0] ? (
+              <SkillAgentSections
+                environmentId={view.columns[0].machine.environmentId}
+                machineLabel={view.columns[0].machine.label}
+                groups={view.columns[0].groups}
+                collapsed={collapsed}
+                onToggle={toggleAgent}
+              />
+            ) : null}
+          </WorkspacePageContainer>
+        </ScrollArea>
+      )}
+    </>
   );
 }

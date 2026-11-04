@@ -3,7 +3,7 @@
 On web and desktop, open **Settings → Appearance** to choose a theme and follow the system
 appearance or stay in light or dark mode. To use different themes for light and dark mode, select
 the corresponding preview within each theme. Appearance preferences are saved separately on each
-device or browser.
+device or browser. Each Settings page has a **Reset page** button in its header to restore that page's defaults.
 
 On web and desktop, use **Change theme** in the command palette to select a theme without leaving chat.
 Press **Cmd+Option+A** on macOS or **Ctrl+Alt+A** on Windows/Linux to open the theme picker directly.
@@ -21,13 +21,10 @@ Android uses **Material You Layout** by default unless you have turned it off in
 It changes shapes, spacing, and controls independently
 of the selected theme.
 
-## Composer context
+## Branch and machine pickers
 
-Git-backed projects show branch and worktree controls below the composer while you create a thread.
-The controls retreat as the composer docks after you send the first message.
-
-Turn on **Composer context** to keep those controls visible after the thread starts. This preference
-applies to the web and desktop clients.
+Git-backed projects show branch, worktree and machine pickers below the composer until you send a
+new thread's first message. After that, change them in the thread details card.
 
 ## Math
 

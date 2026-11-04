@@ -1,7 +1,7 @@
-import { createFileRoute } from "@tanstack/react-router";
-
-import { McpServersPage } from "../components/mcp/McpServersPage";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/_chat/model-context-servers")({
-  component: McpServersPage,
+  beforeLoad: () => {
+    throw redirect({ to: "/extensions", search: { tab: "mcp" }, replace: true });
+  },
 });

@@ -62,13 +62,15 @@ import {
 } from "@t3tools/contracts";
 import {
   StackActions,
+  useFocusEffect,
   useNavigation,
   type NavigationState,
   type ParamListBase,
 } from "@react-navigation/native";
 import { SymbolView } from "../../components/ui/AppSymbol";
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Platform, Pressable, View } from "react-native";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { BackHandler, Platform, Pressable, View } from "react-native";
+import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
@@ -516,7 +518,8 @@ function SourceControlRow(props: {
       isFirst={props.isFirst}
       onPress={() =>
         navigation.dispatch(
-          StackActions.push("AddProjectRepository", {
+          StackActions.push("AddProjectSetup", {
+            mode: "repository",
             environmentId: props.selectedEnvironmentId,
             source: props.source,
           }),
@@ -617,7 +620,8 @@ export function AddProjectSourceScreen(props: { readonly environmentId?: string 
                 isFirst
                 onPress={() =>
                   navigation.dispatch(
-                    StackActions.push("AddProjectNew", {
+                    StackActions.push("AddProjectSetup", {
+                      mode: "new",
                       environmentId: selectedEnvironment.environmentId,
                     }),
                   )
@@ -643,7 +647,8 @@ export function AddProjectSourceScreen(props: { readonly environmentId?: string 
               disabled={!isConnected || !canCreateProject}
               onPress={() =>
                 navigation.dispatch(
-                  StackActions.push("AddProjectLocal", {
+                  StackActions.push("AddProjectSetup", {
+                    mode: "local",
                     environmentId: selectedEnvironment.environmentId,
                   }),
                 )
@@ -819,14 +824,20 @@ function useEnvironmentFromParam(
   return resolveAddProjectEnvironment(environmentOptions, environmentId);
 }
 
-export function AddProjectRepositoryScreen(props: {
+interface ResolvedRepository {
+  readonly remoteUrl: string;
+  readonly repositoryTitle: string;
+  readonly repositoryName: string;
+}
+
+function AddProjectRepositoryScreen(props: {
   readonly environmentId?: string | string[];
   readonly source?: string | string[];
+  readonly onResolved: (repository: ResolvedRepository) => void;
 }) {
   const lookupRepositoryQuery = useAtomQueryRunner(sourceControlEnvironment.repository, {
     reportFailure: false,
   });
-  const navigation = useNavigation();
   const environment = useEnvironmentFromParam(props.environmentId);
   const source = sourceFromParam(props.source);
   const [repositoryInput, setRepositoryInput] = useState("");
@@ -845,15 +856,11 @@ export function AddProjectRepositoryScreen(props: {
     const provider = addProjectRemoteSourceProvider(source);
     if (!provider) {
       const remoteUrl = normalizePastedCloneUrl(repositoryInput);
-      navigation.dispatch(
-        StackActions.push("AddProjectDestination", {
-          environmentId: environment.environmentId,
-          source,
-          remoteUrl,
-          repositoryTitle: remoteUrl,
-          repositoryName: getCloneDirectoryName(remoteUrl),
-        }),
-      );
+      props.onResolved({
+        remoteUrl,
+        repositoryTitle: remoteUrl,
+        repositoryName: getCloneDirectoryName(remoteUrl),
+      });
       setIsSubmitting(false);
       return;
     }
@@ -869,15 +876,11 @@ export function AddProjectRepositoryScreen(props: {
       setError(errorMessage(Cause.squash(result.cause)));
     } else {
       const repository = result.value;
-      navigation.dispatch(
-        StackActions.push("AddProjectDestination", {
-          environmentId: environment.environmentId,
-          source,
-          remoteUrl: getDefaultCloneUrl(repository),
-          repositoryTitle: repository.nameWithOwner,
-          repositoryName: getCloneDirectoryName(repository.nameWithOwner),
-        }),
-      );
+      props.onResolved({
+        remoteUrl: getDefaultCloneUrl(repository),
+        repositoryTitle: repository.nameWithOwner,
+        repositoryName: getCloneDirectoryName(repository.nameWithOwner),
+      });
     }
     setIsSubmitting(false);
   };
@@ -1363,6 +1366,7 @@ export function AddProjectDestinationScreen(props: {
   readonly repositoryTitle?: string | string[];
   readonly repositoryName?: string | string[];
   readonly prompt?: string | string[];
+  readonly onChangeRepository?: () => void;
 }) {
   const openNewTaskDraft = useOpenNewTaskDraft();
   const startProjectClone = useAtomCommand(sourceControlEnvironment.startProjectClone, {
@@ -1479,6 +1483,16 @@ export function AddProjectDestinationScreen(props: {
           <Text className="mt-0.5 text-xs text-foreground-muted" numberOfLines={2}>
             {remoteUrl}
           </Text>
+          {props.onChangeRepository ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Change repository"
+              className="mt-1 min-h-11 justify-center self-start"
+              onPress={props.onChangeRepository}
+            >
+              <Text className="text-sm font-t3-medium text-foreground-secondary">Change</Text>
+            </Pressable>
+          ) : null}
         </View>
       ) : null}
       {environment ? (
@@ -1508,5 +1522,56 @@ export function AddProjectDestinationScreen(props: {
         <EmptyEnvironmentState />
       )}
     </AddProjectShell>
+  );
+}
+
+/** Clone is one screen: look up the repository, then choose where it goes. */
+export function AddProjectCloneScreen(props: {
+  readonly environmentId?: string | string[];
+  readonly source?: string | string[];
+  readonly remoteUrl?: string | string[];
+  readonly repositoryTitle?: string | string[];
+  readonly repositoryName?: string | string[];
+  readonly prompt?: string | string[];
+}) {
+  const [resolved, setResolved] = useState<ResolvedRepository | null>(null);
+  const remoteUrl = resolved?.remoteUrl ?? stringParam(props.remoteUrl);
+  // Back from a destination chosen here returns to the repository step instead of leaving.
+  useFocusEffect(
+    useCallback(() => {
+      if (!resolved) return undefined;
+      const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+        setResolved(null);
+        return true;
+      });
+      return () => subscription.remove();
+    }, [resolved]),
+  );
+  if (!remoteUrl) {
+    return (
+      <>
+        <NativeStackScreenOptions
+          options={{ title: addProjectRemoteSourceLabel(sourceFromParam(props.source)) }}
+        />
+        <AddProjectRepositoryScreen
+          environmentId={props.environmentId}
+          source={props.source}
+          onResolved={setResolved}
+        />
+      </>
+    );
+  }
+  return (
+    <>
+      <NativeStackScreenOptions options={{ title: "Clone destination" }} />
+      <AddProjectDestinationScreen
+        environmentId={props.environmentId}
+        remoteUrl={remoteUrl}
+        repositoryTitle={resolved?.repositoryTitle ?? props.repositoryTitle}
+        repositoryName={resolved?.repositoryName ?? props.repositoryName}
+        prompt={props.prompt}
+        {...(resolved ? { onChangeRepository: () => setResolved(null) } : {})}
+      />
+    </>
   );
 }

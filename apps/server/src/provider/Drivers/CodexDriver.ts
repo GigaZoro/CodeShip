@@ -495,6 +495,10 @@ export const CodexDriver: ProviderDriver<
       consumeResetCredit,
       auth: auth.controller,
       plugins,
+      personalSkillsDirectory: pathService.join(
+        homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath,
+        "skills",
+      ),
       mcp,
       orchestrationAdapter,
       textGeneration,

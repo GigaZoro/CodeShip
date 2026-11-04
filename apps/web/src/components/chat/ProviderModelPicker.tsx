@@ -25,7 +25,7 @@ import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { ModelEsque, getDisplayModelName, getTriggerDisplayModelName } from "./providerIconUtils";
 import { shouldShowInstanceBadge, type ProviderInstanceEntry } from "../../providerInstances";
 import { ComposerControl, type ComposerControlSize } from "./ComposerControl";
-import { takeOpenTarget, useComposerMenuProps } from "./composerEventScope";
+import { takeOpenToEffort, useComposerMenuProps } from "./composerEventScope";
 import { shortcutLabelForCommand } from "../../keybindings";
 import { serverEnvironment } from "../../state/server";
 
@@ -229,15 +229,6 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     row?.scrollIntoView({ block: "nearest" });
     return row != null;
   };
-  const openTarget = (target: "effort" | "permissions") => {
-    if (target === "effort") {
-      focusEffort("any");
-      return;
-    }
-    popupRef.current
-      ?.querySelector<HTMLButtonElement>("[data-composer-permissions-trigger]")
-      ?.click();
-  };
 
   const handleInstanceModelChange = (instanceId: ProviderInstanceId, model: string) => {
     if (props.disabled) return;
@@ -369,8 +360,8 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         setIsMenuOpen(open);
       }}
       onOpenChangeComplete={(open) => {
-        const target = takeOpenTarget(triggerRef.current);
-        if (open && docked && target) openTarget(target);
+        const toEffort = takeOpenToEffort(triggerRef.current);
+        if (open && docked && toEffort) focusEffort("any");
       }}
     >
       <PopoverTrigger
@@ -389,13 +380,12 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             data-composer-shortcut={props.triggerShortcuts}
             onClick={(event) => {
               if (!isMenuOpen || !docked) return;
-              const target = takeOpenTarget(triggerRef.current);
-              if (!target) return;
+              if (!takeOpenToEffort(triggerRef.current)) return;
               // A shortcut aimed at the open picker moves within it instead of closing it.
               (
                 event as typeof event & { preventBaseUIHandler?: () => void }
               ).preventBaseUIHandler?.();
-              openTarget(target);
+              focusEffort("any");
             }}
             className={cn(
               "min-w-0 shrink justify-between whitespace-nowrap",

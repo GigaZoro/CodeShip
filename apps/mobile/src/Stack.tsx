@@ -76,10 +76,7 @@ import {
 import { McpAppFullscreenScreen } from "./features/threads/McpAppFullscreenScreen";
 import { ConnectionsRouteScreen } from "./features/connection/ConnectionsRouteScreen";
 import { ConnectionsNewRouteScreen } from "./features/connection/ConnectionsNewRouteScreen";
-import { AddProjectDestinationRoute } from "./features/projects/AddProjectDestinationRoute";
-import { AddProjectLocalRoute } from "./features/projects/AddProjectLocalRoute";
-import { AddProjectNewRoute } from "./features/projects/AddProjectNewRoute";
-import { AddProjectRepositoryRoute } from "./features/projects/AddProjectRepositoryRoute";
+import { AddProjectSetupRoute } from "./features/projects/AddProjectSetupRoute";
 import { AddProjectSourceRoute } from "./features/projects/AddProjectSourceRoute";
 import {
   NewTaskBranchPickerRouteScreen,
@@ -96,6 +93,7 @@ import { SettingsNavigationRouteScreen } from "./features/settings/SettingsNavig
 import { SettingsAppearanceRouteScreen } from "./features/settings/SettingsAppearanceRouteScreen";
 import { SettingsClientStorageRouteScreen } from "./features/settings/SettingsClientStorageRouteScreen";
 import { SettingsDiagnosticsRouteScreen } from "./features/diagnostics/SettingsDiagnosticsRouteScreen";
+import { SettingsCapabilitiesRouteScreen } from "./features/settings/SettingsCapabilitiesRouteScreen";
 import { SettingsProviderAccountsRouteScreen } from "./features/settings/SettingsProviderAccountsRouteScreen";
 import { SettingsAuthRouteScreen } from "./features/settings/SettingsAuthRouteScreen";
 import { SettingsEnvironmentDetailRouteScreen } from "./features/settings/SettingsEnvironmentDetailRouteScreen";
@@ -104,7 +102,6 @@ import { SettingsFollowUpRouteScreen } from "./features/settings/SettingsFollowU
 import {
   SettingsEnvironmentMaintenanceRouteScreen,
   SettingsThreadsRouteScreen,
-  SettingsWorktreesRouteScreen,
   SettingsEnvironmentSourceControlRouteScreen,
 } from "./features/settings/SettingsServerControlsRouteScreen";
 import {
@@ -127,10 +124,8 @@ import { SettingsProjectGroupingRouteScreen } from "./features/settings/Settings
 import { SettingsProjectOverviewRouteScreen } from "./features/settings/SettingsProjectOverviewRouteScreen";
 import { UsageLimitAccountScreen } from "./features/usage/UsageLimitsPooled";
 import { UsageRouteScreen } from "./features/usage/UsageRouteScreen";
-import { SettingsAboutRouteScreen } from "./features/settings/SettingsAboutRouteScreen";
 import { SettingsNotificationsRouteScreen } from "./features/settings/SettingsNotificationsRouteScreen";
 import { SettingsRouteScreen } from "./features/settings/SettingsRouteScreen";
-import { SettingsLabsRouteScreen } from "./features/settings/ThreadSettingsSections";
 import { SettingsEnvironmentFilterProvider } from "./features/settings/settings-environment-filter";
 import { openSettings, settingsOpenIn } from "./features/settings/settings-navigation";
 import { DEFAULT_SETTINGS_PAGE } from "./features/workspace/workspace-tab-navigation";
@@ -262,56 +257,41 @@ const SETTINGS_SCREENS = {
     linking: "settings/environments/:environmentId",
     options: { ...SETTINGS_PAGE_OPTIONS, title: "Environment" },
   }),
-  // Old links to New threads and Agent behavior open Threads, which absorbed them.
-  SettingsEnvironmentNewThreads: createNativeStackScreen({
-    screen: SettingsThreadsRouteScreen,
-    linking: "settings/new-threads",
-    options: { ...SETTINGS_PAGE_OPTIONS, title: "Threads" },
-  }),
+  // Worktrees joined Source control; the old link still opens it.
   SettingsEnvironmentSourceControl: createNativeStackScreen({
     screen: SettingsEnvironmentSourceControlRouteScreen,
-    linking: "settings/source-control",
-    options: { ...SETTINGS_PAGE_OPTIONS, title: "Source control" },
-  }),
-  SettingsEnvironmentAgentBehavior: createNativeStackScreen({
-    screen: SettingsThreadsRouteScreen,
-    linking: "settings/agent-behavior",
-    options: { ...SETTINGS_PAGE_OPTIONS, title: "Threads" },
-  }),
-  SettingsWorktrees: createNativeStackScreen({
-    screen: SettingsWorktreesRouteScreen,
-    linking: "settings/worktrees",
-    options: { ...SETTINGS_PAGE_OPTIONS, title: "Worktrees" },
-  }),
-  SettingsLabs: createNativeStackScreen({
-    screen: SettingsLabsRouteScreen,
-    linking: "settings/labs",
-    options: { ...SETTINGS_PAGE_OPTIONS, title: "Labs" },
+    linking: { path: "settings/source-control", alias: ["settings/worktrees"] },
+    options: { ...SETTINGS_PAGE_OPTIONS, title: "Source control & worktrees" },
   }),
   SettingsProviderAccounts: createNativeStackScreen({
     screen: SettingsProviderAccountsRouteScreen,
     linking: "settings/provider-accounts",
     options: { ...SETTINGS_PAGE_OPTIONS, title: "Providers" },
   }),
+  SettingsCapabilities: createNativeStackScreen({
+    screen: SettingsCapabilitiesRouteScreen,
+    linking: "settings/capabilities",
+    options: { ...SETTINGS_PAGE_OPTIONS, title: "Capabilities" },
+  }),
   SettingsEnvironmentMaintenance: createNativeStackScreen({
     screen: SettingsEnvironmentMaintenanceRouteScreen,
-    linking: "settings/maintenance",
-    options: { ...SETTINGS_PAGE_OPTIONS, title: "Maintenance" },
+    // About and Labs joined Maintenance; their old links still open it.
+    linking: { path: "settings/maintenance", alias: ["settings/about", "settings/labs"] },
+    options: { ...SETTINGS_PAGE_OPTIONS, title: "Maintenance & about" },
   }),
   SettingsNotifications: createNativeStackScreen({
     screen: SettingsNotificationsRouteScreen,
     linking: "settings/notifications",
     options: { ...SETTINGS_PAGE_OPTIONS, title: "Notifications" },
   }),
+  // New threads and Agent behavior joined Threads; their old links still open it.
   SettingsThreads: createNativeStackScreen({
     screen: SettingsThreadsRouteScreen,
-    linking: "settings/thread-preferences",
+    linking: {
+      path: "settings/thread-preferences",
+      alias: ["settings/new-threads", "settings/agent-behavior"],
+    },
     options: { ...SETTINGS_PAGE_OPTIONS, title: "Threads" },
-  }),
-  SettingsAbout: createNativeStackScreen({
-    screen: SettingsAboutRouteScreen,
-    linking: "settings/about",
-    options: { ...SETTINGS_PAGE_OPTIONS, title: "About" },
   }),
   SettingsEnvironmentNew: createNativeStackScreen({
     screen: ConnectionsNewRouteScreen,
@@ -319,14 +299,6 @@ const SETTINGS_SCREENS = {
     options: {
       ...SETTINGS_PAGE_OPTIONS,
       title: "Add Environment",
-    },
-  }),
-  SettingsArchive: createNativeStackScreen({
-    screen: ArchivedThreadsRouteScreen,
-    linking: "settings/archive",
-    options: {
-      ...SETTINGS_PAGE_OPTIONS,
-      title: "Archive",
     },
   }),
   SettingsNavigation: createNativeStackScreen({
@@ -342,17 +314,9 @@ const SETTINGS_SCREENS = {
       title: "Appearance",
     },
   }),
-  SettingsProjectGrouping: createNativeStackScreen({
-    screen: SettingsProjectGroupingRouteScreen,
-    linking: "settings/project-grouping",
-    options: {
-      ...SETTINGS_PAGE_OPTIONS,
-      title: "General",
-    },
-  }),
   SettingsOrganization: createNativeStackScreen({
     screen: SettingsProjectGroupingRouteScreen,
-    linking: "settings/organization",
+    linking: { path: "settings/organization", alias: ["settings/project-grouping"] },
     options: {
       ...SETTINGS_PAGE_OPTIONS,
       title: "General",
@@ -756,24 +720,10 @@ const RootStackConfig = createWorkspaceStackNavigator({
         title: "Add project",
       },
     }),
-    AddProjectRepository: createNativeStackScreen({
-      linking: "new/add-project/repository",
-      screen: AddProjectRepositoryRoute,
-      options: GLASS_HEADER_OPTIONS,
-    }),
-    AddProjectDestination: createNativeStackScreen({
-      linking: "new/add-project/destination",
-      screen: AddProjectDestinationRoute,
-      options: GLASS_HEADER_OPTIONS,
-    }),
-    AddProjectLocal: createNativeStackScreen({
-      linking: "new/add-project/local",
-      screen: AddProjectLocalRoute,
-      options: GLASS_HEADER_OPTIONS,
-    }),
-    AddProjectNew: createNativeStackScreen({
-      linking: "new/add-project/new",
-      screen: AddProjectNewRoute,
+    // Every step after choosing a source: `mode` is "local", "new", or the clone flow.
+    AddProjectSetup: createNativeStackScreen({
+      linking: "new/add-project/:mode",
+      screen: AddProjectSetupRoute,
       options: GLASS_HEADER_OPTIONS,
     }),
     NewTaskFiles: createNativeStackScreen({
@@ -973,6 +923,16 @@ const RootStackConfig = createWorkspaceStackNavigator({
         ...HORIZONTAL_FORM_SHEET_OPTIONS,
         sheetAllowedDetents: [0.55, 0.7],
         sheetGrabberVisible: true,
+      },
+    }),
+    // Archived threads are a detail of the current tab, not a Settings page; the old Settings
+    // link still opens them.
+    Archive: createNativeStackScreen({
+      screen: ArchivedThreadsRouteScreen,
+      linking: { path: "archive", alias: ["settings/archive"] },
+      options: {
+        ...SETTINGS_PAGE_OPTIONS,
+        title: "Archive",
       },
     }),
     ...SETTINGS_SCREENS,

@@ -319,11 +319,14 @@ const correlateSnapshotWithSource = (
       ),
     );
   }
-  if (!source.supportsPlugins && !source.supportsMcpServers) return Effect.succeed(snapshot);
+  if (!source.supportsPlugins && !source.supportsMcpServers && !source.supportsSkillInstall) {
+    return Effect.succeed(snapshot);
+  }
   return Effect.succeed({
     ...snapshot,
     ...(source.supportsPlugins ? { supportsPlugins: true } : {}),
     ...(source.supportsMcpServers ? { supportsMcpServers: true } : {}),
+    ...(source.supportsSkillInstall ? { supportsSkillInstall: true } : {}),
   });
 };
 
@@ -340,6 +343,7 @@ const buildSnapshotSource = (instance: ProviderInstance): ProviderSnapshotSource
   streamChanges: instance.snapshot.streamChanges,
   supportsPlugins: instance.plugins !== undefined,
   supportsMcpServers: instance.mcp !== undefined,
+  supportsSkillInstall: instance.personalSkillsDirectory !== undefined,
 });
 
 export const layer = Layer.effect(

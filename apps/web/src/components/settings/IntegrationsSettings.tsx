@@ -117,12 +117,12 @@ import {
 } from "~/hooks/useSettings";
 
 import {
-  SettingsUnavailableGroup,
   SettingResetButton,
   SettingsPageContainer,
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
+import { SimlockHostsRow } from "./OptInFeatureRows";
 import { searchableSetting } from "./settingsSearch";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { useSettingsScope } from "./SettingsScopeContext";
@@ -325,7 +325,7 @@ const rotateViewport = (
   height: viewport.width,
 });
 
-function BrowserViewportSetting({ disabled }: { readonly disabled: boolean }) {
+function BrowserViewportSetting() {
   const viewport = useClientSettings((settings) => settings.browserDefaultViewport);
   const updateSettings = useUpdatePrimarySettings();
 
@@ -376,7 +376,7 @@ function BrowserViewportSetting({ disabled }: { readonly disabled: boolean }) {
       {...searchableSetting("browser-default-viewport")}
       description="Tab size for you and agents. Fill fits the panel; other sizes show the device toolbar."
       resetAction={
-        !disabled && viewport._tag !== DEFAULT_BROWSER_VIEWPORT._tag ? (
+        viewport._tag !== DEFAULT_BROWSER_VIEWPORT._tag ? (
           <SettingResetButton
             label="default browser viewport"
             onClick={() => updateSettings({ browserDefaultViewport: DEFAULT_BROWSER_VIEWPORT })}
@@ -385,11 +385,7 @@ function BrowserViewportSetting({ disabled }: { readonly disabled: boolean }) {
       }
       control={
         <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
-          <Select
-            value={viewportSelectValue(viewport)}
-            onValueChange={selectViewport}
-            disabled={disabled}
-          >
+          <Select value={viewportSelectValue(viewport)} onValueChange={selectViewport}>
             <SelectTrigger
               size="sm"
               className="w-full min-w-0 sm:w-44"
@@ -422,7 +418,6 @@ function BrowserViewportSetting({ disabled }: { readonly disabled: boolean }) {
                 value={presentedSize.width}
                 min={PREVIEW_VIEWPORT_MIN_DIMENSION}
                 max={PREVIEW_VIEWPORT_MAX_DIMENSION}
-                disabled={disabled}
                 format={NO_GROUPING}
                 size="sm"
                 className="w-20"
@@ -437,7 +432,6 @@ function BrowserViewportSetting({ disabled }: { readonly disabled: boolean }) {
                 value={presentedSize.height}
                 min={PREVIEW_VIEWPORT_MIN_DIMENSION}
                 max={PREVIEW_VIEWPORT_MAX_DIMENSION}
-                disabled={disabled}
                 format={NO_GROUPING}
                 size="sm"
                 className="w-20"
@@ -453,7 +447,6 @@ function BrowserViewportSetting({ disabled }: { readonly disabled: boolean }) {
                     <Button
                       size="icon-sm"
                       variant="ghost-muted"
-                      disabled={disabled}
                       aria-label={`Rotate to ${
                         presentedSize.height >= presentedSize.width ? "landscape" : "portrait"
                       }`}
@@ -475,7 +468,7 @@ function BrowserViewportSetting({ disabled }: { readonly disabled: boolean }) {
   );
 }
 
-function BrowserZoomSetting({ disabled }: { readonly disabled: boolean }) {
+function BrowserZoomSetting() {
   const zoomFactor = useClientSettings((settings) => settings.browserDefaultZoomFactor);
   const updateSettings = useUpdatePrimarySettings();
 
@@ -484,7 +477,7 @@ function BrowserZoomSetting({ disabled }: { readonly disabled: boolean }) {
       {...searchableSetting("browser-default-zoom")}
       description="Page zoom applied to new browser tabs."
       resetAction={
-        !disabled && zoomFactor !== DEFAULT_PREVIEW_ZOOM_FACTOR ? (
+        zoomFactor !== DEFAULT_PREVIEW_ZOOM_FACTOR ? (
           <SettingResetButton
             label="default browser zoom"
             onClick={() =>
@@ -495,7 +488,6 @@ function BrowserZoomSetting({ disabled }: { readonly disabled: boolean }) {
       }
       control={
         <Select
-          disabled={disabled}
           value={String(zoomFactor)}
           onValueChange={(value) => {
             const next = PREVIEW_ZOOM_LEVELS.find((level) => String(level) === value);
@@ -518,7 +510,7 @@ function BrowserZoomSetting({ disabled }: { readonly disabled: boolean }) {
   );
 }
 
-function BrowserAppearanceSetting({ disabled }: { readonly disabled: boolean }) {
+function BrowserAppearanceSetting() {
   const appearance = useClientSettings((settings) => settings.browserDefaultAppearance);
   const updateSettings = useUpdatePrimarySettings();
 
@@ -527,7 +519,7 @@ function BrowserAppearanceSetting({ disabled }: { readonly disabled: boolean }) 
       {...searchableSetting("browser-default-appearance")}
       description="The color scheme pages are told to prefer. System follows your OS setting."
       resetAction={
-        !disabled && appearance !== DEFAULT_PREVIEW_APPEARANCE ? (
+        appearance !== DEFAULT_PREVIEW_APPEARANCE ? (
           <SettingResetButton
             label="default browser appearance"
             onClick={() => updateSettings({ browserDefaultAppearance: DEFAULT_PREVIEW_APPEARANCE })}
@@ -536,7 +528,6 @@ function BrowserAppearanceSetting({ disabled }: { readonly disabled: boolean }) 
       }
       control={
         <Select
-          disabled={disabled}
           value={appearance}
           onValueChange={(value) => {
             if (value === "system" || value === "light" || value === "dark") {
@@ -564,7 +555,7 @@ function BrowserAppearanceSetting({ disabled }: { readonly disabled: boolean }) 
   );
 }
 
-function BrowserRecordingInputSettings({ disabled }: { readonly disabled: boolean }) {
+function BrowserRecordingInputSettings() {
   const showKeys = useClientSettings((settings) => settings.browserRecordingShowKeyPresses);
   const showMouse = useClientSettings((settings) => settings.browserRecordingShowMousePresses);
   const updateSettings = useUpdatePrimarySettings();
@@ -575,7 +566,6 @@ function BrowserRecordingInputSettings({ disabled }: { readonly disabled: boolea
         description="Show pressed keys and shortcuts in new recordings. Password fields are excluded."
         control={
           <Switch
-            disabled={disabled}
             checked={showKeys}
             aria-label="Show key presses in recordings"
             onCheckedChange={(checked) =>
@@ -589,7 +579,6 @@ function BrowserRecordingInputSettings({ disabled }: { readonly disabled: boolea
         description="Highlight mouse presses and held buttons in new recordings."
         control={
           <Switch
-            disabled={disabled}
             checked={showMouse}
             aria-label="Show mouse presses in recordings"
             onCheckedChange={(checked) =>
@@ -602,7 +591,7 @@ function BrowserRecordingInputSettings({ disabled }: { readonly disabled: boolea
   );
 }
 
-function BrowserRecordingFrameRateSetting({ disabled }: { readonly disabled: boolean }) {
+function BrowserRecordingFrameRateSetting() {
   const frameRate = useClientSettings((settings) => settings.browserRecordingFrameRate);
   const updateSettings = useUpdatePrimarySettings();
 
@@ -611,7 +600,7 @@ function BrowserRecordingFrameRateSetting({ disabled }: { readonly disabled: boo
       {...searchableSetting("browser-recording-frame-rate")}
       description="Maximum recording rate. 30 fps saves CPU and storage; 60 fps is smoother."
       resetAction={
-        !disabled && frameRate !== DEFAULT_BROWSER_RECORDING_FRAME_RATE ? (
+        frameRate !== DEFAULT_BROWSER_RECORDING_FRAME_RATE ? (
           <SettingResetButton
             label="browser recording frame rate"
             onClick={() =>
@@ -622,7 +611,6 @@ function BrowserRecordingFrameRateSetting({ disabled }: { readonly disabled: boo
       }
       control={
         <Select
-          disabled={disabled}
           value={String(frameRate)}
           onValueChange={(value) => {
             const next = BROWSER_RECORDING_FRAME_RATES.find((rate) => String(rate) === value);
@@ -656,7 +644,7 @@ const LINK_TARGET_LABELS: Readonly<Record<BrowserLinkTarget, string>> = {
   app: "CodeShip",
 };
 
-function BrowserLinkTargetSetting({ disabled }: { readonly disabled: boolean }) {
+function BrowserLinkTargetSetting() {
   const linkTarget = useClientSettings((settings) => settings.browserLinkTarget);
   const updateSettings = useUpdatePrimarySettings();
 
@@ -665,7 +653,7 @@ function BrowserLinkTargetSetting({ disabled }: { readonly disabled: boolean }) 
       {...searchableSetting("browser-link-target")}
       description="Where links in the chat and terminal open. Hold ⌘ or Ctrl while clicking a link to open it in your default browser either way."
       resetAction={
-        !disabled && linkTarget !== DEFAULT_BROWSER_LINK_TARGET ? (
+        linkTarget !== DEFAULT_BROWSER_LINK_TARGET ? (
           <SettingResetButton
             label="link target"
             onClick={() => updateSettings({ browserLinkTarget: DEFAULT_BROWSER_LINK_TARGET })}
@@ -674,7 +662,6 @@ function BrowserLinkTargetSetting({ disabled }: { readonly disabled: boolean }) 
       }
       control={
         <Select
-          disabled={disabled}
           value={linkTarget}
           onValueChange={(value) => {
             if (value === "system" || value === "app") {
@@ -834,6 +821,9 @@ function DeviceIntegrationSettings() {
         supportsEas={state.supportsEasHosts === true}
         supportsSimlock={state.supportsSimlockHosts === true}
       />
+      <SettingsSection id="device-experiments" title="Experimental">
+        <SimlockHostsRow />
+      </SettingsSection>
     </>
   );
 }
@@ -1078,7 +1068,7 @@ function AgentBrowserAccessSetting() {
   );
 }
 
-function BrowserAutoShowFloatingPreviewSetting({ disabled }: { readonly disabled: boolean }) {
+function BrowserAutoShowFloatingPreviewSetting() {
   const autoShow = useClientSettings((settings) => settings.browserAutoShowFloatingPreview);
   const updateSettings = useUpdatePrimarySettings();
 
@@ -1087,7 +1077,7 @@ function BrowserAutoShowFloatingPreviewSetting({ disabled }: { readonly disabled
       {...searchableSetting("browser-auto-show-floating-preview")}
       description="Show the floating preview when an agent opens a browser or device unless the agent says otherwise."
       resetAction={
-        !disabled && autoShow !== DEFAULT_BROWSER_AUTO_SHOW_FLOATING_PREVIEW ? (
+        autoShow !== DEFAULT_BROWSER_AUTO_SHOW_FLOATING_PREVIEW ? (
           <SettingResetButton
             label="auto-show floating preview"
             onClick={() =>
@@ -1100,7 +1090,6 @@ function BrowserAutoShowFloatingPreviewSetting({ disabled }: { readonly disabled
       }
       control={
         <Switch
-          disabled={disabled}
           checked={autoShow}
           onCheckedChange={(checked) =>
             updateSettings({ browserAutoShowFloatingPreview: Boolean(checked) })
@@ -1112,7 +1101,7 @@ function BrowserAutoShowFloatingPreviewSetting({ disabled }: { readonly disabled
   );
 }
 
-function BrowserProfilesSetting({ disabled }: { readonly disabled: boolean }) {
+function BrowserProfilesSetting() {
   const userProfiles = useClientSettings((settings) => settings.browserProfiles);
   const defaultProfileId = useClientSettings((settings) => settings.browserDefaultProfileId);
   const settingsHydrated = useClientSettingsHydrated();
@@ -1158,7 +1147,7 @@ function BrowserProfilesSetting({ disabled }: { readonly disabled: boolean }) {
   );
   const importInFlightRef = useRef(false);
   const [importInFlight, setImportInFlight] = useState(false);
-  const profileWritesDisabled = disabled || !settingsHydrated;
+  const profileWritesDisabled = !settingsHydrated;
 
   const profiles = resolveBrowserProfiles(userProfiles);
   const listedProfiles = profiles.filter((profile) => profile.kind !== "incognito");
@@ -1584,7 +1573,7 @@ function BrowserProfilesSetting({ disabled }: { readonly disabled: boolean }) {
   );
 }
 
-function BrowserAssistantsSetting({ disabled }: { readonly disabled: boolean }) {
+function BrowserAssistantsSetting() {
   const settingsHydrated = useClientSettingsHydrated();
   const updateSettings = useUpdatePrimarySettings();
   const assistants = useBrowserAssistants();
@@ -1593,7 +1582,7 @@ function BrowserAssistantsSetting({ disabled }: { readonly disabled: boolean }) 
       (profile) => profile.kind !== "incognito",
     ),
   );
-  const writesDisabled = disabled || !settingsHydrated;
+  const writesDisabled = !settingsHydrated;
   const added = new Set(assistants.map(browserAssistantKey));
 
   // Read live settings so a second click before rerender cannot add a duplicate.
@@ -1699,50 +1688,42 @@ function BrowserAssistantsSetting({ disabled }: { readonly disabled: boolean }) 
 }
 
 export function BrowserSettingsPanel() {
-  const desktopOnly = !isElectron;
-  const desktopOnlyMessage = desktopOnly ? "Only available in the desktop app." : undefined;
-
   return (
     <SettingsPageContainer>
       <SettingsSection id="browser-agent-access" title="Agent access">
         <AgentBrowserAccessSetting />
       </SettingsSection>
       <SettingsSection id="browser" title="Browsing">
-        <SettingsUnavailableGroup message={desktopOnlyMessage}>
-          <BrowserProfilesSetting disabled={desktopOnly} />
-          <BrowserAssistantsSetting disabled={desktopOnly} />
-          <BrowserLinkTargetSetting disabled={desktopOnly} />
-          <BrowserAutoShowFloatingPreviewSetting disabled={desktopOnly} />
-        </SettingsUnavailableGroup>
-        {/* Not desktop-only: web clients search from server-run browser tabs too. */}
+        {/* The built-in browser runs in the desktop app; web clients only search from server-run tabs. */}
+        {isElectron ? (
+          <>
+            <BrowserProfilesSetting />
+            <BrowserAssistantsSetting />
+            <BrowserLinkTargetSetting />
+            <BrowserAutoShowFloatingPreviewSetting />
+          </>
+        ) : null}
         <BrowserSearchEngineSetting />
-        <AdvancedSettings
-          targetIds={[
-            searchableSetting("browser-default-viewport").id,
-            searchableSetting("browser-default-zoom").id,
-            searchableSetting("browser-default-appearance").id,
-          ]}
-        >
-          <SettingsUnavailableGroup message={desktopOnlyMessage}>
-            <BrowserViewportSetting disabled={desktopOnly} />
-            <BrowserZoomSetting disabled={desktopOnly} />
-            <BrowserAppearanceSetting disabled={desktopOnly} />
-          </SettingsUnavailableGroup>
-        </AdvancedSettings>
+        {isElectron ? (
+          <AdvancedSettings
+            targetIds={[
+              searchableSetting("browser-default-viewport").id,
+              searchableSetting("browser-default-zoom").id,
+              searchableSetting("browser-default-appearance").id,
+            ]}
+          >
+            <BrowserViewportSetting />
+            <BrowserZoomSetting />
+            <BrowserAppearanceSetting />
+          </AdvancedSettings>
+        ) : null}
       </SettingsSection>
-      <SettingsSection id="browser-recordings" title="Recordings">
-        <SettingsUnavailableGroup message={desktopOnlyMessage}>
-          <BrowserRecordingFrameRateSetting disabled={desktopOnly} />
-          <BrowserRecordingInputSettings disabled={desktopOnly} />
-        </SettingsUnavailableGroup>
-      </SettingsSection>
-    </SettingsPageContainer>
-  );
-}
-
-export function DevicesSettingsPanel() {
-  return (
-    <SettingsPageContainer>
+      {isElectron ? (
+        <SettingsSection id="browser-recordings" title="Recordings">
+          <BrowserRecordingFrameRateSetting />
+          <BrowserRecordingInputSettings />
+        </SettingsSection>
+      ) : null}
       <DeviceIntegrationSettings />
     </SettingsPageContainer>
   );

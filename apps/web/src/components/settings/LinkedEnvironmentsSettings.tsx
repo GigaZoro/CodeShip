@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import { linkRequestFailureMessage } from "@t3tools/client-runtime/link-request";
 import {
@@ -53,10 +54,13 @@ export function LinkedEnvironmentsSettings({
   environmentId,
   environmentLabel,
   isSearchTarget,
+  leading,
 }: {
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string | null;
   readonly isSearchTarget: boolean;
+  /** Rows shown above the link list, such as the switch that allows links at all. */
+  readonly leading?: ReactNode;
 }) {
   const links = useEnvironmentQuery(peerLinkEnvironment.list({ environmentId, input: {} }));
   const canLink = useAtomValue(peerLinkEnvironment.link.permissionAtom(environmentId));
@@ -67,6 +71,7 @@ export function LinkedEnvironmentsSettings({
       title={environmentLabel === null ? search.title : `${search.title} · ${environmentLabel}`}
       headerAction={canLink ? <LinkEnvironmentAction environmentId={environmentId} /> : null}
     >
+      {leading}
       {links.error ? (
         <SettingsRow title="Could not load linked environments" description={links.error} />
       ) : !links.data ? (

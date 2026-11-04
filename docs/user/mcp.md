@@ -1,14 +1,14 @@
 # MCP servers
 
 MCP servers give Claude and Codex tools from other apps and services, such as an issue tracker or a
-documentation search. Open **MCP servers** in the sidebar rail, or **Open MCP servers** from the
+documentation search. Open **Extensions** in the sidebar rail and choose the **MCP servers** tab, or **Open MCP servers** from the
 command palette, to see each provider's servers, add new ones, sign in to them, and remove them.
 With more than one account or machine, pick which one to manage at the top of the page. Claude and
 Codex accounts on the same machine share their servers, so adding or removing a server on one
 changes it on the others, unless you gave an account its own config directory. They share
 sign-ins too: signing in to a server, or out of one, on one account does it on the others. To have
 each added Claude or Codex account sign in on its own, turn off **Share MCP sign-ins** in
-**Settings > Providers**. Antigravity accounts all load the servers in
+**Settings > Providers & models**. Antigravity accounts all load the servers in
 `~/.gemini/config/mcp_config.json`.
 
 New sessions load your changes. To use them in a thread that is already running, choose **Restart
@@ -42,7 +42,7 @@ it.
 
 - Servers marked **Plugin**, **claude.ai**, **Managed**, or **Built in** come from a plugin, your
   claude.ai connectors, your organization, or the provider itself. Manage plugins on the Plugins
-  page and connectors on claude.ai.
+  tab and connectors on claude.ai.
 - A plugin server marked **Not set up** has no address. Some Claude plugins, such as Anthropic's
   `engineering`, leave Gmail and Google Calendar blank for claude.ai to fill. Choose **Connect on
   claude.ai**, connect them there, and they appear here as **claude.ai** servers.

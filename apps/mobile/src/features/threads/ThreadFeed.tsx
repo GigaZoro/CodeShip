@@ -288,7 +288,7 @@ import {
   ThreadMarkdownImageUnavailable,
   ThreadMarkdownImageView,
 } from "./ThreadMarkdownImage";
-import { openSettings } from "../settings/settings-navigation";
+import { useOpenScheduledTasks } from "../workspace/useOpenScheduledTasks";
 import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
 
 const WIDE_MARKDOWN_BLOCK_OPTIONS = {
@@ -360,6 +360,8 @@ export interface ThreadFeedProps {
   readonly feed: ReadonlyArray<ThreadFeedEntry>;
   readonly pendingHandoff?: HandoffEndpoints | null;
   readonly contentPresentation: ThreadContentPresentation;
+  /** Retries loading the conversation when its presentation is a retryable failure. */
+  readonly onRetryContent?: () => void;
   readonly latestRun: ThreadFeedLatestRun | null;
   readonly activeWorkStartedAt: string | null;
   readonly runlessWorkActive?: boolean;
@@ -1506,7 +1508,7 @@ function ThreadAutomationMessageRow(props: {
   readonly linkHandlers: MarkdownLinkHandlers;
   readonly renderImage: MarkdownImageRenderer;
 }) {
-  const navigation = useNavigation();
+  const openScheduledTasks = useOpenScheduledTasks();
   const tasks = useEnvironmentQuery(
     props.scheduledTaskId
       ? serverEnvironment.scheduledTasksLive({ environmentId: props.environmentId, input: {} })
@@ -1577,11 +1579,7 @@ function ThreadAutomationMessageRow(props: {
       {props.expanded ? (
         <View className="mt-1 flex-row items-center justify-end gap-2 pr-0.5">
           {props.scheduledTaskId ? (
-            <Pressable
-              accessibilityRole="link"
-              hitSlop={6}
-              onPress={() => openSettings(navigation, "SettingsScheduledTasks")}
-            >
+            <Pressable accessibilityRole="link" hitSlop={6} onPress={() => openScheduledTasks()}>
               <Text className="font-t3-medium text-xs text-foreground-secondary">
                 Open automation
               </Text>
@@ -2598,6 +2596,7 @@ function ThreadFeedPlaceholder(props: {
   readonly horizontalPadding: number;
   readonly title: string;
   readonly topInset: number;
+  readonly onRetry?: () => void;
 }) {
   return (
     <View
@@ -2616,6 +2615,11 @@ function ThreadFeedPlaceholder(props: {
         <Text className="text-center text-sm leading-normal text-foreground-secondary">
           {props.detail}
         </Text>
+        {props.onRetry ? (
+          <View className="mt-3">
+            <Button tone="primary" label="Retry" onPress={props.onRetry} />
+          </View>
+        ) : null}
       </View>
     </View>
   );
@@ -3730,6 +3734,9 @@ export const ThreadFeed = memo(function ThreadFeed({
       <ThreadFeedPlaceholder
         title={props.contentPresentation.title}
         detail={props.contentPresentation.detail}
+        {...(props.contentPresentation.retryable && props.onRetryContent
+          ? { onRetry: props.onRetryContent }
+          : {})}
         topInset={topContentInset}
         bottomInset={bottomContentInset}
         horizontalPadding={horizontalPadding}

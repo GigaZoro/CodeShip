@@ -1,12 +1,5 @@
-import { connectionMayStillAnswer } from "@t3tools/client-runtime/connection";
-import {
-  isAtomCommandInterrupted,
-  squashAtomCommandFailure,
-  type AtomCommandResult,
-} from "@t3tools/client-runtime/state/runtime";
 import {
   PROVIDER_PLUGINS_PAGE_SIZE,
-  type EnvironmentId,
   type ProviderPlugin,
   type ProviderPluginsListResult,
 } from "@t3tools/contracts";
@@ -14,18 +7,19 @@ import { useAtomValue } from "@effect/atom-react";
 import { BlocksIcon, PlusIcon, RefreshCwIcon, SearchIcon, Trash2Icon } from "lucide-react";
 import { useId, useState, type FormEvent, type ReactNode } from "react";
 
-import { isElectron } from "../../env";
 import { useDeadlinePassed } from "../../hooks/useDeadline";
-import { useEnvironmentProviderEntries } from "../../hooks/useEnvironmentProviderEntries";
-import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import { readLocalApi } from "../../localApi";
-import type { ProviderInstanceEntry } from "../../providerInstances";
-import { useEnvironments } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
-import { settingsScopeEnvironmentLabel } from "../settings/settingsScopeAxis";
+import { uniquePluginsById } from "./pluginsPage.logic";
+import { failureMessage, reportFailure } from "../extensions/commandFailure";
+import {
+  ProviderListSkeleton,
+  ProviderTargetToggle,
+  useProviderTargets,
+  type ProviderTarget,
+} from "../extensions/ProviderTargets";
 import { Alert, AlertDescription } from "../ui/alert";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -43,39 +37,16 @@ import { Input } from "../ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
 import { Label } from "../ui/label";
 import { ScrollArea } from "../ui/scroll-area";
-import { SidebarInset } from "../ui/sidebar";
-import { Skeleton } from "../ui/skeleton";
 import { Spinner } from "../ui/spinner";
 import { Switch } from "../ui/switch";
 import { toastManager } from "../ui/toast";
-import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../WorkspaceBreadcrumb";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
-import { WorkspacePageHeader } from "../WorkspacePageHeader";
 
 const SEARCH_DEBOUNCE_MS = 300;
 const installCountFormat = new Intl.NumberFormat(undefined, { notation: "compact" });
 
-interface PluginTarget {
-  readonly key: string;
-  readonly environmentId: EnvironmentId;
-  readonly provider: ProviderInstanceEntry;
-  readonly label: string;
-}
-
-function failureMessage(result: AtomCommandResult<unknown, unknown>): string | null {
-  if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return null;
-  const error = squashAtomCommandFailure(result);
-  return error instanceof Error && error.message.trim()
-    ? error.message
-    : "The provider could not finish the change.";
-}
-
-function reportFailure(title: string, result: AtomCommandResult<unknown, unknown>) {
-  const description = failureMessage(result);
-  if (description !== null) toastManager.add({ type: "error", title, description });
-}
+const FAILURE_FALLBACK = "The provider could not finish the change.";
 
 const pluginLabel = (plugin: ProviderPlugin) => plugin.displayName ?? plugin.name;
 
@@ -116,21 +87,8 @@ function PluginRow(props: {
   );
 }
 
-function PluginListSkeleton() {
-  return (
-    <div role="status" aria-label="Loading plugins" className="divide-y rounded-lg border">
-      {[0, 1, 2].map((row) => (
-        <div key={row} className="flex flex-col gap-2 px-4 py-3">
-          <Skeleton className="h-4 w-40" />
-          <Skeleton className="h-3 w-3/4" />
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function AddMarketplaceDialog(props: {
-  readonly target: PluginTarget;
+  readonly target: ProviderTarget;
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly onAdded: () => void;
@@ -175,7 +133,7 @@ function AddMarketplaceDialog(props: {
       props.onAdded();
       return;
     }
-    setError(failureMessage(result));
+    setError(failureMessage(result, FAILURE_FALLBACK));
   };
 
   return (
@@ -207,7 +165,7 @@ function AddMarketplaceDialog(props: {
               />
               <p id={`${sourceId}-hint`} className="text-muted-foreground text-xs">
                 A GitHub repository, a git or https URL, or a folder path on the machine{" "}
-                {props.target.provider.displayName} runs on.
+                {props.target.naming.title} runs on.
               </p>
               {error ? (
                 <p role="alert" className="text-destructive-foreground text-xs">
@@ -231,11 +189,11 @@ function AddMarketplaceDialog(props: {
   );
 }
 
-function ProviderPluginsPanel(props: { readonly target: PluginTarget }) {
+function ProviderPluginsPanel(props: { readonly target: ProviderTarget }) {
   const { target } = props;
   const { environmentId } = target;
   const instanceId = target.provider.instanceId;
-  const providerName = target.provider.displayName;
+  const providerName = target.naming.title;
   const canManage = useAtomValue(
     serverEnvironment.installProviderPlugin.permissionAtom(environmentId),
   );
@@ -270,6 +228,7 @@ function ProviderPluginsPanel(props: { readonly target: PluginTarget }) {
   });
   const reload = useAtomCommand(serverEnvironment.refreshProviderPlugins, { reportFailure: false });
 
+  const installed = result === null ? [] : uniquePluginsById(result.installed);
   const marketplaceLabels = new Map(
     (result?.marketplaces ?? []).map((marketplace) => [
       marketplace.name,
@@ -296,7 +255,7 @@ function ProviderPluginsPanel(props: { readonly target: PluginTarget }) {
       install({ environmentId, input: { instanceId, pluginId: plugin.id } }),
     );
     if (outcome._tag !== "Success") {
-      reportFailure(`Could not install ${pluginLabel(plugin)}`, outcome);
+      reportFailure(`Could not install ${pluginLabel(plugin)}`, outcome, FAILURE_FALLBACK);
       return;
     }
     plugins.refresh();
@@ -329,7 +288,7 @@ function ProviderPluginsPanel(props: { readonly target: PluginTarget }) {
       uninstall({ environmentId, input: { instanceId, pluginId: plugin.id } }),
     );
     if (outcome._tag !== "Success") {
-      reportFailure(`Could not uninstall ${pluginLabel(plugin)}`, outcome);
+      reportFailure(`Could not uninstall ${pluginLabel(plugin)}`, outcome, FAILURE_FALLBACK);
       return;
     }
     plugins.refresh();
@@ -340,7 +299,11 @@ function ProviderPluginsPanel(props: { readonly target: PluginTarget }) {
       setEnabled({ environmentId, input: { instanceId, pluginId: plugin.id, enabled } }),
     );
     if (outcome._tag !== "Success") {
-      reportFailure(`Could not ${enabled ? "enable" : "disable"} ${pluginLabel(plugin)}`, outcome);
+      reportFailure(
+        `Could not ${enabled ? "enable" : "disable"} ${pluginLabel(plugin)}`,
+        outcome,
+        FAILURE_FALLBACK,
+      );
       return;
     }
     plugins.refresh();
@@ -353,7 +316,7 @@ function ProviderPluginsPanel(props: { readonly target: PluginTarget }) {
     });
     setRefreshing(false);
     if (outcome._tag === "Success") plugins.refresh();
-    else reportFailure("Could not refresh plugins", outcome);
+    else reportFailure("Could not refresh plugins", outcome, FAILURE_FALLBACK);
   };
 
   const installedActions = (plugin: ProviderPlugin) => {
@@ -478,7 +441,7 @@ function ProviderPluginsPanel(props: { readonly target: PluginTarget }) {
           </AlertDescription>
         </Alert>
       ) : result === null ? (
-        <PluginListSkeleton />
+        <ProviderListSkeleton label="Loading plugins" />
       ) : (
         <>
           {result.warnings.length > 0 ? (
@@ -501,17 +464,15 @@ function ProviderPluginsPanel(props: { readonly target: PluginTarget }) {
               className="flex items-center gap-2 font-medium text-sm"
             >
               Installed
-              <span className="text-muted-foreground text-xs tabular-nums">
-                {result.installed.length}
-              </span>
+              <span className="text-muted-foreground text-xs tabular-nums">{installed.length}</span>
             </h2>
-            {result.installed.length === 0 ? (
+            {installed.length === 0 ? (
               <p className="text-muted-foreground text-sm">
                 {query ? `No installed plugins match “${query}”.` : "No plugins installed yet."}
               </p>
             ) : (
               <ul className="divide-y rounded-lg border">
-                {result.installed.map((plugin) => (
+                {installed.map((plugin) => (
                   <PluginRow
                     key={plugin.id}
                     plugin={plugin}
@@ -577,104 +538,39 @@ function ProviderPluginsPanel(props: { readonly target: PluginTarget }) {
   );
 }
 
-export function PluginsPage() {
-  const { environments, isReady } = useEnvironments();
-  const providerEntries = useEnvironmentProviderEntries();
-  const multipleEnvironments = providerEntries.length > 1;
-  const targets: Array<PluginTarget> = providerEntries.flatMap(({ environmentId, entries }) => {
-    const environment = environments.find((candidate) => candidate.environmentId === environmentId);
-    const machine =
-      multipleEnvironments && environment
-        ? settingsScopeEnvironmentLabel(environment, environments)
-        : null;
-    return entries
-      .filter(
-        (entry) => entry.enabled && entry.installed && entry.snapshot.supportsPlugins === true,
-      )
-      .map((provider) => ({
-        key: `${environmentId}:${provider.instanceId}`,
-        environmentId,
-        provider,
-        label: machine ? `${provider.displayName} · ${machine}` : provider.displayName,
-      }));
-  });
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const target = targets.find((candidate) => candidate.key === selectedKey) ?? targets[0] ?? null;
-  // Providers arrive with each machine's config; until one answers, none is not "no provider".
-  const connecting =
-    target === null &&
-    (!isReady ||
-      environments.some(
-        (environment) =>
-          environment.serverConfig === null &&
-          connectionMayStillAnswer(environment.connection.phase),
-      ));
-
+export function PluginsPanel() {
+  const { targets, target, setSelectedKey, connecting } = useProviderTargets("supportsPlugins");
+  if (connecting) {
+    return (
+      <ScrollArea className="min-h-0 flex-1">
+        <WorkspacePageContainer width="wide">
+          <ProviderListSkeleton label="Loading plugins" />
+        </WorkspacePageContainer>
+      </ScrollArea>
+    );
+  }
+  if (target === null) {
+    return (
+      <Empty>
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <BlocksIcon />
+          </EmptyMedia>
+          <EmptyTitle>No provider installs plugins here</EmptyTitle>
+          <EmptyDescription>
+            Claude, Codex, and Grok install plugins from their marketplaces. Turn one on in Settings
+            to browse and install them here.
+          </EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    );
+  }
   return (
-    <SidebarInset
-      {...workspaceAreaProps("plugins", 1, "Plugins")}
-      role="main"
-      className="h-dvh min-h-0 overflow-hidden overscroll-y-none"
-    >
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <WorkspacePageHeader electron={isElectron} className="border-b">
-          <WorkspaceBreadcrumb ariaLabel="Plugins breadcrumb" className="min-w-0 flex-1">
-            <WorkspaceBreadcrumbItem current>
-              <h1>Plugins</h1>
-            </WorkspaceBreadcrumbItem>
-          </WorkspaceBreadcrumb>
-        </WorkspacePageHeader>
-        {connecting ? (
-          <ScrollArea className="min-h-0 flex-1">
-            <WorkspacePageContainer width="wide">
-              <PluginListSkeleton />
-            </WorkspacePageContainer>
-          </ScrollArea>
-        ) : target === null ? (
-          <Empty>
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <BlocksIcon />
-              </EmptyMedia>
-              <EmptyTitle>No provider installs plugins here</EmptyTitle>
-              <EmptyDescription>
-                Claude, Codex, and Grok install plugins from their marketplaces. Turn one on in
-                Settings to browse and install them here.
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        ) : (
-          <ScrollArea className="min-h-0 flex-1">
-            <WorkspacePageContainer width="wide">
-              {targets.length > 1 ? (
-                <ToggleGroup
-                  aria-label="Provider"
-                  className="max-w-full overflow-x-auto"
-                  value={[target.key]}
-                  onValueChange={(next) => {
-                    // Pressing the chosen provider again reports no value; the choice stays.
-                    if (next[0] !== undefined) setSelectedKey(next[0]);
-                  }}
-                >
-                  {targets.map((candidate) => (
-                    <Toggle key={candidate.key} value={candidate.key}>
-                      <ProviderInstanceIcon
-                        driverKind={candidate.provider.driverKind}
-                        displayName={candidate.provider.displayName}
-                        accentColor={candidate.provider.accentColor}
-                        acpRegistryIconUrl={candidate.provider.acpRegistryIconUrl}
-                        size="compact"
-                      />
-                      <span className="truncate">{candidate.label}</span>
-                    </Toggle>
-                  ))}
-                </ToggleGroup>
-              ) : null}
-              <ProviderPluginsPanel key={target.key} target={target} />
-            </WorkspacePageContainer>
-          </ScrollArea>
-        )}
-      </div>
-    </SidebarInset>
+    <ScrollArea className="min-h-0 flex-1">
+      <WorkspacePageContainer width="wide">
+        <ProviderTargetToggle targets={targets} target={target} onSelect={setSelectedKey} />
+        <ProviderPluginsPanel key={target.key} target={target} />
+      </WorkspacePageContainer>
+    </ScrollArea>
   );
 }

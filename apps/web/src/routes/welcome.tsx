@@ -7,6 +7,7 @@ import * as Option from "effect/Option";
 import { NoProjectsHero } from "../components/NoProjectsHero";
 import { WelcomeWizard } from "../components/onboarding/WelcomeWizard";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
+import { clearSetupReturnHref, takeSetupReturnHref } from "../onboarding/setupRerun";
 
 const decodeEnvironmentId = Schema.decodeOption(EnvironmentId);
 
@@ -17,6 +18,8 @@ export const Route = createFileRoute("/welcome")({
       throw redirect({ to: "/pair", replace: true });
     }
   },
+  // A re-run abandoned before finishing must not send a later first run to a stale page.
+  onLeave: clearSetupReturnHref,
   component: WelcomeRouteView,
 });
 
@@ -47,7 +50,10 @@ function WelcomeRouteView() {
               );
               return;
             }
-            await navigate({ to: "/", replace: true });
+            const returnHref = takeSetupReturnHref();
+            await (returnHref === null
+              ? navigate({ to: "/", replace: true })
+              : navigate({ href: returnHref, replace: true }));
           }}
         />
       ) : null}

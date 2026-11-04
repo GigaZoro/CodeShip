@@ -4,6 +4,8 @@ import { useState, type ReactNode } from "react";
 import { RotateCcwIcon } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { useSettingsRestore } from "../components/settings/SettingsPanels";
+import { hasRestorableSettings } from "../components/settings/SettingsPanels.logic";
+import { resolveProvidersSettingsTab } from "../components/settings/providersSettingsTab";
 
 import { isElectron } from "../env";
 import { SidebarInset } from "../components/ui/sidebar";
@@ -30,8 +32,8 @@ import {
   movedSettingsPath,
 } from "../components/settings/settingsSearch";
 
-function RestoreDeviceDefaultsButton({ onRestored }: { onRestored: () => void }) {
-  const { changedSettingLabels, restoreDefaults } = useSettingsRestore(onRestored);
+function ResetPageButton({ page, onRestored }: { page: string; onRestored: () => void }) {
+  const { changedSettingLabels, restoreDefaults } = useSettingsRestore(page, onRestored);
   return (
     <Button
       size="xs"
@@ -40,8 +42,20 @@ function RestoreDeviceDefaultsButton({ onRestored }: { onRestored: () => void })
       onClick={() => void restoreDefaults()}
     >
       <RotateCcwIcon className="mx-1 size-3.5" />
-      <span className="max-sm:sr-only">Restore device defaults</span>
+      <span className="max-sm:sr-only">Reset page</span>
     </Button>
+  );
+}
+
+/** Providers lists one machine's instances; its Models tab can span machines. */
+function useSingleEnvironmentSettingsPage(pathname: string) {
+  const providersTab = useLocation({
+    select: (location) =>
+      resolveProvidersSettingsTab((location.search as { tab?: unknown }).tab, location.hash),
+  });
+  return (
+    (pathname === "/settings/providers" && providersTab === "providers") ||
+    pathname === "/settings/secrets"
   );
 }
 
@@ -88,7 +102,12 @@ function SettingsScopeBoundary({ pathname, children }: { pathname: string; child
       </SettingsScopeNotice>
     );
   }
-  if (SETTINGS_DEVICE_ONLY_PATHS.has(pathname) || pathname === "/settings/projects") {
+  // Maintenance mixes server sections with device ones, so it shows its own unavailable message.
+  if (
+    SETTINGS_DEVICE_ONLY_PATHS.has(pathname) ||
+    pathname === "/settings/projects" ||
+    pathname === "/settings/maintenance"
+  ) {
     return children;
   }
   if (scope.kind === "unavailable")
@@ -113,20 +132,28 @@ function SettingsContentLayout() {
   const contentArea = workspaceAreaProps("settings", 1, "Settings content");
   const location = useLocation();
   const { search, environment } = useSettingsScope();
+  const singleEnvironmentPage = useSingleEnvironmentSettingsPage(location.pathname);
   const contentScopeKey =
-    location.pathname === "/settings/diagnostics" || location.pathname === "/settings/providers"
+    location.pathname === "/settings/diagnostics" || singleEnvironmentPage
       ? environment?.environmentId
       : JSON.stringify(search);
   const [restoreSignal, setRestoreSignal] = useState(0);
+  // The providers reset covers Models-tab rows only.
+  const showReset =
+    hasRestorableSettings(location.pathname) &&
+    (location.pathname !== "/settings/providers" ||
+      resolveProvidersSettingsTab((location.search as { tab?: unknown }).tab, location.hash) ===
+        "models");
   const settingsNavInSidebar = useSidebarPanel() === "settings";
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
       <WorkspacePageHeader electron={isElectron} className="border-b">
         <SettingsBreadcrumb pathname={location.pathname} />
-        {location.pathname === "/settings/general" ? (
+        {showReset ? (
           <div className="ms-auto flex shrink-0 items-center">
-            <RestoreDeviceDefaultsButton
+            <ResetPageButton
+              page={location.pathname}
               onRestored={() => setRestoreSignal((value) => value + 1)}
             />
           </div>
@@ -152,10 +179,11 @@ function SettingsRouteLayout() {
   const rawSearch = Route.useSearch();
   const navigate = Route.useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
+  const singleEnvironment = useSingleEnvironmentSettingsPage(pathname);
   return (
     <SettingsScopeProvider
       search={rawSearch}
-      singleEnvironment={pathname === "/settings/providers" || pathname === "/settings/secrets"}
+      singleEnvironment={singleEnvironment}
       onChange={(next) => {
         // Send every axis so retain middleware recognizes "all" as an explicit target.
         void navigate({

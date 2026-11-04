@@ -438,3 +438,57 @@ export function BackgroundActivitySettingsRow() {
     />
   );
 }
+
+/** The same interval as the Background activity dialog, shown with the other git settings. */
+export function GitFetchIntervalRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const canWriteSettings = useScopedSettingsWriteAllowed();
+  const resolvedBackgroundActivity = resolveServerBackgroundActivitySettings(settings);
+  const seconds = durationToSeconds(resolvedBackgroundActivity.automaticGitFetchInterval);
+  const defaultSeconds = durationToSeconds(
+    resolveServerBackgroundActivitySettings(DEFAULT_UNIFIED_SETTINGS).automaticGitFetchInterval,
+  );
+  const setInterval = (
+    automaticGitFetchInterval: Duration.Duration | undefined,
+    options?: Parameters<typeof updateSettings>[1],
+  ) =>
+    updateSettings(
+      backgroundActivityOverrideSettings(settings.backgroundActivity, resolvedBackgroundActivity, {
+        automaticGitFetchInterval,
+      }),
+      options,
+    );
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["backgroundActivity"]}
+      {...searchableSetting("git-fetch-interval")}
+      description="Refresh remote branch status in the background. Set to 0 to turn it off. The Background activity policy in Maintenance still decides when fetches may run."
+      resetAction={
+        seconds !== defaultSeconds && canWriteSettings ? (
+          <SettingResetButton label="git fetch interval" onClick={() => setInterval(undefined)} />
+        ) : null
+      }
+      control={
+        <div
+          inert={!canWriteSettings}
+          className={
+            canWriteSettings
+              ? "flex shrink-0 items-center gap-2"
+              : "flex shrink-0 items-center gap-2 opacity-50"
+          }
+        >
+          <IntervalSecondsField
+            label="Git fetch interval"
+            value={seconds}
+            min={0}
+            step={5}
+            onCommit={(next, options) => setInterval(Duration.seconds(next), options)}
+          />
+          <span className="text-xs text-muted-foreground">seconds</span>
+        </div>
+      }
+    />
+  );
+}

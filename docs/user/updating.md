@@ -2,7 +2,7 @@
 
 The app you use and the server running your agents can be on different machines.
 When a server is behind your web or desktop app, the update button at the bottom
-of the sidebar and **Settings → Environments** offer to update it. The desktop
+of the sidebar and **Settings → Machines & access** offer to update it. The desktop
 app checks for new releases on its own, so the update button appears only when
 there is something to update.
 
@@ -28,7 +28,7 @@ Each server checks that it can install the release before it restarts. If the
 release is not available to a server yet, its update fails, the server keeps
 running, and you can retry. The confirmation lists each machine it skips and
 why, such as a machine that is offline or needs a manual update. Use
-**Settings → Environments** for those.
+**Settings → Machines & access** for those.
 
 If a desktop app restarts on its old version, CodeShip tells you the update did
 not apply. It does not install that version again on its own, even when another
@@ -41,7 +41,7 @@ below.
 ## Safe update with running chats
 
 When chats are running on the desktop app's own server, installing its update
-from the update button or **Settings → About** becomes a **Safe update**. The
+from the update button or **Settings → Maintenance & about** becomes a **Safe update**. The
 confirmation lists the chats that resume after the restart, and any waiting for
 your answer, which stop and need a reply. CodeShip saves where each running chat
 is, installs the update, restarts, and resumes them, even when **Continue
@@ -50,7 +50,7 @@ setting instead.
 
 ## Switch between Stable and Nightly
 
-In the desktop app, change **Settings → About → Update track**. CodeShip shows each
+In the desktop app, change **Settings → Maintenance & about → Update track**. CodeShip shows each
 connected machine it will move and each one it skips, then moves them in one
 step. Remote servers install the latest release on the new track. Remote desktop
 apps reinstall on the new track. This app reinstalls last. Your threads,
@@ -76,7 +76,7 @@ checks.
 Server updates restart the connection and can interrupt active agents and
 terminal commands. Saved threads, settings, and project files remain.
 
-**Settings → Maintenance → Continue threads after restarts** is on by default.
+**Settings → Maintenance & about → Continue threads after restarts** is on by default.
 It resumes supported active threads after an update, crash, or machine
 restart. Changes are saved to connected environments that support this setting;
 update older servers first. If a supported environment was offline or has a
@@ -180,7 +180,7 @@ Machines without npm check the public npm registry directly.
 
 ## Update providers
 
-**Settings → Providers** shows provider updates for the selected environment.
+**Settings → Providers & models** shows provider updates for the selected environment.
 **Update all** updates every outdated provider on every connected environment
 at once. Hover it to see which providers it will update. Providers that only
 offer a manual update command are not included.
@@ -205,7 +205,7 @@ the machine instead.
 The same page lets you refresh provider status and update supported providers.
 These controls require a connected environment and permission to operate it.
 Provider update checks and restart continuation preferences are in
-**Settings → Maintenance**. If provider update checks are disabled, enable them
+**Settings → Maintenance & about**. If provider update checks are disabled, enable them
 there before refreshing to find newer versions. The same setting controls whether
 CodeShip downloads model catalog updates, so with it off new models may not appear
 until you enable it and refresh provider status.

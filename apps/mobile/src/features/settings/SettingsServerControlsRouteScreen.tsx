@@ -45,16 +45,19 @@ import {
   type ScopedMobileSettingsTarget,
 } from "./settings-scoped-server";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
-import { AutoSettleSettingsRows } from "./ThreadSettingsSections";
+import {
+  AutoSettleSettingsRows,
+  LinkedEnvironmentsSettingsSection,
+} from "./ThreadSettingsSections";
+import { AppSettingsSection } from "./SettingsAboutSection";
 import { supportsSharedSettingsSync } from "@t3tools/client-runtime/state/shared-settings";
 
-type SettingsPage = "threads" | "source-control" | "worktrees" | "maintenance";
+type SettingsPage = "threads" | "source-control" | "maintenance";
 
 const PAGE_TITLES: Record<SettingsPage, string> = {
   threads: "Threads",
-  "source-control": "Source control",
-  worktrees: "Worktrees",
-  maintenance: "Maintenance",
+  "source-control": "Source control & worktrees",
+  maintenance: "Maintenance & about",
 };
 
 const PAGE_PROJECT_KEYS: Record<SettingsPage, readonly ProjectScopedServerSettingKey[]> = {
@@ -68,8 +71,9 @@ const PAGE_PROJECT_KEYS: Record<SettingsPage, readonly ProjectScopedServerSettin
     "sidebarAutoSettleOnMerge",
     "sidebarAutoSettleAfterDays",
   ],
-  "source-control": ["defaultAutoPull", "removeAgentCreditsOnMerge"],
-  worktrees: [
+  "source-control": [
+    "defaultAutoPull",
+    "removeAgentCreditsOnMerge",
     "newWorktreesStartFromOrigin",
     "worktreeSubmodules",
     "branchNamingMode",
@@ -169,10 +173,6 @@ export function SettingsThreadsRouteScreen() {
 
 export function SettingsEnvironmentSourceControlRouteScreen() {
   return <ServerSettingsDetail page="source-control" />;
-}
-
-export function SettingsWorktreesRouteScreen() {
-  return <ServerSettingsDetail page="worktrees" />;
 }
 
 export function SettingsEnvironmentMaintenanceRouteScreen() {
@@ -494,11 +494,6 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       onValueChange={(value) => write({ ghqCloneLayout: value })}
                     />
                   </SettingsSection>
-                </>
-              ) : null}
-
-              {props.page === "worktrees" ? (
-                <>
                   <SettingsSection title="New worktrees">
                     <SettingsSwitchRow
                       icon="arrow.triangle.branch"
@@ -628,6 +623,12 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
               ) : null}
             </>
           )}
+          {props.page === "maintenance" ? (
+            <>
+              <LinkedEnvironmentsSettingsSection />
+              <AppSettingsSection />
+            </>
+          ) : null}
         </ScrollView>
       </SettingsScreen>
     </>

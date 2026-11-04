@@ -1,11 +1,5 @@
-import { connectionMayStillAnswer } from "@t3tools/client-runtime/connection";
-import {
-  isAtomCommandInterrupted,
-  settlePromise,
-  squashAtomCommandFailure,
-  type AtomCommandResult,
-} from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, ProviderMcpServer } from "@t3tools/contracts";
+import { settlePromise } from "@t3tools/client-runtime/state/runtime";
+import type { ProviderMcpServer } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -18,23 +12,24 @@ import {
   KeyRoundIcon,
   PlusIcon,
   RefreshCwIcon,
+  SearchIcon,
   ServerIcon,
   Trash2Icon,
   type LucideIcon,
 } from "lucide-react";
 import { useId, useState, type FormEvent, type ReactNode } from "react";
 
-import { isElectron } from "../../env";
-import { useEnvironmentProviderEntries } from "../../hooks/useEnvironmentProviderEntries";
-import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import { readLocalApi } from "../../localApi";
-import type { ProviderInstanceEntry } from "../../providerInstances";
-import { useEnvironments } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
-import { settingsScopeEnvironmentLabel } from "../settings/settingsScopeAxis";
+import { failureMessage, reportFailure } from "../extensions/commandFailure";
+import {
+  ProviderListSkeleton,
+  ProviderTargetToggle,
+  useProviderTargets,
+  type ProviderTarget,
+} from "../extensions/ProviderTargets";
 import { Alert, AlertDescription } from "../ui/alert";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -49,18 +44,15 @@ import {
 } from "../ui/dialog";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { Input } from "../ui/input";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
 import { Label } from "../ui/label";
 import { ScrollArea } from "../ui/scroll-area";
-import { SidebarInset } from "../ui/sidebar";
-import { Skeleton } from "../ui/skeleton";
 import { Spinner } from "../ui/spinner";
 import { Textarea } from "../ui/textarea";
-import { toastManager } from "../ui/toast";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
+import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../WorkspaceBreadcrumb";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
-import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import {
   readMcpServerForm,
   type McpServerForm,
@@ -68,25 +60,7 @@ import {
   type McpServerKind,
 } from "./mcpServerForm";
 
-interface McpTarget {
-  readonly key: string;
-  readonly environmentId: EnvironmentId;
-  readonly provider: ProviderInstanceEntry;
-  readonly label: string;
-}
-
-function failureMessage(result: AtomCommandResult<unknown, unknown>): string | null {
-  if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return null;
-  const error = squashAtomCommandFailure(result);
-  return error instanceof Error && error.message.trim()
-    ? error.message
-    : "The provider could not finish the change.";
-}
-
-function reportFailure(title: string, result: AtomCommandResult<unknown, unknown>) {
-  const description = failureMessage(result);
-  if (description !== null) toastManager.add({ type: "error", title, description });
-}
+const FAILURE_FALLBACK = "The provider could not finish the change.";
 
 const serverLabel = (server: ProviderMcpServer) => server.displayName ?? server.name;
 
@@ -195,19 +169,6 @@ function ServerRow(props: {
   );
 }
 
-function ServerListSkeleton() {
-  return (
-    <div role="status" aria-label="Loading MCP servers" className="divide-y rounded-lg border">
-      {[0, 1, 2].map((row) => (
-        <div key={row} className="flex flex-col gap-2 px-4 py-3">
-          <Skeleton className="h-4 w-40" />
-          <Skeleton className="h-3 w-3/4" />
-        </div>
-      ))}
-    </div>
-  );
-}
-
 const EMPTY_FORM: McpServerForm = {
   name: "",
   kind: "remote",
@@ -226,7 +187,7 @@ function FieldError(props: { readonly id: string; readonly message: string | und
 }
 
 function AddServerDialog(props: {
-  readonly target: McpTarget;
+  readonly target: ProviderTarget;
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly onAdded: () => void;
@@ -239,7 +200,7 @@ function AddServerDialog(props: {
   const addServer = useAtomCommand(serverEnvironment.addProviderMcpServer, {
     reportFailure: false,
   });
-  const providerName = props.target.provider.displayName;
+  const providerName = props.target.naming.title;
 
   const update = (field: McpServerFormField, value: string) => {
     setForm((current) => ({ ...current, [field]: value }));
@@ -283,7 +244,7 @@ function AddServerDialog(props: {
       props.onAdded();
       return;
     }
-    setFailure(failureMessage(result));
+    setFailure(failureMessage(result, FAILURE_FALLBACK));
   };
 
   const field = (name: McpServerFormField) => ({
@@ -433,7 +394,7 @@ function AddServerDialog(props: {
 
 /** Mounted only while open: the server keeps the sign-in alive as long as this subscribes. */
 function SignInFlow(props: {
-  readonly target: McpTarget;
+  readonly target: ProviderTarget;
   readonly server: ProviderMcpServer;
   readonly onClose: () => void;
 }) {
@@ -452,7 +413,7 @@ function SignInFlow(props: {
   const [submitting, setSubmitting] = useState(false);
   const [callbackError, setCallbackError] = useState<string | null>(null);
   const state = signIn.data;
-  const providerName = target.provider.displayName;
+  const providerName = target.naming.title;
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -471,7 +432,7 @@ function SignInFlow(props: {
       },
     });
     setSubmitting(false);
-    if (result._tag !== "Success") setCallbackError(failureMessage(result));
+    if (result._tag !== "Success") setCallbackError(failureMessage(result, FAILURE_FALLBACK));
   };
 
   if (signIn.error !== null) {
@@ -581,7 +542,7 @@ function SignInFlow(props: {
 }
 
 function SignInDialog(props: {
-  readonly target: McpTarget;
+  readonly target: ProviderTarget;
   readonly server: ProviderMcpServer | null;
   readonly onClose: () => void;
 }) {
@@ -593,7 +554,7 @@ function SignInDialog(props: {
             Sign in to {props.server ? serverLabel(props.server) : "MCP server"}
           </DialogTitle>
           <DialogDescription>
-            {props.target.provider.displayName} keeps the sign-in and uses it in new sessions.
+            {props.target.naming.title} keeps the sign-in and uses it in new sessions.
           </DialogDescription>
         </DialogHeader>
         {props.server ? (
@@ -604,11 +565,12 @@ function SignInDialog(props: {
   );
 }
 
-function ProviderMcpPanel(props: { readonly target: McpTarget }) {
+function ProviderMcpPanel(props: { readonly target: ProviderTarget }) {
   const { target } = props;
   const { environmentId } = target;
   const instanceId = target.provider.instanceId;
-  const providerName = target.provider.displayName;
+  const providerName = target.naming.title;
+  const [filter, setFilter] = useState("");
   const canManage = useAtomValue(
     serverEnvironment.addProviderMcpServer.permissionAtom(environmentId),
   );
@@ -660,7 +622,7 @@ function ProviderMcpPanel(props: { readonly target: McpTarget }) {
       remove({ environmentId, input: { instanceId, name: server.name } }),
     );
     if (outcome._tag !== "Success") {
-      reportFailure(`Could not remove ${serverLabel(server)}`, outcome);
+      reportFailure(`Could not remove ${serverLabel(server)}`, outcome, FAILURE_FALLBACK);
       return;
     }
     servers.refresh();
@@ -671,7 +633,7 @@ function ProviderMcpPanel(props: { readonly target: McpTarget }) {
       signOut({ environmentId, input: { instanceId, name: server.name } }),
     );
     if (outcome._tag !== "Success") {
-      reportFailure(`Could not sign out of ${serverLabel(server)}`, outcome);
+      reportFailure(`Could not sign out of ${serverLabel(server)}`, outcome, FAILURE_FALLBACK);
       return;
     }
     servers.refresh();
@@ -682,7 +644,7 @@ function ProviderMcpPanel(props: { readonly target: McpTarget }) {
     const outcome = await reload({ environmentId, input: { instanceId, refresh: true } });
     setRefreshing(false);
     if (outcome._tag === "Success") servers.refresh();
-    else reportFailure("Could not check the MCP servers", outcome);
+    else reportFailure("Could not check the MCP servers", outcome, FAILURE_FALLBACK);
   };
 
   const actions = (server: ProviderMcpServer) => {
@@ -763,6 +725,16 @@ function ProviderMcpPanel(props: { readonly target: McpTarget }) {
   };
 
   const result = servers.data;
+  const needle = filter.trim().toLowerCase();
+  const visibleServers =
+    result === null || needle === ""
+      ? (result?.servers ?? [])
+      : result.servers.filter((server) =>
+          [server.name, server.displayName, server.target].some((field) =>
+            field?.toLowerCase().includes(needle),
+          ),
+        );
+  const searchLabel = `Search ${providerName} MCP servers`;
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-2">
@@ -814,33 +786,51 @@ function ProviderMcpPanel(props: { readonly target: McpTarget }) {
           </AlertDescription>
         </Alert>
       ) : result === null ? (
-        <ServerListSkeleton />
+        <ProviderListSkeleton label="Loading MCP servers" />
       ) : result.servers.length === 0 ? (
         <p className="text-muted-foreground text-sm">
           {providerName} has no MCP servers yet. Add one to give it new tools.
         </p>
       ) : (
         <section aria-labelledby={`mcp-servers-${target.key}`} className="flex flex-col gap-2">
+          <InputGroup>
+            <InputGroupAddon>
+              <SearchIcon aria-hidden />
+            </InputGroupAddon>
+            <InputGroupInput
+              type="search"
+              aria-label={searchLabel}
+              placeholder={searchLabel}
+              value={filter}
+              onChange={(event) => setFilter(event.currentTarget.value)}
+            />
+          </InputGroup>
           <h2
             id={`mcp-servers-${target.key}`}
             className="flex items-center gap-2 font-medium text-sm"
           >
             Servers
             <span className="text-muted-foreground text-xs tabular-nums">
-              {result.servers.length}
+              {needle === ""
+                ? result.servers.length
+                : `${visibleServers.length} of ${result.servers.length}`}
             </span>
             {servers.isPending ? <Spinner size="sm" tone="muted" /> : null}
           </h2>
-          <ul className="divide-y rounded-lg border">
-            {result.servers.map((server) => (
-              <ServerRow
-                key={server.name}
-                server={server}
-                providerName={providerName}
-                actions={actions(server)}
-              />
-            ))}
-          </ul>
+          {visibleServers.length === 0 ? (
+            <p className="text-muted-foreground text-sm">No MCP servers match “{filter.trim()}”.</p>
+          ) : (
+            <ul className="divide-y rounded-lg border">
+              {visibleServers.map((server) => (
+                <ServerRow
+                  key={server.name}
+                  server={server}
+                  providerName={providerName}
+                  actions={actions(server)}
+                />
+              ))}
+            </ul>
+          )}
         </section>
       )}
       <AddServerDialog
@@ -861,104 +851,39 @@ function ProviderMcpPanel(props: { readonly target: McpTarget }) {
   );
 }
 
-export function McpServersPage() {
-  const { environments, isReady } = useEnvironments();
-  const providerEntries = useEnvironmentProviderEntries();
-  const multipleEnvironments = providerEntries.length > 1;
-  const targets: Array<McpTarget> = providerEntries.flatMap(({ environmentId, entries }) => {
-    const environment = environments.find((candidate) => candidate.environmentId === environmentId);
-    const machine =
-      multipleEnvironments && environment
-        ? settingsScopeEnvironmentLabel(environment, environments)
-        : null;
-    return entries
-      .filter(
-        (entry) => entry.enabled && entry.installed && entry.snapshot.supportsMcpServers === true,
-      )
-      .map((provider) => ({
-        key: `${environmentId}:${provider.instanceId}`,
-        environmentId,
-        provider,
-        label: machine ? `${provider.displayName} · ${machine}` : provider.displayName,
-      }));
-  });
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const target = targets.find((candidate) => candidate.key === selectedKey) ?? targets[0] ?? null;
-  // Providers arrive with each machine's config; until one answers, none is not "no provider".
-  const connecting =
-    target === null &&
-    (!isReady ||
-      environments.some(
-        (environment) =>
-          environment.serverConfig === null &&
-          connectionMayStillAnswer(environment.connection.phase),
-      ));
-
+export function McpServersPanel() {
+  const { targets, target, setSelectedKey, connecting } = useProviderTargets("supportsMcpServers");
+  if (connecting) {
+    return (
+      <ScrollArea className="min-h-0 flex-1">
+        <WorkspacePageContainer width="wide">
+          <ProviderListSkeleton label="Loading MCP servers" />
+        </WorkspacePageContainer>
+      </ScrollArea>
+    );
+  }
+  if (target === null) {
+    return (
+      <Empty>
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <ServerIcon />
+          </EmptyMedia>
+          <EmptyTitle>No provider manages MCP servers here</EmptyTitle>
+          <EmptyDescription>
+            Claude and Codex keep their own MCP servers. Turn one on in Settings to add servers and
+            sign in to them here.
+          </EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    );
+  }
   return (
-    <SidebarInset
-      {...workspaceAreaProps("mcp", 1, "MCP servers")}
-      role="main"
-      className="h-dvh min-h-0 overflow-hidden overscroll-y-none"
-    >
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <WorkspacePageHeader electron={isElectron} className="border-b">
-          <WorkspaceBreadcrumb ariaLabel="MCP servers breadcrumb" className="min-w-0 flex-1">
-            <WorkspaceBreadcrumbItem current>
-              <h1>MCP servers</h1>
-            </WorkspaceBreadcrumbItem>
-          </WorkspaceBreadcrumb>
-        </WorkspacePageHeader>
-        {connecting ? (
-          <ScrollArea className="min-h-0 flex-1">
-            <WorkspacePageContainer width="wide">
-              <ServerListSkeleton />
-            </WorkspacePageContainer>
-          </ScrollArea>
-        ) : target === null ? (
-          <Empty>
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <ServerIcon />
-              </EmptyMedia>
-              <EmptyTitle>No provider manages MCP servers here</EmptyTitle>
-              <EmptyDescription>
-                Claude and Codex keep their own MCP servers. Turn one on in Settings to add servers
-                and sign in to them here.
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        ) : (
-          <ScrollArea className="min-h-0 flex-1">
-            <WorkspacePageContainer width="wide">
-              {targets.length > 1 ? (
-                <ToggleGroup
-                  aria-label="Provider"
-                  className="max-w-full overflow-x-auto"
-                  value={[target.key]}
-                  onValueChange={(next) => {
-                    // Pressing the chosen provider again reports no value; the choice stays.
-                    if (next[0] !== undefined) setSelectedKey(next[0]);
-                  }}
-                >
-                  {targets.map((candidate) => (
-                    <Toggle key={candidate.key} value={candidate.key}>
-                      <ProviderInstanceIcon
-                        driverKind={candidate.provider.driverKind}
-                        displayName={candidate.provider.displayName}
-                        accentColor={candidate.provider.accentColor}
-                        acpRegistryIconUrl={candidate.provider.acpRegistryIconUrl}
-                        size="compact"
-                      />
-                      <span className="truncate">{candidate.label}</span>
-                    </Toggle>
-                  ))}
-                </ToggleGroup>
-              ) : null}
-              <ProviderMcpPanel key={target.key} target={target} />
-            </WorkspacePageContainer>
-          </ScrollArea>
-        )}
-      </div>
-    </SidebarInset>
+    <ScrollArea className="min-h-0 flex-1">
+      <WorkspacePageContainer width="wide">
+        <ProviderTargetToggle targets={targets} target={target} onSelect={setSelectedKey} />
+        <ProviderMcpPanel key={target.key} target={target} />
+      </WorkspacePageContainer>
+    </ScrollArea>
   );
 }

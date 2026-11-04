@@ -1,4 +1,4 @@
-import { useAtomValue } from "@effect/atom-react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import {
   connectionMayStillAnswer,
   connectionStatusTitle,
@@ -16,7 +16,7 @@ import {
   PlusIcon,
   Trash2Icon,
 } from "lucide-react";
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useContext, useRef, useState } from "react";
 import type {
   EnvironmentId,
   ModelSelection,
@@ -560,6 +560,7 @@ function ScheduledTaskEnvironmentList({
       : [],
   );
   const queries = useAtomValue(scheduledTasksListAtom(environmentIdsKey(connectedIds)));
+  const registry = useContext(RegistryContext);
   const states = environments.map((environment) => {
     const index = connectedIds.indexOf(environment.environmentId);
     const query = index < 0 ? null : queries[index]!;
@@ -581,9 +582,9 @@ function ScheduledTaskEnvironmentList({
   const summaries: Record<string, string[]> = {
     "Not connected:": [],
     "Loading scheduled tasks on": [],
-    "Could not load scheduled tasks:": [],
     "No tasks on": [],
   };
+  const failures: { environmentId: EnvironmentId; label: string; error: string }[] = [];
   for (const { environment, connected, tasks, error } of states) {
     const label = settingsScopeEnvironmentLabel(environment, environments);
     if (!connected) {
@@ -591,7 +592,7 @@ function ScheduledTaskEnvironmentList({
         `${label} (${connectionStatusTitle(environment.connection)})`,
       );
     } else if (error !== null) {
-      summaries["Could not load scheduled tasks:"]!.push(`${label}: ${error}`);
+      failures.push({ environmentId: environment.environmentId, label, error });
     } else if (!tasks) {
       summaries["Loading scheduled tasks on"]!.push(label);
     } else if (tasks.length === 0 && populated.length > 0) {
@@ -645,6 +646,28 @@ function ScheduledTaskEnvironmentList({
           everyMachineAnswered={loaded.length === environments.length}
         />
       ) : null}
+      {failures.map(({ environmentId: failedId, label, error }) => (
+        <div
+          key={failedId}
+          className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 sm:px-4"
+          role="status"
+        >
+          <p className="min-w-0 break-words text-xs text-muted-foreground">
+            Could not load scheduled tasks: {label}: {error}
+          </p>
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() =>
+              registry.refresh(
+                serverEnvironment.scheduledTasksLive({ environmentId: failedId, input: {} }),
+              )
+            }
+          >
+            Retry
+          </Button>
+        </div>
+      ))}
       {Object.entries(summaries).map(([label, entries]) => {
         if (entries.length === 0) return null;
         // Wraps instead of truncating: errors name the cause, and touch has no hover.
@@ -1272,8 +1295,8 @@ function WebhookDeliveryMode({ environmentId }: { readonly environmentId: Enviro
       {cloudLink.data.holdWebhooksWhileOffline
         ? "Held for up to 24 hours while this environment is offline. "
         : "Forwarded live. Requests fail while this environment is offline. "}
-      <Link to="/settings/access" className="underline underline-offset-2">
-        Change in Sharing & access
+      <Link to="/settings/connections" className="underline underline-offset-2">
+        Change in Machines & access
       </Link>
     </p>
   );

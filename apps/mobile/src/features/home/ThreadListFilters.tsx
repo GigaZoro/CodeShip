@@ -1,6 +1,9 @@
 import { offersSidebarMachineGrouping } from "@t3tools/contracts/settings";
 import { Pressable, ScrollView } from "react-native";
 import { SymbolView } from "../../components/ui/AppSymbol";
+import { Chip } from "../../components/ui/Chip";
+import { useOpenArchivedThreads } from "../archive/useOpenArchivedThreads";
+import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { ListFilterMenu } from "../workspace/ListFilterMenu";
 import type { HomeHeaderProps } from "./HomeHeader.types";
 import {
@@ -27,6 +30,8 @@ export function ThreadListFilters(
     readonly gutter: number;
   },
 ) {
+  const openArchivedThreads = useOpenArchivedThreads();
+  const { themeAppearance } = useAppearancePreferences();
   const selectedEnvironment = props.environments.find(
     (environment) => environment.environmentId === props.selectedEnvironmentId,
   );
@@ -115,6 +120,14 @@ export function ThreadListFilters(
         onSelect={(id) => {
           handleGroupByMenuEvent(id, props);
         }}
+      />
+      <Chip
+        label="Archived"
+        icon="archivebox"
+        glass
+        colorScheme={themeAppearance}
+        accessibilityLabel="Archived threads"
+        onPress={openArchivedThreads}
       />
       {props.selectedEnvironmentId !== null || props.selectedProjectKey !== null ? (
         <Pressable

@@ -4,7 +4,7 @@ import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thr
 import { memo, use, useState } from "react";
 import { type ChatMessage, type TurnDiffSummary } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
-import { GitForkIcon } from "lucide-react";
+import { GitForkIcon, RotateCcwIcon } from "lucide-react";
 import { ChevronDown, ChevronRight } from "lucide";
 import { MorphIcon } from "~/components/MorphIcon";
 import { Button } from "../ui/button";
@@ -25,6 +25,7 @@ import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../times
 import { useV2ItemSupport } from "../../state/v2ItemSupport";
 import { TimelineRowCtx, TimelineRowActivityCtx, type TimelineRow } from "./timelineRowContext";
 import { MESSAGE_HEADING_LEVEL, MessageAuthorHeading } from "./TimelineRowParts";
+import { markRetryRewind } from "./timelineRetry";
 
 export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
@@ -138,6 +139,42 @@ function AssistantForkButton({
   );
 }
 
+function AssistantRetryButton({ messageId }: { readonly messageId: ChatMessage["id"] }) {
+  const ctx = use(TimelineRowCtx);
+  const activity = use(TimelineRowActivityCtx);
+  const target = ctx.retryTarget;
+  if (target === null || target.assistantMessageId !== messageId || !ctx.canOperateThread) {
+    return null;
+  }
+  // aria-disabled, not disabled, so the tooltip can still say why.
+  const blocked = activity.isWorking || activity.isRevertingCheckpoint;
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            aria-disabled={blocked}
+            onClick={() => {
+              if (blocked) return;
+              markRetryRewind(target.userMessageId);
+              ctx.onRevertToTurnCount(target.turnCount, target.userMessageId);
+            }}
+            aria-label="Retry this response"
+          />
+        }
+      >
+        <RotateCcwIcon className="size-3" />
+      </TooltipTrigger>
+      <TooltipPopup side="top">
+        {activity.isWorking ? "Stop the agent to retry" : "Retry this response"}
+      </TooltipPopup>
+    </Tooltip>
+  );
+}
+
 export function AssistantMetaTimelineRow({
   row,
 }: {
@@ -197,6 +234,7 @@ function AssistantMessageMeta({
       {projectedItem?.item.type === "assistant_message" ? (
         <AssistantForkButton projectedItem={projectedItem} />
       ) : null}
+      {!message.streaming ? <AssistantRetryButton messageId={message.id} /> : null}
       {!message.streaming && (
         <Tooltip>
           <TooltipTrigger render={<p className="text-muted-foreground text-xs tabular-nums" />}>

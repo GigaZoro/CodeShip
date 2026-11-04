@@ -397,10 +397,6 @@ function ThreadRouteContent(
     label: "set thread runtime mode",
     reportFailure: false,
   });
-  const setThreadInteractionMode = useAtomCommand(threadEnvironment.setInteractionMode, {
-    label: "set thread interaction mode",
-    reportFailure: false,
-  });
   const loadEarlierHistory = useAtomCommand(threadEnvironment.loadEarlierHistory, {
     label: "load earlier thread history",
     reportFailure: false,
@@ -521,7 +517,6 @@ function ThreadRouteContent(
         ...selectedThread,
         modelSelection: composer.modelSelection ?? selectedThread.modelSelection,
         runtimeMode: composer.runtimeMode ?? selectedThread.runtimeMode,
-        interactionMode: composer.interactionMode ?? selectedThread.interactionMode,
       }
     : null;
 
@@ -709,12 +704,10 @@ function ThreadRouteContent(
       resumableRunId: composer.resumableRunId,
       queueHeld: composer.queueHeld,
       runtimeMode: composer.runtimeMode ?? selectedThread.runtimeMode,
-      interactionMode: composer.interactionMode ?? selectedThread.interactionMode,
       modelSelection: composer.modelSelection,
       messageId: MessageId.make(uuidv4()),
       createdAt: new Date().toISOString(),
       setRuntimeMode: setThreadRuntimeMode,
-      setInteractionMode: setThreadInteractionMode,
       startTurn: continueThreadRun,
       resumeQueue: resumeThreadQueue,
     });
@@ -1115,7 +1108,6 @@ function ThreadRouteContent(
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}
           canSwitchThreadProvider={composer.canSwitchThreadProvider}
-          onUpdateThreadInteractionMode={composer.onUpdateInteractionMode}
           onRespondToApproval={requests.onRespondToApproval}
           onSelectUserInputOption={requests.onSelectUserInputOption}
           onChangeUserInputCustomAnswer={requests.onChangeUserInputCustomAnswer}

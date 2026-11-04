@@ -4,7 +4,7 @@ Use your ChatGPT plan or an existing Codex CLI login to code in CodeShip.
 
 ## Connect with ChatGPT
 
-Connect during onboarding or in **Settings → Providers**. For a remote machine,
+Connect during onboarding or in **Settings → Providers & models**. For a remote machine,
 select that environment first. CodeShip handles Codex installation; sign in on
 OpenAI and allow sharing of your ChatGPT plan.
 
@@ -28,7 +28,7 @@ covers installation and custom configuration.
 
 ## Use multiple accounts
 
-Add another ChatGPT account in **Settings → Providers**, then select the account
+Add another ChatGPT account in **Settings → Providers & models**, then select the account
 from the thread's model picker. Compatible accounts can continue the same thread.
 Every account uses the `AGENTS.md`, skills, and configuration in `~/.codex`, and
 the same [MCP server](./mcp.md) sign-ins. Connecting accounts through CodeShip
@@ -48,7 +48,7 @@ mkdir -p ~/.codex_personal
 CODEX_HOME=~/.codex_personal codex login
 ```
 
-Then add a second Codex instance in **Settings > Providers**:
+Then add a second Codex instance in **Settings > Providers & models**:
 
 | Instance       | CODEX_HOME path | Shadow home path    |
 | -------------- | --------------- | ------------------- |

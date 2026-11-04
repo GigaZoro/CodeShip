@@ -34,6 +34,13 @@ import {
   ChatGptHandoffState,
 } from "./providerSetup.ts";
 import {
+  ProviderSkillError,
+  ProviderSkillExportInput,
+  ProviderSkillExportResult,
+  ProviderSkillInstallInput,
+  ProviderSkillInstallResult,
+} from "./providerSkills.ts";
+import {
   ProviderPluginAddMarketplaceInput,
   ProviderPluginAddMarketplaceResult,
   ProviderPluginError,
@@ -476,6 +483,8 @@ export const WS_METHODS = {
   providerPluginsInstall: "provider.plugins.install",
   providerPluginsUninstall: "provider.plugins.uninstall",
   providerPluginsSetEnabled: "provider.plugins.setEnabled",
+  providerSkillsExport: "provider.skills.export",
+  providerSkillsInstall: "provider.skills.install",
   providerPluginsAddMarketplace: "provider.plugins.addMarketplace",
   providerMcpList: "provider.mcp.list",
   providerMcpAdd: "provider.mcp.add",
@@ -818,6 +827,20 @@ const WsProviderPluginsAddMarketplaceRpc = Rpc.make(WS_METHODS.providerPluginsAd
   payload: ProviderPluginAddMarketplaceInput,
   success: ProviderPluginAddMarketplaceResult,
   error: ProviderPluginRpcError,
+});
+
+const ProviderSkillRpcError = Schema.Union([ProviderSkillError, EnvironmentAuthorizationError]);
+
+const WsProviderSkillsExportRpc = Rpc.make(WS_METHODS.providerSkillsExport, {
+  payload: ProviderSkillExportInput,
+  success: ProviderSkillExportResult,
+  error: ProviderSkillRpcError,
+});
+
+const WsProviderSkillsInstallRpc = Rpc.make(WS_METHODS.providerSkillsInstall, {
+  payload: ProviderSkillInstallInput,
+  success: ProviderSkillInstallResult,
+  error: ProviderSkillRpcError,
 });
 
 const ProviderMcpRpcError = Schema.Union([ProviderMcpError, EnvironmentAuthorizationError]);
@@ -2136,6 +2159,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderPluginsUninstallRpc,
   WsProviderPluginsSetEnabledRpc,
   WsProviderPluginsAddMarketplaceRpc,
+  WsProviderSkillsExportRpc,
+  WsProviderSkillsInstallRpc,
   WsProviderMcpListRpc,
   WsProviderMcpAddRpc,
   WsProviderMcpRemoveRpc,

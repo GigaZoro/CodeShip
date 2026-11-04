@@ -9,6 +9,7 @@ import {
   endThreadContextDrag,
   moveThreadContextDrag as moveThreadContextDragGhost,
 } from "./chat/threadContextDrag";
+import { archiveThreadWithConfirm } from "../lib/archiveThreadWithConfirm";
 import { discardComposerDraft } from "../lib/discardComposerDraft";
 import { requestCustomSnooze } from "./CustomSnoozeDialog";
 import { useAtomValue } from "@effect/atom-react";
@@ -65,6 +66,7 @@ import {
 import type { OlderSettledScope } from "@t3tools/client-runtime/state/threads";
 
 import {
+  ArchiveIcon,
   CheckIcon,
   ChevronDownIcon,
   FolderIcon,
@@ -3459,34 +3461,14 @@ export default function Sidebar({
           case "copy-thread-id":
             copyThreadIdToClipboard(thread.id, { threadId: thread.id });
             return;
-          case "archive": {
-            if (confirmThreadArchive) {
-              const confirmed = await settlePromise(() =>
-                api.dialogs.confirm(`Archive thread "${thread.title}"?`),
-              );
-              if (confirmed._tag === "Failure" || !confirmed.value) return;
-            }
-            let didArchive = false;
-            const result = await archiveThread(threadRef, {
-              onArchived: () => {
-                didArchive = true;
-              },
+          case "archive":
+            await archiveThreadWithConfirm({
+              threadRef,
+              title: thread.title,
+              confirm: confirmThreadArchive,
+              archiveThread,
             });
-            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-              const error = squashAtomCommandFailure(result);
-              toastManager.add(
-                stackedThreadToast({
-                  type: "error",
-                  title: didArchive
-                    ? "Thread archived, but navigation failed"
-                    : "Failed to archive thread",
-                  description: error instanceof Error ? error.message : "An error occurred.",
-                }),
-              );
-              return;
-            }
             return;
-          }
           case "delete": {
             if (confirmThreadDelete) {
               const confirmed = await settlePromise(() =>
@@ -3767,6 +3749,21 @@ export default function Sidebar({
                         </div>
                       </div>
                     ) : null}
+                    <div className="px-2.5 pt-2">
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        className="w-full justify-start"
+                        onClick={() => {
+                          dispatchProjectScopeMenu({ type: "open-changed", open: false });
+                          if (isMobile) setOpenMobile(false);
+                          void router.navigate({ to: "/archived" });
+                        }}
+                      >
+                        <ArchiveIcon />
+                        Archived threads
+                      </Button>
+                    </div>
                     <ComboboxSearchInput
                       aria-label={
                         machineScopeItems.length > 0

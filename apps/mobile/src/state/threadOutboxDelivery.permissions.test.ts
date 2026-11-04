@@ -389,7 +389,6 @@ describe("queued task operation access", () => {
     const queued = message({
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "different-model" },
       runtimeMode: "approval-required",
-      interactionMode: "plan",
     });
     await state.manager.enqueue(queued);
     state.runtime.mockImplementationOnce(async () => {

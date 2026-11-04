@@ -11,7 +11,7 @@ import {
   TriangleAlertIcon,
   XIcon,
 } from "lucide-react";
-import { useLocation } from "@tanstack/react-router";
+import { Link, useLocation } from "@tanstack/react-router";
 import {
   type KeyboardEvent,
   type ReactNode,
@@ -73,6 +73,7 @@ import {
 } from "./KeybindingsSettings.logic";
 import { SettingsGroup } from "./SettingsGroup";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
+import { QuitShortcutRow, SendShortcutRow } from "./SettingsPanels";
 import { keybindingSearchAnchorId, searchableSetting } from "./settingsSearch";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -1539,6 +1540,35 @@ export function KeybindingsSettingsPanel() {
           </SettingsGroup>
         )}
       </div>
+
+      <OtherShortcutsSection />
     </SettingsPageContainer>
+  );
+}
+
+/** Shortcuts this device keeps in its own settings rather than in keybindings.json. */
+function OtherShortcutsSection() {
+  return (
+    <SettingsSection id="other-shortcuts" title="Other shortcuts">
+      <SendShortcutRow />
+      <QuitShortcutRow />
+      {isElectron ? (
+        <SettingsRow
+          title="Capture shortcut"
+          description="Captures a window into your draft. Set it with the rest of Window capture."
+          control={
+            <Button
+              render={
+                <Link to="/settings/chat" hash={searchableSetting("snap-shot-shortcut").id} />
+              }
+              size="sm"
+              variant="outline"
+            >
+              Change
+            </Button>
+          }
+        />
+      ) : null}
+    </SettingsSection>
   );
 }

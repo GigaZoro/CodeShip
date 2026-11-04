@@ -14,6 +14,8 @@ import {
 /** One-click requests sent to the agent in this thread, for work the user would otherwise type. */
 export function ThreadAgentActionsPanel(props: {
   readonly isGitRepo: boolean;
+  /** False when git shows no changes to commit or review; null when unknown. */
+  readonly hasChanges: boolean | null;
   /** Why the agent cannot take a message now, or null when it can. */
   readonly unavailableReason: string | null;
   readonly onAsk: (prompt: string) => void;
@@ -50,7 +52,7 @@ export function ThreadAgentActionsPanel(props: {
       }
     >
       <div className="flex flex-col">
-        {availableAgentActions(props.isGitRepo, customActions).map((action) => (
+        {availableAgentActions(props.isGitRepo, customActions, props.hasChanges).map((action) => (
           <Tooltip key={action.id}>
             <TooltipTrigger
               delay={400}

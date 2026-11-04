@@ -55,7 +55,7 @@ See [images and videos](#images-and-videos-in-messages) for previewing and savin
 
 ## Send while the agent is working
 
-On web and desktop, choose **Settings → Chat → Follow-up behavior** to queue
+On web and desktop, choose **Settings → Chat & diffs → Follow-up behavior** to queue
 new messages for a later turn or steer the running turn immediately. The setting
 applies to this client; already queued messages keep their place. Queued messages
 are saved on the server and can be edited or removed before they send.
@@ -90,7 +90,7 @@ device until you sign back into the same account.
 
 ## Custom models
 
-On web and desktop, use Settings → Providers → **Models** to add an unlisted model with a custom
+On web and desktop, use Settings → Providers & models → **Models** to add an unlisted model with a custom
 name and options. Only options supported by the provider integration affect turns. Antigravity
 uses its account catalog and does not support custom models.
 
@@ -114,7 +114,7 @@ instance:
 CodeShip remembers your provider, model, and model options for new threads. A
 project's configured model takes precedence; resetting that project setting
 returns to the remembered selection. [Auto](./thread-sidebar.md#inspect-agent-work)
-runs the provider and model you choose in **Settings → Providers** and picks the
+runs the provider and model you choose in **Settings → Providers & models** and picks the
 account for you.
 
 Leaving reasoning level or service tier unset uses the provider's own configuration.
@@ -248,14 +248,17 @@ folders, because Codex lists both copies of a duplicate. All accounts of a
 provider use the same folders, unless you gave an account its own config
 directory.
 
-The slash menu also includes skills unless you turn off **Settings → Chat →
+The slash menu also includes skills unless you turn off **Settings → Chat & diffs →
 Show skills in slash menu**, under Advanced. Only skills enabled for the provider are listed.
 
-On web and desktop, **Skills** in the sidebar rail lists every provider's skills
+On web and desktop, the **Skills** tab of **Extensions** in the sidebar rail lists every provider's skills
 on each connected machine, with what each one does and where its `SKILL.md`
 lives. Project skills appear once a thread has used that project with the
 provider. With several machines, each gets its own column, and a skill that the
-same provider lacks on another shown machine is marked **Not on** that machine.
+same provider lacks on another shown machine is marked **Not on** that machine; choose
+**Copy to** that machine to copy the skill to the same agent there. Skills that are
+linked from another folder, such as ones kept in a synced `agent-config`, are not
+copied; pull that repository on the other machine instead.
 **Filters** narrows the page by provider, source, status, and machine, or to
 just those differences.
 
@@ -264,15 +267,15 @@ session** in the command palette on web and desktop. The conversation continues,
 and your next message starts the agent again with the new setup.
 
 Provider commands must start the message to run. CodeShip commands such as
-`/model` and `/plan`, and skill mentions, work on any line.
+`/model`, and skill mentions, work on any line.
+
+Choose **Retry** under the last assistant reply to rewind and send your last message again.
 
 Send `/compact` in an existing conversation to reduce context usage when the
-provider supports it, even with the context meter turned off.
+provider supports it, even before the context meter appears.
 
-On web and desktop, turn on **Settings → Labs → Legacy → Context
-window indicator (legacy)** to see context usage. The meter is off by default
-and appears once the provider reports usage. Open it for usage details and
-**Compact context** when the provider supports compaction.
+On web and desktop, the context meter appears once the provider reports usage. Open it
+for usage details and **Compact context** when the provider supports compaction.
 
 Claude instances can also compact idle threads for you. See
 [compact long conversations](./providers-claude.md#compact-long-conversations).

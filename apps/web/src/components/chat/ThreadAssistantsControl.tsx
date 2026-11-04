@@ -13,6 +13,7 @@ import {
   useOpenBrowserAssistant,
 } from "~/browser/browserAssistants";
 import { cn } from "~/lib/utils";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Menu, MenuItem, MenuItemLabel, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import {
@@ -33,27 +34,34 @@ export function ThreadAssistantsControl(props: {
   const [menuOpen, setMenuOpen] = useState(false);
   const only = props.assistants.length === 1 ? props.assistants[0] : undefined;
   const PrimaryIcon = only ? BROWSER_ASSISTANTS[only.kind].Icon : SparklesIcon;
-  const primaryLabel = only ? browserAssistantLabel(only) : "Dots and Duets";
+  const primaryLabel = only ? browserAssistantLabel(only) : "Web assistants";
 
   return (
     <div
       role="group"
-      aria-label="Dots and Duets"
+      aria-label="Web assistants"
       className={THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS}
       ref={anchorRef}
     >
-      <ThreadDetailsControl
-        size="sm"
-        variant="ghost"
-        part="primary"
-        aria-label={only ? `Open ${primaryLabel}` : "Choose a dot or Duet"}
-        onClick={() => (only ? void openAssistant(only) : setMenuOpen(true))}
-      >
-        <PrimaryIcon aria-hidden className={THREAD_DETAILS_PANEL_ICON_CLASS} />
-        <span className={cn("min-w-0 truncate", THREAD_DETAILS_PANEL_LABEL_CLASS)}>
-          {primaryLabel}
-        </span>
-      </ThreadDetailsControl>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <ThreadDetailsControl
+              size="sm"
+              variant="ghost"
+              part="primary"
+              aria-label={only ? `Open ${primaryLabel}` : "Choose a web assistant"}
+              onClick={() => (only ? void openAssistant(only) : setMenuOpen(true))}
+            />
+          }
+        >
+          <PrimaryIcon aria-hidden className={THREAD_DETAILS_PANEL_ICON_CLASS} />
+          <span className={cn("min-w-0 truncate", THREAD_DETAILS_PANEL_LABEL_CLASS)}>
+            {primaryLabel}
+          </span>
+        </TooltipTrigger>
+        <TooltipPopup side="left">ChatGPT dots and Claude Duets</TooltipPopup>
+      </Tooltip>
       <span aria-hidden="true" className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS} />
       <Menu open={menuOpen} onOpenChange={setMenuOpen}>
         <MenuTrigger
@@ -62,7 +70,7 @@ export function ThreadAssistantsControl(props: {
               size="sm"
               variant="ghost"
               part="secondary"
-              aria-label="Dots and Duets options"
+              aria-label="Web assistants options"
             />
           }
         >
@@ -84,7 +92,7 @@ export function ThreadAssistantsControl(props: {
           <MenuSeparator />
           <MenuItem onClick={() => void navigate({ to: "/settings/browser" })}>
             <SettingsIcon className="size-4" />
-            <MenuItemLabel>Manage dots and Duets</MenuItemLabel>
+            <MenuItemLabel>Manage web assistants</MenuItemLabel>
           </MenuItem>
         </MenuPopup>
       </Menu>

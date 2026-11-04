@@ -68,7 +68,7 @@ export function countActiveSkillFilters(search: SkillsSearch): number {
   );
 }
 
-interface SkillsMachine {
+export interface SkillsMachine {
   readonly environmentId: EnvironmentId;
   readonly label: string;
 }
@@ -84,7 +84,7 @@ export interface SkillRowModel {
   readonly skill: ServerProviderSkill;
   readonly source: ProviderSkillSourceKind;
   /** Shown machines whose same agent lacks this skill. */
-  readonly missingOn: ReadonlyArray<string>;
+  readonly missingOn: ReadonlyArray<SkillsMachine>;
 }
 
 export interface SkillAgentGroup<Provider> {
@@ -160,7 +160,9 @@ export function buildSkillsView<Machine extends SkillsMachine, Provider>(input: 
       if (other === column) return [];
       const names = namesByMachine.get(other)?.get(agentKey);
       // A machine without this agent differs by agent, not by skill.
-      return names && !names.has(skillNameKey(skill)) ? [other.machine.label] : [];
+      return names && !names.has(skillNameKey(skill))
+        ? [{ environmentId: other.machine.environmentId, label: other.machine.label }]
+        : [];
     });
 
   const comparing = visible.length > 1;

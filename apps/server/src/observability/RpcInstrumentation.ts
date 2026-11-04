@@ -57,6 +57,8 @@ const RPC_AGGREGATES = {
   [WS_METHODS.providerPluginsUninstall]: "provider",
   [WS_METHODS.providerPluginsSetEnabled]: "provider",
   [WS_METHODS.providerPluginsAddMarketplace]: "provider",
+  [WS_METHODS.providerSkillsExport]: "provider",
+  [WS_METHODS.providerSkillsInstall]: "provider",
   [WS_METHODS.providerMcpList]: "provider",
   [WS_METHODS.providerMcpAdd]: "provider",
   [WS_METHODS.providerMcpRemove]: "provider",

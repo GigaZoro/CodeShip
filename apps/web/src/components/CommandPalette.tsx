@@ -77,6 +77,7 @@ import {
   MessageSquareIcon,
   MessagesSquareIcon,
   PaletteIcon,
+  ArchiveIcon,
   RotateCcwIcon,
   ServerIcon,
   SettingsIcon,
@@ -258,6 +259,9 @@ import { ProjectFilePicker } from "./files/ProjectFilePicker";
 import { openLinkPullRequestDialog } from "./pullRequest/LinkPullRequestDialog";
 import { canShareWithGuestAtom } from "./chat/guestShareAvailability";
 import { openGuestShareDialog } from "./chat/guestShareDialogState";
+import { useOpenSetupWizard } from "../onboarding/setupRerun";
+import { useActiveThreadPaletteItems } from "./CommandPaletteThreadActions";
+import { ThreadRenameDialogHost } from "./ThreadRenameDialog";
 import { ProjectContentSearchDialog } from "./search/ProjectContentSearchDialog";
 import { settingsForThisPlatform, SETTINGS_SECTION_LABELS } from "./settings/settingsSearch";
 import { primaryServerKeybindingsAtom } from "../state/server";
@@ -354,6 +358,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
           initialContext={state.restoredSearch}
         />
       </CommandDialog>
+      <ThreadRenameDialogHost />
     </ComposerHandleContext>
   );
 }
@@ -424,6 +429,7 @@ function OpenCommandPaletteDialog(props: {
   readonly initialContext: CommandPaletteReturnContext | undefined;
 }) {
   const navigate = useNavigate();
+  const openSetupWizard = useOpenSetupWizard();
   const pathname = useLocation({ select: (location) => location.pathname });
   const { openChildSearch, setOpen } = props;
   // Keyed by palette session: the intent and restored search only seed this
@@ -547,6 +553,7 @@ function OpenCommandPaletteDialog(props: {
   };
   const threads = useVisibleThreadShells();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const activeThreadLifecycleItems = useActiveThreadPaletteItems(activeThread);
   const providersByEnvironment = useEnvironmentProviders();
   const { changeThemeItem, changeAppearanceItem, themeEditorItem } = useCommandPaletteThemeItems();
   const currentView = viewStack.at(-1)?.view ?? null;
@@ -1505,6 +1512,8 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
+  actionItems.push(...activeThreadLifecycleItems);
+
   if (activeThread !== null) {
     actionItems.push({
       kind: "action",
@@ -1733,12 +1742,23 @@ function OpenCommandPaletteDialog(props: {
 
   actionItems.push({
     kind: "action",
+    value: "action:extensions",
+    searchTerms: ["extensions", "add-ons", "skills", "plugins", "mcp", "connectors"],
+    title: "Open extensions",
+    icon: <BlocksIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/extensions" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
     value: "action:skills",
-    searchTerms: ["skills", "agent skills", "capabilities"],
+    searchTerms: ["skills", "agent skills", "capabilities", "extensions"],
     title: "Open skills",
     icon: <SparklesIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
-      await navigate({ to: "/skills" });
+      await navigate({ to: "/extensions", search: { tab: "skills" } });
     },
   });
 
@@ -1749,7 +1769,7 @@ function OpenCommandPaletteDialog(props: {
     title: "Open plugins",
     icon: <BlocksIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
-      await navigate({ to: "/plugins" });
+      await navigate({ to: "/extensions", search: { tab: "plugins" } });
     },
   });
 
@@ -1760,7 +1780,29 @@ function OpenCommandPaletteDialog(props: {
     title: "Open MCP servers",
     icon: <ServerIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
-      await navigate({ to: "/model-context-servers" });
+      await navigate({ to: "/extensions", search: { tab: "mcp" } });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:archived-threads",
+    searchTerms: ["archived", "archive", "restore", "unarchive", "old threads"],
+    title: "Open archived threads",
+    icon: <ArchiveIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/archived" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:run-setup",
+    searchTerms: ["setup", "welcome", "onboarding", "wizard", "first run", "get started"],
+    title: "Run setup again",
+    icon: <RotateCcwIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      openSetupWizard();
     },
   });
 
@@ -2689,6 +2731,13 @@ function OpenCommandPaletteDialog(props: {
       platform: navigator.platform,
       context: { modelPickerOpen: false, editableFocus: true },
     });
+    if (command === "thread.snooze" && !event.nativeEvent.isComposing) {
+      event.preventDefault();
+      event.stopPropagation();
+      setHighlightedItemValue(null);
+      setQuery(">Snooze");
+      return;
+    }
     if (command === "thread.pin") {
       const highlightedItem = findHighlightedCommandPaletteItem(
         displayedGroups,
@@ -2710,8 +2759,15 @@ function OpenCommandPaletteDialog(props: {
       (command === "chat.new" ||
         command === "chat.newLocal" ||
         command === "chat.newWithoutProject");
+    // Any row's displayed shortcut runs that row; find and copy have their own handling below.
+    const runsDisplayedShortcut =
+      command !== null &&
+      command !== "chat.find" &&
+      command !== "thread.copyReference" &&
+      !event.nativeEvent.isComposing &&
+      event.keyCode !== 229;
     const matchingItem =
-      isJump || isNewThread
+      isJump || isNewThread || runsDisplayedShortcut
         ? displayedGroups
             .flatMap((group) => group.items)
             .find((item) => item.shortcutCommand === command)

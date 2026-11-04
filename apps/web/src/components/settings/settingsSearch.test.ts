@@ -36,7 +36,7 @@ const ITEMS: ReadonlyArray<SettingsSearchItem> = [
   {
     id: "network-access",
     title: "Network access",
-    to: "/settings/access",
+    to: "/settings/connections",
     searchTerms: ["remote pairing backend"],
   },
   {
@@ -61,13 +61,13 @@ describe("searchSettings", () => {
   it("matches titles, sections, and remembered setting details", () => {
     expect(searchSettings("word", ITEMS).map((item) => item.id)).toEqual(["word-wrap"]);
     expect(searchSettings("network", ITEMS).map((item) => item.id)).toEqual(["network-access"]);
-    expect(searchSettings("sharing", ITEMS).map((item) => item.id)).toEqual(["network-access"]);
+    expect(searchSettings("machines", ITEMS).map((item) => item.id)).toEqual(["network-access"]);
     expect(searchSettings("claude", ITEMS).map((item) => item.id)).toEqual(["providers"]);
     expect(searchSettings("long lines", ITEMS).map((item) => item.id)).toEqual(["word-wrap"]);
     for (const query of ["fallback", "fallback agent", "fallback model"]) {
       expect(searchSettings(query)[0]).toMatchObject({
         id: "fallback-model",
-        to: "/settings/threads",
+        to: "/settings/providers",
         scope: "environment-defaults",
       });
     }
@@ -236,8 +236,7 @@ describe("settings search targets", () => {
     expect(streaming.scope).toBe("project-defaults");
     expect(isSettingsSearchScopeAvailable(streaming.scope, "project")).toBe(true);
     for (const id of [
-      "legacy-plan-mode",
-      "legacy-context-window-indicator",
+      "pull-request-links-open-in-app",
       "sidebar-grouping",
       "sidebar-group-by-machine",
     ]) {
@@ -350,26 +349,37 @@ describe("source control host search items", () => {
 describe("movedSettingsPath", () => {
   it("sends old links to the page their row moved to", () => {
     expect(movedSettingsPath("/settings/general", "text-generation-model")).toBe(
+      "/settings/providers",
+    );
+    expect(movedSettingsPath("/settings/threads", "default-model")).toBe("/settings/providers");
+    expect(movedSettingsPath("/settings/access", "authorized-clients")).toBe(
+      "/settings/connections",
+    );
+    expect(movedSettingsPath("/settings/worktrees", "worktree-branch-naming")).toBe(
+      "/settings/source-control",
+    );
+    expect(movedSettingsPath("/settings/diffs", "diff-color-scheme")).toBe("/settings/appearance");
+    expect(movedSettingsPath("/settings/access", "network-access")).toBe("/settings/connections");
+    expect(movedSettingsPath("/settings/storage", "storage-worktrees")).toBe(
+      "/settings/source-control",
+    );
+    expect(movedSettingsPath("/settings/storage", "")).toBe("/settings/maintenance");
+    expect(movedSettingsPath("/settings/integrations", "devices")).toBe("/settings/browser");
+    expect(movedSettingsPath("/settings/beta", "")).toBe("/settings/general");
+    expect(movedSettingsPath("/settings/labs", "guest-links")).toBe("/settings/connections");
+    expect(movedSettingsPath("/settings/about", "")).toBe("/settings/maintenance");
+    expect(movedSettingsPath("/settings/snap-shot", "")).toBe("/settings/chat");
+    expect(movedSettingsPath("/settings/chat", "send-shortcut")).toBe("/settings/keybindings");
+    expect(movedSettingsPath("/settings/providers", "compact-idle-threads")).toBe(
       "/settings/threads",
     );
-    expect(movedSettingsPath("/settings/connections", "authorized-clients")).toBe(
-      "/settings/access",
-    );
-    expect(movedSettingsPath("/settings/source-control", "worktree-branch-naming")).toBe(
-      "/settings/worktrees",
-    );
-    expect(movedSettingsPath("/settings/appearance", "diff-color-scheme")).toBe("/settings/diffs");
-    expect(movedSettingsPath("/settings/connections", "network-access")).toBe("/settings/access");
-    expect(movedSettingsPath("/settings/storage", "storage-worktrees")).toBe("/settings/worktrees");
-    expect(movedSettingsPath("/settings/storage", "")).toBe("/settings/maintenance");
-    expect(movedSettingsPath("/settings/integrations", "devices")).toBe("/settings/devices");
-    expect(movedSettingsPath("/settings/beta", "")).toBe("/settings/labs");
   });
 
   it("leaves current pages alone", () => {
     expect(movedSettingsPath("/settings/general", "time-format")).toBeNull();
-    expect(movedSettingsPath("/settings/projects", "project-defaults")).toBeNull();
+    expect(movedSettingsPath("/settings/projects", "add-project-starts-in")).toBeNull();
     expect(movedSettingsPath("/settings/connections", "remote-environments")).toBeNull();
     expect(movedSettingsPath("/settings/appearance", "theme")).toBeNull();
+    expect(movedSettingsPath("/settings/providers", "default-model")).toBeNull();
   });
 });

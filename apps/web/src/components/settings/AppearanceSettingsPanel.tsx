@@ -31,6 +31,7 @@ import {
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
+import { DiffColorsSettingsRow } from "./SettingsPanels";
 import { searchableSetting } from "./settingsSearch";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { PanelAnimationsPreview } from "./PanelAnimationsPreview";
@@ -350,13 +351,13 @@ export function AppearanceSettingsPanel() {
             />
           }
         />
+        <DiffColorsSettingsRow />
         <AdvancedSettings
           targetIds={[
             searchableSetting("panel-animations").id,
             searchableSetting("environment-identification").id,
             // Environment identification's search result lands on this section.
             "appearance-interface",
-            searchableSetting("composer-context").id,
           ]}
         >
           <SettingsRow
@@ -450,33 +451,6 @@ export function AppearanceSettingsPanel() {
                   ))}
                 </SelectPopup>
               </Select>
-            }
-          />
-          <SettingsRow
-            {...searchableSetting("composer-context")}
-            description="Keep branch and worktree controls below the composer after a thread starts."
-            resetAction={
-              settings.persistComposerContextStrip !==
-              DEFAULT_UNIFIED_SETTINGS.persistComposerContextStrip ? (
-                <SettingResetButton
-                  label="composer context"
-                  onClick={() =>
-                    updateSettings({
-                      persistComposerContextStrip:
-                        DEFAULT_UNIFIED_SETTINGS.persistComposerContextStrip,
-                    })
-                  }
-                />
-              ) : null
-            }
-            control={
-              <Switch
-                checked={settings.persistComposerContextStrip}
-                onCheckedChange={(checked) =>
-                  updateSettings({ persistComposerContextStrip: Boolean(checked) })
-                }
-                aria-label="Keep composer context visible in active threads"
-              />
             }
           />
         </AdvancedSettings>

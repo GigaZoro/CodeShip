@@ -363,7 +363,6 @@ export async function recoverEditedCreationAfterDelivery(
     updateComposerDraftSettings(draftKey, {
       ...(kept.modelSelection !== undefined ? { modelSelection: kept.modelSelection } : {}),
       ...(kept.runtimeMode !== undefined ? { runtimeMode: kept.runtimeMode } : {}),
-      ...(kept.interactionMode !== undefined ? { interactionMode: kept.interactionMode } : {}),
     });
     // Flush before removal: append only schedules persistence, leaving the queue as the sole durable copy.
     await flushComposerDrafts();
@@ -448,7 +447,6 @@ export async function restoreRejectedQueuedMessage(
     updateComposerDraftSettings(draftKey, {
       ...(queuedMessage.modelSelection ? { modelSelection: queuedMessage.modelSelection } : {}),
       ...(queuedMessage.runtimeMode ? { runtimeMode: queuedMessage.runtimeMode } : {}),
-      ...(queuedMessage.interactionMode ? { interactionMode: queuedMessage.interactionMode } : {}),
       ...(queuedMessage.creation
         ? {
             workspaceSelection: {
@@ -774,7 +772,7 @@ export function createThreadOutboxDelivery(): {
       serverEnvironment.configValueAtom(queuedMessage.environmentId),
     );
     if (!serverConfig) return false;
-    const settings = resolveQueuedThreadSettings(queuedMessage, thread, serverConfig.providers);
+    const settings = resolveQueuedThreadSettings(queuedMessage, thread);
     if (isModelSelectionUnavailable(serverConfig, settings.modelSelection, thread.projectId)) {
       const { title, detail } = describeUnavailableModelSelection(
         serverConfig,
@@ -868,11 +866,7 @@ export function createThreadOutboxDelivery(): {
       );
       return restoreQueuedMessage(persistedMessage, `${title}. ${detail}`);
     }
-    const sendSettings = resolveQueuedThreadSettings(
-      queuedMessage,
-      settings,
-      currentConfig.providers,
-    );
+    const sendSettings = resolveQueuedThreadSettings(queuedMessage, settings);
     if (!hasAccess()) return true;
     const deliveryResult = await runDeliveryCommand(threadEnvironment.startTurn, {
       environmentId: queuedMessage.environmentId,
@@ -941,15 +935,11 @@ export function createThreadOutboxDelivery(): {
       serverEnvironment.configValueAtom(queuedMessage.environmentId),
     );
     if (!serverConfig) return false;
-    const settings = resolveQueuedThreadSettings(
-      queuedMessage,
-      {
-        modelSelection,
-        runtimeMode: DEFAULT_RUNTIME_MODE,
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-      },
-      serverConfig.providers,
-    );
+    const settings = resolveQueuedThreadSettings(queuedMessage, {
+      modelSelection,
+      runtimeMode: DEFAULT_RUNTIME_MODE,
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+    });
     if (isModelSelectionUnavailable(serverConfig, settings.modelSelection, creation.projectId)) {
       const { title, detail } = describeUnavailableModelSelection(
         serverConfig,
@@ -1006,11 +996,7 @@ export function createThreadOutboxDelivery(): {
       );
       return restoreQueuedMessage(persistedMessage, `${title}. ${detail}`);
     }
-    const sendSettings = resolveQueuedThreadSettings(
-      queuedMessage,
-      settings,
-      currentConfig.providers,
-    );
+    const sendSettings = resolveQueuedThreadSettings(queuedMessage, settings);
     if (!hasAccess()) return true;
     let workspace = creation;
     if (creation.pullRequestReference) {

@@ -1,7 +1,7 @@
-import { createFileRoute } from "@tanstack/react-router";
-
-import { PluginsPage } from "../components/plugins/PluginsPage";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/_chat/plugins")({
-  component: PluginsPage,
+  beforeLoad: () => {
+    throw redirect({ to: "/extensions", search: { tab: "plugins" }, replace: true });
+  },
 });

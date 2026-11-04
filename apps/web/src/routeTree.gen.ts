@@ -27,7 +27,9 @@ import { Route as ChatProjectsRouteImport } from './routes/_chat.projects'
 import { Route as ChatPluginsRouteImport } from './routes/_chat.plugins'
 import { Route as ChatNewRouteImport } from './routes/_chat.new'
 import { Route as ChatModelContextServersRouteImport } from './routes/_chat.model-context-servers'
+import { Route as ChatExtensionsRouteImport } from './routes/_chat.extensions'
 import { Route as ChatArtifactsRouteImport } from './routes/_chat.artifacts'
+import { Route as ChatArchivedRouteImport } from './routes/_chat.archived'
 import { Route as ChatSettingsWorktreesRouteImport } from './routes/_chat.settings.worktrees'
 import { Route as ChatSettingsThreadsRouteImport } from './routes/_chat.settings.threads'
 import { Route as ChatSettingsStorageRouteImport } from './routes/_chat.settings.storage'
@@ -146,9 +148,19 @@ const ChatModelContextServersRoute = ChatModelContextServersRouteImport.update({
   path: '/model-context-servers',
   getParentRoute: () => ChatRoute,
 } as any)
+const ChatExtensionsRoute = ChatExtensionsRouteImport.update({
+  id: '/extensions',
+  path: '/extensions',
+  getParentRoute: () => ChatRoute,
+} as any)
 const ChatArtifactsRoute = ChatArtifactsRouteImport.update({
   id: '/artifacts',
   path: '/artifacts',
+  getParentRoute: () => ChatRoute,
+} as any)
+const ChatArchivedRoute = ChatArchivedRouteImport.update({
+  id: '/archived',
+  path: '/archived',
   getParentRoute: () => ChatRoute,
 } as any)
 const ChatSettingsWorktreesRoute = ChatSettingsWorktreesRouteImport.update({
@@ -304,7 +316,9 @@ export interface FileRoutesByFullPath {
   '/guest': typeof GuestRoute
   '/pair': typeof PairRoute
   '/welcome': typeof WelcomeRoute
+  '/archived': typeof ChatArchivedRoute
   '/artifacts': typeof ChatArtifactsRoute
+  '/extensions': typeof ChatExtensionsRoute
   '/model-context-servers': typeof ChatModelContextServersRoute
   '/new': typeof ChatNewRoute
   '/plugins': typeof ChatPluginsRoute
@@ -351,7 +365,9 @@ export interface FileRoutesByTo {
   '/guest': typeof GuestRoute
   '/pair': typeof PairRoute
   '/welcome': typeof WelcomeRoute
+  '/archived': typeof ChatArchivedRoute
   '/artifacts': typeof ChatArtifactsRoute
+  '/extensions': typeof ChatExtensionsRoute
   '/model-context-servers': typeof ChatModelContextServersRoute
   '/new': typeof ChatNewRoute
   '/plugins': typeof ChatPluginsRoute
@@ -401,7 +417,9 @@ export interface FileRoutesById {
   '/guest': typeof GuestRoute
   '/pair': typeof PairRoute
   '/welcome': typeof WelcomeRoute
+  '/_chat/archived': typeof ChatArchivedRoute
   '/_chat/artifacts': typeof ChatArtifactsRoute
+  '/_chat/extensions': typeof ChatExtensionsRoute
   '/_chat/model-context-servers': typeof ChatModelContextServersRoute
   '/_chat/new': typeof ChatNewRoute
   '/_chat/plugins': typeof ChatPluginsRoute
@@ -452,7 +470,9 @@ export interface FileRouteTypes {
     | '/guest'
     | '/pair'
     | '/welcome'
+    | '/archived'
     | '/artifacts'
+    | '/extensions'
     | '/model-context-servers'
     | '/new'
     | '/plugins'
@@ -499,7 +519,9 @@ export interface FileRouteTypes {
     | '/guest'
     | '/pair'
     | '/welcome'
+    | '/archived'
     | '/artifacts'
+    | '/extensions'
     | '/model-context-servers'
     | '/new'
     | '/plugins'
@@ -548,7 +570,9 @@ export interface FileRouteTypes {
     | '/guest'
     | '/pair'
     | '/welcome'
+    | '/_chat/archived'
     | '/_chat/artifacts'
+    | '/_chat/extensions'
     | '/_chat/model-context-servers'
     | '/_chat/new'
     | '/_chat/plugins'
@@ -729,11 +753,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatModelContextServersRouteImport
       parentRoute: typeof ChatRoute
     }
+    '/_chat/extensions': {
+      id: '/_chat/extensions'
+      path: '/extensions'
+      fullPath: '/extensions'
+      preLoaderRoute: typeof ChatExtensionsRouteImport
+      parentRoute: typeof ChatRoute
+    }
     '/_chat/artifacts': {
       id: '/_chat/artifacts'
       path: '/artifacts'
       fullPath: '/artifacts'
       preLoaderRoute: typeof ChatArtifactsRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/_chat/archived': {
+      id: '/_chat/archived'
+      path: '/archived'
+      fullPath: '/archived'
+      preLoaderRoute: typeof ChatArchivedRouteImport
       parentRoute: typeof ChatRoute
     }
     '/_chat/settings/worktrees': {
@@ -998,7 +1036,9 @@ const ChatSettingsRouteWithChildren = ChatSettingsRoute._addFileChildren(
 )
 
 interface ChatRouteChildren {
+  ChatArchivedRoute: typeof ChatArchivedRoute
   ChatArtifactsRoute: typeof ChatArtifactsRoute
+  ChatExtensionsRoute: typeof ChatExtensionsRoute
   ChatModelContextServersRoute: typeof ChatModelContextServersRoute
   ChatNewRoute: typeof ChatNewRoute
   ChatPluginsRoute: typeof ChatPluginsRoute
@@ -1015,7 +1055,9 @@ interface ChatRouteChildren {
 }
 
 const ChatRouteChildren: ChatRouteChildren = {
+  ChatArchivedRoute: ChatArchivedRoute,
   ChatArtifactsRoute: ChatArtifactsRoute,
+  ChatExtensionsRoute: ChatExtensionsRoute,
   ChatModelContextServersRoute: ChatModelContextServersRoute,
   ChatNewRoute: ChatNewRoute,
   ChatPluginsRoute: ChatPluginsRoute,

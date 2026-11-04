@@ -15,9 +15,10 @@ public final class T3NativeControlsModule: Module {
       if #available(iOS 26.0, *) {
         return [
           "supportsWorkspaceColumns": NSClassFromString("RNSSplitHostComponentView") != nil,
+          "supportsTasksTab": true,
         ]
       }
-      return ["supportsWorkspaceColumns": false]
+      return ["supportsWorkspaceColumns": false, "supportsTasksTab": true]
     }
     View(T3SegmentedControlView.self) {
       ViewName("SegmentedControl")

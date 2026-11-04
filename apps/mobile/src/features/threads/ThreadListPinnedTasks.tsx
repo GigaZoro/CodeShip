@@ -1,6 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { MenuAction } from "@react-native-menu/menu";
-import { useNavigation } from "@react-navigation/native";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   collectPinnedTasks,
@@ -40,7 +39,7 @@ import { serverEnvironment } from "../../state/server";
 import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { describeSchedule } from "../settings/scheduledTaskPresentation";
-import { openSettings } from "../settings/settings-navigation";
+import { useOpenScheduledTasks } from "../workspace/useOpenScheduledTasks";
 import {
   THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME,
   THREAD_LIST_V2_ROW_DIVIDERS,
@@ -134,7 +133,7 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
 }) {
   const { environmentId, task } = props;
-  const navigation = useNavigation();
+  const openScheduledTasks = useOpenScheduledTasks();
   const theme = useUniwindTheme();
   const sidebarPane = props.pane === "sidebar";
   const runThreadId = pinnedTaskRunThreadId(task);
@@ -168,7 +167,7 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
 
   const openRun = () => {
     if (runThread !== null) props.onSelectThread(runThread);
-    else openSettings(navigation, "SettingsScheduledTasks");
+    else openScheduledTasks();
   };
   const actions: MenuAction[] = [
     ...(runThread !== null ? [{ id: "open-run", title: "Open last run" }] : []),
@@ -187,7 +186,7 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
   ];
   const handleAction = async (action: string) => {
     if (action === "open-run") return openRun();
-    if (action === "edit") return openSettings(navigation, "SettingsScheduledTasks");
+    if (action === "edit") return openScheduledTasks();
     if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
     const result =
       action === "run"

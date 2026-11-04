@@ -97,9 +97,11 @@ interface ThreadDetailsPanelProps extends Pick<
   ) => Promise<ProjectScriptActionResult>;
   onDeleteProjectScript: (scriptId: string) => Promise<ProjectScriptActionResult>;
   usage: ThreadDetailsUsageInput;
-  /** Sends a request to the thread's agent; null hides the actions, as on a draft. */
+  /** Sends a request to the thread's agent; null hides the actions, as on a draft or before the thread has started. */
   agentActions: {
     readonly onAsk: (prompt: string) => void;
+    /** False when git shows no changes to commit or review; null when unknown. */
+    readonly hasChanges: boolean | null;
     /** Why the agent cannot take a message now, or null when it can. */
     readonly unavailableReason: string | null;
   } | null;
@@ -316,6 +318,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
               {props.agentActions && visible.agentActions ? (
                 <ThreadAgentActionsPanel
                   isGitRepo={props.isGitRepo}
+                  hasChanges={props.agentActions.hasChanges}
                   unavailableReason={props.agentActions.unavailableReason}
                   onAsk={props.agentActions.onAsk}
                 />

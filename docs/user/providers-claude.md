@@ -7,7 +7,7 @@ shared provider settings.
 ## Separate accounts or configurations
 
 Each Claude provider is one account. To add another, add a Claude instance in
-**Settings > Providers** and choose **Sign in**. CodeShip runs `claude auth login`
+**Settings > Providers & models** and choose **Sign in**. CodeShip runs `claude auth login`
 in a terminal on the environment's machine; sign in with the other account in your
 browser. Each provider then shows its account's email and plan.
 
@@ -18,7 +18,7 @@ sessions, so threads can move between accounts. Claude saves MCP servers with th
 login, so before Claude starts, CodeShip copies the servers in `~/.claude.json`, such
 as ones added with `claude mcp add --scope user`, into each account. The accounts
 also share MCP sign-ins, so signing in to a server on one signs in all of them; turn
-off **Share MCP sign-ins** in **Settings > Providers** to keep each account's own. On
+off **Share MCP sign-ins** in **Settings > Providers & models** to keep each account's own. On
 Windows, an account that keeps its login in the Windows Credential Manager signs in on
 its own. **Sign out** signs that account out; sign the first provider out with
 `claude auth logout` in a terminal.
@@ -74,7 +74,7 @@ history for that message. The cache lasts about an hour on a Claude
 subscription and 5 minutes with an API key, Bedrock, or Vertex. See [commands and skills](./composer.md#commands-and-skills) for using
 composer commands.
 
-**Compact idle threads** in **Settings > Providers > Advanced** controls this for threads
+**Compact idle threads** in **Settings > Threads > Behavior** controls this for threads
 over 200,000 tokens. Each Claude provider's settings can override it:
 
 - **When you return** shows the **Compact** chip described above. This is the default.
@@ -115,7 +115,7 @@ tool, which refuses skills reserved for manual invocation.
 
 To show Claude task lists in the web and desktop apps, add
 `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` under **Variables** in the Claude instance's
-**Environment** section in **Settings > Providers**. Each update shows as a Tasks
+**Environment** section in **Settings > Providers & models**. Each update shows as a Tasks
 row in the thread; open it to see every step.
 
 ## OpenRouter
@@ -135,7 +135,7 @@ Claude Code session using that directory before starting the router setup. Cache
 login credentials can conflict with the router token.
 
 Select the model you want in CodeShip. For an OpenRouter model outside the built-in
-list, open that Claude instance in **Settings > Providers** and add its full model
+list, open that Claude instance in **Settings > Providers & models** and add its full model
 ID with **Add custom model**. Then select it in the chat model picker.
 `ANTHROPIC_DEFAULT_*_MODEL` variables map Claude Code aliases such as `sonnet`; they
 do not replace the explicit model ID selected in CodeShip. Custom models may have

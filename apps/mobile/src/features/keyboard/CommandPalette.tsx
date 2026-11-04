@@ -72,6 +72,8 @@ import { parseActiveThreadPath, type HardwareKeyboardCommand } from "./hardwareK
 import { threadJumpIndex } from "./threadKeyboardShortcuts";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { openSettings } from "../settings/settings-navigation";
+import { useOpenScheduledTasks } from "../workspace/useOpenScheduledTasks";
+import { useOpenArchivedThreads } from "../archive/useOpenArchivedThreads";
 import { useSelectWorkspaceTab } from "../workspace/useSelectWorkspaceTab";
 import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
 
@@ -223,6 +225,8 @@ export function CommandPalette(props: {
 }) {
   const navigation = useNavigation();
   const selectTab = useSelectWorkspaceTab();
+  const openScheduledTasks = useOpenScheduledTasks();
+  const openArchivedThreads = useOpenArchivedThreads();
   const { themeVariables } = useAppearancePreferences();
   const selectDetail = useSelectWorkspaceDetail();
   const runCommand = props.onCommand;
@@ -332,7 +336,7 @@ export function CommandPalette(props: {
         kind: "action",
         title: "Scheduled tasks",
         searchTerms: ["schedule", "automations", "recurring"],
-        run: () => openSettings(navigation, "SettingsScheduledTasks"),
+        run: openScheduledTasks,
       },
       {
         key: "usage",
@@ -346,7 +350,7 @@ export function CommandPalette(props: {
         kind: "action",
         title: "Archived threads",
         searchTerms: ["restore", "history"],
-        run: () => openSettings(navigation, "SettingsArchive"),
+        run: openArchivedThreads,
       },
     ];
     if (canTriage) {
@@ -473,6 +477,8 @@ export function CommandPalette(props: {
     return [...actions, ...projectItems, ...threadItems];
   }, [
     selectTab,
+    openScheduledTasks,
+    openArchivedThreads,
     activeThread,
     activeThreadRef,
     environments.length,

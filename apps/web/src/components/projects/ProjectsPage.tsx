@@ -25,6 +25,7 @@ import {
 import { useId, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 
+import { ProjectSettingsSheet } from "./ProjectSettingsSheet";
 import { openCommandPalette } from "../../commandPaletteBus";
 import { isElectron } from "../../env";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
@@ -66,7 +67,7 @@ import {
   useSnoozeWakeClock,
 } from "../Sidebar.logic";
 import type { SidebarMachine } from "../sidebar/SidebarFolderHeader";
-import { resolveThreadRowStatus, ThreadRowStatusIcon } from "../sidebar/threadRowStatus";
+import { resolveThreadRowStatus, ThreadRowStatusContent } from "../sidebar/threadRowStatus";
 import { useLocallyUnreadThreadKeys } from "../sidebar/useLocallyUnreadThreadKeys";
 import { useSidebarMachines } from "../sidebar/useSidebarMachines";
 import { Button } from "../ui/button";
@@ -182,6 +183,7 @@ export function ProjectsPage() {
   const search = useSearch({ from: "/_chat/projects" });
   const navigate = useNavigate({ from: "/projects" });
   const { handleNewThread } = useHandleNewThread();
+  const [settingsProjectKey, setSettingsProjectKey] = useState<string | null>(null);
   const { settleThread, confirmSettlingUnmergedWork } = useThreadActions();
   const { copyToClipboard: copyPath } = useCopyToClipboard<{ path: string }>({
     onCopy: ({ path }) =>
@@ -349,17 +351,14 @@ export function ProjectsPage() {
     .filter((section) => section.cards.length > 0);
 
   const openProjectSettings = (card: ProjectCard) =>
-    void navigate({
-      to: "/projects/$projectKey",
-      params: {
-        projectKey: getSidebarProjectSettingsKey(
-          card.group,
-          projectGroupingSettings,
-          projects,
-          card.member ? scopeProjectRef(card.member.environmentId, card.member.id) : undefined,
-        ),
-      },
-    });
+    setSettingsProjectKey(
+      getSidebarProjectSettingsKey(
+        card.group,
+        projectGroupingSettings,
+        projects,
+        card.member ? scopeProjectRef(card.member.environmentId, card.member.id) : undefined,
+      ),
+    );
   const startThread = (card: ProjectCard) => {
     const project = card.newThreadTarget;
     if (project === null) return;
@@ -541,6 +540,10 @@ export function ProjectsPage() {
           </WorkspacePageContainer>
         </ScrollArea>
       </div>
+      <ProjectSettingsSheet
+        projectKey={settingsProjectKey}
+        onClose={() => setSettingsProjectKey(null)}
+      />
     </SidebarInset>
   );
 }
@@ -855,8 +858,7 @@ function ProjectThreadRow(props: {
         >
           {status ? (
             <span className={cn("inline-flex items-center gap-1 font-medium", status.className)}>
-              <ThreadRowStatusIcon icon={status.icon} className="size-3" />
-              {status.label}
+              <ThreadRowStatusContent status={status} iconClassName="size-3" />
             </span>
           ) : (
             <span className="text-muted-foreground">

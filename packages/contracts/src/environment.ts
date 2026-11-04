@@ -116,6 +116,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   autoMode: Schema.optionalKey(Schema.Boolean),
   /** Stores `newThreadsUseLastModel`; hide its switch where absent. */
   lastPickedModel: Schema.optionalKey(Schema.Boolean),
+  /** Serves provider.skills.export and provider.skills.install; hide Copy to machine where absent. */
+  providerSkillCopy: Schema.optionalKey(Schema.Boolean),
   /** Honors `scheduledTaskModelSelection` and a task's `followsDefaultModel`; hide both where absent. */
   scheduledTaskDefaultModel: Schema.optionalKey(Schema.Boolean),
   /** Honors `delegatedTaskModelSelections`; hide that setting where it is absent. */

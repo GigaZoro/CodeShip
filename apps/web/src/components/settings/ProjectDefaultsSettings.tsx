@@ -55,7 +55,12 @@ function isWorktreeSubmodules(value: string | null): value is WorktreeSubmodules
   return value !== null && (WORKTREE_SUBMODULES_OPTIONS as readonly string[]).includes(value);
 }
 
-export function ProjectDefaultsSettings({ category }: { category: ProjectSettingsCategory }) {
+/** "models" holds the new-thread model rows for Providers & models; "general" keeps permissions and workspace. */
+export function ProjectDefaultsSettings({
+  category,
+}: {
+  category: ProjectSettingsCategory | "models";
+}) {
   const { scope, target, targets, connectedEnvironments } = useSettingsScope();
   const settings = useScopedSettings();
   const clientSettings = useClientSettings();
@@ -254,7 +259,6 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                 model={selection.model}
                 modelOptions={selection.options ?? []}
                 allowPromptInjectedEffort={false}
-                planModeEnabled={settings.planModeEnabled}
                 triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                 onModelOptionsChange={(options) =>
                   setModel(withModelSelectionOptions(selection, options))
@@ -400,7 +404,6 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                     model={taskSelection.model}
                     modelOptions={taskSelection.options ?? []}
                     allowPromptInjectedEffort={false}
-                    planModeEnabled={settings.planModeEnabled}
                     triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                     onModelOptionsChange={(options) =>
                       setTaskModel(withModelSelectionOptions(taskSelection, options))
@@ -463,7 +466,6 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                 model={fallbackSelection.model}
                 modelOptions={fallbackSelection.options ?? []}
                 allowPromptInjectedEffort={false}
-                planModeEnabled={settings.planModeEnabled}
                 triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                 onModelOptionsChange={(options) =>
                   updateSettings({
@@ -484,6 +486,17 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
     />
   ) : null;
 
+  if (category === "models") {
+    return (
+      <SettingsSection id="new-thread-models" title="New threads">
+        {modelRow}
+        {lastModelRow}
+        {fallbackRow}
+        {taskModelRows}
+      </SettingsSection>
+    );
+  }
+
   return (
     <SettingsSection
       id={category === "source-control" ? "source-control-defaults" : "project-defaults"}
@@ -498,10 +511,6 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
         </>
       ) : category === "general" ? (
         <>
-          {modelRow}
-          {lastModelRow}
-          {fallbackRow}
-          {taskModelRows}
           <SettingsRow
             serverScoped
             settingKeys={["defaultRuntimeMode"]}

@@ -128,7 +128,7 @@ export function usePlanFollowUpSend(input: PlanFollowUpSendInput) {
     }
 
     const sendCtx = composerRef.current?.getSendContext();
-    if (!sendCtx?.providerAvailable || !sendCtx.interactionModeEnabled) {
+    if (!sendCtx?.providerAvailable) {
       return false;
     }
 
@@ -282,7 +282,7 @@ export function useImplementPlanInNewThread(input: ImplementPlanInNewThreadInput
     }
 
     const sendCtx = composerRef.current?.getSendContext();
-    if (!sendCtx?.providerAvailable || !sendCtx.interactionModeEnabled) {
+    if (!sendCtx?.providerAvailable) {
       return;
     }
 

@@ -1,5 +1,4 @@
 import { useAuth } from "@clerk/react";
-import { Link } from "@tanstack/react-router";
 import { managedCapabilityDenial } from "@t3tools/contracts";
 
 import { hasCloudPublicConfig } from "~/cloud/publicConfig";
@@ -7,30 +6,19 @@ import { useT3ConnectAuthPrompt } from "../clerk/useT3ConnectAuthPrompt";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { ScopedSwitch } from "./ScopedSwitch";
-import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
+import { SettingsRow } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
-import { LegacyFeaturesSection } from "./SettingsPanels";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 import { useOptionalSettingsScope } from "./SettingsScopeContext";
 import { firstManagedDenial, usePrimaryManagedPolicy } from "~/state/managedPolicy";
 
-/** Features still settling in, and legacy behavior kept for people who rely on it. */
-export function LabsSettingsPanel() {
-  return (
-    <SettingsPageContainer>
-      <SettingsSection id="beta" title="Beta">
-        <BoringSidebarMultilineRow />
-        {/* Clerk is only mounted when this build has T3 Connect. */}
-        {hasCloudPublicConfig() ? <GuestLinksRowWithSignIn /> : <GuestLinksRow />}
-        <LinkedEnvironmentsRow />
-        <SimlockHostsRow />
-      </SettingsSection>
-      <LegacyFeaturesSection />
-    </SettingsPageContainer>
-  );
+/** Opt-in features that used to live in Labs, now shown on the page they belong to. */
+export function GuestLinksSetting() {
+  // Clerk is only mounted when this build has T3 Connect.
+  return hasCloudPublicConfig() ? <GuestLinksRowWithSignIn /> : <GuestLinksRow />;
 }
 
-function BoringSidebarMultilineRow() {
+export function BoringSidebarMultilineRow() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   return (
@@ -91,11 +79,8 @@ function GuestLinksRow() {
       description={
         <>
           Share a thread with a guest who watches it live in their browser and sends messages you
-          approve. Needs T3 Connect: sign in and link this machine in{" "}
-          <Link to="/settings/access" className="underline underline-offset-2">
-            Sharing & access
-          </Link>
-          . While it is off, every guest link stops working.
+          approve. Needs T3 Connect: sign in and link this machine under T3 Connect on this page.
+          While it is off, every guest link stops working.
         </>
       }
       control={
@@ -110,7 +95,7 @@ function GuestLinksRow() {
   );
 }
 
-function LinkedEnvironmentsRow() {
+export function LinkedEnvironmentsRow() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   return (
@@ -120,12 +105,9 @@ function LinkedEnvironmentsRow() {
       settingKeys={["linkedEnvironmentsEnabled"]}
       description={
         <>
-          Let agents here work on your other machines, and theirs here. Turn it on for each machine,
-          then link them in{" "}
-          <Link to="/settings/connections" className="underline underline-offset-2">
-            Connections
-          </Link>
-          . While it is off, nothing new starts over a link; tasks already running finish.
+          Let agents here work on your other machines, and theirs here. Applies to every machine
+          this app is connected to; link them under Linked environments on this page. While it is
+          off, nothing new starts over a link; tasks already running finish.
         </>
       }
       control={
@@ -142,7 +124,7 @@ function LinkedEnvironmentsRow() {
   );
 }
 
-function SimlockHostsRow() {
+export function SimlockHostsRow() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   return (
@@ -161,11 +143,8 @@ function SimlockHostsRow() {
           >
             Simlock
           </a>{" "}
-          pool, added in{" "}
-          <Link to="/settings/devices" className="underline underline-offset-2">
-            Devices
-          </Link>
-          . An alpha that may change or break. CodeShip never installs Simlock.
+          pool, added under Device sources. An alpha that may change or break. CodeShip never
+          installs Simlock.
         </>
       }
       control={

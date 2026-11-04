@@ -9,13 +9,11 @@ import {
   OrchestrationMessageContext,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ProjectId as ProjectIdSchema,
-  ProviderInteractionMode as ProviderInteractionModeSchema,
   ProviderOptionSelection as ProviderOptionSelectionSchema,
   RuntimeMode as RuntimeModeSchema,
   type EnvironmentId,
   type ModelSelection,
   type ProjectId,
-  type ProviderInteractionMode,
   type ProviderOptionSelection,
   type RuntimeMode,
   type ScopedThreadRef,
@@ -365,7 +363,6 @@ export interface ComposerDraft {
   readonly importedShareIds?: ReadonlyArray<string>;
   readonly modelSelection?: ModelSelection;
   readonly runtimeMode?: RuntimeMode;
-  readonly interactionMode?: ProviderInteractionMode;
   readonly workspaceSelection?: ComposerDraftWorkspaceSelection;
   readonly project?: ComposerDraftProject;
 }
@@ -399,7 +396,7 @@ export interface ComposerDraftWorkspaceSelection {
 
 export type ComposerDraftSettingsUpdate = Pick<
   ComposerDraft,
-  "modelSelection" | "runtimeMode" | "interactionMode" | "workspaceSelection" | "project"
+  "modelSelection" | "runtimeMode" | "workspaceSelection" | "project"
 >;
 
 const ComposerDraftWorkspaceSelectionSchema = Schema.Struct({
@@ -430,7 +427,6 @@ const ComposerDraftSchema = Schema.Struct({
   importedShareIds: Schema.optional(Schema.Array(Schema.String)),
   modelSelection: Schema.optional(ModelSelectionSchema),
   runtimeMode: Schema.optional(RuntimeModeSchema),
-  interactionMode: Schema.optional(ProviderInteractionModeSchema),
   workspaceSelection: Schema.optional(ComposerDraftWorkspaceSelectionSchema),
   project: Schema.optional(ComposerDraftProjectSchema),
 });
@@ -611,7 +607,6 @@ function isEmptyDraft(draft: ComposerDraft): boolean {
     draft.attachments.length === 0 &&
     draft.modelSelection === undefined &&
     draft.runtimeMode === undefined &&
-    draft.interactionMode === undefined &&
     draft.workspaceSelection === undefined
   );
 }
@@ -677,7 +672,6 @@ export function decodePersistedComposerState(value: unknown): {
               draft.text.length === 0 &&
               draft.attachments.length === 0 &&
               draft.runtimeMode === undefined &&
-              draft.interactionMode === undefined &&
               draft.workspaceSelection === undefined
               ? { ...draft, modelSelection: undefined }
               : draft,
@@ -1166,18 +1160,8 @@ export async function removeDeliveredCloudQueuedMessage(
     )
       continue;
     if (
-      JSON.stringify([
-        archived.modelSelection,
-        archived.runtimeMode,
-        archived.interactionMode,
-        archived.creation,
-      ]) !==
-      JSON.stringify([
-        message.modelSelection,
-        message.runtimeMode,
-        message.interactionMode,
-        message.creation,
-      ])
+      JSON.stringify([archived.modelSelection, archived.runtimeMode, archived.creation]) !==
+      JSON.stringify([message.modelSelection, message.runtimeMode, message.creation])
     )
       continue;
     const editorKey = `pending-task:${message.messageId}`;
@@ -1189,8 +1173,6 @@ export async function removeDeliveredCloudQueuedMessage(
         (editor.modelSelection !== undefined &&
           JSON.stringify(editor.modelSelection) !== JSON.stringify(message.modelSelection)) ||
         (editor.runtimeMode !== undefined && editor.runtimeMode !== message.runtimeMode) ||
-        (editor.interactionMode !== undefined &&
-          editor.interactionMode !== message.interactionMode) ||
         (editor.workspaceSelection !== undefined &&
           (editor.workspaceSelection.mode !== message.creation?.workspaceMode ||
             editor.workspaceSelection.branch !== message.creation?.branch ||
@@ -1745,7 +1727,6 @@ export function sameComposerDraftState(a: ComposerDraft, b: ComposerDraft): bool
     a.importedShareIds === b.importedShareIds &&
     a.modelSelection === b.modelSelection &&
     a.runtimeMode === b.runtimeMode &&
-    a.interactionMode === b.interactionMode &&
     a.workspaceSelection === b.workspaceSelection
   );
 }
@@ -1770,9 +1751,7 @@ export function undoComposerDraftMergeState(
       .filter((attachment) => !snapshotAttachmentIds.has(attachment.id))
       .map((attachment) => attachment.id),
   );
-  const undoSetting = <
-    K extends "modelSelection" | "runtimeMode" | "interactionMode" | "workspaceSelection",
-  >(
+  const undoSetting = <K extends "modelSelection" | "runtimeMode" | "workspaceSelection">(
     key: K,
   ): ComposerDraft[K] => (existing[key] === merged[key] ? snapshot[key] : existing[key]);
   const text =
@@ -1790,7 +1769,6 @@ export function undoComposerDraftMergeState(
     ),
     modelSelection: undoSetting("modelSelection"),
     runtimeMode: undoSetting("runtimeMode"),
-    interactionMode: undoSetting("interactionMode"),
     workspaceSelection: undoSetting("workspaceSelection"),
   };
   return withComposerDraft(current, draftKey, draft);
@@ -2021,10 +1999,7 @@ export const composerDraftUploadSourcesAtom = Atom.make((get): ComposerDraftUplo
   }),
 );
 
-type ComposerDraftSettings = Pick<
-  ComposerDraft,
-  "modelSelection" | "runtimeMode" | "interactionMode"
->;
+type ComposerDraftSettings = Pick<ComposerDraft, "modelSelection" | "runtimeMode">;
 const EMPTY_DRAFT_SETTINGS: ComposerDraftSettings = {};
 const composerDraftSettingsAtom = Atom.family((draftKey: string) =>
   Atom.make((get): ComposerDraftSettings => {
@@ -2032,14 +2007,11 @@ const composerDraftSettingsAtom = Atom.family((draftKey: string) =>
     return {
       modelSelection: draft.modelSelection,
       runtimeMode: draft.runtimeMode,
-      interactionMode: draft.interactionMode,
     };
   }).pipe(
     Atom.withEquality(
       (a: ComposerDraftSettings, b: ComposerDraftSettings) =>
-        a.modelSelection === b.modelSelection &&
-        a.runtimeMode === b.runtimeMode &&
-        a.interactionMode === b.interactionMode,
+        a.modelSelection === b.modelSelection && a.runtimeMode === b.runtimeMode,
     ),
   ),
 );

@@ -61,6 +61,12 @@ export interface TimelineRowSharedState {
   runs: ReadonlyArray<HandoffTimelineRun>;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertToTurnCount: (targetTurnCount: number, messageId: MessageId) => void;
+  /** The last reply and the message it answers, when that exchange can be rewound and resent. */
+  retryTarget: {
+    readonly assistantMessageId: MessageId;
+    readonly userMessageId: MessageId;
+    readonly turnCount: number;
+  } | null;
   onUseArtifactTemplate: (template: CodexArtifactTemplate) => void;
   onSendAppMessage: ((text: string) => Promise<void>) | undefined;
   onAppFullscreenChange: (rowId: string, fullscreen: boolean) => void;

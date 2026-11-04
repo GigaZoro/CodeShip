@@ -45,6 +45,11 @@ export function isProjectScopedSettingKey(key: string): key is ProjectScopedServ
   return PROJECT_SCOPED_KEYS.has(key);
 }
 
+/** Whether a project or checkout scope can store this key: client-side, or a per-project server override. */
+export function isStorableInProjectScope(key: string): boolean {
+  return isProjectScopedSettingKey(key) || (CLIENT_KEYS.has(key) && !SERVER_KEYS.has(key));
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

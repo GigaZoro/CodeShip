@@ -1,5 +1,12 @@
-export const NAVIGATION_TAB_ORDER = ["threads", "pullRequests", "usage"] as const;
+export const NAVIGATION_TAB_ORDER = ["threads", "scheduledTasks", "pullRequests", "usage"] as const;
 export type NavigationTab = (typeof NAVIGATION_TAB_ORDER)[number];
+
+/** Tabs that are one full page, with no list/detail pair and no search. */
+export type NavigationPageTab = Exclude<NavigationTab, "threads" | "pullRequests">;
+
+export function isNavigationPageTab(tab: NavigationTab): tab is NavigationPageTab {
+  return tab !== "threads" && tab !== "pullRequests";
+}
 
 export function navigationCustomizationAvailable(
   registeredSections: number = NAVIGATION_TAB_ORDER.length,
@@ -9,7 +16,8 @@ export function navigationCustomizationAvailable(
 
 export const NAVIGATION_TAB_LABELS: Readonly<Record<NavigationTab, string>> = {
   threads: "Threads",
-  pullRequests: "Pulls",
+  scheduledTasks: "Tasks",
+  pullRequests: "PRs",
   usage: "Usage",
 };
 

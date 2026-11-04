@@ -7,6 +7,8 @@ export type ThreadContentPresentation =
       readonly kind: "unavailable";
       readonly title: string;
       readonly detail: string;
+      /** The load failed and trying again can succeed; the feed offers a Retry action. */
+      readonly retryable?: true;
     };
 
 export function projectThreadContentPresentation(input: {
@@ -30,6 +32,7 @@ export function projectThreadContentPresentation(input: {
       kind: "unavailable",
       title: "Could not load conversation",
       detail: input.detailError,
+      retryable: true,
     };
   }
   if (

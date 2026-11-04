@@ -1,7 +1,6 @@
 import {
   AlarmClockIcon,
   CircleAlertIcon,
-  CircleCheckIcon,
   CircleDashedIcon,
   CircleDotDashedIcon,
   MessageCircleQuestionIcon,
@@ -19,15 +18,25 @@ const THREAD_ROW_STATUS_ICONS = {
   request: UserRoundIcon,
   approval: ShieldQuestionIcon,
   failed: CircleAlertIcon,
-  done: CircleCheckIcon,
   woke: AlarmClockIcon,
 } as const;
 
-export interface ThreadRowStatus {
-  readonly label: string;
-  readonly icon: keyof typeof THREAD_ROW_STATUS_ICONS;
-  readonly className: string;
-}
+type ThreadRowStatusIconName = Exclude<keyof typeof THREAD_ROW_STATUS_ICONS, "done">;
+
+export type ThreadRowStatus =
+  | {
+      readonly label: string;
+      readonly icon: ThreadRowStatusIconName;
+      readonly unseen?: undefined;
+      readonly className: string;
+    }
+  /** A finished turn the user has not opened yet: shown as a dot, not a pill. */
+  | {
+      readonly label: string;
+      readonly icon?: undefined;
+      readonly unseen: true;
+      readonly className: string;
+    };
 
 /** The short status a thread row shows in place of its age, or null when it has none. */
 export function resolveThreadRowStatus(input: {
@@ -64,12 +73,30 @@ export function resolveThreadRowStatus(input: {
     return { label: "Woke", icon: "woke", className: "text-warning-foreground" };
   }
   if (input.isUnread) {
-    return { label: "Done", icon: "done", className: "text-success-foreground" };
+    return {
+      label: "Finished, not yet opened",
+      className: "text-success-foreground",
+      unseen: true,
+    };
   }
   return null;
 }
 
-export function ThreadRowStatusIcon(props: { icon: ThreadRowStatus["icon"]; className: string }) {
+function ThreadRowStatusIcon(props: { icon: ThreadRowStatusIconName; className: string }) {
   const Icon = THREAD_ROW_STATUS_ICONS[props.icon];
   return <Icon aria-hidden className={cn("shrink-0", props.className)} />;
+}
+
+/** The status's icon and label, or a small dot for a completion the user has not seen. */
+export function ThreadRowStatusContent(props: { status: ThreadRowStatus; iconClassName: string }) {
+  const { status } = props;
+  if (status.unseen) {
+    return <span role="img" aria-label={status.label} className="size-2 rounded-full bg-current" />;
+  }
+  return (
+    <>
+      <ThreadRowStatusIcon icon={status.icon} className={props.iconClassName} />
+      {status.label}
+    </>
+  );
 }

@@ -71,7 +71,7 @@ const SettingsEnvironmentSelectionContext = createContext<SettingsEnvironmentSel
  * Holds the Settings scope selection across Settings pages, which are separate root routes.
  * It stays mounted for the whole app, so it keeps only the selection; the environment and
  * project data is derived in the hook, by the Settings pages that are mounted. The selection
- * resets when Settings closes.
+ * resets when `open` turns false; the Tasks tab nests its own provider that stays open.
  */
 export function SettingsEnvironmentFilterProvider(props: {
   readonly open: boolean;

@@ -2,7 +2,6 @@ import * as Dialog from "../../components/ui/Dialog";
 import type {
   EnvironmentId,
   ProjectId,
-  ProviderInteractionMode,
   ServerProvider,
   ThreadId,
   ThreadPullRequestLink,
@@ -104,15 +103,9 @@ export function buildComposerSlashCommandItems(input: {
   readonly hasThread: boolean;
   readonly hasCompactableConversation?: boolean;
   readonly offersUsageLimits?: boolean;
-  readonly allowInteractionMode: boolean;
-  readonly selectedProviderStatus: Pick<
-    ServerProvider,
-    "driver" | "slashCommands" | "showInteractionModeToggle"
-  > | null;
+  readonly selectedProviderStatus: Pick<ServerProvider, "driver" | "slashCommands"> | null;
 }): ComposerCommandItem[] {
   const query = input.query.toLowerCase();
-  const allowInteractionMode =
-    input.allowInteractionMode && input.selectedProviderStatus?.showInteractionModeToggle !== false;
   const builtIn = [
     {
       id: "cmd:model",
@@ -121,24 +114,8 @@ export function buildComposerSlashCommandItems(input: {
       label: "/model",
       description: "Switch model",
     },
-    {
-      id: "cmd:plan",
-      type: "slash-command",
-      command: "plan",
-      label: "/plan",
-      description: "Switch to plan mode",
-    },
-    {
-      id: "cmd:default",
-      type: "slash-command",
-      command: "default",
-      label: "/default",
-      description: "Switch to default mode",
-    },
   ] satisfies ComposerCommandItem[];
-  const items: ComposerCommandItem[] = builtIn.filter(
-    (item) => item.command.includes(query) && (item.command === "model" || allowInteractionMode),
-  );
+  const items: ComposerCommandItem[] = builtIn.filter((item) => item.command.includes(query));
 
   // Providers expand commands only at the start of a message. T3 commands
   // change local state and do not have this restriction.
@@ -171,24 +148,11 @@ export function resolveComposerCommandSelection(input: {
   readonly draftMessage: string;
   readonly trigger: Pick<ComposerTrigger, "rangeStart" | "rangeEnd">;
   readonly item: ComposerCommandItem;
-  readonly allowInteractionMode: boolean;
 }): {
   readonly text: string;
   readonly cursor: number;
-  readonly interactionMode: ProviderInteractionMode | null;
 } {
   const { draftMessage, trigger, item } = input;
-  if (
-    input.allowInteractionMode &&
-    item.type === "slash-command" &&
-    (item.command === "plan" || item.command === "default")
-  ) {
-    return {
-      ...replaceTextRange(draftMessage, trigger.rangeStart, trigger.rangeEnd, ""),
-      interactionMode: item.command,
-    };
-  }
-
   let replacement = "";
   if (item.type === "path") {
     replacement = `${serializeComposerFileLink(item.path)} `;
@@ -199,10 +163,7 @@ export function resolveComposerCommandSelection(input: {
   } else if (item.type === "provider-slash-command") {
     replacement = `/${item.command.name} `;
   }
-  return {
-    ...replaceTextRange(draftMessage, trigger.rangeStart, trigger.rangeEnd, replacement),
-    interactionMode: null,
-  };
+  return replaceTextRange(draftMessage, trigger.rangeStart, trigger.rangeEnd, replacement);
 }
 
 export function useComposerCommandMenu({
@@ -223,7 +184,6 @@ export function useComposerCommandMenu({
   offersUsageLimits = false,
   enabled = true,
   onChangeDraftMessage,
-  onUpdateInteractionMode,
   onUsageLimits,
 }: {
   readonly draftMessage: string;
@@ -244,7 +204,6 @@ export function useComposerCommandMenu({
   readonly offersUsageLimits?: boolean;
   readonly enabled?: boolean;
   readonly onChangeDraftMessage: (value: string) => void;
-  readonly onUpdateInteractionMode?: (mode: ProviderInteractionMode) => void;
   readonly onUsageLimits?: () => void;
 }) {
   const [localSelection, setLocalSelection] = useState(() => ({
@@ -349,7 +308,6 @@ export function useComposerCommandMenu({
         hasThread,
         hasCompactableConversation,
         offersUsageLimits,
-        allowInteractionMode: onUpdateInteractionMode !== undefined,
         selectedProviderStatus: selectedProviderStatus
           ? {
               ...selectedProviderStatus,
@@ -598,15 +556,9 @@ export function useComposerCommandMenu({
       draftMessage,
       trigger,
       item,
-      allowInteractionMode:
-        onUpdateInteractionMode !== undefined &&
-        selectedProviderStatus?.showInteractionModeToggle !== false,
     });
     setSelection({ start: result.cursor, end: result.cursor });
     onChangeDraftMessage(result.text);
-    if (result.interactionMode !== null) {
-      onUpdateInteractionMode?.(result.interactionMode);
-    }
   };
 
   return {

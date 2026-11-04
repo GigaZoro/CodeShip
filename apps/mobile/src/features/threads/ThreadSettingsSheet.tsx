@@ -1631,7 +1631,7 @@ export function ExistingThreadSettingsRouteScreen({
         option.selection.model === modelSelection.model,
     ) ?? null;
   const updateModelSelection = (selection: ModelSelection) => {
-    updateThreadDraftModelSelection(threadKey, selection, serverConfig?.providers ?? []);
+    updateThreadDraftModelSelection(threadKey, selection);
     setStickyComposerModelSelection(selection);
   };
   const finalReview =

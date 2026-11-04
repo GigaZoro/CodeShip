@@ -1,11 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router";
 
-import { SnapShotSettings } from "../components/settings/SnapShotSettings";
-
-function SettingsSnapShotRoute() {
-  return <SnapShotSettings />;
-}
-
-export const Route = createFileRoute("/_chat/settings/snap-shot")({
-  component: SettingsSnapShotRoute,
-});
+// Merged into /settings/chat; the settings route redirects old links.
+export const Route = createFileRoute("/_chat/settings/snap-shot")({});

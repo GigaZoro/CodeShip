@@ -281,6 +281,9 @@ vi.mock("../features/threads/McpAppWebView", () => ({}));
 vi.mock("../features/layout/AdaptiveWorkspaceLayout", () => ({
   useAdaptiveWorkspaceLayout: () => ({ fileInspector: { supported: false } }),
 }));
+vi.mock("../features/workspace/useOpenScheduledTasks", () => ({
+  useOpenScheduledTasks: () => vi.fn(),
+}));
 vi.mock("../features/threads/thread-workflow-opening", () => ({ useWorkflowOpening: () => null }));
 vi.mock("../features/threads/useFileChipShare", () => ({ useFileChipShare: () => vi.fn() }));
 vi.mock("../features/threads/ThreadMarkdownImage", async () => {

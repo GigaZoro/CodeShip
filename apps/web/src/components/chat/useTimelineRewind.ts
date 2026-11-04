@@ -33,6 +33,7 @@ import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { rewindToMessage } from "./chatViewSend";
 import { makeThreadErrorSetter } from "../ChatView.logic";
+import { takeRetryRewind } from "./timelineRetry";
 interface TimelineRewindInput {
   readonly environmentId: EnvironmentId;
   readonly routeThreadRef: ScopedThreadRef;
@@ -93,8 +94,11 @@ export function useTimelineRewind(input: TimelineRewindInput) {
   const onRevertToTurnCount = async (
     turnCount: number,
     messageId: MessageId,
-    restoreFiles?: boolean,
+    requestedRestoreFiles?: boolean,
   ) => {
+    // Retry rewinds the conversation only, so it can go straight through without the edit dialog.
+    const retry = takeRetryRewind(messageId);
+    const restoreFiles = retry ? false : requestedRestoreFiles;
     const localApi = readLocalApi();
     if (
       !localApi ||
@@ -127,6 +131,17 @@ export function useTimelineRewind(input: TimelineRewindInput) {
     if (restoreFiles === undefined) {
       openRevertConfirm(routeThreadKey, { turnCount, messageId });
       return;
+    }
+    if (retry) {
+      // The rewind appends to the composer, so an unsent draft would be sent with the retry.
+      const draft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+      if (
+        (draft?.prompt.trim().length ?? 0) > 0 ||
+        (draft?.images.length ?? 0) + (draft?.files.length ?? 0) > 0
+      ) {
+        setThreadError(activeThread.id, "Clear the message box before retrying.");
+        return;
+      }
     }
 
     useComposerDraftStore.setState((store) => ({
@@ -161,7 +176,15 @@ export function useTimelineRewind(input: TimelineRewindInput) {
       promptRef.current = nextPrompt;
       composerRef.current?.resetCursorState({ prompt: nextPrompt, cursor: nextPrompt.length });
       requestAnimationFrame(() => {
-        if (currentRouteThreadKeyRef.current === routeThreadKey) composerRef.current?.focusAtEnd();
+        if (currentRouteThreadKeyRef.current !== routeThreadKey) return;
+        composerRef.current?.focusAtEnd();
+        if (!retry) return;
+        // Wait a frame for the composer to take the restored message, then send it as it was.
+        requestAnimationFrame(() => {
+          if (currentRouteThreadKeyRef.current !== routeThreadKey) return;
+          if (composerRef.current?.submit() !== true)
+            setThreadError(activeThread.id, "Message restored. Press send to retry.");
+        });
       });
     }
   };

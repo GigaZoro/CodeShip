@@ -1,25 +1,21 @@
 import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
-import { Platform } from "react-native";
 import {
   NAVIGATION_TAB_LABELS,
-  navigationCustomizationAvailable,
-  resolveHiddenNavigationTabs,
   enabledNavigationTabs,
   type NavigationTab,
 } from "./navigation-tab-order";
 import type { AppSymbolName } from "../../components/ui/AppSymbol";
 import { mobilePreferencesAtom } from "../../state/preferences";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
+import { effectiveHiddenNavigationTabs } from "./native-tab-support";
 import { resolveWorkspaceTabOrder } from "./workspace-tabs-state";
 
-export const WORKSPACE_TAB_LABELS = {
-  ...NAVIGATION_TAB_LABELS,
-  ...(Platform.OS === "ios" ? { threads: "Chats", pullRequests: "PRs" } : {}),
-};
+export { NAVIGATION_TAB_LABELS };
 
 export const NAVIGATION_TAB_ICONS = {
   threads: "text.bubble",
+  scheduledTasks: "clock",
   pullRequests: PullRequestGlyph.pullRequest,
   usage: "chart.bar.xaxis",
 } as const satisfies Readonly<Record<NavigationTab, AppSymbolName>>;
@@ -37,7 +33,7 @@ export function useHiddenNavigationTabs() {
   const saved = AsyncResult.isSuccess(preferences)
     ? preferences.value.hiddenNavigationTabs
     : undefined;
-  return navigationCustomizationAvailable() ? resolveHiddenNavigationTabs(saved) : [];
+  return effectiveHiddenNavigationTabs(saved);
 }
 
 export function useEnabledNavigationTabs() {

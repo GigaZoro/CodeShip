@@ -338,7 +338,8 @@ function cloneRepository(repository: PromptLinkRepository, request: LinkedDraftR
       : null;
   const name = promptLinkRepositoryName(repository);
   dispatchFromNewTask(
-    StackActions.push("AddProjectDestination", {
+    StackActions.push("AddProjectSetup", {
+      mode: "repository",
       environmentId,
       remoteUrl: `https://github.com/${name}.git`,
       repositoryTitle: name,

@@ -5,7 +5,7 @@ import { page, userEvent } from "vite-plus/test/browser";
 
 import { render } from "../../../test/render";
 import { ComposerHandleContext, type ComposerHandleRef } from "../../composerHandleContext";
-import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/menu";
+import { Menu, MenuPopup, MenuTrigger } from "../ui/menu";
 import {
   focusRequestedPermission,
   markOpenToPermissions,
@@ -16,9 +16,8 @@ import { runtimeModeConfig, runtimeModeOptions } from "./runtimeModeConfig";
 
 const options = runtimeModeOptions.map((mode) => ({ mode, ...runtimeModeConfig[mode] }));
 
-// Mirrors the overflow menu: mode radio items first, then the Permissions section.
+// Mirrors the overflow menu, which holds the Permissions section.
 function OverflowMenu() {
-  const [interaction, setInteraction] = useState("plan");
   const [mode, setMode] = useState<RuntimeMode>("full-access");
   const composerMenuProps = useComposerMenuProps();
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -27,10 +26,6 @@ function OverflowMenu() {
       <Menu onOpenChangeComplete={(open) => focusRequestedPermission(open, triggerRef.current)}>
         <MenuTrigger ref={triggerRef}>More</MenuTrigger>
         <MenuPopup {...composerMenuProps}>
-          <MenuRadioGroup value={interaction} onValueChange={setInteraction}>
-            <MenuRadioItem value="default">Chat</MenuRadioItem>
-            <MenuRadioItem value="plan">Plan</MenuRadioItem>
-          </MenuRadioGroup>
           <ComposerPermissionsSection
             runtimeMode={mode}
             runtimeModeOptions={options}
@@ -43,15 +38,12 @@ function OverflowMenu() {
   );
 }
 
-it("reaches Permissions from the mode items with arrow keys, previews, and picks with Enter", async () => {
+it("reaches Permissions from the trigger with arrow keys, previews, and picks with Enter", async () => {
   await using screen = await render(<OverflowMenu />, { router: false }); // no routes involved
   const trigger = screen.getByRole("button", { name: "More" });
   await userEvent.tab();
   await expect.element(trigger).toHaveFocus();
   await userEvent.keyboard("{ArrowDown}");
-  await expect.element(page.getByRole("menuitemradio", { name: "Chat" })).toHaveFocus();
-
-  await userEvent.keyboard("{ArrowDown}{ArrowDown}");
   const supervised = page.getByRole("menuitemradio", { name: "Supervised" });
   await expect.element(supervised).toHaveFocus();
   await expect
@@ -65,10 +57,7 @@ it("reaches Permissions from the mode items with arrow keys, previews, and picks
   await userEvent.keyboard("{ArrowLeft}{ArrowLeft}");
   await expect.element(page.getByRole("menuitemradio", { name: "Supervised" })).toHaveFocus();
 
-  await userEvent.keyboard("{ArrowUp}");
-  await expect.element(page.getByRole("menuitemradio", { name: "Plan" })).toHaveFocus();
-
-  await userEvent.keyboard("{ArrowDown}{ArrowDown}{Enter}");
+  await userEvent.keyboard("{ArrowDown}{Enter}");
   await expect.element(screen.getByRole("status")).toHaveTextContent("auto-accept-edits");
   await expect
     .element(page.getByRole("menuitemradio", { name: "Supervised" }))
@@ -99,8 +88,8 @@ it("returns focus to the editor after a pick", async () => {
   await using screen = await render(ui, { router: false }); // no routes involved
   await userEvent.tab();
   await userEvent.keyboard("{ArrowDown}");
-  await expect.element(page.getByRole("menuitemradio", { name: "Chat" })).toHaveFocus();
-  await userEvent.keyboard("{ArrowDown}{ArrowDown}{Enter}");
+  await expect.element(page.getByRole("menuitemradio", { name: "Supervised" })).toHaveFocus();
+  await userEvent.keyboard("{Enter}");
   await expect.element(screen.getByRole("status")).toHaveTextContent("approval-required");
   await vi.waitFor(() => expect(handle.focusAtEnd).toHaveBeenCalled());
 });
@@ -118,7 +107,7 @@ it("opens on the checked permission when composer.mode marked the trigger", asyn
   await expect.element(page.getByRole("menuitemradio", { name: "Full access" })).not.toHaveFocus();
 });
 
-// Mirrors ComposerControlsBar: the chip shows only while the mode differs from the default.
+// Mirrors ComposerControlsBar: the chip stays in the row whatever the mode.
 function PermissionsChip() {
   const [mode, setMode] = useState<RuntimeMode>("approval-required");
   return (
@@ -126,22 +115,17 @@ function PermissionsChip() {
       <button type="button" data-composer-shortcut="composer.effort composer.mode">
         Model
       </button>
-      {mode === "full-access" ? null : (
-        <ComposerFooterModeControls
-          showInteractionModeToggle={false}
-          interactionMode="default"
-          runtimeMode={mode}
-          runtimeModeOptions={options}
-          accessDisplay="label"
-          onToggleInteractionMode={() => {}}
-          onRuntimeModeChange={setMode}
-        />
-      )}
+      <ComposerFooterModeControls
+        runtimeMode={mode}
+        runtimeModeOptions={options}
+        accessDisplay="label"
+        onRuntimeModeChange={setMode}
+      />
     </div>
   );
 }
 
-it("returns focus to the editor when picking the default hides the chip", async () => {
+it("returns focus to the editor after picking from the chip", async () => {
   const { handle, ui } = withComposer(<PermissionsChip />);
   await using screen = await render(ui, { router: false }); // no routes involved
   await userEvent.click(screen.getByRole("button", { name: "Permissions: Supervised" }));

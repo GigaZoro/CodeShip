@@ -41,12 +41,7 @@ import {
   snapShotSetupComplete,
   type SnapShotSoundSelection,
 } from "./SnapShotSettings.logic";
-import {
-  SettingsUnavailableGroup,
-  SettingsPageContainer,
-  SettingsRow,
-  SettingsSection,
-} from "./settingsLayout";
+import { SettingsUnavailableGroup, SettingsRow, SettingsSection } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/menu";
@@ -349,8 +344,8 @@ export function SnapShotSettings() {
   };
 
   return (
-    <SettingsPageContainer>
-      <SettingsSection id="snap-shot" title="SnapShots">
+    <>
+      <SettingsSection id="snap-shot" title="Window capture">
         <SettingsUnavailableGroup message={unavailableMessage}>
           <SettingsRow
             {...searchableSetting("snap-shot-enabled")}
@@ -580,6 +575,6 @@ export function SnapShotSettings() {
           onLeaveStep={stopRecording}
         />
       ) : null}
-    </SettingsPageContainer>
+    </>
   );
 }

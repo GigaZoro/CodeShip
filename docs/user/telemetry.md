@@ -33,7 +33,7 @@ sends startup timings, and every report carries a random ID for the install. Rep
 the T3 Connect relay to Axiom. They do not include your threads, prompts, or connection details,
 but an error message can quote a value the app was handling.
 
-To stop sending them, turn off **Send crash reports** in **Settings > About CodeShip > Diagnostics**.
+To stop sending them, turn off **Send crash reports** in **Settings > Maintenance & about > Diagnostics**.
 
 ## Export diagnostics to your own receiver
 

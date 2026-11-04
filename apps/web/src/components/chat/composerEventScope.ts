@@ -63,7 +63,7 @@ export function focusRequestedPermission(open: boolean, trigger: HTMLElement | n
 }
 
 /** Focuses the checked permission in the menu this trigger opened. */
-export function focusCheckedPermission(trigger: HTMLElement | null): void {
+function focusCheckedPermission(trigger: HTMLElement | null): void {
   const popupId = trigger?.getAttribute("aria-controls");
   const popup = popupId ? document.getElementById(popupId) : null;
   popup
@@ -79,15 +79,9 @@ export function markOpenToEffort(trigger: HTMLElement): void {
   trigger.dataset.openToEffort = "true";
 }
 
-/** Reads and clears an open-to mark: effort from composer.effort, permissions from composer.mode. */
-export function takeOpenTarget(trigger: HTMLElement | null): "effort" | "permissions" | null {
-  if (trigger?.dataset.openToEffort) {
-    delete trigger.dataset.openToEffort;
-    return "effort";
-  }
-  if (trigger?.dataset.openToPermissions) {
-    delete trigger.dataset.openToPermissions;
-    return "permissions";
-  }
-  return null;
+/** Reads and clears the mark composer.effort left on the model picker trigger. */
+export function takeOpenToEffort(trigger: HTMLElement | null): boolean {
+  if (!trigger?.dataset.openToEffort) return false;
+  delete trigger.dataset.openToEffort;
+  return true;
 }

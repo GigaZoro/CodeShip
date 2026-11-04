@@ -32,6 +32,7 @@ import {
   AndroidSettingsEnvironmentFilter,
   SettingsEnvironmentFilterHeader,
 } from "./components/SettingsEnvironmentFilterHeader";
+import { SettingsRow } from "./components/SettingsRow";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
 import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
@@ -87,6 +88,16 @@ export function SettingsProviderAccountsRouteScreen() {
               </SettingsSection>
             ))
           )}
+          {selectedTargets.length > 0 ? (
+            <SettingsSection>
+              <SettingsRow
+                icon="sparkles"
+                label="Capabilities"
+                value="MCP servers and skills"
+                target="SettingsCapabilities"
+              />
+            </SettingsSection>
+          ) : null}
         </ScreenScrollView>
       </SettingsScreen>
     </>

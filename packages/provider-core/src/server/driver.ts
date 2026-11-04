@@ -61,6 +61,8 @@ export interface ProviderInstance {
   readonly textGeneration: ProviderTextGeneration;
   readonly auth?: ProviderAuthController;
   readonly plugins?: ProviderPluginManagement;
+  /** Where this provider loads personal skills from; absent when it cannot take copied skills. */
+  readonly personalSkillsDirectory?: string;
   readonly mcp?: ProviderMcpManagement;
   readonly acpSessionManagement?: {
     readonly listSessions: (input: {

@@ -36,6 +36,7 @@ import {
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 import { ManagedByOrganization } from "../ManagedPolicy";
 import { LocalEnvironmentSetting } from "./LocalEnvironmentSetting";
+import { GuestLinksSetting, LinkedEnvironmentsRow } from "./OptInFeatureRows";
 import { searchableSetting } from "./settingsSearch";
 import { EnvironmentIconMenu } from "./EnvironmentIconPicker";
 import { FoldedSettingsSection } from "./FoldedSettingsSection";
@@ -155,7 +156,8 @@ function LocalVersionStatusLabel() {
 }
 
 /** Environments lists the machines this app connects to; access covers who may reach this one. */
-export function ConnectionsSettings({ view }: { readonly view: "environments" | "access" }) {
+/** Machines this app reaches, and how other devices reach this one. */
+export function ConnectionsSettings() {
   const desktopBridge = window.desktopBridge;
   const { environments } = useEnvironments();
   const primaryEnvironment = usePrimaryEnvironment();
@@ -290,9 +292,8 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
   const canMaintain = useEnvironmentScope(primaryEnvironmentId, AuthEnvironmentMaintainScope);
   const canManageRelay = useEnvironmentScope(primaryEnvironmentId, AuthRelayWriteScope);
   const canManageLocalBackend = !isLocalEnvironmentDisabled() && canMaintain;
-  const showsAccess = view === "access";
   const authAccessChanges = useEnvironmentQuery(
-    showsAccess && canReadAccess && primaryEnvironmentId !== null
+    canReadAccess && primaryEnvironmentId !== null
       ? authEnvironment.accessChanges({
           environmentId: primaryEnvironmentId,
           input: null,
@@ -300,10 +301,10 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
       : null,
   );
   const desktopNetworkAccess = useEnvironmentQuery(
-    showsAccess && canManageLocalBackend && desktopBridge ? desktopNetworkAccessStateAtom : null,
+    canManageLocalBackend && desktopBridge ? desktopNetworkAccessStateAtom : null,
   );
   const desktopWsl = useEnvironmentQuery(
-    showsAccess && canManageLocalBackend && desktopBridge ? desktopWslStateAtom : null,
+    canManageLocalBackend && desktopBridge ? desktopWslStateAtom : null,
   );
   const desktopWslState = desktopWsl.data;
   const desktopWslError = desktopWslMutationError ?? desktopWsl.error;
@@ -1472,8 +1473,6 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
     </>
   );
 
-  if (showsAccess) return <SettingsPageContainer>{primarySettings}</SettingsPageContainer>;
-
   return (
     <SettingsPageContainer>
       {desktopBridge ? (
@@ -1481,6 +1480,7 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
           <LocalEnvironmentSetting />
         </SettingsSection>
       ) : null}
+      {primarySettings}
       <SettingsSection
         {...searchableSetting("remote-environments")}
         title="Environments"
@@ -1531,16 +1531,25 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
           }}
         />
       ) : null}
+      {peerLinkHosts.length === 0 ? (
+        <SettingsSection id="linked-environments-toggle" title="Linked environments">
+          <LinkedEnvironmentsRow />
+        </SettingsSection>
+      ) : null}
       {peerLinkHosts.map((environment, index) => (
         <LinkedEnvironmentsSettings
           key={environment.environmentId}
           environmentId={environment.environmentId}
           environmentLabel={peerLinkHosts.length > 1 ? environment.label : null}
           isSearchTarget={index === 0}
+          leading={index === 0 ? <LinkedEnvironmentsRow /> : null}
         />
       ))}
       <LoadBalancingSettings environments={loadBalancingEnvironments} />
       <PullRequestRoutingSettings environments={loadBalancingEnvironments} />
+      <SettingsSection id="guest-sharing" title="Guest sharing">
+        <GuestLinksSetting />
+      </SettingsSection>
     </SettingsPageContainer>
   );
 }

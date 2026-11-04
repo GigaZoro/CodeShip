@@ -5,6 +5,10 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import {
+  buildProjectGroups,
+  selectProjectGroupingSettings,
+} from "@t3tools/client-runtime/state/project-grouping";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import {
   isAtomCommandInterrupted,
@@ -41,6 +45,8 @@ import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
 import { textDirection } from "~/textDirection";
 import { useClientSettings } from "../../hooks/useSettings";
+import { useProjects } from "../../state/entities";
+import { usePrimaryEnvironmentId } from "../../state/environments";
 import { GuestShareIndicator } from "./GuestShareControls";
 
 interface ChatHeaderProps {
@@ -84,7 +90,26 @@ export const ChatHeader = memo(function ChatHeader({
   onOpenProjectSettings,
   onFindInThread,
 }: ChatHeaderProps) {
-  const activeProjectName = activeProject?.isScratch ? "No project" : activeProject?.title;
+  const allProjects = useProjects();
+  const groupingSettings = useClientSettings(selectProjectGroupingSettings);
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  // The thread list names a project by its group, so the header uses the same name.
+  const activeProjectGroupLabel = activeProject
+    ? buildProjectGroups({
+        projects: allProjects,
+        settings: groupingSettings,
+        preferredEnvironmentId: primaryEnvironmentId,
+        groupScratchProjects: true,
+      }).find((group) =>
+        group.memberProjectRefs.some(
+          (ref) =>
+            ref.environmentId === activeProject.environmentId && ref.projectId === activeProject.id,
+        ),
+      )?.label
+    : undefined;
+  const activeProjectName = activeProject?.isScratch
+    ? "No project"
+    : (activeProjectGroupLabel ?? activeProject?.title);
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const interfaceFont = useClientSettings((settings) => settings.fontFamilySans);
   const breadcrumbContainerRef = useRef<HTMLDivElement>(null);

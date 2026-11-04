@@ -3,9 +3,9 @@
 CodeShip includes third-party software and adapted assets. To read their license and attribution
 notices:
 
-- On web and desktop, open **Settings → About**, find **Open source licenses** under **Legal**,
+- On web and desktop, open **Settings → Maintenance & about**, find **Open source licenses** under **Legal**,
   and select **View licenses**.
-- On mobile, open **Settings → About CodeShip → Open source licenses**.
+- On mobile, open **Settings → Maintenance & about → Open source licenses**.
 
 The page lists the version when available, license identifier, and the parts of CodeShip that include
 or use the item. This also covers optional device tools that CodeShip installs on demand instead of

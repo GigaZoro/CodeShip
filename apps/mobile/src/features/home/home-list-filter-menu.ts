@@ -12,6 +12,14 @@ export function threadListGroupingLabel(grouping: SidebarGrouping): string {
   return kinds.length === 0 ? "Group" : `By ${kinds.join(", ")}`;
 }
 
+export const ARCHIVED_THREADS_EVENT = "archived-threads";
+
+/** Opens the archived threads screen from the thread list's native menus. */
+export const archivedThreadsMenuItem = {
+  id: ARCHIVED_THREADS_EVENT,
+  title: "Archived",
+} satisfies MenuAction;
+
 const PROJECT_GROUPING_EVENT_PREFIX = "group-by:";
 const MACHINE_GROUPING_EVENT = "group-by-machine";
 
@@ -101,6 +109,7 @@ export function buildHomeListFilterMenu(
     readonly grouping: SidebarGrouping;
     readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
     readonly onProjectChange: (projectKey: string | null) => void;
+    readonly onOpenArchived: () => void;
   } & ThreadListGroupingHandlers,
 ): HomeListFilterMenu {
   const items: Array<HomeListFilterMenuAction | HomeListFilterMenuSubmenu> = [];
@@ -168,6 +177,8 @@ export function buildHomeListFilterMenu(
       onPress: props.onMachineGroupingToggle,
     });
   }
+
+  items.push({ type: "action", title: "Archived", onPress: props.onOpenArchived });
 
   return {
     title: "Thread list options",

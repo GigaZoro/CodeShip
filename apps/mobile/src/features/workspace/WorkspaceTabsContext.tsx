@@ -3,11 +3,8 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { createContext, use, useState, type Dispatch, type ReactNode } from "react";
 
 import { mobilePreferencesAtom } from "../../state/preferences";
-import {
-  navigationCustomizationAvailable,
-  resolveHiddenNavigationTabs,
-  resolveSelectedNavigationTab,
-} from "./navigation-tab-order";
+import { resolveSelectedNavigationTab } from "./navigation-tab-order";
+import { effectiveHiddenNavigationTabs } from "./native-tab-support";
 import {
   initialWorkspaceTabsState,
   resolveWorkspaceTabOrder,
@@ -41,9 +38,7 @@ function resolveWorkspaceTabsSelection(
 ): WorkspaceTabsState {
   const saved = AsyncResult.isSuccess(preferences) ? preferences.value : undefined;
   const order = resolveWorkspaceTabOrder(saved?.navigationTabOrder);
-  const hidden = navigationCustomizationAvailable()
-    ? resolveHiddenNavigationTabs(saved?.hiddenNavigationTabs)
-    : [];
+  const hidden = effectiveHiddenNavigationTabs(saved?.hiddenNavigationTabs);
   const selected = resolveSelectedNavigationTab(order, hidden, state.selectedTab);
   return selected && selected !== state.selectedTab
     ? workspaceTabsReducer(state, { type: "select", tab: selected })
@@ -56,6 +51,7 @@ function createWorkspaceTabsModel() {
   const stored = Atom.make(initialWorkspaceTabsState());
   const scrollOffsets: Record<WorkspaceSearchTab, number> = {
     threads: 0,
+    scheduledTasks: 0,
     pullRequests: 0,
     usage: 0,
     settings: 0,

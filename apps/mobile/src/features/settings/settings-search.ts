@@ -30,6 +30,7 @@ const SETTINGS_SEARCH_TERMS = {
   SettingsNavigation: ["tabs", "tab order", "reorder", "hide tabs"],
   SettingsKeyboard: ["return key", "send message", "new line", "hardware keyboard"],
   SettingsMicrophone: ["voice", "dictation", "audio input", "bluetooth"],
+  SettingsCapabilities: ["mcp", "mcp servers", "skills", "tools", "extensions", "plugins"],
   SettingsScheduledTasks: ["automations", "schedule", "cron", "recurring", "webhook"],
   SettingsProjectOverview: ["project", "overview", "checkouts", "delete project"],
   SettingsOrganization: [
@@ -66,7 +67,6 @@ const SETTINGS_SEARCH_TERMS = {
     "thread behavior",
   ],
   SettingsFollowUp: ["follow-ups", "queue", "steer", "while the agent is running"],
-  SettingsArchive: ["archive", "archived", "restore", "unarchive"],
   SettingsProviderAccounts: [
     "provider accounts",
     "codex",
@@ -86,17 +86,21 @@ const SETTINGS_SEARCH_TERMS = {
     "automatically pull",
     "clone into host folders",
     "ghq",
-  ],
-  SettingsWorktrees: [
     "worktree",
     "branch naming",
     "branch prefix",
     "submodules",
     "start from remote",
   ],
-  SettingsLabs: ["legacy", "plan mode", "beta", "linked environments", "link machine"],
-  SettingsEnvironmentMaintenance: ["updates", "provider updates", "restart", "manage environments"],
-  SettingsAbout: [
+  SettingsEnvironmentMaintenance: [
+    "updates",
+    "provider updates",
+    "restart",
+    "manage environments",
+    "linked environments",
+    "link machine",
+    "beta",
+    "about",
     "version",
     "diagnostics",
     "client storage",

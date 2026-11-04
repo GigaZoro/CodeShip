@@ -1,20 +1,19 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
-  BlocksIcon,
   CalendarClockIcon,
   ChartNoAxesColumnIcon,
   LayoutGridIcon,
+  PuzzleIcon,
   MessagesSquareIcon,
   NotebookPenIcon,
-  ServerIcon,
   SettingsIcon,
   ShapesIcon,
-  SparklesIcon,
 } from "lucide-react";
 import { tightestLimitWindow } from "@t3tools/shared/usageLimits";
 import { memo, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 
+import { isElectron } from "../../env";
 import { shortcutLabelForCommand } from "../../keybindings";
 import { primaryServerKeybindingsAtom } from "../../state/server";
 import { usePullRequestsSupported } from "../../state/environments";
@@ -39,9 +38,7 @@ type SidebarNavDestination =
   | "projects"
   | "pull-requests"
   | "artifacts"
-  | "skills"
-  | "plugins"
-  | "mcp"
+  | "extensions"
   | "scheduled-tasks"
   | "thread-page"
   | "usage"
@@ -51,9 +48,7 @@ function resolveActiveDestination(pathname: string): SidebarNavDestination {
   if (pathname === "/projects") return "projects";
   if (pathname === "/pull-requests") return "pull-requests";
   if (pathname === "/artifacts") return "artifacts";
-  if (pathname === "/skills") return "skills";
-  if (pathname === "/plugins") return "plugins";
-  if (pathname === "/model-context-servers") return "mcp";
+  if (pathname === "/extensions") return "extensions";
   if (pathname === "/usage") return "usage";
   if (pathname === "/scheduled-tasks") return "scheduled-tasks";
   if (pathname === "/thread-page") return "thread-page";
@@ -186,41 +181,32 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
           />
         ) : null}
         <SidebarNavRailItem
-          icon={<ShapesIcon />}
-          label="Artifacts"
-          isActive={active === "artifacts"}
-          onClick={go(() => navigate({ to: "/artifacts" }))}
-        />
-        <SidebarNavRailItem
-          icon={<SparklesIcon />}
-          label="Skills"
-          isActive={active === "skills"}
-          onClick={go(() => navigate({ to: "/skills" }))}
-        />
-        <SidebarNavRailItem
-          icon={<BlocksIcon />}
-          label="Plugins"
-          isActive={active === "plugins"}
-          onClick={go(() => navigate({ to: "/plugins" }))}
-        />
-        <SidebarNavRailItem
-          icon={<ServerIcon />}
-          label="MCP servers"
-          isActive={active === "mcp"}
-          onClick={go(() => navigate({ to: "/model-context-servers" }))}
-        />
-        <SidebarNavRailItem
           icon={<CalendarClockIcon />}
           label="Scheduled tasks"
           isActive={active === "scheduled-tasks"}
           onClick={go(() => navigate({ to: "/scheduled-tasks" }))}
         />
         <SidebarNavRailItem
-          icon={<NotebookPenIcon />}
-          label="ThreadPage"
-          isActive={active === "thread-page"}
-          onClick={go(() => navigate({ to: "/thread-page" }))}
+          icon={<PuzzleIcon />}
+          label="Extensions"
+          isActive={active === "extensions"}
+          onClick={go(() => navigate({ to: "/extensions" }))}
         />
+        <SidebarNavRailItem
+          icon={<ShapesIcon />}
+          label="Artifacts"
+          isActive={active === "artifacts"}
+          onClick={go(() => navigate({ to: "/artifacts" }))}
+        />
+        {/* The browser cannot embed thread.page, so the page is desktop only. */}
+        {isElectron ? (
+          <SidebarNavRailItem
+            icon={<NotebookPenIcon />}
+            label="ThreadPage"
+            isActive={active === "thread-page"}
+            onClick={go(() => navigate({ to: "/thread-page" }))}
+          />
+        ) : null}
       </SidebarMenu>
       <SidebarMenu className="items-center">
         <SidebarUpdatePill />

@@ -27,7 +27,7 @@ again.
 Providers and diagnostics are per machine: they show one environment at a time, the primary
 one until you pick another. Every other setting fans out to the selection.
 
-With a project selected, a provider's switch in **Settings → Providers** turns it on or off for
+With a project selected, a provider's switch in **Settings → Providers & models** turns it on or off for
 that project only, in either direction: a provider off on the machine can be used in one project,
 and one on everywhere can be kept out of another. That project's model pickers follow the switch,
 and no new turn there can start on a provider it turned off, including queued messages and
@@ -46,7 +46,7 @@ Settings that are environment-wide stay read-only while a project is selected. W
 targets disagree, a control shows **Mixed** until you choose one value. Appearance, keyboard,
 and other phone-only settings ignore the filter.
 
-Choose a provider and model for new threads in **Settings → Threads → Model** on web or desktop,
+Choose a provider and model for new threads in **Settings → Providers & models → Models → New threads** on web or desktop,
 or **Settings → Threads → Default model** on mobile. A machine with no saved choice uses the
 default saved on another connected machine, with its effort level, when it has that provider;
 otherwise CodeShip automatically uses an available provider. Reset the web or desktop model
@@ -57,7 +57,7 @@ Turn on **Use last picked model** under the model to start each new thread on th
 last picked on that device, Auto included. Until you pick one there, new threads use the default
 model. Scheduled tasks and threads that agents start are not affected.
 
-Scheduled tasks have their own default in **Settings → Threads → Scheduled tasks** on web or
+Scheduled tasks have their own default in **Settings → Providers & models → Models → New threads** on web or
 desktop, or **Scheduled tasks model** on mobile: Auto, a model, or **Same as new threads**, which
 follows the model above and its project overrides. A task with **Use default model** turned on,
 which is how new tasks start, runs this model on every run, so changing it here changes all of
@@ -90,7 +90,7 @@ A project on several machines must have every machine connected to pin or archiv
 
 ## Worktree branch names
 
-In **Settings → Worktrees → Worktree branch naming**, choose a static prefix,
+In **Settings → Source control & worktrees → Worktree branch naming**, choose a static prefix,
 a model-selected semantic prefix such as `feat/` or `fix/`, or custom instructions
 for the complete name. The static prefix defaults to `t3/`; a trailing slash is
 optional, and an empty prefix adds nothing. Invalid characters in a static prefix
@@ -104,7 +104,7 @@ branch name remains.
 
 ## Scheduled tasks on mobile
 
-Open **Settings → Scheduled tasks** to create scheduled tasks or manage existing
+Open the **Tasks** tab to create scheduled tasks or manage existing
 ones across your connected environments. Use the settings filter to narrow the
 list by environment or project. Each task runs on the environment you choose,
 using its project, model, and workspace settings. Fixed-time schedules use that
@@ -123,7 +123,7 @@ Leaving an edited form asks before discarding unsaved changes.
 
 ## Webhook automations
 
-On the **Scheduled tasks** page on web or desktop, or in **Settings → Scheduled tasks**
+On the **Scheduled tasks** page on web or desktop, or in the **Tasks** tab
 on mobile, choose **On webhook** as a task's schedule to run it whenever another
 service calls its URL, such as GitHub on a new pull request or a CI job that failed. A public URL needs a
 [T3 Connect](remote-access.md) managed tunnel; after you save the task, copy
@@ -183,7 +183,7 @@ requests and the prompt each one produced.
 If the environment is offline, the sender gets an error and nothing runs;
 redeliver from the sender, such as GitHub's **Recent Deliveries**, once it is
 back. To have T3 Connect keep requests instead, turn on **Hold webhooks while
-offline** in **Settings → Sharing & access**. T3 Connect then stores requests to a
+offline** in **Settings → Machines & access**. T3 Connect then stores requests to a
 T3 Connect URL for up to 24 hours and delivers them when the environment
 returns. Leave it off if you don't want request bodies stored outside your
 machine. To skip requests that waited too long, set **Skip requests older
@@ -207,7 +207,7 @@ built-in default. Leave a setting on **Inherit** to let the next tier decide.
 Browser access changes apply when an agent session next starts.
 
 New worktrees initialize git submodules recursively. If that step is slow because the repository
-declares many nested submodules, set **Submodules** in **Settings → Worktrees** under Advanced (with the project
+declares many nested submodules, set **Submodules** in **Settings → Source control & worktrees** under Advanced (with the project
 selected to override it there) to **Top level only** to stop at the ones the repository declares
 itself, or **Skip** to leave them for a setup script. It resolves in the same order as the
 workspace default: a `"worktreeSubmodules"` value in the `t3.json` of the branch being checked out
@@ -216,13 +216,13 @@ applies when the project and environment are both on **Inherit**.
 ## Worktree location
 
 New worktrees go in the `worktrees` folder of the T3 home directory. To put them somewhere else,
-such as another drive, set **Settings → Worktrees → Worktree location** to an absolute path like
+such as another drive, set **Settings → Source control & worktrees → Worktree location** to an absolute path like
 `D:\worktrees` or `~/worktrees`. The setting is per machine. Existing worktrees stay where they
 are, and cleanup covers both the default folder and the custom one.
 
 ## Storage cleanup
 
-Open **Settings → Worktrees → Cleanup** to enable automatic cleanup on one machine or all connected
+Open **Settings → Source control & worktrees → Cleanup** to enable automatic cleanup on one machine or all connected
 environments. Policies are off by default and run on the server at startup, when changed, and
 hourly. Offline machines keep their existing policies.
 
@@ -281,7 +281,7 @@ local work, resolve it yourself before automatic pulls can resume.
 
 ## Import Claude Code and Codex conversations
 
-In Threads, enable **Import conversations** to bring Claude Code and Codex conversations from that
+In **Settings → Projects**, enable **Import conversations** to bring Claude Code and Codex conversations from that
 computer into CodeShip. Choose an environment to set the default or a project to override it. The
 project's settings page has the same switch. On mobile, use **Settings → Threads**.
 

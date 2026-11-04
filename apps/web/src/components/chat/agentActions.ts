@@ -12,6 +12,7 @@ const AGENT_ACTIONS = [
     label: "Commit & open PR",
     icon: PullRequestGlyph.pullRequest,
     needsGit: true,
+    needsChanges: true,
     searchTerms: ["commit", "push", "pull request", "pr", "ship"],
     prompt:
       "Commit the changes in this thread with a clear message and push the branch. If it has no pull request yet, open one with a short summary of the changes; otherwise update the existing one.",
@@ -21,6 +22,7 @@ const AGENT_ACTIONS = [
     label: "Run tests",
     icon: TestTubeDiagonalIcon,
     needsGit: false,
+    needsChanges: false,
     searchTerms: ["test", "tests", "verify", "check"],
     prompt: "Run the tests that cover the changes in this thread and fix any failures.",
   },
@@ -29,6 +31,7 @@ const AGENT_ACTIONS = [
     label: "Review changes",
     icon: ScanSearchIcon,
     needsGit: false,
+    needsChanges: true,
     searchTerms: ["review", "bugs", "check", "audit"],
     prompt:
       "Review the changes in this thread for bugs, missed edge cases and leftover debug code, then fix what you find.",
@@ -49,13 +52,19 @@ interface AgentAction {
 const PREVIEW_LENGTH = 240;
 const promptPreview = (prompt: string) => truncate(prompt.replace(/\s+/g, " "), PREVIEW_LENGTH);
 
-/** The built-in requests that fit the thread, then the ones the user saved in settings. */
+/**
+ * The built-in requests that fit the thread, then the ones the user saved in settings.
+ * `hasChanges` is false when git shows nothing to commit, push or review, and null when unknown.
+ */
 export function availableAgentActions(
   isGitRepo: boolean,
   custom: ReadonlyArray<CustomAgentAction>,
+  hasChanges: boolean | null = null,
 ): ReadonlyArray<AgentAction> {
   return [
-    ...AGENT_ACTIONS.filter((action) => isGitRepo || !action.needsGit).map((action) => ({
+    ...AGENT_ACTIONS.filter(
+      (action) => (isGitRepo || !action.needsGit) && (hasChanges !== false || !action.needsChanges),
+    ).map((action) => ({
       ...action,
       preview: action.prompt,
     })),

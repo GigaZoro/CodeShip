@@ -37,6 +37,7 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
+import { useOpenArchivedThreads } from "../archive/useOpenArchivedThreads";
 import { useProjects, useNavigationThreadShells } from "../../state/entities";
 import { useThreadSearch } from "../../state/queries";
 import { useThreadListV2ShelfPreferences } from "./use-thread-list-v2-shelf-preferences";
@@ -54,6 +55,8 @@ import { requestThreadMessageJump } from "./threadMessageJump";
 import { useThreadListSearchMatches } from "./useThreadListSearchMatches";
 import { useHomeListOptions } from "../home/home-list-options";
 import {
+  ARCHIVED_THREADS_EVENT,
+  archivedThreadsMenuItem,
   buildGroupByMenuActions,
   buildHomeListFilterMenu,
   handleGroupByMenuEvent,
@@ -171,6 +174,7 @@ function ThreadNavigationSidebarPane(
   const floatingTabs = floatingTabsMetrics(enabledTabs.length + 1, scale, fabSize, props.width);
   const projects = useProjects();
   const threads = useNavigationThreadShells();
+  const openArchivedThreads = useOpenArchivedThreads();
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const searchInputRef = useRef<TextInputInstance>(null);
@@ -445,6 +449,7 @@ function ThreadNavigationSidebarPane(
           },
         ] satisfies MenuAction[])),
     ...buildGroupByMenuActions(groupBy, environments.length),
+    archivedThreadsMenuItem,
   ] satisfies MenuAction[];
   const handleListMenuAction = ({
     nativeEvent,
@@ -452,6 +457,10 @@ function ThreadNavigationSidebarPane(
     readonly nativeEvent: { readonly event: string };
   }) => {
     const event = nativeEvent.event;
+    if (event === ARCHIVED_THREADS_EVENT) {
+      openArchivedThreads();
+      return;
+    }
     if (
       handleGroupByMenuEvent(event, {
         onProjectGroupingChange: setProjectGrouping,
@@ -786,6 +795,7 @@ function ThreadNavigationSidebarPane(
     onProjectChange: setSelectedProjectKey,
     onProjectGroupingChange: setProjectGrouping,
     onMachineGroupingToggle: toggleMachineGrouping,
+    onOpenArchived: openArchivedThreads,
   });
   const nativeHeaderItems = createSidebarHeaderItems({
     filterIcon,

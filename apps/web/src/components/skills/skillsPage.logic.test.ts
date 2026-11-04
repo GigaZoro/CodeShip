@@ -41,7 +41,7 @@ const missingByName = (result: ReturnType<typeof view>, label: string) =>
     result.columns
       .find((column) => column.machine.label === label)!
       .groups.flatMap((group) => group.skills)
-      .map((row) => [row.skill.name, row.missingOn]),
+      .map((row) => [row.skill.name, row.missingOn.map((machine) => machine.label)]),
   );
 
 describe("buildSkillsView", () => {

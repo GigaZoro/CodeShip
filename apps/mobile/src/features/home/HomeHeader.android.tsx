@@ -1,7 +1,13 @@
 import type { MenuAction } from "@react-native-menu/menu";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { ThreadListToolbar } from "./ThreadListToolbar";
-import { buildGroupByMenuActions, handleGroupByMenuEvent } from "./home-list-filter-menu";
+import { useOpenArchivedThreads } from "../archive/useOpenArchivedThreads";
+import {
+  ARCHIVED_THREADS_EVENT,
+  archivedThreadsMenuItem,
+  buildGroupByMenuActions,
+  handleGroupByMenuEvent,
+} from "./home-list-filter-menu";
 import type { HomeHeaderProps } from "./HomeHeader.types";
 
 export type { HomeHeaderEnvironment } from "./HomeHeader.types";
@@ -11,6 +17,7 @@ function checkedMenuState(checked: boolean) {
 }
 
 export function HomeHeader(props: HomeHeaderProps) {
+  const openArchivedThreads = useOpenArchivedThreads();
   const hasCustomListOptions =
     props.selectedEnvironmentId !== null || props.selectedProjectKey !== null;
   const menuActions: MenuAction[] = [
@@ -51,9 +58,14 @@ export function HomeHeader(props: HomeHeaderProps) {
           },
         ] satisfies MenuAction[])),
     ...buildGroupByMenuActions(props.grouping, props.environments.length),
+    archivedThreadsMenuItem,
   ];
   const handleMenuAction = (event: { nativeEvent: { event: string } }) => {
     const id = event.nativeEvent.event;
+    if (id === ARCHIVED_THREADS_EVENT) {
+      openArchivedThreads();
+      return;
+    }
     if (handleGroupByMenuEvent(id, props)) return;
     if (id === "environment:all") {
       props.onEnvironmentChange(null);

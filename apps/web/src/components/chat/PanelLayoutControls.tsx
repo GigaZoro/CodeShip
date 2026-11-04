@@ -10,6 +10,15 @@ import { PopoverCreateHandle, PopoverTrigger } from "../ui/popover";
 import { Toggle } from "../ui/toggle";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
+/** Names a header toggle once the window is wide enough; narrower windows keep the icon alone. */
+function ToggleLabel({ children }: { children: ReactNode }) {
+  return (
+    <span aria-hidden className="hidden xl:inline">
+      {children}
+    </span>
+  );
+}
+
 export interface PanelLayoutControlsProps {
   showThreadPanelControl?: boolean;
   showTerminalControl?: boolean;
@@ -59,6 +68,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
       size="sm"
     >
       <SquareMenuIcon className="size-4" />
+      <ToggleLabel>Details</ToggleLabel>
     </Toggle>
   );
   const threadPanelControl = (
@@ -96,6 +106,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
               disabled={!terminalAvailable}
             >
               <PanelBottomIcon className="size-4" />
+              <ToggleLabel>Terminal</ToggleLabel>
             </Toggle>
           </TooltipTrigger>
           <TooltipPopup side="bottom">
@@ -119,6 +130,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
               disabled={!rightPanelAvailable}
             >
               <PanelRightIcon className="size-4" />
+              <ToggleLabel>Panel</ToggleLabel>
             </Toggle>
           </TooltipTrigger>
           <TooltipPopup side="bottom">

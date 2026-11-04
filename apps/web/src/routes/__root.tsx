@@ -97,9 +97,9 @@ export const Route = createRootRoute({
       authGateState.status === "authenticated" &&
       getDesktopSnapShotBridge() &&
       shouldResumeSnapShotSetupOnStartup() &&
-      location.pathname !== "/settings/snap-shot"
+      location.pathname !== "/settings/chat"
     ) {
-      throw redirect({ to: "/settings/snap-shot", replace: true });
+      throw redirect({ to: "/settings/chat", hash: "snap-shot", replace: true });
     }
     return {
       authGateState,

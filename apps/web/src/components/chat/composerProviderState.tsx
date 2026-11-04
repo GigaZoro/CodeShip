@@ -29,7 +29,8 @@ type ComposerProviderStateInput = {
   models: ReadonlyArray<ServerProviderModel>;
   promptInjectionState?: ComposerPromptInjectionState;
   modelOptions: ReadonlyArray<ProviderOptionSelection> | null | undefined;
-  planModeEnabled: boolean;
+  /** Keeps the OpenCode "plan" agent in the options; the composer never offers it. */
+  planModeEnabled?: boolean;
 };
 
 type ComposerPromptInjectionState = "none" | "ultrathink";
@@ -54,7 +55,6 @@ type ComposerTraitsTarget = {
   reportedModelSelection?: ModelSelection | null | undefined;
   promptUltrathink: PromptUltrathink;
   onPromptEdit: (edit: (prompt: string) => string) => void;
-  planModeEnabled: boolean;
 };
 
 export function getComposerPromptInjectionState(prompt: string): ComposerPromptInjectionState {
@@ -84,7 +84,7 @@ function resolveComposerOptionSelections(
   model: string,
   provider: ProviderDriverKind,
   modelOptions: ReadonlyArray<ProviderOptionSelection> | null | undefined,
-  planModeEnabled: boolean,
+  planModeEnabled = false,
 ): {
   caps: ModelCapabilities;
   selections: ReadonlyArray<ProviderOptionSelection> | undefined;
@@ -100,7 +100,7 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
     models,
     modelOptions,
     promptInjectionState = "none",
-    planModeEnabled,
+    planModeEnabled = false,
   } = input;
   if (provider === "opencode") {
     const normalizedModel = normalizeModelSlug(model, provider);
@@ -162,7 +162,6 @@ export function getComposerReasoningStep(input: {
   reportedModelSelection?: ModelSelection | null | undefined;
   prompt: string;
   cursor: number;
-  planModeEnabled: boolean;
   direction: 1 | -1;
 }): {
   prompt: string;
@@ -175,7 +174,6 @@ export function getComposerReasoningStep(input: {
     input.model,
     input.provider,
     input.modelOptions,
-    input.planModeEnabled,
   );
   const step = getReasoningTraitStep({
     provider: input.provider,
@@ -185,7 +183,6 @@ export function getComposerReasoningStep(input: {
     modelOptions: selections,
     reportedModelSelection: input.reportedModelSelection,
     prompt,
-    planModeEnabled: input.planModeEnabled,
     direction: input.direction,
   });
   if (!step) return null;
@@ -209,7 +206,6 @@ export function resolveComposerTraitsInput(
     input.model,
     input.provider,
     input.modelOptions,
-    input.planModeEnabled,
   );
   const persistence = threadRef ? { threadRef } : draftId ? { draftId } : null;
   if (!persistence) return null;

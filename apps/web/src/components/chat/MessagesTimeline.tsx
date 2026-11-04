@@ -87,6 +87,7 @@ import {
   type MessagesTimelineRow,
   type TimelineLatestRun,
 } from "./MessagesTimeline.logic";
+import { deriveRetryTarget } from "./timelineRetry";
 import { type ThreadFindMatch } from "./threadFind";
 import { useThreadFindNavigation } from "./useThreadFindNavigation";
 import { TooltipScrollDismissArea } from "../ui/tooltip";
@@ -1037,6 +1038,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     runs,
     activeThreadEnvironmentId,
     onRevertToTurnCount,
+    retryTarget: deriveRetryTarget(rows),
     onRunShellCommand,
     findActive,
     onImageExpand,

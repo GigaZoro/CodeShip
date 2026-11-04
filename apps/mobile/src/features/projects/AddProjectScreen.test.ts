@@ -9,7 +9,15 @@ import type { NavigationState } from "@react-navigation/native";
 import { AuthOrchestrationOperateScope, AuthSourceControlWriteScope } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
-import { act, createElement, isValidElement, type ReactNode } from "react";
+import {
+  act,
+  Children,
+  createElement,
+  Fragment,
+  isValidElement,
+  useEffect,
+  type ReactNode,
+} from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -55,6 +63,7 @@ vi.mock("../workspace/useSelectWorkspaceDetail", async () => {
 });
 vi.mock("../../native/StackHeader", () => ({
   nativeHeaderScrollEdgeEffects: () => undefined,
+  NativeStackScreenOptions: "NativeStackScreenOptions",
 }));
 vi.mock("../../components/ui/NavigationRow", () => ({ NavigationRow: "NavigationRow" }));
 vi.mock("../../components/ui/Button", () => ({ Button: "Button" }));
@@ -65,11 +74,15 @@ vi.mock("react-native", () => ({
   Platform: { OS: "ios" },
   ActivityIndicator: "ActivityIndicator",
   Alert: { alert: state.alert },
+  BackHandler: { addEventListener: () => ({ remove: () => undefined }) },
   Pressable: "Pressable",
   ScrollView: "ScrollView",
   View: "View",
 }));
 vi.mock("@react-navigation/native", () => ({
+  useFocusEffect: (effect: () => void | (() => void)) => {
+    useEffect(effect, [effect]);
+  },
   useNavigation: () => ({
     dispatch: state.dispatch,
     getState: () =>
@@ -80,7 +93,7 @@ vi.mock("@react-navigation/native", () => ({
           { key: "draft", name: "Thread", params: { draft: {} } },
           { key: "picker", name: "NewTaskProject" },
           { key: "add", name: "AddProject" },
-          { key: "local", name: "AddProjectLocal" },
+          { key: "local", name: "AddProjectSetup" },
         ],
       },
   }),
@@ -172,6 +185,7 @@ vi.mock("../../state/use-composer-drafts", () => ({
 }));
 
 import {
+  AddProjectCloneScreen,
   AddProjectNewScreen,
   AddProjectDestinationScreen,
   AddProjectLocalFolderScreen,
@@ -241,6 +255,30 @@ function cloneAction() {
   return action;
 }
 
+describe("clone project screen", () => {
+  const stageOf = (props: Parameters<typeof AddProjectCloneScreen>[0]) => {
+    const rendered = renderScreen(() => AddProjectCloneScreen(props));
+    // The stage renders beside its header options; the stage is the last child.
+    const screen =
+      isValidElement<{ children?: ReactNode }>(rendered) && rendered.type === Fragment
+        ? Children.toArray(rendered.props.children).at(-1)
+        : rendered;
+    if (!isValidElement(screen) || typeof screen.type !== "function") {
+      throw new Error("Clone stage missing");
+    }
+    return screen.type.name;
+  };
+
+  it("starts at the repository and goes straight to the destination for a linked repository", () => {
+    expect(stageOf({ environmentId: "environment", source: "github" })).toBe(
+      "AddProjectRepositoryScreen",
+    );
+    expect(
+      stageOf({ environmentId: "environment", remoteUrl: "https://example.com/repo.git" }),
+    ).toBe("AddProjectDestinationScreen");
+  });
+});
+
 describe("clone project permissions", () => {
   beforeEach(async () => {
     state.baseDirectory = await NodeFSP.mkdtemp(
@@ -280,7 +318,7 @@ function mountProjectFlow(
   withDraft: boolean,
   withChooser = true,
   withPullRequest = false,
-  screenName = "AddProjectLocal",
+  screenName = "AddProjectSetup",
 ) {
   const { StackRouter, StackActions, CommonActions } = loadRouters();
   const base = StackRouter({});
@@ -293,9 +331,7 @@ function mountProjectFlow(
       "PullRequestFile",
       "NewTaskProject",
       "AddProject",
-      "AddProjectLocal",
-      "AddProjectNew",
-      "AddProjectDestination",
+      "AddProjectSetup",
     ],
     routeParamList: {},
     routeGetIdList: {},
@@ -369,7 +405,10 @@ describe("add project source environment", () => {
       reconnectedLocal();
       expect(state.dispatch).toHaveBeenLastCalledWith({
         type: "PUSH",
-        payload: { name: "AddProjectLocal", params: { environmentId: "environment" } },
+        payload: {
+          name: "AddProjectSetup",
+          params: { mode: "local", environmentId: "environment" },
+        },
       });
       state.connectionStates = { environment: "offline" };
       await act(() => root.render(createElement(SourceObserver)));
@@ -382,7 +421,10 @@ describe("add project source environment", () => {
       local();
       expect(state.dispatch).toHaveBeenLastCalledWith({
         type: "PUSH",
-        payload: { name: "AddProjectLocal", params: { environmentId: "another-environment" } },
+        payload: {
+          name: "AddProjectSetup",
+          params: { mode: "local", environmentId: "another-environment" },
+        },
       });
     } finally {
       await act(() => root.unmount());
@@ -420,8 +462,8 @@ describe("add project source environment", () => {
       if (!local) throw new Error("Local folder action missing");
       local();
       expect(navigation.getState().routes.at(-1)).toMatchObject({
-        name: "AddProjectLocal",
-        params: { environmentId: "another-environment" },
+        name: "AddProjectSetup",
+        params: { mode: "local", environmentId: "another-environment" },
       });
     } finally {
       await act(() => root.unmount());
@@ -454,8 +496,8 @@ describe("add project source environment", () => {
       state.dispatch.mockClear();
       actions!.local();
       expect(navigation.getState().routes.at(-1)).toMatchObject({
-        name: "AddProjectLocal",
-        params: { environmentId },
+        name: "AddProjectSetup",
+        params: { mode: "local", environmentId },
       });
       navigation.back();
     };
@@ -530,7 +572,7 @@ describe("local project navigation", () => {
     created.resolve(AsyncResult.success(undefined));
     await created.promise;
     navigation.back();
-    navigation.push("AddProjectLocal");
+    navigation.push("AddProjectSetup");
     const remaining = navigation.getState();
     projected.resolve({ environmentId: "environment", id: "project" });
     await submission;
@@ -567,7 +609,7 @@ describe("local project navigation", () => {
       waitingForProject.resolve();
       return projected.promise;
     });
-    const navigation = mountProjectFlow(false, true, true, "AddProjectNew");
+    const navigation = mountProjectFlow(false, true, true, "AddProjectSetup");
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     const root = createRoot(document.createElement("div"));
     let screen: ReactNode;
@@ -609,7 +651,7 @@ describe("local project navigation", () => {
         await waitingForProject.promise;
       });
       navigation.back();
-      navigation.push("AddProjectNew");
+      navigation.push("AddProjectSetup");
       const remaining = navigation.getState();
       await act(async () => {
         projected.resolve({ environmentId: "environment", id: "project" });

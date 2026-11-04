@@ -5,7 +5,7 @@ also lists the command IDs and defaults available in your version.
 
 ## Composer controls
 
-In **Settings → Chat → Send shortcut**, choose whether Enter sends, requires
+In **Settings → Keybindings → Other shortcuts → Send shortcut**, choose whether Enter sends, requires
 `mod+Enter` for multiline prompts, or always requires `mod+Enter`. `Shift+Enter`
 inserts a new line. This applies to the web and desktop composer at desktop widths.
 
@@ -153,6 +153,9 @@ a shortcut.
 
 ## Commands with special behavior
 
+`mod+alt+z` snoozes the open thread by opening the command palette on its Snooze options, and
+`mod+alt+e` archives it. Pin, settle, rename and the other thread actions are in the command palette too.
+
 `thread.stop` interrupts the running turn in the focused thread. It has no default
 shortcut; assign one in **Settings → Keybindings**.
 
@@ -195,6 +198,6 @@ Use `Cmd+Q` on macOS or `Ctrl+Q` on Windows and Linux. In the default **Hold** m
 hold for 1.2 seconds or press twice within 500 milliseconds. Holding requires
 keyboard repeat; if repeat is disabled, use two presses or the application menu.
 
-Change **Settings → General → Confirmations → Quit shortcut** to **Direct** for a
+Change **Settings → Keybindings → Other shortcuts → Quit shortcut** to **Direct** for a
 single press or **Double press** for two presses only. Choosing **Quit** from the
 application menu always quits immediately.

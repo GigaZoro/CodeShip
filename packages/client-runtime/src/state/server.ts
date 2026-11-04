@@ -1331,6 +1331,20 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:provider:plugins:add-marketplace",
       tag: WS_METHODS.providerPluginsAddMarketplace,
     }),
+    // Reads one skill's files from the machine that has it, to install on another.
+    exportProviderSkill: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:skills:export",
+      tag: WS_METHODS.providerSkillsExport,
+    }),
+    installProviderSkill: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:skills:install",
+      tag: WS_METHODS.providerSkillsInstall,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.instanceId, input.name]),
+      },
+    }),
     // Listing starts the provider and connects to every server; the server keeps a short copy.
     providerMcpServers: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:provider:mcp",

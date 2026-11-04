@@ -173,6 +173,7 @@ import { userFacingDispatchErrorMessage } from "./orchestration-v2/UserFacingErr
 import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
 import * as ProviderInstanceRegistry from "./provider/ProviderInstanceRegistry.ts";
 import * as ProviderPlugins from "./provider/ProviderPlugins.ts";
+import * as ProviderSkills from "./provider/ProviderSkills.ts";
 import * as ProviderMcp from "./provider/ProviderMcp.ts";
 import * as AcpRegistrySupport from "@t3tools/provider-acp-registry/server/AcpRegistrySupport";
 import * as AcpRegistryRuntimeCoordinator from "@t3tools/provider-acp-registry/server/AcpRegistryRuntimeCoordinator";
@@ -1384,6 +1385,7 @@ export const layerWsRpc = (
       const providerAuth = yield* ProviderAuthService.ProviderAuthService;
       const providerInstallation = yield* makeProviderInstallation();
       const providerPlugins = yield* ProviderPlugins.ProviderPlugins;
+      const providerSkills = yield* ProviderSkills.ProviderSkills;
       const providerMcp = yield* ProviderMcp.ProviderMcp;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const npmRelease = yield* NpmRelease.NpmRelease;
@@ -2553,6 +2555,8 @@ export const layerWsRpc = (
         [WS_METHODS.providerInstallSubscribe]: (input) => providerInstallation.subscribe(input),
         [WS_METHODS.providerInstallRemove]: (input) => providerInstallation.remove(input),
         [WS_METHODS.providerPluginsList]: (input) => providerPlugins.list(input),
+        [WS_METHODS.providerSkillsExport]: (input) => providerSkills.exportSkill(input),
+        [WS_METHODS.providerSkillsInstall]: (input) => providerSkills.installSkill(input),
         [WS_METHODS.providerPluginsInstall]: (input) => providerPlugins.install(input),
         [WS_METHODS.providerPluginsUninstall]: (input) => providerPlugins.uninstall(input),
         [WS_METHODS.providerPluginsSetEnabled]: (input) => providerPlugins.setEnabled(input),

@@ -6,7 +6,7 @@ TypeScript package. It does not use Cursor's ACP transport for V2 execution.
 ## Prerequisites
 
 - Node.js 22.13 or newer. The repository's supported Node version satisfies this requirement.
-- Sign in with Cursor in **Settings > Providers > Cursor**, or provide a Cursor API key in
+- Sign in with Cursor in **Settings > Providers & models > Cursor**, or provide a Cursor API key in
   `CURSOR_API_KEY`.
 - A paid Cursor plan on the account used for browser sign-in or `CURSOR_API_KEY`.
 - A model accepted by the Cursor SDK. `auto` is sent to the SDK as its `default` model selection.

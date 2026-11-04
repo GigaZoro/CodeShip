@@ -104,7 +104,7 @@ Nix manages both the desktop app and the bundled
 ### The `t3` command
 
 The desktop app includes the `t3` command-line tool. To run it from any
-terminal, open **Settings → About** and choose **Install** next to
+terminal, open **Settings → Maintenance & about** and choose **Install** next to
 **t3 command**. On macOS and Linux it adds a `t3` link to a folder on your
 `PATH`; on Windows it adds the app's command folder to your `PATH`. Open a new
 terminal afterwards. **Remove** takes it off again. If you already have `t3`
@@ -112,7 +112,7 @@ from npm, it stays as it is.
 
 ### Windows Subsystem for Linux
 
-Choose a WSL distro in **Settings → Sharing & access** to run agents and projects
+Choose a WSL distro in **Settings → Machines & access** to run agents and projects
 there. Install the provider CLIs inside that distro. CodeShip installs its own
 server runtime there automatically; the first launch after an app update can
 take longer.
@@ -138,7 +138,7 @@ Install CodeShip from the
 The phone connects to a server on another machine. Follow
 [remote access](./remote-access.md) to link it through T3 Connect or a pairing URL.
 
-Store links and QR codes are also available in **Settings → About → Mobile app**
+Store links and QR codes are also available in **Settings → Maintenance & about → Mobile app**
 on web and desktop. The store apps work with both stable and Nightly servers. Test builds are optional:
 
 - **iPhone and iPad:** TestFlight is invite-only.
@@ -153,7 +153,7 @@ before sharing.
 
 ## Providers
 
-Open **Settings → Providers** in the web or desktop app, select the environment,
+Open **Settings → Providers & models** in the web or desktop app, select the environment,
 and enable the provider you want. Installation, login, and configuration belong
 to that environment's machine, even when you connect from a phone or another
 computer.
@@ -167,7 +167,7 @@ computer.
 | OpenCode    | Install [OpenCode](https://opencode.ai), then run `opencode auth login`.                                                                                  |
 | Antigravity | Install and sign in with Google from CodeShip's provider settings.                                                                                        |
 | Pi          | Install [Pi](./providers-pi.md#set-up-pi) with Node.js 22.19 or newer, then run `pi` and `/login`.                                                        |
-| Muse Code   | Install [Muse Code](https://dev.meta.ai/docs/muse-code) on the server, run `muse login`, then enable it in Settings → Providers.                          |
+| Muse Code   | Install [Muse Code](https://dev.meta.ai/docs/muse-code) on the server, run `muse login`, then enable it in Settings → Providers & models.                 |
 | fx          | Install [fx](https://fx.sh) with `curl -fsSL https://fx.sh/setup.sh \| bash`, then run `fx login`.                                                        |
 
 Provider CLIs must be on the server's `PATH`. If CodeShip cannot find one, set its
@@ -177,7 +177,7 @@ Cursor's executable is `cursor-agent`, although its login command is
 managed runtimes without a `PATH` entry.
 
 CodeShip warns when a provider version has known compatibility problems with your
-release. Check **Settings → Providers** on that environment for the recommended
+release. Check **Settings → Providers & models** on that environment for the recommended
 version or range. When its package manager supports installing a specific version,
 you can install the recommendation there. Otherwise use the provider's installer
 on the environment's machine. An unlisted version is unverified.

@@ -171,7 +171,7 @@ export function ArchivedThreadsPanel() {
   };
 
   return (
-    <SettingsPageContainer>
+    <SettingsPageContainer scopeLead="Showing archived threads for">
       {archivedGroups.length === 0 ? (
         <SettingsSection
           id={isLoadingArchive ? undefined : searchableSetting("archive").id}
