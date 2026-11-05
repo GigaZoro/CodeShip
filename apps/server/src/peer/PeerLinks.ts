@@ -58,7 +58,7 @@ export interface ResolvedPeerLink {
 }
 
 export const LINKED_ENVIRONMENTS_OFF =
-  "Linked environments is off on this machine. Turn it on in Settings → Labs.";
+  "Linked environments is off on this machine. Turn it on in Settings → Machines & access → Linked environments.";
 
 /**
  * Links from this environment to others. Linking signs this environment in to
@@ -69,7 +69,7 @@ export const LINKED_ENVIRONMENTS_OFF =
 export class PeerLinks extends Context.Service<
   PeerLinks,
   {
-    /** Whether the Linked environments beta (Settings → Labs) is on here. */
+    /** Whether the Linked environments beta (Settings → Machines & access → Linked environments) is on here. */
     readonly enabled: Effect.Effect<boolean>;
     readonly link: (input: PeerLinkCreateInput) => Effect.Effect<PeerLink, PeerLinkError>;
     /**
@@ -82,6 +82,8 @@ export class PeerLinks extends Context.Service<
       Option.Option<{ readonly environmentId: EnvironmentId; readonly label: string }>
     >;
     readonly list: Effect.Effect<ReadonlyArray<PeerLinkSummary>, PeerLinkError>;
+    /** Every stored link, without asking any peer whether it answers. */
+    readonly listStored: Effect.Effect<ReadonlyArray<PeerLink>, PeerLinkError>;
     /** The stored link, without asking the peer whether it answers. */
     readonly get: (
       environmentId: EnvironmentId,
@@ -517,6 +519,10 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const listStored: PeerLinks["Service"]["listStored"] = readRows.pipe(
+    Effect.flatMap((rows) => Effect.forEach(rows, toLink)),
+  );
+
   const get: PeerLinks["Service"]["get"] = (environmentId) =>
     readRow(environmentId).pipe(
       Effect.flatMap(
@@ -616,6 +622,7 @@ const make = Effect.gen(function* () {
     link,
     describe: describeUrl,
     list,
+    listStored,
     get,
     unlink,
     resolve,

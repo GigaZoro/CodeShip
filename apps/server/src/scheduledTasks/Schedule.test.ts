@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 
-import { isSameSchedule, nextScheduledRunAt } from "./Schedule.ts";
+import { isSameSchedule, nextAlignedIntervalRunAt, nextScheduledRunAt } from "./Schedule.ts";
 
 describe("scheduled task schedule calculation", () => {
   it("skips to the next matching fixed-time weekday", () => {
@@ -24,6 +24,19 @@ describe("scheduled task schedule calculation", () => {
     expect(parts?.weekDay).toBe(1);
     expect(parts?.hour).toBe(9);
     expect(parts?.minute).toBe(0);
+  });
+
+  it("counts aligned interval slots from the anchor, strictly after the reference time", () => {
+    const hour = 3_600_000;
+    const anchor = Date.UTC(2026, 8, 9, 12, 0, 0);
+    const next = (offsetMs: number) =>
+      DateTime.toEpochMillis(
+        nextAlignedIntervalRunAt(hour, anchor, DateTime.makeUnsafe(anchor + offsetMs)),
+      ) - anchor;
+    expect(next(10 * 60_000)).toBe(hour);
+    expect(next(hour)).toBe(2 * hour);
+    expect(next(hour + 1)).toBe(2 * hour);
+    expect(next(-5 * 60_000)).toBe(hour);
   });
 
   it("compares schedules structurally", () => {

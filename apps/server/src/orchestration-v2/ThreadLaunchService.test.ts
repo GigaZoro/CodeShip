@@ -52,6 +52,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import { layerSharedTaskIdentities } from "../scheduledTasks/sharedTaskTestLayers.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -327,6 +328,7 @@ it.effect.each(
           harness.layer,
           NodeCrypto.layer,
           Scheduler.layer,
+          layerSharedTaskIdentities(),
           Layer.mock(SecretRequests.SecretRequests)({}),
           ManagedPolicy.layerTest(),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
@@ -394,6 +396,7 @@ it.effect(
           harness.layer,
           NodeCrypto.layer,
           Scheduler.layer,
+          layerSharedTaskIdentities(),
           Layer.mock(SecretRequests.SecretRequests)({}),
           ManagedPolicy.layerTest(),
         ),
@@ -432,6 +435,7 @@ it.effect("runs a thread-bound automation on the provider the thread uses now", 
         harness.layer,
         NodeCrypto.layer,
         Scheduler.layer,
+        layerSharedTaskIdentities(),
         Layer.mock(SecretRequests.SecretRequests)({}),
         ManagedPolicy.layerTest(),
       ),
@@ -896,6 +900,7 @@ function scratchHarness() {
         harness.layer,
         NodeCrypto.layer,
         Scheduler.layer,
+        layerSharedTaskIdentities(),
         Layer.mock(SecretRequests.SecretRequests)({}),
         ManagedPolicy.layerTest(),
       ),

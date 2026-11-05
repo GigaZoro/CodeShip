@@ -5,6 +5,7 @@ import {
   type ProjectId,
   ScheduledTaskId,
   type ScheduledTask,
+  type ScheduledTaskSharedRunOn,
   type ScheduledTaskUpsertSchedule,
   type ModelSelection,
   type RuntimeMode,
@@ -110,6 +111,12 @@ export interface DraftState {
   readonly baseModelSelection: ModelSelection | null;
   /** Runs the scheduled tasks default model instead of the one picked here. */
   readonly followsDefaultModel: boolean;
+  /** Kept on every machine and synced. Exclusions of machines not connected right now stay stored. */
+  readonly shared: boolean;
+  readonly sharedExcludedEnvironmentIds: ReadonlyArray<EnvironmentId>;
+  readonly sharedRunOn: ScheduledTaskSharedRunOn;
+  /** The project's machine order as edited here; null until the user moves a machine. */
+  readonly sharedMachineOrder: ReadonlyArray<EnvironmentId> | null;
   readonly signatureEnabled: boolean;
   readonly signatureHeader: string;
   readonly signatureEncoding: "hex" | "base64";
@@ -300,6 +307,10 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     interactionMode: task.interactionMode,
     baseModelSelection: task.modelSelection,
     followsDefaultModel: task.followsDefaultModel === true,
+    shared: task.shared != null,
+    sharedExcludedEnvironmentIds: task.shared?.excludedEnvironmentIds ?? [],
+    sharedRunOn: task.shared?.runOn ?? "every",
+    sharedMachineOrder: null,
     ...(schedule.type === "webhook" && schedule.signature !== null
       ? {
           signatureEnabled: true,

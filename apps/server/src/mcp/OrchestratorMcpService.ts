@@ -27,6 +27,8 @@ import {
   type OrchestratorMcpRequestSecretResult,
   type OrchestratorMcpDeleteScheduledTaskResult,
   type OrchestratorMcpListScheduledTasksResult,
+  type OrchestratorMcpSharedScheduledTasksInput,
+  type OrchestratorMcpSharedScheduledTasksResult,
   type OrchestratorMcpScheduledTask,
   type OrchestratorMcpScheduleTaskInput,
   type OrchestratorMcpScheduleTaskResult,
@@ -184,6 +186,10 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpListScheduledTasksInput,
   ) => Effect.Effect<OrchestratorMcpListScheduledTasksResult, OrchestratorMcpFailure>;
+  readonly sharedScheduledTasks: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpSharedScheduledTasksInput,
+  ) => Effect.Effect<OrchestratorMcpSharedScheduledTasksResult, OrchestratorMcpFailure>;
   readonly updateScheduledTask: (
     scope: McpInvocationScope,
     input: OrchestratorMcpUpdateScheduledTaskInput,
@@ -260,7 +266,13 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): OrchestratorMcpScheduledTask {
+const ONE_MACHINE_NEEDS_SHARED = "oneMachine needs a shared task: pass shared: true as well.";
+
+function scheduledTaskSummary(
+  task: ScheduledTask,
+  mayRun: boolean,
+  lastRun: OrchestratorMcpScheduledTask["lastRun"],
+): OrchestratorMcpScheduledTask {
   return {
     scheduledTaskId: task.id,
     title: task.title,
@@ -278,6 +290,9 @@ function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): Orchestrato
       ? {}
       : { webhookSignature: task.webhook.hasSecret ? "set" : "none" }),
     ...(task.blockedByPolicy === undefined ? {} : { blockedByPolicy: task.blockedByPolicy }),
+    shared: task.shared != null,
+    ...(task.shared?.runOn === "one" ? { oneMachine: true } : {}),
+    lastRun,
   };
 }
 
@@ -1990,6 +2005,31 @@ const make = Effect.gen(function* () {
     runtimeModeRank(modes.runtimeMode) <= runtimeModeRank(limits.runtimeMode) &&
     interactionModeRank(modes.interactionMode) <= interactionModeRank(limits.interactionMode);
 
+  // A run that dispatched is still going while its thread's latest run is, and failed if that run did.
+  const lastRunOf = Effect.fn("OrchestratorMcpService.lastRunOf")(function* (task: ScheduledTask) {
+    if (task.lastRunAt === null || task.lastRunStatus === "never") return null;
+    const at = task.lastRunAt;
+    if (task.lastRunStatus === "running") return { at, outcome: "working" as const };
+    if (task.lastRunStatus === "failed") return { at, outcome: "failed" as const };
+    const threadId = task.lastRunThreadId;
+    const records =
+      threadId == null
+        ? undefined
+        : yield* threadManagement
+            .getThreadRecords(threadId, ["runs"])
+            .pipe(Effect.orElseSucceed(() => undefined));
+    const latest = records === undefined ? undefined : ThreadManagementService.latestRun(records);
+    if (latest === undefined) return { at, outcome: "completed" as const };
+    return {
+      at,
+      outcome: ThreadManagementService.isTerminalRunStatus(latest.status)
+        ? latest.status === "completed"
+          ? ("completed" as const)
+          : ("failed" as const)
+        : ("working" as const),
+    };
+  });
+
   /**
    * Its webhook URL starts runs, so only a caller that may start one sees it: never a client
    * approved for read-only access, and a thread caller only with a live turn, at modes covering
@@ -2017,6 +2057,7 @@ const make = Effect.gen(function* () {
         live &&
           Option.isSome(modes) &&
           modes.value.every((mode) => withinLimits(caller.limits, mode)),
+        yield* lastRunOf(task),
       );
     },
   );
@@ -2069,9 +2110,18 @@ const make = Effect.gen(function* () {
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
       yield* assertLiveCallerForOtherProject(scope, parent, projectId);
       const project = yield* requireProject(projectId);
+      if (input.oneMachine === true && input.shared !== true) {
+        return yield* failure("invalid_request", ONE_MACHINE_NEEDS_SHARED);
+      }
+      if (input.shared === true && input.bindToCurrentThread === true) {
+        return yield* failure(
+          "invalid_request",
+          "A shared task starts a new thread on each machine, so it can't be bound to this thread.",
+        );
+      }
       const bindToCurrentThread =
         input.bindToCurrentThread ??
-        (parent !== undefined && parent.thread.projectId === projectId);
+        (input.shared !== true && parent !== undefined && parent.thread.projectId === projectId);
       if (bindToCurrentThread && (parent === undefined || parent.thread.projectId !== projectId)) {
         return yield* failure(
           "invalid_request",
@@ -2129,6 +2179,16 @@ const make = Effect.gen(function* () {
         interactionMode: limits.interactionMode,
         createdBy: "agent",
         creationSource: "mcp",
+        ...(input.shared === true
+          ? {
+              shared: {
+                excludedEnvironmentIds: [],
+                ...(input.oneMachine === undefined
+                  ? {}
+                  : { runOn: input.oneMachine ? ("one" as const) : ("every" as const) }),
+              },
+            }
+          : {}),
         ...replay,
       };
       const { task } = yield* scheduledTasks
@@ -2159,11 +2219,32 @@ const make = Effect.gen(function* () {
         };
       },
     ),
+    sharedScheduledTasks: Effect.fn("OrchestratorMcpService.sharedScheduledTasks")(
+      function* (_scope, input) {
+        return yield* scheduledTasks
+          .sharedCopies(input.forEnvironmentId)
+          .pipe(
+            Effect.mapError((error) =>
+              failure("orchestration_error", `Could not read shared tasks: ${error.message}`),
+            ),
+          );
+      },
+    ),
     updateScheduledTask: Effect.fn("OrchestratorMcpService.updateScheduledTask")(
       function* (scope, input) {
         const { parent, limits } = yield* loadCaller(scope);
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
+        const sharedAfter = input.shared ?? existing.shared != null;
+        if (input.oneMachine === true && !sharedAfter) {
+          return yield* failure("invalid_request", ONE_MACHINE_NEEDS_SHARED);
+        }
+        if (input.bindToCurrentThread === true && sharedAfter) {
+          return yield* failure(
+            "invalid_request",
+            "A shared task starts a new thread on each machine, so it can't be bound to this thread.",
+          );
+        }
         if (
           input.bindToCurrentThread === true &&
           (parent === undefined || parent.thread.projectId !== existing.projectId)
@@ -2200,6 +2281,19 @@ const make = Effect.gen(function* () {
           interactionMode: existing.interactionMode,
           createdBy: existing.createdBy,
           creationSource: existing.creationSource,
+          // Omitted keeps the stored choice.
+          ...(input.shared === false
+            ? { shared: null }
+            : sharedAfter && (input.shared === true || input.oneMachine !== undefined)
+              ? {
+                  shared: {
+                    excludedEnvironmentIds: existing.shared?.excludedEnvironmentIds ?? [],
+                    ...(input.oneMachine === undefined
+                      ? {}
+                      : { runOn: input.oneMachine ? ("one" as const) : ("every" as const) }),
+                  },
+                }
+              : {}),
         };
         const { task } = yield* scheduledTasks
           .upsert(upsertInput)

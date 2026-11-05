@@ -23,7 +23,10 @@ import {
 } from "./baseSchemas.ts";
 import {
   ScheduledTaskRunStatus,
+  ScheduledTaskProjectMachineOrder,
   ScheduledTaskSchedule,
+  ScheduledTaskSharedCopy,
+  ScheduledTaskSharedDeletion,
   ScheduledTaskUpsertSchedule,
 } from "./scheduledTask.ts";
 import { ProviderInteractionMode, ProviderRequestKind, RuntimeMode } from "./providerPolicy.ts";
@@ -661,6 +664,18 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
       description: "Default true: runs post in this thread. False: new thread per run.",
     }),
   ),
+  shared: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "True: same task on each of the user's machines, each running it. New thread per run; no webhook.",
+    }),
+  ),
+  oneMachine: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "With shared: each run happens on one machine, the first available in the project's machine order.",
+    }),
+  ),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
@@ -693,6 +708,16 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   blockedByPolicy: Schema.optional(Schema.String).annotate({
     description: "Present when an administrator's policy stops this task from running.",
   }),
+  shared: Schema.optional(Schema.Boolean),
+  oneMachine: Schema.optional(Schema.Boolean),
+  lastRun: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        at: IsoDateTime,
+        outcome: Schema.Literals(["working", "completed", "failed"]),
+      }),
+    ),
+  ).annotate({ description: "The last run here. working: its thread is still going." }),
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;
 
@@ -716,6 +741,21 @@ export const OrchestratorMcpListScheduledTasksResult = Schema.Struct({
 export type OrchestratorMcpListScheduledTasksResult =
   typeof OrchestratorMcpListScheduledTasksResult.Type;
 
+/** For a linked machine: the shared tasks it may hold, so it can pull newer copies with no client open. */
+export const OrchestratorMcpSharedScheduledTasksInput = Schema.Struct({
+  forEnvironmentId: EnvironmentId,
+});
+export type OrchestratorMcpSharedScheduledTasksInput =
+  typeof OrchestratorMcpSharedScheduledTasksInput.Type;
+
+export const OrchestratorMcpSharedScheduledTasksResult = Schema.Struct({
+  tasks: Schema.Array(ScheduledTaskSharedCopy),
+  deletions: Schema.Array(ScheduledTaskSharedDeletion),
+  projectMachineOrders: Schema.Array(ScheduledTaskProjectMachineOrder),
+});
+export type OrchestratorMcpSharedScheduledTasksResult =
+  typeof OrchestratorMcpSharedScheduledTasksResult.Type;
+
 export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
   scheduledTaskId: ScheduledTaskId,
@@ -724,6 +764,8 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   schedule: Schema.optional(OrchestratorMcpSchedule),
   enabled: Schema.optional(Schema.Boolean),
   bindToCurrentThread: Schema.optional(Schema.Boolean),
+  shared: Schema.optional(Schema.Boolean),
+  oneMachine: Schema.optional(Schema.Boolean),
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;

@@ -1,9 +1,19 @@
 import {
   CommandId,
+  EnvironmentId,
   MessageId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type ProjectId,
   ScheduledTask,
+  ScheduledTaskSharing,
+  ScheduledTaskOneMachineDecision,
+  ScheduledTaskProjectMachineOrder,
+  compareScheduledTaskSharedRevisions,
+  scheduledTaskSharedProjectKey,
+  type OrchestratorMcpSharedScheduledTasksResult,
+  type ScheduledTaskApplySharedInput,
+  type ScheduledTaskApplySharedResult,
+  type ScheduledTaskSharedRevision,
   ScheduledTaskError,
   ScheduledTaskId,
   ThreadId,
@@ -28,6 +38,7 @@ import {
   type ServerSettings as ServerSettingsValue,
   type ScheduledTaskUpsertInput,
   managedPolicyDeniedMessage,
+  resolveProjectProviderInstanceEnabled,
   managedRuntimeModeDenial,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -50,6 +61,10 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as SharedTaskPeerCheck from "./SharedTaskPeerCheck.ts";
+import * as ProjectService from "../project/ProjectService.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Metrics from "../observability/Metrics.ts";
@@ -60,7 +75,12 @@ import { resolveScheduledTaskDefaultModelSelection } from "@t3tools/shared/proje
 import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { isMissedFixedTimeRun, isSameSchedule, nextScheduledRunAt } from "./Schedule.ts";
+import {
+  isMissedFixedTimeRun,
+  isSameSchedule,
+  nextAlignedIntervalRunAt,
+  nextScheduledRunAt,
+} from "./Schedule.ts";
 import {
   redactHeaders,
   redactQuery,
@@ -81,6 +101,13 @@ import { constantTimeEquals, verifyWebhookSignature } from "./webhookVerificatio
 export const WEBHOOK_ROUTE_PREFIX = "/api/hooks";
 const isScheduledTaskError = Schema.is(ScheduledTaskError);
 const PROMPT_TOO_LONG = "The filled-in prompt is too long.";
+const MINUTE_MS = 60_000;
+// An occurrence of a one-machine task counts as run if a machine started it within this
+// long before the occurrence was due.
+const ONE_MACHINE_WINDOW_CAP_MS = 12 * 60 * MINUTE_MS;
+const ONE_MACHINE_GRACE_CAP_MS = 5 * MINUTE_MS;
+// The first machine in the order runs on time without asking; later than this it asks first.
+const ONE_MACHINE_ON_TIME_MS = MINUTE_MS;
 const WEBHOOK_DELIVERY_RETENTION = 50;
 const WEBHOOK_DEDUPE_DELIVERY_RETENTION = 20;
 const WEBHOOK_FILTERED_DELIVERY_RETENTION = 20;
@@ -187,6 +214,22 @@ const decodeWorkspaceStrategyJson = Schema.decodeUnknownEffect(
 const decodeModelSelectionJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ScheduledTask.fields.modelSelection),
 );
+const decodeSharedProjectJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(ScheduledTaskSharing.fields.project),
+);
+const decodeExcludedEnvironmentsJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(ScheduledTaskSharing.fields.excludedEnvironmentIds),
+);
+const decodeUncheckedJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(ScheduledTaskOneMachineDecision.fields.unchecked),
+);
+const decodeMachineOrderRow = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    project: Schema.fromJsonString(ScheduledTaskProjectMachineOrder.fields.project),
+    order: Schema.fromJsonString(ScheduledTaskProjectMachineOrder.fields.order),
+    revision: ScheduledTaskProjectMachineOrder.fields.revision,
+  }),
+);
 const HeadersJson = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String));
 const MissingFieldsJson = Schema.fromJsonString(Schema.Array(Schema.String));
 const decodeHeadersJson = Schema.decodeUnknownOption(HeadersJson);
@@ -221,6 +264,24 @@ interface ScheduledTaskRow {
   readonly pinned_at?: string | null;
   readonly last_run_thread_id?: string | null;
   readonly follows_default_model?: number;
+  readonly shared_revision_at?: string | null;
+  readonly shared_revision_environment_id?: string | null;
+  readonly shared_project_json?: string | null;
+  readonly shared_excluded_environment_ids_json?: string | null;
+  readonly shared_run_on?: string | null;
+  readonly decision_at?: string | null;
+  readonly decision_ran_on?: string | null;
+  readonly decision_unchecked_json?: string | null;
+}
+
+interface MachineOrderRow extends SharedRevisionRow {
+  readonly project_json: string;
+  readonly order_json: string;
+}
+
+interface SharedRevisionRow {
+  readonly revision_at: string;
+  readonly revision_environment_id: string;
 }
 
 interface WebhookDeliveryRow {
@@ -261,6 +322,14 @@ export class ScheduledTaskService extends Context.Service<
     readonly delete: (
       input: ScheduledTaskDeleteInput,
     ) => Effect.Effect<ScheduledTaskDeleteResult, ScheduledTaskError>;
+    /** This machine's shared tasks as copies for `forEnvironmentId`, which gets none that exclude it. */
+    readonly sharedCopies: (
+      forEnvironmentId: EnvironmentId,
+    ) => Effect.Effect<OrchestratorMcpSharedScheduledTasksResult, ScheduledTaskError>;
+    /** Brings this machine's copy of a shared task up to a newer revision; an older one changes nothing. */
+    readonly applyShared: (
+      input: ScheduledTaskApplySharedInput,
+    ) => Effect.Effect<ScheduledTaskApplySharedResult, ScheduledTaskError>;
     /** Deletes only tasks that still target this thread, including their webhook deliveries. */
     readonly deleteForThread: (threadId: ThreadId) => Effect.Effect<void, ScheduledTaskError>;
     /** Points tasks bound to these threads at the project the threads moved to. */
@@ -305,14 +374,23 @@ function iso(value: DateTime.DateTime): string {
 
 const localNow = DateTime.withCurrentZoneLocal(DateTime.nowInCurrentZone);
 
-function nextRunAt(
-  task: Pick<ScheduledTask, "enabled" | "schedule">,
-  from: DateTime.DateTime,
-): string | null {
+type NextRunTask = Pick<ScheduledTask, "enabled" | "schedule"> &
+  Partial<Pick<ScheduledTask, "createdAt" | "shared">>;
+
+/** Every copy of a one-machine interval task runs the same slots, counted from its creation. */
+function hasAlignedSlots(task: Pick<NextRunTask, "schedule" | "shared">): boolean {
+  return task.schedule.type === "interval" && task.shared?.runOn === "one";
+}
+
+function nextRunAt(task: NextRunTask, from: DateTime.DateTime): string | null {
   if (!task.enabled) return null;
   // Decoded intervals can overflow DateTime; unrepresentable occurrences have no next run.
   try {
-    const next = nextScheduledRunAt(task.schedule, from);
+    const anchorMs = Date.parse(task.createdAt ?? "");
+    const next =
+      task.schedule.type === "interval" && hasAlignedSlots(task) && Number.isFinite(anchorMs)
+        ? nextAlignedIntervalRunAt(task.schedule.everyMs, anchorMs, from)
+        : nextScheduledRunAt(task.schedule, from);
     return next !== null && Number.isFinite(DateTime.toEpochMillis(next)) ? iso(next) : null;
   } catch {
     return null;
@@ -324,7 +402,7 @@ function nextRunAt(
  * (`lastRunAt`), so a manual run that began before its time does not use it up.
  */
 function nextRunAfterRun(
-  task: Pick<ScheduledTask, "enabled" | "schedule" | "lastRunAt">,
+  task: NextRunTask & Pick<ScheduledTask, "lastRunAt">,
   now: DateTime.DateTime,
 ): string | null {
   const startedAt =
@@ -378,6 +456,32 @@ const decodeRow = Effect.fnUntraced(
     const webhook = schedule.type === "webhook" ? webhookEndpoint(row, origin) : undefined;
     const workspaceStrategy = yield* decodeWorkspaceStrategyJson(row.workspace_strategy_json);
     const modelSelection = yield* decodeModelSelectionJson(row.model_selection_json);
+    const shared =
+      row.shared_revision_at === undefined
+        ? undefined
+        : row.shared_revision_at === null
+          ? null
+          : {
+              revision: {
+                at: row.shared_revision_at,
+                environmentId: row.shared_revision_environment_id,
+              },
+              project: yield* decodeSharedProjectJson(row.shared_project_json),
+              excludedEnvironmentIds: yield* decodeExcludedEnvironmentsJson(
+                row.shared_excluded_environment_ids_json,
+              ),
+              ...(row.shared_run_on === "one" ? { runOn: "one" } : {}),
+            };
+    const decision =
+      row.decision_at === undefined
+        ? undefined
+        : row.decision_at === null
+          ? null
+          : {
+              at: row.decision_at,
+              ranOn: row.decision_ran_on,
+              unchecked: yield* decodeUncheckedJson(row.decision_unchecked_json),
+            };
     return yield* decodeTask({
       id: row.task_id,
       title: row.title,
@@ -405,6 +509,8 @@ const decodeRow = Effect.fnUntraced(
       ...(row.follows_default_model === undefined
         ? {}
         : { followsDefaultModel: row.follows_default_model === 1 }),
+      ...(shared === undefined ? {} : { shared }),
+      ...(decision === undefined ? {} : { lastOneMachineDecision: decision }),
     });
   },
   (effect, row, _origin?) =>
@@ -457,6 +563,12 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const crypto = yield* Crypto.Crypto;
+    const hereEnvironmentId = yield* ServerEnvironment.ServerEnvironmentIdentity.pipe(
+      Effect.flatMap((identity) => identity.getEnvironmentId),
+    );
+    const peerCheck = yield* SharedTaskPeerCheck.SharedTaskPeerCheck;
+    const projects = yield* ProjectService.ProjectService;
+    const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
     const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
     const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
@@ -492,6 +604,13 @@ export const layer = Layer.effect(
       ReadonlyMap<ScheduledTaskId, ReadonlyArray<number>>
     >(new Map());
     const activeRuns = yield* Ref.make<ReadonlySet<ScheduledTaskId>>(new Set());
+    // A restart forgets these, which only costs a one-machine task one more wait for its turn.
+    const oneMachineDeferrals = yield* Ref.make<
+      ReadonlyMap<
+        ScheduledTaskId,
+        { readonly occurrenceDueMs: number; readonly deferredTo: string }
+      >
+    >(new Map());
     // Notifications re-emit the full list; slow subscribers need only the newest dirty signal.
     const changesPubSub = yield* PubSub.sliding<void>(1);
     const dueTasks = DueHint.make();
@@ -516,6 +635,44 @@ export const layer = Layer.effect(
       CREATE TABLE IF NOT EXISTS scheduled_task_default_model (task_id TEXT PRIMARY KEY)
     `;
 
+    // A shared task keeps its sync metadata here, off scheduled_tasks, for the same reason.
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS scheduled_task_shared (
+        task_id TEXT PRIMARY KEY,
+        revision_at TEXT NOT NULL,
+        revision_environment_id TEXT NOT NULL,
+        project_json TEXT NOT NULL,
+        excluded_environment_ids_json TEXT NOT NULL,
+        run_on TEXT NOT NULL DEFAULT 'every'
+      )
+    `;
+    // The machines a project's one-machine tasks try in order; synced like a shared task.
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS scheduled_task_project_machine_orders (
+        project_key TEXT PRIMARY KEY,
+        project_json TEXT NOT NULL,
+        order_json TEXT NOT NULL,
+        revision_at TEXT NOT NULL,
+        revision_environment_id TEXT NOT NULL
+      )
+    `;
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS scheduled_task_one_machine_decision (
+        task_id TEXT PRIMARY KEY,
+        decided_at TEXT NOT NULL,
+        ran_on TEXT,
+        unchecked_json TEXT NOT NULL
+      )
+    `;
+    // Outlives the task so a stale copy on another machine is removed, not restored.
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS scheduled_task_shared_deletions (
+        task_id TEXT PRIMARY KEY,
+        revision_at TEXT NOT NULL,
+        revision_environment_id TEXT NOT NULL
+      )
+    `;
+
     const readSettings = serverSettings.getSettings.pipe(
       Effect.mapError((cause) => taskError("Could not read server settings.", { cause })),
     );
@@ -530,7 +687,20 @@ export const layer = Layer.effect(
                 resolveScheduledTaskDefaultModelSelection(settings, task.projectId) ??
                 task.modelSelection,
             }
-          : task;
+          : task.shared != null &&
+              !resolveProjectProviderInstanceEnabled(
+                settings,
+                task.projectId,
+                task.modelSelection.instanceId,
+              )
+            ? // Another machine's account: the task keeps its own model, runs use the default here.
+              { ...task, modelUnavailableHere: true }
+            : task;
+    const launchModelSelection = (settings: ServerSettingsValue, task: ScheduledTask) =>
+      task.modelUnavailableHere === true
+        ? (resolveScheduledTaskDefaultModelSelection(settings, task.projectId) ??
+          task.modelSelection)
+        : task.modelSelection;
 
     const selectAllRows = () =>
       sql<ScheduledTaskRow>`
@@ -562,7 +732,23 @@ export const layer = Layer.effect(
         (SELECT last_run_thread_id FROM scheduled_task_sidebar s
           WHERE s.task_id = scheduled_tasks.task_id) AS last_run_thread_id,
         EXISTS (SELECT 1 FROM scheduled_task_default_model d
-          WHERE d.task_id = scheduled_tasks.task_id) AS follows_default_model
+          WHERE d.task_id = scheduled_tasks.task_id) AS follows_default_model,
+        (SELECT revision_at FROM scheduled_task_shared sh
+          WHERE sh.task_id = scheduled_tasks.task_id) AS shared_revision_at,
+        (SELECT revision_environment_id FROM scheduled_task_shared sh
+          WHERE sh.task_id = scheduled_tasks.task_id) AS shared_revision_environment_id,
+        (SELECT project_json FROM scheduled_task_shared sh
+          WHERE sh.task_id = scheduled_tasks.task_id) AS shared_project_json,
+        (SELECT excluded_environment_ids_json FROM scheduled_task_shared sh
+          WHERE sh.task_id = scheduled_tasks.task_id) AS shared_excluded_environment_ids_json,
+        (SELECT run_on FROM scheduled_task_shared sh
+          WHERE sh.task_id = scheduled_tasks.task_id) AS shared_run_on,
+        (SELECT decided_at FROM scheduled_task_one_machine_decision od
+          WHERE od.task_id = scheduled_tasks.task_id) AS decision_at,
+        (SELECT ran_on FROM scheduled_task_one_machine_decision od
+          WHERE od.task_id = scheduled_tasks.task_id) AS decision_ran_on,
+        (SELECT unchecked_json FROM scheduled_task_one_machine_decision od
+          WHERE od.task_id = scheduled_tasks.task_id) AS decision_unchecked_json
       FROM scheduled_tasks
       -- Not updated_at: toggles, runs and edits rewrite it, and clients render
       -- this order as-is, so rows would move under the pointer.
@@ -610,7 +796,23 @@ export const layer = Layer.effect(
         (SELECT last_run_thread_id FROM scheduled_task_sidebar s
           WHERE s.task_id = scheduled_tasks.task_id) AS last_run_thread_id,
         EXISTS (SELECT 1 FROM scheduled_task_default_model d
-          WHERE d.task_id = scheduled_tasks.task_id) AS follows_default_model
+          WHERE d.task_id = scheduled_tasks.task_id) AS follows_default_model,
+        (SELECT revision_at FROM scheduled_task_shared sh
+          WHERE sh.task_id = scheduled_tasks.task_id) AS shared_revision_at,
+        (SELECT revision_environment_id FROM scheduled_task_shared sh
+          WHERE sh.task_id = scheduled_tasks.task_id) AS shared_revision_environment_id,
+        (SELECT project_json FROM scheduled_task_shared sh
+          WHERE sh.task_id = scheduled_tasks.task_id) AS shared_project_json,
+        (SELECT excluded_environment_ids_json FROM scheduled_task_shared sh
+          WHERE sh.task_id = scheduled_tasks.task_id) AS shared_excluded_environment_ids_json,
+        (SELECT run_on FROM scheduled_task_shared sh
+          WHERE sh.task_id = scheduled_tasks.task_id) AS shared_run_on,
+        (SELECT decided_at FROM scheduled_task_one_machine_decision od
+          WHERE od.task_id = scheduled_tasks.task_id) AS decision_at,
+        (SELECT ran_on FROM scheduled_task_one_machine_decision od
+          WHERE od.task_id = scheduled_tasks.task_id) AS decision_ran_on,
+        (SELECT unchecked_json FROM scheduled_task_one_machine_decision od
+          WHERE od.task_id = scheduled_tasks.task_id) AS decision_unchecked_json
       FROM scheduled_tasks
       WHERE task_id = ${id}
     `.pipe(NodeSqliteClient.readOnly);
@@ -763,14 +965,136 @@ export const layer = Layer.effect(
         ),
       );
 
+    const toRevision = (row: SharedRevisionRow | undefined): ScheduledTaskSharedRevision | null =>
+      row === undefined
+        ? null
+        : { at: row.revision_at, environmentId: EnvironmentId.make(row.revision_environment_id) };
+
+    const storedRevisions = (id: ScheduledTaskId) =>
+      Effect.all({
+        shared: sql<SharedRevisionRow>`
+          SELECT revision_at, revision_environment_id FROM scheduled_task_shared
+          WHERE task_id = ${id}`,
+        deletion: sql<SharedRevisionRow>`
+          SELECT revision_at, revision_environment_id FROM scheduled_task_shared_deletions
+          WHERE task_id = ${id}`,
+      }).pipe(
+        Effect.map(({ shared, deletion }) => ({
+          shared: toRevision(shared[0]),
+          deletion: toRevision(deletion[0]),
+        })),
+      );
+
+    // Later than anything stored, even when this machine's clock is behind, so an edit always
+    // beats the version it edited.
+    const revisionAfter = Effect.fnUntraced(function* (
+      storedAts: ReadonlyArray<string | undefined>,
+    ) {
+      const nowMs = DateTime.toEpochMillis(yield* localNow);
+      const after = storedAts.map((at) => (at === undefined ? 0 : Date.parse(at) + 1));
+      const revision: ScheduledTaskSharedRevision = {
+        at: iso(DateTime.makeUnsafe(Math.max(nowMs, ...after))),
+        environmentId: hereEnvironmentId,
+      };
+      return revision;
+    });
+
+    const stampRevision = Effect.fn("ScheduledTaskService.stampRevision")(function* (
+      id: ScheduledTaskId,
+    ) {
+      const stored = yield* storedRevisions(id);
+      return yield* revisionAfter([stored.shared?.at, stored.deletion?.at]);
+    });
+
+    const writeSharing = (id: ScheduledTaskId, sharing: ScheduledTaskSharing) =>
+      sql`
+        INSERT INTO scheduled_task_shared (
+          task_id, revision_at, revision_environment_id, project_json,
+          excluded_environment_ids_json, run_on
+        ) VALUES (
+          ${id},
+          ${sharing.revision.at},
+          ${sharing.revision.environmentId},
+          ${JSON.stringify(sharing.project)},
+          ${JSON.stringify(sharing.excludedEnvironmentIds)},
+          ${sharing.runOn ?? "every"}
+        )
+        ON CONFLICT (task_id) DO UPDATE SET
+          revision_at = excluded.revision_at,
+          revision_environment_id = excluded.revision_environment_id,
+          project_json = excluded.project_json,
+          excluded_environment_ids_json = excluded.excluded_environment_ids_json,
+          run_on = excluded.run_on
+      `.pipe(
+        Effect.andThen(sql`DELETE FROM scheduled_task_shared_deletions WHERE task_id = ${id}`),
+      );
+
+    const writeDeletion = (id: ScheduledTaskId, revision: ScheduledTaskSharedRevision) =>
+      sql`
+        INSERT INTO scheduled_task_shared_deletions (task_id, revision_at, revision_environment_id)
+        VALUES (${id}, ${revision.at}, ${revision.environmentId})
+        ON CONFLICT (task_id) DO UPDATE SET
+          revision_at = excluded.revision_at,
+          revision_environment_id = excluded.revision_environment_id
+      `.pipe(Effect.andThen(sql`DELETE FROM scheduled_task_shared WHERE task_id = ${id}`));
+
+    // For an edit that is not a save: stamps a shared task and leaves any other alone.
+    const bumpSharedRevision = Effect.fn("ScheduledTaskService.bumpSharedRevision")(function* (
+      id: ScheduledTaskId,
+    ) {
+      if ((yield* storedRevisions(id)).shared === null) return;
+      const revision = yield* stampRevision(id);
+      yield* sql`
+        UPDATE scheduled_task_shared
+        SET revision_at = ${revision.at}, revision_environment_id = ${revision.environmentId}
+        WHERE task_id = ${id}
+      `;
+    });
+
+    const stampOrderRevision = Effect.fn("ScheduledTaskService.stampOrderRevision")(function* (
+      projectKey: string,
+    ) {
+      const [stored] = yield* sql<SharedRevisionRow>`
+        SELECT revision_at, revision_environment_id FROM scheduled_task_project_machine_orders
+        WHERE project_key = ${projectKey}`;
+      return yield* revisionAfter([stored?.revision_at]);
+    });
+
+    const writeMachineOrder = (order: ScheduledTaskProjectMachineOrder) =>
+      sql`
+        INSERT INTO scheduled_task_project_machine_orders (
+          project_key, project_json, order_json, revision_at, revision_environment_id
+        ) VALUES (
+          ${scheduledTaskSharedProjectKey(order.project)},
+          ${JSON.stringify(order.project)},
+          ${JSON.stringify(order.order)},
+          ${order.revision.at},
+          ${order.revision.environmentId}
+        )
+        ON CONFLICT (project_key) DO UPDATE SET
+          order_json = excluded.order_json,
+          revision_at = excluded.revision_at,
+          revision_environment_id = excluded.revision_environment_id
+      `;
+
+    const deleteLocalRows = (id: ScheduledTaskId) =>
+      sql`DELETE FROM scheduled_task_webhook_deliveries WHERE task_id = ${id}`.pipe(
+        Effect.andThen(sql`DELETE FROM scheduled_task_sidebar WHERE task_id = ${id}`),
+        Effect.andThen(sql`DELETE FROM scheduled_task_default_model WHERE task_id = ${id}`),
+        Effect.andThen(sql`DELETE FROM scheduled_task_shared WHERE task_id = ${id}`),
+        Effect.andThen(sql`DELETE FROM scheduled_task_one_machine_decision WHERE task_id = ${id}`),
+        Effect.andThen(sql`DELETE FROM scheduled_tasks WHERE task_id = ${id}`),
+      );
+
     const deleteRow = (id: ScheduledTaskId) =>
       sql
         .withTransaction(
-          sql`DELETE FROM scheduled_task_webhook_deliveries WHERE task_id = ${id}`.pipe(
-            Effect.andThen(sql`DELETE FROM scheduled_task_sidebar WHERE task_id = ${id}`),
-            Effect.andThen(sql`DELETE FROM scheduled_task_default_model WHERE task_id = ${id}`),
-            Effect.andThen(sql`DELETE FROM scheduled_tasks WHERE task_id = ${id}`),
-          ),
+          Effect.gen(function* () {
+            if ((yield* storedRevisions(id)).shared !== null) {
+              yield* writeDeletion(id, yield* stampRevision(id));
+            }
+            yield* deleteLocalRows(id);
+          }),
         )
         .pipe(
           Effect.mapError((cause) =>
@@ -1013,7 +1337,7 @@ export const layer = Layer.effect(
                     commandId,
                     projectId: active.projectId,
                     title: active.title,
-                    modelSelection: active.modelSelection,
+                    modelSelection: launchModelSelection(yield* readSettings, active),
                     runtimeMode: active.runtimeMode,
                     interactionMode: active.interactionMode,
                     workspaceStrategy: active.workspaceStrategy,
@@ -1164,6 +1488,168 @@ export const layer = Layer.effect(
       yield* notifyChanged;
     });
 
+    const oneMachineWindowMs = (schedule: ScheduledTask["schedule"]) =>
+      schedule.type === "interval"
+        ? Math.min(schedule.everyMs / 2, ONE_MACHINE_WINDOW_CAP_MS)
+        : ONE_MACHINE_WINDOW_CAP_MS;
+
+    // Where this machine stands in the project's order, and the machines to ask.
+    const oneMachinePlan = Effect.fn("ScheduledTaskService.oneMachinePlan")(
+      function* (sharing: ScheduledTaskSharing) {
+        const excluded = new Set<string>(sharing.excludedEnvironmentIds);
+        const [stored] = yield* sql<MachineOrderRow>`
+          SELECT project_json, order_json, revision_at, revision_environment_id
+          FROM scheduled_task_project_machine_orders
+          WHERE project_key = ${scheduledTaskSharedProjectKey(sharing.project)}
+        `.pipe(NodeSqliteClient.readOnly);
+        if (stored === undefined) {
+          const linked = (yield* peerCheck.linkedEnvironmentIds).filter(
+            (id) => !excluded.has(id) && id !== hereEnvironmentId,
+          );
+          return { rank: linked.length === 0 ? 0 : 1, peers: linked };
+        }
+        const { order } = yield* decodeMachineOrderRow({
+          project: stored.project_json,
+          order: stored.order_json,
+          revision: { at: stored.revision_at, environmentId: stored.revision_environment_id },
+        });
+        const effective = order.filter((id) => !excluded.has(id));
+        const index = effective.indexOf(hereEnvironmentId);
+        return {
+          rank: index === -1 ? effective.length : index,
+          peers: effective.filter((id) => id !== hereEnvironmentId),
+        };
+      },
+      (effect, sharing) =>
+        effect.pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Could not read the machine order; running without waiting", {
+              cause,
+              project: sharing.project,
+            }).pipe(Effect.as({ rank: 0, peers: [] as ReadonlyArray<EnvironmentId> })),
+          ),
+        ),
+    );
+
+    const recordOneMachineDecision = (
+      taskId: ScheduledTaskId,
+      decision: ScheduledTaskOneMachineDecision,
+    ) =>
+      sql`
+        INSERT INTO scheduled_task_one_machine_decision (task_id, decided_at, ran_on, unchecked_json)
+        VALUES (${taskId}, ${decision.at}, ${decision.ranOn}, ${JSON.stringify(decision.unchecked)})
+        ON CONFLICT (task_id) DO UPDATE SET
+          decided_at = excluded.decided_at,
+          ran_on = excluded.ran_on,
+          unchecked_json = excluded.unchecked_json
+      `;
+
+    // One occurrence of a task that runs on one machine: wait for this machine's turn, then run
+    // unless a machine ahead already has it.
+    const settleOneMachineOccurrence = Effect.fn("ScheduledTaskService.settleOneMachineOccurrence")(
+      function* (task: ScheduledTask, sharing: ScheduledTaskSharing, now: DateTime.DateTime) {
+        const nowMs = DateTime.toEpochMillis(now);
+        const dueMs = Date.parse(task.nextRunAt!);
+        const deferral = (yield* Ref.get(oneMachineDeferrals)).get(task.id);
+        const resumed = deferral !== undefined && deferral.deferredTo === task.nextRunAt;
+        const windowMs = oneMachineWindowMs(task.schedule);
+        const plan = yield* oneMachinePlan(sharing);
+        if (!resumed) {
+          if (plan.rank > 0) {
+            const graceMs = Math.min(ONE_MACHINE_GRACE_CAP_MS, windowMs / 2);
+            const deferredTo = iso(DateTime.makeUnsafe(dueMs + plan.rank * graceMs));
+            yield* sql`
+              UPDATE scheduled_tasks SET next_run_at = ${deferredTo}, updated_at = ${iso(now)}
+              WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
+            `.pipe(
+              Effect.mapError((cause) =>
+                taskError("Could not defer the schedule task run.", { taskId: task.id, cause }),
+              ),
+            );
+            yield* Ref.update(oneMachineDeferrals, (current) =>
+              new Map(current).set(task.id, { occurrenceDueMs: dueMs, deferredTo }),
+            );
+            return yield* notifyChanged;
+          }
+          if (nowMs - dueMs <= ONE_MACHINE_ON_TIME_MS) {
+            return yield* runTask(task, "scheduled").pipe(Effect.asVoid);
+          }
+        }
+        const occurrenceDueMs = resumed ? deferral.occurrenceDueMs : dueMs;
+        const answer = yield* peerCheck.check({
+          taskId: task.id,
+          peers: plan.peers,
+          since: iso(DateTime.makeUnsafe(occurrenceDueMs - windowMs)),
+        });
+        yield* Ref.update(oneMachineDeferrals, (current) => {
+          const next = new Map(current);
+          next.delete(task.id);
+          return next;
+        });
+        yield* Effect.forEach(
+          answer.unchecked,
+          (peer) =>
+            Effect.logWarning("Could not ask a machine about a one-machine task", {
+              taskId: task.id,
+              environmentId: peer.environmentId,
+              reason: peer.reason,
+            }),
+          { discard: true },
+        );
+        const decision: ScheduledTaskOneMachineDecision = {
+          at: iso(now),
+          ranOn: answer.ranOn,
+          unchecked: answer.unchecked,
+        };
+        if (answer.ranOn === null) {
+          yield* recordOneMachineDecision(task.id, decision).pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Could not record the one-machine decision", {
+                taskId: task.id,
+                cause,
+              }),
+            ),
+          );
+          return yield* runTask(task, "scheduled").pipe(Effect.asVoid);
+        }
+        const occurrenceDue = DateTime.makeUnsafe(occurrenceDueMs);
+        const shared = { ...task, shared: sharing };
+        let next = nextRunAt(shared, occurrenceDue);
+        if (next !== null && Date.parse(next) <= nowMs) next = nextRunAt(shared, now);
+        yield* sql
+          .withTransaction(
+            sql`
+              UPDATE scheduled_tasks SET next_run_at = ${next}, updated_at = ${iso(now)}
+              WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
+            `.pipe(Effect.andThen(recordOneMachineDecision(task.id, decision))),
+          )
+          .pipe(
+            Effect.mapError((cause) =>
+              taskError("Could not skip the schedule task run.", { taskId: task.id, cause }),
+            ),
+          );
+        yield* Effect.logInfo("Skipping a one-machine task run another machine has", {
+          taskId: task.id,
+          ranOn: answer.ranOn,
+        });
+        yield* notifyChanged;
+      },
+    );
+
+    // Due rows come without sharing, so look it up only for tasks that are shared to run on one machine.
+    const runDueOccurrence = Effect.fn("ScheduledTaskService.runDueOccurrence")(function* (
+      task: ScheduledTask,
+      now: DateTime.DateTime,
+    ) {
+      const [runOn] = yield* sql<{ run_on: string }>`
+        SELECT run_on FROM scheduled_task_shared WHERE task_id = ${task.id}
+      `.pipe(NodeSqliteClient.readOnly);
+      const sharing = runOn?.run_on === "one" ? (yield* findTask(task.id))?.shared : null;
+      return sharing == null
+        ? yield* runTask(task, "scheduled")
+        : yield* settleOneMachineOccurrence(task, sharing, now);
+    });
+
     const runDueTasks = Effect.fn("ScheduledTaskService.runDueTasks")(function* () {
       const now = yield* localNow;
       const nowMs = DateTime.toEpochMillis(now);
@@ -1200,7 +1686,7 @@ export const layer = Layer.effect(
           Effect.suspend(() =>
             isMissedFixedTimeRun(task.schedule, dueAt, now)
               ? rescheduleMissedRun(task, now)
-              : runTask(task, "scheduled"),
+              : runDueOccurrence(task, now),
           ).pipe(
             Effect.catch((cause) =>
               Effect.logWarning("Scheduled task run failed", { taskId: task.id, cause }),
@@ -1265,11 +1751,87 @@ export const layer = Layer.effect(
 
     yield* scheduler.register("scheduled-tasks", runDueTasks());
 
+    const readSharedDeletions = sql<SharedRevisionRow & { readonly task_id: string }>`
+      SELECT task_id, revision_at, revision_environment_id
+      FROM scheduled_task_shared_deletions ORDER BY task_id ASC
+    `.pipe(
+      NodeSqliteClient.readOnly,
+      Effect.map((rows) =>
+        rows.map((row) => ({ id: ScheduledTaskId.make(row.task_id), revision: toRevision(row)! })),
+      ),
+    );
+
+    const readMachineOrders = sql<MachineOrderRow>`
+      SELECT project_json, order_json, revision_at, revision_environment_id
+      FROM scheduled_task_project_machine_orders ORDER BY project_key ASC
+    `.pipe(
+      NodeSqliteClient.readOnly,
+      Effect.flatMap((rows) =>
+        Effect.forEach(rows, (row) =>
+          decodeMachineOrderRow({
+            project: row.project_json,
+            order: row.order_json,
+            revision: { at: row.revision_at, environmentId: row.revision_environment_id },
+          }),
+        ),
+      ),
+    );
+
     const list: ScheduledTaskService["Service"]["list"] = () =>
-      listRows().pipe(
-        Effect.map((tasks) => ({ tasks })),
-        Effect.mapError((cause) => taskError("Could not list schedule tasks.", { cause })),
-      );
+      Effect.all({
+        tasks: listRows(),
+        sharedDeletions: readSharedDeletions,
+        peerLinks: peerCheck.linkStatus,
+        projectMachineOrders: readMachineOrders,
+      }).pipe(Effect.mapError((cause) => taskError("Could not list schedule tasks.", { cause })));
+
+    const sharedCopies: ScheduledTaskService["Service"]["sharedCopies"] = Effect.fn(
+      "ScheduledTaskService.sharedCopies",
+    )(
+      function* (forEnvironmentId) {
+        const rows = yield* selectAllRows();
+        // Stored model, not the default shown here: the copy is this task's own definition.
+        const tasks = yield* Effect.forEach(
+          rows.filter((row) => row.shared_revision_at != null),
+          (row) => decodeRow(row),
+        );
+        const copies = tasks.flatMap((task) =>
+          task.shared == null ||
+          task.schedule.type === "webhook" ||
+          task.shared.excludedEnvironmentIds.includes(forEnvironmentId)
+            ? []
+            : [
+                {
+                  id: task.id,
+                  title: task.title,
+                  prompt: task.prompt,
+                  enabled: task.enabled,
+                  schedule: task.schedule,
+                  workspaceStrategy: task.workspaceStrategy,
+                  modelSelection: task.modelSelection,
+                  followsDefaultModel: task.followsDefaultModel ?? false,
+                  runtimeMode: task.runtimeMode,
+                  interactionMode: task.interactionMode,
+                  createdBy: task.createdBy,
+                  creationSource: task.creationSource,
+                  createdAt: task.createdAt,
+                  shared: task.shared,
+                },
+              ],
+        );
+        const projectKeys = new Set(
+          copies.map((copy) => scheduledTaskSharedProjectKey(copy.shared.project)),
+        );
+        return {
+          tasks: copies,
+          deletions: yield* readSharedDeletions,
+          projectMachineOrders: (yield* readMachineOrders).filter((order) =>
+            projectKeys.has(scheduledTaskSharedProjectKey(order.project)),
+          ),
+        };
+      },
+      Effect.mapError((cause) => taskError("Could not read the shared schedule tasks.", { cause })),
+    );
 
     const subscribeList: ScheduledTaskService["Service"]["subscribeList"] = () =>
       Stream.unwrap(
@@ -1282,6 +1844,72 @@ export const layer = Layer.effect(
           );
         }),
       );
+
+    // Resolved fresh: a project's own identity is a cache that reads blank when cold.
+    const sharedProjectOf = Effect.fn("ScheduledTaskService.sharedProjectOf")(function* (
+      projectId: ProjectId,
+      taskId: ScheduledTaskId,
+    ) {
+      if (yield* managedFolders.isScratchProject(projectId)) {
+        return { type: "none" } as const satisfies ScheduledTaskSharing["project"];
+      }
+      const project = yield* projects.getById(projectId).pipe(
+        Effect.map(Option.getOrUndefined),
+        Effect.mapError((cause) =>
+          taskError("Could not load the task's project.", { taskId, cause }),
+        ),
+      );
+      const identity =
+        project === undefined ? null : yield* repositoryIdentities.resolve(project.workspaceRoot);
+      if (project === undefined || identity === null) {
+        return yield* taskError(
+          "To share a task, pick No project or a project with a git remote, so each machine can find its copy.",
+          { taskId },
+        );
+      }
+      return {
+        type: "repository",
+        canonicalKey: identity.canonicalKey,
+        title: project.title,
+      } as const satisfies ScheduledTaskSharing["project"];
+    });
+
+    const localProjectFor = Effect.fn("ScheduledTaskService.localProjectFor")(function* (
+      project: ScheduledTaskSharing["project"],
+      taskId: ScheduledTaskId,
+    ) {
+      if (project.type === "none") {
+        const scratch = yield* managedFolders.ensureScratchProject.pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not prepare the No project folder.", { taskId, cause }),
+          ),
+        );
+        return scratch.projectId;
+      }
+      const matches: Array<{ readonly id: ProjectId; readonly title: string }> = [];
+      let cursor: number | null = 0;
+      while (cursor !== null) {
+        const page: Effect.Success<ReturnType<typeof projects.listPage>> = yield* projects
+          .listPage({ cursor, limit: 100 })
+          .pipe(
+            Effect.mapError((cause) =>
+              taskError("Could not list this machine's projects.", { taskId, cause }),
+            ),
+          );
+        for (const candidate of page.projects) {
+          const identity = yield* repositoryIdentities.resolve(candidate.workspaceRoot);
+          if (identity?.canonicalKey === project.canonicalKey) matches.push(candidate);
+        }
+        cursor = page.nextCursor;
+      }
+      if (matches.length === 1) return matches[0]!.id;
+      return yield* taskError(
+        matches.length === 0
+          ? `No project on this machine has the repository ${project.title} (${project.canonicalKey}). Add it here, or leave this machine out of the task.`
+          : `Several projects on this machine have the repository ${project.title} (${project.canonicalKey}): ${matches.map((match) => `${match.title} (${match.id})`).join(", ")}. Keep one, or leave this machine out of the task.`,
+        { taskId },
+      );
+    });
 
     const upsert: ScheduledTaskService["Service"]["upsert"] = Effect.fn(
       "ScheduledTaskService.upsert",
@@ -1323,6 +1951,30 @@ export const layer = Layer.effect(
       // keep their run history, and so real load failures propagate instead
       // of silently resetting an existing row.
       const existingTask = yield* findTask(id);
+      // Omitted keeps the stored choice, so a client that predates sharing can re-save a task.
+      const sharedExclusions =
+        input.shared === undefined
+          ? existingTask?.shared?.excludedEnvironmentIds
+          : input.shared?.excludedEnvironmentIds;
+      if (sharedExclusions !== undefined) {
+        if (input.threadId != null) {
+          return yield* taskError(
+            "A shared task starts a new thread on each machine, so it can't post to one thread.",
+            { taskId: id },
+          );
+        }
+        if (input.schedule.type === "webhook") {
+          return yield* taskError(
+            "A shared task can't use a webhook: each machine has its own webhook address.",
+            { taskId: id },
+          );
+        }
+      }
+      const sharedProject =
+        sharedExclusions === undefined ? null : yield* sharedProjectOf(input.projectId, id);
+      // Omitted keeps the stored choice.
+      const sharedRunOn = input.shared?.runOn ?? existingTask?.shared?.runOn;
+      const machineOrder = input.shared?.machineOrder;
       // Keep the existing next_run_at when the schedule itself is untouched:
       // editing a title or prompt must not postpone (or resurrect) a due
       // run — only schedule/enabled changes restart the clock.
@@ -1398,10 +2050,13 @@ export const layer = Layer.effect(
         (yield* managedFolders.isScratchProject(input.projectId))
           ? { type: "root" }
           : input.workspaceStrategy;
+      const aligned =
+        schedule.type === "interval" && sharedExclusions !== undefined && sharedRunOn === "one";
       const scheduleUnchanged =
         existingTask !== null &&
         existingTask.enabled === input.enabled &&
-        isSameSchedule(existingTask.schedule, schedule);
+        isSameSchedule(existingTask.schedule, schedule) &&
+        hasAlignedSlots(existingTask) === aligned;
       if (!scheduleUnchanged)
         yield* requireFutureOnce({ enabled: input.enabled, schedule }, now, id);
       const task: ScheduledTask = {
@@ -1422,7 +2077,15 @@ export const layer = Layer.effect(
         updatedAt: iso(now),
         nextRunAt: scheduleUnchanged
           ? existingTask.nextRunAt
-          : nextRunAt({ enabled: input.enabled, schedule }, now),
+          : nextRunAt(
+              {
+                enabled: input.enabled,
+                schedule,
+                createdAt: existingTask?.createdAt ?? iso(now),
+                ...(aligned ? { shared: { runOn: "one" } as ScheduledTaskSharing } : {}),
+              },
+              now,
+            ),
         lastRunAt: existingTask?.lastRunAt ?? null,
         lastRunStatus: existingTask?.lastRunStatus ?? "never",
         lastRunError: existingTask?.lastRunError ?? null,
@@ -1460,6 +2123,24 @@ export const layer = Layer.effect(
               ? sql`INSERT INTO scheduled_task_default_model (task_id) VALUES (${id})
                     ON CONFLICT (task_id) DO NOTHING`
               : sql`DELETE FROM scheduled_task_default_model WHERE task_id = ${id}`;
+            if (sharedExclusions !== undefined && sharedProject !== null) {
+              yield* writeSharing(id, {
+                revision: yield* stampRevision(id),
+                project: sharedProject,
+                excludedEnvironmentIds: sharedExclusions,
+                ...(sharedRunOn === undefined ? {} : { runOn: sharedRunOn }),
+              });
+              if (machineOrder !== undefined) {
+                const key = scheduledTaskSharedProjectKey(sharedProject);
+                yield* writeMachineOrder({
+                  project: sharedProject,
+                  order: machineOrder,
+                  revision: yield* stampOrderRevision(key),
+                });
+              }
+            } else if ((yield* storedRevisions(id)).shared !== null) {
+              yield* writeDeletion(id, yield* stampRevision(id));
+            }
           }),
         )
         .pipe(
@@ -1471,6 +2152,188 @@ export const layer = Layer.effect(
         );
       yield* notifyChanged;
       return { task: (yield* findTask(id)) ?? { ...task, followsDefaultModel } };
+    });
+
+    const applyShared: ScheduledTaskService["Service"]["applyShared"] = Effect.fn(
+      "ScheduledTaskService.applyShared",
+    )(function* (input) {
+      if (input.type === "projectMachineOrder") {
+        const order = input.order;
+        return yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const [stored] = yield* sql<SharedRevisionRow>`
+                SELECT revision_at, revision_environment_id
+                FROM scheduled_task_project_machine_orders
+                WHERE project_key = ${scheduledTaskSharedProjectKey(order.project)}`;
+              if (
+                stored !== undefined &&
+                compareScheduledTaskSharedRevisions(order.revision, toRevision(stored)!) <= 0
+              ) {
+                return { outcome: "stale" as const };
+              }
+              yield* writeMachineOrder(order);
+              return { outcome: "applied" as const };
+            }),
+          )
+          .pipe(
+            Effect.mapError((cause) => taskError("Could not apply the machine order.", { cause })),
+            Effect.tap((result) => (result.outcome === "applied" ? notifyChanged : Effect.void)),
+          );
+      }
+      const id = input.type === "upsert" ? input.task.id : input.deletion.id;
+      const incoming =
+        input.type === "upsert" ? input.task.shared.revision : input.deletion.revision;
+      const toTaskError = (cause: unknown) =>
+        isScheduledTaskError(cause)
+          ? cause
+          : taskError("Could not apply the shared schedule task.", { taskId: id, cause });
+
+      // Read again inside the transaction that writes, so concurrent applies settle on one winner.
+      const classify = Effect.gen(function* () {
+        const stored = yield* storedRevisions(id);
+        const exists =
+          (yield* sql`SELECT 1 AS found FROM scheduled_tasks WHERE task_id = ${id}`).length > 0;
+        if (exists && stored.shared === null) return "local" as const;
+        const current = [stored.shared, stored.deletion].reduce<ScheduledTaskSharedRevision | null>(
+          (latest, revision) =>
+            revision !== null &&
+            (latest === null || compareScheduledTaskSharedRevisions(revision, latest) > 0)
+              ? revision
+              : latest,
+          null,
+        );
+        return current !== null && compareScheduledTaskSharedRevisions(incoming, current) <= 0
+          ? ("stale" as const)
+          : ("open" as const);
+      });
+      const commit = <E>(
+        write: Effect.Effect<void, E>,
+        outcome: "applied" | "removed",
+      ): Effect.Effect<ScheduledTaskApplySharedResult, ScheduledTaskError> =>
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const state = yield* classify;
+              if (state !== "open") return { outcome: state };
+              yield* write;
+              return { outcome };
+            }),
+          )
+          .pipe(
+            Effect.mapError(toTaskError),
+            Effect.tap((result) =>
+              result.outcome === "applied" || result.outcome === "removed"
+                ? notifyChanged
+                : Effect.void,
+            ),
+          );
+
+      const early = yield* classify.pipe(Effect.mapError(toTaskError));
+      if (early !== "open") return { outcome: early };
+
+      if (input.type === "delete") {
+        return yield* commit(
+          deleteLocalRows(id).pipe(Effect.andThen(writeDeletion(id, incoming))),
+          "applied",
+        );
+      }
+      const task = input.task;
+      // A deletion row here would spread the removal to every other machine.
+      if (task.shared.excludedEnvironmentIds.includes(hereEnvironmentId)) {
+        return yield* commit(deleteLocalRows(id), "removed");
+      }
+      if (task.schedule.type === "webhook") {
+        return yield* taskError(
+          "A shared task can't use a webhook: each machine has its own webhook address.",
+          { taskId: id },
+        );
+      }
+      const modeDenial = task.enabled
+        ? managedRuntimeModeDenial(managedPolicy.summary, task.runtimeMode)
+        : undefined;
+      if (modeDenial !== undefined) return yield* taskError(modeDenial, { taskId: id });
+
+      const projectId = yield* localProjectFor(task.shared.project, id);
+      const now = yield* localNow;
+      const existingTask = yield* findTask(id);
+      const schedule: ScheduledTask["schedule"] =
+        task.schedule.type === "once"
+          ? { type: "once", runAt: iso(DateTime.makeUnsafe(task.schedule.runAt)) }
+          : task.schedule;
+      const workspaceStrategy: ScheduledTask["workspaceStrategy"] =
+        task.workspaceStrategy.type === "worktree" &&
+        (yield* managedFolders.isScratchProject(projectId))
+          ? { type: "root" }
+          : task.workspaceStrategy;
+      const scheduleUnchanged =
+        existingTask !== null &&
+        existingTask.enabled === task.enabled &&
+        isSameSchedule(existingTask.schedule, schedule) &&
+        hasAlignedSlots(existingTask) === hasAlignedSlots({ schedule, shared: task.shared });
+      const saved: ScheduledTask = {
+        id,
+        title: task.title,
+        prompt: task.prompt,
+        enabled: task.enabled,
+        schedule,
+        projectId,
+        threadId: null,
+        workspaceStrategy,
+        modelSelection: task.modelSelection,
+        runtimeMode: task.runtimeMode,
+        interactionMode: task.interactionMode,
+        createdBy: existingTask?.createdBy ?? task.createdBy,
+        creationSource: task.creationSource,
+        createdAt: existingTask?.createdAt ?? task.createdAt,
+        updatedAt: iso(now),
+        // A one-time run that has passed just has no next run: the other machine already took it.
+        nextRunAt: scheduleUnchanged
+          ? existingTask.nextRunAt
+          : nextRunAt(
+              {
+                enabled: task.enabled,
+                schedule,
+                createdAt: existingTask?.createdAt ?? task.createdAt,
+                shared: task.shared,
+              },
+              now,
+            ),
+        lastRunAt: existingTask?.lastRunAt ?? null,
+        lastRunStatus: existingTask?.lastRunStatus ?? "never",
+        lastRunError: existingTask?.lastRunError ?? null,
+        runCount: existingTask?.runCount ?? 0,
+      };
+      const automaticallyPin =
+        existingTask === null &&
+        (yield* serverSettings.getSettings.pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not read schedule task settings.", { taskId: id, cause }),
+          ),
+        )).automaticallyPinScheduledTasks;
+      return yield* commit(
+        Effect.gen(function* () {
+          if (automaticallyPin) {
+            yield* sql`
+              INSERT INTO scheduled_task_sidebar (task_id, pinned_at)
+              SELECT ${id}, ${iso(now)}
+              WHERE NOT EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${id})
+              ON CONFLICT (task_id) DO NOTHING
+            `;
+          }
+          yield* saveTask(saved, false, scheduleUnchanged ? existingTask.schedule : null, {
+            token: null,
+            secret: null,
+            secretChanged: true,
+          });
+          yield* task.followsDefaultModel
+            ? sql`INSERT INTO scheduled_task_default_model (task_id) VALUES (${id})
+                  ON CONFLICT (task_id) DO NOTHING`
+            : sql`DELETE FROM scheduled_task_default_model WHERE task_id = ${id}`;
+          yield* writeSharing(id, task.shared);
+        }),
+        "applied",
+      );
     });
 
     const setEnabled: ScheduledTaskService["Service"]["setEnabled"] = Effect.fn(
@@ -1498,24 +2361,33 @@ export const layer = Layer.effect(
         now,
         input.id,
       );
-      const next = nextRunAt({ enabled: input.enabled, schedule: existing.schedule }, now);
+      const next = nextRunAt({ ...existing, enabled: input.enabled }, now);
       // RETURNING so a task deleted between the load and this UPDATE is a
       // visible not-found error, not a false success.
-      const updated = yield* sql<{ task_id: string }>`
-          UPDATE scheduled_tasks
-          SET enabled = ${input.enabled ? 1 : 0},
-              next_run_at = ${next},
-              updated_at = ${iso(now)}
-          WHERE task_id = ${input.id}
-          RETURNING task_id
-        `.pipe(
-        Effect.mapError((cause) =>
-          taskError("Could not update schedule task.", { taskId: input.id, cause }),
-        ),
-      );
-      if (updated.length === 0) {
-        return yield* taskError("Schedule task not found.", { taskId: input.id });
-      }
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const updated = yield* sql<{ task_id: string }>`
+              UPDATE scheduled_tasks
+              SET enabled = ${input.enabled ? 1 : 0},
+                  next_run_at = ${next},
+                  updated_at = ${iso(now)}
+              WHERE task_id = ${input.id}
+              RETURNING task_id
+            `;
+            if (updated.length === 0) {
+              return yield* taskError("Schedule task not found.", { taskId: input.id });
+            }
+            yield* bumpSharedRevision(input.id);
+          }),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            isScheduledTaskError(cause)
+              ? cause
+              : taskError("Could not update schedule task.", { taskId: input.id, cause }),
+          ),
+        );
       yield* notifyChanged;
       return {
         task: { ...existing, enabled: input.enabled, nextRunAt: next, updatedAt: iso(now) },
@@ -1549,22 +2421,30 @@ export const layer = Layer.effect(
     const setFollowsDefaultModel: ScheduledTaskService["Service"]["setFollowsDefaultModel"] =
       Effect.fn("ScheduledTaskService.setFollowsDefaultModel")(function* (input) {
         // Only the flag changes: a task's own model stays stored, so turning it off restores it.
-        const changed = yield* (
-          input.followsDefaultModel
-            ? sql<{ task_id: ScheduledTaskId }>`
-                INSERT INTO scheduled_task_default_model (task_id)
-                SELECT task_id FROM scheduled_tasks WHERE task_id IN ${sql.in(input.ids)}
-                ON CONFLICT (task_id) DO NOTHING
-                RETURNING task_id
-              `
-            : sql<{ task_id: ScheduledTaskId }>`
-                DELETE FROM scheduled_task_default_model
-                WHERE task_id IN ${sql.in(input.ids)}
-                RETURNING task_id
-              `
-        ).pipe(
-          Effect.mapError((cause) => taskError("Could not update schedule tasks.", { cause })),
-        );
+        const changed = yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const rows = yield* input.followsDefaultModel
+                ? sql<{ task_id: ScheduledTaskId }>`
+                    INSERT INTO scheduled_task_default_model (task_id)
+                    SELECT task_id FROM scheduled_tasks WHERE task_id IN ${sql.in(input.ids)}
+                    ON CONFLICT (task_id) DO NOTHING
+                    RETURNING task_id
+                  `
+                : sql<{ task_id: ScheduledTaskId }>`
+                    DELETE FROM scheduled_task_default_model
+                    WHERE task_id IN ${sql.in(input.ids)}
+                    RETURNING task_id
+                  `;
+              yield* Effect.forEach(rows, (row) => bumpSharedRevision(row.task_id), {
+                discard: true,
+              });
+              return rows;
+            }),
+          )
+          .pipe(
+            Effect.mapError((cause) => taskError("Could not update schedule tasks.", { cause })),
+          );
         if (changed.length > 0) yield* notifyChanged;
         return { ids: changed.map((row) => row.task_id) };
       });
@@ -1626,6 +2506,10 @@ export const layer = Layer.effect(
           `;
             yield* sql`
             DELETE FROM scheduled_task_default_model
+            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
+          `;
+            yield* sql`
+            DELETE FROM scheduled_task_shared
             WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
           `;
             return yield* sql<{ task_id: ScheduledTaskId }>`
@@ -2594,6 +3478,8 @@ export const layer = Layer.effect(
       setPinned,
       setFollowsDefaultModel,
       delete: deleteTask,
+      applyShared,
+      sharedCopies,
       deleteForThread,
       moveThreadTasks,
       runNow,

@@ -15,6 +15,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import { layerSharedTaskDependencies } from "./sharedTaskTestLayers.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
@@ -34,6 +35,7 @@ const dependencies = Layer.mergeAll(
     isScratchProject: () => Effect.succeed(false),
   }),
   Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+  layerSharedTaskDependencies(),
   Layer.mock(SecretRequests.SecretRequests)({}),
 );
 const serviceLayer = ScheduledTaskService.layer.pipe(Layer.provide(dependencies));

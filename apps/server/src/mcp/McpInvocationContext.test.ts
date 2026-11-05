@@ -95,3 +95,38 @@ it("acts at an administrator's ceiling for a client approved above it", () => {
   expect(modes(scope("auto-accept-edits"), "auto").runtimeMode).toBe("auto-accept-edits");
   expect(modes(scope("full-access")).runtimeMode).toBe("full-access");
 });
+
+it.effect.each([
+  { name: "a thread caller", client: undefined, linkedEnvironments: undefined, visible: false },
+  {
+    name: "an outside client that is not a link",
+    client: { sessionId: "s", label: "Claude", access: "approval-required" as const },
+    linkedEnvironments: undefined,
+    visible: false,
+  },
+  {
+    name: "a peer link",
+    client: { sessionId: "s", label: "Mac", access: "approval-required" as const, linked: true },
+    linkedEnvironments: undefined,
+    visible: true,
+  },
+  {
+    name: "a peer link while linked environments is off",
+    client: { sessionId: "s", label: "Mac", access: "approval-required" as const, linked: true },
+    linkedEnvironments: false,
+    visible: false,
+  },
+])("shows peer-link-only tools to $name: $visible", ({ client, linkedEnvironments, visible }) =>
+  Effect.sync(() => McpInvocationContext.visibleToPeerLinks()).pipe(
+    Effect.provideService(McpInvocationContext.McpInvocationContext, {
+      environmentId: EnvironmentId.make("environment-1"),
+      requestNamespace: "client:s",
+      thread: undefined,
+      client,
+      capabilities: new Set<never>(),
+      issuedAt: 1,
+      ...(linkedEnvironments === undefined ? {} : { linkedEnvironments }),
+    }),
+    Effect.map((shown) => expect(shown).toBe(visible)),
+  ),
+);

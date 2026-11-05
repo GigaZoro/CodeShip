@@ -19,6 +19,8 @@ import {
   OrchestratorMcpFailure,
   OrchestratorMcpListScheduledTasksInput,
   OrchestratorMcpListScheduledTasksResult,
+  OrchestratorMcpSharedScheduledTasksInput,
+  OrchestratorMcpSharedScheduledTasksResult,
   OrchestratorMcpSaveScheduledTaskInput,
   OrchestratorMcpScheduleTaskResult,
   OrchestratorMcpTaskCancelInput,
@@ -182,6 +184,21 @@ const ListScheduledTasksTool = Tool.make("list_scheduled_tasks", {
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true);
+
+const SharedScheduledTasksTool = Tool.make("t3_shared_scheduled_tasks", {
+  description:
+    "For a linked machine: this environment's shared scheduled tasks it may hold, with deletions and machine orders.",
+  parameters: OrchestratorMcpSharedScheduledTasksInput,
+  success: OrchestratorMcpSharedScheduledTasksResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Read shared scheduled tasks")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.visibleToPeerLinks);
 
 const DeleteScheduledTaskTool = Tool.make("delete_scheduled_task", {
   description:
@@ -356,6 +373,7 @@ export const OrchestratorToolkit = Toolkit.make(
   BackgroundWaitTool,
   ScheduleTaskTool,
   ListScheduledTasksTool,
+  SharedScheduledTasksTool,
   DeleteScheduledTaskTool,
   RequestSecretTool,
   CreateThreadsTool,

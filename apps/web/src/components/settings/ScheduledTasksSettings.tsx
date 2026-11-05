@@ -5,6 +5,8 @@ import {
 } from "@t3tools/client-runtime/connection";
 import { AsyncResult } from "effect/reactivity";
 import {
+  ChevronDownIcon,
+  ChevronUpIcon,
   Clock3Icon,
   CopyIcon,
   InboxIcon,
@@ -43,6 +45,7 @@ import {
   MIN_SCHEDULED_TASK_INTERVAL_MS,
   ProviderInstanceId,
   resolveEnvironmentMachineKind,
+  scheduledTaskSharedProjectKey,
 } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
@@ -69,11 +72,32 @@ import {
 import {
   useEnvironment,
   useEnvironmentHttpBaseUrl,
+  useEnvironments,
   type EnvironmentPresentation,
 } from "../../state/environments";
 import { useProjects, useThreadShell } from "../../state/entities";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { pinnedTaskRunThreadId } from "@t3tools/client-runtime/scheduled-task-pins";
+import {
+  describeOneMachineLinkWarning,
+  effectiveOneMachineOrder,
+  mergeMachineOrder,
+  moveMachine,
+  newestProjectMachineOrder,
+  oneMachineLinkWarnings,
+  projectMachineOrderSubject,
+  seedMachineOrder,
+  sharedProjectReference,
+  sharedSyncFailureKey,
+  sharedUpsertField,
+  toggleSharedExclusion,
+  visibleMachineOrder,
+} from "@t3tools/client-runtime/scheduled-task-sharing";
+import {
+  sharedScheduledTaskSnapshotsAtom,
+  supportsSharedScheduledTasks,
+  useSharedScheduledTaskFailures,
+} from "../../state/sharedScheduledTasks";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { environmentAtomList, environmentIdsKey } from "../../state/environmentAtomList";
 import { formatEnvironmentQueryError, useEnvironmentQuery } from "../../state/query";
@@ -119,6 +143,8 @@ import { ToggleGroup, Toggle } from "../ui/toggle-group";
 import { Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from "../ui/empty";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { Badge } from "../ui/badge";
+import { Checkbox } from "../ui/checkbox";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -176,6 +202,10 @@ const EMPTY_DRAFT: DraftState = {
   interactionMode: "default",
   baseModelSelection: null,
   followsDefaultModel: true,
+  shared: false,
+  sharedExcludedEnvironmentIds: [],
+  sharedRunOn: "every",
+  sharedMachineOrder: null,
   signatureEnabled: false,
   ...WEBHOOK_SIGNATURE_DEFAULTS,
   signatureSecret: "",
@@ -826,6 +856,106 @@ function ScheduledTaskEnvironmentSection({
   );
 }
 
+function SharedTaskBadge({
+  task,
+  environmentId,
+}: {
+  readonly task: ScheduledTask;
+  readonly environmentId: EnvironmentId;
+}) {
+  const nowMinute = useNowMinute();
+  const { environments } = useEnvironments();
+  const failures = useSharedScheduledTaskFailures();
+  const sharingIds = environments
+    .filter(
+      (entry) => entry.connection.phase === "connected" && supportsSharedScheduledTasks(entry),
+    )
+    .map((entry) => entry.environmentId);
+  const snapshots = useAtomValue(sharedScheduledTaskSnapshotsAtom(environmentIdsKey(sharingIds)));
+  const labelOf = (environmentId: EnvironmentId) => {
+    const entry = environments.find((candidate) => candidate.environmentId === environmentId);
+    return entry ? settingsScopeEnvironmentLabel(entry, environments) : environmentId;
+  };
+  const shared = task.shared;
+  const oneMachine = shared?.runOn === "one";
+  const orderSubject = shared
+    ? projectMachineOrderSubject(scheduledTaskSharedProjectKey(shared.project))
+    : null;
+  const notSynced = [...failures.values()].filter(
+    (failure) => failure.subject === task.id || failure.subject === orderSubject,
+  );
+  const leftOut = (shared?.excludedEnvironmentIds ?? []).map(labelOf);
+  const order =
+    oneMachine && shared
+      ? effectiveOneMachineOrder(
+          newestProjectMachineOrder(snapshots, shared.project)?.order ?? [],
+          shared.excludedEnvironmentIds,
+          sharingIds,
+        )
+      : [];
+  const linkWarnings = oneMachineLinkWarnings(
+    snapshots,
+    order,
+    Date.parse(`${nowMinute}:00.000Z`),
+  ).map((warning) => describeOneMachineLinkWarning(warning, labelOf));
+  const decision = oneMachine ? task.lastOneMachineDecision : null;
+  const unchecked = decision?.unchecked ?? [];
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Badge
+            variant={
+              notSynced.length > 0 || unchecked.length > 0 || linkWarnings.length > 0
+                ? "warning"
+                : "info"
+            }
+            tabIndex={0}
+          />
+        }
+      >
+        {oneMachine ? "One machine" : "Every machine"}
+      </TooltipTrigger>
+      <TooltipPopup side="top">
+        <div className="space-y-1">
+          <p>
+            {oneMachine
+              ? "Each run happens on one machine: the first in the order that is online and finishes it."
+              : "Runs on every machine, each on its own schedule."}
+          </p>
+          {order.length > 0 ? <p>Order: {order.map(labelOf).join(" → ")}</p> : null}
+          {leftOut.length > 0 ? <p>Not on: {leftOut.join(", ")}</p> : null}
+          {decision ? (
+            <p>
+              {decision.ranOn === null
+                ? `Last run here at ${new Date(decision.at).toLocaleString()}`
+                : `Skipped ${new Date(decision.at).toLocaleString()}: ${labelOf(decision.ranOn)} ran it`}
+            </p>
+          ) : null}
+          {unchecked.map((entry) => (
+            <p key={entry.environmentId}>
+              Couldn't check {labelOf(entry.environmentId)}: {entry.reason}
+            </p>
+          ))}
+          {linkWarnings.map((warning) => (
+            <p key={warning}>{warning}</p>
+          ))}
+          {task.modelUnavailableHere ? (
+            <p>
+              Runs the default model on {labelOf(environmentId)}: its own model isn't set up here.
+            </p>
+          ) : null}
+          {notSynced.map((failure) => (
+            <p key={sharedSyncFailureKey(failure.environmentId, failure.subject)}>
+              Not synced to {labelOf(failure.environmentId)}: {failure.error}
+            </p>
+          ))}
+        </div>
+      </TooltipPopup>
+    </Tooltip>
+  );
+}
+
 function ScheduledTaskRow({
   environmentId,
   task,
@@ -944,6 +1074,7 @@ function ScheduledTaskRow({
           {task.lastRunStatus !== "never" ? (
             <Badge variant={statusVariant(task.lastRunStatus)}>{task.lastRunStatus}</Badge>
           ) : null}
+          {task.shared ? <SharedTaskBadge task={task} environmentId={environmentId} /> : null}
           {task.lastRunAt && task.lastRunStatus !== "running" ? (
             <span>
               Last run <ScheduledRelativeLabel value={task.lastRunAt} />
@@ -979,7 +1110,9 @@ function ScheduledTaskRow({
           <Switch
             checked={task.enabled}
             disabled={busy || !canOperate}
-            aria-label={`Enable ${task.title}`}
+            aria-label={
+              task.shared ? `Enable ${task.title} on every machine` : `Enable ${task.title}`
+            }
             onCheckedChange={() => void toggleEnabled()}
           />
           <Menu>
@@ -1486,9 +1619,40 @@ function ScheduledTaskEditorForm({
     inheritedDefaultModel,
   );
   // A task bound to a thread runs that thread's model, so the default does not apply to it.
+  const offersShared = supportsSharedScheduledTasks(environment);
+  const sharing = offersShared && draft.shared;
+  const sharedMachines = connectedEnvironments.filter(supportsSharedScheduledTasks);
+  const sharedMachineIds = sharedMachines.map((entry) => entry.environmentId);
+  const sharedSnapshots = useAtomValue(
+    sharedScheduledTaskSnapshotsAtom(environmentIdsKey(sharedMachineIds)),
+  );
+  const editedShared = (liveTask ?? task)?.shared;
+  const sharedProject = sharedProjectReference({
+    editedShared,
+    editedProjectId: (liveTask ?? task)?.projectId,
+    project: selectedProject,
+  });
+  const storedMachineOrder =
+    sharedProject === null ? null : newestProjectMachineOrder(sharedSnapshots, sharedProject);
+  const machineOrder = visibleMachineOrder(
+    draft.sharedMachineOrder ??
+      seedMachineOrder(storedMachineOrder, sharedMachineIds, environmentId),
+    sharedMachineIds,
+  );
+  const editorNowMinute = useNowMinute();
+  const editorLinkWarnings = oneMachineLinkWarnings(
+    sharedSnapshots,
+    effectiveOneMachineOrder(machineOrder, draft.sharedExcludedEnvironmentIds, sharedMachineIds),
+    Date.parse(`${editorNowMinute}:00.000Z`),
+  ).map((warning) =>
+    describeOneMachineLinkWarning(
+      warning,
+      (id) => sharedMachines.find((entry) => entry.environmentId === id)?.label ?? id,
+    ),
+  );
   const offersDefaultModel =
     environment?.serverConfig?.environment.capabilities.scheduledTaskDefaultModel === true &&
-    !draft.threadId;
+    (sharing || !draft.threadId);
   const followsDefaultModel = offersDefaultModel && draft.followsDefaultModel;
   const ownSelection =
     draftSelection &&
@@ -1614,7 +1778,7 @@ function ScheduledTaskEditorForm({
       enabled: draft.enabled,
       schedule,
       projectId: selectedProjectId as ProjectId,
-      threadId: draft.threadId ? (draft.threadId as ThreadId) : null,
+      threadId: draft.threadId && !sharing ? (draft.threadId as ThreadId) : null,
       workspaceStrategy,
       modelSelection: selection,
       ...(offersDefaultModel ? { followsDefaultModel } : {}),
@@ -1624,6 +1788,17 @@ function ScheduledTaskEditorForm({
         draft.runtimeMode,
       interactionMode: draft.interactionMode,
       creationSource: "web",
+      ...sharedUpsertField({
+        supported: offersShared,
+        shared: draft.shared,
+        wasShared: (liveTask ?? task)?.shared != null,
+        excludedEnvironmentIds: draft.sharedExcludedEnvironmentIds,
+        runOn: draft.sharedRunOn,
+        ...(draft.sharedMachineOrder !== null ||
+        (sharedProject !== null && storedMachineOrder === null)
+          ? { machineOrder: mergeMachineOrder(machineOrder, storedMachineOrder?.order ?? []) }
+          : {}),
+      }),
     };
     // Lock before React renders, and keep successful creates locked until the form closes.
     submissionPending.current = true;
@@ -1722,6 +1897,120 @@ function ScheduledTaskEditorForm({
               </SelectPopup>
             </Select>
           </Field>
+          {offersShared ? (
+            <div className="space-y-3">
+              <Field label="Runs">
+                <ToggleGroup
+                  aria-label="Which machines run this task"
+                  value={[draft.shared ? draft.sharedRunOn : "this"]}
+                  disabled={saving || !connected}
+                  onValueChange={(values) => {
+                    const choice = values[0] as "this" | "every" | "one" | undefined;
+                    if (choice === undefined) return;
+                    setDraft((current) => ({
+                      ...current,
+                      shared: choice !== "this",
+                      sharedRunOn: choice === "one" ? "one" : "every",
+                      // Shared tasks never use a webhook, so a webhook draft falls back to a time.
+                      scheduleMode:
+                        choice !== "this" && current.scheduleMode === "webhook"
+                          ? "fixed"
+                          : current.scheduleMode,
+                    }));
+                  }}
+                >
+                  <Toggle value="this">This machine</Toggle>
+                  <Toggle value="every">Every machine</Toggle>
+                  <Toggle value="one">One machine</Toggle>
+                </ToggleGroup>
+              </Field>
+              {draft.shared ? (
+                <p className="text-sm text-muted-foreground">
+                  {draft.sharedRunOn === "one"
+                    ? `Order for ${selectedProject?.title ?? "this project"}, used by all its one-machine tasks. The first machine that's online runs each run; the next one runs it if the first is offline or its run fails.`
+                    : "Keeps a copy on each machine, in sync. Each machine runs it on its own schedule."}
+                </p>
+              ) : null}
+              {draft.shared ? (
+                <ol aria-label="Machines" className="space-y-1.5">
+                  {(draft.sharedRunOn === "one" ? machineOrder : sharedMachineIds).flatMap(
+                    (machineId, index, ids) => {
+                      const entry = sharedMachines.find((item) => item.environmentId === machineId);
+                      if (!entry) return [];
+                      return [
+                        <li key={machineId} className="flex items-center gap-2 text-sm">
+                          <Checkbox
+                            aria-label={`Run on ${entry.label}`}
+                            checked={!draft.sharedExcludedEnvironmentIds.includes(machineId)}
+                            disabled={saving}
+                            onCheckedChange={(checked) =>
+                              setDraft((current) => ({
+                                ...current,
+                                sharedExcludedEnvironmentIds: toggleSharedExclusion(
+                                  current.sharedExcludedEnvironmentIds,
+                                  machineId,
+                                  checked === true,
+                                ),
+                              }))
+                            }
+                          />
+                          <EnvironmentMachineIcon
+                            kind={resolveEnvironmentMachineKind(entry.serverConfig)}
+                            className="size-4"
+                          />
+                          <span className="min-w-0 flex-1 truncate">{entry.label}</span>
+                          {draft.sharedRunOn === "one" ? (
+                            <>
+                              <Button
+                                size="icon-xs"
+                                variant="ghost"
+                                aria-label={`Move ${entry.label} up`}
+                                disabled={saving || index === 0}
+                                onClick={() =>
+                                  setDraft((current) => ({
+                                    ...current,
+                                    sharedMachineOrder: moveMachine(ids, machineId, -1),
+                                  }))
+                                }
+                              >
+                                <ChevronUpIcon className="size-3.5" />
+                              </Button>
+                              <Button
+                                size="icon-xs"
+                                variant="ghost"
+                                aria-label={`Move ${entry.label} down`}
+                                disabled={saving || index === ids.length - 1}
+                                onClick={() =>
+                                  setDraft((current) => ({
+                                    ...current,
+                                    sharedMachineOrder: moveMachine(ids, machineId, 1),
+                                  }))
+                                }
+                              >
+                                <ChevronDownIcon className="size-3.5" />
+                              </Button>
+                            </>
+                          ) : null}
+                        </li>,
+                      ];
+                    },
+                  )}
+                </ol>
+              ) : null}
+              {draft.shared && draft.sharedRunOn === "one" ? (
+                <div className="space-y-1 text-sm text-warning-foreground" role="status">
+                  {editorLinkWarnings.map((warning) => (
+                    <p key={warning}>{warning}</p>
+                  ))}
+                  {editorLinkWarnings.length > 0 ? (
+                    <p className="text-muted-foreground">
+                      A machine that can't check the ones ahead of it runs the task anyway.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {tasksQuery.error ? (
             <p className="text-sm text-destructive" role="status">
               {tasksQuery.error}
@@ -1743,10 +2032,12 @@ function ScheduledTaskEditorForm({
             />
           </Field>
 
-          <ScheduledTaskDestination
-            environmentId={environmentId}
-            threadId={draft.threadId ? (draft.threadId as ThreadId) : null}
-          />
+          {sharing ? null : (
+            <ScheduledTaskDestination
+              environmentId={environmentId}
+              threadId={draft.threadId ? (draft.threadId as ThreadId) : null}
+            />
+          )}
 
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Project" htmlFor="scheduled-task-project">
@@ -1961,7 +2252,9 @@ function ScheduledTaskEditorForm({
                   <Toggle value="interval">Every interval</Toggle>
                   <Toggle
                     value="webhook"
-                    disabled={webhookDenial !== undefined && draft.scheduleMode !== "webhook"}
+                    disabled={
+                      sharing || (webhookDenial !== undefined && draft.scheduleMode !== "webhook")
+                    }
                   >
                     On webhook
                   </Toggle>

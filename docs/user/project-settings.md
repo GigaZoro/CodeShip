@@ -121,6 +121,41 @@ Webhook tasks only run when their URL is called, so they can't be run
 immediately.
 Leaving an edited form asks before discarding unsaved changes.
 
+## Shared scheduled tasks
+
+A task's **Runs** choice keeps a copy of it on each of your machines:
+
+- **Every machine** runs it on each machine, on its own schedule, in its own
+  time zone. Uncheck a machine to keep the task off it; a machine you connect
+  later gets the task too.
+- **One machine** runs each occurrence once, on the first machine in the
+  project's machine order that is online and finishes it. Each later machine
+  waits a few minutes per place in the order, then asks the machines ahead of
+  it. It runs the task only when none of them ran it, or their run failed, for
+  example when a machine is offline or out of usage. The order belongs to the
+  project, so changing it in one task changes it for every one-machine task in
+  that project.
+
+For **One machine**, each machine needs a link to every machine ahead of it in
+the order, made in **Settings → Machines & access → Linked environments** on
+that machine (see [Linked environments](remote-access.md)). The editor and the
+task's badge warn about a missing, expired, or turned-off link. A machine that
+can't reach one runs the task anyway, so you may get an extra run but never a
+missed one.
+
+Copies sync while CodeShip on web, desktop, or mobile is connected to both
+machines. A machine that links to another also fetches newer copies from it
+every few minutes, even with no app open. Editing, pausing, or deleting a
+shared task on one machine does the same on the others; pinning and **Run now**
+stay on the machine where you use them. Choosing **This machine** keeps the task
+only on the machine you edit it on.
+
+A shared task starts a new thread on each run and can't use a webhook. It runs
+in **No project**, or in the project with the same git remote on each machine;
+a machine without that project shows why its copy is missing. If a task's model
+isn't set up on a machine, such as another account, that machine runs its
+scheduled tasks model instead and the badge says so.
+
 ## Webhook automations
 
 On the **Scheduled tasks** page on web or desktop, or in the **Tasks** tab

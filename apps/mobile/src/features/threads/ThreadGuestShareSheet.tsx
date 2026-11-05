@@ -30,7 +30,7 @@ const COPY_FEEDBACK_DURATION_MS = 1200;
 
 /**
  * Whether this environment offers "Share with guest": the user may create links there, and its
- * Guest links beta is on (Settings > Labs). The server refuses links while the beta is off.
+ * Guest links beta is on (Settings > Machines & access > Guest sharing). The server refuses links while the beta is off.
  */
 export function useCanShareWithGuest(environmentId: EnvironmentId | null): boolean {
   const permitted = useAtomValue(serverEnvironment.createGuestShare.permissionAtom(environmentId));

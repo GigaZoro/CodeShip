@@ -120,6 +120,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   providerSkillCopy: Schema.optionalKey(Schema.Boolean),
   /** Honors `scheduledTaskModelSelection` and a task's `followsDefaultModel`; hide both where absent. */
   scheduledTaskDefaultModel: Schema.optionalKey(Schema.Boolean),
+  /** Serves `scheduledTasks.applyShared` and stores `shared`; clients sync shared tasks only here. */
+  sharedScheduledTasks: Schema.optionalKey(Schema.Boolean),
   /** Honors `delegatedTaskModelSelections`; hide that setting where it is absent. */
   delegatedTaskModels: Schema.optionalKey(Schema.Boolean),
   /** Runs Final review and honors the thread `finalReview` flag; hide its controls where absent. */

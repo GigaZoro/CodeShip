@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 
 import {
   CommandId,
+  EnvironmentId,
   ForwardCompatibleArray,
   IsoDateTime,
   ProjectId,
@@ -224,6 +225,88 @@ export const ScheduledTaskWebhookEndpoint = Schema.Struct({
 });
 export type ScheduledTaskWebhookEndpoint = typeof ScheduledTaskWebhookEndpoint.Type;
 
+/**
+ * Orders edits to a shared task across machines: the later `at` wins, then the
+ * higher environment id. Each machine stamps its own edits and keeps a stamp it
+ * receives as-is, so every machine settles on the same winner.
+ */
+export const ScheduledTaskSharedRevision = Schema.Struct({
+  at: IsoDateTime,
+  environmentId: EnvironmentId,
+});
+export type ScheduledTaskSharedRevision = typeof ScheduledTaskSharedRevision.Type;
+
+export function compareScheduledTaskSharedRevisions(
+  left: ScheduledTaskSharedRevision,
+  right: ScheduledTaskSharedRevision,
+): number {
+  const byTime = Date.parse(left.at) - Date.parse(right.at);
+  if (byTime !== 0) return Math.sign(byTime);
+  return left.environmentId < right.environmentId
+    ? -1
+    : left.environmentId > right.environmentId
+      ? 1
+      : 0;
+}
+
+/** Where a shared task runs on each machine: its No project, or its project with this repository. */
+export const ScheduledTaskSharedProject = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("none") }),
+  Schema.Struct({
+    type: Schema.Literal("repository"),
+    canonicalKey: TrimmedNonEmptyString,
+    title: TrimmedNonEmptyString,
+  }),
+]);
+export type ScheduledTaskSharedProject = typeof ScheduledTaskSharedProject.Type;
+
+export function scheduledTaskSharedProjectKey(project: ScheduledTaskSharedProject): string {
+  return project.type === "none" ? "none" : `repository:${project.canonicalKey}`;
+}
+
+/** `every`: each machine runs every occurrence. `one`: one machine runs each, in the project's machine order. */
+export const ScheduledTaskSharedRunOn = Schema.Literals(["every", "one"]);
+export type ScheduledTaskSharedRunOn = typeof ScheduledTaskSharedRunOn.Type;
+
+/** A task with the same id on every machine. */
+export const ScheduledTaskSharing = Schema.Struct({
+  revision: ScheduledTaskSharedRevision,
+  project: ScheduledTaskSharedProject,
+  /** Machines that keep no copy. New machines get the task. */
+  excludedEnvironmentIds: Schema.Array(EnvironmentId),
+  /** Absent means `every`. */
+  runOn: Schema.optional(ScheduledTaskSharedRunOn),
+});
+export type ScheduledTaskSharing = typeof ScheduledTaskSharing.Type;
+
+/**
+ * The machines a project's one-machine tasks try, first to last. Synced like a
+ * shared task; a machine holding a copy but missing here comes after the list.
+ */
+export const ScheduledTaskProjectMachineOrder = Schema.Struct({
+  project: ScheduledTaskSharedProject,
+  order: Schema.Array(EnvironmentId),
+  revision: ScheduledTaskSharedRevision,
+});
+export type ScheduledTaskProjectMachineOrder = typeof ScheduledTaskProjectMachineOrder.Type;
+
+/** How this machine last settled an occurrence of a one-machine task. */
+export const ScheduledTaskOneMachineDecision = Schema.Struct({
+  at: IsoDateTime,
+  /** The machine that already ran or is running it, when this one skipped; null when this one ran it. */
+  ranOn: Schema.NullOr(EnvironmentId),
+  /** Machines this one could not ask, and why. It ran the task anyway. */
+  unchecked: Schema.Array(Schema.Struct({ environmentId: EnvironmentId, reason: Schema.String })),
+});
+export type ScheduledTaskOneMachineDecision = typeof ScheduledTaskOneMachineDecision.Type;
+
+/** Kept after a shared task is deleted or unshared, so a stale copy elsewhere is removed rather than restored. */
+export const ScheduledTaskSharedDeletion = Schema.Struct({
+  id: ScheduledTaskId,
+  revision: ScheduledTaskSharedRevision,
+});
+export type ScheduledTaskSharedDeletion = typeof ScheduledTaskSharedDeletion.Type;
+
 export const ScheduledTask = Schema.Struct({
   id: ScheduledTaskId,
   title: TrimmedNonEmptyString,
@@ -254,6 +337,11 @@ export const ScheduledTask = Schema.Struct({
   followsDefaultModel: Schema.optional(Schema.Boolean),
   /** Why the task cannot run regardless of `enabled`, such as a managed policy refusing webhooks. */
   blockedByPolicy: Schema.optionalKey(Schema.String),
+  /** Present on a shared task. Absent from servers without sharing. */
+  shared: Schema.optional(Schema.NullOr(ScheduledTaskSharing)),
+  lastOneMachineDecision: Schema.optional(Schema.NullOr(ScheduledTaskOneMachineDecision)),
+  /** A shared task's own model is not set up on this machine, so it runs the scheduled tasks default model here. */
+  modelUnavailableHere: Schema.optional(Schema.Boolean),
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
 
@@ -262,6 +350,16 @@ export type ScheduledTaskListInput = typeof ScheduledTaskListInput.Type;
 
 export const ScheduledTaskListResult = Schema.Struct({
   tasks: ForwardCompatibleArray(ScheduledTask),
+  /** Shared tasks this machine deleted or unshared. Absent from servers without sharing. */
+  sharedDeletions: Schema.optional(Schema.Array(ScheduledTaskSharedDeletion)),
+  projectMachineOrders: Schema.optional(Schema.Array(ScheduledTaskProjectMachineOrder)),
+  /** This machine's links, so clients can warn about one-machine tasks it cannot check. */
+  peerLinks: Schema.optional(
+    Schema.Struct({
+      enabled: Schema.Boolean,
+      links: Schema.Array(Schema.Struct({ environmentId: EnvironmentId, expiresAt: IsoDateTime })),
+    }),
+  ),
 });
 export type ScheduledTaskListResult = typeof ScheduledTaskListResult.Type;
 
@@ -286,8 +384,63 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
   creationSource: Schema.optional(OrchestrationV2CreationSource),
+  shared: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        excludedEnvironmentIds: Schema.Array(EnvironmentId),
+        runOn: Schema.optional(ScheduledTaskSharedRunOn),
+        machineOrder: Schema.optional(Schema.Array(EnvironmentId)).annotate({
+          description:
+            "Sets the machine order of the task's project, for all its one-machine tasks.",
+        }),
+      }),
+    ),
+  ).annotate({
+    description:
+      "Run on every machine, kept in sync. Null keeps it on this machine only. Omitted keeps the stored choice.",
+  }),
 });
 export type ScheduledTaskUpsertInput = typeof ScheduledTaskUpsertInput.Type;
+
+/** A shared task as one machine hands it to another: its definition, without run state. */
+export const ScheduledTaskSharedCopy = Schema.Struct({
+  id: ScheduledTaskId,
+  title: TrimmedNonEmptyString,
+  prompt: TrimmedNonEmptyString,
+  enabled: Schema.Boolean,
+  schedule: ScheduledTaskSchedule,
+  workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
+  modelSelection: ModelSelection,
+  followsDefaultModel: Schema.Boolean,
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
+  createdBy: OrchestrationV2Actor,
+  creationSource: OrchestrationV2CreationSource,
+  createdAt: IsoDateTime,
+  shared: ScheduledTaskSharing,
+});
+export type ScheduledTaskSharedCopy = typeof ScheduledTaskSharedCopy.Type;
+
+/** Brings this machine's copy of a shared task up to a newer revision; an older one changes nothing. */
+export const ScheduledTaskApplySharedInput = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("upsert"), task: ScheduledTaskSharedCopy }),
+  Schema.Struct({ type: Schema.Literal("delete"), deletion: ScheduledTaskSharedDeletion }),
+  Schema.Struct({
+    type: Schema.Literal("projectMachineOrder"),
+    order: ScheduledTaskProjectMachineOrder,
+  }),
+]);
+export type ScheduledTaskApplySharedInput = typeof ScheduledTaskApplySharedInput.Type;
+
+export const ScheduledTaskApplySharedResult = Schema.Struct({
+  /**
+   * `applied`: saved or deleted. `removed`: this machine is excluded, so its copy
+   * was dropped. `stale`: it already has this revision or a newer one. `local`:
+   * a task here that is not shared already uses the id, so it was left alone.
+   */
+  outcome: Schema.Literals(["applied", "removed", "stale", "local"]),
+});
+export type ScheduledTaskApplySharedResult = typeof ScheduledTaskApplySharedResult.Type;
 
 export const ScheduledTaskSetEnabledInput = Schema.Struct({
   id: ScheduledTaskId,

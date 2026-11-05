@@ -45,6 +45,20 @@ export function nextScheduledRunAt(
   return null;
 }
 
+/**
+ * The first `anchor + k × everyMs` after `from`. Machines that share a task and anchor compute
+ * the same slots, whatever their last runs were.
+ */
+export function nextAlignedIntervalRunAt(
+  everyMs: number,
+  anchorMs: number,
+  from: DateTime.DateTime,
+): DateTime.DateTime {
+  const step = Math.max(everyMs, MIN_SCHEDULED_TASK_INTERVAL_MS);
+  const k = Math.max(1, Math.floor((DateTime.toEpochMillis(from) - anchorMs) / step) + 1);
+  return DateTime.makeUnsafe(anchorMs + k * step);
+}
+
 function weekdayKey(weekdays: ReadonlyArray<number> | undefined): string {
   const unique = [...new Set(weekdays ?? [])].toSorted((x, y) => x - y);
   if (unique.length === 0 || unique.length === 7) return "daily";

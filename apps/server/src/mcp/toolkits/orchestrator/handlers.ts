@@ -101,7 +101,16 @@ const handlers = {
       { refused: "schedule tasks in this environment" },
     ),
     McpToolAccess.writes(
-      ({ scheduledTaskId, prompt, title, schedule, enabled, bindToCurrentThread }) =>
+      ({
+        scheduledTaskId,
+        prompt,
+        title,
+        schedule,
+        enabled,
+        bindToCurrentThread,
+        shared,
+        oneMachine,
+      }) =>
         Effect.gen(function* () {
           if (scheduledTaskId === undefined) return yield* Effect.die("unreachable");
           const scope = yield* McpInvocationContext.McpInvocationContext;
@@ -113,6 +122,8 @@ const handlers = {
             schedule,
             enabled,
             bindToCurrentThread,
+            shared,
+            oneMachine,
           });
         }),
     ),
@@ -122,6 +133,13 @@ const handlers = {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
       return yield* service.listScheduledTasks(scope, input);
+    }),
+  ),
+  t3_shared_scheduled_tasks: McpToolAccess.reads((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+      return yield* service.sharedScheduledTasks(scope, input);
     }),
   ),
   delete_scheduled_task: McpToolAccess.writes((input) =>

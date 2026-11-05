@@ -139,6 +139,43 @@ its agents can already do anything that user can, so the fence would only stop
 T3's own tools. Its work still carries `linkOrigin`, so clients show where it
 came from. A stamp without the access, from before it was recorded, is fenced.
 
+## Shared scheduled tasks sync through clients
+
+A shared scheduled task has the same id on every machine, and each machine
+runs its own copy. Clients connected to several environments push newer copies
+to machines that are behind
+([`scheduledTaskSharing.ts`](../../packages/client-runtime/src/scheduledTaskSharing.ts)).
+Links only pull: a link paired below full access may not change scheduled tasks
+there, so each machine reads its links' copies through the link-only
+`t3_shared_scheduled_tasks` tool and applies them itself
+([`SharedTaskPull.ts`](../../apps/server/src/scheduledTasks/SharedTaskPull.ts)).
+That tool leaves out copies that exclude the asking machine.
+
+- **Highest revision wins, per task.** A machine stamps its own edits with
+  `max(now, previous + 1 ms)` and its id, and keeps a stamp it receives as-is,
+  so every machine settles on the same copy even with skewed clocks.
+  `scheduledTasks.applyShared` ignores anything not newer than what it holds,
+  so any number of clients can push at once.
+- **Deletes leave a deletion record** that spreads to every machine, including
+  ones that never had the task. Without it, a machine that was offline during
+  the delete would bring the task back.
+- **A machine left out drops its copy without a deletion record**, which would
+  otherwise delete the task everywhere.
+- **A client never plans from a list it has not loaded.** An unloaded list
+  would read as a machine with no tasks.
+- **Projects travel as references:** No project, or a repository's canonical
+  key that each machine resolves to its own project.
+
+A **one-machine** task runs each occurrence once. Its project's machine order
+is a synced record of its own. Interval occurrences count from the task's
+creation, not each machine's last run, so every machine agrees on when one is
+due. A machine late in the order waits its rank times
+a grace period, then asks the machines in the order through its peer links
+(`list_scheduled_tasks`, a read, which links below full access allow) whether
+one is working on or finished that occurrence. A machine that can't ask one
+runs the task and records it, so a missing or expired link causes a duplicate
+run, not a missed one. A late first machine asks the same way before it runs.
+
 ## Hosted web is a client
 
 The hosted web app stores its connection catalog in the browser and connects

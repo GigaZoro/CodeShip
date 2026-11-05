@@ -31,6 +31,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import { layerSharedTaskDependencies } from "./sharedTaskTestLayers.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
@@ -216,6 +217,7 @@ it.effect(
                   isScratchProject: () => Effect.succeed(false),
                 }),
                 Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+                layerSharedTaskDependencies(),
                 Layer.mock(SecretRequests.SecretRequests)({}),
                 NodeCrypto.layer,
                 Scheduler.layer,
@@ -315,6 +317,7 @@ it.effect(
                   isScratchProject: () => Effect.succeed(false),
                 }),
                 Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+                layerSharedTaskDependencies(),
                 Layer.mock(SecretRequests.SecretRequests)({}),
                 NodeCrypto.layer,
                 Scheduler.layer,
@@ -367,6 +370,7 @@ it.effect("thread cleanup notifies subscribers and a finishing run cannot recrea
                 Effect.andThen(Effect.die("test dispatch failure")),
               ),
           }),
+          layerSharedTaskDependencies(),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",
@@ -452,6 +456,7 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
                 rest,
               ]),
           }),
+          layerSharedTaskDependencies(),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",
@@ -503,6 +508,7 @@ it.effect("a pin and the last run's thread survive edits and leave with the task
             launch: () => Effect.succeed({ threadId: runThreadId } as never),
           }),
           Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+          layerSharedTaskDependencies(),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",
@@ -601,6 +607,7 @@ it.effect("a task that follows the default runs the scheduled tasks model and ke
               ),
           }),
           Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+          layerSharedTaskDependencies(),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",
@@ -687,6 +694,7 @@ it.effect("refuses saving an enabled task above the policy ceiling", () =>
           }),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
           Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+          layerSharedTaskDependencies(),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",
@@ -756,6 +764,7 @@ it.effect("a run interrupted right after it reserves the task does not block the
               ),
           }),
           Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+          layerSharedTaskDependencies(),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",

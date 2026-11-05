@@ -109,6 +109,9 @@ const codexAdditionalContext = () =>
 
 // CI rejects a PR that raises any value above main's agentContextBudget.json, so growth
 // needs the agent-context-increase label. Lower the values when the text shrinks.
+// Only another environment's peer link sees these, never an agent.
+const PEER_LINK_ONLY_TOOLS: ReadonlySet<string> = new Set(["t3_shared_scheduled_tasks"]);
+
 it.effect("agent context matches the committed budget", () =>
   Effect.gen(function* () {
     const mcp = yield* McpServer.McpServer;
@@ -118,11 +121,13 @@ it.effect("agent context matches the committed budget", () =>
       // The model sees these fields. outputSchema and annotations are protocol metadata.
       mcpToolListJsonBytes: utf8Bytes(
         JSON.stringify(
-          mcp.tools.map(({ tool }) => ({
-            name: tool.name,
-            description: tool.description,
-            inputSchema: tool.inputSchema,
-          })),
+          mcp.tools
+            .filter(({ tool }) => !PEER_LINK_ONLY_TOOLS.has(tool.name))
+            .map(({ tool }) => ({
+              name: tool.name,
+              description: tool.description,
+              inputSchema: tool.inputSchema,
+            })),
         ),
       ),
     };

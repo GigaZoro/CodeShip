@@ -1,10 +1,12 @@
 import { isWebhookDedupeTemplate } from "@t3tools/contracts";
 import type {
+  EnvironmentId,
   ModelSelection,
   ServerConfig,
   ProjectId,
   RuntimeMode,
   ScheduledTask,
+  ScheduledTaskSharedRunOn,
   ScheduledTaskUpsertSchedule,
   ScheduledTaskWebhookSignature,
 } from "@t3tools/contracts";
@@ -199,6 +201,10 @@ export type ScheduledTaskDraft = {
   readonly modelSelectionIsExplicit: boolean;
   /** Runs the scheduled tasks default model instead of `modelSelection`. */
   readonly followsDefaultModel: boolean;
+  /** Kept on every machine and synced. The editor lists no machines, so stored exclusions stay as they are. */
+  readonly shared: boolean;
+  readonly sharedExcludedEnvironmentIds: ReadonlyArray<EnvironmentId>;
+  readonly sharedRunOn: ScheduledTaskSharedRunOn;
   readonly schedule: ScheduleDraft;
   readonly workspace: Workspace;
   readonly baseRef: string;
@@ -220,6 +226,8 @@ function draftSignature(draft: ScheduledTaskDraft): string {
       .sort((a, b) => a.id.localeCompare(b.id))
       .map((option) => [option.id, option.value]),
     draft.followsDefaultModel,
+    draft.shared,
+    draft.sharedRunOn,
     draft.schedule.mode,
     draft.schedule.timeOfDay,
     draft.schedule.runAt,
@@ -258,6 +266,9 @@ export function createDraft(
     modelSelection,
     modelSelectionIsExplicit: false,
     followsDefaultModel: true,
+    shared: false,
+    sharedExcludedEnvironmentIds: [],
+    sharedRunOn: "every",
     schedule: DEFAULT_SCHEDULE,
     workspace: "worktree",
     baseRef: "main",
@@ -277,6 +288,9 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     modelSelection: task.modelSelection,
     modelSelectionIsExplicit: true,
     followsDefaultModel: task.followsDefaultModel === true,
+    shared: task.shared != null,
+    sharedExcludedEnvironmentIds: task.shared?.excludedEnvironmentIds ?? [],
+    sharedRunOn: task.shared?.runOn ?? "every",
     schedule: scheduleDraftForTask(task),
     workspace: task.workspaceStrategy.type,
     baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "main",

@@ -53,6 +53,17 @@ import type { ComposerEditorSelection } from "../../components/ComposerEditor";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
+import {
+  describeOneMachineLinkWarning,
+  effectiveOneMachineOrder,
+  newestProjectMachineOrder,
+  oneMachineLinkWarnings,
+  seedMachineOrder,
+  sharedProjectReference,
+  sharedUpsertField,
+  visibleMachineOrder,
+} from "@t3tools/client-runtime/scheduled-task-sharing";
+import { useSharedScheduledTaskSnapshots } from "../../state/sharedScheduledTasks";
 import { webhookAddress } from "@t3tools/client-runtime/webhook-address";
 import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { usePreparedConnection } from "../../state/session";
@@ -679,8 +690,35 @@ function TaskForm({
   const serverConfigs = useServerConfigs();
   const modelOptions = buildModelOptions(config, null, undefined, draft.projectId);
   // A task bound to a thread runs that thread's model, so the default does not apply to it.
+  const offersShared = config?.environment.capabilities.sharedScheduledTasks === true;
+  const sharing = offersShared && draft.shared;
+  const sharingTargetIds = availableTargets
+    .filter((target) => target.serverConfig.environment.capabilities.sharedScheduledTasks === true)
+    .map((target) => target.environmentId);
+  const sharedSnapshots = useSharedScheduledTaskSnapshots();
+  const draftProject = projects.find((project) => project.id === draft.projectId);
+  const sharedProject = sharedProjectReference({
+    editedShared: draft.task?.shared,
+    editedProjectId: draft.task?.projectId,
+    project: draftProject,
+  });
+  const storedMachineOrder =
+    sharedProject === null ? null : newestProjectMachineOrder(sharedSnapshots, sharedProject);
+  const machineOrder = visibleMachineOrder(
+    seedMachineOrder(storedMachineOrder, sharingTargetIds, environmentId),
+    sharingTargetIds,
+  );
+  const [openedAt] = useState(Date.now);
+  const targetLabel = (id: EnvironmentId) =>
+    availableTargets.find((target) => target.environmentId === id)?.label ?? id;
+  const linkWarnings = oneMachineLinkWarnings(
+    sharedSnapshots,
+    effectiveOneMachineOrder(machineOrder, draft.sharedExcludedEnvironmentIds, sharingTargetIds),
+    openedAt,
+  ).map((warning) => describeOneMachineLinkWarning(warning, targetLabel));
   const offersDefaultModel =
-    config?.environment.capabilities.scheduledTaskDefaultModel === true && !draft.task?.threadId;
+    config?.environment.capabilities.scheduledTaskDefaultModel === true &&
+    (sharing || !draft.task?.threadId);
   const followsDefaultModel = offersDefaultModel && draft.followsDefaultModel;
   const taskModel = followsDefaultModel
     ? (scheduledTaskDefaultModel(
@@ -808,7 +846,7 @@ function TaskForm({
       ...(offersDefaultModel ? { followsDefaultModel } : {}),
       schedule,
       enabled: draft.enabled,
-      threadId: draft.task?.threadId ?? null,
+      threadId: sharing ? null : (draft.task?.threadId ?? null),
       workspaceStrategy:
         draft.workspace === "root"
           ? { type: "root" }
@@ -824,6 +862,14 @@ function TaskForm({
         clampManagedRuntimeMode(config?.managedPolicy, draft.runtimeMode) ?? draft.runtimeMode,
       interactionMode: draft.task?.interactionMode ?? "default",
       creationSource: draft.task?.creationSource ?? "mobile",
+      ...sharedUpsertField({
+        supported: offersShared,
+        shared: draft.shared,
+        wasShared: (liveTask ?? draft.task)?.shared != null,
+        excludedEnvironmentIds: draft.sharedExcludedEnvironmentIds,
+        runOn: draft.sharedRunOn,
+        ...(sharedProject !== null && storedMachineOrder === null ? { machineOrder } : {}),
+      }),
     };
     submissionPending.current = true;
     setSaving(true);
@@ -883,6 +929,61 @@ function TaskForm({
               if (target) onChangeEnvironment(target);
             }}
           />
+          {offersShared ? (
+            <View className="gap-3 border-t border-border-subtle px-4 py-3">
+              <SegmentedControl
+                variant="card"
+                options={[
+                  { value: "this", label: "This machine" },
+                  { value: "every", label: "Every machine" },
+                  { value: "one", label: "One machine" },
+                ]}
+                selected={draft.shared ? draft.sharedRunOn : "this"}
+                onSelect={(choice) =>
+                  setDraft({
+                    ...draft,
+                    shared: choice !== "this",
+                    sharedRunOn: choice === "one" ? "one" : "every",
+                    // Shared tasks never use a webhook, so a webhook draft falls back to a time.
+                    schedule:
+                      choice !== "this" && draft.schedule.mode === "webhook"
+                        ? { ...draft.schedule, mode: "fixed_time" }
+                        : draft.schedule,
+                  })
+                }
+              />
+              {draft.shared && draft.sharedRunOn === "one" ? (
+                <View
+                  accessible
+                  accessibilityLabel={`Machine order for ${draftProject?.title ?? "this project"}`}
+                  className="gap-1"
+                >
+                  <Text className="text-sm text-foreground-muted">
+                    {`Order for ${draftProject?.title ?? "this project"}, used by all its one-machine tasks. The first machine that's online runs each run; the next one runs it if the first is offline or its run fails.`}
+                  </Text>
+                  {machineOrder.map((id, index) => (
+                    <Text key={id} className="text-sm text-foreground">
+                      {`${index + 1}. ${targetLabel(id)}`}
+                    </Text>
+                  ))}
+                  {linkWarnings.map((warning) => (
+                    <Text key={warning} className="text-sm text-warning-foreground">
+                      {warning}
+                    </Text>
+                  ))}
+                  {linkWarnings.length > 0 ? (
+                    <Text className="text-sm text-foreground-muted">
+                      A machine that can't check the ones ahead of it runs the task anyway.
+                    </Text>
+                  ) : null}
+                </View>
+              ) : draft.shared ? (
+                <Text className="text-sm text-foreground-muted">
+                  Keeps a copy on each machine, in sync. Each machine runs it on its own schedule.
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
         </SettingsSection>
         <SettingsSection title="Task">
           <FormField
@@ -1045,7 +1146,7 @@ function TaskForm({
                   ? [{ value: "once" as const, label: "Once" }]
                   : []),
                 { value: "interval", label: "Interval" },
-                ...(webhookDenial === undefined || draft.schedule.mode === "webhook"
+                ...(!sharing && (webhookDenial === undefined || draft.schedule.mode === "webhook")
                   ? [{ value: "webhook" as const, label: "On webhook" }]
                   : []),
               ]}
@@ -1513,7 +1614,7 @@ function EnvironmentTasks({
           >
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={`Edit ${task.title}`}
+              accessibilityLabel={`Edit ${task.title}${task.shared ? (task.shared.runOn === "one" ? ", runs on one machine" : ", runs on every machine") : ""}${task.modelUnavailableHere ? ", runs the default model here" : ""}`}
               onPress={() => {
                 onEdit(task);
               }}
@@ -1529,6 +1630,12 @@ function EnvironmentTasks({
                   : task.nextRunAt
                     ? ` · ${formatNextScheduledTaskRun(task.nextRunAt, now)}`
                     : ""}
+                {task.modelUnavailableHere ? " · Runs the default model here" : ""}
+                {task.shared
+                  ? task.shared.runOn === "one"
+                    ? " · One machine"
+                    : " · Every machine"
+                  : ""}
               </Text>
               {task.blockedByPolicy ? (
                 <Text className="text-sm text-foreground-muted" numberOfLines={2}>

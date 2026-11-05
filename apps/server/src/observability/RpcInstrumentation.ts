@@ -111,6 +111,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.scheduledTasksDelete]: "scheduledTasks",
   [WS_METHODS.scheduledTasksRunNow]: "scheduledTasks",
   [WS_METHODS.scheduledTasksRotateWebhookToken]: "scheduledTasks",
+  [WS_METHODS.scheduledTasksApplyShared]: "scheduledTasks",
   [WS_METHODS.scheduledTasksListWebhookDeliveries]: "scheduledTasks",
   [WS_METHODS.scheduledTasksGetWebhookDelivery]: "scheduledTasks",
   [WS_METHODS.secretsAnswerRequest]: "secrets",

@@ -1658,6 +1658,12 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
+    applySharedScheduledTask: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:scheduled-task:apply-shared",
+      tag: WS_METHODS.scheduledTasksApplyShared,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
     setScheduledTaskEnabled: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:set-enabled",
       tag: WS_METHODS.scheduledTasksSetEnabled,

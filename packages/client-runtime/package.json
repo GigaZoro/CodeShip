@@ -79,6 +79,10 @@
       "types": "./src/scheduledTaskPins.ts",
       "default": "./src/scheduledTaskPins.ts"
     },
+    "./scheduled-task-sharing": {
+      "types": "./src/scheduledTaskSharing.ts",
+      "default": "./src/scheduledTaskSharing.ts"
+    },
     "./connection": {
       "types": "./src/connection/index.ts",
       "default": "./src/connection/index.ts"

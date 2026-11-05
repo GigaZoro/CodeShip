@@ -25,6 +25,7 @@ import {
   ORCHESTRATION_V2_WS_METHODS,
   type OrchestrationV2Command,
   type OrchestrationV2ThreadLaunchInput,
+  type ScheduledTaskApplySharedInput,
   type ScheduledTaskUpsertInput,
   AuthTerminalReadScope,
   type AuthEnvironmentScope,
@@ -266,6 +267,10 @@ const promptTextForRpcCall = (method: string, payload: unknown): string | undefi
   }
   if (method === WS_METHODS.scheduledTasksUpsert) {
     return (payload as ScheduledTaskUpsertInput).prompt;
+  }
+  if (method === WS_METHODS.scheduledTasksApplyShared) {
+    const input = payload as ScheduledTaskApplySharedInput;
+    return input.type === "upsert" ? input.task.prompt : undefined;
   }
   if (method !== ORCHESTRATION_V2_WS_METHODS.dispatchCommand) return undefined;
   const command = payload as OrchestrationV2Command;

@@ -389,6 +389,8 @@ import {
   ServerSettingsPatch,
 } from "./settings.ts";
 import {
+  ScheduledTaskApplySharedInput,
+  ScheduledTaskApplySharedResult,
   ScheduledTaskDeleteInput,
   ScheduledTaskDeleteResult,
   ScheduledTaskError,
@@ -593,6 +595,7 @@ export const WS_METHODS = {
   scheduledTasksDelete: "scheduledTasks.delete",
   scheduledTasksRunNow: "scheduledTasks.runNow",
   scheduledTasksRotateWebhookToken: "scheduledTasks.rotateWebhookToken",
+  scheduledTasksApplyShared: "scheduledTasks.applyShared",
   secretsAnswerRequest: "secrets.answerRequest",
   guestShareCreate: "guestShare.create",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
@@ -2094,6 +2097,12 @@ const WsScheduledTasksRotateWebhookTokenRpc = Rpc.make(
   },
 );
 
+const WsScheduledTasksApplySharedRpc = Rpc.make(WS_METHODS.scheduledTasksApplyShared, {
+  payload: ScheduledTaskApplySharedInput,
+  success: ScheduledTaskApplySharedResult,
+  error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
+});
+
 const WsGuestShareCreateRpc = Rpc.make(WS_METHODS.guestShareCreate, {
   payload: GuestShareCreateInput,
   success: GuestShareCreateResult,
@@ -2221,6 +2230,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksDeleteRpc,
   WsScheduledTasksRunNowRpc,
   WsScheduledTasksRotateWebhookTokenRpc,
+  WsScheduledTasksApplySharedRpc,
   WsSecretsAnswerRequestRpc,
   WsScheduledTasksListWebhookDeliveriesRpc,
   WsScheduledTasksGetWebhookDeliveryRpc,

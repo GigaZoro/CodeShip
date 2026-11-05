@@ -80,7 +80,7 @@ const fromLinkError = (error: PeerLinkError) =>
 const linkedEnvironmentsOffThere = new OrchestratorMcpFailure({
   code: "orchestration_error",
   message:
-    "The linked environment has Linked environments turned off. Turn it on in its Settings → Labs.",
+    "The linked environment has Linked environments turned off. Turn it on in its Settings → Machines & access → Linked environments.",
 });
 
 /** The body of an MCP response: JSON, or a single server-sent event carrying JSON. */
