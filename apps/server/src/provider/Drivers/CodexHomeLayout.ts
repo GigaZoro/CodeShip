@@ -32,10 +32,12 @@ const KNOWN_SHARED_DIRECTORIES = [
   "thread-writer-locks",
 ] as const;
 
-// auth.lock guards the shadow home's private auth.json.
+// auth.lock guards the shadow home's private auth.json. .credentials.json holds the account's MCP
+// sign-ins: copies of a rotating refresh token in two homes sign each other out.
 const PRIVATE_ENTRY_NAMES = new Set([
   "auth.json",
   "auth.lock",
+  ".credentials.json",
   "models_cache.json",
   "cloud-config-bundle-cache.json",
 ]);
@@ -93,7 +95,6 @@ export class CodexShadowHomeFileSystemError extends Schema.TaggedError<CodexShad
       "makeDirectory",
       "readDirectory",
       "remove",
-      "rename",
       "symlink",
       "stat",
     ]),
@@ -431,15 +432,8 @@ const ensureShadowAuthIsPrivate = Effect.fn("CodexHomeLayout.ensureShadowAuthIsP
   },
 );
 
-// Codex's file store for MCP sign-ins, used off a keychain or when an account keeps its own.
-const MCP_SIGN_IN_FILE = ".credentials.json";
-
 export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome")(function* (
   layout: CodexHomeLayout,
-  options: {
-    /** Off, the account keeps its own MCP sign-ins instead of linking the shared home's. */
-    readonly shareMcpSignIns?: boolean | undefined;
-  } = {},
 ) {
   if (layout.mode !== "authOverlay") return;
   const effectiveHomePath = layout.effectiveHomePath;
@@ -491,46 +485,15 @@ export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome"
         }),
     }),
   );
-  const shareMcpSignIns = options.shareMcpSignIns ?? true;
-  const privateEntryNames: ReadonlySet<string> = shareMcpSignIns
-    ? PRIVATE_ENTRY_NAMES
-    : new Set([...PRIVATE_ENTRY_NAMES, MCP_SIGN_IN_FILE]);
   const entries = new Set<string>(KNOWN_SHARED_DIRECTORIES);
   for (const entryName of sharedEntryNames) {
-    if (!privateEntryNames.has(entryName) && !SHADOW_LOCAL_ENTRY_NAMES.has(entryName)) {
+    if (!PRIVATE_ENTRY_NAMES.has(entryName) && !SHADOW_LOCAL_ENTRY_NAMES.has(entryName)) {
       entries.add(entryName);
     }
   }
 
-  // Sign-ins this account kept while sharing was off give way to the shared ones.
-  if (entries.has(MCP_SIGN_IN_FILE)) {
-    const ownSignIns = path.join(effectiveHomePath, MCP_SIGN_IN_FILE);
-    const state = yield* readLinkState({
-      fileSystem,
-      sharedHomePath: layout.sharedHomePath,
-      effectiveHomePath,
-      entryName: MCP_SIGN_IN_FILE,
-      linkPath: ownSignIns,
-    });
-    if (state._tag === "NotSymlink") {
-      yield* fileSystem.rename(ownSignIns, `${ownSignIns}.unshared`).pipe(
-        Effect.catchTags({
-          PlatformError: (cause) =>
-            new CodexShadowHomeFileSystemError({
-              sharedHomePath: layout.sharedHomePath,
-              effectiveHomePath,
-              operation: "rename",
-              path: ownSignIns,
-              entryName: MCP_SIGN_IN_FILE,
-              cause,
-            }),
-        }),
-      );
-    }
-  }
-
   yield* Effect.forEach(
-    privateEntryNames,
+    PRIVATE_ENTRY_NAMES,
     (entryName) =>
       entryName === "auth.json"
         ? Effect.void
@@ -546,7 +509,7 @@ export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome"
   yield* Effect.forEach(
     entries,
     (entryName) => {
-      if (privateEntryNames.has(entryName)) {
+      if (PRIVATE_ENTRY_NAMES.has(entryName)) {
         return Effect.void;
       }
       return ensureSymlink({

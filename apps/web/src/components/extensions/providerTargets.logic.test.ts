@@ -13,7 +13,7 @@ function entry(
   instanceId: string,
   driver: string,
   displayName: string,
-  options: { readonly home?: string; readonly mcp?: boolean } = {},
+  options: { readonly home?: string; readonly supported?: boolean } = {},
 ): ProviderInstanceEntry {
   return {
     instanceId: ProviderInstanceId.make(instanceId),
@@ -25,7 +25,10 @@ function entry(
     status: "ready",
     isDefault: false,
     isAvailable: true,
-    snapshot: { supportsMcpServers: options.mcp ?? true } as ServerProvider,
+    snapshot: {
+      supportsMcpServers: options.supported ?? true,
+      supportsPlugins: options.supported ?? true,
+    } as ServerProvider,
     models: [],
   };
 }
@@ -45,17 +48,16 @@ const entriesByEnvironment = new Map([
       entry("codex_work", "codex", "work", { home: "codex:home:/u/.codex-work" }),
     ],
   ],
-  [pc.environmentId, [entry("grok", "grok", "Grok", { mcp: false })]],
+  [pc.environmentId, [entry("grok", "grok", "Grok", { supported: false })]],
 ]);
 const machines = buildProviderMachines({
   machines: [mac, pc],
   entriesByEnvironment,
-  capability: "supportsMcpServers",
-  mergeAccounts: () => true,
+  capability: "supportsPlugins",
 });
 
 describe("buildProviderMachines", () => {
-  it("merges accounts that share a home unless told not to, and drops machines without one", () => {
+  it("merges accounts that share a home for plugins but not MCP, and drops machines without one", () => {
     expect(machines.map(({ machine }) => machine.label)).toEqual(["Mac"]);
     expect(machines[0]!.targets.map((target) => [target.label, target.accounts.length])).toEqual([
       ["Claude", 2],
@@ -66,7 +68,6 @@ describe("buildProviderMachines", () => {
       machines: [mac],
       entriesByEnvironment,
       capability: "supportsMcpServers",
-      mergeAccounts: () => false,
     });
     expect(separate[0]!.targets.map((target) => target.label)).toEqual([
       "Claude",

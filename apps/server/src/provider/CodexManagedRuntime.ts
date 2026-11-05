@@ -47,7 +47,6 @@ export const makeCodexManagedRuntime = Effect.fn("makeCodexManagedRuntime")(func
   readonly enabled: boolean;
   readonly environment: NodeJS.ProcessEnv;
   readonly config: CodexSettings;
-  readonly shareMcpSignIns: Effect.Effect<boolean>;
 }) {
   const installation = yield* CodexInstallation.CodexInstallation;
   const config = yield* ServerConfig.ServerConfig;
@@ -141,9 +140,8 @@ export const makeCodexManagedRuntime = Effect.fn("makeCodexManagedRuntime")(func
       environmentId,
       profileKey,
     ]);
-    const shareMcpSignIns = yield* options.shareMcpSignIns;
-    const privateMcpSignIns = !shareMcpSignIns && homeLayout.mode === "authOverlay";
-    yield* materializeCodexShadowHome(homeLayout, { shareMcpSignIns }).pipe(
+    const privateMcpSignIns = homeLayout.mode === "authOverlay";
+    yield* materializeCodexShadowHome(homeLayout).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(Path.Path, path),
       Effect.mapError(

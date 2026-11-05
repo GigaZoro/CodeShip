@@ -51,14 +51,6 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     enabled,
     config,
     environment: yield* mergeProviderInstanceEnvironment(input.environment),
-    shareMcpSignIns: host.settings.get.pipe(
-      Effect.map((settings) => settings.shareMcpSignIns),
-      Effect.catch((error) =>
-        Effect.logWarning("Codex MCP sign-ins stay shared: settings could not be read.", {
-          error,
-        }).pipe(Effect.as(true)),
-      ),
-    ),
   });
   const continuationIdentity = codexContinuationIdentity(runtime.homeLayout);
   const stamp = withInstanceIdentity({

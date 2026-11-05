@@ -8,9 +8,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
@@ -203,40 +201,9 @@ export const CodexDriver: ProviderDriver<
         // The default instance uses the Codex CLI's own login, which a terminal shares.
         auth: { ...draft.auth, canLogout },
       });
-    const { settings: serverSettings } = yield* ProviderHost.ProviderHost;
-    const readShareMcpSignIns = serverSettings.get.pipe(
-      Effect.map((settings) => settings.shareMcpSignIns),
-      Effect.catch((error) =>
-        Effect.logWarning("Codex MCP sign-ins stay shared: settings could not be read.", {
-          error,
-        }).pipe(Effect.as(true)),
-      ),
-    );
-    const sharedMcpSignIns = yield* Ref.make(yield* readShareMcpSignIns);
-    const mcpSignInChanges = yield* Semaphore.make(1);
-    // Only an account in its own shadow home can keep its MCP sign-ins apart.
-    const prepareMcpSignIns =
-      homeLayout.mode !== "authOverlay"
-        ? Effect.succeed(false)
-        : Effect.gen(function* () {
-            const share = yield* readShareMcpSignIns;
-            if (share !== (yield* Ref.get(sharedMcpSignIns))) {
-              yield* materializeCodexShadowHome(homeLayout, { shareMcpSignIns: share }).pipe(
-                Effect.andThen(Ref.set(sharedMcpSignIns, share)),
-                Effect.provideService(FileSystem.FileSystem, fileSystem),
-                Effect.provideService(Path.Path, pathService),
-                Effect.catch((error) =>
-                  Effect.logWarning("The Codex shadow home could not follow MCP sign-in sharing.", {
-                    error,
-                  }),
-                ),
-              );
-            }
-            return !share;
-          }).pipe(mcpSignInChanges.withPermits(1));
-    yield* materializeCodexShadowHome(homeLayout, {
-      shareMcpSignIns: yield* Ref.get(sharedMcpSignIns),
-    }).pipe(
+    // An added account's MCP sign-ins stay in its own shadow home.
+    const privateMcpSignIns = homeLayout.mode === "authOverlay";
+    yield* materializeCodexShadowHome(homeLayout).pipe(
       Effect.mapError(
         (cause) =>
           new ProviderDriverError({
@@ -279,8 +246,6 @@ export const CodexDriver: ProviderDriver<
       {
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
         compatibility: installation.compatibility,
-        prepareMcpSignIns,
-        shareMcpSignIns: yield* Ref.get(sharedMcpSignIns),
       },
     ).pipe(
       Effect.mapError(
@@ -378,19 +343,16 @@ export const CodexDriver: ProviderDriver<
             ),
           );
 
-    const openAppServerClient = prepareMcpSignIns.pipe(
-      Effect.flatMap((privateSignIns) =>
-        withCodexAppServerClient({
-          binaryPath: effectiveConfig.binaryPath,
-          homePath: effectiveConfig.homePath,
-          launchArgs: withPrivateMcpSignIns(
-            resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
-            privateSignIns,
-          ),
-          cwd: process.cwd(),
-          environment: processEnv,
-        }),
+    const openAppServerClient = withCodexAppServerClient({
+      binaryPath: effectiveConfig.binaryPath,
+      homePath: effectiveConfig.homePath,
+      launchArgs: withPrivateMcpSignIns(
+        resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+        privateMcpSignIns,
       ),
+      cwd: process.cwd(),
+      environment: processEnv,
+    }).pipe(
       Effect.map(({ client }) => client),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     );
@@ -402,20 +364,15 @@ export const CodexDriver: ProviderDriver<
       instanceId,
       openClient: openAppServerClient,
       runCli: (args) =>
-        prepareMcpSignIns.pipe(
-          Effect.flatMap((privateSignIns) =>
-            runCodexCli(
-              {
-                binaryPath: effectiveConfig.binaryPath,
-                homePath: effectiveConfig.homePath,
-                cwd: process.cwd(),
-                environment: processEnv,
-              },
-              [...privateMcpSignInArgs(privateSignIns), ...args],
-            ),
-          ),
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        ),
+        runCodexCli(
+          {
+            binaryPath: effectiveConfig.binaryPath,
+            homePath: effectiveConfig.homePath,
+            cwd: process.cwd(),
+            environment: processEnv,
+          },
+          [...privateMcpSignInArgs(privateMcpSignIns), ...args],
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)),
     }).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
 
     const auth = yield* makeCodexCliAuth({

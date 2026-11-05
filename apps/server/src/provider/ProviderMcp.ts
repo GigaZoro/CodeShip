@@ -100,18 +100,6 @@ const make = Effect.gen(function* () {
     },
   );
 
-  // Accounts sharing a home share their servers and, for Claude, their sign-ins.
-  const invalidateSharingHome = (instanceId: ProviderInstanceId) =>
-    instances.listInstances.pipe(
-      Effect.flatMap((all) =>
-        Effect.forEach(
-          ProviderInstanceRegistry.instancesSharingHome(all, instanceId),
-          (id) => Cache.invalidate(lists, id),
-          { discard: true },
-        ),
-      ),
-    );
-
   const change = (
     instanceId: ProviderInstanceId,
     operation: ProviderMcpOperation,
@@ -119,7 +107,17 @@ const make = Effect.gen(function* () {
   ) =>
     management(instanceId, operation).pipe(
       Effect.flatMap(run),
-      Effect.ensuring(invalidateSharingHome(instanceId)),
+      Effect.ensuring(
+        instances.listInstances.pipe(
+          Effect.flatMap((all) =>
+            Effect.forEach(
+              ProviderInstanceRegistry.instancesSharingHome(all, instanceId),
+              (id) => Cache.invalidate(lists, id),
+              { discard: true },
+            ),
+          ),
+        ),
+      ),
     );
 
   const openSignIn = Effect.fn("ProviderMcp.openSignIn")(function* (input: ProviderMcpServerInput) {
@@ -153,7 +151,7 @@ const make = Effect.gen(function* () {
                 }),
               ),
           }),
-          Effect.ensuring(invalidateSharingHome(input.instanceId)),
+          Effect.ensuring(Cache.invalidate(lists, input.instanceId)),
           Effect.as(succeeded),
         ),
       ),

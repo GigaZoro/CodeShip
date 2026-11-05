@@ -24,6 +24,8 @@ const PRIVATE_ENTRIES = new Set([
   ".claude.json",
   "backups",
   "remote-settings.json",
+  // Claude skips servers listed here for a while; shared, one account's failed sign-in would hide them elsewhere.
+  "mcp-needs-auth-cache.json",
   ".DS_Store",
 ]);
 // Claude's locks and pending writes beside its config and login belong to that account.
@@ -100,16 +102,15 @@ export const materializeClaudeAccountHome = Effect.fn("materializeClaudeAccountH
           ),
         );
       }
-      // Older builds linked in a lock Claude held at the time; once released, the dangling link
-      // keeps Claude from ever taking that lock for this account.
+      // Older builds linked in private entries; a dangling lock link keeps Claude from ever taking that lock.
       for (const entry of yield* fileSystem.readDirectory(input.accountHome)) {
-        if (!isPrivateEntry(entry) || !entry.endsWith(".lock")) continue;
-        const lockPath = path.join(input.accountHome, entry);
-        const isLink = yield* fileSystem.readLink(lockPath).pipe(
+        if (!isPrivateEntry(entry)) continue;
+        const entryPath = path.join(input.accountHome, entry);
+        const isLink = yield* fileSystem.readLink(entryPath).pipe(
           Effect.as(true),
           Effect.orElseSucceed(() => false),
         );
-        if (isLink) yield* fileSystem.remove(lockPath);
+        if (isLink) yield* fileSystem.remove(entryPath);
       }
     }).pipe(
       Effect.catch((error) =>
@@ -200,28 +201,23 @@ const writeClaudeConfig = Effect.fn("ClaudeAccountHome.writeClaudeConfig")(funct
     .pipe(Effect.onError(() => fileSystem.remove(pending).pipe(Effect.ignore)));
 });
 
-/**
- * Claude holds `<file>.lock` to read and rewrite a file, so a copy never lands between the two.
- * `stale` matches the one Claude uses for that lock.
- */
-export const withClaudeLock = <A, E, R>(
-  file: string,
-  task: Effect.Effect<A, E, R>,
-  options: { readonly stale?: number } = {},
-) =>
+/** Claude holds this lock to read and rewrite its config, so a copy never lands between the two. */
+const withClaudeConfigLock = <A, E, R>(configPath: string, task: Effect.Effect<A, E, R>) =>
   Effect.scoped(
     Effect.gen(function* () {
       const services = yield* Effect.context<never>();
       yield* Effect.acquireRelease(
         Effect.tryPromise(() =>
-          lock(file, {
-            lockfilePath: `${file}.lock`,
+          lock(configPath, {
+            lockfilePath: `${configPath}.lock`,
             realpath: false,
-            ...options,
             retries: { retries: 20, factor: 1, minTimeout: 100, maxTimeout: 100 },
             onCompromised: (error) =>
               Effect.runSyncWith(services)(
-                Effect.logWarning("A Claude lock was taken during a copy.", { file, error }),
+                Effect.logWarning("Claude's config lock was taken during a copy.", {
+                  configPath,
+                  error,
+                }),
               ),
           }),
         ),
@@ -254,7 +250,7 @@ export const shareClaudeMcpServers = Effect.fn("shareClaudeMcpServers")(function
     }
     // Claude writes the account's config on its first run; until then there is nothing to copy into.
     if (!(yield* fileSystem.exists(accountConfigPath))) return;
-    yield* withClaudeLock(
+    yield* withClaudeConfigLock(
       accountConfigPath,
       Effect.gen(function* () {
         const account = parseClaudeConfig(yield* fileSystem.readFileString(accountConfigPath));

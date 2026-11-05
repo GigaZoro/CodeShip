@@ -11,6 +11,14 @@ session or catalog state. For a new driver, start with [adding a provider](./add
 
 ## Process and account isolation
 
+Accounts of one provider share MCP server configuration but never MCP sign-ins. OAuth servers
+rotate refresh tokens, so a sign-in copied into a second credential store is retired when either
+copy refreshes, and the other account is signed out. Codex also keeps these sign-ins in the OS
+keychain, shared across every `CODEX_HOME` without a shared refresh lock, so an added Codex
+account launches with the file store and keeps `.credentials.json` in its own shadow home. The main
+Codex account does not get the flag: it shares `~/.codex` with other Codex apps, and Codex's default
+store mode deletes the file entry whenever it saves that server's sign-in to the keychain.
+
 The `opencode` driver probes the installed version and runs the 1.x or 2.x runtime. OpenCode's MCP
 registrations are directory-scoped, while T3's MCP connection is thread-scoped, so threads in one
 directory must not share one T3 MCP entry.

@@ -30,9 +30,9 @@ covers installation and custom configuration.
 
 Add another ChatGPT account in **Settings → Providers & models**, then select the account
 from the thread's model picker. Compatible accounts can continue the same thread.
-Every account uses the `AGENTS.md`, skills, and configuration in `~/.codex`, and
-the same [MCP server](./mcp.md) sign-ins. Connecting accounts through CodeShip
-leaves your CLI login unchanged.
+Every account uses the `AGENTS.md`, skills, and configuration in `~/.codex`,
+including its [MCP servers](./mcp.md); each added account signs in to those servers
+on its own. Connecting accounts through CodeShip leaves your CLI login unchanged.
 
 ### Multiple CLI logins
 

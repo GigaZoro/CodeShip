@@ -29,19 +29,18 @@ interface MachineLike {
 }
 
 /**
- * Each machine's providers that support `capability`. Accounts that share a home also share their
- * plugins and MCP servers, so they become one target named by the provider alone, unless
- * `mergeAccounts` says that machine keeps something per account, such as MCP sign-ins.
+ * Each machine's providers that support `capability`. Accounts that share a home share their
+ * plugins, so for plugins they become one target named by the provider alone. They share MCP servers
+ * too, but each account keeps its own MCP sign-ins, so for MCP every account is its own target.
  * Machines without such a provider are left out.
  */
 export function buildProviderMachines<M extends MachineLike>(input: {
   readonly machines: ReadonlyArray<M>;
   readonly entriesByEnvironment: ReadonlyMap<EnvironmentId, ReadonlyArray<ProviderInstanceEntry>>;
   readonly capability: ProviderCapability;
-  readonly mergeAccounts: (environmentId: EnvironmentId) => boolean;
 }): ReadonlyArray<ProviderMachine<M>> {
+  const merge = input.capability === "supportsPlugins";
   const grouped = input.machines.map((machine) => {
-    const merge = input.mergeAccounts(machine.environmentId);
     const groups = new Map<string, Array<ProviderInstanceEntry>>();
     for (const entry of input.entriesByEnvironment.get(machine.environmentId) ?? []) {
       if (!entry.enabled || !entry.installed || entry.snapshot[input.capability] !== true) continue;

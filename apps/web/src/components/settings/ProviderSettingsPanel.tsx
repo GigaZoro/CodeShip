@@ -435,10 +435,6 @@ export function EnvironmentProviderSettings({
     serverEnvironment.configValueAtom(environmentId),
     (config) => config?.environment.capabilities.autoMode === true,
   );
-  const serverSupportsMcpSignInSharing = useAtomValue(
-    serverEnvironment.configValueAtom(environmentId),
-    (config) => config?.environment.capabilities.mcpSignInSharing === true,
-  );
   const serverSupportsFinalReview = useAtomValue(
     serverEnvironment.configValueAtom(environmentId),
     (config) => config?.environment.capabilities.finalReview === true,
@@ -976,7 +972,6 @@ export function EnvironmentProviderSettings({
           providers={serverProviders}
           readOnly={readOnly || !canWriteSettings}
           supportsAutoMode={serverSupportsAutoMode}
-          supportsMcpSignInSharing={serverSupportsMcpSignInSharing}
         />
       ) : null}
 

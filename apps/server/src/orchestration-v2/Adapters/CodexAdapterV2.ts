@@ -1605,13 +1605,7 @@ export type CodexAdapterV2DriverEnv =
 
 export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapterV2")(function* (
   { instanceId, environment, enabled, config }: ProviderAdapterDriverCreateInput<CodexSettings>,
-  hooks: Pick<
-    CodexAdapterV2Options,
-    "onUsageLimits" | "resolveRuntime" | "compatibility" | "prepareMcpSignIns"
-  > & {
-    /** Whether MCP sign-ins are shared when the adapter is built. */
-    readonly shareMcpSignIns?: boolean;
-  } = {},
+  hooks: Pick<CodexAdapterV2Options, "onUsageLimits" | "resolveRuntime" | "compatibility"> = {},
 ) {
   const clientFactory = yield* CodexAppServerClientFactory;
   const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
@@ -1622,8 +1616,7 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
   const serverConfig = yield* ServerConfig;
   const homeLayout = yield* resolveCodexHomeLayout(config);
 
-  const { shareMcpSignIns, ...adapterHooks } = hooks;
-  yield* materializeCodexShadowHome(homeLayout, { shareMcpSignIns }).pipe(
+  yield* materializeCodexShadowHome(homeLayout).pipe(
     Effect.mapError(
       (cause) =>
         new ProviderAdapterDriverCreateError({
@@ -1652,7 +1645,8 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
     idAllocator,
     serverConfig,
     continuationRequests,
-    ...adapterHooks,
+    privateMcpSignIns: homeLayout.mode === "authOverlay",
+    ...hooks,
   });
 });
 
@@ -1663,8 +1657,8 @@ export interface CodexAdapterV2Options {
   readonly clientFactory: CodexAppServerClientFactoryShape;
   readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
   readonly resolveRuntime?: Effect.Effect<CodexEffectiveRuntime, ProviderSetupError, Scope.Scope>;
-  /** Runs before each session; true keeps this account's MCP sign-ins in its own home. */
-  readonly prepareMcpSignIns?: Effect.Effect<boolean>;
+  /** Keeps this account's MCP sign-ins in its own home. A resolved runtime already carries the flag. */
+  readonly privateMcpSignIns?: boolean;
   readonly compatibility?: (
     version: string,
   ) => Effect.Effect<ServerProviderCompatibilityAdvisory | undefined>;
@@ -1722,7 +1716,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           runtimePolicy: input.runtimePolicy,
           settings: resolvedRuntime?.config ?? adapterOptions.settings,
           environment: resolvedRuntime?.environment ?? adapterOptions.environment,
-          privateMcpSignIns: yield* adapterOptions.prepareMcpSignIns ?? Effect.succeed(false),
+          privateMcpSignIns:
+            resolvedRuntime === undefined && adapterOptions.privateMcpSignIns === true,
         });
         const additionalContextByThread = yield* Ref.make(
           new Map<

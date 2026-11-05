@@ -1336,8 +1336,6 @@ export const ServerSettings = Schema.Struct({
   autoResumeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Off by default: providers may treat switching accounts to dodge limits as a terms violation. */
   failoverLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  /** Off, added Claude and Codex accounts keep their own MCP sign-ins. */
-  shareMcpSignIns: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   /** Failover tries a driver's accounts in this order; unlisted accounts follow in settings order. */
   providerInstanceFailoverOrder: Schema.Array(ProviderInstanceId).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
@@ -1779,7 +1777,6 @@ export const ServerSettingsPatch = Schema.Struct({
   autoResumeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   snoozeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   failoverLimitedThreads: Schema.optionalKey(Schema.Boolean),
-  shareMcpSignIns: Schema.optionalKey(Schema.Boolean),
   providerInstanceFailoverOrder: Schema.optionalKey(Schema.Array(ProviderInstanceId)),
   autoModeProvider: Schema.optionalKey(Schema.NullOr(ProviderDriverKind)),
   /** Per provider; null clears it back to the provider's default model. */

@@ -49,7 +49,6 @@ import * as AntigravityInstallation from "./AntigravityInstallation.ts";
 import * as ModelManifest from "./ModelManifest.ts";
 import { applyProviderCompatibility } from "./providerCompatibility.ts";
 import * as ResetCreditCoordinator from "./resetCreditCoordinator.ts";
-import * as ClaudeMcpSignIns from "./Drivers/ClaudeMcpSignIns.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as OpenCodeRuntime from "@t3tools/provider-opencode/server/OpenCodeRuntime";
@@ -2395,7 +2394,6 @@ it.layer(
           Layer.provideMerge(McpProviderSessions.layer),
           Layer.provideMerge(ModelManifest.layerTest),
           Layer.provideMerge(ResetCreditCoordinator.layerTest),
-          Layer.provideMerge(ClaudeMcpSignIns.layer),
           Layer.provideMerge(
             OpenCodeRuntime.layer.pipe(Layer.provide(OpenCodeServerLedger.layerTest)),
           ),
@@ -2514,7 +2512,6 @@ it.layer(
           Layer.provideMerge(McpProviderSessions.layer),
           Layer.provideMerge(ModelManifest.layerTest),
           Layer.provideMerge(ResetCreditCoordinator.layerTest),
-          Layer.provideMerge(ClaudeMcpSignIns.layer),
           Layer.provideMerge(
             OpenCodeRuntime.layer.pipe(Layer.provide(OpenCodeServerLedger.layerTest)),
           ),
@@ -2622,7 +2619,6 @@ it.layer(
           Layer.provideMerge(ProviderLatestVersions.layer),
           Layer.provideMerge(McpProviderSessions.layer),
           Layer.provideMerge(ResetCreditCoordinator.layerTest),
-          Layer.provideMerge(ClaudeMcpSignIns.layer),
           Layer.provideMerge(layerBackgroundPolicyAlwaysRun),
         ),
       );

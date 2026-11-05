@@ -106,7 +106,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
     );
 
     it.effect.skipIf(!symlinksSupported)(
-      "keeps MCP sign-ins in the shadow home only while sharing them is off",
+      "keeps MCP sign-ins in the shadow home and unlinks the shared ones",
       () =>
         Effect.gen(function* () {
           const fileSystem = yield* FileSystem.FileSystem;
@@ -116,21 +116,16 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
           const sharedSignIns = path.join(sharedHome, ".credentials.json");
           const ownSignIns = path.join(shadowHome, ".credentials.json");
           yield* writeTextFile(sharedSignIns, "shared sign-ins");
+          yield* fileSystem.symlink(sharedSignIns, ownSignIns);
           const layout = yield* resolveCodexHomeLayout(
             decodeCodexSettings({ homePath: sharedHome, shadowHomePath: shadowHome }),
           );
 
           yield* materializeCodexShadowHome(layout);
-          expect(yield* fileSystem.readLink(ownSignIns)).toBe(sharedSignIns);
-          yield* materializeCodexShadowHome(layout, { shareMcpSignIns: false });
           expect(yield* fileSystem.exists(ownSignIns)).toBe(false);
           yield* writeTextFile(ownSignIns, "own sign-ins");
-          yield* materializeCodexShadowHome(layout, { shareMcpSignIns: false });
-          expect(yield* fileSystem.readFileString(ownSignIns)).toBe("own sign-ins");
-
           yield* materializeCodexShadowHome(layout);
-          expect(yield* fileSystem.readLink(ownSignIns)).toBe(sharedSignIns);
-          expect(yield* fileSystem.readFileString(`${ownSignIns}.unshared`)).toBe("own sign-ins");
+          expect(yield* fileSystem.readFileString(ownSignIns)).toBe("own sign-ins");
           expect(yield* fileSystem.readFileString(sharedSignIns)).toBe("shared sign-ins");
         }),
     );

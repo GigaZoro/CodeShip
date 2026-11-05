@@ -56,11 +56,6 @@ export function useProviderTargets(capability: ProviderCapability) {
       providerEntries.map(({ environmentId, entries }) => [environmentId, entries]),
     ),
     capability,
-    // With MCP sign-ins kept per account, each account's servers sign in on their own.
-    mergeAccounts: (environmentId) =>
-      capability !== "supportsMcpServers" ||
-      environments.find((environment) => environment.environmentId === environmentId)?.serverConfig
-        ?.settings.shareMcpSignIns !== false,
   });
   const machine = pickProviderMachine(machines, remembered.machine);
   const target = machine
