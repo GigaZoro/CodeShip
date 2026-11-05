@@ -4,10 +4,13 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeftIcon,
+  EllipsisIcon,
+  LinkIcon,
   ListFilterIcon,
   MessageSquareIcon,
   SearchIcon,
   ShapesIcon,
+  Trash2Icon,
 } from "lucide-react";
 import { useRef, useState } from "react";
 
@@ -32,6 +35,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   Menu,
   MenuGroupLabel,
+  MenuItem,
   MenuPopup,
   MenuRadioGroup,
   MenuRadioItem,
@@ -45,6 +49,7 @@ import { Skeleton } from "../ui/skeleton";
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../WorkspaceBreadcrumb";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { type Artifact, artifactKey, useArtifacts } from "./artifactsState";
+import { useArtifactActions } from "./useArtifactActions";
 
 export interface ArtifactSelection {
   readonly environmentId: EnvironmentId;
@@ -96,10 +101,12 @@ function ArtifactRow(props: {
   readonly selected: boolean;
   readonly environmentLabel: string | undefined;
   readonly onSelect: () => void;
+  readonly onCopyLink: () => void;
+  readonly onDelete: () => void;
 }) {
   const { artifact, provider } = props;
   return (
-    <li>
+    <li className="group/artifact relative">
       <button
         type="button"
         aria-current={props.selected ? "true" : undefined}
@@ -126,7 +133,7 @@ function ArtifactRow(props: {
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="flex min-w-0 items-baseline gap-2">
             <span className="min-w-0 flex-1 truncate font-medium text-sm">{artifact.title}</span>
-            <span className="shrink-0 text-muted-foreground text-xs">
+            <span className="shrink-0 text-muted-foreground text-xs group-focus-within/artifact:invisible group-hover/artifact:invisible group-has-[[data-popup-open]]/artifact:invisible">
               <RelativeTime timestamp={artifact.publishedAt} />
             </span>
           </span>
@@ -140,6 +147,27 @@ function ArtifactRow(props: {
           </span>
         </span>
       </button>
+      <span className="absolute top-1.5 right-1.5 opacity-0 focus-within:opacity-100 group-hover/artifact:opacity-100 has-[[data-popup-open]]:opacity-100">
+        <Menu>
+          <MenuTrigger
+            render={
+              <Button size="icon-xs" variant="ghost" aria-label={`Actions for ${artifact.title}`} />
+            }
+          >
+            <EllipsisIcon aria-hidden />
+          </MenuTrigger>
+          <MenuPopup align="end">
+            <MenuItem onClick={props.onCopyLink}>
+              <LinkIcon />
+              Copy link
+            </MenuItem>
+            <MenuItem variant="destructive" onClick={props.onDelete}>
+              <Trash2Icon />
+              Delete…
+            </MenuItem>
+          </MenuPopup>
+        </Menu>
+      </span>
     </li>
   );
 }
@@ -148,6 +176,8 @@ function ArtifactPreview(props: {
   readonly artifact: Artifact;
   readonly environmentLabel: string | undefined;
   readonly onBack: (() => void) | undefined;
+  readonly onCopyLink: () => void;
+  readonly onDelete: () => void;
 }) {
   const { artifact } = props;
   const navigate = useNavigate();
@@ -176,6 +206,10 @@ function ArtifactPreview(props: {
             {artifact.archived ? <span className="shrink-0">· Archived thread</span> : null}
           </p>
         </div>
+        <Button size="sm" variant="outline" onClick={props.onCopyLink}>
+          <LinkIcon />
+          Copy link
+        </Button>
         <Button
           size="sm"
           variant="outline"
@@ -188,6 +222,10 @@ function ArtifactPreview(props: {
         >
           <MessageSquareIcon />
           Open thread
+        </Button>
+        <Button size="sm" variant="destructive-outline" onClick={props.onDelete}>
+          <Trash2Icon />
+          Delete
         </Button>
       </div>
       <ScrollArea className="min-h-0 flex-1">
@@ -227,6 +265,16 @@ export function ArtifactsPage(props: {
     useArtifacts(environmentIds);
   // Agents publish while the page is open, so returning to it reads the list again.
   useLiveRefresh(refresh, { key: "artifacts", enabled: environmentIds.length > 0 });
+  const { copyLink, deleteArtifact } = useArtifactActions({
+    refresh,
+    onDeleted: (deleted) => {
+      if (
+        props.selection?.environmentId === deleted.environmentId &&
+        props.selection.attachmentId === deleted.attachmentId
+      )
+        props.onSelectionChange(null);
+    },
+  });
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<ArtifactSort>("newest");
   const [project, setProject] = useState(ALL_PROJECTS);
@@ -380,6 +428,8 @@ export function ArtifactsPage(props: {
                 }
                 selected={selected !== undefined && artifactKey(selected) === artifactKey(artifact)}
                 environmentLabel={labelFor(artifact.environmentId)}
+                onCopyLink={() => void copyLink(artifact)}
+                onDelete={() => void deleteArtifact(artifact)}
                 onSelect={() =>
                   props.onSelectionChange({
                     environmentId: artifact.environmentId,
@@ -450,6 +500,8 @@ export function ArtifactsPage(props: {
             artifact={selected}
             environmentLabel={labelFor(selected.environmentId)}
             onBack={() => props.onSelectionChange(null)}
+            onCopyLink={() => void copyLink(selected)}
+            onDelete={() => void deleteArtifact(selected)}
           />
         ) : (
           <div className="flex min-h-0 flex-1">
@@ -459,6 +511,8 @@ export function ArtifactsPage(props: {
                 artifact={selected}
                 environmentLabel={labelFor(selected.environmentId)}
                 onBack={undefined}
+                onCopyLink={() => void copyLink(selected)}
+                onDelete={() => void deleteArtifact(selected)}
               />
             ) : (
               <div className="flex flex-1 items-center justify-center text-muted-foreground text-sm">

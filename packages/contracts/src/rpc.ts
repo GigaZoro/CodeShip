@@ -39,6 +39,7 @@ import {
   ProviderSkillExportResult,
   ProviderSkillInstallInput,
   ProviderSkillInstallResult,
+  ProviderSkillSetEnabledInput,
 } from "./providerSkills.ts";
 import {
   ProviderPluginAddMarketplaceInput,
@@ -485,6 +486,7 @@ export const WS_METHODS = {
   providerPluginsSetEnabled: "provider.plugins.setEnabled",
   providerSkillsExport: "provider.skills.export",
   providerSkillsInstall: "provider.skills.install",
+  providerSkillsSetEnabled: "provider.skills.setEnabled",
   providerPluginsAddMarketplace: "provider.plugins.addMarketplace",
   providerMcpList: "provider.mcp.list",
   providerMcpAdd: "provider.mcp.add",
@@ -840,6 +842,12 @@ const WsProviderSkillsExportRpc = Rpc.make(WS_METHODS.providerSkillsExport, {
 const WsProviderSkillsInstallRpc = Rpc.make(WS_METHODS.providerSkillsInstall, {
   payload: ProviderSkillInstallInput,
   success: ProviderSkillInstallResult,
+  error: ProviderSkillRpcError,
+});
+
+const WsProviderSkillsSetEnabledRpc = Rpc.make(WS_METHODS.providerSkillsSetEnabled, {
+  payload: ProviderSkillSetEnabledInput,
+  success: Schema.Void,
   error: ProviderSkillRpcError,
 });
 
@@ -2161,6 +2169,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderPluginsAddMarketplaceRpc,
   WsProviderSkillsExportRpc,
   WsProviderSkillsInstallRpc,
+  WsProviderSkillsSetEnabledRpc,
   WsProviderMcpListRpc,
   WsProviderMcpAddRpc,
   WsProviderMcpRemoveRpc,

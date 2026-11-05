@@ -3,6 +3,7 @@ import { Pressable, ScrollView } from "react-native";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { Chip } from "../../components/ui/Chip";
 import { useOpenArchivedThreads } from "../archive/useOpenArchivedThreads";
+import { useOpenArtifacts } from "../artifacts/useOpenArtifacts";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { ListFilterMenu } from "../workspace/ListFilterMenu";
 import type { HomeHeaderProps } from "./HomeHeader.types";
@@ -31,6 +32,7 @@ export function ThreadListFilters(
   },
 ) {
   const openArchivedThreads = useOpenArchivedThreads();
+  const openArtifacts = useOpenArtifacts();
   const { themeAppearance } = useAppearancePreferences();
   const selectedEnvironment = props.environments.find(
     (environment) => environment.environmentId === props.selectedEnvironmentId,
@@ -128,6 +130,14 @@ export function ThreadListFilters(
         colorScheme={themeAppearance}
         accessibilityLabel="Archived threads"
         onPress={openArchivedThreads}
+      />
+      <Chip
+        label="Artifacts"
+        icon="square.on.square"
+        glass
+        colorScheme={themeAppearance}
+        accessibilityLabel="Artifacts"
+        onPress={openArtifacts}
       />
       {props.selectedEnvironmentId !== null || props.selectedProjectKey !== null ? (
         <Pressable

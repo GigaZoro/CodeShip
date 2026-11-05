@@ -7,6 +7,7 @@ import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
   type MessageId,
+  type OrchestrationV2Checkpoint,
   type ScopedThreadRef,
   type ThreadId,
   type RunId,
@@ -33,7 +34,20 @@ import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { rewindToMessage } from "./chatViewSend";
 import { makeThreadErrorSetter } from "../ChatView.logic";
-import { takeRetryRewind } from "./timelineRetry";
+import { markRetryRewind, takeRetryRewind } from "./timelineRetry";
+/** Whether any turn that a rewind to `turnCount` would undo changed files. */
+function turnsAfterChangedFiles(
+  checkpoints: ReadonlyArray<OrchestrationV2Checkpoint>,
+  turnCount: number,
+): boolean {
+  return checkpoints.some(
+    (checkpoint) =>
+      checkpoint.appRunOrdinal !== null &&
+      checkpoint.appRunOrdinal > turnCount &&
+      (checkpoint.files.length > 0 || (checkpoint.filesTotal?.count ?? 0) > 0),
+  );
+}
+
 interface TimelineRewindInput {
   readonly environmentId: EnvironmentId;
   readonly routeThreadRef: ScopedThreadRef;
@@ -96,9 +110,7 @@ export function useTimelineRewind(input: TimelineRewindInput) {
     messageId: MessageId,
     requestedRestoreFiles?: boolean,
   ) => {
-    // Retry rewinds the conversation only, so it can go straight through without the edit dialog.
     const retry = takeRetryRewind(messageId);
-    const restoreFiles = retry ? false : requestedRestoreFiles;
     const localApi = readLocalApi();
     if (
       !localApi ||
@@ -128,8 +140,14 @@ export function useTimelineRewind(input: TimelineRewindInput) {
       setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
       return;
     }
+    // A retry that changed no files has nothing to restore, so it skips the dialog.
+    const restoreFiles =
+      requestedRestoreFiles ??
+      (retry && !turnsAfterChangedFiles(serverProjection?.checkpoints ?? [], turnCount)
+        ? false
+        : undefined);
     if (restoreFiles === undefined) {
-      openRevertConfirm(routeThreadKey, { turnCount, messageId });
+      openRevertConfirm(routeThreadKey, { turnCount, messageId, retry });
       return;
     }
     if (retry) {
@@ -179,7 +197,7 @@ export function useTimelineRewind(input: TimelineRewindInput) {
         if (currentRouteThreadKeyRef.current !== routeThreadKey) return;
         composerRef.current?.focusAtEnd();
         if (!retry) return;
-        // Wait a frame for the composer to take the restored message, then send it as it was.
+        // Wait a frame for the composer to take the restored message, then resend it on the rewound conversation.
         requestAnimationFrame(() => {
           if (currentRouteThreadKeyRef.current !== routeThreadKey) return;
           if (composerRef.current?.submit() !== true)
@@ -189,7 +207,13 @@ export function useTimelineRewind(input: TimelineRewindInput) {
     }
   };
   const onRevertToTurnCountStable = useStableCallback(onRevertToTurnCount);
-  const onConfirmRevert = (turnCount: number, messageId: MessageId, restoreFiles: boolean) => {
+  const onConfirmRevert = (
+    turnCount: number,
+    messageId: MessageId,
+    restoreFiles: boolean,
+    retry: boolean,
+  ) => {
+    if (retry) markRetryRewind(messageId);
     void onRevertToTurnCount(turnCount, messageId, restoreFiles);
   };
   const onConfirmRevertStable = useStableCallback(onConfirmRevert);

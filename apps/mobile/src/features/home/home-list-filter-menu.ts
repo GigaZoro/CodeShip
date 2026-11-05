@@ -20,6 +20,14 @@ export const archivedThreadsMenuItem = {
   title: "Archived",
 } satisfies MenuAction;
 
+export const ARTIFACTS_EVENT = "artifacts";
+
+/** Opens the artifacts screen from the thread list's native menus. */
+export const artifactsMenuItem = {
+  id: ARTIFACTS_EVENT,
+  title: "Artifacts",
+} satisfies MenuAction;
+
 const PROJECT_GROUPING_EVENT_PREFIX = "group-by:";
 const MACHINE_GROUPING_EVENT = "group-by-machine";
 
@@ -110,6 +118,7 @@ export function buildHomeListFilterMenu(
     readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
     readonly onProjectChange: (projectKey: string | null) => void;
     readonly onOpenArchived: () => void;
+    readonly onOpenArtifacts: () => void;
   } & ThreadListGroupingHandlers,
 ): HomeListFilterMenu {
   const items: Array<HomeListFilterMenuAction | HomeListFilterMenuSubmenu> = [];
@@ -179,6 +188,7 @@ export function buildHomeListFilterMenu(
   }
 
   items.push({ type: "action", title: "Archived", onPress: props.onOpenArchived });
+  items.push({ type: "action", title: "Artifacts", onPress: props.onOpenArtifacts });
 
   return {
     title: "Thread list options",

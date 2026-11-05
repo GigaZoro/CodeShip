@@ -85,6 +85,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.providerInstallRemove]: AuthProvidersManageScope,
   [WS_METHODS.providerPluginsList]: AuthOrchestrationReadScope,
   [WS_METHODS.providerSkillsExport]: AuthProvidersManageScope,
+  [WS_METHODS.providerSkillsSetEnabled]: AuthProvidersManageScope,
   [WS_METHODS.providerMcpList]: AuthOrchestrationReadScope,
   [WS_METHODS.providerMcpSignIn]: AuthProvidersManageScope,
   [WS_METHODS.serverUpdateServer]: AuthEnvironmentMaintainScope,

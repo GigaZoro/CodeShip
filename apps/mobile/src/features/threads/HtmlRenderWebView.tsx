@@ -19,7 +19,7 @@ import { mobileHtmlRenderTheme } from "../../lib/htmlRenderTheme";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useAssetUrlState, useRefreshAssetUrl } from "../../state/assets";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
-import type { AttachmentFileRouteParams } from "../files/AttachmentFileScreen";
+import type { AttachmentFileRouteParams } from "../../lib/attachmentFileRoute";
 
 const ROW_BOTTOM_MARGIN = 8;
 const ACTION_ROW_HEIGHT = 32;

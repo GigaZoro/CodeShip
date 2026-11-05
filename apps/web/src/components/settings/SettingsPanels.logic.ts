@@ -1,4 +1,9 @@
-import { isStorableInProjectScope, type ScopedSettingsPatch } from "./scopedSettings";
+import {
+  isProjectScopedSettingKey,
+  isStorableInProjectScope,
+  type ScopedSettingsPatch,
+} from "./scopedSettings";
+import type { ProjectScopedServerSettingKey } from "@t3tools/contracts";
 import type { SettingsPath } from "./settingsSearch";
 import type {
   BackgroundActivityProfile,
@@ -276,6 +281,8 @@ type RestorableKey = keyof UnifiedSettings;
 interface RestorableSettings {
   readonly page: SettingsPath;
   readonly keys: ReadonlyArray<RestorableKey>;
+  /** Set for single-row entries, so a project reset can name what it clears. */
+  readonly label?: string;
   readonly changedLabels: (settings: UnifiedSettings) => ReadonlyArray<string>;
 }
 
@@ -287,6 +294,7 @@ function restorable(
   return {
     page,
     keys,
+    label,
     changedLabels: (settings) =>
       keys.some((key) => !Equal.equals(settings[key], DEFAULT_UNIFIED_SETTINGS[key]))
         ? [label]
@@ -392,8 +400,16 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   restorable("/settings/projects", "Add project base directory", ["addProjectBaseDirectory"]),
   restorable("/settings/projects", "Clone into host folders", ["ghqCloneLayout"]),
   restorable("/settings/projects", "Import conversations", ["importAgentConversations"]),
+  restorable("/settings/providers", "Default model", ["defaultModelSelection"]),
+  restorable("/settings/providers", "Use last picked model", ["newThreadsUseLastModel"]),
+  restorable("/settings/providers", "Fallback model", ["fallbackModelSelection"]),
+  restorable("/settings/providers", "Scheduled tasks model", ["scheduledTaskModelSelection"]),
   restorable("/settings/providers", "Text generation model", ["textGenerationModelSelection"]),
   restorable("/settings/providers", "Thread title instructions", ["threadTitleInstructions"]),
+  restorable("/settings/providers", "Source control writer model", [
+    "sourceControlWriterModelSelection",
+  ]),
+  restorable("/settings/providers", "Review guide model", ["reviewGuideModelSelection"]),
   {
     page: "/settings/browser",
     keys: BROWSER_DEFAULT_KEYS,
@@ -426,21 +442,51 @@ export function hasRestorableSettings(page: string): boolean {
 export function changedRestorableSettingLabels(
   settings: UnifiedSettings,
   page: string | null,
-  projectScoped = false,
 ): string[] {
-  return restorableSettingsFor(page, projectScoped).flatMap((entry) =>
-    entry.changedLabels(settings),
-  );
+  return restorableSettingsFor(page, false).flatMap((entry) => entry.changedLabels(settings));
 }
 
-export function restorableSettingsPatch(
-  page: string | null,
-  projectScoped = false,
-): ScopedSettingsPatch {
+export function restorableSettingsPatch(page: string | null): ScopedSettingsPatch {
   // Every key comes from UnifiedSettings, and each value is that key's own default.
   return Object.fromEntries(
-    restorableSettingsFor(page, projectScoped).flatMap((entry) =>
+    restorableSettingsFor(page, false).flatMap((entry) =>
       entry.keys.map((key) => [key, DEFAULT_UNIFIED_SETTINGS[key]] as const),
     ),
   ) as ScopedSettingsPatch;
+}
+
+/**
+ * Under a project or checkout scope, a reset clears that project's own overrides so it inherits
+ * again, rather than pinning defaults as new overrides, and resets this device's settings.
+ */
+export function projectScopedRestorePlan(
+  settings: UnifiedSettings,
+  page: string | null,
+  overriddenKeys: ReadonlySet<string>,
+): {
+  readonly labels: string[];
+  readonly clearKeys: ProjectScopedServerSettingKey[];
+  readonly devicePatch: ScopedSettingsPatch;
+} {
+  const labels: string[] = [];
+  const clearKeys: ProjectScopedServerSettingKey[] = [];
+  const deviceEntries: RestorableSettings[] = [];
+  for (const entry of restorableSettingsFor(page, true)) {
+    const projectKeys = entry.keys.filter(isProjectScopedSettingKey);
+    if (projectKeys.length === 0) {
+      deviceEntries.push(entry);
+      labels.push(...entry.changedLabels(settings));
+      continue;
+    }
+    const overridden = projectKeys.filter((key) => overriddenKeys.has(key));
+    if (overridden.length === 0) continue;
+    clearKeys.push(...overridden);
+    if (entry.label !== undefined) labels.push(entry.label);
+  }
+  const devicePatch = Object.fromEntries(
+    deviceEntries.flatMap((entry) =>
+      entry.keys.map((key) => [key, DEFAULT_UNIFIED_SETTINGS[key]] as const),
+    ),
+  ) as ScopedSettingsPatch;
+  return { labels, clearKeys, devicePatch };
 }

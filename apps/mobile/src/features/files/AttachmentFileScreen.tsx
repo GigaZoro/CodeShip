@@ -29,17 +29,7 @@ import { scopedThreadKey } from "../../lib/scopedEntities";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { isZipFile, ZipArchiveView } from "./ZipArchiveView";
 import { AttachmentDocumentBody, nativeViewerKind } from "./AttachmentDocumentBody";
-
-export type AttachmentFileRouteParams = {
-  readonly environmentId?: string;
-  readonly threadId?: string;
-  readonly attachmentId: string;
-  readonly name: string;
-  readonly mimeType: string;
-  readonly sizeBytes: string;
-  readonly draftKey?: string;
-  readonly htmlRender?: "1";
-};
+import type { AttachmentFileRouteParams } from "../../lib/attachmentFileRoute";
 
 type AttachmentFileScreenProps = StaticScreenProps<AttachmentFileRouteParams>;
 

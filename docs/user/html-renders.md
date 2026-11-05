@@ -4,7 +4,7 @@ Agents can answer with a page instead of only text: a chart, table, diagram, ima
 
 Ask for a change to a page ("sort the bars", "use a line chart instead") and the agent publishes a new version with its reply. The earlier version collapses to one line in the thread. Click it to show that version again, or on mobile, tap it to open it full screen.
 
-On web and desktop, **Artifacts** in the sidebar rail lists the pages from all your threads on every connected machine, newest first. Only the newest version of each page is listed. Search by page, thread, or project title, and use **Open thread** to go back to the conversation.
+On web and desktop, **Artifacts** in the sidebar rail lists the pages from all your threads on every connected machine, newest first. Only the newest version of each page is listed. Search by page, thread, or project title, and use **Open thread** to go back to the conversation. **Copy link** copies a link that opens the page in the app, and **Delete** removes it from the list; the thread keeps showing it. On mobile, **Artifacts** in the thread list's menu opens the same list.
 
 Pages use your current theme, including custom themes, and follow light and dark mode as you switch. Scripts run inside the page, but it is sandboxed away from CodeShip and your session. Links you click in a page open in your browser. Use the expand button to open a page full screen. On web and desktop, use the zoom controls to see more detail.
 

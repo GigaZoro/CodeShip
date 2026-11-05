@@ -260,7 +260,7 @@ import { openLinkPullRequestDialog } from "./pullRequest/LinkPullRequestDialog";
 import { canShareWithGuestAtom } from "./chat/guestShareAvailability";
 import { openGuestShareDialog } from "./chat/guestShareDialogState";
 import { useOpenSetupWizard } from "../onboarding/setupRerun";
-import { useActiveThreadPaletteItems } from "./CommandPaletteThreadActions";
+import { hasSnoozeRows, useActiveThreadPaletteItems } from "./CommandPaletteThreadActions";
 import { ThreadRenameDialogHost } from "./ThreadRenameDialog";
 import { ProjectContentSearchDialog } from "./search/ProjectContentSearchDialog";
 import { settingsForThisPlatform, SETTINGS_SECTION_LABELS } from "./settings/settingsSearch";
@@ -2731,7 +2731,11 @@ function OpenCommandPaletteDialog(props: {
       platform: navigator.platform,
       context: { modelPickerOpen: false, editableFocus: true },
     });
-    if (command === "thread.snooze" && !event.nativeEvent.isComposing) {
+    if (
+      command === "thread.snooze" &&
+      !event.nativeEvent.isComposing &&
+      hasSnoozeRows(activeThreadLifecycleItems)
+    ) {
       event.preventDefault();
       event.stopPropagation();
       setHighlightedItemValue(null);

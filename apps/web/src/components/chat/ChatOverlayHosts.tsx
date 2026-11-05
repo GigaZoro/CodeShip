@@ -182,6 +182,7 @@ export function BranchRestoreConfirmHost(props: {
 interface PendingRevert {
   readonly turnCount: number;
   readonly messageId: MessageId;
+  readonly retry?: boolean;
 }
 
 const revertConfirmAtom = makeThreadOverlayAtom<PendingRevert>("revert-confirm");
@@ -192,14 +193,20 @@ export function openRevertConfirm(threadKey: string, pending: PendingRevert): vo
 
 export function RevertConfirmHost(props: {
   readonly threadKey: string;
-  readonly onConfirm: (turnCount: number, messageId: MessageId, restoreFiles: boolean) => void;
+  readonly onConfirm: (
+    turnCount: number,
+    messageId: MessageId,
+    restoreFiles: boolean,
+    retry: boolean,
+  ) => void;
 }) {
   const pending = useThreadOverlay(revertConfirmAtom, props.threadKey);
   const confirm = (restoreFiles: boolean) => {
     if (pending === null) return;
     closeThreadOverlay(revertConfirmAtom);
-    props.onConfirm(pending.turnCount, pending.messageId, restoreFiles);
+    props.onConfirm(pending.turnCount, pending.messageId, restoreFiles, pending.retry === true);
   };
+  const retry = pending?.retry === true;
   return (
     <AlertDialog
       open={pending !== null}
@@ -209,10 +216,11 @@ export function RevertConfirmHost(props: {
     >
       <AlertDialogPopup>
         <AlertDialogHeader>
-          <AlertDialogTitle>Edit from here?</AlertDialogTitle>
+          <AlertDialogTitle>{retry ? "Retry this response?" : "Edit from here?"}</AlertDialogTitle>
           <AlertDialogDescription>
-            Rewind chat to before this message. Your prompt and attachments return to the composer.
-            “Revert files too” also undoes your own edits.
+            {retry
+              ? "Rewind chat to before this response and send your message again. “Revert files too” also undoes the edits the response made, so the retry starts from the earlier files."
+              : "Rewind chat to before this message. Your prompt and attachments return to the composer. “Revert files too” also undoes your own edits."}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -220,7 +228,9 @@ export function RevertConfirmHost(props: {
           <Button variant="destructive-outline" onClick={() => confirm(true)}>
             Revert files too
           </Button>
-          <Button onClick={() => confirm(false)}>Revert and keep changes</Button>
+          <Button onClick={() => confirm(false)}>
+            {retry ? "Retry, keep changes" : "Revert and keep changes"}
+          </Button>
         </AlertDialogFooter>
       </AlertDialogPopup>
     </AlertDialog>

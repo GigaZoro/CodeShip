@@ -10,12 +10,14 @@ import {
   type ProviderSkillInstallInput,
   type ProviderSkillInstallResult,
   type ProviderSkillOperation,
+  type ProviderSkillSetEnabledInput,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "./ProviderRegistry.ts";
@@ -54,6 +56,9 @@ export class ProviderSkills extends Context.Service<
     readonly installSkill: (
       input: ProviderSkillInstallInput,
     ) => Effect.Effect<ProviderSkillInstallResult, ProviderSkillError>;
+    readonly setSkillEnabled: (
+      input: ProviderSkillSetEnabledInput,
+    ) => Effect.Effect<void, ProviderSkillError>;
   }
 >()("t3/provider/ProviderSkills") {}
 
@@ -62,13 +67,18 @@ const make = Effect.gen(function* () {
   const providers = yield* ProviderRegistry.ProviderRegistry;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const home = yield* HostProcess.HomeDirectory;
   const scope = yield* Effect.scope;
 
   const fail = (
     operation: ProviderSkillOperation,
     instanceId: ProviderInstanceId,
     reason: ProviderSkillErrorReason,
-    extra?: { readonly cause?: unknown; readonly linkTarget?: string },
+    extra?: {
+      readonly cause?: unknown;
+      readonly linkTarget?: string;
+      readonly path?: string;
+    },
   ) =>
     new ProviderSkillError({
       operation,
@@ -76,6 +86,7 @@ const make = Effect.gen(function* () {
       reason,
       ...(extra?.cause === undefined ? {} : { cause: extra.cause }),
       ...(extra?.linkTarget === undefined ? {} : { linkTarget: extra.linkTarget }),
+      ...(extra?.path === undefined ? {} : { path: extra.path }),
     });
 
   const getInstance = Effect.fn("ProviderSkills.getInstance")(function* (
@@ -101,9 +112,14 @@ const make = Effect.gen(function* () {
   const isInsideGitRepository = Effect.fn("ProviderSkills.isInsideGitRepository")(function* (
     directory: string,
   ) {
+    // A dotfiles repository at the home folder would otherwise make every skill look managed, so
+    // the walk stops short of home; a repository below it, such as ~/.agents, still counts.
+    const realHome = yield* fileSystem.realPath(home).pipe(Effect.orElseSucceed(() => home));
+    const underHome = directory === realHome || isInside(realHome, directory);
     let current = directory;
     // Bounded so a pathological path can never loop.
     for (let depth = 0; depth < 64; depth++) {
+      if (underHome && current === realHome) return false;
       const hasGit = yield* fileSystem
         .exists(path.join(current, ".git"))
         .pipe(Effect.orElseSucceed(() => false));
@@ -143,7 +159,7 @@ const make = Effect.gen(function* () {
         if (IGNORED_ENTRIES.has(entry) || VCS_DIRECTORIES.has(entry)) continue;
         const relativePath = relativeDirectory === "" ? entry : `${relativeDirectory}/${entry}`;
         if (!isSafeRelativePath(relativePath) || seenPaths.has(relativePath.toLowerCase())) {
-          return yield* fail("export", instanceId, "invalidPath");
+          return yield* fail("export", instanceId, "invalidPath", { path: relativePath });
         }
         seenPaths.add(relativePath.toLowerCase());
         const entryPath = path.join(realDirectory, entry);
@@ -262,7 +278,7 @@ const make = Effect.gen(function* () {
     for (const file of files) {
       // Paths differing only by case collide on case-insensitive disks, so they count as duplicates.
       if (!isSafeRelativePath(file.path) || seen.has(file.path.toLowerCase())) {
-        return yield* fail("install", instanceId, "invalidPath");
+        return yield* fail("install", instanceId, "invalidPath", { path: file.path });
       }
       seen.add(file.path.toLowerCase());
       // Base64 is 4 characters per 3 bytes, so oversized input fails before it is decoded.
@@ -357,6 +373,24 @@ const make = Effect.gen(function* () {
     );
   });
 
+  /** Accounts on one provider home read the same skills, so each picks up a change to them. */
+  const refreshSharingHome = Effect.fn("ProviderSkills.refreshSharingHome")(function* (
+    instanceId: ProviderInstanceId,
+    refreshed?: ProviderInstanceId,
+  ) {
+    const sharing = ProviderInstanceRegistry.instancesSharingHome(
+      yield* instances.listInstances,
+      instanceId,
+    ).filter((id) => id !== refreshed);
+    yield* Effect.forEach(
+      sharing,
+      (id) =>
+        // The provider refresh outlives the request, whose scope would interrupt it.
+        providers.refreshInstance(id).pipe(Effect.ignoreCause({ log: true }), Effect.forkIn(scope)),
+      { discard: true },
+    );
+  });
+
   const installSkill = Effect.fn("ProviderSkills.installSkill")(function* (
     input: ProviderSkillInstallInput,
   ) {
@@ -381,22 +415,54 @@ const make = Effect.gen(function* () {
         PlatformError: (cause) => Effect.fail(fail("install", instanceId, "failed", { cause })),
       }),
     );
-    // Accounts on one provider home read the same skills folder, so each picks the skill up.
-    const sharing = ProviderInstanceRegistry.instancesSharingHome(
-      yield* instances.listInstances,
-      instanceId,
-    );
-    yield* Effect.forEach(
-      sharing,
-      (id) =>
-        // The provider refresh outlives the request, whose scope would interrupt it.
-        providers.refreshInstance(id).pipe(Effect.ignoreCause({ log: true }), Effect.forkIn(scope)),
-      { discard: true },
-    );
+    yield* refreshSharingHome(instanceId);
     return { name: input.name, fileCount: files.length } satisfies ProviderSkillInstallResult;
   });
 
-  return ProviderSkills.of({ exportSkill, installSkill });
+  const findReportedSkill = (instanceId: ProviderInstanceId, skillPath: string) =>
+    providers.getProviders.pipe(
+      Effect.map((snapshots) =>
+        snapshots
+          .flatMap((provider) =>
+            provider.instanceId === instanceId
+              ? [
+                  ...provider.skills,
+                  ...(provider.workspaceSnapshots ?? []).flatMap((entry) => entry.skills),
+                ]
+              : [],
+          )
+          .find((candidate) => candidate.path === skillPath),
+      ),
+    );
+
+  const setSkillEnabled = Effect.fn("ProviderSkills.setSkillEnabled")(function* (
+    input: ProviderSkillSetEnabledInput,
+  ) {
+    const { instanceId } = input;
+    yield* Effect.annotateCurrentSpan({ "provider.instance_id": instanceId });
+    const instance = yield* getInstance("setEnabled", instanceId);
+    if (instance.setSkillEnabled === undefined) {
+      return yield* fail("setEnabled", instanceId, "unsupported");
+    }
+    // Only paths the provider itself reported are skills; the name comes from that listing.
+    const skill = yield* findReportedSkill(instanceId, input.skillPath);
+    if (skill === undefined) return yield* fail("setEnabled", instanceId, "skillNotFound");
+    yield* instance.setSkillEnabled({
+      name: skill.name,
+      path: skill.path,
+      enabled: input.enabled,
+    });
+    // The list the caller sees is the instance's own snapshot, so it is current when this returns.
+    yield* providers.refreshInstance(instanceId).pipe(Effect.ignoreCause({ log: true }));
+    yield* refreshSharingHome(instanceId, instanceId);
+    // A project or local settings file outranks the user setting that was just written.
+    const refreshed = yield* findReportedSkill(instanceId, input.skillPath);
+    if (refreshed !== undefined && refreshed.enabled !== input.enabled) {
+      return yield* fail("setEnabled", instanceId, "overriddenByProject");
+    }
+  });
+
+  return ProviderSkills.of({ exportSkill, installSkill, setSkillEnabled });
 });
 
 export const layer = Layer.effect(ProviderSkills, make);

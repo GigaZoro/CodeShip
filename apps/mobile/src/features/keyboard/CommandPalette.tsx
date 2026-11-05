@@ -74,6 +74,7 @@ import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { openSettings } from "../settings/settings-navigation";
 import { useOpenScheduledTasks } from "../workspace/useOpenScheduledTasks";
 import { useOpenArchivedThreads } from "../archive/useOpenArchivedThreads";
+import { useOpenArtifacts } from "../artifacts/useOpenArtifacts";
 import { useSelectWorkspaceTab } from "../workspace/useSelectWorkspaceTab";
 import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
 
@@ -227,6 +228,7 @@ export function CommandPalette(props: {
   const selectTab = useSelectWorkspaceTab();
   const openScheduledTasks = useOpenScheduledTasks();
   const openArchivedThreads = useOpenArchivedThreads();
+  const openArtifacts = useOpenArtifacts();
   const { themeVariables } = useAppearancePreferences();
   const selectDetail = useSelectWorkspaceDetail();
   const runCommand = props.onCommand;
@@ -351,6 +353,13 @@ export function CommandPalette(props: {
         title: "Archived threads",
         searchTerms: ["restore", "history"],
         run: openArchivedThreads,
+      },
+      {
+        key: "artifacts",
+        kind: "action",
+        title: "Artifacts",
+        searchTerms: ["pages", "html", "charts", "mockups"],
+        run: openArtifacts,
       },
     ];
     if (canTriage) {
@@ -479,6 +488,7 @@ export function CommandPalette(props: {
     selectTab,
     openScheduledTasks,
     openArchivedThreads,
+    openArtifacts,
     activeThread,
     activeThreadRef,
     environments.length,

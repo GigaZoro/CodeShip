@@ -71,6 +71,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
+import { toSafeThreadAttachmentSegment } from "../attachmentStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import { ROLLBACK_FAILED_MESSAGE } from "./CheckpointRollbackService.ts";
 import * as EffectWorker from "./EffectWorker.ts";
@@ -2598,6 +2599,36 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         DateTime.toEpochMillis(taggedShell.updatedAt),
         DateTime.toEpochMillis(untaggedShell.updatedAt),
       );
+
+      const artifactId = `${toSafeThreadAttachmentSegment(threadId)}-00000000-0000-4000-8000-000000000001-html`;
+      for (const [step, hidden, expected] of [
+        ["hide", true, [artifactId]],
+        ["retry", true, [artifactId]],
+        ["restore", false, []],
+      ] as const) {
+        yield* orchestrator.dispatch({
+          type: "thread.artifact.hide",
+          commandId: CommandId.make(`runtime-layer-lifecycle-artifact-${step}`),
+          threadId,
+          attachmentId: artifactId,
+          hidden,
+        });
+        assert.deepEqual(
+          (yield* orchestrator.getThreadProjection(threadId)).thread.hiddenArtifacts ?? [],
+          expected,
+          step,
+        );
+      }
+      const foreignArtifact = yield* orchestrator
+        .dispatch({
+          type: "thread.artifact.hide",
+          commandId: CommandId.make("runtime-layer-lifecycle-artifact-foreign"),
+          threadId,
+          attachmentId: "some-other-thread-00000000-0000-4000-8000-000000000001-html",
+          hidden: true,
+        })
+        .pipe(Effect.flip);
+      assert.instanceOf(foreignArtifact, Orchestrator.OrchestratorDispatchError);
 
       const preAutoProjection = yield* orchestrator.getThreadProjection(threadId);
       const staleAutoSettle = yield* orchestrator

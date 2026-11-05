@@ -1,4 +1,9 @@
-import { ClaudeSettings, defaultInstanceIdForDriver, ProviderDriverKind } from "@t3tools/contracts";
+import {
+  ClaudeSettings,
+  defaultInstanceIdForDriver,
+  ProviderDriverKind,
+  ProviderSkillError,
+} from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";
@@ -26,6 +31,7 @@ import { ProviderDriverError } from "../Errors.ts";
 import { claudeUsageReader } from "./claudeUsage.ts";
 import { makeClaudeScopedLimitNames } from "../claudeUsageLimits.ts";
 import * as ClaudeResetCredits from "../claudeResetCredits.ts";
+import { setClaudeSkillOverride } from "./ClaudeSkills.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import {
   checkClaudeProviderStatus,
@@ -543,6 +549,29 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       auth: auth.controller,
       plugins,
       personalSkillsDirectory: path.join(configDir, "skills"),
+      setSkillEnabled: ({ name, enabled }) =>
+        // Plugin skills (`plugin:name`) follow their plugin, which has no per-skill override.
+        name.includes(":")
+          ? Effect.fail(
+              new ProviderSkillError({
+                operation: "setEnabled",
+                instanceId,
+                reason: "unsupported",
+              }),
+            )
+          : setClaudeSkillOverride({ configDir, name, enabled }).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+              Effect.mapError(
+                (cause) =>
+                  new ProviderSkillError({
+                    operation: "setEnabled",
+                    instanceId,
+                    reason: "failed",
+                    cause,
+                  }),
+              ),
+            ),
       mcp,
       snapshot,
       invalidateCaches: Cache.invalidateAll(capabilitiesProbeCache),

@@ -34,6 +34,8 @@ const RenderRow = Schema.Struct({
   projectId: ProjectId,
   projectTitle: Schema.NullOr(Schema.String),
   providerInstanceId: Schema.NullOr(Schema.String),
+  hiddenArtifacts: Schema.NullOr(Schema.String),
+  runStatus: Schema.NullOr(Schema.String),
 });
 type RenderRow = typeof RenderRow.Type;
 
@@ -54,6 +56,13 @@ interface PublishedPage {
   readonly reference: HtmlRenderReference;
 }
 
+const hiddenIds = (row: RenderRow): ReadonlySet<string> => {
+  const parsed = parseOutput(row.hiddenArtifacts);
+  return new Set(
+    Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [],
+  );
+};
+
 /** Rows newest first; keeps each thread's own pages and only the newest version of each. */
 function collectHtmlRenders(
   rows: ReadonlyArray<RenderRow>,
@@ -72,17 +81,32 @@ function collectHtmlRenders(
       : [];
   });
   const byId = new Map(pages.map((page) => [page.reference.attachmentId, page]));
-  const replaced = new Set(pages.flatMap((page) => page.reference.revises ?? []));
-  const versionsOf = (page: PublishedPage) => {
+  const live = pages.filter((page) => page.row.runStatus !== "rolled_back");
+  const replaced = new Set(live.flatMap((page) => page.reference.revises ?? []));
+  // Ids from the page back through everything it revises, itself included.
+  const chainOf = (page: PublishedPage) => {
     const seen = new Set([page.reference.attachmentId]);
     let revises = page.reference.revises;
     while (revises !== undefined && !seen.has(revises)) {
       seen.add(revises);
       revises = byId.get(revises)?.reference.revises;
     }
-    return seen.size;
+    return seen;
   };
-  const current = pages.filter((page) => !replaced.has(page.reference.attachmentId));
+  // Hiding is per thread and names the version that was newest then. The page stays hidden when a
+  // later revision builds on it, and after a rollback makes an older version the newest again.
+  const hidden = new Set<string>();
+  for (const page of pages) {
+    for (const id of hiddenIds(page.row)) {
+      const target = byId.get(id);
+      for (const hiddenId of target === undefined ? [id] : chainOf(target)) hidden.add(hiddenId);
+    }
+  }
+  const current = live.filter(
+    (page) =>
+      !replaced.has(page.reference.attachmentId) &&
+      ![...chainOf(page)].some((id) => hidden.has(id)),
+  );
   return {
     renders: current.slice(0, limit).map((page) => {
       const { row, reference } = page;
@@ -91,7 +115,7 @@ function collectHtmlRenders(
         title: reference.title,
         height: reference.height,
         ...(reference.heights === undefined ? {} : { heights: reference.heights }),
-        versions: versionsOf(page),
+        versions: chainOf(page).size,
         threadId: row.threadId,
         threadTitle: row.threadTitle,
         archived: row.archivedAt !== null,
@@ -111,7 +135,7 @@ function collectHtmlRenders(
 export class HtmlRenderLibrary extends Context.Service<
   HtmlRenderLibrary,
   {
-    /** Pages agents published with html_render across every thread that still exists. */
+    /** Pages agents published with html_render across every thread that still exists, minus those hidden from the gallery. */
     readonly list: (
       input: OrchestrationV2ListHtmlRendersInput,
     ) => Effect.Effect<OrchestrationV2HtmlRenderList, OrchestrationV2ListHtmlRendersError>;
@@ -135,7 +159,9 @@ const make = Effect.gen(function* () {
         threads.archived_at AS "archivedAt",
         threads.project_id AS "projectId",
         projects.title AS "projectTitle",
-        json_extract(threads.payload_json, '$.providerInstanceId') AS "providerInstanceId"
+        json_extract(threads.payload_json, '$.providerInstanceId') AS "providerInstanceId",
+        json_extract(threads.payload_json, '$.hiddenArtifacts') AS "hiddenArtifacts",
+        run.status AS "runStatus"
       FROM orchestration_v2_projection_turn_items AS item
       INNER JOIN orchestration_v2_projection_threads AS threads
         ON threads.thread_id = item.thread_id
@@ -146,7 +172,6 @@ const make = Effect.gen(function* () {
       WHERE item.type = 'dynamic_tool'
         AND json_extract(item.payload_json, '$.toolName') LIKE ${`%${HTML_RENDER_TOOL_NAME}`}
         AND threads.deleted_at IS NULL
-        AND (run.status IS NULL OR run.status <> 'rolled_back')
       ORDER BY "publishedAt" DESC, item.turn_item_id DESC
       LIMIT ${scanLimit}
     `,

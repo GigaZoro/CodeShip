@@ -46,6 +46,8 @@ import {
   type RenderFailureProps,
 } from "./components/RenderErrorBoundary";
 import { ArchivedThreadsRouteScreen } from "./features/archive/ArchivedThreadsRouteScreen";
+import { ArtifactsScreen } from "./features/artifacts/ArtifactsScreen";
+import { ArtifactViewerScreen } from "./features/artifacts/ArtifactViewerScreen";
 import { ConnectOnboardingRouteScreen } from "./features/cloud/ConnectOnboardingRouteScreen";
 import { AttachmentFileScreen } from "./features/files/AttachmentFileScreen";
 import { ThreadFilesTreeScreen, ThreadFileScreen } from "./features/files/ThreadFilesRouteScreen";
@@ -934,6 +936,19 @@ const RootStackConfig = createWorkspaceStackNavigator({
         ...SETTINGS_PAGE_OPTIONS,
         title: "Archive",
       },
+    }),
+    // Like Archive, a detail of the current tab; the viewer is a plain card so Back returns to the list.
+    Artifacts: createNativeStackScreen({
+      screen: ArtifactsScreen,
+      linking: "artifacts",
+      options: {
+        ...SETTINGS_PAGE_OPTIONS,
+        title: "Artifacts",
+      },
+    }),
+    Artifact: createNativeStackScreen({
+      screen: ArtifactViewerScreen,
+      options: SOLID_HEADER_OPTIONS,
     }),
     ...SETTINGS_SCREENS,
     SettingsLegal: createNativeStackScreen({

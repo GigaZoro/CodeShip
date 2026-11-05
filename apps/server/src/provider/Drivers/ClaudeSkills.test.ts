@@ -6,7 +6,11 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
-import { discoverClaudeSkills, linkClaudeSharedSkills } from "./ClaudeSkills.ts";
+import {
+  discoverClaudeSkills,
+  linkClaudeSharedSkills,
+  setClaudeSkillOverride,
+} from "./ClaudeSkills.ts";
 import { planClaudeSkillDispatch } from "./ClaudeSkillDispatch.ts";
 
 const writeSkill = Effect.fn(function* (
@@ -930,6 +934,112 @@ it.layer(Layer.mergeAll(NodeServices.layer, isolatedHome))("discoverClaudeSkills
           ["user-only-yes", true, false],
         ],
       );
+    }),
+  );
+});
+
+it.layer(Layer.mergeAll(NodeServices.layer, isolatedHome))("setClaudeSkillOverride", (it) => {
+  const makeConfigDir = Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const configDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-override-" });
+    const settingsPath = path.join(configDir, "settings.json");
+    return { fs, configDir, settingsPath };
+  });
+
+  it.effect("creates the settings file when it is missing and the skill is turned off", () =>
+    Effect.gen(function* () {
+      const { fs, configDir, settingsPath } = yield* makeConfigDir;
+      yield* setClaudeSkillOverride({ configDir, name: "plan", enabled: false });
+      assert.deepEqual(JSON.parse(yield* fs.readFileString(settingsPath)), {
+        skillOverrides: { plan: "off" },
+      });
+    }),
+  );
+
+  it.effect("keeps every other setting and override, including in a hand-edited file", () =>
+    Effect.gen(function* () {
+      const { fs, configDir, settingsPath } = yield* makeConfigDir;
+      yield* fs.writeFileString(
+        settingsPath,
+        `{
+  // trailing commas and comments are fine for Claude Code
+  "model": "opus",
+  "env": { "A": "1", },
+  "skillOverrides": { "review": "user-invocable-only", },
+}`,
+      );
+      yield* setClaudeSkillOverride({ configDir, name: "plan", enabled: false });
+      assert.deepEqual(JSON.parse(yield* fs.readFileString(settingsPath)), {
+        model: "opus",
+        env: { A: "1" },
+        skillOverrides: { review: "user-invocable-only", plan: "off" },
+      });
+    }),
+  );
+
+  it.effect("removes the override when enabling, and the map once it is empty", () =>
+    Effect.gen(function* () {
+      const { fs, configDir, settingsPath } = yield* makeConfigDir;
+      yield* fs.writeFileString(
+        settingsPath,
+        JSON.stringify({ model: "opus", skillOverrides: { plan: "off", review: "off" } }),
+      );
+      yield* setClaudeSkillOverride({ configDir, name: "plan", enabled: true });
+      assert.deepEqual(JSON.parse(yield* fs.readFileString(settingsPath)), {
+        model: "opus",
+        skillOverrides: { review: "off" },
+      });
+      yield* setClaudeSkillOverride({ configDir, name: "review", enabled: true });
+      assert.deepEqual(JSON.parse(yield* fs.readFileString(settingsPath)), { model: "opus" });
+    }),
+  );
+
+  it.effect("does not write when the skill is already in the requested state", () =>
+    Effect.gen(function* () {
+      const { fs, configDir, settingsPath } = yield* makeConfigDir;
+      yield* setClaudeSkillOverride({ configDir, name: "plan", enabled: true });
+      assert.isFalse(yield* fs.exists(settingsPath));
+    }),
+  );
+
+  it.effect("leaves a settings file it cannot parse untouched", () =>
+    Effect.gen(function* () {
+      const { fs, configDir, settingsPath } = yield* makeConfigDir;
+      yield* fs.writeFileString(settingsPath, "{ not json");
+      const failure = yield* setClaudeSkillOverride({
+        configDir,
+        name: "plan",
+        enabled: false,
+      }).pipe(Effect.flip);
+      assert.isDefined(failure);
+      assert.equal(yield* fs.readFileString(settingsPath), "{ not json");
+    }),
+  );
+
+  it.effect("keeps both overrides when two skills are toggled at once", () =>
+    Effect.gen(function* () {
+      const { fs, configDir, settingsPath } = yield* makeConfigDir;
+      const names = ["a", "b", "c", "d", "e", "f"];
+      yield* Effect.forEach(
+        names,
+        (name) => setClaudeSkillOverride({ configDir, name, enabled: false }),
+        { concurrency: "unbounded", discard: true },
+      );
+      assert.deepEqual(
+        Object.keys(JSON.parse(yield* fs.readFileString(settingsPath)).skillOverrides).toSorted(),
+        names,
+      );
+    }),
+  );
+
+  it.effect("keeps the permission mode of an existing settings file", () =>
+    Effect.gen(function* () {
+      const { fs, configDir, settingsPath } = yield* makeConfigDir;
+      yield* fs.writeFileString(settingsPath, "{}");
+      yield* fs.chmod(settingsPath, 0o600);
+      yield* setClaudeSkillOverride({ configDir, name: "plan", enabled: false });
+      assert.equal((yield* fs.stat(settingsPath)).mode & 0o777, 0o600);
     }),
   );
 });

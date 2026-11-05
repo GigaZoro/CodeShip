@@ -55,6 +55,7 @@ import {
 } from "../../hooks/useTheme";
 import {
   useScopedSettings,
+  useClearScopedSettings,
   useScopedSettingsMixed,
   useUpdateScopedSettings,
 } from "./useScopedSettings";
@@ -90,6 +91,7 @@ import {
   projectGroupingModeFromToggle,
   readLastEnabledProjectGroupingMode,
   rememberEnabledProjectGroupingMode,
+  projectScopedRestorePlan,
   restorableSettingsPatch,
 } from "./SettingsPanels.logic";
 import {
@@ -426,15 +428,31 @@ export function useSettingsRestore(page: string | null, onRestored?: () => void)
   } = useTheme();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
-  const scopeKind = useOptionalSettingsScope()?.scope.kind;
-  const projectScoped = scopeKind === "project" || scopeKind === "checkout";
+  const clearScopedSettings = useClearScopedSettings();
+  const scopeContext = useOptionalSettingsScope();
+  const scope = scopeContext?.scope;
+  const projectPlan =
+    scopeContext && scope && (scope.kind === "project" || scope.kind === "checkout")
+      ? projectScopedRestorePlan(
+          settings,
+          page,
+          new Set(
+            scope.members.flatMap((member) => {
+              const overrides = scopeContext.environments.find(
+                (environment) => environment.environmentId === member.environmentId,
+              )?.serverConfig?.settings.projectSettingsOverrides?.[member.id];
+              return overrides ? Object.keys(overrides) : [];
+            }),
+          ),
+        )
+      : null;
   const includesTheme = page === null || page === "/settings/appearance";
 
   const changedSettingLabels = [
     ...(includesTheme && theme !== "system" ? ["Theme"] : []),
     ...(includesTheme && !followSystem ? ["Follow system"] : []),
     ...(includesTheme && themeHalves !== null ? ["Theme mix"] : []),
-    ...changedRestorableSettingLabels(settings, page, projectScoped),
+    ...(projectPlan ? projectPlan.labels : changedRestorableSettingLabels(settings, page)),
   ];
 
   const restoreDefaults = async () => {
@@ -491,7 +509,12 @@ export function useSettingsRestore(page: string | null, onRestored?: () => void)
         return;
       }
     }
-    updateSettings(restorableSettingsPatch(page, projectScoped));
+    if (projectPlan) {
+      if (projectPlan.clearKeys.length > 0) clearScopedSettings(projectPlan.clearKeys);
+      updateSettings(projectPlan.devicePatch);
+    } else {
+      updateSettings(restorableSettingsPatch(page));
+    }
     onRestored?.();
   };
 

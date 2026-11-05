@@ -13,6 +13,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "./ProviderRegistry.ts";
@@ -27,7 +28,9 @@ const file = (path: string, text = "x"): ProviderSkillFile => ({
   contentBase64: Buffer.from(text).toString("base64"),
 });
 
-const makeHarness = Effect.gen(function* () {
+const makeHarness = Effect.fn("test.makeHarness")(function* (options?: {
+  readonly homeIsRoot?: boolean;
+}) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: "t3-skills-" }));
@@ -49,7 +52,23 @@ const makeHarness = Effect.gen(function* () {
     } as unknown as ProviderInstance,
     [bareId]: { instanceId: bareId, continuationIdentity } as unknown as ProviderInstance,
   };
-  const reported: Array<{ readonly path: string }> = [];
+  const reported: Array<{ path: string; name?: string; enabled?: boolean }> = [];
+  // Skills whose reported state ignores the toggle, like one pinned by a project settings file.
+  const pinned = new Set<string>();
+  const toggled: Array<{
+    readonly name: string;
+    readonly path: string;
+    readonly enabled: boolean;
+  }> = [];
+  instances[sourceId] = {
+    ...instances[sourceId],
+    setSkillEnabled: (input: (typeof toggled)[number]) =>
+      Effect.sync(() => {
+        toggled.push(input);
+        const entry = reported.find((candidate) => candidate.path === input.path);
+        if (entry !== undefined && !pinned.has(input.path)) entry.enabled = input.enabled;
+      }),
+  } as unknown as ProviderInstance;
   const layer = ProviderSkills.layer.pipe(
     Layer.provide(
       Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
@@ -70,6 +89,13 @@ const makeHarness = Effect.gen(function* () {
       }),
     ),
     Layer.provide(NodeServices.layer),
+    // A home folder that holds no skills keeps them outside it unless a test opts in.
+    Layer.provide(
+      Layer.succeed(
+        HostProcess.HomeDirectory,
+        options?.homeIsRoot === true ? root : path.join(root, "home"),
+      ),
+    ),
   );
 
   /** A skill on the source machine that its provider lists. */
@@ -90,13 +116,25 @@ const makeHarness = Effect.gen(function* () {
     return skillPath;
   });
 
-  return { fs, path, root, sourceSkills, targetSkills, refreshed, reported, layer, writeSkill };
+  return {
+    fs,
+    path,
+    root,
+    sourceSkills,
+    targetSkills,
+    refreshed,
+    reported,
+    toggled,
+    pinned,
+    layer,
+    writeSkill,
+  };
 });
 
 it.layer(NodeServices.layer)("ProviderSkills", (it) => {
   it.effect("copies a skill between instances byte for byte and skips symlinks", () =>
     Effect.gen(function* () {
-      const h = yield* makeHarness;
+      const h = yield* makeHarness();
       const binary = new Uint8Array([0, 255, 128, 7]);
       const skillPath = yield* h.writeSkill("review", {
         "SKILL.md": "---\nname: review\n---\nBody",
@@ -147,7 +185,7 @@ it.layer(NodeServices.layer)("ProviderSkills", (it) => {
 
   it.effect("refuses to replace an existing skill unless asked, and replaces it whole", () =>
     Effect.gen(function* () {
-      const h = yield* makeHarness;
+      const h = yield* makeHarness();
       yield* Effect.gen(function* () {
         const service = yield* ProviderSkills.ProviderSkills;
         const install = (files: ReadonlyArray<ProviderSkillFile>, overwrite: boolean) =>
@@ -173,7 +211,7 @@ it.layer(NodeServices.layer)("ProviderSkills", (it) => {
 
   it.effect("rejects unsafe names and paths before writing anything", () =>
     Effect.gen(function* () {
-      const h = yield* makeHarness;
+      const h = yield* makeHarness();
       yield* Effect.gen(function* () {
         const service = yield* ProviderSkills.ProviderSkills;
         const attempt = (name: string, files: ReadonlyArray<ProviderSkillFile>) =>
@@ -206,7 +244,7 @@ it.layer(NodeServices.layer)("ProviderSkills", (it) => {
 
   it.effect("enforces the file count and size limits on install and export", () =>
     Effect.gen(function* () {
-      const h = yield* makeHarness;
+      const h = yield* makeHarness();
       yield* Effect.gen(function* () {
         const service = yield* ProviderSkills.ProviderSkills;
         const install = (files: ReadonlyArray<ProviderSkillFile>) =>
@@ -265,7 +303,7 @@ it.layer(NodeServices.layer)("ProviderSkills", (it) => {
 
   it.effect("only exports skills the provider lists and only installs where it can", () =>
     Effect.gen(function* () {
-      const h = yield* makeHarness;
+      const h = yield* makeHarness();
       yield* Effect.gen(function* () {
         const service = yield* ProviderSkills.ProviderSkills;
         yield* h.fs.writeFileString(h.path.join(h.root, "SKILL.md"), "unlisted");
@@ -299,7 +337,7 @@ it.layer(NodeServices.layer)("ProviderSkills", (it) => {
 
   it.effect("refuses to copy a linked skill and reports where it points", () =>
     Effect.gen(function* () {
-      const h = yield* makeHarness;
+      const h = yield* makeHarness();
       const managed = h.path.join(h.root, "agent-config", "linked");
       yield* h.fs.makeDirectory(managed, { recursive: true });
       yield* h.fs.writeFileString(h.path.join(managed, "SKILL.md"), "managed");
@@ -360,9 +398,57 @@ it.layer(NodeServices.layer)("ProviderSkills", (it) => {
     }),
   );
 
+  it.effect("stops looking for a managing repository at the home folder", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness({ homeIsRoot: true });
+      // A dotfiles repository at home must not make every skill look managed.
+      yield* h.fs.makeDirectory(h.path.join(h.root, ".git"));
+      const plain = yield* h.writeSkill("plain", { "SKILL.md": "body" });
+      // A repository below home, like the agent-config clone, still manages its skills.
+      const clone = h.path.join(h.root, "agent-config", "skills", "managed");
+      yield* h.fs.makeDirectory(clone, { recursive: true });
+      yield* h.fs.writeFileString(h.path.join(clone, "SKILL.md"), "managed");
+      yield* h.fs.makeDirectory(h.path.join(h.root, "agent-config", ".git"));
+      const managedPath = h.path.join(clone, "SKILL.md");
+      h.reported.push({ path: managedPath });
+
+      yield* Effect.gen(function* () {
+        const service = yield* ProviderSkills.ProviderSkills;
+        const exported = yield* service.exportSkill({ instanceId: sourceId, skillPath: plain });
+        assert.equal(exported.name, "plain");
+        const managed = yield* service
+          .exportSkill({ instanceId: sourceId, skillPath: managedPath })
+          .pipe(Effect.flip);
+        assert.equal(managed.reason, "linkedSkill");
+        const installed = yield* service.installSkill({
+          instanceId: targetId,
+          name: "fresh",
+          files: [file("SKILL.md")],
+          overwrite: false,
+        });
+        assert.equal(installed.fileCount, 1);
+      }).pipe(Effect.provide(h.layer));
+    }),
+  );
+
+  it.effect("keeps looking above skills that live outside the home folder", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.fs.makeDirectory(h.path.join(h.root, ".git"));
+      const skillPath = yield* h.writeSkill("outside", { "SKILL.md": "body" });
+      yield* Effect.gen(function* () {
+        const service = yield* ProviderSkills.ProviderSkills;
+        const refused = yield* service
+          .exportSkill({ instanceId: sourceId, skillPath })
+          .pipe(Effect.flip);
+        assert.equal(refused.reason, "linkedSkill");
+      }).pipe(Effect.provide(h.layer));
+    }),
+  );
+
   it.effect("follows links that stay inside the skill and counts the ones that leave it", () =>
     Effect.gen(function* () {
-      const h = yield* makeHarness;
+      const h = yield* makeHarness();
       const skillPath = yield* h.writeSkill("linky", {
         "SKILL.md": "body",
         "real/data.txt": "data",
@@ -392,7 +478,7 @@ it.layer(NodeServices.layer)("ProviderSkills", (it) => {
 
   it.effect("keeps executable bits and installs a readable folder", () =>
     Effect.gen(function* () {
-      const h = yield* makeHarness;
+      const h = yield* makeHarness();
       const skillPath = yield* h.writeSkill("run", {
         "SKILL.md": "body",
         "scripts/go.sh": "echo go",
@@ -428,7 +514,7 @@ it.layer(NodeServices.layer)("ProviderSkills", (it) => {
 
   it.effect("leaves version-control folders out and validates names and paths on export", () =>
     Effect.gen(function* () {
-      const h = yield* makeHarness;
+      const h = yield* makeHarness();
       const clean = yield* h.writeSkill("clean", {
         "SKILL.md": "body",
         ".git/config": "[core]",
@@ -456,7 +542,12 @@ it.layer(NodeServices.layer)("ProviderSkills", (it) => {
           "nested/keep.txt",
         ]);
         assert.equal(yield* exportReason(badName), "invalidName");
-        assert.equal(yield* exportReason(badPath), "invalidPath");
+        const oddName = yield* service
+          .exportSkill({ instanceId: sourceId, skillPath: badPath })
+          .pipe(Effect.flip);
+        assert.equal(oddName.reason, "invalidPath");
+        assert.equal(oddName.path, "a:b.txt");
+        assert.include(oddName.message, "a:b.txt");
         // A case-sensitive disk can hold both; the target may not, so export refuses early.
         const fsIsCaseSensitive =
           (yield* h.fs.readDirectory(h.path.join(h.sourceSkills, "clash"))).length === 3;
@@ -467,7 +558,7 @@ it.layer(NodeServices.layer)("ProviderSkills", (it) => {
 
   it.effect("rejects malformed base64 and paths that differ only by case on install", () =>
     Effect.gen(function* () {
-      const h = yield* makeHarness;
+      const h = yield* makeHarness();
       yield* Effect.gen(function* () {
         const service = yield* ProviderSkills.ProviderSkills;
         const attempt = (files: ReadonlyArray<ProviderSkillFile>) =>
@@ -496,5 +587,80 @@ it.layer(NodeServices.layer)("ProviderSkills", (it) => {
         assert.equal(ok.fileCount, 2);
       }).pipe(Effect.provide(h.layer));
     }),
+  );
+
+  it.effect(
+    "turns a listed skill off through its instance and refreshes the accounts on its home",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        h.reported.push({ name: "plan", path: "/skills/plan/SKILL.md" });
+        yield* Effect.gen(function* () {
+          const service = yield* ProviderSkills.ProviderSkills;
+          yield* service.setSkillEnabled({
+            instanceId: sourceId,
+            skillPath: "/skills/plan/SKILL.md",
+            enabled: false,
+          });
+          assert.deepEqual(h.toggled, [
+            { name: "plan", path: "/skills/plan/SKILL.md", enabled: false },
+          ]);
+          assert.sameMembers(
+            [
+              yield* Queue.take(h.refreshed),
+              yield* Queue.take(h.refreshed),
+              yield* Queue.take(h.refreshed),
+            ],
+            [sourceId, targetId, bareId],
+          );
+        }).pipe(Effect.provide(h.layer));
+      }),
+  );
+
+  it.effect("fails when a project settings file keeps the skill in its old state", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      h.reported.push({ name: "plan", path: "/skills/plan/SKILL.md", enabled: true });
+      h.pinned.add("/skills/plan/SKILL.md");
+      yield* Effect.gen(function* () {
+        const service = yield* ProviderSkills.ProviderSkills;
+        const failure = yield* service
+          .setSkillEnabled({
+            instanceId: sourceId,
+            skillPath: "/skills/plan/SKILL.md",
+            enabled: false,
+          })
+          .pipe(Effect.flip);
+        assert.equal(failure.reason, "overriddenByProject");
+        assert.equal(
+          failure.message,
+          "This skill is set in the project's settings, so the user setting has no effect.",
+        );
+      }).pipe(Effect.provide(h.layer));
+    }),
+  );
+
+  it.effect(
+    "refuses to toggle unlisted skills, unknown instances, and providers without a switch",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        h.reported.push({ name: "plan", path: "/skills/plan/SKILL.md" });
+        yield* Effect.gen(function* () {
+          const service = yield* ProviderSkills.ProviderSkills;
+          const reason = (instanceId: ProviderInstanceId, skillPath: string) =>
+            service.setSkillEnabled({ instanceId, skillPath, enabled: false }).pipe(
+              Effect.flip,
+              Effect.map((error) => error.reason),
+            );
+          assert.equal(yield* reason(sourceId, "/etc/passwd"), "skillNotFound");
+          assert.equal(yield* reason(targetId, "/skills/plan/SKILL.md"), "unsupported");
+          assert.equal(
+            yield* reason(ProviderInstanceId.make("gone"), "/skills/plan/SKILL.md"),
+            "instanceNotFound",
+          );
+          assert.deepEqual(h.toggled, []);
+        }).pipe(Effect.provide(h.layer));
+      }),
   );
 });

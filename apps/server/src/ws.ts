@@ -2557,6 +2557,7 @@ export const layerWsRpc = (
         [WS_METHODS.providerPluginsList]: (input) => providerPlugins.list(input),
         [WS_METHODS.providerSkillsExport]: (input) => providerSkills.exportSkill(input),
         [WS_METHODS.providerSkillsInstall]: (input) => providerSkills.installSkill(input),
+        [WS_METHODS.providerSkillsSetEnabled]: (input) => providerSkills.setSkillEnabled(input),
         [WS_METHODS.providerPluginsInstall]: (input) => providerPlugins.install(input),
         [WS_METHODS.providerPluginsUninstall]: (input) => providerPlugins.uninstall(input),
         [WS_METHODS.providerPluginsSetEnabled]: (input) => providerPlugins.setEnabled(input),

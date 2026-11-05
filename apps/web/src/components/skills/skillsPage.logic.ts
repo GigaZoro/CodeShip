@@ -80,6 +80,14 @@ interface SkillsAgentInput<Provider> {
   readonly skills: ReadonlyArray<ServerProviderSkill>;
 }
 
+/**
+ * Plugin skills follow their plugin and system skills ship with the agent, so a provider that
+ * offers a switch still has none for them.
+ */
+export function canToggleSkill(row: Pick<SkillRowModel, "skill" | "source">): boolean {
+  return row.source !== "app" && row.source !== "system" && !row.skill.name.includes(":");
+}
+
 export interface SkillRowModel {
   readonly skill: ServerProviderSkill;
   readonly source: ProviderSkillSourceKind;

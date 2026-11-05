@@ -29,6 +29,7 @@ import {
   interruptThreadTurn,
   forkSideChat,
   forkThreadFromRun,
+  hideThreadArtifact,
   markThreadUnread,
   mergeThreadBack,
   promoteQueuedRun,
@@ -128,6 +129,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     delete: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:delete",
       execute: deleteThread,
+      scheduler,
+      concurrency,
+    }),
+    hideArtifact: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:hide-artifact",
+      execute: hideThreadArtifact,
       scheduler,
       concurrency,
     }),

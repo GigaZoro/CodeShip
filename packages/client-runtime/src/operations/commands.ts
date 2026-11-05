@@ -597,6 +597,24 @@ export const visitThread = Effect.fn("EnvironmentCommands.visitThread")(function
   });
 });
 
+export interface HideThreadArtifactInput extends ThreadCommandInput {
+  readonly attachmentId: string;
+  /** False restores the page to the gallery. */
+  readonly hidden: boolean;
+}
+/** Removes a published page from the Artifacts gallery; the thread keeps showing it inline. */
+export const hideThreadArtifact = Effect.fn("EnvironmentCommands.hideThreadArtifact")(function* (
+  input: HideThreadArtifactInput,
+) {
+  return yield* dispatch({
+    type: "thread.artifact.hide",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    attachmentId: input.attachmentId,
+    hidden: input.hidden,
+  });
+});
+
 export const markThreadUnread = Effect.fn("EnvironmentCommands.markThreadUnread")(function* (
   input: MarkThreadUnreadInput,
 ) {

@@ -1,4 +1,9 @@
-import { CodexSettings, defaultInstanceIdForDriver, ProviderDriverKind } from "@t3tools/contracts";
+import {
+  CodexSettings,
+  defaultInstanceIdForDriver,
+  ProviderDriverKind,
+  ProviderSkillError,
+} from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -419,7 +424,9 @@ export const CodexDriver: ProviderDriver<
       openClient: openAppServerClient,
       canLogout,
     }).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
+    // `subscribe` replays the current state first; skipping it keeps a rebuild to one probe.
     yield* auth.controller.subscribe("codex-account-snapshot").pipe(
+      Stream.drop(1),
       Stream.filter((state) => ["idle", "succeeded", "failed", "cancelled"].includes(state.phase)),
       Stream.runForEach(() => snapshot.refresh.pipe(Effect.ignoreCause({ log: true }))),
       Effect.forkScoped,
@@ -499,6 +506,24 @@ export const CodexDriver: ProviderDriver<
         homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath,
         "skills",
       ),
+      setSkillEnabled: ({ path: skillPath, enabled }) =>
+        openAppServerClient.pipe(
+          Effect.flatMap((client) =>
+            client.request("skills/config/write", { path: skillPath, enabled }),
+          ),
+          Effect.scoped,
+          Effect.timeout("20 seconds"),
+          Effect.asVoid,
+          Effect.mapError(
+            (cause) =>
+              new ProviderSkillError({
+                operation: "setEnabled",
+                instanceId,
+                reason: "failed",
+                cause,
+              }),
+          ),
+        ),
       mcp,
       orchestrationAdapter,
       textGeneration,

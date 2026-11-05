@@ -99,6 +99,7 @@ import {
 import { compactEditorInsets } from "./compactEditorInsets";
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
 import { ComposerPopoverAnchor } from "./ComposerPopoverAnchor";
+import { ComposerPlanModeChip } from "./ComposerPlanModeChip";
 import { ComposerQueuedEditAttachments } from "./ComposerQueuedEdit";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
 import type { ComposerEnvironmentCandidate } from "@t3tools/client-runtime/composerThreadItems";
@@ -823,6 +824,12 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
         style={{ maxWidth: props.contentMaxWidth }}
       >
         {props.draftControls}
+        {!props.isDraft && props.selectedThread.interactionMode === "plan" ? (
+          <ComposerPlanModeChip
+            environmentId={props.environmentId}
+            threadId={props.selectedThread.id}
+          />
+        ) : null}
         {!isSubmissionLocked &&
         composerMenu.trigger &&
         (composerMenu.items.length > 0 || composerMenu.trigger.kind === "pull-request") ? (

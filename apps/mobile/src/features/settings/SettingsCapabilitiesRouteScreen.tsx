@@ -92,7 +92,11 @@ function ProviderCapabilities(props: {
   return (
     <SettingsSection title={`${environment.label} · ${name}`}>
       {provider.supportsMcpServers ? (
-        <McpServerRows environment={environment} provider={provider} />
+        <McpServerRows
+          environment={environment}
+          provider={provider}
+          hasSkills={skills.length > 0}
+        />
       ) : null}
       {skills.slice(0, MAX_SKILLS_SHOWN).map((skill) => (
         <CapabilityRow
@@ -118,6 +122,7 @@ function ProviderCapabilities(props: {
 function McpServerRows(props: {
   readonly environment: SettingsTarget;
   readonly provider: ServerProvider;
+  readonly hasSkills: boolean;
 }) {
   const servers = useEnvironmentQuery(
     serverEnvironment.providerMcpServers({
@@ -133,6 +138,9 @@ function McpServerRows(props: {
     ) : (
       <Text className="p-4 text-foreground-muted">Loading MCP servers…</Text>
     );
+  }
+  if (servers.data.servers.length === 0 && !props.hasSkills) {
+    return <Text className="p-4 text-foreground-muted">No servers or skills.</Text>;
   }
   return (
     <>

@@ -4,13 +4,15 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
-import { fromLenientJson } from "@t3tools/shared/schemaJson";
+import { fromJsonStringPretty, fromLenientJson } from "@t3tools/shared/schemaJson";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import { parse as parseYamlDocument } from "yaml";
 
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
+import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { linkPath } from "./ClaudeAccountHome.ts";
 
 type ClaudeSkillScope = "user" | "project";
@@ -287,6 +289,82 @@ const readSkillSettings = Effect.fn("readSkillSettings")(function* (
   }
 
   return { skillOverrides: overridesByName, enabledPlugins };
+});
+
+const UserSettingsObject = fromLenientJson(Schema.Record(Schema.String, Schema.Unknown));
+const decodeUserSettingsObject = Schema.decodeUnknownEffect(UserSettingsObject);
+const encodeUserSettingsObject = Schema.encodeEffect(
+  fromJsonStringPretty(Schema.Record(Schema.String, Schema.Unknown)),
+);
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+// One read-modify-write at a time per settings file, so two toggles cannot drop each other's override.
+const settingsWriteLocks = new Map<string, Semaphore.Semaphore>();
+const settingsWriteLock = (settingsPath: string) => {
+  const existing = settingsWriteLocks.get(settingsPath);
+  if (existing !== undefined) return existing;
+  const created = Semaphore.makeUnsafe(1);
+  settingsWriteLocks.set(settingsPath, created);
+  return created;
+};
+
+/**
+ * Turns a skill off by writing `"off"` into the user settings' `skillOverrides`, and on by
+ * removing that entry. Every other setting and override is kept. Comments in a hand-edited file
+ * do not survive the rewrite, but a file that cannot be parsed is never overwritten.
+ */
+export const setClaudeSkillOverride = Effect.fn("setClaudeSkillOverride")(function* (input: {
+  readonly configDir: string;
+  readonly name: string;
+  readonly enabled: boolean;
+}) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const settingsPath = path.join(input.configDir, "settings.json");
+  yield* settingsWriteLock(settingsPath).withPermits(1)(
+    writeOverride(fileSystem, settingsPath, input),
+  );
+});
+
+const writeOverride = Effect.fn("writeClaudeSkillOverride")(function* (
+  fileSystem: FileSystem.FileSystem,
+  settingsPath: string,
+  input: { readonly name: string; readonly enabled: boolean },
+) {
+  const contents = yield* fileSystem
+    .readFileString(settingsPath)
+    .pipe(Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed("")));
+  const settings = contents.trim() === "" ? {} : yield* decodeUserSettingsObject(contents);
+  const overrides = isPlainRecord(settings.skillOverrides) ? settings.skillOverrides : {};
+  const isOff = overrides[input.name] === "off";
+  if (isOff === !input.enabled) return;
+
+  // Entries rather than assignment, so a skill named like an Object.prototype key stays data.
+  const entries = Object.entries(overrides);
+  const next = input.enabled
+    ? entries.filter(([name]) => name !== input.name)
+    : entries.some(([name]) => name === input.name)
+      ? entries.map(([name, value]) => [name, name === input.name ? "off" : value] as const)
+      : [...entries, [input.name, "off"] as const];
+  const nextOverrides = Object.fromEntries(next);
+  const updated =
+    next.length === 0
+      ? Object.fromEntries(Object.entries(settings).filter(([key]) => key !== "skillOverrides"))
+      : "skillOverrides" in settings
+        ? Object.fromEntries(
+            Object.entries(settings).map(([key, value]) => [
+              key,
+              key === "skillOverrides" ? nextOverrides : value,
+            ]),
+          )
+        : { ...settings, skillOverrides: nextOverrides };
+  yield* writeFileStringAtomically({
+    filePath: settingsPath,
+    contents: `${yield* encodeUserSettingsObject(updated)}\n`,
+    preserveMode: true,
+  });
 });
 
 const InstalledPlugins = Schema.fromJsonString(

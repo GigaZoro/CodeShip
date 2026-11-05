@@ -113,6 +113,7 @@ import {
   useRetainedContextPayloads,
 } from "./composerContextUndo";
 import { ComposerBanner } from "./ComposerBanner";
+import { ComposerPlanModeChip } from "./ComposerPlanModeChip";
 import { ComposerSurface } from "./ComposerSurface";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./ComposerBannerStack";
 import {
@@ -453,6 +454,7 @@ export interface ChatComposerProps {
   onResume: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
+  onLeavePlanMode: () => void;
   onSelectActivePendingUserInputOption: (questionId: string, optionValue: string) => void;
   onAdvanceActivePendingUserInput: () => void;
   onDismissActivePendingUserInput: (requestId: RuntimeRequestId) => void;
@@ -562,6 +564,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onResume,
     onInterrupt,
     onImplementPlanInNewThread,
+    onLeavePlanMode,
     onSelectActivePendingUserInputOption,
     onAdvanceActivePendingUserInput,
     onDismissActivePendingUserInput,
@@ -3463,6 +3466,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 )}
               >
                 {composerAttachButton ? <div className="me-2">{composerAttachButton}</div> : null}
+                {interactionMode === "plan" ? (
+                  <div className="me-2">
+                    <ComposerPlanModeChip onLeave={onLeavePlanMode} />
+                  </div>
+                ) : null}
                 <div
                   data-chat-composer-actions="right"
                   data-chat-composer-transition-actions="true"

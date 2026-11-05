@@ -11,4 +11,5 @@ export type ProviderSnapshotSource = {
   readonly supportsPlugins?: boolean;
   readonly supportsMcpServers?: boolean;
   readonly supportsSkillInstall?: boolean;
+  readonly supportsSkillToggle?: boolean;
 };

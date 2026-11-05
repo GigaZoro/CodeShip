@@ -25,8 +25,8 @@ export function deriveRetryTarget(rows: ReadonlyArray<MessagesTimelineRow>): Ret
   };
 }
 
-// Set by the Retry button just before it asks to rewind; the rewind consumes it, skips the edit
-// confirmation, and resends the restored message.
+// Set by the Retry button just before it asks to rewind; the rewind consumes it and resends the
+// restored message. The confirmation dialog re-sets it when the turn changed files.
 let pendingRetryMessageId: MessageId | null = null;
 
 export function markRetryRewind(messageId: MessageId): void {

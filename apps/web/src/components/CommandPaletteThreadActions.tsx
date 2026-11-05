@@ -30,6 +30,13 @@ import { pickSnoozePreset, resolveSnoozePresets } from "./Sidebar.snooze";
 import { requestThreadRename } from "./ThreadRenameDialog";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 
+const SNOOZE_ROW_PREFIX = "action:thread-snooze:";
+
+/** Whether the active thread's rows include snooze choices, so the snooze shortcut has a list to open. */
+export function hasSnoozeRows(items: ReadonlyArray<CommandPaletteActionItem>): boolean {
+  return items.some((item) => item.value.startsWith(SNOOZE_ROW_PREFIX));
+}
+
 function failureToast(title: string, result: AtomCommandResult<unknown, unknown>) {
   if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return;
   const error = squashAtomCommandFailure(result);
@@ -125,7 +132,7 @@ export function useActiveThreadPaletteItems(
       for (const [index, preset] of presets.entries()) {
         items.push({
           kind: "action",
-          value: `action:thread-snooze:${preset.id}`,
+          value: `${SNOOZE_ROW_PREFIX}${preset.id}`,
           searchTerms: ["snooze", "later", "remind", "hide", "thread", preset.label],
           title: `Snooze: ${preset.label}`,
           description: preset.whenLabel,
@@ -145,7 +152,7 @@ export function useActiveThreadPaletteItems(
       }
       items.push({
         kind: "action",
-        value: "action:thread-snooze:custom",
+        value: `${SNOOZE_ROW_PREFIX}custom`,
         searchTerms: ["snooze", "later", "remind", "custom", "thread"],
         title: "Snooze: Custom…",
         icon: <AlarmClockIcon className={ITEM_ICON_CLASS} />,

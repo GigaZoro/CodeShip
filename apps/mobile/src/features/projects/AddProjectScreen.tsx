@@ -1534,6 +1534,7 @@ export function AddProjectCloneScreen(props: {
   readonly repositoryName?: string | string[];
   readonly prompt?: string | string[];
 }) {
+  const navigation = useNavigation();
   const [resolved, setResolved] = useState<ResolvedRepository | null>(null);
   const remoteUrl = resolved?.remoteUrl ?? stringParam(props.remoteUrl);
   // Back from a destination chosen here returns to the repository step instead of leaving.
@@ -1544,8 +1545,17 @@ export function AddProjectCloneScreen(props: {
         setResolved(null);
         return true;
       });
-      return () => subscription.remove();
-    }, [resolved]),
+      // iOS header Back and the swipe gesture go through navigation, not BackHandler.
+      const unsubscribe = navigation.addListener("beforeRemove", (event) => {
+        if (event.data.action.type !== "POP" && event.data.action.type !== "GO_BACK") return;
+        event.preventDefault();
+        setResolved(null);
+      });
+      return () => {
+        subscription.remove();
+        unsubscribe();
+      };
+    }, [navigation, resolved]),
   );
   if (!remoteUrl) {
     return (

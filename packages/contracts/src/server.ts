@@ -223,6 +223,8 @@ export const ServerProvider = Schema.Struct({
   supportsMcpServers: Schema.optional(Schema.Boolean),
   /** This instance has a personal skills folder, so it can receive a copied skill. */
   supportsSkillInstall: Schema.optional(Schema.Boolean),
+  /** This instance can turn a skill on or off, so clients show the switch. */
+  supportsSkillToggle: Schema.optional(Schema.Boolean),
   setup: Schema.optional(
     Schema.Struct({
       canAuthenticate: Schema.Boolean,

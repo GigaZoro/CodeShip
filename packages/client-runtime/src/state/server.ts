@@ -1345,6 +1345,15 @@ export function createServerEnvironmentAtoms<R, E>(
           JSON.stringify([environmentId, input.instanceId, input.name]),
       },
     }),
+    setProviderSkillEnabled: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:skills:set-enabled",
+      tag: WS_METHODS.providerSkillsSetEnabled,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.instanceId, input.skillPath]),
+      },
+    }),
     // Listing starts the provider and connects to every server; the server keeps a short copy.
     providerMcpServers: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:provider:mcp",

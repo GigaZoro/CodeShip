@@ -1,7 +1,12 @@
 import { EnvironmentId, type ServerProviderSkill } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildSkillsView, type SkillsSearch, validateSkillsSearch } from "./skillsPage.logic";
+import {
+  buildSkillsView,
+  canToggleSkill,
+  type SkillsSearch,
+  validateSkillsSearch,
+} from "./skillsPage.logic";
 
 const skill = (name: string, scope = "user"): ServerProviderSkill => ({
   name,
@@ -79,5 +84,17 @@ describe("validateSkillsSearch", () => {
         missing: "true",
       }),
     ).toEqual({ hideAgent: ["codex"], hideSource: ["personal"] });
+  });
+});
+
+describe("canToggleSkill", () => {
+  it.each([
+    ["a personal skill", skill("plan"), "personal", true],
+    ["a project skill", skill("deploy", "project"), "project", true],
+    ["a plugin skill", skill("plugin:plan"), "personal", false],
+    ["a skill bundled with an app", skill("slides"), "app", false],
+    ["a system skill", skill("skill-creator", "system"), "system", false],
+  ] as const)("%s", (_label, entry, source, expected) => {
+    expect(canToggleSkill({ skill: entry, source })).toBe(expected);
   });
 });

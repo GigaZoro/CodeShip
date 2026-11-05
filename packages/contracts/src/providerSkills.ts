@@ -45,7 +45,15 @@ export const ProviderSkillInstallResult = Schema.Struct({
 });
 export type ProviderSkillInstallResult = typeof ProviderSkillInstallResult.Type;
 
-export const ProviderSkillOperation = Schema.Literals(["export", "install"]);
+export const ProviderSkillSetEnabledInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  /** The `path` of a skill in the provider's skills list: its SKILL.md. */
+  skillPath: TrimmedNonEmptyString,
+  enabled: Schema.Boolean,
+});
+export type ProviderSkillSetEnabledInput = typeof ProviderSkillSetEnabledInput.Type;
+
+export const ProviderSkillOperation = Schema.Literals(["export", "install", "setEnabled"]);
 export type ProviderSkillOperation = typeof ProviderSkillOperation.Type;
 
 export const ProviderSkillErrorReason = Schema.Literals([
@@ -60,6 +68,7 @@ export const ProviderSkillErrorReason = Schema.Literals([
   "tooManyFiles",
   "tooLarge",
   "alreadyExists",
+  "overriddenByProject",
   "failed",
 ]);
 export type ProviderSkillErrorReason = typeof ProviderSkillErrorReason.Type;
@@ -72,6 +81,8 @@ export class ProviderSkillError extends Schema.TaggedError<ProviderSkillError>()
     reason: ProviderSkillErrorReason,
     /** For `linkedSkill`: the real folder of the skill (export) or of the skills directory (install). */
     linkTarget: Schema.optionalKey(Schema.String),
+    /** For `invalidPath`: the offending path relative to the skill folder. */
+    path: Schema.optionalKey(Schema.String),
     cause: Schema.optionalKey(Schema.Defect()),
   },
 ) {
@@ -80,13 +91,17 @@ export class ProviderSkillError extends Schema.TaggedError<ProviderSkillError>()
       case "instanceNotFound":
         return "This provider is no longer configured.";
       case "unsupported":
-        return "This provider does not support copying skills.";
+        return this.operation === "setEnabled"
+          ? "This skill cannot be turned on or off here."
+          : "This provider does not support copying skills.";
       case "skillNotFound":
         return "This skill is not in the provider's skills list.";
       case "invalidName":
         return "The skill name is not allowed.";
       case "invalidPath":
-        return "The skill contains a file path that is not allowed.";
+        return this.path === undefined
+          ? "The skill contains a file path that is not allowed."
+          : `The skill contains a file path that is not allowed: ${this.path}`;
       case "invalidContent":
         return "The skill contains a file that is not valid base64.";
       case "linkedSkill":
@@ -101,10 +116,17 @@ export class ProviderSkillError extends Schema.TaggedError<ProviderSkillError>()
         return "The skill is larger than 5 MB.";
       case "alreadyExists":
         return "A skill with this name already exists.";
+      case "overriddenByProject":
+        return "This skill is set in the project's settings, so the user setting has no effect.";
       case "failed":
-        return this.operation === "export"
-          ? "Could not read the skill."
-          : "Could not install the skill.";
+        switch (this.operation) {
+          case "export":
+            return "Could not read the skill.";
+          case "install":
+            return "Could not install the skill.";
+          case "setEnabled":
+            return "Could not change whether the skill is enabled.";
+        }
     }
   }
 }

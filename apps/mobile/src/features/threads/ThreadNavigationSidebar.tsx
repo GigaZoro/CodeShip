@@ -38,6 +38,7 @@ import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
 import { useOpenArchivedThreads } from "../archive/useOpenArchivedThreads";
+import { useOpenArtifacts } from "../artifacts/useOpenArtifacts";
 import { useProjects, useNavigationThreadShells } from "../../state/entities";
 import { useThreadSearch } from "../../state/queries";
 import { useThreadListV2ShelfPreferences } from "./use-thread-list-v2-shelf-preferences";
@@ -56,7 +57,9 @@ import { useThreadListSearchMatches } from "./useThreadListSearchMatches";
 import { useHomeListOptions } from "../home/home-list-options";
 import {
   ARCHIVED_THREADS_EVENT,
+  ARTIFACTS_EVENT,
   archivedThreadsMenuItem,
+  artifactsMenuItem,
   buildGroupByMenuActions,
   buildHomeListFilterMenu,
   handleGroupByMenuEvent,
@@ -175,6 +178,7 @@ function ThreadNavigationSidebarPane(
   const projects = useProjects();
   const threads = useNavigationThreadShells();
   const openArchivedThreads = useOpenArchivedThreads();
+  const openArtifacts = useOpenArtifacts();
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const searchInputRef = useRef<TextInputInstance>(null);
@@ -450,6 +454,7 @@ function ThreadNavigationSidebarPane(
         ] satisfies MenuAction[])),
     ...buildGroupByMenuActions(groupBy, environments.length),
     archivedThreadsMenuItem,
+    artifactsMenuItem,
   ] satisfies MenuAction[];
   const handleListMenuAction = ({
     nativeEvent,
@@ -459,6 +464,10 @@ function ThreadNavigationSidebarPane(
     const event = nativeEvent.event;
     if (event === ARCHIVED_THREADS_EVENT) {
       openArchivedThreads();
+      return;
+    }
+    if (event === ARTIFACTS_EVENT) {
+      openArtifacts();
       return;
     }
     if (
@@ -796,6 +805,7 @@ function ThreadNavigationSidebarPane(
     onProjectGroupingChange: setProjectGrouping,
     onMachineGroupingToggle: toggleMachineGrouping,
     onOpenArchived: openArchivedThreads,
+    onOpenArtifacts: openArtifacts,
   });
   const nativeHeaderItems = createSidebarHeaderItems({
     filterIcon,

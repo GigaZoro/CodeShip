@@ -319,7 +319,12 @@ const correlateSnapshotWithSource = (
       ),
     );
   }
-  if (!source.supportsPlugins && !source.supportsMcpServers && !source.supportsSkillInstall) {
+  if (
+    !source.supportsPlugins &&
+    !source.supportsMcpServers &&
+    !source.supportsSkillInstall &&
+    !source.supportsSkillToggle
+  ) {
     return Effect.succeed(snapshot);
   }
   return Effect.succeed({
@@ -327,6 +332,7 @@ const correlateSnapshotWithSource = (
     ...(source.supportsPlugins ? { supportsPlugins: true } : {}),
     ...(source.supportsMcpServers ? { supportsMcpServers: true } : {}),
     ...(source.supportsSkillInstall ? { supportsSkillInstall: true } : {}),
+    ...(source.supportsSkillToggle ? { supportsSkillToggle: true } : {}),
   });
 };
 
@@ -344,6 +350,7 @@ const buildSnapshotSource = (instance: ProviderInstance): ProviderSnapshotSource
   supportsPlugins: instance.plugins !== undefined,
   supportsMcpServers: instance.mcp !== undefined,
   supportsSkillInstall: instance.personalSkillsDirectory !== undefined,
+  supportsSkillToggle: instance.setSkillEnabled !== undefined,
 });
 
 export const layer = Layer.effect(

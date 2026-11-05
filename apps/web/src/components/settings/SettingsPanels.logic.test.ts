@@ -6,6 +6,7 @@ import {
   changedRestorableSettingLabels,
   getChangedBrowserSettingLabels,
   hasChangedBackgroundActivitySettings,
+  projectScopedRestorePlan,
   restorableSettingsPatch,
 } from "./SettingsPanels.logic";
 
@@ -109,29 +110,27 @@ describe("page reset", () => {
     ]);
   });
 
-  it("limits a project-scoped reset to settings that scope can store", () => {
-    expect(Object.keys(restorableSettingsPatch("/settings/threads", true))).not.toContain(
-      "snoozeLimitedThreads",
-    );
-    expect(Object.keys(restorableSettingsPatch("/settings/threads", true))).toContain(
-      "sidebarAutoSettleAfterDays",
-    );
-    expect(Object.keys(restorableSettingsPatch("/settings/maintenance", true))).toEqual([
-      "continueThreadsAfterServerUpdate",
-    ]);
-    expect(Object.keys(restorableSettingsPatch("/settings/keybindings", true)).toSorted()).toEqual([
-      "confirmQuit",
-      "sendShortcut",
-    ]);
+  it("under a project scope clears that project's overrides instead of pinning defaults", () => {
     const changedMachineWide = {
       ...DEFAULT_UNIFIED_SETTINGS,
       snoozeLimitedThreads: !DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads,
     };
-    expect(changedRestorableSettingLabels(changedMachineWide, "/settings/threads", true)).toEqual(
-      [],
+    const plan = projectScopedRestorePlan(
+      changedMachineWide,
+      "/settings/threads",
+      new Set(["sidebarAutoSettleAfterDays", "pullRequestMergeMethod"]),
     );
-    expect(changedRestorableSettingLabels(changedMachineWide, "/settings/threads")).toEqual([
-      "Snooze until limits reset",
+    // Machine-wide rows can't be reset from a project; only the project's own overrides clear.
+    expect(plan.clearKeys).toEqual(["sidebarAutoSettleAfterDays"]);
+    expect(plan.labels).toEqual(["Auto-settle inactive threads"]);
+    expect(plan.devicePatch).toEqual({});
+
+    const keybindings = projectScopedRestorePlan(changed, "/settings/keybindings", new Set());
+    expect(keybindings.clearKeys).toEqual([]);
+    expect(keybindings.labels).toEqual(["Send shortcut"]);
+    expect(Object.keys(keybindings.devicePatch).toSorted()).toEqual([
+      "confirmQuit",
+      "sendShortcut",
     ]);
   });
 

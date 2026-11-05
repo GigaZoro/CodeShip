@@ -2,9 +2,12 @@ import type { MenuAction } from "@react-native-menu/menu";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { ThreadListToolbar } from "./ThreadListToolbar";
 import { useOpenArchivedThreads } from "../archive/useOpenArchivedThreads";
+import { useOpenArtifacts } from "../artifacts/useOpenArtifacts";
 import {
   ARCHIVED_THREADS_EVENT,
+  ARTIFACTS_EVENT,
   archivedThreadsMenuItem,
+  artifactsMenuItem,
   buildGroupByMenuActions,
   handleGroupByMenuEvent,
 } from "./home-list-filter-menu";
@@ -18,6 +21,7 @@ function checkedMenuState(checked: boolean) {
 
 export function HomeHeader(props: HomeHeaderProps) {
   const openArchivedThreads = useOpenArchivedThreads();
+  const openArtifacts = useOpenArtifacts();
   const hasCustomListOptions =
     props.selectedEnvironmentId !== null || props.selectedProjectKey !== null;
   const menuActions: MenuAction[] = [
@@ -59,11 +63,16 @@ export function HomeHeader(props: HomeHeaderProps) {
         ] satisfies MenuAction[])),
     ...buildGroupByMenuActions(props.grouping, props.environments.length),
     archivedThreadsMenuItem,
+    artifactsMenuItem,
   ];
   const handleMenuAction = (event: { nativeEvent: { event: string } }) => {
     const id = event.nativeEvent.event;
     if (id === ARCHIVED_THREADS_EVENT) {
       openArchivedThreads();
+      return;
+    }
+    if (id === ARTIFACTS_EVENT) {
+      openArtifacts();
       return;
     }
     if (handleGroupByMenuEvent(id, props)) return;

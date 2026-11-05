@@ -66,6 +66,7 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.providerPluginsAddMarketplace,
       WS_METHODS.providerSkillsExport,
       WS_METHODS.providerSkillsInstall,
+      WS_METHODS.providerSkillsSetEnabled,
       WS_METHODS.providerMcpAdd,
       WS_METHODS.providerMcpRemove,
       WS_METHODS.providerMcpSignIn,

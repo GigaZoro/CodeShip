@@ -29,6 +29,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   // A skill is instructions every session the provider runs here follows.
   [WS_METHODS.providerSkillsExport]: AuthProvidersManageScope,
   [WS_METHODS.providerSkillsInstall]: AuthProvidersManageScope,
+  [WS_METHODS.providerSkillsSetEnabled]: AuthProvidersManageScope,
   // MCP servers start commands and reach services from every session the provider runs here.
   [WS_METHODS.providerMcpAdd]: AuthProvidersManageScope,
   [WS_METHODS.providerMcpRemove]: AuthProvidersManageScope,

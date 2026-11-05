@@ -171,3 +171,94 @@ it.effect("marks the list truncated when more pages exist than the limit", () =>
     assert.isTrue(result.truncated);
   }),
 );
+
+it.effect("leaves out pages their thread hid from the gallery", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      UPDATE orchestration_v2_projection_threads
+      SET payload_json = ${JSON.stringify({
+        providerInstanceId: "codex",
+        hiddenArtifacts: [pageId("thread-a", 2)],
+      })}
+      WHERE thread_id = 'thread-a'
+    `;
+    const library = yield* HtmlRenderLibrary.HtmlRenderLibrary;
+    const result = yield* library.list({ limit: 10 });
+    assert.deepStrictEqual(
+      result.renders.map((page) => page.attachmentId),
+      [pageId("thread-b", 1)],
+    );
+  }).pipe(Effect.provide(testLayer)),
+);
+
+const hideInThreadA = (ids: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      UPDATE orchestration_v2_projection_threads
+      SET payload_json = ${JSON.stringify({
+        providerInstanceId: "codex",
+        hiddenArtifacts: ids,
+      })}
+      WHERE thread_id = 'thread-a'
+    `;
+  });
+
+it.effect("keeps a hidden page hidden when a later revision builds on it", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* hideInThreadA([pageId("thread-a", 2)]);
+    yield* sql`
+      INSERT INTO orchestration_v2_projection_turn_items
+        (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json)
+      VALUES ('a5', 'thread-a', NULL, 0, 'dynamic_tool', 'completed', '2026-01-10', ${JSON.stringify(
+        {
+          toolName: "mcp__t3-code__html_render",
+          completedAt: "2026-01-10",
+          output: {
+            structuredContent: {
+              htmlRender: {
+                attachmentId: pageId("thread-a", 5),
+                title: "Revenue v3",
+                height: 400,
+                revises: pageId("thread-a", 2),
+              },
+            },
+          },
+        },
+      )})
+    `;
+    const library = yield* HtmlRenderLibrary.HtmlRenderLibrary;
+    const result = yield* library.list({ limit: 10 });
+    assert.deepStrictEqual(
+      result.renders.map((page) => page.attachmentId),
+      [pageId("thread-b", 1)],
+    );
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("keeps a hidden page hidden when a rollback makes an older version the newest", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO orchestration_v2_projection_runs
+        (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
+      VALUES ('run-undone-v2', 'thread-a', 10, 'codex', 'rolled_back', '2026-01-01', '{}')
+    `;
+    yield* sql`
+      UPDATE orchestration_v2_projection_turn_items SET run_id = 'run-undone-v2'
+      WHERE turn_item_id = 'a2'
+    `;
+    yield* hideInThreadA([pageId("thread-a", 2)]);
+    const library = yield* HtmlRenderLibrary.HtmlRenderLibrary;
+    const result = yield* library.list({ limit: 10 });
+    assert.deepStrictEqual(
+      result.renders.map((page) => page.attachmentId),
+      [pageId("thread-b", 1)],
+    );
+  }).pipe(Effect.provide(testLayer)),
+);

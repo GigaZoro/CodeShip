@@ -2948,6 +2948,19 @@ export default function ChatView(props: ChatViewProps) {
     persistThreadSettingsForNextTurn,
   });
   const onImplementPlanInNewThreadStable = useStableCallback(onImplementPlanInNewThread);
+  const onLeavePlanMode = async () => {
+    if (!activeThread || interactionMode !== "plan") return;
+    const result = await persistThreadSettingsForNextTurn({
+      threadId: activeThread.id,
+      createdAt: new Date().toISOString(),
+      runtimeMode,
+      interactionMode: DEFAULT_INTERACTION_MODE,
+    });
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      setThreadError(activeThread.id, "Could not leave plan mode. Try again.");
+    }
+  };
+  const onLeavePlanModeStable = useStableCallback(onLeavePlanMode);
 
   const onWorktreeSetupWorkLocally = () => {
     if (!worktreeSetup || worktreeSetup.phase !== "running" || !draftId) {
@@ -3756,6 +3769,7 @@ export default function ChatView(props: ChatViewProps) {
                               onResume={onComposerResumeStable}
                               onInterrupt={onInterruptStable}
                               onImplementPlanInNewThread={onImplementPlanInNewThreadStable}
+                              onLeavePlanMode={onLeavePlanModeStable}
                               onSelectActivePendingUserInputOption={
                                 onSelectActivePendingUserInputOptionStable
                               }

@@ -1,4 +1,5 @@
 import { CopySkillToMachineButton } from "./CopySkillToMachineButton";
+import { useAtomValue } from "@effect/atom-react";
 import { connectionMayStillAnswer } from "@t3tools/client-runtime/connection";
 import type { ProviderSkillSourceKind } from "@t3tools/client-runtime/providerSkills";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -20,7 +21,7 @@ import {
   SearchIcon,
   SparklesIcon,
 } from "lucide-react";
-import { useId, useState, type ReactNode } from "react";
+import { useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import { useOpenInPreferredEditor } from "../../editorPreferences";
@@ -30,7 +31,10 @@ import { cn } from "../../lib/utils";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import { useEnvironment, useEnvironments } from "../../state/environments";
 import { useEnvironmentScope } from "../../state/session";
+import { serverEnvironment } from "../../state/server";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
+import { reportFailure } from "../extensions/commandFailure";
 import { validateExtensionsSearch } from "../extensions/extensionsSearch";
 import { ProviderName } from "../extensions/ProviderTargets";
 import { SkillSourceBadge, skillSourcePresentation } from "../chat/SkillSourceBadge";
@@ -58,11 +62,13 @@ import {
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
+import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import {
   buildSkillsView,
+  canToggleSkill,
   collectProviderSkills,
   countActiveSkillFilters,
   type SkillAgentGroup,
@@ -113,6 +119,8 @@ function useOpenSkillFile(environmentId: EnvironmentId): ((path: string) => void
     });
 }
 
+const WANTED_STATE_GRACE_MS = 5_000;
+
 function SkillRow(props: {
   readonly row: SkillRowModel;
   readonly onOpen: ((path: string) => void) | null;
@@ -120,12 +128,48 @@ function SkillRow(props: {
   readonly machineLabel: string;
   /** Instance ids repeat across machines, so the copy lands in the same agent there. */
   readonly instanceId: ProviderInstanceId;
+  /** The agent advertises a switch; plugin and system skills still have none. */
+  readonly agentCanToggle: boolean;
 }) {
   const { skill, source, missingOn } = props.row;
   const { onOpen } = props;
+  const mayChange = useAtomValue(
+    serverEnvironment.setProviderSkillEnabled.permissionAtom(props.environmentId),
+  );
+  const setSkillEnabled = useAtomCommand(serverEnvironment.setProviderSkillEnabled, {
+    reportFailure: false,
+  });
+  // The wanted state shows at once. A failure drops it; a success keeps it until the refreshed
+  // list catches up, with a cap so a snapshot that never arrives cannot pin the switch.
+  const [wanted, setWanted] = useState<boolean | null>(null);
+  const wantedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showSwitch = props.agentCanToggle && canToggleSkill(props.row);
   const description = skill.shortDescription ?? skill.description;
   const name = formatProviderSkillDisplayName(skill);
   const [expanded, setExpanded] = useState(false);
+  const toggle = (enabled: boolean) => {
+    if (wantedTimer.current !== null) clearTimeout(wantedTimer.current);
+    wantedTimer.current = null;
+    setWanted(enabled);
+    void setSkillEnabled({
+      environmentId: props.environmentId,
+      input: { instanceId: props.instanceId, skillPath: skill.path, enabled },
+    })
+      .then((result) => {
+        reportFailure(
+          `Could not ${enabled ? "enable" : "disable"} ${name}`,
+          result,
+          "The skill was not changed.",
+        );
+        if (result._tag === "Success") {
+          wantedTimer.current = setTimeout(() => setWanted(null), WANTED_STATE_GRACE_MS);
+        } else {
+          setWanted(null);
+        }
+      })
+      .catch(() => setWanted(null));
+  };
+  const enabled = wanted ?? skill.enabled;
   return (
     <li className="relative flex min-w-0 flex-col gap-1 px-4 py-3">
       {onOpen ? (
@@ -165,7 +209,7 @@ function SkillRow(props: {
         </button>
         <span className="min-w-0 truncate font-medium text-sm">{name}</span>
         <SkillSourceBadge kind={source} />
-        {skill.enabled ? null : (
+        {enabled ? null : (
           <Badge size="sm" variant="outline">
             Disabled
           </Badge>
@@ -179,6 +223,26 @@ function SkillRow(props: {
           <Badge size="sm" variant="warning">
             Not on {missingOn.map((machine) => machine.label).join(", ")}
           </Badge>
+        ) : null}
+        {showSwitch ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span className="ms-auto flex items-center">
+                  <Switch
+                    size="sm"
+                    checked={enabled}
+                    disabled={!mayChange || wanted !== null}
+                    aria-label={`Enable ${name}`}
+                    onCheckedChange={toggle}
+                  />
+                </span>
+              }
+            />
+            <TooltipPopup>
+              {mayChange ? (enabled ? "Disable" : "Enable") : "You can't change skills here"}
+            </TooltipPopup>
+          </Tooltip>
         ) : null}
       </div>
       {missingOn.length > 0 ? (
@@ -258,6 +322,7 @@ function SkillAgentSection(props: {
                 environmentId={props.environmentId}
                 machineLabel={props.machineLabel}
                 instanceId={group.provider.instanceId}
+                agentCanToggle={group.provider.snapshot.supportsSkillToggle === true}
               />
             ))}
           </ul>

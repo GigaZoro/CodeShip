@@ -21,6 +21,7 @@ const LOCKED_RENAME_RETRY_DELAY = "100 millis";
 export const writeFileStringAtomically = (input: {
   readonly filePath: string;
   readonly contents: string;
+  readonly preserveMode?: boolean;
 }) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -42,6 +43,14 @@ export const writeFileStringAtomically = (input: {
       const tempPath = path.join(tempDirectory, "contents.tmp");
 
       yield* fs.writeFileString(tempPath, input.contents);
+      if (input.preserveMode && platform !== "win32") {
+        const mode = yield* fs.stat(targetPath).pipe(
+          Effect.map((info) => info.mode & 0o7777),
+          Effect.catchReason("PlatformError", "NotFound", () => Effect.void),
+        );
+        // chmod rather than the write mode, which the umask would narrow.
+        if (mode !== undefined) yield* fs.chmod(tempPath, mode);
+      }
       if (platform !== "win32") return yield* fs.rename(tempPath, targetPath);
 
       // Stop retrying if another save changes the target; read-only targets also return permanent EPERM.

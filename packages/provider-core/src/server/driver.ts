@@ -16,6 +16,7 @@ import type {
   ProviderMcpError,
   ProviderMcpServer,
   ProviderMcpServerConfig,
+  ProviderSkillError,
   ServerProvider,
   ServerProviderWorkspaceSnapshot,
 } from "@t3tools/contracts";
@@ -63,6 +64,14 @@ export interface ProviderInstance {
   readonly plugins?: ProviderPluginManagement;
   /** Where this provider loads personal skills from; absent when it cannot take copied skills. */
   readonly personalSkillsDirectory?: string;
+  /** Turns one skill on or off in the provider's own config; absent when it has no such switch. */
+  readonly setSkillEnabled?: (input: {
+    /** The skill's name as the provider lists it. */
+    readonly name: string;
+    /** The skill's SKILL.md. */
+    readonly path: string;
+    readonly enabled: boolean;
+  }) => Effect.Effect<void, ProviderSkillError>;
   readonly mcp?: ProviderMcpManagement;
   readonly acpSessionManagement?: {
     readonly listSessions: (input: {

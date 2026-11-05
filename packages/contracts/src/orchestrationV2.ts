@@ -439,6 +439,10 @@ const LenientThreadOpens = Schema.NullOr(OrchestrationV2ThreadOpens).pipe(
   Schema.catchDecoding(() => Effect.succeedSome(null)),
 );
 
+const StoredHiddenArtifacts = Schema.Array(Schema.String).pipe(
+  Schema.catchDecoding(() => Effect.succeedSome([])),
+);
+
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
@@ -492,6 +496,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
   activeOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   /** Absent on threads written before tags existed; read as empty. */
   tags: Schema.optional(StoredThreadTags),
+  /** Pages (by html_render attachment id) removed from the Artifacts gallery; the thread keeps rendering them inline. */
+  hiddenArtifacts: Schema.optional(StoredHiddenArtifacts),
   lastVisitedAt: Schema.NullOr(Schema.DateTimeUtc).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
@@ -1885,6 +1891,7 @@ export const OrchestrationV2DomainEvent = Schema.Union([
       "thread.pin-reordered",
       "thread.active-reordered",
       "thread.tags-updated",
+      "thread.artifacts-updated",
       "thread.visited",
       "thread.marked-unread",
       "thread.metadata-updated",
@@ -2771,6 +2778,7 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
       "thread.pin-reordered",
       "thread.active-reordered",
       "thread.tags-updated",
+      "thread.artifacts-updated",
       "thread.visited",
       "thread.marked-unread",
       "thread.pull-request-synced",
@@ -3018,6 +3026,14 @@ export const OrchestrationV2Command = Schema.Union([
     threadId: ThreadId,
     tag: ThreadTag,
     tagged: Schema.Boolean,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.artifact.hide"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    /** An html_render attachment id published by this thread. */
+    attachmentId: TrimmedNonEmptyString,
+    hidden: Schema.Boolean,
   }),
   Schema.Struct({
     type: Schema.Literal("thread.pin.reorder"),

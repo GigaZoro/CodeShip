@@ -139,6 +139,10 @@ import {
   type GuestShareCommand,
 } from "./GuestShareDecider.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
+import {
+  parseThreadSegmentFromAttachmentId,
+  toSafeThreadAttachmentSegment,
+} from "../attachmentStore.ts";
 import { withCommandMetrics } from "../observability/Metrics.ts";
 import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -549,6 +553,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.pin.reorder":
     case "thread.active.reorder":
     case "thread.tag.set":
+    case "thread.artifact.hide":
     case "thread.visit":
     case "thread.mark-unread":
     case "thread.metadata.update":
@@ -3032,6 +3037,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           | "thread.unpin"
           | "thread.pin.reorder"
           | "thread.tag.set"
+          | "thread.artifact.hide"
           | "thread.active.reorder"
           | "thread.mark-unread"
           | "thread.metadata.update"
@@ -3155,6 +3161,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           commandType: command.type,
           cause: `Thread ${command.threadId} is no longer empty.`,
         });
+    }
+    // A page belongs to the thread that published it; a forged id must not poison another thread's list.
+    if (
+      command.type === "thread.artifact.hide" &&
+      parseThreadSegmentFromAttachmentId(command.attachmentId) !==
+        (toSafeThreadAttachmentSegment(command.threadId) ?? undefined)
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Artifact ${command.attachmentId} was not published by thread ${command.threadId}.`,
+      });
     }
     if (command.type === "thread.archive" && thread.archivedAt !== null) {
       return yield* new OrchestratorDispatchError({
@@ -3578,6 +3596,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               : current.filter((tag) => tag !== command.tag),
           };
         }
+        case "thread.artifact.hide": {
+          const current = thread.hiddenArtifacts ?? [];
+          return {
+            ...thread,
+            hiddenArtifacts: command.hidden
+              ? current.includes(command.attachmentId)
+                ? current
+                : [...current, command.attachmentId]
+              : current.filter((id) => id !== command.attachmentId),
+          };
+        }
         case "thread.mark-unread": {
           // Retire the wake before rewinding the visit, preserving its settlement timer.
           const snoozeExpired =
@@ -3952,6 +3981,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return "thread.active-reordered" as const;
         case "thread.tag.set":
           return "thread.tags-updated" as const;
+        case "thread.artifact.hide":
+          return "thread.artifacts-updated" as const;
         case "thread.mark-unread":
           return "thread.marked-unread" as const;
         case "thread.metadata.update":
@@ -13098,6 +13129,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.pin.reorder":
       case "thread.active.reorder":
       case "thread.tag.set":
+      case "thread.artifact.hide":
       case "thread.mark-unread":
       case "thread.metadata.update":
       case "thread.pull-request.link":
