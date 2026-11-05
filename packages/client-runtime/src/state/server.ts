@@ -1678,6 +1678,12 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
+    reorderPinnedScheduledTasks: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:scheduled-task:reorder-pinned",
+      tag: WS_METHODS.scheduledTasksReorderPinned,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
     setScheduledTasksFollowDefaultModel: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:set-follows-default-model",
       tag: WS_METHODS.scheduledTasksSetFollowsDefaultModel,

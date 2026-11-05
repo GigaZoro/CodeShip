@@ -34,6 +34,8 @@ import {
   type ScheduledTaskSetEnabledInput,
   type ScheduledTaskSetFollowsDefaultModelInput,
   type ScheduledTaskSetFollowsDefaultModelResult,
+  type ScheduledTaskReorderPinnedInput,
+  type ScheduledTaskReorderPinnedResult,
   type ScheduledTaskSetPinnedInput,
   type ServerSettings as ServerSettingsValue,
   type ScheduledTaskUpsertInput,
@@ -262,6 +264,7 @@ interface ScheduledTaskRow {
   readonly webhook_secret: string | null;
   /** From scheduled_task_sidebar; absent where a query does not join it. */
   readonly pinned_at?: string | null;
+  readonly pin_order_key?: string | null;
   readonly last_run_thread_id?: string | null;
   readonly follows_default_model?: number;
   readonly shared_revision_at?: string | null;
@@ -316,6 +319,9 @@ export class ScheduledTaskService extends Context.Service<
     readonly setPinned: (
       input: ScheduledTaskSetPinnedInput,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
+    readonly reorderPinned: (
+      input: ScheduledTaskReorderPinnedInput,
+    ) => Effect.Effect<ScheduledTaskReorderPinnedResult, ScheduledTaskError>;
     readonly setFollowsDefaultModel: (
       input: ScheduledTaskSetFollowsDefaultModelInput,
     ) => Effect.Effect<ScheduledTaskSetFollowsDefaultModelResult, ScheduledTaskError>;
@@ -505,6 +511,7 @@ const decodeRow = Effect.fnUntraced(
       runCount: row.run_count,
       ...(webhook === undefined ? {} : { webhook }),
       ...(row.pinned_at === undefined ? {} : { pinnedAt: row.pinned_at }),
+      ...(row.pin_order_key === undefined ? {} : { pinOrderKey: row.pin_order_key }),
       ...(row.last_run_thread_id === undefined ? {} : { lastRunThreadId: row.last_run_thread_id }),
       ...(row.follows_default_model === undefined
         ? {}
@@ -627,9 +634,14 @@ export const layer = Layer.effect(
       CREATE TABLE IF NOT EXISTS scheduled_task_sidebar (
         task_id TEXT PRIMARY KEY,
         pinned_at TEXT,
-        last_run_thread_id TEXT
+        last_run_thread_id TEXT,
+        pin_order_key TEXT
       )
     `;
+    const sidebarColumns = yield* sql<{ name: string }>`PRAGMA table_info(scheduled_task_sidebar)`;
+    if (!sidebarColumns.some((column) => column.name === "pin_order_key")) {
+      yield* sql`ALTER TABLE scheduled_task_sidebar ADD COLUMN pin_order_key TEXT`;
+    }
     // A row means the task runs the scheduled tasks default model instead of its own.
     yield* sql`
       CREATE TABLE IF NOT EXISTS scheduled_task_default_model (task_id TEXT PRIMARY KEY)
@@ -729,6 +741,8 @@ export const layer = Layer.effect(
         webhook_secret,
         (SELECT pinned_at FROM scheduled_task_sidebar s
           WHERE s.task_id = scheduled_tasks.task_id) AS pinned_at,
+        (SELECT pin_order_key FROM scheduled_task_sidebar s
+          WHERE s.task_id = scheduled_tasks.task_id) AS pin_order_key,
         (SELECT last_run_thread_id FROM scheduled_task_sidebar s
           WHERE s.task_id = scheduled_tasks.task_id) AS last_run_thread_id,
         EXISTS (SELECT 1 FROM scheduled_task_default_model d
@@ -793,6 +807,8 @@ export const layer = Layer.effect(
         webhook_secret,
         (SELECT pinned_at FROM scheduled_task_sidebar s
           WHERE s.task_id = scheduled_tasks.task_id) AS pinned_at,
+        (SELECT pin_order_key FROM scheduled_task_sidebar s
+          WHERE s.task_id = scheduled_tasks.task_id) AS pin_order_key,
         (SELECT last_run_thread_id FROM scheduled_task_sidebar s
           WHERE s.task_id = scheduled_tasks.task_id) AS last_run_thread_id,
         EXISTS (SELECT 1 FROM scheduled_task_default_model d
@@ -2404,7 +2420,7 @@ export const layer = Layer.effect(
         INSERT INTO scheduled_task_sidebar (task_id, pinned_at)
         SELECT ${input.id}, ${pinnedAt}
         WHERE EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${input.id})
-        ON CONFLICT (task_id) DO UPDATE SET pinned_at = excluded.pinned_at
+        ON CONFLICT (task_id) DO UPDATE SET pinned_at = excluded.pinned_at, pin_order_key = NULL
         RETURNING task_id
       `.pipe(
         Effect.mapError((cause) =>
@@ -2415,7 +2431,33 @@ export const layer = Layer.effect(
         return yield* taskError("Schedule task not found.", { taskId: input.id });
       }
       yield* notifyChanged;
-      return { task: { ...existing, pinnedAt } };
+      return { task: { ...existing, pinnedAt, pinOrderKey: null } };
+    });
+
+    const reorderPinned: ScheduledTaskService["Service"]["reorderPinned"] = Effect.fn(
+      "ScheduledTaskService.reorderPinned",
+    )(function* (input) {
+      const changed = yield* sql
+        .withTransaction(
+          Effect.forEach(
+            input.assignments,
+            ({ id, orderKey }) =>
+              sql<{ task_id: ScheduledTaskId }>`
+              UPDATE scheduled_task_sidebar SET pin_order_key = ${orderKey}
+              WHERE task_id = ${id} AND pinned_at IS NOT NULL
+                AND EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${id})
+              RETURNING task_id
+            `,
+          ),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not reorder pinned schedule tasks.", { cause }),
+          ),
+        );
+      const ids = changed.flat().map((row) => row.task_id);
+      if (ids.length > 0) yield* notifyChanged;
+      return { ids };
     });
 
     const setFollowsDefaultModel: ScheduledTaskService["Service"]["setFollowsDefaultModel"] =
@@ -3476,6 +3518,7 @@ export const layer = Layer.effect(
       upsert,
       setEnabled,
       setPinned,
+      reorderPinned,
       setFollowsDefaultModel,
       delete: deleteTask,
       applyShared,

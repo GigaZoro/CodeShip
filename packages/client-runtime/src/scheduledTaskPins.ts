@@ -1,5 +1,7 @@
 import type { EnvironmentId, ScheduledTask } from "@t3tools/contracts";
 
+import { planPinnedReorder } from "./state/threadSort.ts";
+
 export type PinnedTaskStatus =
   | "starting"
   | "working"
@@ -97,28 +99,140 @@ export function intervalWaitProgress(
   return Math.min(1, Math.max(0, 1 - remainingMs / task.schedule.everyMs));
 }
 
-interface PinnedTaskEntry {
+export interface PinnedTaskEntry {
   readonly environmentId: EnvironmentId;
   readonly task: ScheduledTask;
 }
 
+export function pinnedTaskKey(entry: {
+  readonly environmentId: EnvironmentId;
+  readonly task: Pick<ScheduledTask, "id">;
+}): string {
+  return `${entry.environmentId}:${entry.task.id}`;
+}
+
 /**
- * The pinned tasks across these environments, oldest pin first, so pinning
- * another task does not move the ones already there.
+ * Tasks moved by hand first, in their order, then the rest oldest pin first,
+ * so pinning another task does not move the ones already there.
  */
+function sortPinnedTasks(entries: ReadonlyArray<PinnedTaskEntry>): PinnedTaskEntry[] {
+  return [...entries].sort((left, right) => {
+    const leftKey = left.task.pinOrderKey ?? null;
+    const rightKey = right.task.pinOrderKey ?? null;
+    if (leftKey !== rightKey) {
+      if (leftKey === null) return 1;
+      if (rightKey === null) return -1;
+      return leftKey < rightKey ? -1 : 1;
+    }
+    return (
+      (left.task.pinnedAt ?? "").localeCompare(right.task.pinnedAt ?? "") ||
+      left.task.id.localeCompare(right.task.id) ||
+      left.environmentId.localeCompare(right.environmentId)
+    );
+  });
+}
+
+/** The pinned tasks across these environments, in sidebar order. */
 export function collectPinnedTasks(
   environmentIds: ReadonlyArray<EnvironmentId>,
   tasksFor: (environmentId: EnvironmentId) => ReadonlyArray<ScheduledTask>,
 ): PinnedTaskEntry[] {
-  return environmentIds
-    .flatMap((environmentId) =>
+  return sortPinnedTasks(
+    environmentIds.flatMap((environmentId) =>
       tasksFor(environmentId)
         .filter((task) => task.pinnedAt != null)
         .map((task) => ({ environmentId, task })),
-    )
-    .sort(
-      (left, right) =>
-        (left.task.pinnedAt ?? "").localeCompare(right.task.pinnedAt ?? "") ||
-        left.task.id.localeCompare(right.task.id),
-    );
+    ),
+  );
+}
+
+export interface PinnedTaskOrderAssignment {
+  readonly environmentId: EnvironmentId;
+  readonly id: ScheduledTask["id"];
+  readonly orderKey: string;
+}
+
+/**
+ * The order keys that put `movedKey` where `visibleOrder` has it. Tasks a project
+ * filter hides keep their keys and are never written.
+ */
+export function planPinnedTaskMove(input: {
+  readonly pinned: ReadonlyArray<PinnedTaskEntry>;
+  readonly visibleOrder: readonly string[];
+  readonly movedKey: string;
+}): PinnedTaskOrderAssignment[] {
+  const byKey = new Map(input.pinned.map((entry) => [pinnedTaskKey(entry), entry]));
+  return planPinnedReorder({
+    orderedIds: input.visibleOrder,
+    keysById: new Map(
+      input.pinned.map((entry) => [pinnedTaskKey(entry), entry.task.pinOrderKey ?? null]),
+    ),
+    movedId: input.movedKey,
+  }).flatMap(({ id, orderKey }) => {
+    const entry = byKey.get(id);
+    return entry === undefined
+      ? []
+      : [{ environmentId: entry.environmentId, id: entry.task.id, orderKey }];
+  });
+}
+
+interface HeldPinOrderKey {
+  readonly orderKey: string;
+  /** Server keys this client has written over; the held key shows while the server has one. */
+  readonly replaces: ReadonlyArray<string | null>;
+  readonly pinnedAt: string | null | undefined;
+}
+
+/** Keys this client sent, by `pinnedTaskKey`, shown until the server's list catches up. */
+export type HeldPinOrder = ReadonlyMap<string, HeldPinOrderKey>;
+
+function isHeldKeyPending(task: ScheduledTask, hold: HeldPinOrderKey): boolean {
+  // A re-pin or another client's move replaces the key, so the server's wins.
+  return task.pinnedAt === hold.pinnedAt && hold.replaces.includes(task.pinOrderKey ?? null);
+}
+
+export function holdPinOrder(
+  pinned: ReadonlyArray<PinnedTaskEntry>,
+  held: HeldPinOrder | null,
+  assignments: ReadonlyArray<PinnedTaskOrderAssignment>,
+): HeldPinOrder {
+  const byKey = new Map(pinned.map((entry) => [pinnedTaskKey(entry), entry]));
+  const next = new Map<string, HeldPinOrderKey>();
+  for (const [key, hold] of held ?? []) {
+    const entry = byKey.get(key);
+    if (entry !== undefined && isHeldKeyPending(entry.task, hold)) next.set(key, hold);
+  }
+  for (const assignment of assignments) {
+    const key = pinnedTaskKey({
+      environmentId: assignment.environmentId,
+      task: { id: assignment.id },
+    });
+    const entry = byKey.get(key);
+    if (entry === undefined) continue;
+    const earlier = next.get(key);
+    next.set(key, {
+      orderKey: assignment.orderKey,
+      replaces:
+        earlier === undefined
+          ? [entry.task.pinOrderKey ?? null]
+          : [...earlier.replaces, earlier.orderKey],
+      pinnedAt: entry.task.pinnedAt,
+    });
+  }
+  return next;
+}
+
+/** `pinned` from the server, with the keys this client is still waiting on, re-sorted. */
+export function applyHeldPinOrder(
+  pinned: ReadonlyArray<PinnedTaskEntry>,
+  held: HeldPinOrder,
+): PinnedTaskEntry[] {
+  return sortPinnedTasks(
+    pinned.map((entry) => {
+      const hold = held.get(pinnedTaskKey(entry));
+      return hold !== undefined && isHeldKeyPending(entry.task, hold)
+        ? { ...entry, task: { ...entry.task, pinOrderKey: hold.orderKey } }
+        : entry;
+    }),
+  );
 }

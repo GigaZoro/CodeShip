@@ -2,11 +2,15 @@ import { EnvironmentId, type ScheduledTask } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  applyHeldPinOrder,
   collectPinnedTasks,
   formatNextRunCountdown,
+  holdPinOrder,
   intervalWaitProgress,
+  pinnedTaskKey,
   resolvePinnedTaskStatus,
   scheduledTasksForThread,
+  type HeldPinOrder,
 } from "./scheduledTaskPins.ts";
 
 describe("resolvePinnedTaskStatus", () => {
@@ -121,6 +125,85 @@ describe("collectPinnedTasks", () => {
       "server:ci",
       "laptop:deploy",
     ]);
+  });
+
+  it("puts tasks moved by hand first, in their order, then the rest by pin time", () => {
+    const task = (id: string, pinnedAt: string, pinOrderKey: string | null) =>
+      ({ id, pinnedAt, pinOrderKey }) as unknown as ScheduledTask;
+    const laptop = EnvironmentId.make("laptop");
+    const server = EnvironmentId.make("server");
+    const tasks = new Map([
+      [
+        laptop,
+        [
+          task("deploy", "2026-11-02T10:00:00.000Z", "t"),
+          task("new", "2026-11-02T09:00:00.000Z", null),
+        ],
+      ],
+      [
+        server,
+        [
+          task("ci", "2026-11-02T11:00:00.000Z", "m"),
+          task("old", "2026-11-02T08:00:00.000Z", null),
+        ],
+      ],
+    ]);
+
+    const pinned = collectPinnedTasks([laptop, server], (id) => tasks.get(id) ?? []);
+
+    expect(pinned.map(pinnedTaskKey)).toEqual([
+      "server:ci",
+      "laptop:deploy",
+      "server:old",
+      "laptop:new",
+    ]);
+  });
+});
+
+describe("applyHeldPinOrder", () => {
+  const environmentId = EnvironmentId.make("laptop");
+  const entry = (
+    id: string,
+    pinOrderKey: string | null,
+    pinnedAt = "2026-11-02T10:00:00.000Z",
+  ) => ({
+    environmentId,
+    task: { id, pinnedAt, pinOrderKey } as unknown as ScheduledTask,
+  });
+  const order = (pinned: ReadonlyArray<ReturnType<typeof entry>>, held: HeldPinOrder) =>
+    applyHeldPinOrder(pinned, held).map(({ task }) => task.id);
+  const sent = [entry("a", "c"), entry("b", "m")];
+  // The client moved b above a.
+  const held = holdPinOrder(sent, null, [{ environmentId, id: sent[1]!.task.id, orderKey: "b" }]);
+
+  it.each([
+    { name: "before the server answers", server: sent, expected: ["b", "a"] },
+    {
+      name: "once the server has the key",
+      server: [entry("a", "c"), entry("b", "b")],
+      expected: ["b", "a"],
+    },
+    {
+      name: "after another client moves it",
+      server: [entry("a", "c"), entry("b", "x")],
+      expected: ["a", "b"],
+    },
+    {
+      name: "after it is unpinned and pinned again",
+      server: [entry("a", "c"), entry("b", null, "2026-11-03T10:00:00.000Z")],
+      expected: ["a", "b"],
+    },
+  ])("$name", ({ server, expected }) => {
+    expect(order(server, held)).toEqual(expected);
+  });
+
+  it("keeps an earlier move while a second one is in flight", () => {
+    const again = holdPinOrder(sent, held, [
+      { environmentId, id: sent[0]!.task.id, orderKey: "an" },
+    ]);
+    expect(order(sent, again)).toEqual(["a", "b"]);
+    // The first move lands before the second.
+    expect(order([entry("a", "c"), entry("b", "b")], again)).toEqual(["a", "b"]);
   });
 });
 

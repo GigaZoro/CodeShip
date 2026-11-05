@@ -499,6 +499,9 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
 
 it.effect("a pin and the last run's thread survive edits and leave with the task", () =>
   Effect.gen(function* () {
+    const outerSql = yield* SqlClient.SqlClient;
+    // The table as it was before pin order keys, to cover the upgrade.
+    yield* outerSql`CREATE TABLE scheduled_task_sidebar (task_id TEXT PRIMARY KEY, pinned_at TEXT, last_run_thread_id TEXT)`;
     const runThreadId = ThreadId.make("thread:started-by-run");
     const layer = ScheduledTaskService.layer.pipe(
       Layer.provide(
@@ -554,6 +557,14 @@ it.effect("a pin and the last run's thread survive edits and leave with the task
 
       const pinned = yield* service.setPinned({ id: task.id, pinned: true });
       assert.isNotNull(pinned.task.pinnedAt ?? null);
+      assert.isNull(pinned.task.pinOrderKey ?? null);
+      const reordered = yield* service.reorderPinned({
+        assignments: [
+          { id: task.id, orderKey: "m" },
+          { id: ScheduledTaskId.make("task:missing"), orderKey: "n" },
+        ],
+      });
+      assert.deepEqual(reordered.ids, [task.id]);
       const run = yield* service.runNow({ id: task.id });
       assert.equal(run.threadId, runThreadId);
       assert.equal(run.task.lastRunThreadId, runThreadId);
@@ -562,10 +573,16 @@ it.effect("a pin and the last run's thread survive edits and leave with the task
       const edited = yield* listed();
       assert.equal(edited?.title, "Check CI and deploys");
       assert.equal(edited?.pinnedAt, pinned.task.pinnedAt);
+      assert.equal(edited?.pinOrderKey, "m");
       assert.equal(edited?.lastRunThreadId, runThreadId);
 
       yield* service.setPinned({ id: task.id, pinned: false });
       assert.isNull((yield* listed())?.pinnedAt ?? null);
+      assert.isNull((yield* listed())?.pinOrderKey ?? null);
+      const afterUnpin = yield* service.reorderPinned({
+        assignments: [{ id: task.id, orderKey: "p" }],
+      });
+      assert.lengthOf(afterUnpin.ids, 0);
 
       yield* service.delete({ id: task.id });
       const leftover = yield* sql`SELECT task_id FROM scheduled_task_sidebar`;

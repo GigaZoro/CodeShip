@@ -1,12 +1,33 @@
+import {
+  closestCenter,
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import { restrictToFirstScrollableAncestor, restrictToVerticalAxis } from "@dnd-kit/modifiers";
+import {
+  arrayMove,
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigate } from "@tanstack/react-router";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
+  applyHeldPinOrder,
   collectPinnedTasks,
   formatNextRunCountdown,
+  holdPinOrder,
   intervalWaitProgress,
+  pinnedTaskKey,
   pinnedTaskRunThreadId,
+  planPinnedTaskMove,
   resolvePinnedTaskStatus,
+  type HeldPinOrder,
   type PinnedTaskStatus,
 } from "@t3tools/client-runtime/scheduled-task-pins";
 import {
@@ -34,6 +55,7 @@ import {
 } from "lucide-react";
 import {
   memo,
+  useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
@@ -89,7 +111,11 @@ const STATUS_DISPLAY: Record<
   paused: { label: "Paused", icon: PauseIcon, className: "text-muted-foreground" },
 };
 
-type PinnedTaskMenuId = "open-run" | "edit" | "run-now" | "unpin";
+type PinnedTaskMenuId = "open-run" | "edit" | "run-now" | "move-up" | "move-down" | "unpin";
+
+// Module constants keep dnd-kit's sensor and modifier inputs stable across renders.
+const PINNED_TASK_POINTER_OPTIONS = { activationConstraint: { distance: 6 } };
+const PINNED_TASK_DRAG_MODIFIERS = [restrictToVerticalAxis, restrictToFirstScrollableAncestor];
 
 // Each ticks once a second on the shared clock, so only these spans re-render.
 function NextRunCountdown(props: { nextRunAt: string }) {
@@ -115,10 +141,14 @@ function IntervalWaitBar(props: { task: ScheduledTask }) {
 }
 
 const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
+  sortableId: string;
   environmentId: EnvironmentId;
   task: ScheduledTask;
   projectDisplayName: string | null;
   routeThreadKey: string | null;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMove: (sortableId: string, offset: -1 | 1) => void;
   onNavigateToThread: (threadRef: ScopedThreadRef) => void;
 }) {
   const { environmentId, task, onNavigateToThread } = props;
@@ -126,6 +156,12 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
   const canOperate = useAtomValue(
     serverEnvironment.setScheduledTaskPinned.permissionAtom(environmentId),
   );
+  // Servers without reordering leave pinOrderKey out of the task.
+  const canReorder = canOperate && task.pinOrderKey !== undefined;
+  const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: props.sortableId,
+    disabled: !canReorder,
+  });
   const setPinned = useSetScheduledTaskPinned();
   const runNow = useAtomCommand(serverEnvironment.runScheduledTaskNow, {
     label: "sidebar scheduled task run now",
@@ -180,6 +216,23 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
               disabled: !canOperate || status === "starting",
             },
           ]),
+      ...(canReorder
+        ? [
+            {
+              id: "move-up" as const,
+              label: "Move up",
+              icon: "arrow-up",
+              disabled: !props.canMoveUp,
+              separatorBefore: true,
+            },
+            {
+              id: "move-down" as const,
+              label: "Move down",
+              icon: "arrow-down",
+              disabled: !props.canMoveDown,
+            },
+          ]
+        : []),
       {
         id: "unpin",
         label: "Unpin from sidebar",
@@ -211,6 +264,12 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
         }
         return;
       }
+      case "move-up":
+        props.onMove(props.sortableId, -1);
+        return;
+      case "move-down":
+        props.onMove(props.sortableId, 1);
+        return;
       case "unpin":
         await setPinned(environmentId, task, false);
         return;
@@ -240,7 +299,12 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
 
   const StatusIcon = display?.icon;
   return (
-    <li className="list-none py-0.5">
+    <li
+      ref={setNodeRef}
+      style={{ transform: CSS.Translate.toString(transform), transition }}
+      {...listeners}
+      className={cn("list-none py-0.5", isDragging && "relative z-20")}
+    >
       <div
         role="treeitem"
         tabIndex={-1}
@@ -252,6 +316,8 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
         className={cn(
           "group/sidebar-row relative w-full cursor-pointer overflow-hidden rounded-md text-left text-sidebar-foreground outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
           isActive ? "bg-sidebar-row-active" : "hover:bg-sidebar-row-hover",
+          isDragging &&
+            "bg-sidebar bg-linear-to-b from-sidebar-row-active to-sidebar-row-active shadow-lg",
         )}
         onClick={openRun}
         onContextMenu={handleContextMenu}
@@ -326,12 +392,83 @@ export const SidebarPinnedTasksBlock = memo(function SidebarPinnedTasksBlock(pro
     true,
     Schema.Boolean,
   );
-  const entries = useAtomValue(pinnedTasksAtom(props.environmentIdsKey)).filter(
+  // Keys this client sent, shown until the server's list reflects them, so a drop does not snap back.
+  const [held, setHeld] = useState<HeldPinOrder | null>(null);
+  const reorder = useAtomCommand(serverEnvironment.reorderPinnedScheduledTasks, {
+    label: "sidebar scheduled task reorder",
+  });
+  const sensors = useSensors(useSensor(PointerSensor, PINNED_TASK_POINTER_OPTIONS));
+  const collected = useAtomValue(pinnedTasksAtom(props.environmentIdsKey));
+  const pinned = held === null ? collected : applyHeldPinOrder(collected, held);
+  const entries = pinned.filter(
     ({ environmentId, task }) =>
       props.scopedProjectKeys === null ||
       props.scopedProjectKeys.has(`${environmentId}:${task.projectId}`),
   );
   if (entries.length === 0) return null;
+  const visibleKeys = entries.map(pinnedTaskKey);
+
+  const moveTo = (movedKey: string, toIndex: number) => {
+    const fromIndex = visibleKeys.indexOf(movedKey);
+    if (fromIndex === -1 || toIndex < 0 || toIndex >= visibleKeys.length || toIndex === fromIndex) {
+      return;
+    }
+    const assignments = planPinnedTaskMove({
+      pinned,
+      visibleOrder: arrayMove(visibleKeys, fromIndex, toIndex),
+      movedKey,
+    });
+    if (assignments.length === 0) return;
+    const taskByKey = new Map(pinned.map((entry) => [pinnedTaskKey(entry), entry.task]));
+    // A move that would rewrite a task this client cannot reorder is not applied at all.
+    if (
+      assignments.some(
+        (assignment) =>
+          taskByKey.get(
+            pinnedTaskKey({ environmentId: assignment.environmentId, task: assignment }),
+          )?.pinOrderKey === undefined ||
+          !readEnvironmentScope(assignment.environmentId, AuthOrchestrationOperateScope),
+      )
+    ) {
+      return;
+    }
+    const nextHeld = holdPinOrder(collected, held, assignments);
+    setHeld(nextHeld);
+    const byEnvironment = new Map<
+      EnvironmentId,
+      Array<{ id: ScheduledTask["id"]; orderKey: string }>
+    >();
+    for (const { environmentId, id, orderKey } of assignments) {
+      byEnvironment.set(environmentId, [
+        ...(byEnvironment.get(environmentId) ?? []),
+        { id, orderKey },
+      ]);
+    }
+    void (async () => {
+      const results = await Promise.all(
+        [...byEnvironment].map(([environmentId, environmentAssignments]) =>
+          reorder({ environmentId, input: { assignments: environmentAssignments } }),
+        ),
+      );
+      const failure = results.find((result) => result._tag === "Failure");
+      if (failure === undefined) return;
+      setHeld((current) => (current === nextHeld ? null : current));
+      if (isAtomCommandInterrupted(failure)) return;
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not reorder pinned tasks",
+          description: String(squashAtomCommandFailure(failure)),
+        }),
+      );
+    })();
+  };
+  const moveBy = (movedKey: string, offset: -1 | 1) =>
+    moveTo(movedKey, visibleKeys.indexOf(movedKey) + offset);
+  const handleDragEnd = ({ active, over }: DragEndEvent) => {
+    if (over === null || active.id === over.id) return;
+    moveTo(String(active.id), visibleKeys.indexOf(String(over.id)));
+  };
   const content = (
     <>
       <li className="mx-0.5 h-8 shrink-0 list-none">
@@ -346,19 +483,33 @@ export const SidebarPinnedTasksBlock = memo(function SidebarPinnedTasksBlock(pro
           Scheduled
         </CollapsibleSectionHeader>
       </li>
-      {expanded &&
-        entries.map(({ environmentId, task }) => (
-          <SidebarPinnedTaskRow
-            key={`${environmentId}:${task.id}`}
-            environmentId={environmentId}
-            task={task}
-            projectDisplayName={
-              props.projectDisplayNameByKey.get(`${environmentId}:${task.projectId}`) ?? null
-            }
-            routeThreadKey={props.routeThreadKey}
-            onNavigateToThread={props.onNavigateToThread}
-          />
-        ))}
+      {expanded && (
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          modifiers={PINNED_TASK_DRAG_MODIFIERS}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext items={visibleKeys} strategy={verticalListSortingStrategy}>
+            {entries.map(({ environmentId, task }, index) => (
+              <SidebarPinnedTaskRow
+                key={visibleKeys[index]}
+                sortableId={visibleKeys[index]!}
+                environmentId={environmentId}
+                task={task}
+                projectDisplayName={
+                  props.projectDisplayNameByKey.get(`${environmentId}:${task.projectId}`) ?? null
+                }
+                routeThreadKey={props.routeThreadKey}
+                canMoveUp={index > 0}
+                canMoveDown={index < entries.length - 1}
+                onMove={moveBy}
+                onNavigateToThread={props.onNavigateToThread}
+              />
+            ))}
+          </SortableContext>
+        </DndContext>
+      )}
     </>
   );
   if (props.inPanel) {

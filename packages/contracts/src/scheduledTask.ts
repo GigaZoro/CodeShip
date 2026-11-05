@@ -331,6 +331,8 @@ export const ScheduledTask = Schema.Struct({
   webhook: Schema.optional(ScheduledTaskWebhookEndpoint),
   /** Pinned tasks show in the sidebar. Absent from servers without pinning. */
   pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** Where a pinned task sits once moved by hand; null until then. Absent from servers without reordering. */
+  pinOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   /** The thread the last successful run used: the bound thread, or the one it started. */
   lastRunThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   /** Runs the scheduled tasks default model, already resolved into `modelSelection`. */
@@ -453,6 +455,19 @@ export const ScheduledTaskSetPinnedInput = Schema.Struct({
   pinned: Schema.Boolean,
 });
 export type ScheduledTaskSetPinnedInput = typeof ScheduledTaskSetPinnedInput.Type;
+
+export const ScheduledTaskReorderPinnedInput = Schema.Struct({
+  assignments: Schema.Array(
+    Schema.Struct({ id: ScheduledTaskId, orderKey: TrimmedNonEmptyString }),
+  ).check(Schema.isMinLength(1)),
+});
+export type ScheduledTaskReorderPinnedInput = typeof ScheduledTaskReorderPinnedInput.Type;
+
+export const ScheduledTaskReorderPinnedResult = Schema.Struct({
+  /** The tasks that took their key; one since unpinned or deleted is left out. */
+  ids: Schema.Array(ScheduledTaskId),
+});
+export type ScheduledTaskReorderPinnedResult = typeof ScheduledTaskReorderPinnedResult.Type;
 
 export const ScheduledTaskSetFollowsDefaultModelInput = Schema.Struct({
   ids: Schema.Array(ScheduledTaskId).check(Schema.isMinLength(1)),

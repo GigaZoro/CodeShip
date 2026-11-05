@@ -73,6 +73,9 @@ task's menu. Pins are saved on the environment, so every device connected to it 
 
 On web and desktop, pinned tasks appear in the collapsible **Scheduled** section above
 **Needs you** on the right. In narrower windows and on mobile, they stay in the thread list.
+To change their order on web and desktop, drag a pinned task, or right-click it and choose
+**Move up** or **Move down**. Every device shows the same order, and a newly pinned task goes
+to the bottom.
 
 Tasks are not pinned automatically by default. Turn on **Automatically pin scheduled tasks** in
 **Settings → General** to pin new tasks when they are created. Changing this setting leaves
