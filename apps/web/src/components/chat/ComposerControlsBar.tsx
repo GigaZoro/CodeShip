@@ -142,21 +142,30 @@ export function ComposerControlsBar(props: {
     measuredHiddenBlockCount,
   });
   const controlSize = composerControlsCollapsed ? "xs" : "sm";
+  // Auto takes its model and options from Settings, including when the chat still reports an older pick.
+  const autoSelection =
+    selectedModelSelection.autoAccount === true && multipleModelSelections === null
+      ? autoPick
+      : null;
+  const autoOn = autoSelection !== null;
+  const autoProvider = autoSelection
+    ? providerInstanceEntries.find((entry) => entry.instanceId === autoSelection.instanceId)
+    : undefined;
   const traitsInput = resolveComposerTraitsInput({
-    provider: selectedProvider,
-    instanceId: selectedInstanceId,
+    provider: autoProvider?.driverKind ?? selectedProvider,
+    instanceId: autoSelection?.instanceId ?? selectedInstanceId,
     ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
     ...(routeKind === "draft" && draftId ? { draftId } : {}),
-    model: selectedModel,
-    models: selectedProviderModels,
-    modelOptions: composerModelOptions?.[selectedInstanceId],
-    reportedModelSelection,
+    model: autoSelection?.model ?? selectedModel,
+    models: autoProvider?.models ?? selectedProviderModels,
+    modelOptions: autoSelection
+      ? autoSelection.options
+      : composerModelOptions?.[selectedInstanceId],
+    reportedModelSelection: autoOn ? undefined : reportedModelSelection,
     promptUltrathink,
     onPromptEdit,
   });
   const effort = describeComposerEffort(traitsInput, props.effortDisplay, controlSize);
-  // Auto takes its model and options from Settings, so the picker offers none of its own.
-  const autoOn = autoPick !== null && selectedModelSelection.autoAccount === true;
   const restingBlockDefs = [
     {
       id: "mode",
@@ -189,14 +198,16 @@ export function ComposerControlsBar(props: {
       autoPick={autoPick}
       onProviderModelSelect={onProviderModelSelect}
       activeInstanceId={
-        providerCatalogPending
+        autoSelection?.instanceId ??
+        (providerCatalogPending
           ? (activeThreadModelSelection?.instanceId ?? selectedInstanceId)
-          : selectedInstanceId
+          : selectedInstanceId)
       }
       model={
-        providerCatalogPending
+        autoSelection?.model ??
+        (providerCatalogPending
           ? (activeThreadModelSelection?.model ?? selectedModelForPickerWithCustomFallback)
-          : selectedModelForPickerWithCustomFallback
+          : selectedModelForPickerWithCustomFallback)
       }
       lockedProvider={lockedProvider}
       lockedContinuationGroupKey={lockedContinuationGroupKey}
