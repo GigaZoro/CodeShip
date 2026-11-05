@@ -592,6 +592,33 @@ it.layer(
     "C:\\Program Files\\WinGet\\Packages\\Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe\\claude.exe";
   const nativeClaude = "C:\\Users\\me\\.local\\bin\\claude.exe";
 
+  it.effect("asks a native updater's own channel instead of the npm registry", () =>
+    Effect.gen(function* () {
+      const capabilities = yield* resolveInstall({
+        definition: {
+          ...claudeUpdate,
+          nativeUpdate: {
+            ...claudeUpdate.nativeUpdate,
+            lookupLatestVersion: () => Effect.succeed("2.1.311"),
+          },
+        },
+        resolved: nativeClaude,
+        real: nativeClaude,
+      });
+
+      expect(capabilities.latestVersion).toBeNull();
+      expect(
+        yield* resolveLatestProviderVersion(capabilities).pipe(
+          Effect.provide(ProviderLatestVersions.layer),
+          Effect.provideService(
+            HttpClient.HttpClient,
+            HttpClient.make(() => Effect.die("the npm registry must not be queried")),
+          ),
+        ),
+      ).toBe("2.1.311");
+    }),
+  );
+
   it.effect.each([
     { name: "a user-scope link", resolved: userWinGetLink, real: userWinGetPackage },
     { name: "a user-scope package", resolved: userWinGetPackage, real: userWinGetPackage },

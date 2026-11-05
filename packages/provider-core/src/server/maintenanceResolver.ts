@@ -88,6 +88,10 @@ export interface PackageManagedProviderMaintenanceDefinition {
     readonly isCommandPath?: (commandPath: string) => boolean;
     /** The updater cannot detect installs outside `isCommandPath`, so leave those manual-only. */
     readonly requiresCommandPath?: boolean;
+    /** The version the native updater installs when it follows its own release channel instead of npm's latest tag. */
+    readonly lookupLatestVersion?: (
+      context: ProviderMaintenanceResolutionContext,
+    ) => Effect.Effect<string | null>;
     readonly env?:
       | NodeJS.ProcessEnv
       | ((context: ProviderMaintenanceResolutionContext) => NodeJS.ProcessEnv);
@@ -529,6 +533,12 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
         platform: context.platform,
         ...(nativeEnv
           ? { env: typeof nativeEnv === "function" ? nativeEnv(context) : nativeEnv }
+          : {}),
+        ...(nativeUpdate.lookupLatestVersion
+          ? {
+              latestVersion: null,
+              lookupLatestVersion: nativeUpdate.lookupLatestVersion(context),
+            }
           : {}),
       })
     : manual;

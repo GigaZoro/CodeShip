@@ -9,6 +9,7 @@ import * as Path from "effect/Path";
 import {
   discoverClaudeSkills,
   linkClaudeSharedSkills,
+  readClaudeAutoUpdatesChannel,
   setClaudeSkillOverride,
 } from "./ClaudeSkills.ts";
 import { planClaudeSkillDispatch } from "./ClaudeSkillDispatch.ts";
@@ -614,6 +615,23 @@ it.layer(Layer.mergeAll(NodeServices.layer, isolatedHome))("discoverClaudeSkills
         explicitSkills.map((skill) => skill.name),
         ["explicit-skill"],
       );
+    }),
+  );
+
+  it.effect("reads autoUpdatesChannel from the settings under CLAUDE_CONFIG_DIR", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-channel-" });
+      yield* fs.writeFileString(
+        path.join(tempDir, "settings.json"),
+        JSON.stringify({ autoUpdatesChannel: "stable" }),
+      );
+      const emptyDir = path.join(tempDir, "empty");
+      yield* fs.makeDirectory(emptyDir);
+
+      assert.equal(yield* readClaudeAutoUpdatesChannel({ CLAUDE_CONFIG_DIR: tempDir }), "stable");
+      assert.equal(yield* readClaudeAutoUpdatesChannel({ CLAUDE_CONFIG_DIR: emptyDir }), undefined);
     }),
   );
 

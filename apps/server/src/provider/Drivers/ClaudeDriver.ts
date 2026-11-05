@@ -15,6 +15,8 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
+import * as HttpClientRequest from "effect/http/HttpClientRequest";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { ChildProcessSpawner } from "effect/process";
 
 import { makeClaudeTextGeneration } from "../../textGeneration/ClaudeTextGeneration.ts";
@@ -31,7 +33,7 @@ import { ProviderDriverError } from "../Errors.ts";
 import { claudeUsageReader } from "./claudeUsage.ts";
 import { makeClaudeScopedLimitNames } from "../claudeUsageLimits.ts";
 import * as ClaudeResetCredits from "../claudeResetCredits.ts";
-import { setClaudeSkillOverride } from "./ClaudeSkills.ts";
+import { readClaudeAutoUpdatesChannel, setClaudeSkillOverride } from "./ClaudeSkills.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import {
   checkClaudeProviderStatus,
@@ -99,14 +101,50 @@ function isClaudeNativeCommandPath(commandPath: string): boolean {
   );
 }
 
-const UPDATE = makePackageManagedProviderMaintenanceResolver({
-  provider: DRIVER_KIND,
-  npmPackageName: "@anthropic-ai/claude-code",
-  nativeUpdate: {
-    args: ["update"],
-    isCommandPath: isClaudeNativeCommandPath,
-  },
+const CLAUDE_RELEASES_URL = "https://downloads.claude.ai/claude-code-releases";
+const CLAUDE_RELEASE_LOOKUP_TIMEOUT = Duration.seconds(4);
+const CLAUDE_CHANNEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const CLAUDE_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
+// `claude update` follows the autoUpdatesChannel in Claude's settings, not npm's latest tag.
+const lookupClaudeChannelVersion = Effect.fn("ClaudeDriver.lookupChannelVersion")(function* (
+  environment: NodeJS.ProcessEnv,
+) {
+  const configured = yield* readClaudeAutoUpdatesChannel(environment);
+  const channel = configured?.trim() || "latest";
+  if (!CLAUDE_CHANNEL_PATTERN.test(channel)) return null;
+  const client = yield* HttpClient.HttpClient;
+  const body = yield* client
+    .execute(HttpClientRequest.get(`${CLAUDE_RELEASES_URL}/${channel}`))
+    .pipe(
+      Effect.flatMap(HttpClientResponse.filterStatusOk),
+      Effect.flatMap((response) => response.text),
+      Effect.timeout(CLAUDE_RELEASE_LOOKUP_TIMEOUT),
+      Effect.orElseSucceed(() => ""),
+    );
+  const version = body.trim();
+  return CLAUDE_VERSION_PATTERN.test(version) ? version : null;
 });
+
+const makeUpdateResolver = (services: {
+  readonly httpClient: HttpClient.HttpClient;
+  readonly fileSystem: FileSystem.FileSystem;
+  readonly path: Path.Path;
+}) =>
+  makePackageManagedProviderMaintenanceResolver({
+    provider: DRIVER_KIND,
+    npmPackageName: "@anthropic-ai/claude-code",
+    nativeUpdate: {
+      args: ["update"],
+      isCommandPath: isClaudeNativeCommandPath,
+      lookupLatestVersion: (context) =>
+        lookupClaudeChannelVersion(context.env).pipe(
+          Effect.provideService(HttpClient.HttpClient, services.httpClient),
+          Effect.provideService(FileSystem.FileSystem, services.fileSystem),
+          Effect.provideService(Path.Path, services.path),
+        ),
+    },
+  });
 
 export type ClaudeDriverEnv =
   | ClaudeAdapterV2DriverEnv
@@ -204,10 +242,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       homePath: accountHome ?? config.homePath,
     } satisfies ClaudeSettings;
     const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
-      resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
-        binaryPath: effectiveConfig.binaryPath,
-        env: processEnv,
-      }).pipe(
+      resolveProviderMaintenanceCapabilitiesEffect(
+        makeUpdateResolver({ httpClient, fileSystem, path }),
+        {
+          binaryPath: effectiveConfig.binaryPath,
+          env: processEnv,
+        },
+      ).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
