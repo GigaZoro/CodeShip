@@ -83,6 +83,7 @@ vi.mock("@react-navigation/native", () => ({
   useFocusEffect: (effect: () => void | (() => void)) => {
     useEffect(effect, [effect]);
   },
+  usePreventRemove: () => undefined,
   useNavigation: () => ({
     dispatch: state.dispatch,
     getState: () =>

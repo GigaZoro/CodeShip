@@ -155,7 +155,6 @@ function LocalVersionStatusLabel() {
   );
 }
 
-/** Environments lists the machines this app connects to; access covers who may reach this one. */
 /** Machines this app reaches, and how other devices reach this one. */
 export function ConnectionsSettings() {
   const desktopBridge = window.desktopBridge;

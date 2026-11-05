@@ -30,6 +30,7 @@ const IGNORED_ENTRIES = new Set([".DS_Store"]);
 // Version-control metadata is history of the source machine, not part of the skill.
 const VCS_DIRECTORIES = new Set([".git", ".hg", ".svn"]);
 const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
+const STAGING_DIRECTORY = ".codeship-staging";
 const FILE_MODE = 0o644;
 const EXECUTABLE_MODE = 0o755;
 
@@ -75,7 +76,6 @@ const make = Effect.gen(function* () {
     instanceId: ProviderInstanceId,
     reason: ProviderSkillErrorReason,
     extra?: {
-      readonly cause?: unknown;
       readonly linkTarget?: string;
       readonly path?: string;
     },
@@ -84,10 +84,21 @@ const make = Effect.gen(function* () {
       operation,
       instanceId,
       reason,
-      ...(extra?.cause === undefined ? {} : { cause: extra.cause }),
       ...(extra?.linkTarget === undefined ? {} : { linkTarget: extra.linkTarget }),
       ...(extra?.path === undefined ? {} : { path: extra.path }),
     });
+
+  // The platform error names absolute paths, so it stays in the server log and off the wire.
+  const failFilesystem = (
+    operation: ProviderSkillOperation,
+    instanceId: ProviderInstanceId,
+    cause: unknown,
+  ) =>
+    Effect.logWarning("Provider skill file operation failed", {
+      operation,
+      instanceId,
+      cause,
+    }).pipe(Effect.andThen(Effect.fail(fail(operation, instanceId, "failed"))));
 
   const getInstance = Effect.fn("ProviderSkills.getInstance")(function* (
     operation: ProviderSkillOperation,
@@ -235,7 +246,7 @@ const make = Effect.gen(function* () {
     }
     const { files, skippedLinks } = yield* collectFiles(instanceId, directory).pipe(
       Effect.catchTags({
-        PlatformError: (cause) => Effect.fail(fail("export", instanceId, "failed", { cause })),
+        PlatformError: (cause) => failFilesystem("export", instanceId, cause),
       }),
     );
     if (!files.some((file) => file.relativePath === SKILL_FILE)) {
@@ -251,7 +262,7 @@ const make = Effect.gen(function* () {
       ),
     ).pipe(
       Effect.catchTags({
-        PlatformError: (cause) => Effect.fail(fail("export", instanceId, "failed", { cause })),
+        PlatformError: (cause) => failFilesystem("export", instanceId, cause),
       }),
     );
     return {
@@ -327,11 +338,12 @@ const make = Effect.gen(function* () {
     if (exists && !input.overwrite) {
       return yield* fail("install", input.instanceId, "alreadyExists");
     }
-    yield* fileSystem.makeDirectory(input.skillsDirectory, { recursive: true });
-    const staging = yield* fileSystem.makeTempDirectory({
-      directory: input.skillsDirectory,
-      prefix: ".codeship-skill-",
-    });
+    // Staging and backups sit two levels down: a folder holding SKILL.md directly in the skills
+    // directory would be listed as a duplicate skill if a crash left it behind. The container
+    // stays, since removing it could delete a concurrent install's backup of the skill it replaces.
+    const container = path.join(input.skillsDirectory, STAGING_DIRECTORY);
+    yield* fileSystem.makeDirectory(container, { recursive: true });
+    const staging = yield* fileSystem.makeTempDirectory({ directory: container, prefix: "skill-" });
     const backup = `${staging}-previous`;
     const publish = Effect.gen(function* () {
       for (const file of input.files) {
@@ -357,7 +369,7 @@ const make = Effect.gen(function* () {
               ((yield* isSymbolicLink(target)) ||
                 (yield* fileSystem.exists(target).pipe(Effect.orElseSucceed(() => false))));
             return yield* appeared
-              ? fail("install", input.instanceId, "alreadyExists", { cause })
+              ? fail("install", input.instanceId, "alreadyExists")
               : Effect.fail(cause);
           }),
         }),
@@ -412,7 +424,7 @@ const make = Effect.gen(function* () {
       instanceId,
     }).pipe(
       Effect.catchTags({
-        PlatformError: (cause) => Effect.fail(fail("install", instanceId, "failed", { cause })),
+        PlatformError: (cause) => failFilesystem("install", instanceId, cause),
       }),
     );
     yield* refreshSharingHome(instanceId);
@@ -453,8 +465,15 @@ const make = Effect.gen(function* () {
       enabled: input.enabled,
     });
     // The list the caller sees is the instance's own snapshot, so it is current when this returns.
-    yield* providers.refreshInstance(instanceId).pipe(Effect.ignoreCause({ log: true }));
+    const refreshSucceeded = yield* providers.refreshInstance(instanceId).pipe(
+      Effect.as(true),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Skill refresh failed", cause).pipe(Effect.as(false)),
+      ),
+    );
     yield* refreshSharingHome(instanceId, instanceId);
+    // The write succeeded; a stale snapshot cannot say whether a project setting outranks it.
+    if (!refreshSucceeded) return;
     // A project or local settings file outranks the user setting that was just written.
     const refreshed = yield* findReportedSkill(instanceId, input.skillPath);
     if (refreshed !== undefined && refreshed.enabled !== input.enabled) {

@@ -13,6 +13,7 @@ import { parse as parseYamlDocument } from "yaml";
 
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
+import { resolveSymlinkTarget } from "@t3tools/shared/symlink";
 import { linkPath } from "./ClaudeAccountHome.ts";
 
 type ClaudeSkillScope = "user" | "project";
@@ -323,9 +324,11 @@ export const setClaudeSkillOverride = Effect.fn("setClaudeSkillOverride")(functi
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const settingsPath = path.join(input.configDir, "settings.json");
-  yield* settingsWriteLock(settingsPath).withPermits(1)(
-    writeOverride(fileSystem, settingsPath, input),
+  // Added accounts link settings.json to a shared file, so the lock follows the link.
+  const lockKey = yield* resolveSymlinkTarget(settingsPath).pipe(
+    Effect.orElseSucceed(() => settingsPath),
   );
+  yield* settingsWriteLock(lockKey).withPermits(1)(writeOverride(fileSystem, settingsPath, input));
 });
 
 const writeOverride = Effect.fn("writeClaudeSkillOverride")(function* (

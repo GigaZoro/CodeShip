@@ -337,16 +337,14 @@ describe("thread outbox", () => {
       resolveQueuedThreadSettings(legacyMessage, {
         modelSelection: selectedMessage.modelSelection,
         runtimeMode: selectedMessage.runtimeMode,
-        interactionMode: "default",
       }),
     ).toEqual({
       modelSelection: selectedMessage.modelSelection,
       runtimeMode: selectedMessage.runtimeMode,
-      interactionMode: "default",
     });
   });
 
-  it("keeps the thread's saved interaction mode and ignores a stored message mode", () => {
+  it("ignores a stored message interaction mode", () => {
     const codex = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" };
     const message = {
       ...queuedMessage({ messageId: "queued-plan", createdAt: "2026-09-02T10:00:00.000Z" }),
@@ -358,13 +356,6 @@ describe("thread outbox", () => {
     });
 
     expect(storedPlanMessage).toEqual(message);
-    expect(
-      resolveQueuedThreadSettings(storedPlanMessage, {
-        modelSelection: codex,
-        runtimeMode: "approval-required",
-        interactionMode: "plan",
-      }).interactionMode,
-    ).toBe("plan");
   });
 
   it("holds the mutation queue while persisted messages are loading", async () => {

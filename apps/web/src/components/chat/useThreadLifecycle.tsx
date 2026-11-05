@@ -136,6 +136,14 @@ interface ThreadLifecycleInput {
   }) => Promise<AtomCommandResult<void, unknown>>;
 }
 
+const MODAL_SELECTOR = '[role="dialog"], [aria-modal="true"]';
+
+/** A dialog's own inputs keep their keys; destructive thread shortcuts must not fire through them. */
+function isInsideModalDialog(target: EventTarget | null): boolean {
+  if (target instanceof Element && target.closest(MODAL_SELECTOR)) return true;
+  return document.activeElement?.closest(MODAL_SELECTOR) != null;
+}
+
 /**
  * Thread state the chat shows and changes outside a normal send: snooze and settle with
  * their status line, the local checkout's branch, background work, child-thread and goal
@@ -683,13 +691,15 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
       );
     },
     // The snooze presets live in the palette, so the shortcut opens it on them.
-    "thread.snooze": () => {
+    "thread.snooze": ({ event }) => {
+      if (isInsideModalDialog(event.target)) return false;
       if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return false;
       if (!activeThreadShell || !serverConfigLoaded || activeThreadSnoozed) return false;
       if (!canSnooze(activeThreadShell, { now: new Date().toISOString() })) return false;
       openCommandPalette({ query: ">Snooze" });
     },
     "thread.archive": ({ event }) => {
+      if (isInsideModalDialog(event.target)) return false;
       if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return false;
       if (!activeThreadShell || !activeThreadRef) return false;
       if (!threadRuntimeCanArchive(activeThreadShell.runtime)) return false;

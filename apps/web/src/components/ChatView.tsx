@@ -2949,7 +2949,7 @@ export default function ChatView(props: ChatViewProps) {
   });
   const onImplementPlanInNewThreadStable = useStableCallback(onImplementPlanInNewThread);
   const onLeavePlanMode = async () => {
-    if (!activeThread || interactionMode !== "plan") return;
+    if (!canOperateThread || !activeThread || interactionMode !== "plan") return;
     const result = await persistThreadSettingsForNextTurn({
       threadId: activeThread.id,
       createdAt: new Date().toISOString(),
@@ -3769,7 +3769,7 @@ export default function ChatView(props: ChatViewProps) {
                               onResume={onComposerResumeStable}
                               onInterrupt={onInterruptStable}
                               onImplementPlanInNewThread={onImplementPlanInNewThreadStable}
-                              onLeavePlanMode={onLeavePlanModeStable}
+                              onLeavePlanMode={canOperateThread ? onLeavePlanModeStable : undefined}
                               onSelectActivePendingUserInputOption={
                                 onSelectActivePendingUserInputOptionStable
                               }
@@ -3851,14 +3851,17 @@ export default function ChatView(props: ChatViewProps) {
                           )}
                         </div>
                       </div>
-                      {isDraftHeroState && composerBannerItems.length > 0 ? (
+                      {isDraftHeroState && (composerBannerItems.length > 0 || !embedded) ? (
                         // Out of flow, like the headline, so a notice never moves the centered composer.
-                        <div className="absolute inset-x-0 top-full flex flex-col gap-1 pt-4">
-                          <ComposerBannerStack items={composerBannerItems} detached />
-                        </div>
-                      ) : isDraftHeroState && !embedded ? (
-                        <div className="absolute inset-x-0 top-full">
-                          <DraftRecentThreads draftTarget={composerDraftTarget} />
+                        <div className="absolute inset-x-0 top-full flex flex-col gap-1">
+                          {composerBannerItems.length > 0 ? (
+                            <div className="flex flex-col gap-1 pt-4">
+                              <ComposerBannerStack items={composerBannerItems} detached />
+                            </div>
+                          ) : null}
+                          {embedded ? null : (
+                            <DraftRecentThreads draftTarget={composerDraftTarget} />
+                          )}
                         </div>
                       ) : null}
                     </ComposerSurface.Shell>

@@ -47,14 +47,12 @@ export function ProjectsSettings() {
       ) : unavailable ? (
         unavailable
       ) : (
-        <>
-          <SettingsScopeNotice target="project">
+        <SettingsPageContainer>
+          <SettingsScopeNotice inline target="project">
             Choose a project to manage its name, icon, checkouts and actions.
           </SettingsScopeNotice>
-          <SettingsPageContainer showScopeSentence={false}>
-            <NewProjectsSettingsSection />
-          </SettingsPageContainer>
-        </>
+          <NewProjectsSettingsSection />
+        </SettingsPageContainer>
       )}
     </div>
   );

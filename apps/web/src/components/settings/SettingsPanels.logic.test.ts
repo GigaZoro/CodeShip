@@ -104,10 +104,11 @@ describe("page reset", () => {
       "Send shortcut",
     ]);
     expect(changedRestorableSettingLabels(changed, "/settings/chat")).toEqual(["Diff layout"]);
-    expect(Object.keys(restorableSettingsPatch("/settings/keybindings")).toSorted()).toEqual([
-      "confirmQuit",
-      "sendShortcut",
-    ]);
+    expect(
+      Object.keys(
+        restorableSettingsPatch(DEFAULT_UNIFIED_SETTINGS, "/settings/keybindings"),
+      ).toSorted(),
+    ).toEqual(["confirmQuit", "sendShortcut"]);
   });
 
   it("under a project scope clears that project's overrides instead of pinning defaults", () => {
@@ -132,6 +133,31 @@ describe("page reset", () => {
       "confirmQuit",
       "sendShortcut",
     ]);
+  });
+
+  it("resets only the git fetch interval override on the source control page", () => {
+    const custom = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      backgroundActivity: {
+        schemaVersion: 1,
+        profile: "custom",
+        baseProfile: "balanced",
+        overrides: {
+          automaticGitFetchInterval: Duration.seconds(42),
+          pauseWhenOnBattery: true,
+        },
+      },
+    } as const;
+    expect(changedRestorableSettingLabels(custom, "/settings/source-control")).toEqual([
+      "Git fetch interval",
+    ]);
+    expect(
+      changedRestorableSettingLabels(DEFAULT_UNIFIED_SETTINGS, "/settings/source-control"),
+    ).toEqual([]);
+    const patch = restorableSettingsPatch(custom, "/settings/source-control");
+    expect(Object.keys(patch)).toContain("backgroundActivity");
+    expect(patch.backgroundActivity?.overrides?.pauseWhenOnBattery).toBe(true);
+    expect(patch.backgroundActivity?.overrides?.automaticGitFetchInterval).toBeUndefined();
   });
 
   it("covers every page when resetting everything", () => {

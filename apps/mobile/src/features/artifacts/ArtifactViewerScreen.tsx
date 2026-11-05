@@ -90,11 +90,17 @@ export function ArtifactViewerScreen({ route }: ArtifactViewerProps) {
   const { artifacts, error, isLoading, refresh } = useArtifacts(environmentIds);
   const deleteArtifact = useDeleteArtifact();
   const environmentId = EnvironmentId.make(route.params.environmentId);
-  const artifact = artifacts.find(
+  const live = artifacts.find(
     (candidate) =>
       candidate.environmentId === environmentId &&
       candidate.attachmentId === route.params.attachmentId,
   );
+  // A brief environment disconnect drops the list; keep the page mounted meanwhile. The route
+  // pins one version, and the list rebuilds its rows every render, so keep the first match only.
+  const [kept, setKept] = useState(live);
+  if (live && kept === undefined) setKept(live);
+  const offline = !environmentIds.includes(environmentId);
+  const artifact = live ?? (offline ? kept : undefined);
   const goBack = () => {
     if (navigation.canGoBack()) navigation.goBack();
   };
@@ -138,7 +144,23 @@ export function ArtifactViewerScreen({ route }: ArtifactViewerProps) {
         }
       />
       {artifact ? (
-        <ArtifactPage key={artifactKey(artifact)} artifact={artifact} />
+        <>
+          {offline ? (
+            <Text className="px-4 py-2 text-center text-xs text-foreground-muted">
+              Environment offline. Showing the last loaded page.
+            </Text>
+          ) : null}
+          <ArtifactPage key={artifactKey(artifact)} artifact={artifact} />
+        </>
+      ) : offline ? (
+        <View className="flex-1 justify-center">
+          <EmptyState
+            title="Environment offline"
+            detail="Reconnect to this environment to open the artifact."
+            actionLabel="Back to artifacts"
+            onAction={goBack}
+          />
+        </View>
       ) : isLoading ? (
         <View className="flex-1 items-center justify-center">
           <AppActivityIndicator />

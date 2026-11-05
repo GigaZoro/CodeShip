@@ -17,7 +17,6 @@ import {
   ThreadId,
   type ModelSelection as ModelSelectionType,
   type ProjectId as ProjectIdType,
-  type ProviderInteractionMode as ProviderInteractionModeType,
   type RuntimeMode as RuntimeModeType,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -91,7 +90,6 @@ export interface QueuedThreadMessage {
 export interface ThreadSettingsSnapshot {
   readonly modelSelection: ModelSelectionType;
   readonly runtimeMode: RuntimeModeType;
-  readonly interactionMode: ProviderInteractionModeType;
 }
 
 export function resolveQueuedThreadSettings(
@@ -101,7 +99,6 @@ export function resolveQueuedThreadSettings(
   return {
     modelSelection: message.modelSelection ?? thread.modelSelection,
     runtimeMode: message.runtimeMode ?? thread.runtimeMode,
-    interactionMode: thread.interactionMode,
   };
 }
 

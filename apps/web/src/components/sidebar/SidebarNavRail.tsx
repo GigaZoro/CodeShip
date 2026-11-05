@@ -30,7 +30,7 @@ import {
   UsageLimitsGlance,
   useLimitPools,
 } from "../usage/UsageLimitsGlance";
-import { isSettingsPage, useNavigateToMainApp } from "./mainAppLocation";
+import { isSettingsPage, isSidebarSectionPage, useNavigateToMainApp } from "./mainAppLocation";
 import { SidebarUpdatePill } from "./SidebarUpdatePill";
 
 type SidebarNavDestination =
@@ -44,7 +44,7 @@ type SidebarNavDestination =
   | "usage"
   | "settings";
 
-function resolveActiveDestination(pathname: string): SidebarNavDestination {
+function resolveActiveDestination(pathname: string): SidebarNavDestination | null {
   if (pathname === "/projects") return "projects";
   if (pathname === "/pull-requests") return "pull-requests";
   if (pathname === "/artifacts") return "artifacts";
@@ -53,7 +53,8 @@ function resolveActiveDestination(pathname: string): SidebarNavDestination {
   if (pathname === "/scheduled-tasks") return "scheduled-tasks";
   if (pathname === "/thread-page") return "thread-page";
   if (isSettingsPage(pathname)) return "settings";
-  return "threads";
+  // Section pages without a rail item (Archived) highlight nothing.
+  return isSidebarSectionPage(pathname) ? null : "threads";
 }
 
 function SidebarNavRailItem({

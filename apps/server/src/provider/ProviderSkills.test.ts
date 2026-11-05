@@ -55,6 +55,7 @@ const makeHarness = Effect.fn("test.makeHarness")(function* (options?: {
   const reported: Array<{ path: string; name?: string; enabled?: boolean }> = [];
   // Skills whose reported state ignores the toggle, like one pinned by a project settings file.
   const pinned = new Set<string>();
+  const refresh = { fails: false };
   const toggled: Array<{
     readonly name: string;
     readonly path: string;
@@ -85,7 +86,9 @@ const makeHarness = Effect.fn("test.makeHarness")(function* (options?: {
             ] as unknown as ReadonlyArray<ServerProvider>,
         ),
         refreshInstance: (id) =>
-          Queue.offer(refreshed, id).pipe(Effect.as<ReadonlyArray<ServerProvider>>([])),
+          refresh.fails
+            ? Effect.die("probe failed")
+            : Queue.offer(refreshed, id).pipe(Effect.as<ReadonlyArray<ServerProvider>>([])),
       }),
     ),
     Layer.provide(NodeServices.layer),
@@ -126,6 +129,7 @@ const makeHarness = Effect.fn("test.makeHarness")(function* (options?: {
     reported,
     toggled,
     pinned,
+    refresh,
     layer,
     writeSkill,
   };
@@ -203,8 +207,15 @@ it.layer(NodeServices.layer)("ProviderSkills", (it) => {
         const target = h.path.join(h.targetSkills, "tidy");
         assert.equal(yield* h.fs.readFileString(h.path.join(target, "SKILL.md")), "v2");
         assert.isFalse(yield* h.fs.exists(h.path.join(target, "old.txt")));
-        // No staging or backup folder survives beside the skill.
-        assert.deepEqual(yield* h.fs.readDirectory(h.targetSkills), ["tidy"]);
+        // No staging or backup folder survives; only their empty container stays.
+        assert.deepEqual((yield* h.fs.readDirectory(h.targetSkills)).toSorted(), [
+          ".codeship-staging",
+          "tidy",
+        ]);
+        assert.deepEqual(
+          yield* h.fs.readDirectory(h.path.join(h.targetSkills, ".codeship-staging")),
+          [],
+        );
       }).pipe(Effect.provide(h.layer));
     }),
   );
@@ -636,6 +647,24 @@ it.layer(NodeServices.layer)("ProviderSkills", (it) => {
           failure.message,
           "This skill is set in the project's settings, so the user setting has no effect.",
         );
+      }).pipe(Effect.provide(h.layer));
+    }),
+  );
+
+  it.effect("succeeds without the project-override check when the refresh fails", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      h.reported.push({ name: "plan", path: "/skills/plan/SKILL.md", enabled: true });
+      h.pinned.add("/skills/plan/SKILL.md");
+      h.refresh.fails = true;
+      yield* Effect.gen(function* () {
+        const service = yield* ProviderSkills.ProviderSkills;
+        yield* service.setSkillEnabled({
+          instanceId: sourceId,
+          skillPath: "/skills/plan/SKILL.md",
+          enabled: false,
+        });
+        assert.lengthOf(h.toggled, 1);
       }).pipe(Effect.provide(h.layer));
     }),
   );

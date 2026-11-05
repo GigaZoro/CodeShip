@@ -1033,6 +1033,32 @@ it.layer(Layer.mergeAll(NodeServices.layer, isolatedHome))("setClaudeSkillOverri
     }),
   );
 
+  it.effect("keeps both overrides when two accounts share a linked settings file", () =>
+    Effect.gen(function* () {
+      const { fs, configDir, settingsPath } = yield* makeConfigDir;
+      const path = yield* Path.Path;
+      const secondDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-override-" });
+      yield* fs.writeFileString(settingsPath, "{}");
+      yield* fs.symlink(settingsPath, path.join(secondDir, "settings.json"));
+      const names = ["a", "b", "c", "d", "e", "f"];
+      yield* Effect.forEach(
+        names,
+        (name, index) =>
+          setClaudeSkillOverride({
+            configDir: index % 2 === 0 ? configDir : secondDir,
+            name,
+            enabled: false,
+          }),
+        { concurrency: "unbounded", discard: true },
+      );
+      assert.deepEqual(
+        Object.keys(JSON.parse(yield* fs.readFileString(settingsPath)).skillOverrides).toSorted(),
+        names,
+      );
+      assert.isTrue((yield* fs.readLink(path.join(secondDir, "settings.json"))) === settingsPath);
+    }),
+  );
+
   it.effect("keeps the permission mode of an existing settings file", () =>
     Effect.gen(function* () {
       const { fs, configDir, settingsPath } = yield* makeConfigDir;

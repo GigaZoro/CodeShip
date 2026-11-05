@@ -133,7 +133,7 @@ function ArtifactRow(props: {
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="flex min-w-0 items-baseline gap-2">
             <span className="min-w-0 flex-1 truncate font-medium text-sm">{artifact.title}</span>
-            <span className="shrink-0 text-muted-foreground text-xs group-focus-within/artifact:invisible group-hover/artifact:invisible group-has-[[data-popup-open]]/artifact:invisible">
+            <span className="shrink-0 text-muted-foreground text-xs pointer-coarse:invisible group-focus-within/artifact:invisible group-hover/artifact:invisible group-has-[[data-popup-open]]/artifact:invisible">
               <RelativeTime timestamp={artifact.publishedAt} />
             </span>
           </span>
@@ -147,7 +147,7 @@ function ArtifactRow(props: {
           </span>
         </span>
       </button>
-      <span className="absolute top-1.5 right-1.5 opacity-0 focus-within:opacity-100 group-hover/artifact:opacity-100 has-[[data-popup-open]]:opacity-100">
+      <span className="absolute top-1.5 right-1.5 opacity-0 pointer-coarse:opacity-100 focus-within:opacity-100 group-hover/artifact:opacity-100 has-[[data-popup-open]]:opacity-100">
         <Menu>
           <MenuTrigger
             render={

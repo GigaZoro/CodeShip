@@ -83,7 +83,6 @@ export class ProviderSkillError extends Schema.TaggedError<ProviderSkillError>()
     linkTarget: Schema.optionalKey(Schema.String),
     /** For `invalidPath`: the offending path relative to the skill folder. */
     path: Schema.optionalKey(Schema.String),
-    cause: Schema.optionalKey(Schema.Defect()),
   },
 ) {
   override get message(): string {

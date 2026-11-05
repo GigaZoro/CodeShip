@@ -23,7 +23,7 @@ import { findRevertCheckpoint } from "../../session-logic";
 import { type ChatMessage } from "../../types";
 import { newThreadId } from "~/lib/utils";
 import { buildThreadRouteParams } from "../../threadRoutes";
-import { useComposerDraftStore } from "../../composerDraftStore";
+import { composerDraftHasUserContent, useComposerDraftStore } from "../../composerDraftStore";
 import { threadEnvironment } from "../../state/threads";
 import { waitForThreadShell } from "../../state/entities";
 import { openRevertConfirm } from "./ChatOverlayHosts";
@@ -153,10 +153,7 @@ export function useTimelineRewind(input: TimelineRewindInput) {
     if (retry) {
       // The rewind appends to the composer, so an unsent draft would be sent with the retry.
       const draft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
-      if (
-        (draft?.prompt.trim().length ?? 0) > 0 ||
-        (draft?.images.length ?? 0) + (draft?.files.length ?? 0) > 0
-      ) {
+      if (composerDraftHasUserContent(draft)) {
         setThreadError(activeThread.id, "Clear the message box before retrying.");
         return;
       }
@@ -200,7 +197,7 @@ export function useTimelineRewind(input: TimelineRewindInput) {
         // Wait a frame for the composer to take the restored message, then resend it on the rewound conversation.
         requestAnimationFrame(() => {
           if (currentRouteThreadKeyRef.current !== routeThreadKey) return;
-          if (composerRef.current?.submit() !== true)
+          if (promptRef.current !== rewind.prompt || composerRef.current?.submit() !== true)
             setThreadError(activeThread.id, "Message restored. Press send to retry.");
         });
       });

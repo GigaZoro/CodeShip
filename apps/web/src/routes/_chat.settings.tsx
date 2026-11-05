@@ -179,6 +179,7 @@ function SettingsRouteLayout() {
   const rawSearch = Route.useSearch();
   const navigate = Route.useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
+  const hash = useLocation({ select: (location) => location.hash });
   const singleEnvironment = useSingleEnvironmentSettingsPage(pathname);
   return (
     <SettingsScopeProvider
@@ -188,10 +189,15 @@ function SettingsRouteLayout() {
         // Send every axis so retain middleware recognizes "all" as an explicit target.
         void navigate({
           to: pathname,
-          search: () => ({
+          search: (previous) => ({
             project: next.project,
             machine: next.machine,
             checkout: next.checkout,
+            // The Models tab is part of the page, not of the scope; resolve it like the page does.
+            ...(pathname === "/settings/providers" &&
+            resolveProvidersSettingsTab((previous as { tab?: unknown }).tab, hash) === "models"
+              ? { tab: "models" as const }
+              : {}),
           }),
           hash: "",
           resetScroll: false,

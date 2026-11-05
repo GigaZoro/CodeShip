@@ -284,7 +284,44 @@ interface RestorableSettings {
   /** Set for single-row entries, so a project reset can name what it clears. */
   readonly label?: string;
   readonly changedLabels: (settings: UnifiedSettings) => ReadonlyArray<string>;
+  /** Replaces "every key to its default" for entries that restore only part of a key. */
+  readonly patch?: (settings: UnifiedSettings) => ScopedSettingsPatch;
+  /** Already restored by another entry's full reset, so a reset of every page skips it. */
+  readonly partOfAnotherEntry?: true;
 }
+
+function entryPatch(entry: RestorableSettings, settings: UnifiedSettings): ScopedSettingsPatch {
+  return (
+    entry.patch?.(settings) ??
+    (Object.fromEntries(
+      entry.keys.map((key) => [key, DEFAULT_UNIFIED_SETTINGS[key]] as const),
+    ) as ScopedSettingsPatch)
+  );
+}
+
+function gitFetchIntervalSeconds(settings: UnifiedSettings): number {
+  return durationToSeconds(
+    resolveServerBackgroundActivitySettings(settings).automaticGitFetchInterval,
+  );
+}
+
+/** Only the git fetch interval's override clears; the rest of the background policy stays. */
+const GIT_FETCH_INTERVAL_ENTRY: RestorableSettings = {
+  page: "/settings/source-control",
+  keys: ["backgroundActivity"],
+  label: "Git fetch interval",
+  partOfAnotherEntry: true,
+  changedLabels: (settings) =>
+    gitFetchIntervalSeconds(settings) !== gitFetchIntervalSeconds(DEFAULT_UNIFIED_SETTINGS)
+      ? ["Git fetch interval"]
+      : [],
+  patch: (settings) =>
+    backgroundActivityOverrideSettings(
+      settings.backgroundActivity,
+      resolveServerBackgroundActivitySettings(settings),
+      { automaticGitFetchInterval: undefined },
+    ),
+};
 
 function restorable(
   page: SettingsPath,
@@ -397,6 +434,7 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   restorable("/settings/source-control", "Open pull requests in CodeShip", [
     "pullRequestLinksOpenInApp",
   ]),
+  GIT_FETCH_INTERVAL_ENTRY,
   restorable("/settings/projects", "Add project base directory", ["addProjectBaseDirectory"]),
   restorable("/settings/projects", "Clone into host folders", ["ghqCloneLayout"]),
   restorable("/settings/projects", "Import conversations", ["importAgentConversations"]),
@@ -428,7 +466,7 @@ function restorableSettingsFor(
 ): ReadonlyArray<RestorableSettings> {
   const onPage =
     page === null
-      ? RESTORABLE_SETTINGS
+      ? RESTORABLE_SETTINGS.filter((entry) => !entry.partOfAnotherEntry)
       : RESTORABLE_SETTINGS.filter((entry) => entry.page === page);
   return projectScoped
     ? onPage.filter((entry) => entry.keys.every(isStorableInProjectScope))
@@ -446,12 +484,13 @@ export function changedRestorableSettingLabels(
   return restorableSettingsFor(page, false).flatMap((entry) => entry.changedLabels(settings));
 }
 
-export function restorableSettingsPatch(page: string | null): ScopedSettingsPatch {
-  // Every key comes from UnifiedSettings, and each value is that key's own default.
-  return Object.fromEntries(
-    restorableSettingsFor(page, false).flatMap((entry) =>
-      entry.keys.map((key) => [key, DEFAULT_UNIFIED_SETTINGS[key]] as const),
-    ),
+export function restorableSettingsPatch(
+  settings: UnifiedSettings,
+  page: string | null,
+): ScopedSettingsPatch {
+  return Object.assign(
+    {},
+    ...restorableSettingsFor(page, false).map((entry) => entryPatch(entry, settings)),
   ) as ScopedSettingsPatch;
 }
 
@@ -483,10 +522,9 @@ export function projectScopedRestorePlan(
     clearKeys.push(...overridden);
     if (entry.label !== undefined) labels.push(entry.label);
   }
-  const devicePatch = Object.fromEntries(
-    deviceEntries.flatMap((entry) =>
-      entry.keys.map((key) => [key, DEFAULT_UNIFIED_SETTINGS[key]] as const),
-    ),
+  const devicePatch = Object.assign(
+    {},
+    ...deviceEntries.map((entry) => entryPatch(entry, settings)),
   ) as ScopedSettingsPatch;
   return { labels, clearKeys, devicePatch };
 }

@@ -513,7 +513,7 @@ export function useSettingsRestore(page: string | null, onRestored?: () => void)
       if (projectPlan.clearKeys.length > 0) clearScopedSettings(projectPlan.clearKeys);
       updateSettings(projectPlan.devicePatch);
     } else {
-      updateSettings(restorableSettingsPatch(page));
+      updateSettings(restorableSettingsPatch(settings, page));
     }
     onRestored?.();
   };

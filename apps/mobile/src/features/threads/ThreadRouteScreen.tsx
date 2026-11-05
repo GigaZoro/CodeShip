@@ -85,7 +85,8 @@ import { useSelectedThreadWorktree } from "../../state/use-selected-thread-workt
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
 import { resolveMergeBackTargetThreadId } from "@t3tools/client-runtime/state/thread-relationships";
 import { resolveLatestMergeBackRun } from "@t3tools/client-runtime/state/thread-workflows";
-import { threadEnvironment } from "../../state/threads";
+import { appAtomRegistry } from "../../state/atom-registry";
+import { environmentThreads, threadEnvironment } from "../../state/threads";
 import { EMPTY_ENVIRONMENT_THREAD_STATE } from "@t3tools/client-runtime/state/threads";
 import { useProjects } from "../../state/entities";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
@@ -562,6 +563,17 @@ function ThreadRouteContent(
       return;
     }
     onReconnectEnvironment(environmentId);
+  };
+  // A connected environment only needs this thread's subscription restarted.
+  const handleRetryThreadContent = () => {
+    if (!environmentId) return;
+    if (routeConnectionState !== "connected" || !selectedThreadDetailRef) {
+      onReconnectEnvironment(environmentId);
+      return;
+    }
+    appAtomRegistry.refresh(
+      environmentThreads.stateAtom(environmentId, selectedThreadDetailRef.threadId),
+    );
   };
 
   const gitActionProgressTarget = {
@@ -1107,6 +1119,7 @@ function ThreadRouteContent(
           }
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}
+          onRetryThreadContent={handleRetryThreadContent}
           canSwitchThreadProvider={composer.canSwitchThreadProvider}
           onRespondToApproval={requests.onRespondToApproval}
           onSelectUserInputOption={requests.onSelectUserInputOption}

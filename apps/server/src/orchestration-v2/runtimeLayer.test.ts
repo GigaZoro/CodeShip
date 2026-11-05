@@ -2629,6 +2629,31 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         })
         .pipe(Effect.flip);
       assert.instanceOf(foreignArtifact, Orchestrator.OrchestratorDispatchError);
+      const malformedArtifact = yield* orchestrator
+        .dispatch({
+          type: "thread.artifact.hide",
+          commandId: CommandId.make("runtime-layer-lifecycle-artifact-malformed"),
+          threadId,
+          attachmentId: `${toSafeThreadAttachmentSegment(threadId)}-forged`,
+          hidden: true,
+        })
+        .pipe(Effect.flip);
+      assert.instanceOf(malformedArtifact, Orchestrator.OrchestratorDispatchError);
+      const artifactAt = (n: number) =>
+        `${toSafeThreadAttachmentSegment(threadId)}-00000000-0000-4000-8000-${String(n).padStart(12, "0")}-html`;
+      for (let n = 1; n <= 201; n += 1) {
+        yield* orchestrator.dispatch({
+          type: "thread.artifact.hide",
+          commandId: CommandId.make(`runtime-layer-lifecycle-artifact-cap-${n}`),
+          threadId,
+          attachmentId: artifactAt(n),
+          hidden: true,
+        });
+      }
+      const cappedHidden = (yield* orchestrator.getThreadProjection(threadId)).thread
+        .hiddenArtifacts;
+      assert.equal(cappedHidden?.length, 200);
+      assert.deepEqual([cappedHidden?.[0], cappedHidden?.[199]], [artifactAt(2), artifactAt(201)]);
 
       const preAutoProjection = yield* orchestrator.getThreadProjection(threadId);
       const staleAutoSettle = yield* orchestrator

@@ -64,6 +64,7 @@ import {
   StackActions,
   useFocusEffect,
   useNavigation,
+  usePreventRemove,
   type NavigationState,
   type ParamListBase,
 } from "@react-navigation/native";
@@ -1545,18 +1546,17 @@ export function AddProjectCloneScreen(props: {
         setResolved(null);
         return true;
       });
-      // iOS header Back and the swipe gesture go through navigation, not BackHandler.
-      const unsubscribe = navigation.addListener("beforeRemove", (event) => {
-        if (event.data.action.type !== "POP" && event.data.action.type !== "GO_BACK") return;
-        event.preventDefault();
-        setResolved(null);
-      });
-      return () => {
-        subscription.remove();
-        unsubscribe();
-      };
-    }, [navigation, resolved]),
+      return () => subscription.remove();
+    }, [resolved]),
   );
+  // iOS header Back and the swipe gesture only block native dismissal through usePreventRemove.
+  usePreventRemove(resolved !== null, ({ data }) => {
+    if (data.action.type === "POP" || data.action.type === "GO_BACK") {
+      setResolved(null);
+      return;
+    }
+    navigation.dispatch(data.action);
+  });
   if (!remoteUrl) {
     return (
       <>

@@ -7,6 +7,7 @@ import {
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
+import { useAtomValue } from "@effect/atom-react";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import {
   AlarmClockIcon,
@@ -22,7 +23,7 @@ import { useClientSettings } from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { useThreadActions } from "../hooks/useThreadActions";
 import { archiveThreadWithConfirm } from "../lib/archiveThreadWithConfirm";
-import { readEnvironmentServerConfigLoaded } from "../state/entities";
+import { environmentServerConfigsAtom } from "../state/server";
 import { useEnvironmentScope } from "../state/session";
 import { requestCustomSnooze } from "./CustomSnoozeDialog";
 import { ITEM_ICON_CLASS, type CommandPaletteActionItem } from "./CommandPalette.logic";
@@ -70,10 +71,12 @@ export function useActiveThreadPaletteItems(
     thread?.environmentId ?? ("" as EnvironmentThreadShell["environmentId"]),
     AuthOrchestrationOperateScope,
   );
+  // Subscribed, not read, so rows appear when the config loads after the palette opens.
+  const serverConfigs = useAtomValue(environmentServerConfigsAtom);
   if (!thread || !canOperate) return [];
 
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
-  const configLoaded = readEnvironmentServerConfigLoaded(thread.environmentId);
+  const configLoaded = serverConfigs.has(thread.environmentId);
   const now = new Date(`${nowMinute}:00.000Z`);
   const items: CommandPaletteActionItem[] = [];
 

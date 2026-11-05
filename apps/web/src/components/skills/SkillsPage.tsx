@@ -21,7 +21,7 @@ import {
   SearchIcon,
   SparklesIcon,
 } from "lucide-react";
-import { useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import { useOpenInPreferredEditor } from "../../editorPreferences";
@@ -140,9 +140,17 @@ function SkillRow(props: {
     reportFailure: false,
   });
   // The wanted state shows at once. A failure drops it; a success keeps it until the refreshed
-  // list catches up, with a cap so a snapshot that never arrives cannot pin the switch.
+  // list catches up (skill.enabled === wanted), with a timer cap so a snapshot that never
+  // arrives cannot pin the switch.
   const [wanted, setWanted] = useState<boolean | null>(null);
   const wantedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- clears the pending grace timer so it cannot set state after unmount
+  useEffect(
+    () => () => {
+      if (wantedTimer.current !== null) clearTimeout(wantedTimer.current);
+    },
+    [],
+  );
   const showSwitch = props.agentCanToggle && canToggleSkill(props.row);
   const description = skill.shortDescription ?? skill.description;
   const name = formatProviderSkillDisplayName(skill);
@@ -169,7 +177,8 @@ function SkillRow(props: {
       })
       .catch(() => setWanted(null));
   };
-  const enabled = wanted ?? skill.enabled;
+  const pending = wanted !== null && wanted !== skill.enabled;
+  const enabled = pending ? wanted : skill.enabled;
   return (
     <li className="relative flex min-w-0 flex-col gap-1 px-4 py-3">
       {onOpen ? (
@@ -232,7 +241,7 @@ function SkillRow(props: {
                   <Switch
                     size="sm"
                     checked={enabled}
-                    disabled={!mayChange || wanted !== null}
+                    disabled={!mayChange || pending}
                     aria-label={`Enable ${name}`}
                     onCheckedChange={toggle}
                   />

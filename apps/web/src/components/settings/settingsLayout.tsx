@@ -587,14 +587,11 @@ export function SettingsPageContainer({
   className,
   width = "readable",
   scopeLead,
-  showScopeSentence = true,
 }: {
   children: ReactNode;
   className?: string;
   width?: WorkspacePageWidth;
   scopeLead?: string;
-  /** Off when an earlier container on the page already states the scope. */
-  showScopeSentence?: boolean;
 }) {
   const navigate = useNavigate();
   const hash = useLocation({ select: (location) => location.hash });
@@ -623,7 +620,7 @@ export function SettingsPageContainer({
         data-settings-page-scroll
       >
         <WorkspacePageContainer width={width} className={cn("gap-8", className)}>
-          {showScopeSentence ? <SettingsScopeSentence lead={scopeLead} /> : null}
+          <SettingsScopeSentence lead={scopeLead} />
           {children}
         </WorkspacePageContainer>
       </div>

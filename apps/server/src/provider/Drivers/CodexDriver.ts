@@ -424,10 +424,15 @@ export const CodexDriver: ProviderDriver<
       openClient: openAppServerClient,
       canLogout,
     }).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
-    // `subscribe` replays the current state first; skipping it keeps a rebuild to one probe.
+    // `subscribe` replays the current state first; skipping that replay when idle keeps a rebuild
+    // to one probe without losing a sign-in that settled first. A later idle is a sign-out.
     yield* auth.controller.subscribe("codex-account-snapshot").pipe(
-      Stream.drop(1),
-      Stream.filter((state) => ["idle", "succeeded", "failed", "cancelled"].includes(state.phase)),
+      Stream.zipWithIndex,
+      Stream.filter(
+        ([state, index]) =>
+          !(index === 0 && state.phase === "idle") &&
+          ["idle", "succeeded", "failed", "cancelled"].includes(state.phase),
+      ),
       Stream.runForEach(() => snapshot.refresh.pipe(Effect.ignoreCause({ log: true }))),
       Effect.forkScoped,
     );
@@ -514,14 +519,11 @@ export const CodexDriver: ProviderDriver<
           Effect.scoped,
           Effect.timeout("20 seconds"),
           Effect.asVoid,
+          Effect.tapError((cause) =>
+            Effect.logWarning("Codex skill toggle failed", { instanceId, cause }),
+          ),
           Effect.mapError(
-            (cause) =>
-              new ProviderSkillError({
-                operation: "setEnabled",
-                instanceId,
-                reason: "failed",
-                cause,
-              }),
+            () => new ProviderSkillError({ operation: "setEnabled", instanceId, reason: "failed" }),
           ),
         ),
       mcp,

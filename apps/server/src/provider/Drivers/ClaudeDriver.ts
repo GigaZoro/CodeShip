@@ -562,14 +562,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
           : setClaudeSkillOverride({ configDir, name, enabled }).pipe(
               Effect.provideService(FileSystem.FileSystem, fileSystem),
               Effect.provideService(Path.Path, path),
+              Effect.tapError((cause) =>
+                Effect.logWarning("Claude skill override write failed", { instanceId, cause }),
+              ),
               Effect.mapError(
-                (cause) =>
-                  new ProviderSkillError({
-                    operation: "setEnabled",
-                    instanceId,
-                    reason: "failed",
-                    cause,
-                  }),
+                () =>
+                  new ProviderSkillError({ operation: "setEnabled", instanceId, reason: "failed" }),
               ),
             ),
       mcp,

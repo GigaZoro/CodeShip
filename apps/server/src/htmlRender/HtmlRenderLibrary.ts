@@ -95,9 +95,13 @@ function collectHtmlRenders(
   };
   // Hiding is per thread and names the version that was newest then. The page stays hidden when a
   // later revision builds on it, and after a rollback makes an older version the newest again.
+  // Every row of a thread carries the same list, so read it once per thread.
   const hidden = new Set<string>();
-  for (const page of pages) {
-    for (const id of hiddenIds(page.row)) {
+  const readThreads = new Set<string>();
+  for (const { row } of pages) {
+    if (readThreads.has(row.threadId)) continue;
+    readThreads.add(row.threadId);
+    for (const id of hiddenIds(row)) {
       const target = byId.get(id);
       for (const hiddenId of target === undefined ? [id] : chainOf(target)) hidden.add(hiddenId);
     }

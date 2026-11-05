@@ -5,10 +5,12 @@ import {
   type ServerProvider,
   type ServerProviderSkill,
 } from "@t3tools/contracts";
+import { useState } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText as Text } from "../../components/ui/AppText";
+import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { environmentPresentations } from "../../state/presentation";
@@ -22,8 +24,8 @@ import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
 import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
 
-/** Skill lists run to hundreds of entries; the rest stay on the environment's own Skills page. */
-const MAX_SKILLS_SHOWN = 100;
+/** Skill lists run to hundreds of entries; only the first few render until expanded. */
+const MAX_SKILLS_SHOWN = 25;
 
 const MCP_STATUS_LABELS = {
   connected: "Connected",
@@ -89,6 +91,8 @@ function ProviderCapabilities(props: {
   const { environment, provider } = props;
   const name = provider.displayName ?? provider.driver;
   const skills = provider.skills.filter((skill) => skill.enabled);
+  const [showAll, setShowAll] = useState(false);
+  const visibleSkills = showAll ? skills : skills.slice(0, MAX_SKILLS_SHOWN);
   return (
     <SettingsSection title={`${environment.label} · ${name}`}>
       {provider.supportsMcpServers ? (
@@ -98,7 +102,7 @@ function ProviderCapabilities(props: {
           hasSkills={skills.length > 0}
         />
       ) : null}
-      {skills.slice(0, MAX_SKILLS_SHOWN).map((skill) => (
+      {visibleSkills.map((skill) => (
         <CapabilityRow
           key={`${skill.scope ?? ""}:${skill.path}`}
           icon="sparkles"
@@ -108,9 +112,10 @@ function ProviderCapabilities(props: {
         />
       ))}
       {skills.length > MAX_SKILLS_SHOWN ? (
-        <Text className="p-4 text-sm text-foreground-muted">
-          {`${skills.length - MAX_SKILLS_SHOWN} more skills are not listed here.`}
-        </Text>
+        <ListActionRow
+          label={showAll ? "Show fewer" : `Show all (${skills.length})`}
+          onPress={() => setShowAll((value) => !value)}
+        />
       ) : null}
       {!provider.supportsMcpServers && skills.length === 0 ? (
         <Text className="p-4 text-foreground-muted">No servers or skills.</Text>

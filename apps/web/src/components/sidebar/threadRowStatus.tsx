@@ -21,7 +21,7 @@ const THREAD_ROW_STATUS_ICONS = {
   woke: AlarmClockIcon,
 } as const;
 
-type ThreadRowStatusIconName = Exclude<keyof typeof THREAD_ROW_STATUS_ICONS, "done">;
+type ThreadRowStatusIconName = keyof typeof THREAD_ROW_STATUS_ICONS;
 
 export type ThreadRowStatus =
   | {

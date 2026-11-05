@@ -807,23 +807,6 @@ export function createThreadOutboxDelivery(): {
       }
     }
 
-    if (settings.interactionMode !== thread.interactionMode) {
-      if (!hasAccess()) return true;
-      const interactionResult = await runDeliveryCommand(threadEnvironment.setInteractionMode, {
-        environmentId: queuedMessage.environmentId,
-        input: {
-          commandId: settingsCommandId(queuedMessage, "interaction-mode"),
-          threadId: queuedMessage.threadId,
-          interactionMode: settings.interactionMode,
-          createdAt: queuedMessage.createdAt,
-        },
-      });
-      if (AsyncResult.isFailure(interactionResult)) {
-        reportCommandFailure(queuedMessage, interactionResult, "settings-sync");
-        return false;
-      }
-    }
-
     let prepared: PreparedTurnAttachments;
     let persistedMessage: QueuedThreadMessage;
     let deliveryRevision: number;
@@ -893,7 +876,7 @@ export function createThreadOutboxDelivery(): {
           attachments: queuedMessage.attachments,
         }),
         runtimeMode: sendSettings.runtimeMode,
-        interactionMode: sendSettings.interactionMode,
+        interactionMode: thread.interactionMode,
         createdAt: queuedMessage.createdAt,
         dispatchMode: queuedMessage.dispatchMode ?? "start",
       },
@@ -938,7 +921,6 @@ export function createThreadOutboxDelivery(): {
     const settings = resolveQueuedThreadSettings(queuedMessage, {
       modelSelection,
       runtimeMode: DEFAULT_RUNTIME_MODE,
-      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
     });
     if (isModelSelectionUnavailable(serverConfig, settings.modelSelection, creation.projectId)) {
       const { title, detail } = describeUnavailableModelSelection(
@@ -1050,7 +1032,7 @@ export function createThreadOutboxDelivery(): {
         uploadedAttachments: prepared.attachments,
         modelSelection: sendSettings.modelSelection,
         runtimeMode: sendSettings.runtimeMode,
-        interactionMode: sendSettings.interactionMode,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         workspaceMode: workspace.workspaceMode,
         branch: workspace.branch,
         worktreePath: workspace.worktreePath,

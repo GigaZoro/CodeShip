@@ -140,6 +140,8 @@ import {
 } from "./GuestShareDecider.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import {
+  parseAttachmentFileExtension,
+  parseAttachmentUuid,
   parseThreadSegmentFromAttachmentId,
   toSafeThreadAttachmentSegment,
 } from "../attachmentStore.ts";
@@ -736,6 +738,9 @@ function legacyPullRequestLink(
 }
 
 const DELEGATED_RESULT_INLINE_BYTES = 16_000;
+
+// Keeps a thread's hidden list from growing without bound; the oldest ids drop first.
+const MAX_HIDDEN_ARTIFACTS = 200;
 
 function delegatedCompletionWakeDetail(
   taskIds: ReadonlyArray<string>,
@@ -3165,8 +3170,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // A page belongs to the thread that published it; a forged id must not poison another thread's list.
     if (
       command.type === "thread.artifact.hide" &&
-      parseThreadSegmentFromAttachmentId(command.attachmentId) !==
-        (toSafeThreadAttachmentSegment(command.threadId) ?? undefined)
+      (parseThreadSegmentFromAttachmentId(command.attachmentId) !==
+        (toSafeThreadAttachmentSegment(command.threadId) ?? undefined) ||
+        parseAttachmentUuid(command.attachmentId) === null ||
+        parseAttachmentFileExtension(command.attachmentId) !== "html")
     ) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -3603,7 +3610,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             hiddenArtifacts: command.hidden
               ? current.includes(command.attachmentId)
                 ? current
-                : [...current, command.attachmentId]
+                : [...current, command.attachmentId].slice(-MAX_HIDDEN_ARTIFACTS)
               : current.filter((id) => id !== command.attachmentId),
           };
         }

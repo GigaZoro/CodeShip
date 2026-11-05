@@ -262,3 +262,38 @@ it.effect("keeps a hidden page hidden when a rollback makes an older version the
     );
   }).pipe(Effect.provide(testLayer)),
 );
+
+it.effect("hides both sibling revisions of a page when one of them is hidden", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    // Hiding is by shared ancestry, so a sibling that revises the same page goes with it.
+    yield* sql`
+      INSERT INTO orchestration_v2_projection_turn_items
+        (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json)
+      VALUES ('a6', 'thread-a', NULL, 0, 'dynamic_tool', 'completed', '2026-01-11', ${JSON.stringify(
+        {
+          toolName: "mcp__t3-code__html_render",
+          completedAt: "2026-01-11",
+          output: {
+            structuredContent: {
+              htmlRender: {
+                attachmentId: pageId("thread-a", 6),
+                title: "Revenue v2 alt",
+                height: 400,
+                revises: pageId("thread-a", 1),
+              },
+            },
+          },
+        },
+      )})
+    `;
+    yield* hideInThreadA([pageId("thread-a", 2)]);
+    const library = yield* HtmlRenderLibrary.HtmlRenderLibrary;
+    const result = yield* library.list({ limit: 10 });
+    assert.deepStrictEqual(
+      result.renders.map((page) => page.attachmentId),
+      [pageId("thread-b", 1)],
+    );
+  }).pipe(Effect.provide(testLayer)),
+);

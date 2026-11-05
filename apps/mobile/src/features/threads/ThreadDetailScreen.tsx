@@ -299,6 +299,7 @@ export interface ThreadDetailScreenProps {
     ) => Promise<boolean | "responded">,
   ) => Promise<MessageId | null>;
   readonly onReconnectEnvironment: () => void;
+  readonly onRetryThreadContent: () => void;
   readonly canSwitchThreadProvider: boolean;
   readonly onRespondToApproval: ApprovalResponder;
   readonly onSelectUserInputOption: (
@@ -1464,7 +1465,7 @@ function ThreadDetailBody(
                 isProviderSubagent || pendingMessageEditBlocked ? null : handleEditPendingMessage
               }
               contentPresentation={props.contentPresentation}
-              onRetryContent={props.onReconnectEnvironment}
+              onRetryContent={props.onRetryThreadContent}
               threadTitle={props.selectedThread.title}
               latestRun={props.activityRun}
               activeWorkStartedAt={props.activeWorkStartedAt}
