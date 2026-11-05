@@ -1,5 +1,11 @@
 import { Button } from "../../components/ui/Button";
 import {
+  SCHEDULED_TASK_PLACEMENT_OPTIONS,
+  scheduledTaskPlacementLabel,
+} from "@t3tools/client-runtime/scheduled-task-pins";
+import { ListRowLayout } from "../../components/ui/ListRowLayout";
+import { Menu } from "../../components/ui/Menu";
+import {
   AuthSettingsWriteScope,
   isManagedSettingPath,
   type ServerSettingsPatch,
@@ -237,7 +243,7 @@ export function WorkingSectionSettings() {
   );
 }
 
-export function ScheduledTaskPinSettings() {
+export function ScheduledTaskPlacementSettings() {
   const { selectedTargets } = useSettingsEnvironmentFilter();
   const targets = resolveMobileSettingsTargets(
     selectedTargets.filter(supportsSharedSettingsSync),
@@ -246,38 +252,65 @@ export function ScheduledTaskPinSettings() {
   const writable = useEnvironmentsWithScope(selectedTargets, AuthSettingsWriteScope);
   const [pending, setPending] = useState(false);
   const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
-    label: "automatic scheduled task pinning",
+    label: "scheduled task default placement",
     reportFailure: true,
   });
-  const managed = managedSettingReason(targets, "automaticallyPinScheduledTasks");
+  const managed = managedSettingReason(targets, "scheduledTaskDefaultPlacement");
+  const current = uniformMobileSetting(targets, "scheduledTaskDefaultPlacement");
+  const disabled =
+    pending ||
+    targets.length === 0 ||
+    managed !== undefined ||
+    targets.some((target) => !writable.has(target.environment.environmentId));
+  const label = current === null ? "Mixed" : scheduledTaskPlacementLabel(current);
+  const row = (
+    <ListRowLayout
+      icon="pin"
+      label="Show new scheduled tasks in"
+      description={
+        managed ?? "Where new scheduled tasks appear. Change a task's place from its menu."
+      }
+      detail={label}
+      disabled={disabled}
+    />
+  );
 
   return (
     <SettingsSection title="Scheduled tasks">
-      <SettingsSwitchRow
-        icon="pin"
-        label="Automatically pin scheduled tasks"
-        subtitle={managed ?? "Pin newly created scheduled tasks. Existing pins stay as they are."}
-        value={uniformMobileSetting(targets, "automaticallyPinScheduledTasks")}
-        disabled={
-          pending ||
-          targets.length === 0 ||
-          managed !== undefined ||
-          targets.some((target) => !writable.has(target.environment.environmentId))
-        }
-        onValueChange={async (value) => {
-          setPending(true);
-          await Promise.all(
-            targets.map((target) =>
-              updateSettings({
-                environmentId: target.environment.environmentId,
-                input: { patch: { automaticallyPinScheduledTasks: value } },
-              }),
-            ),
-          ).finally(() => {
-            setPending(false);
-          });
-        }}
-      />
+      {disabled ? (
+        row
+      ) : (
+        <Menu
+          accessible
+          accessibilityRole="button"
+          accessibilityLabel={`Show new scheduled tasks in: ${label}`}
+          title="Show new scheduled tasks in"
+          actions={SCHEDULED_TASK_PLACEMENT_OPTIONS.map((option) => ({
+            id: option.value,
+            title: option.label,
+            state: option.value === current ? ("on" as const) : ("off" as const),
+          }))}
+          onPressAction={async ({ nativeEvent }) => {
+            const placement = SCHEDULED_TASK_PLACEMENT_OPTIONS.find(
+              (option) => option.value === nativeEvent.event,
+            )?.value;
+            if (placement === undefined) return;
+            setPending(true);
+            await Promise.all(
+              targets.map((target) =>
+                updateSettings({
+                  environmentId: target.environment.environmentId,
+                  input: { patch: { scheduledTaskDefaultPlacement: placement } },
+                }),
+              ),
+            ).finally(() => {
+              setPending(false);
+            });
+          }}
+        >
+          {row}
+        </Menu>
+      )}
     </SettingsSection>
   );
 }

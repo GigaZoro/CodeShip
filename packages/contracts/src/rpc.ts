@@ -406,9 +406,10 @@ import {
   ScheduledTaskSetEnabledInput,
   ScheduledTaskSetFollowsDefaultModelInput,
   ScheduledTaskSetFollowsDefaultModelResult,
+  ScheduledTaskSetPlacementInput,
+  ScheduledTaskSetPlacementResult,
   ScheduledTaskReorderPinnedInput,
   ScheduledTaskReorderPinnedResult,
-  ScheduledTaskSetPinnedInput,
   ScheduledTaskUpsertInput,
   ScheduledTaskMutationResult,
 } from "./scheduledTask.ts";
@@ -592,7 +593,7 @@ export const WS_METHODS = {
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
   scheduledTasksUpsert: "scheduledTasks.upsert",
   scheduledTasksSetEnabled: "scheduledTasks.setEnabled",
-  scheduledTasksSetPinned: "scheduledTasks.setPinned",
+  scheduledTasksSetPlacement: "scheduledTasks.setPlacement",
   scheduledTasksReorderPinned: "scheduledTasks.reorderPinned",
   scheduledTasksSetFollowsDefaultModel: "scheduledTasks.setFollowsDefaultModel",
   scheduledTasksDelete: "scheduledTasks.delete",
@@ -2064,9 +2065,9 @@ const WsScheduledTasksSetEnabledRpc = Rpc.make(WS_METHODS.scheduledTasksSetEnabl
   error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
 });
 
-const WsScheduledTasksSetPinnedRpc = Rpc.make(WS_METHODS.scheduledTasksSetPinned, {
-  payload: ScheduledTaskSetPinnedInput,
-  success: ScheduledTaskMutationResult,
+const WsScheduledTasksSetPlacementRpc = Rpc.make(WS_METHODS.scheduledTasksSetPlacement, {
+  payload: ScheduledTaskSetPlacementInput,
+  success: ScheduledTaskSetPlacementResult,
   error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
 });
 
@@ -2234,7 +2235,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksSubscribeRpc,
   WsScheduledTasksUpsertRpc,
   WsScheduledTasksSetEnabledRpc,
-  WsScheduledTasksSetPinnedRpc,
+  WsScheduledTasksSetPlacementRpc,
   WsScheduledTasksReorderPinnedRpc,
   WsScheduledTasksSetFollowsDefaultModelRpc,
   WsScheduledTasksDeleteRpc,

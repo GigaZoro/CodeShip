@@ -4,11 +4,14 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   applyHeldPinOrder,
   collectPinnedTasks,
+  formatLastRunAgo,
   formatNextRunCountdown,
   holdPinOrder,
   intervalWaitProgress,
   pinnedTaskKey,
   resolvePinnedTaskStatus,
+  resolveScheduledTaskPlacement,
+  scheduledTaskHiddenThreadKeys,
   scheduledTasksForThread,
   type HeldPinOrder,
 } from "./scheduledTaskPins.ts";
@@ -82,6 +85,20 @@ describe("formatNextRunCountdown", () => {
   });
 });
 
+describe("formatLastRunAgo", () => {
+  const now = Date.parse("2026-11-02T10:00:00.000Z");
+  it.each([
+    { at: "2026-11-02T10:00:30.000Z", expected: "just now" },
+    { at: "2026-11-02T09:59:30.000Z", expected: "just now" },
+    { at: "2026-11-02T09:48:00.000Z", expected: "12m ago" },
+    { at: "2026-11-02T06:30:00.000Z", expected: "3h ago" },
+    { at: "2026-10-31T09:00:00.000Z", expected: "2d ago" },
+    { at: "not a date", expected: "" },
+  ])("$at reads $expected", ({ at, expected }) => {
+    expect(formatLastRunAgo(at, now)).toBe(expected);
+  });
+});
+
 describe("intervalWaitProgress", () => {
   const now = Date.parse("2026-11-02T10:00:00.000Z");
   const every5Min = { type: "interval" as const, everyMs: 300_000 };
@@ -108,15 +125,60 @@ describe("intervalWaitProgress", () => {
   });
 });
 
+describe("resolveScheduledTaskPlacement", () => {
+  it.each([
+    {
+      name: "a stored placement",
+      task: { placement: "none" as const, pinnedAt: "x" },
+      expected: "none",
+    },
+    {
+      name: "a pinned task from a server without placements",
+      task: { pinnedAt: "x" },
+      expected: "pinned",
+    },
+    {
+      name: "an unpinned task from a server without placements",
+      task: { pinnedAt: null },
+      expected: "chat",
+    },
+    { name: "a task from a server without pinning", task: {}, expected: "chat" },
+  ])("$name resolves to $expected", ({ task, expected }) => {
+    expect(resolveScheduledTaskPlacement(task)).toBe(expected);
+  });
+});
+
+const placedTask = (
+  id: string,
+  fields: {
+    placement?: string;
+    pinnedAt?: string | null;
+    threadId?: string | null;
+    lastRunThreadId?: string | null;
+  },
+) => ({ id, ...fields }) as unknown as ScheduledTask;
+
 describe("collectPinnedTasks", () => {
   it("lists only pinned tasks across environments, oldest pin first", () => {
-    const task = (id: string, pinnedAt: string | null | undefined) =>
-      ({ id, pinnedAt }) as unknown as ScheduledTask;
     const laptop = EnvironmentId.make("laptop");
     const server = EnvironmentId.make("server");
     const tasks = new Map([
-      [laptop, [task("deploy", "2026-11-02T10:05:00.000Z"), task("lint", null)]],
-      [server, [task("ci", "2026-11-02T10:00:00.000Z"), task("legacy", undefined)]],
+      [
+        laptop,
+        [
+          placedTask("deploy", { placement: "pinned", pinnedAt: "2026-11-02T10:05:00.000Z" }),
+          placedTask("lint", { placement: "chat", pinnedAt: null }),
+          placedTask("quiet", { placement: "none", pinnedAt: null }),
+        ],
+      ],
+      [
+        server,
+        [
+          placedTask("ci", { placement: "pinned", pinnedAt: "2026-11-02T10:00:00.000Z" }),
+          placedTask("old", { pinnedAt: "2026-11-02T10:10:00.000Z" }),
+          placedTask("legacy", {}),
+        ],
+      ],
     ]);
 
     const pinned = collectPinnedTasks([laptop, server], (id) => tasks.get(id) ?? []);
@@ -124,6 +186,7 @@ describe("collectPinnedTasks", () => {
     expect(pinned.map(({ environmentId, task }) => `${environmentId}:${task.id}`)).toEqual([
       "server:ci",
       "laptop:deploy",
+      "server:old",
     ]);
   });
 
@@ -204,6 +267,24 @@ describe("applyHeldPinOrder", () => {
     expect(order(sent, again)).toEqual(["a", "b"]);
     // The first move lands before the second.
     expect(order([entry("a", "c"), entry("b", "b")], again)).toEqual(["a", "b"]);
+  });
+});
+
+describe("scheduledTaskHiddenThreadKeys", () => {
+  it("holds the bound or latest run thread of tasks placed nowhere, kept while unchanged", () => {
+    const laptop = EnvironmentId.make("laptop");
+    const tasks = [
+      placedTask("bound", { placement: "none", threadId: "t1", lastRunThreadId: "t0" }),
+      placedTask("fresh", { placement: "none", threadId: null, lastRunThreadId: "t2" }),
+      placedTask("unrun", { placement: "none", threadId: null, lastRunThreadId: null }),
+      placedTask("chat", { placement: "chat", threadId: "t3" }),
+      placedTask("pinned", { placement: "pinned", threadId: "t4" }),
+    ];
+
+    const hidden = scheduledTaskHiddenThreadKeys([laptop], () => tasks, new Set());
+
+    expect([...hidden].sort()).toEqual(["laptop:t1", "laptop:t2"]);
+    expect(scheduledTaskHiddenThreadKeys([laptop], () => tasks, hidden)).toBe(hidden);
   });
 });
 

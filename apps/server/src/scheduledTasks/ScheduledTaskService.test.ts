@@ -10,6 +10,7 @@ import {
   ProviderInstanceId,
   ScheduledTaskError,
   ScheduledTaskId,
+  type ScheduledTaskPlacement,
   type ServerSettings as ServerSettingsValue,
   ThreadId,
 } from "@t3tools/contracts";
@@ -497,11 +498,21 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
-it.effect("a pin and the last run's thread survive edits and leave with the task", () =>
+it.effect("a placement and the last run's thread survive edits and leave with the task", () =>
   Effect.gen(function* () {
-    const outerSql = yield* SqlClient.SqlClient;
-    // The table as it was before pin order keys, to cover the upgrade.
-    yield* outerSql`CREATE TABLE scheduled_task_sidebar (task_id TEXT PRIMARY KEY, pinned_at TEXT, last_run_thread_id TEXT)`;
+    const legacySql = yield* SqlClient.SqlClient;
+    // A table from before placements and pin order keys, holding a pinned task.
+    yield* legacySql`
+      CREATE TABLE scheduled_task_sidebar (
+        task_id TEXT PRIMARY KEY,
+        pinned_at TEXT,
+        last_run_thread_id TEXT
+      )
+    `;
+    yield* legacySql`
+      INSERT INTO scheduled_task_sidebar (task_id, pinned_at)
+      VALUES ('task:legacy', '2026-10-01T00:00:00.000Z')
+    `;
     const runThreadId = ThreadId.make("thread:started-by-run");
     const layer = ScheduledTaskService.layer.pipe(
       Layer.provide(
@@ -526,9 +537,10 @@ it.effect("a pin and the last run's thread survive edits and leave with the task
       const sql = yield* SqlClient.SqlClient;
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const settings = yield* ServerSettings.ServerSettingsService;
-      const upsert = (title: string, id = "task:pinned") =>
+      const upsert = (title: string, id = "task:pinned", placement?: ScheduledTaskPlacement) =>
         service.upsert({
           id: ScheduledTaskId.make(id),
+          ...(placement === undefined ? {} : { placement }),
           title,
           prompt: "Check progress",
           enabled: true,
@@ -539,25 +551,47 @@ it.effect("a pin and the last run's thread survive edits and leave with the task
           runtimeMode: "full-access",
           interactionMode: "default",
         });
+      const legacy = yield* sql<{ placement: string; pinned_at: string }>`
+        SELECT placement, pinned_at FROM scheduled_task_sidebar WHERE task_id = 'task:legacy'
+      `;
+      assert.deepEqual(legacy, [{ placement: "pinned", pinned_at: "2026-10-01T00:00:00.000Z" }]);
+      yield* sql`DELETE FROM scheduled_task_sidebar WHERE task_id = 'task:legacy'`;
+
       const { task } = yield* upsert("Check CI");
+      assert.equal(task.placement, "chat");
       assert.isNull(task.pinnedAt);
       const listed = () =>
         service.list().pipe(Effect.map(({ tasks }) => tasks.find(({ id }) => id === task.id)));
 
-      yield* settings.updateSettings({ automaticallyPinScheduledTasks: true });
-      assert.isNull((yield* upsert("Existing task")).task.pinnedAt);
-      const automatic = (yield* upsert("New automatic pin", "task:automatic")).task;
+      yield* settings.updateSettings({ scheduledTaskDefaultPlacement: "pinned" });
+      assert.equal((yield* upsert("Existing task")).task.placement, "chat");
+      const automatic = (yield* upsert("New pinned task", "task:automatic")).task;
+      assert.equal(automatic.placement, "pinned");
       assert.isNotNull(automatic.pinnedAt);
-      yield* service.setPinned({ id: automatic.id, pinned: false });
-      assert.isNull((yield* upsert("Stay unpinned", automatic.id)).task.pinnedAt);
-      yield* settings.updateSettings({ automaticallyPinScheduledTasks: false });
-      assert.isNull((yield* upsert("New unpinned task", "task:unpinned")).task.pinnedAt);
+      yield* service.setPlacement({ ids: [automatic.id], placement: "chat" });
+      assert.equal((yield* upsert("Stay regular", automatic.id)).task.placement, "chat");
+      yield* settings.updateSettings({ scheduledTaskDefaultPlacement: "none" });
+      const hidden = (yield* upsert("New hidden task", "task:hidden")).task;
+      assert.equal(hidden.placement, "none");
+      assert.isNull(hidden.pinnedAt);
+      yield* settings.updateSettings({ scheduledTaskDefaultPlacement: "chat" });
+      assert.equal((yield* upsert("New regular task", "task:regular")).task.placement, "chat");
+      const chosen = (yield* upsert("Chosen", "task:chosen", "pinned")).task;
+      assert.equal(chosen.placement, "pinned");
+      assert.isNotNull(chosen.pinnedAt);
+      assert.equal((yield* upsert("Chosen", chosen.id, "none")).task.placement, "none");
+      assert.equal((yield* upsert("Chosen again", chosen.id)).task.placement, "none");
+      yield* service.delete({ id: chosen.id });
       yield* service.delete({ id: automatic.id });
-      yield* service.delete({ id: ScheduledTaskId.make("task:unpinned") });
+      yield* service.delete({ id: hidden.id });
+      yield* service.delete({ id: ScheduledTaskId.make("task:regular") });
 
-      const pinned = yield* service.setPinned({ id: task.id, pinned: true });
-      assert.isNotNull(pinned.task.pinnedAt ?? null);
-      assert.isNull(pinned.task.pinOrderKey ?? null);
+      assert.deepEqual((yield* service.setPlacement({ ids: [task.id], placement: "pinned" })).ids, [
+        task.id,
+      ]);
+      const pinned = yield* listed();
+      assert.isNotNull(pinned?.pinnedAt ?? null);
+      assert.isNull(pinned?.pinOrderKey ?? null);
       const reordered = yield* service.reorderPinned({
         assignments: [
           { id: task.id, orderKey: "m" },
@@ -572,11 +606,26 @@ it.effect("a pin and the last run's thread survive edits and leave with the task
       yield* upsert("Check CI and deploys");
       const edited = yield* listed();
       assert.equal(edited?.title, "Check CI and deploys");
-      assert.equal(edited?.pinnedAt, pinned.task.pinnedAt);
+      assert.equal(edited?.placement, "pinned");
+      assert.equal(edited?.pinnedAt, pinned?.pinnedAt);
       assert.equal(edited?.pinOrderKey, "m");
       assert.equal(edited?.lastRunThreadId, runThreadId);
 
-      yield* service.setPinned({ id: task.id, pinned: false });
+      yield* service.setPlacement({ ids: [task.id], placement: "none" });
+      const hiddenTask = yield* listed();
+      assert.equal(hiddenTask?.placement, "none");
+      assert.isNull(hiddenTask?.pinnedAt ?? null);
+      assert.equal(hiddenTask?.lastRunThreadId, runThreadId);
+
+      yield* TestClock.adjust("1 minute");
+      yield* service.setPlacement({ ids: [task.id], placement: "pinned" });
+      assert.notEqual((yield* listed())?.pinnedAt, pinned?.pinnedAt);
+      assert.deepEqual(
+        (yield* service.setPlacement({ ids: [task.id], placement: "pinned" })).ids,
+        [],
+      );
+
+      yield* service.setPlacement({ ids: [task.id], placement: "chat" });
       assert.isNull((yield* listed())?.pinnedAt ?? null);
       assert.isNull((yield* listed())?.pinOrderKey ?? null);
       const afterUnpin = yield* service.reorderPinned({
@@ -587,8 +636,10 @@ it.effect("a pin and the last run's thread survive edits and leave with the task
       yield* service.delete({ id: task.id });
       const leftover = yield* sql`SELECT task_id FROM scheduled_task_sidebar`;
       assert.lengthOf(leftover, 0);
-      const missing = yield* service.setPinned({ id: task.id, pinned: true }).pipe(Effect.flip);
-      assert.equal(missing.message, "Schedule task not found.");
+      assert.deepEqual(
+        (yield* service.setPlacement({ ids: [task.id], placement: "pinned" })).ids,
+        [],
+      );
     }).pipe(Effect.provide(layer.pipe(Layer.provideMerge(ServerSettings.layerTest()))));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

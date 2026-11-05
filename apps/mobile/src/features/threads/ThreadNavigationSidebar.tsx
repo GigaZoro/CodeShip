@@ -17,7 +17,7 @@ import type {
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { AnimatedLegendList } from "@legendapp/list/reanimated";
 import { THREAD_SIDEBAR_ROW_LAYOUT } from "./threadListAnimations";
-import { ThreadListPinnedTasks } from "./ThreadListPinnedTasks";
+import { ThreadListPinnedTasks, useScheduledTaskHiddenThreadKeys } from "./ThreadListPinnedTasks";
 import type { MenuAction } from "@react-native-menu/menu";
 import { useAtomValue } from "@effect/atom-react";
 import { useMemo, useRef, useState } from "react";
@@ -366,6 +366,9 @@ function ThreadNavigationSidebarPane(
   } = listEnvironments;
   const resolveProviderInstance = useThreadRowProviderInstanceResolver(providersByEnvironmentId);
   const pendingOrder = usePendingThreadOrder();
+  const hiddenTaskThreadKeys = useScheduledTaskHiddenThreadKeys(
+    JSON.stringify([...settlementEnvironmentIds]),
+  );
   const {
     layout: threadListV2Layout,
     items: threadListV2Items,
@@ -383,6 +386,7 @@ function ThreadNavigationSidebarPane(
     pinReorderEnvironmentIds,
     activeReorderEnvironmentIds,
     queuedThreadKeys,
+    hiddenTaskThreadKeys,
     settledLimit: settledVisibleCount,
     now,
     pendingOrder,

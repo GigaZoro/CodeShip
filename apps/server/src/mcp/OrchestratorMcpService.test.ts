@@ -2603,6 +2603,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                           prompt: input.prompt,
                           runtimeMode: input.runtimeMode,
                           interactionMode: input.interactionMode,
+                          ...(input.placement === undefined ? {} : { placement: input.placement }),
                         });
                         yield* Ref.set(saved, [saving]);
                         return { task: saving };
@@ -2618,8 +2619,9 @@ describe("OrchestratorMcpService provider resolution", () => {
           prompt: "Check in",
           schedule: { type: "interval", everyMs: 3_600_000 },
           clientRequestId: "schedule-retry",
+          placement: "pinned",
         } as const;
-        yield* mcp.scheduleTask(supervisedClient, request);
+        assert.equal((yield* mcp.scheduleTask(supervisedClient, request)).placement, "pinned");
         yield* Ref.update(saved, (tasks) =>
           tasks.map((task) => ({ ...task, runtimeMode: "full-access" as const })),
         );

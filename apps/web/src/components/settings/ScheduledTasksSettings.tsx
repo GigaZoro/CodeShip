@@ -13,7 +13,6 @@ import {
   MoreHorizontalIcon,
   PencilIcon,
   PinIcon,
-  PinOffIcon,
   PlayIcon,
   PlusIcon,
   Trash2Icon,
@@ -26,6 +25,7 @@ import type {
   ProjectId,
   ScheduledTask,
   ScheduledTaskId,
+  ScheduledTaskPlacement,
   ScheduledTaskSchedule,
   ScheduledTaskUpsertInput,
   ScheduledTaskWebhookDeliverySummary,
@@ -66,9 +66,9 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useNowMinute } from "../../hooks/useNowMinute";
 import {
-  supportsScheduledTaskPinning,
-  useSetScheduledTaskPinned,
-} from "../../hooks/useSetScheduledTaskPinned";
+  supportsScheduledTaskPlacement,
+  useSetScheduledTaskPlacement,
+} from "../../hooks/useSetScheduledTaskPlacement";
 import {
   useEnvironment,
   useEnvironmentHttpBaseUrl,
@@ -77,7 +77,11 @@ import {
 } from "../../state/environments";
 import { useProjects, useThreadShell } from "../../state/entities";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { pinnedTaskRunThreadId } from "@t3tools/client-runtime/scheduled-task-pins";
+import {
+  pinnedTaskRunThreadId,
+  resolveScheduledTaskPlacement,
+  SCHEDULED_TASK_PLACEMENT_OPTIONS,
+} from "@t3tools/client-runtime/scheduled-task-pins";
 import {
   describeOneMachineLinkWarning,
   effectiveOneMachineOrder,
@@ -138,7 +142,17 @@ import {
   type WorkspaceMode,
 } from "./scheduledTasksSettings.logic";
 import { Label } from "../ui/label";
-import { Menu, MenuTrigger, MenuPopup, MenuItem, MenuSeparator } from "../ui/menu";
+import { ScheduledTaskPlacementRadioGroup } from "./ScheduledTaskPlacementRadioGroup";
+import {
+  Menu,
+  MenuTrigger,
+  MenuPopup,
+  MenuItem,
+  MenuSeparator,
+  MenuSub,
+  MenuSubPopup,
+  MenuSubTrigger,
+} from "../ui/menu";
 import { ToggleGroup, Toggle } from "../ui/toggle-group";
 import { Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from "../ui/empty";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
@@ -508,6 +522,7 @@ export function ScheduledTasksSettings(target: {
           </WorkspaceBreadcrumbItem>
         </WorkspaceBreadcrumb>
         <div className="ms-auto flex shrink-0 items-center">
+          <ShowAllTasksIn />
           <Button size="xs" variant="ghost" disabled={!startTask} onClick={startTask}>
             <PlusIcon className="size-3" />
             New task
@@ -571,6 +586,66 @@ export const scheduledTasksListAtom = environmentAtomList(
   "web-scheduled-tasks-list",
   (environmentId) => serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
 );
+
+const scheduledTaskPlacementPermissionsAtom = environmentAtomList(
+  "web-scheduled-task-placement-permissions",
+  serverEnvironment.setScheduledTaskPlacement.permissionAtom,
+);
+
+/** Moves every task listed on this page, so the choice reaches exactly what the user sees. */
+function ShowAllTasksIn() {
+  const { scope, environments } = useSettingsScope();
+  const setPlacement = useSetScheduledTaskPlacement();
+  const connectedIds = environments.flatMap((environment) =>
+    environment.connection.phase === "connected" && environment.serverConfig !== null
+      ? [environment.environmentId]
+      : [],
+  );
+  const key = environmentIdsKey(connectedIds);
+  const queries = useAtomValue(scheduledTasksListAtom(key));
+  const permissions = useAtomValue(scheduledTaskPlacementPermissionsAtom(key));
+  const movable = (placement: ScheduledTaskPlacement | null) =>
+    connectedIds.flatMap((environmentId, index) => {
+      if (!permissions[index]) return [];
+      const tasks = (AsyncResult.getOrElse(queries[index]!, () => null)?.tasks ?? []).filter(
+        (task) =>
+          supportsScheduledTaskPlacement(task) &&
+          matchesScheduledTaskScope(scope, environmentId, task.projectId) &&
+          resolveScheduledTaskPlacement(task) !== placement,
+      );
+      return tasks.length > 0 ? [{ environmentId, tasks }] : [];
+    });
+  const choose = async (placement: ScheduledTaskPlacement, label: string) => {
+    const groups = movable(placement);
+    const count = groups.reduce((total, group) => total + group.tasks.length, 0);
+    const message = `Show ${count} ${count === 1 ? "task" : "tasks"} in ${label}?\nEach task you can see on this page moves. You can change any task again from its menu.`;
+    if (!((await requestConfirmDialog(message)) ?? window.confirm(message))) return;
+    await Promise.all(
+      groups.map((group) => setPlacement(group.environmentId, group.tasks, placement)),
+    );
+  };
+  return (
+    <Menu>
+      <MenuTrigger
+        render={<Button size="xs" variant="ghost" disabled={movable(null).length === 0} />}
+      >
+        Show all in
+        <ChevronDownIcon className="size-3" />
+      </MenuTrigger>
+      <MenuPopup align="end">
+        {SCHEDULED_TASK_PLACEMENT_OPTIONS.map((option) => (
+          <MenuItem
+            key={option.value}
+            disabled={movable(option.value).length === 0}
+            onClick={() => void choose(option.value, option.label)}
+          >
+            {option.label}
+          </MenuItem>
+        ))}
+      </MenuPopup>
+    </Menu>
+  );
+}
 
 function ScheduledTaskEnvironmentList({
   environmentId,
@@ -981,9 +1056,8 @@ function ScheduledTaskRow({
   const remove = useAtomCommand(serverEnvironment.deleteScheduledTask, {
     label: "scheduled task delete",
   });
-  const setPinned = useSetScheduledTaskPinned();
+  const setPlacement = useSetScheduledTaskPlacement();
   const navigate = useNavigate();
-  const isPinned = task.pinnedAt != null;
   const failToast = (title: string, description: string) =>
     toastManager.add(stackedThreadToast({ type: "error", title, description }));
   /** Runs one task command while the row is busy; a failure toasts under the action's own title. */
@@ -1144,11 +1218,19 @@ function ScheduledTaskRow({
                   Run now
                 </MenuItem>
               )}
-              {supportsScheduledTaskPinning(task) ? (
-                <MenuItem onClick={() => void setPinned(environmentId, task, !isPinned)}>
-                  {isPinned ? <PinOffIcon /> : <PinIcon />}
-                  {isPinned ? "Unpin from sidebar" : "Pin to sidebar"}
-                </MenuItem>
+              {supportsScheduledTaskPlacement(task) ? (
+                <MenuSub>
+                  <MenuSubTrigger>
+                    <PinIcon />
+                    Show in
+                  </MenuSubTrigger>
+                  <MenuSubPopup>
+                    <ScheduledTaskPlacementRadioGroup
+                      task={task}
+                      onChange={(placement) => void setPlacement(environmentId, [task], placement)}
+                    />
+                  </MenuSubPopup>
+                </MenuSub>
               ) : null}
               <MenuSeparator />
               <MenuItem variant="destructive" onClick={() => void deleteTask()}>

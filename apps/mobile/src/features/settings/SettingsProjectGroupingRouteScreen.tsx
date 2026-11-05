@@ -16,7 +16,7 @@ import {
   NewThreadSettingsSection,
   ThreadGroupingSettingsSection,
   WorkingSectionSettings,
-  ScheduledTaskPinSettings,
+  ScheduledTaskPlacementSettings,
 } from "./ThreadSettingsSections";
 
 const GROUPING_OPTIONS: ReadonlyArray<{
@@ -84,7 +84,7 @@ export function SettingsProjectGroupingRouteScreen() {
         </SettingsSection>
         <ThreadGroupingSettingsSection />
         <WorkingSectionSettings />
-        <ScheduledTaskPinSettings />
+        <ScheduledTaskPlacementSettings />
         <NewThreadSettingsSection />
       </ScrollView>
     </SettingsScreen>

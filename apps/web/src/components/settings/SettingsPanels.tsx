@@ -82,6 +82,7 @@ import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { AgentConversationsSettings } from "./AgentConversationsSettings";
+import { SCHEDULED_TASK_PLACEMENT_OPTIONS } from "@t3tools/client-runtime/scheduled-task-pins";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -593,20 +594,25 @@ export function GeneralSettingsPanel() {
 
       <SettingsSection id="sidebar" title="Sidebar">
         <SettingsRow
-          {...searchableSetting("automatically-pin-scheduled-tasks")}
+          {...searchableSetting("scheduled-task-default-placement")}
           serverScoped
-          settingKeys={["automaticallyPinScheduledTasks"]}
-          description="Pin newly created scheduled tasks to the sidebar. Existing pins stay as they are."
-          control={
-            <ScopedSwitch
-              settingKeys={["automaticallyPinScheduledTasks"]}
-              checked={settings.automaticallyPinScheduledTasks}
-              onCheckedChange={(checked) =>
-                updateSettings({ automaticallyPinScheduledTasks: checked })
-              }
-              aria-label="Automatically pin scheduled tasks"
-            />
+          settingKeys={["scheduledTaskDefaultPlacement"]}
+          description="Where new scheduled tasks appear. Change a task's place from its menu."
+          resetAction={
+            settings.scheduledTaskDefaultPlacement !==
+            DEFAULT_UNIFIED_SETTINGS.scheduledTaskDefaultPlacement ? (
+              <SettingResetButton
+                label="new scheduled task placement"
+                onClick={() =>
+                  updateSettings({
+                    scheduledTaskDefaultPlacement:
+                      DEFAULT_UNIFIED_SETTINGS.scheduledTaskDefaultPlacement,
+                  })
+                }
+              />
+            ) : null
           }
+          control={<ScheduledTaskPlacementSelect />}
         />
         <SettingsRow
           {...searchableSetting("sidebar-grouping")}
@@ -1384,6 +1390,40 @@ function ScopedCompactIdleThreadsRow() {
         </Select>
       }
     />
+  );
+}
+
+function ScheduledTaskPlacementSelect() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const mixed = useScopedSettingsMixed(["scheduledTaskDefaultPlacement"]);
+  return (
+    <Select
+      value={mixed ? null : settings.scheduledTaskDefaultPlacement}
+      onValueChange={(value) => {
+        const option = SCHEDULED_TASK_PLACEMENT_OPTIONS.find(
+          (candidate) => candidate.value === value,
+        );
+        if (option) updateSettings({ scheduledTaskDefaultPlacement: option.value });
+      }}
+    >
+      <SelectTrigger size="sm" className="w-full sm:w-44" aria-label="Show new scheduled tasks in">
+        <SelectValue>
+          {(value: string | null) =>
+            value === null
+              ? "Mixed"
+              : SCHEDULED_TASK_PLACEMENT_OPTIONS.find((option) => option.value === value)?.label
+          }
+        </SelectValue>
+      </SelectTrigger>
+      <SelectPopup align="end" alignItemWithTrigger={false}>
+        {SCHEDULED_TASK_PLACEMENT_OPTIONS.map((option) => (
+          <SelectItem hideIndicator key={option.value} value={option.value}>
+            {option.label}
+          </SelectItem>
+        ))}
+      </SelectPopup>
+    </Select>
   );
 }
 

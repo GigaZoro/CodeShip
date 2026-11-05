@@ -22,6 +22,7 @@ import {
   TurnItemId,
 } from "./baseSchemas.ts";
 import {
+  ScheduledTaskPlacement,
   ScheduledTaskRunStatus,
   ScheduledTaskProjectMachineOrder,
   ScheduledTaskSchedule,
@@ -676,6 +677,10 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
         "With shared: each run happens on one machine, the first available in the project's machine order.",
     }),
   ),
+  placement: Schema.optional(ScheduledTaskPlacement).annotate({
+    description:
+      "Where it shows in the user's thread list: none (hidden), chat (runs as normal chats), pinned (a task row). Omit to keep the current one, or for new tasks the user's default.",
+  }),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
@@ -708,6 +713,7 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   blockedByPolicy: Schema.optional(Schema.String).annotate({
     description: "Present when an administrator's policy stops this task from running.",
   }),
+  placement: Schema.optional(ScheduledTaskPlacement),
   shared: Schema.optional(Schema.Boolean),
   oneMachine: Schema.optional(Schema.Boolean),
   lastRun: Schema.optional(
@@ -766,6 +772,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   bindToCurrentThread: Schema.optional(Schema.Boolean),
   shared: Schema.optional(Schema.Boolean),
   oneMachine: Schema.optional(Schema.Boolean),
+  placement: Schema.optional(ScheduledTaskPlacement),
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;

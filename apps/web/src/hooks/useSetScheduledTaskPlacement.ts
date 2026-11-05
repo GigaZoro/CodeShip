@@ -2,6 +2,7 @@ import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
   type ScheduledTask,
+  type ScheduledTaskPlacement,
 } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
@@ -13,23 +14,30 @@ import { serverEnvironment } from "../state/server";
 import { readEnvironmentScope } from "../state/session";
 import { useAtomCommand } from "../state/use-atom-command";
 
-/** Servers without task pinning leave pinnedAt out of the task entirely. */
-export function supportsScheduledTaskPinning(task: Pick<ScheduledTask, "pinnedAt">): boolean {
-  return task.pinnedAt !== undefined;
+/** Servers that predate placements leave it out of the task, so they cannot move one. */
+export function supportsScheduledTaskPlacement(task: Pick<ScheduledTask, "placement">): boolean {
+  return task.placement !== undefined;
 }
 
-export function useSetScheduledTaskPinned() {
-  const setPinned = useAtomCommand(serverEnvironment.setScheduledTaskPinned, {
-    label: "scheduled task pin",
+export function useSetScheduledTaskPlacement() {
+  const setPlacement = useAtomCommand(serverEnvironment.setScheduledTaskPlacement, {
+    label: "scheduled task placement",
   });
-  return async (environmentId: EnvironmentId, task: ScheduledTask, pinned: boolean) => {
+  return async (
+    environmentId: EnvironmentId,
+    tasks: ReadonlyArray<Pick<ScheduledTask, "id">>,
+    placement: ScheduledTaskPlacement,
+  ) => {
     if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
-    const result = await setPinned({ environmentId, input: { id: task.id, pinned } });
+    const result = await setPlacement({
+      environmentId,
+      input: { ids: tasks.map((task) => task.id), placement },
+    });
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: pinned ? "Could not pin task" : "Could not unpin task",
+          title: tasks.length === 1 ? "Could not move task" : "Could not move tasks",
           description: String(squashAtomCommandFailure(result)),
         }),
       );

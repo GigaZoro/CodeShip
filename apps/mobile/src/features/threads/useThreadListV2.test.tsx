@@ -51,6 +51,7 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
     pinReorderEnvironmentIds: environmentIds,
     activeReorderEnvironmentIds: environmentIds,
     queuedThreadKeys: new Set(),
+    hiddenTaskThreadKeys: new Set(),
     settledLimit: 10,
     now: "2026-01-02T00:00:00.000Z",
     pendingOrder: null,

@@ -283,7 +283,10 @@ import {
   type SidebarSweepAction,
 } from "./sidebar/SidebarThreadRow";
 import { SidebarDraftBlock } from "./sidebar/SidebarDraftBlock";
-import { SidebarPinnedTasksBlock } from "./sidebar/SidebarPinnedTasks";
+import {
+  SidebarPinnedTasksBlock,
+  useScheduledTaskHiddenThreadKeys,
+} from "./sidebar/SidebarPinnedTasks";
 import { useSidebarMachines } from "./sidebar/useSidebarMachines";
 import { publishSidebarFolderControls } from "./sidebar/sidebarFolderControls";
 import { useLocallyUnreadThreadKeys } from "./sidebar/useLocallyUnreadThreadKeys";
@@ -380,6 +383,8 @@ interface SidebarThreadPartitionInput {
   readonly scopedProjectKeys: ReadonlySet<string> | null;
   /** Tasks linked environments run for a listed thread; they show under it. */
   readonly delegatedUnderParent: ReadonlySet<string>;
+  /** Threads of scheduled tasks placed nowhere; they list only while they need the user. */
+  readonly hiddenTaskThreadKeys: ReadonlySet<string>;
   readonly serverConfigs: ReadonlyMap<EnvironmentId, EnvironmentServerConfig>;
   readonly connectedEnvironmentIds: readonly EnvironmentId[];
   readonly optimisticDrop: SidebarOptimisticDrop | null;
@@ -503,6 +508,7 @@ function useSidebarThreads(input: {
   readonly optimisticDrop: SidebarOptimisticDrop | null;
   readonly threads: readonly EnvironmentThreadShell[];
   readonly delegatedUnderParent: ReadonlySet<string>;
+  readonly hiddenTaskThreadKeys: ReadonlySet<string>;
   readonly routeRowThreadKey: string | null;
   readonly grouping: SidebarThreadGrouping;
 }) {
@@ -514,6 +520,7 @@ function useSidebarThreads(input: {
     optimisticDrop,
     threads,
     delegatedUnderParent,
+    hiddenTaskThreadKeys,
     routeRowThreadKey,
     grouping,
   } = input;
@@ -572,6 +579,7 @@ function useSidebarThreads(input: {
     delegatedUnderParent,
     serverConfigs,
     connectedEnvironmentIds,
+    hiddenTaskThreadKeys,
     optimisticDrop,
     workingShelfEnabled,
     sortActiveBySend: grouping.projects !== null || grouping.machines !== null,
@@ -904,6 +912,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     threads,
     scopedProjectKeys,
     delegatedUnderParent,
+    hiddenTaskThreadKeys,
     serverConfigs,
     optimisticDrop,
     workingShelfEnabled,
@@ -911,12 +920,19 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     disconnectedEnvironmentIds,
   } = input;
   const preciseNow = new Date().toISOString();
-  const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys, delegatedUnderParent);
   // Ignores the project scope: a thread waiting on the user must not hide in a folder, shelf, or filter.
   const needsYou = filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent).filter(
     threadAwaitsUser,
   );
   const needsYouKeys = new Set(needsYou.map(threadShellKey));
+  const visible = filterSidebarV2VisibleThreads(
+    threads,
+    scopedProjectKeys,
+    delegatedUnderParent,
+  ).filter((thread) => {
+    const key = threadShellKey(thread);
+    return !hiddenTaskThreadKeys.has(key) || needsYouKeys.has(key);
+  });
   const inboxObservation = inboxReturns.observe(workingShelfEnabled ? threads : null);
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
@@ -1105,6 +1121,8 @@ function useSidebarLookups() {
   const projects = useProjects();
   const environments = useEnvironmentIdentities();
   const serverConfigs = useServerConfigs();
+  const taskEnvironmentIdsKey = JSON.stringify([...serverConfigs.keys()]);
+  const hiddenTaskThreadKeys = useScheduledTaskHiddenThreadKeys(taskEnvironmentIdsKey);
   const providerEntriesByEnvironment = useAtomValue(sidebarProviderEntriesAtom);
   const projectGroups = useSidebarProjectGroups();
   const environmentLabelById = new Map(
@@ -1140,6 +1158,8 @@ function useSidebarLookups() {
     projectDisplayNameByKey,
     projectGroupByScopeKey,
     projectScopeItems,
+    taskEnvironmentIdsKey,
+    hiddenTaskThreadKeys,
   };
 }
 
@@ -1221,6 +1241,8 @@ export default function Sidebar({
     projectDisplayNameByKey,
     projectGroupByScopeKey,
     projectScopeItems: lookupProjectScopeItems,
+    taskEnvironmentIdsKey,
+    hiddenTaskThreadKeys,
   } = useSidebarLookups();
   const delegatedUnderParent = useDelegatedUnderParent();
   const router = useRouter();
@@ -1674,6 +1696,7 @@ export default function Sidebar({
     optimisticDrop,
     threads,
     delegatedUnderParent,
+    hiddenTaskThreadKeys,
     routeRowThreadKey,
     grouping: {
       projects: groupBy.project
@@ -4190,9 +4213,11 @@ export default function Sidebar({
                       const scheduledTasks = (
                         <SidebarPinnedTasksBlock
                           key="pinned-tasks"
-                          environmentIdsKey={JSON.stringify([...serverConfigs.keys()])}
+                          environmentIdsKey={taskEnvironmentIdsKey}
                           scopedProjectKeys={scopedProjectKeys}
                           projectDisplayNameByKey={projectDisplayNameByKey}
+                          environmentLabelById={environmentLabelById}
+                          environmentMachineById={environmentMachineById}
                           routeThreadKey={routeThreadKey}
                           onNavigateToThread={navigateToThread}
                           inPanel={activityPanelTarget !== null}

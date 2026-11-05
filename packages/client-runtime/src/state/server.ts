@@ -1672,9 +1672,9 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
-    setScheduledTaskPinned: createEnvironmentRpcCommand(runtime, {
-      label: "environment-data:server:scheduled-task:set-pinned",
-      tag: WS_METHODS.scheduledTasksSetPinned,
+    setScheduledTaskPlacement: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:scheduled-task:set-placement",
+      tag: WS_METHODS.scheduledTasksSetPlacement,
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),

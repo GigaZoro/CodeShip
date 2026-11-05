@@ -215,7 +215,7 @@ it.effect(
         yield* service.setFollowsDefaultModel({ ids: [saved.id], followsDefaultModel: true });
         expect((yield* taskOf(service))?.shared?.revision.at).toBe("2031-01-01T00:00:00.002Z");
 
-        yield* service.setPinned({ id: saved.id, pinned: true });
+        yield* service.setPlacement({ ids: [saved.id], placement: "pinned" });
         expect((yield* taskOf(service))?.shared?.revision.at).toBe("2031-01-01T00:00:00.002Z");
       }),
     ),
@@ -572,9 +572,9 @@ it.effect("the first machine asks first when it is late", () =>
       // The scheduler ticks every 5 seconds, so lateness needs a due time already in the past.
       const lateDue = iso(NOW - 2 * MINUTE_MS);
       yield* scenario.sql`UPDATE scheduled_tasks SET next_run_at = ${lateDue}`;
-      yield* scenario.service.setPinned({
-        id: "scheduled-task:shared" as ScheduledTaskId,
-        pinned: true,
+      yield* scenario.service.setPlacement({
+        ids: ["scheduled-task:shared" as ScheduledTaskId],
+        placement: "pinned",
       });
       yield* scenario.tick(NOW);
       yield* scenario.settled;

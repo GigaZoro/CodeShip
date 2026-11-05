@@ -290,6 +290,7 @@ function scheduledTaskSummary(
       ? {}
       : { webhookSignature: task.webhook.hasSecret ? "set" : "none" }),
     ...(task.blockedByPolicy === undefined ? {} : { blockedByPolicy: task.blockedByPolicy }),
+    ...(task.placement === undefined ? {} : { placement: task.placement }),
     shared: task.shared != null,
     ...(task.shared?.runOn === "one" ? { oneMachine: true } : {}),
     lastRun,
@@ -2179,6 +2180,7 @@ const make = Effect.gen(function* () {
         interactionMode: limits.interactionMode,
         createdBy: "agent",
         creationSource: "mcp",
+        ...(input.placement === undefined ? {} : { placement: input.placement }),
         ...(input.shared === true
           ? {
               shared: {
@@ -2281,6 +2283,7 @@ const make = Effect.gen(function* () {
           interactionMode: existing.interactionMode,
           createdBy: existing.createdBy,
           creationSource: existing.creationSource,
+          ...(input.placement === undefined ? {} : { placement: input.placement }),
           // Omitted keeps the stored choice.
           ...(input.shared === false
             ? { shared: null }

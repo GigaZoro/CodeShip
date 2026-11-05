@@ -23,6 +23,9 @@ const TimeOfDay = TrimmedNonEmptyString.check(
   Schema.isPattern(/^([01]?\d|2[0-3]):([0-5]\d)$/),
 ).annotate({ description: "Local time as HH:MM, such as 09:30." });
 
+export const ScheduledTaskPlacement = Schema.Literals(["none", "chat", "pinned"]);
+export type ScheduledTaskPlacement = typeof ScheduledTaskPlacement.Type;
+
 export const MIN_SCHEDULED_TASK_INTERVAL_MS = 60_000;
 
 const ScheduledTaskIntervalMs = Schema.Int.check(Schema.isGreaterThan(0));
@@ -329,7 +332,9 @@ export const ScheduledTask = Schema.Struct({
   lastRunError: Schema.NullOr(Schema.String),
   runCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   webhook: Schema.optional(ScheduledTaskWebhookEndpoint),
-  /** Pinned tasks show in the sidebar. Absent from servers without pinning. */
+  /** Where the task shows in thread lists. Absent from servers that predate placement. */
+  placement: Schema.optional(ScheduledTaskPlacement),
+  /** When the task was pinned; it orders the pinned rows. */
   pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** Where a pinned task sits once moved by hand; null until then. Absent from servers without reordering. */
   pinOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
@@ -367,6 +372,10 @@ export type ScheduledTaskListResult = typeof ScheduledTaskListResult.Type;
 
 export const ScheduledTaskUpsertInput = Schema.Struct({
   id: Schema.optional(ScheduledTaskId),
+  placement: Schema.optional(ScheduledTaskPlacement).annotate({
+    description:
+      "Where the task shows in the thread list. Omitted keeps the stored one, or for a new task the default.",
+  }),
   requireExisting: Schema.optional(Schema.Boolean).annotate({
     description: "Reject the save if the task no longer exists, for edits from a client form.",
   }),
@@ -450,11 +459,17 @@ export const ScheduledTaskSetEnabledInput = Schema.Struct({
 });
 export type ScheduledTaskSetEnabledInput = typeof ScheduledTaskSetEnabledInput.Type;
 
-export const ScheduledTaskSetPinnedInput = Schema.Struct({
-  id: ScheduledTaskId,
-  pinned: Schema.Boolean,
+export const ScheduledTaskSetPlacementInput = Schema.Struct({
+  ids: Schema.Array(ScheduledTaskId).check(Schema.isMinLength(1)),
+  placement: ScheduledTaskPlacement,
 });
-export type ScheduledTaskSetPinnedInput = typeof ScheduledTaskSetPinnedInput.Type;
+export type ScheduledTaskSetPlacementInput = typeof ScheduledTaskSetPlacementInput.Type;
+
+export const ScheduledTaskSetPlacementResult = Schema.Struct({
+  /** The tasks that changed; a task already there or since deleted is left out. */
+  ids: Schema.Array(ScheduledTaskId),
+});
+export type ScheduledTaskSetPlacementResult = typeof ScheduledTaskSetPlacementResult.Type;
 
 export const ScheduledTaskReorderPinnedInput = Schema.Struct({
   assignments: Schema.Array(

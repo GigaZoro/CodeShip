@@ -59,35 +59,44 @@ and worktree while you stay in the new thread composer. This requires a Git proj
 
 Threads waiting on you sit together under **Needs you** in a box at the bottom right on web
 and desktop. In narrow windows and on mobile, they appear at the top of the thread list,
-below pinned tasks: an approval, an answer to a question, a subagent's request, or a guest's message.
+below scheduled task rows: an approval, an answer to a question, a subagent's request, or a guest's message.
 It lists them from every machine and project, even when the list is filtered to one, the thread's
 folder is closed, or the thread is pinned or settled. Once you answer, the thread returns to its
 usual place.
 
-## Pin scheduled tasks
+## Choose where scheduled tasks show
 
-Pin a scheduled task to watch its runs and next scheduled start. On web and desktop, choose
-**Pin to sidebar** from the task's menu on the **Scheduled tasks** page, or use the pin
-button in a thread's **Automations** card. On mobile, choose **Pin to thread list** from the
-task's menu. Pins are saved on the environment, so every device connected to it shows them.
+Each scheduled task has a place in the app:
 
-On web and desktop, pinned tasks appear in the collapsible **Scheduled** section above
-**Needs you** on the right. In narrower windows and on mobile, they stay in the thread list.
-To change their order on web and desktop, drag a pinned task, or right-click it and choose
+- **None** keeps the task out of the thread list, along with the thread it runs in (for a task
+  that starts a new thread each run, its latest one). That thread still appears under
+  **Needs you** when it needs an approval or answer.
+- **Regular chat** lists the task's run threads like any other chat. This is the default.
+- **Pinned** adds a row for the task in the collapsible **Scheduled** section, so you can watch
+  its runs and next scheduled start.
+
+To change the order of pinned tasks on web and desktop, drag one, or right-click it and choose
 **Move up** or **Move down**. Every device shows the same order, and a newly pinned task goes
 to the bottom.
 
-Tasks are not pinned automatically by default. Turn on **Automatically pin scheduled tasks** in
-**Settings → General** to pin new tasks when they are created. Changing this setting leaves
-existing pins alone, and editing or running a task does not pin it again.
+Change a task's choice with **Show in** in its menu on the **Scheduled tasks** page, in the
+**Automations** card of its thread, in the right-click menu of its row, or in its menu on mobile.
+**Show all in** at the top of the **Scheduled tasks** page moves every task shown there at once.
+The choice is saved on the environment, so every device connected to it shows the same place.
 
-A pinned task shows whether its latest run is still working or needs your input, and counts
-down to its next run. Tasks that repeat on an interval also show a bar for the time left.
+**Show new scheduled tasks in** in **Settings → General** sets the place for tasks created from
+then on. Regular chat is the default. Changing it leaves existing tasks where they are, and
+editing or running a task does not move it.
+
+A task with a row shows whether its latest run is still working or needs your input, and counts
+down to its next run, or shows when it last ran if it has none. With more than one machine
+connected, the row also names its machine. Tasks that repeat on an interval also show a bar for
+the time left.
 Select the task to open the thread its last run used, or its settings if it has not run yet.
 Right-click the row on web and desktop, or long-press it on mobile, to run the task now or
-unpin it.
+change where it shows.
 
-Pinned or not, a thread a scheduled task runs in shows a calendar icon in the thread list. On web
+Wherever the task shows, a thread it runs in shows a calendar icon in the thread list. On web
 and desktop, hover it for the schedule and next run, or click it to open the task. A task that
 starts a new thread for each run marks only the thread from its latest run.
 

@@ -1,15 +1,20 @@
 import { useAtomValue } from "@effect/atom-react";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { useNavigate } from "@tanstack/react-router";
-import { CalendarClockIcon, PinIcon, PinOffIcon, PlayIcon, Settings2Icon } from "lucide-react";
+import { CalendarClockIcon, PinIcon, PlayIcon, Settings2Icon } from "lucide-react";
 import { useId, useState } from "react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
   type ScheduledTask,
+  type ScheduledTaskPlacement,
   type ThreadId,
 } from "@t3tools/contracts";
+import {
+  resolveScheduledTaskPlacement,
+  scheduledTaskPlacementLabel,
+} from "@t3tools/client-runtime/scheduled-task-pins";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -27,11 +32,13 @@ import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
-  supportsScheduledTaskPinning,
-  useSetScheduledTaskPinned,
-} from "../../hooks/useSetScheduledTaskPinned";
+  supportsScheduledTaskPlacement,
+  useSetScheduledTaskPlacement,
+} from "../../hooks/useSetScheduledTaskPlacement";
 
 import { readEnvironmentScope } from "../../state/session";
+import { Menu, MenuPopup, MenuTrigger } from "../ui/menu";
+import { ScheduledTaskPlacementRadioGroup } from "../settings/ScheduledTaskPlacementRadioGroup";
 import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -61,34 +68,38 @@ function taskThreadRelation(task: ScheduledTask, threadId: ThreadId) {
   return "Now runs in another thread";
 }
 
-function PinToSidebarControl(props: {
+function ShowInControl(props: {
   readonly task: ScheduledTask;
   readonly disabled: boolean;
-  readonly onToggle: (pinned: boolean) => void;
+  readonly onChange: (placement: ScheduledTaskPlacement) => void;
 }) {
-  const pinned = props.task.pinnedAt != null;
+  const label = scheduledTaskPlacementLabel(resolveScheduledTaskPlacement(props.task));
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <ThreadDetailsControl
-            size="icon-xs"
-            variant="ghost"
-            part="icon"
-            aria-label={
-              pinned
-                ? `Unpin ${props.task.title} from sidebar`
-                : `Pin ${props.task.title} to sidebar`
-            }
-            disabled={props.disabled}
-            onClick={() => props.onToggle(!pinned)}
-          >
-            {pinned ? <PinOffIcon className="size-3.5" /> : <PinIcon className="size-3.5" />}
-          </ThreadDetailsControl>
-        }
-      />
-      <TooltipPopup>{pinned ? "Unpin from sidebar" : "Pin to sidebar"}</TooltipPopup>
-    </Tooltip>
+    <Menu>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <MenuTrigger
+              render={
+                <ThreadDetailsControl
+                  size="icon-xs"
+                  variant="ghost"
+                  part="icon"
+                  aria-label={`Show ${props.task.title} in: ${label}`}
+                  disabled={props.disabled}
+                />
+              }
+            >
+              <PinIcon className="size-3.5" />
+            </MenuTrigger>
+          }
+        />
+        <TooltipPopup>Show in: {label}</TooltipPopup>
+      </Tooltip>
+      <MenuPopup align="end">
+        <ScheduledTaskPlacementRadioGroup task={props.task} onChange={props.onChange} />
+      </MenuPopup>
+    </Menu>
   );
 }
 
@@ -100,11 +111,11 @@ function ThreadAutomationRow(props: {
   readonly onEdit: () => void;
   readonly onRun: () => void;
   readonly onSetEnabled: (enabled: boolean) => void;
-  readonly onSetPinned: (pinned: boolean) => void;
+  readonly onSetPlacement: (placement: ScheduledTaskPlacement) => void;
 }) {
   const { task } = props;
   const descriptionId = useId();
-  const pinnable = supportsScheduledTaskPinning(task);
+  const movable = supportsScheduledTaskPlacement(task);
   // Webhook tasks need a request from their URL.
   const runnable = task.schedule.type !== "webhook";
   return (
@@ -169,13 +180,13 @@ function ThreadAutomationRow(props: {
         </Tooltip>
         <span aria-hidden="true" className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS} />
         {/* Shown on hover and focus so the title keeps the row's width at rest. */}
-        {pinnable || runnable ? (
+        {movable || runnable ? (
           <div className="ms-1 hidden shrink-0 items-center gap-0.5 group-hover/details-split:flex group-focus-within/details-split:flex pointer-coarse:flex [@media(hover:none)]:flex">
-            {pinnable ? (
-              <PinToSidebarControl
+            {movable ? (
+              <ShowInControl
                 task={task}
                 disabled={!props.canOperate}
-                onToggle={props.onSetPinned}
+                onChange={props.onSetPlacement}
               />
             ) : null}
             {runnable ? (
@@ -229,7 +240,7 @@ export function ThreadAutomationsPanel(props: {
   const runTaskNow = useAtomCommand(serverEnvironment.runScheduledTaskNow, {
     label: "thread automation run now",
   });
-  const setPinned = useSetScheduledTaskPinned();
+  const setPlacement = useSetScheduledTaskPlacement();
   const navigate = useNavigate();
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
 
@@ -330,7 +341,9 @@ export function ThreadAutomationsPanel(props: {
             }
             onRun={() => void runNow(task)}
             onSetEnabled={(enabled) => void toggleEnabled(task, enabled)}
-            onSetPinned={(pinned) => void setPinned(props.environmentId, task, pinned)}
+            onSetPlacement={(placement) =>
+              void setPlacement(props.environmentId, [task], placement)
+            }
           />
         ))}
       </ul>

@@ -56,6 +56,7 @@ import {
   ProviderDriverKind,
 } from "./providerInstance.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
+import { ScheduledTaskPlacement } from "./scheduledTask.ts";
 
 export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"]);
 export type TimestampFormat = typeof TimestampFormat.Type;
@@ -1330,8 +1331,8 @@ export const ServerSettings = Schema.Struct({
   sidebarAutoSettleAfterDays: Schema.NullOr(SidebarAutoSettleAfterDays).pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS)),
   ),
-  automaticallyPinScheduledTasks: Schema.Boolean.pipe(
-    Schema.withDecodingDefault(Effect.succeed(false)),
+  scheduledTaskDefaultPlacement: ScheduledTaskPlacement.pipe(
+    Schema.withDecodingDefault(Effect.succeed("chat" as const)),
   ),
   compactIdleThreads: LegacyCompactIdleThreads.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
@@ -1775,7 +1776,7 @@ export const ServerSettingsPatch = Schema.Struct({
   simlockDeviceHostsEnabled: Schema.optionalKey(Schema.Boolean),
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
   compactIdleThreads: Schema.optionalKey(LegacyCompactIdleThreads),
-  automaticallyPinScheduledTasks: Schema.optionalKey(Schema.Boolean),
+  scheduledTaskDefaultPlacement: Schema.optionalKey(ScheduledTaskPlacement),
   idleCompaction: Schema.optionalKey(IdleCompactionMode),
   sidebarAutoSettleKeepPullRequests: Schema.optionalKey(Schema.Boolean),
   sidebarAutoSettleOpensPullRequests: Schema.optionalKey(Schema.Boolean),

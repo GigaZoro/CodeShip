@@ -450,11 +450,11 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["group by project folders tree boring legacy classic sidebar"],
   },
   {
-    id: "automatically-pin-scheduled-tasks",
-    title: "Automatically pin scheduled tasks",
+    id: "scheduled-task-default-placement",
+    title: "Show new scheduled tasks in",
     to: "/settings/general",
     scope: "environment",
-    searchTerms: ["auto pin scheduled tasks automations recurring sidebar"],
+    searchTerms: ["auto pin scheduled tasks automations recurring sidebar placement window"],
   },
   {
     id: "sidebar-group-by-machine",

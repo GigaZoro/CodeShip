@@ -71,7 +71,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.serverPrepareTriage]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksUpsert]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksSetEnabled]: AuthOrchestrationOperateScope,
-  [WS_METHODS.scheduledTasksSetPinned]: AuthOrchestrationOperateScope,
+  [WS_METHODS.scheduledTasksSetPlacement]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksReorderPinned]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksSetFollowsDefaultModel]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksDelete]: AuthOrchestrationOperateScope,

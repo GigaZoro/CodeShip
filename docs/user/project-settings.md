@@ -117,8 +117,8 @@ environment is offline then, the task runs when it is back.
 Deleting a thread also deletes tasks that post into that thread. Tasks that start
 a new thread on each run survive deletion of their previous threads.
 
-You can edit, pause, resume, run immediately, pin to the thread list, or delete a
-task from the list. See [Pin scheduled tasks](thread-sidebar.md#pin-scheduled-tasks).
+You can edit, pause, resume, run immediately, change where it shows, or delete a
+task from the list. See [Choose where scheduled tasks show](thread-sidebar.md#choose-where-scheduled-tasks-show).
 Webhook tasks only run when their URL is called, so they can't be run
 immediately.
 Leaving an edited form asks before discarding unsaved changes.

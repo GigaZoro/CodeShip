@@ -3,10 +3,14 @@ import type { MenuAction } from "@react-native-menu/menu";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   collectPinnedTasks,
+  formatLastRunAgo,
   formatNextRunCountdown,
   intervalWaitProgress,
   pinnedTaskRunThreadId,
   resolvePinnedTaskStatus,
+  resolveScheduledTaskPlacement,
+  scheduledTaskHiddenThreadKeys,
+  SCHEDULED_TASK_PLACEMENT_OPTIONS,
   type PinnedTaskStatus,
 } from "@t3tools/client-runtime/scheduled-task-pins";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
@@ -35,6 +39,7 @@ import { cn } from "../../lib/cn";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { useQuietThreadShell } from "../../state/entities";
+import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
 import { serverEnvironment } from "../../state/server";
 import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -61,6 +66,27 @@ const pinnedTasksAtom = Atom.family((environmentIdsKey: string) =>
     ),
   ).pipe(Atom.withLabel(`mobile:thread-list-pinned-tasks:${environmentIdsKey}`)),
 );
+
+const hiddenThreadKeysAtom = Atom.family((environmentIdsKey: string) => {
+  let previous: ReadonlySet<string> = new Set();
+  return Atom.make((get) => {
+    previous = scheduledTaskHiddenThreadKeys(
+      JSON.parse(environmentIdsKey) as ReadonlyArray<EnvironmentId>,
+      (environmentId) =>
+        AsyncResult.getOrElse(
+          get(serverEnvironment.scheduledTasksLive({ environmentId, input: {} })),
+          () => null,
+        )?.tasks ?? [],
+      previous,
+    );
+    return previous;
+  }).pipe(Atom.withLabel(`mobile:thread-list-hidden-task-threads:${environmentIdsKey}`));
+});
+
+/** Scoped keys of the threads that scheduled tasks placed nowhere in the thread list. */
+export function useScheduledTaskHiddenThreadKeys(environmentIdsKey: string): ReadonlySet<string> {
+  return useAtomValue(hiddenThreadKeysAtom(environmentIdsKey));
+}
 
 const WORKING_TONE = {
   className: "text-adaptive-sky-600-400",
@@ -112,6 +138,10 @@ function NextRunCountdown(props: { readonly nextRunAt: string }) {
   return formatNextRunCountdown(props.nextRunAt, useVisibleSecondClock(true));
 }
 
+function LastRunAgo(props: { readonly lastRunAt: string }) {
+  return formatLastRunAgo(props.lastRunAt, useVisibleSecondClock(true));
+}
+
 function IntervalWaitBar(props: { readonly task: ScheduledTask }) {
   const progress = intervalWaitProgress(props.task, useVisibleSecondClock(true));
   if (progress === null) return null;
@@ -128,6 +158,7 @@ function IntervalWaitBar(props: { readonly task: ScheduledTask }) {
 const PinnedTaskRow = memo(function PinnedTaskRow(props: {
   readonly environmentId: EnvironmentId;
   readonly task: ScheduledTask;
+  readonly machineLabel: string | null;
   readonly pane: "screen" | "sidebar";
   readonly selectedThreadKey: string | null;
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
@@ -154,10 +185,10 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
   );
   const display = status === "idle" ? null : STATUS_DISPLAY[status];
   const canOperate = useAtomValue(
-    serverEnvironment.setScheduledTaskPinned.permissionAtom(environmentId),
+    serverEnvironment.setScheduledTaskPlacement.permissionAtom(environmentId),
   );
-  const setPinned = useAtomCommand(serverEnvironment.setScheduledTaskPinned, {
-    label: "thread list task unpin",
+  const setPlacement = useAtomCommand(serverEnvironment.setScheduledTaskPlacement, {
+    label: "thread list task placement",
     reportFailure: false,
   });
   const runNow = useAtomCommand(serverEnvironment.runScheduledTaskNow, {
@@ -182,20 +213,42 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
             attributes: { disabled: !canOperate || status === "starting" },
           },
         ]),
-    { id: "unpin", title: "Unpin", image: "pin.slash", attributes: { disabled: !canOperate } },
+    ...(task.placement === undefined
+      ? []
+      : [
+          {
+            id: "show-in",
+            title: "Show in",
+            attributes: { disabled: !canOperate },
+            subactions: SCHEDULED_TASK_PLACEMENT_OPTIONS.map((option) => ({
+              id: `placement:${option.value}`,
+              title: option.label,
+              state:
+                option.value === resolveScheduledTaskPlacement(task)
+                  ? ("on" as const)
+                  : ("off" as const),
+            })),
+          },
+        ]),
   ];
   const handleAction = async (action: string) => {
     if (action === "open-run") return openRun();
     if (action === "edit") return openScheduledTasks();
     if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
+    const placement = SCHEDULED_TASK_PLACEMENT_OPTIONS.find(
+      (option) => `placement:${option.value}` === action,
+    )?.value;
     const result =
       action === "run"
         ? await runNow({ environmentId, input: { id: task.id } })
-        : action === "unpin"
-          ? await setPinned({ environmentId, input: { id: task.id, pinned: false } })
+        : placement !== undefined
+          ? await setPlacement({ environmentId, input: { ids: [task.id], placement } })
           : null;
     if (result?._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-      Dialog.alert("Could not update task", String(squashAtomCommandFailure(result)));
+      Dialog.alert(
+        action === "run" ? "Could not update task" : "Could not move task",
+        String(squashAtomCommandFailure(result)),
+      );
     }
   };
 
@@ -231,15 +284,33 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
           </View>
         ) : null}
       </View>
-      <Text className={cn("mt-1 text-xs", appearance.mutedForegroundClassName)} numberOfLines={1}>
-        {describeSchedule(task)}
-        {task.enabled && task.nextRunAt !== null ? (
-          <>
-            {" · next "}
-            <NextRunCountdown nextRunAt={task.nextRunAt} />
-          </>
+      <View className="mt-1 flex-row items-center gap-2">
+        <Text
+          className={cn("flex-1 text-xs", appearance.mutedForegroundClassName)}
+          numberOfLines={1}
+        >
+          {describeSchedule(task)}
+          {task.enabled && task.nextRunAt !== null ? (
+            <>
+              {" · next "}
+              <NextRunCountdown nextRunAt={task.nextRunAt} />
+            </>
+          ) : task.lastRunAt !== null ? (
+            <>
+              {" · last run "}
+              <LastRunAgo lastRunAt={task.lastRunAt} />
+            </>
+          ) : null}
+        </Text>
+        {props.machineLabel !== null ? (
+          <Text
+            className={cn("max-w-[45%] shrink-0 text-xs", appearance.mutedForegroundClassName)}
+            numberOfLines={1}
+          >
+            {props.machineLabel}
+          </Text>
         ) : null}
-      </Text>
+      </View>
       {status === "idle" || status === "failed" ? <IntervalWaitBar task={task} /> : null}
     </>
   );
@@ -253,7 +324,9 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
       >
         <RowPressable
           accessibilityRole="button"
-          accessibilityLabel={[task.title, display?.label].filter(Boolean).join(", ")}
+          accessibilityLabel={[task.title, display?.label, props.machineLabel]
+            .filter(Boolean)
+            .join(", ")}
           accessibilityHint={
             runThread !== null ? "Opens the task's last run." : "Opens scheduled task settings."
           }
@@ -288,6 +361,8 @@ export function ThreadListPinnedTasks(props: {
   readonly selectedThreadKey: string | null;
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
 }) {
+  const { savedConnectionsById } = useSavedRemoteConnections();
+  const showMachine = props.environmentId === null && Object.keys(savedConnectionsById).length > 1;
   const entries = useAtomValue(pinnedTasksAtom(props.environmentIdsKey)).filter(
     ({ environmentId, task }) =>
       (props.environmentId === null || environmentId === props.environmentId) &&
@@ -304,6 +379,9 @@ export function ThreadListPinnedTasks(props: {
           key={`${environmentId}:${task.id}`}
           environmentId={environmentId}
           task={task}
+          machineLabel={
+            showMachine ? (savedConnectionsById[environmentId]?.environmentLabel ?? null) : null
+          }
           pane={props.pane}
           selectedThreadKey={props.selectedThreadKey}
           onSelectThread={props.onSelectThread}

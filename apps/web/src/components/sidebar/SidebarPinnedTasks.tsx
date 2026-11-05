@@ -20,6 +20,7 @@ import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environ
 import {
   applyHeldPinOrder,
   collectPinnedTasks,
+  formatLastRunAgo,
   formatNextRunCountdown,
   holdPinOrder,
   intervalWaitProgress,
@@ -28,6 +29,9 @@ import {
   planPinnedTaskMove,
   resolvePinnedTaskStatus,
   type HeldPinOrder,
+  resolveScheduledTaskPlacement,
+  SCHEDULED_TASK_PLACEMENT_OPTIONS,
+  scheduledTaskHiddenThreadKeys,
   type PinnedTaskStatus,
 } from "@t3tools/client-runtime/scheduled-task-pins";
 import {
@@ -38,7 +42,9 @@ import {
 import type {
   ContextMenuItem,
   EnvironmentId,
+  EnvironmentMachineKind,
   ScheduledTask,
+  ScheduledTaskPlacement,
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { AuthOrchestrationOperateScope, ThreadId } from "@t3tools/contracts";
@@ -62,7 +68,10 @@ import {
 
 import { useNowSecond } from "../../hooks/useNowSecond";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
-import { useSetScheduledTaskPinned } from "../../hooks/useSetScheduledTaskPinned";
+import {
+  supportsScheduledTaskPlacement,
+  useSetScheduledTaskPlacement,
+} from "../../hooks/useSetScheduledTaskPlacement";
 import { attachSidebarTree } from "../../lib/sidebarTree";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import { readLocalApi } from "../../localApi";
@@ -77,6 +86,7 @@ import {
   resolveSidebarThreadStatus,
   resolveWorkingStartedAt,
 } from "../Sidebar.logic";
+import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { CollapsibleSectionHeader } from "../ui/collapsible-section-header";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -95,6 +105,27 @@ const pinnedTasksAtom = Atom.family((environmentIdsKey: string) =>
   ).pipe(Atom.withLabel(`web:sidebar-pinned-tasks:${environmentIdsKey}`)),
 );
 
+const hiddenThreadKeysAtom = Atom.family((environmentIdsKey: string) => {
+  let previous: ReadonlySet<string> = new Set();
+  return Atom.make((get) => {
+    previous = scheduledTaskHiddenThreadKeys(
+      JSON.parse(environmentIdsKey) as ReadonlyArray<EnvironmentId>,
+      (environmentId) =>
+        AsyncResult.getOrElse(
+          get(serverEnvironment.scheduledTasksLive({ environmentId, input: {} })),
+          () => null,
+        )?.tasks ?? [],
+      previous,
+    );
+    return previous;
+  }).pipe(Atom.withLabel(`web:sidebar-hidden-task-threads:${environmentIdsKey}`));
+});
+
+/** Scoped keys of the threads that scheduled tasks placed nowhere in the thread list. */
+export function useScheduledTaskHiddenThreadKeys(environmentIdsKey: string): ReadonlySet<string> {
+  return useAtomValue(hiddenThreadKeysAtom(environmentIdsKey));
+}
+
 const STATUS_DISPLAY: Record<
   Exclude<PinnedTaskStatus, "idle">,
   { readonly label: string; readonly icon: typeof CircleDashedIcon; readonly className: string }
@@ -111,7 +142,14 @@ const STATUS_DISPLAY: Record<
   paused: { label: "Paused", icon: PauseIcon, className: "text-muted-foreground" },
 };
 
-type PinnedTaskMenuId = "open-run" | "edit" | "run-now" | "move-up" | "move-down" | "unpin";
+type PinnedTaskMenuId =
+  | "open-run"
+  | "edit"
+  | "run-now"
+  | "move-up"
+  | "move-down"
+  | "show-in"
+  | `place:${ScheduledTaskPlacement}`;
 
 // Module constants keep dnd-kit's sensor and modifier inputs stable across renders.
 const PINNED_TASK_POINTER_OPTIONS = { activationConstraint: { distance: 6 } };
@@ -122,6 +160,10 @@ function NextRunCountdown(props: { nextRunAt: string }) {
   return (
     <span className="tabular-nums">{formatNextRunCountdown(props.nextRunAt, useNowSecond())}</span>
   );
+}
+
+function LastRunAgo(props: { lastRunAt: string }) {
+  return <>{formatLastRunAgo(props.lastRunAt, useNowSecond())}</>;
 }
 
 function IntervalWaitBar(props: { task: ScheduledTask }) {
@@ -145,6 +187,8 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
   environmentId: EnvironmentId;
   task: ScheduledTask;
   projectDisplayName: string | null;
+  machineLabel: string | null;
+  machineKind: EnvironmentMachineKind;
   routeThreadKey: string | null;
   canMoveUp: boolean;
   canMoveDown: boolean;
@@ -154,7 +198,7 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
   const { environmentId, task, onNavigateToThread } = props;
   const navigate = useNavigate();
   const canOperate = useAtomValue(
-    serverEnvironment.setScheduledTaskPinned.permissionAtom(environmentId),
+    serverEnvironment.setScheduledTaskPlacement.permissionAtom(environmentId),
   );
   // Servers without reordering leave pinOrderKey out of the task.
   const canReorder = canOperate && task.pinOrderKey !== undefined;
@@ -162,7 +206,9 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
     id: props.sortableId,
     disabled: !canReorder,
   });
-  const setPinned = useSetScheduledTaskPinned();
+  const setPlacement = useSetScheduledTaskPlacement();
+  const canMove = supportsScheduledTaskPlacement(task);
+  const currentPlacement = resolveScheduledTaskPlacement(task);
   const runNow = useAtomCommand(serverEnvironment.runScheduledTaskNow, {
     label: "sidebar scheduled task run now",
   });
@@ -184,7 +230,8 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
   const accessibility = resolveSidebarRowAccessibility({
     title: task.title,
     statusLabel: display?.label ?? null,
-    projectDisplayName: props.projectDisplayName,
+    projectDisplayName:
+      [props.projectDisplayName, props.machineLabel].filter(Boolean).join(", ") || null,
     isActive,
   });
 
@@ -233,13 +280,22 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
             },
           ]
         : []),
-      {
-        id: "unpin",
-        label: "Unpin from sidebar",
-        icon: "pin-off",
-        disabled: !canOperate,
-        separatorBefore: true,
-      },
+      ...(canMove
+        ? [
+            {
+              id: "show-in" as const,
+              label: "Show in",
+              icon: "pin",
+              disabled: !canOperate,
+              separatorBefore: true,
+              children: SCHEDULED_TASK_PLACEMENT_OPTIONS.map((option) => ({
+                id: `place:${option.value}` as const,
+                label: option.label,
+                checked: option.value === currentPlacement,
+              })),
+            },
+          ]
+        : []),
     ];
     const clicked = await settlePromise(() => api.contextMenu.show(items, position));
     if (clicked._tag === "Failure") return;
@@ -270,9 +326,12 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
       case "move-down":
         props.onMove(props.sortableId, 1);
         return;
-      case "unpin":
-        await setPinned(environmentId, task, false);
-        return;
+      default: {
+        const placement = SCHEDULED_TASK_PLACEMENT_OPTIONS.find(
+          (option) => `place:${option.value}` === clicked.value,
+        )?.value;
+        if (placement !== undefined) await setPlacement(environmentId, [task], placement);
+      }
     }
   };
 
@@ -294,7 +353,7 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
   const handleUnpin = (event: ReactMouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
-    void setPinned(environmentId, task, false);
+    void setPlacement(environmentId, [task], "chat");
   };
 
   const StatusIcon = display?.icon;
@@ -345,30 +404,48 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
                 ) : null}
               </span>
             ) : null}
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    aria-label={`Unpin ${task.title} from sidebar`}
-                    disabled={!canOperate}
-                    onClick={handleUnpin}
-                    className="pointer-events-none inline-flex shrink-0 cursor-pointer items-center rounded-md bg-transparent px-1 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-any-hover/sidebar-row:pointer-events-auto group-any-hover/sidebar-row:opacity-100 motion-reduce:transition-none"
-                  >
-                    <PinOffIcon className="size-3.5" />
-                  </button>
-                }
-              />
-              <TooltipPopup side="top">Unpin from sidebar</TooltipPopup>
-            </Tooltip>
+            {canMove ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <button
+                      type="button"
+                      aria-label={`Unpin ${task.title} from sidebar`}
+                      disabled={!canOperate}
+                      onClick={handleUnpin}
+                      className="pointer-events-none inline-flex shrink-0 cursor-pointer items-center rounded-md bg-transparent px-1 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-any-hover/sidebar-row:pointer-events-auto group-any-hover/sidebar-row:opacity-100 motion-reduce:transition-none"
+                    >
+                      <PinOffIcon className="size-3.5" />
+                    </button>
+                  }
+                />
+                <TooltipPopup side="top">Unpin from sidebar</TooltipPopup>
+              </Tooltip>
+            ) : null}
           </div>
-          <div className="mt-0.5 truncate pl-5 text-xs text-muted-foreground">
-            {scheduleLabel(task.schedule)}
-            {task.enabled && task.nextRunAt !== null ? (
-              <>
-                {" · next "}
-                <NextRunCountdown nextRunAt={task.nextRunAt} />
-              </>
+          <div className="mt-0.5 flex min-w-0 items-center gap-2 pl-5 text-xs text-muted-foreground">
+            <span className="min-w-0 flex-1 truncate">
+              {scheduleLabel(task.schedule)}
+              {task.enabled && task.nextRunAt !== null ? (
+                <>
+                  {" · next "}
+                  <NextRunCountdown nextRunAt={task.nextRunAt} />
+                </>
+              ) : task.lastRunAt !== null ? (
+                <>
+                  {" · last run "}
+                  <LastRunAgo lastRunAt={task.lastRunAt} />
+                </>
+              ) : null}
+            </span>
+            {props.machineLabel !== null ? (
+              <span className="inline-flex max-w-[45%] shrink-0 items-center gap-1">
+                <EnvironmentMachineIcon
+                  kind={props.machineKind}
+                  className="size-3 shrink-0 stroke-muted-foreground"
+                />
+                <span className="truncate">{props.machineLabel}</span>
+              </span>
             ) : null}
           </div>
         </div>
@@ -383,6 +460,8 @@ export const SidebarPinnedTasksBlock = memo(function SidebarPinnedTasksBlock(pro
   environmentIdsKey: string;
   scopedProjectKeys: ReadonlySet<string> | null;
   projectDisplayNameByKey: ReadonlyMap<string, string>;
+  environmentLabelById: ReadonlyMap<EnvironmentId, string>;
+  environmentMachineById: ReadonlyMap<EnvironmentId, EnvironmentMachineKind>;
   routeThreadKey: string | null;
   onNavigateToThread: (threadRef: ScopedThreadRef) => void;
   inPanel: boolean;
@@ -469,6 +548,7 @@ export const SidebarPinnedTasksBlock = memo(function SidebarPinnedTasksBlock(pro
     if (over === null || active.id === over.id) return;
     moveTo(String(active.id), visibleKeys.indexOf(String(over.id)));
   };
+  const showMachine = (JSON.parse(props.environmentIdsKey) as ReadonlyArray<string>).length > 1;
   const content = (
     <>
       <li className="mx-0.5 h-8 shrink-0 list-none">
@@ -500,6 +580,10 @@ export const SidebarPinnedTasksBlock = memo(function SidebarPinnedTasksBlock(pro
                 projectDisplayName={
                   props.projectDisplayNameByKey.get(`${environmentId}:${task.projectId}`) ?? null
                 }
+                machineLabel={
+                  showMachine ? (props.environmentLabelById.get(environmentId) ?? null) : null
+                }
+                machineKind={props.environmentMachineById.get(environmentId) ?? "server"}
                 routeThreadKey={props.routeThreadKey}
                 canMoveUp={index > 0}
                 canMoveDown={index < entries.length - 1}

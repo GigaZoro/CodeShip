@@ -534,6 +534,32 @@ describe("buildThreadListV2Items", () => {
 
     expect(items.map((item) => item.thread.id)).toEqual(["local", "remote"]);
   });
+
+  it("leaves out threads owned by tasks with no place, unless they need the user", () => {
+    const remoteEnvironmentId = EnvironmentId.make("environment-remote");
+    const { items } = buildThreadListV2Items({
+      threads: [
+        makeThread({ id: ThreadId.make("chat"), title: "Chat" }),
+        makeThread({ id: ThreadId.make("task-run"), title: "Task run" }),
+        makeThread({ id: ThreadId.make("task-ask"), title: "Task ask", hasPendingApprovals: true }),
+        makeThread({
+          environmentId: remoteEnvironmentId,
+          id: ThreadId.make("task-run"),
+          title: "Same id on another machine",
+        }),
+      ],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      hiddenTaskThreadKeys: new Set([`${environmentId}:task-run`, `${environmentId}:task-ask`]),
+    });
+
+    expect(items.map((item) => `${item.thread.environmentId}:${item.thread.id}`)).toEqual([
+      `${environmentId}:task-ask`,
+      `${environmentId}:chat`,
+      `${remoteEnvironmentId}:task-run`,
+    ]);
+  });
 });
 
 describe("buildThreadListV2Items settled paging", () => {

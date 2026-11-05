@@ -57,6 +57,7 @@ export function useThreadListV2(input: {
   readonly pinReorderEnvironmentIds: ReadonlySet<EnvironmentId>;
   readonly activeReorderEnvironmentIds: ReadonlySet<EnvironmentId>;
   readonly queuedThreadKeys: ReadonlySet<string>;
+  readonly hiddenTaskThreadKeys: ReadonlySet<string>;
   readonly settledLimit: number;
   readonly now: string;
   readonly pendingOrder: LayoutInput["pendingOrder"];
@@ -146,6 +147,7 @@ export function useThreadListV2(input: {
         settlementEnvironmentIds: input.settlementEnvironmentIds,
         snoozeEnvironmentIds: input.snoozeEnvironmentIds,
         queuedThreadKeys: input.queuedThreadKeys,
+        hiddenTaskThreadKeys: input.hiddenTaskThreadKeys,
         settledLimit: input.settledLimit,
         now: layoutTime,
         workingShelfEnabled,
@@ -179,6 +181,7 @@ export function useThreadListV2(input: {
       input.settlementEnvironmentIds,
       input.snoozeEnvironmentIds,
       input.queuedThreadKeys,
+      input.hiddenTaskThreadKeys,
       input.settledLimit,
       layoutTime,
       workingShelfEnabled,

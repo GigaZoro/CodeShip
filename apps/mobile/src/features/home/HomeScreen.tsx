@@ -79,7 +79,10 @@ import {
   type ThreadListV2ListItem,
 } from "../threads/threadListV2";
 import { useThreadListV2ShelfPreferences } from "../threads/use-thread-list-v2-shelf-preferences";
-import { ThreadListPinnedTasks } from "../threads/ThreadListPinnedTasks";
+import {
+  ThreadListPinnedTasks,
+  useScheduledTaskHiddenThreadKeys,
+} from "../threads/ThreadListPinnedTasks";
 import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
 import {
   buildHomeProjectScopes,
@@ -490,6 +493,9 @@ export function HomeScreen(props: HomeScreenProps) {
   } = listEnvironments;
   const resolveProviderInstance = useThreadRowProviderInstanceResolver(providersByEnvironmentId);
   const pendingOrder = usePendingThreadOrder();
+  const hiddenTaskThreadKeys = useScheduledTaskHiddenThreadKeys(
+    JSON.stringify([...settlementEnvironmentIds]),
+  );
   const {
     layout: threadListV2Layout,
     items: threadListV2Items,
@@ -507,6 +513,7 @@ export function HomeScreen(props: HomeScreenProps) {
     pinReorderEnvironmentIds,
     activeReorderEnvironmentIds,
     queuedThreadKeys,
+    hiddenTaskThreadKeys,
     settledLimit: settledVisibleCount,
     now,
     pendingOrder,

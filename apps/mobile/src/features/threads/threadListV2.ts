@@ -775,6 +775,8 @@ export function buildThreadListV2Items(input: {
   /** Settled threads in scope that are not local (older settled threads not loaded). */
   readonly unloadedSettledCount?: number;
   readonly grouping?: ThreadListV2Grouping | null;
+  /** Scoped keys of threads that scheduled tasks placed nowhere; they list only while they need the user. */
+  readonly hiddenTaskThreadKeys?: ReadonlySet<string>;
 }): ThreadListV2Layout {
   const now = input.now;
   const pending =
@@ -807,6 +809,8 @@ export function buildThreadListV2Items(input: {
   );
   const listedThreads = listableThreads.filter(
     (thread) =>
+      (input.hiddenTaskThreadKeys?.has(`${thread.environmentId}:${thread.id}`) !== true ||
+        threadAwaitsUser(thread)) &&
       (input.environmentId === null || thread.environmentId === input.environmentId) &&
       (projectKeys === null || projectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
   );

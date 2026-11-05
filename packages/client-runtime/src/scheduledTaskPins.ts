@@ -1,4 +1,4 @@
-import type { EnvironmentId, ScheduledTask } from "@t3tools/contracts";
+import type { EnvironmentId, ScheduledTask, ScheduledTaskPlacement } from "@t3tools/contracts";
 
 import { planPinnedReorder } from "./state/threadSort.ts";
 
@@ -88,6 +88,17 @@ export function formatNextRunCountdown(nextRunAt: string, nowMs: number): string
   return `in ${Math.round(hours / 24)}d`;
 }
 
+export function formatLastRunAgo(lastRunAt: string, nowMs: number): string {
+  const elapsedMs = nowMs - Date.parse(lastRunAt);
+  if (Number.isNaN(elapsedMs)) return "";
+  const minutes = Math.floor(elapsedMs / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 /** How far an interval task is through its wait for the next run, from 0 to 1. */
 export function intervalWaitProgress(
   task: Pick<ScheduledTask, "schedule" | "nextRunAt">,
@@ -97,6 +108,26 @@ export function intervalWaitProgress(
   const remainingMs = Date.parse(task.nextRunAt) - nowMs;
   if (Number.isNaN(remainingMs)) return null;
   return Math.min(1, Math.max(0, 1 - remainingMs / task.schedule.everyMs));
+}
+
+export const SCHEDULED_TASK_PLACEMENT_OPTIONS: ReadonlyArray<{
+  readonly value: ScheduledTaskPlacement;
+  readonly label: string;
+}> = [
+  { value: "none", label: "None" },
+  { value: "chat", label: "Regular chat" },
+  { value: "pinned", label: "Pinned" },
+];
+
+export function scheduledTaskPlacementLabel(placement: ScheduledTaskPlacement): string {
+  return SCHEDULED_TASK_PLACEMENT_OPTIONS.find((option) => option.value === placement)!.label;
+}
+
+/** Servers that predate placements only know pinned tasks. */
+export function resolveScheduledTaskPlacement(
+  task: Pick<ScheduledTask, "placement" | "pinnedAt">,
+): ScheduledTaskPlacement {
+  return task.placement ?? (task.pinnedAt != null ? "pinned" : "chat");
 }
 
 export interface PinnedTaskEntry {
@@ -140,7 +171,7 @@ export function collectPinnedTasks(
   return sortPinnedTasks(
     environmentIds.flatMap((environmentId) =>
       tasksFor(environmentId)
-        .filter((task) => task.pinnedAt != null)
+        .filter((task) => resolveScheduledTaskPlacement(task) === "pinned")
         .map((task) => ({ environmentId, task })),
     ),
   );
@@ -235,4 +266,27 @@ export function applyHeldPinOrder(
         : entry;
     }),
   );
+}
+
+/**
+ * `environmentId:threadId` keys of the threads that tasks placed nowhere own: the bound thread,
+ * else the latest run. Returns `previous` when nothing changed, so thread lists keep their memo.
+ */
+export function scheduledTaskHiddenThreadKeys(
+  environmentIds: ReadonlyArray<EnvironmentId>,
+  tasksFor: (environmentId: EnvironmentId) => ReadonlyArray<ScheduledTask>,
+  previous: ReadonlySet<string>,
+): ReadonlySet<string> {
+  const next = new Set<string>();
+  for (const environmentId of environmentIds) {
+    for (const task of tasksFor(environmentId)) {
+      const threadId = task.threadId ?? task.lastRunThreadId;
+      if (threadId != null && resolveScheduledTaskPlacement(task) === "none") {
+        next.add(`${environmentId}:${threadId}`);
+      }
+    }
+  }
+  return next.size === previous.size && [...next].every((key) => previous.has(key))
+    ? previous
+    : next;
 }

@@ -110,6 +110,7 @@ const handlers = {
         bindToCurrentThread,
         shared,
         oneMachine,
+        placement,
       }) =>
         Effect.gen(function* () {
           if (scheduledTaskId === undefined) return yield* Effect.die("unreachable");
@@ -124,6 +125,7 @@ const handlers = {
             bindToCurrentThread,
             shared,
             oneMachine,
+            placement,
           });
         }),
     ),
