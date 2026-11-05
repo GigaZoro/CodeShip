@@ -70,6 +70,8 @@ When the default model's provider is out of usage, new threads start on the **Fa
 instead, at the default model's effort level when the fallback model offers it. A default model
 picked on one account switches even while another account of that provider has usage left; choose
 [Auto](./thread-sidebar.md#inspect-agent-work) as the default to move to that account instead.
+Auto can be the fallback model too: new threads then start on Auto's provider and model, on
+whichever of its accounts has usage left.
 
 ## Pin and archive projects
 

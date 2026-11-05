@@ -88,18 +88,11 @@ export function ProjectDefaultsSettings({
         );
   const autoPick = autoModePick({ settings, accounts: providers, lockedDriver: null });
   const storedAuto = storedSelection?.autoAccount === true && autoPick !== null;
-  // An Auto default shows the model and account Auto starts threads on.
+  // An Auto pick shows the model and account Auto starts threads on.
+  const resolveAuto = (stored: ModelSelection) =>
+    resolveAutoModelSelection({ selection: stored, settings, accounts: providers, started: false });
   const selection = storedSelection
-    ? resolveEffectiveDefaultModelSelection(
-        settings,
-        providers,
-        resolveAutoModelSelection({
-          selection: storedSelection,
-          settings,
-          accounts: providers,
-          started: false,
-        }),
-      )
+    ? resolveEffectiveDefaultModelSelection(settings, providers, resolveAuto(storedSelection))
     : null;
   const entries = providerInstanceEntriesFor(providers, settings, target?.projectId ?? null);
   const modelOptions = getCustomModelOptionsByInstance(
@@ -126,14 +119,7 @@ export function ProjectDefaultsSettings({
   const storedTaskModel = settings.scheduledTaskModelSelection;
   const taskModelAuto = storedTaskModel?.autoAccount === true && autoPick !== null;
   // Empty follows the new-thread model, so it shows that model.
-  const taskSelection = storedTaskModel
-    ? resolveAutoModelSelection({
-        selection: storedTaskModel,
-        settings,
-        accounts: providers,
-        started: false,
-      })
-    : selection;
+  const taskSelection = storedTaskModel ? resolveAuto(storedTaskModel) : selection;
   const taskEntry = entries.find((entry) => entry.instanceId === taskSelection?.instanceId);
   const taskModelOptions = getCustomModelOptionsByInstance(
     settings,
@@ -141,7 +127,9 @@ export function ProjectDefaultsSettings({
     taskSelection?.instanceId,
     taskSelection?.model,
   );
-  const fallbackSelection = settings.fallbackModelSelection ?? selection;
+  const storedFallback = settings.fallbackModelSelection;
+  const fallbackAuto = storedFallback?.autoAccount === true && autoPick !== null;
+  const fallbackSelection = storedFallback ? resolveAuto(storedFallback) : selection;
   const fallbackEntry = entries.find((entry) => entry.instanceId === fallbackSelection?.instanceId);
   const fallbackModelOptions = getCustomModelOptionsByInstance(
     settings,
@@ -458,8 +446,15 @@ export function ProjectDefaultsSettings({
               onInstanceModelChange={(instanceId, model) =>
                 setFallbackModel(createModelSelection(instanceId, model))
               }
+              auto={{
+                pick: autoPick,
+                checked: !mixedFallback && fallbackAuto,
+                onSelect: () => {
+                  if (autoPick) setFallbackModel(autoPick);
+                },
+              }}
             />
-            {settings.fallbackModelSelection !== null && fallbackEntry && !mixedFallback ? (
+            {storedFallback !== null && fallbackEntry && !mixedFallback && !fallbackAuto ? (
               <TraitsPicker
                 provider={fallbackEntry.driverKind}
                 models={fallbackEntry.models}

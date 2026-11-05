@@ -2562,10 +2562,12 @@ export default function ChatView(props: ChatViewProps) {
         ? [
             modelFallbackBannerItem({
               fallbackModelName:
-                providerStatuses
-                  .find((provider) => provider.instanceId === fallbackSelection.instanceId)
-                  ?.models.find((model) => model.slug === fallbackSelection.model)?.name ??
-                fallbackSelection.model,
+                fallbackSelection.autoAccount === true
+                  ? "Auto"
+                  : (providerStatuses
+                      .find((provider) => provider.instanceId === fallbackSelection.instanceId)
+                      ?.models.find((model) => model.slug === fallbackSelection.model)?.name ??
+                    fallbackSelection.model),
               limitedAccount: fallback.provider,
               hasOtherAccounts: providerStatuses.some(
                 (provider) =>
