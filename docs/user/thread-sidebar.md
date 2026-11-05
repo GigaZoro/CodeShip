@@ -66,10 +66,13 @@ usual place.
 
 ## Pin scheduled tasks
 
-Pin a scheduled task to watch it from the thread list. On web and desktop, choose
+Pin a scheduled task to watch its runs and next scheduled start. On web and desktop, choose
 **Pin to sidebar** from the task's menu on the **Scheduled tasks** page, or use the pin
 button in a thread's **Automations** card. On mobile, choose **Pin to thread list** from the
 task's menu. Pins are saved on the environment, so every device connected to it shows them.
+
+On web and desktop, pinned tasks appear in the collapsible **Scheduled** section above
+**Needs you** on the right. In narrower windows and on mobile, they stay in the thread list.
 
 Tasks are not pinned automatically by default. Turn on **Automatically pin scheduled tasks** in
 **Settings → General** to pin new tasks when they are created. Changing this setting leaves

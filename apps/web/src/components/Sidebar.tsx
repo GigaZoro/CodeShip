@@ -4,6 +4,7 @@ import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
 import { type EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
 import { SidebarNeedsYouPanel } from "./sidebar/SidebarNeedsYouPanel";
+import { createPortal } from "react-dom";
 import {
   dropThreadContext,
   endThreadContextDrag,
@@ -1205,10 +1206,10 @@ function readRouteThreadKey(router: AnyRouter): string | null {
 
 export default function Sidebar({
   routeReveal,
-  needsYouPanelTarget,
+  activityPanelTarget,
 }: {
   routeReveal: SidebarRouteReveal;
-  needsYouPanelTarget: HTMLElement | null;
+  activityPanelTarget: HTMLElement | null;
 }) {
   const {
     projects,
@@ -4185,6 +4186,8 @@ export default function Sidebar({
                           onNavigateToDraft={navigateToDraft}
                           onDraftContextMenu={handleDraftContextMenu}
                         />,
+                      ];
+                      const scheduledTasks = (
                         <SidebarPinnedTasksBlock
                           key="pinned-tasks"
                           environmentIdsKey={JSON.stringify([...serverConfigs.keys()])}
@@ -4192,13 +4195,15 @@ export default function Sidebar({
                           projectDisplayNameByKey={projectDisplayNameByKey}
                           routeThreadKey={routeThreadKey}
                           onNavigateToThread={navigateToThread}
-                        />,
-                      ];
-                      if (needsYouThreads.length > 0) {
-                        const needsYouRows = needsYouThreads.map((thread) =>
-                          renderThreadRow(thread, "needs-you"),
-                        );
-                        if (needsYouPanelTarget === null) {
+                          inPanel={activityPanelTarget !== null}
+                        />
+                      );
+                      const needsYouRows = needsYouThreads.map((thread) =>
+                        renderThreadRow(thread, "needs-you"),
+                      );
+                      if (activityPanelTarget === null) {
+                        items.push(scheduledTasks);
+                        if (needsYouRows.length > 0) {
                           items.push(
                             <SidebarNeedsYouHeader
                               key="needs-you-header"
@@ -4211,17 +4216,22 @@ export default function Sidebar({
                               className="mx-2.5 my-1.5 h-px list-none bg-sidebar-border/60"
                             />,
                           );
-                        } else {
-                          items.push(
-                            <SidebarNeedsYouPanel
-                              key="needs-you-panel"
-                              count={needsYouThreads.length}
-                              target={needsYouPanelTarget}
-                            >
-                              {needsYouRows}
-                            </SidebarNeedsYouPanel>,
-                          );
                         }
+                      } else {
+                        items.push(
+                          createPortal(
+                            <>
+                              {scheduledTasks}
+                              {needsYouRows.length > 0 ? (
+                                <SidebarNeedsYouPanel count={needsYouThreads.length}>
+                                  {needsYouRows}
+                                </SidebarNeedsYouPanel>
+                              ) : null}
+                            </>,
+                            activityPanelTarget,
+                            "sidebar-activity-panels",
+                          ),
+                        );
                       }
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {

@@ -1,18 +1,13 @@
 import type { ReactNode } from "react";
-import { createPortal } from "react-dom";
 
 import { attachSidebarTree } from "../../lib/sidebarTree";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import { SidebarNeedsYouHeader } from "./SidebarListMarkers";
 
-export function SidebarNeedsYouPanel(props: {
-  count: number;
-  target: HTMLElement;
-  children: ReactNode;
-}) {
-  return createPortal(
+export function SidebarNeedsYouPanel(props: { count: number; children: ReactNode }) {
+  return (
     <section
-      {...workspaceAreaProps("needs-you", 6, "Needs you")}
+      {...workspaceAreaProps("needs-you", 7, "Needs you")}
       className="flex max-h-[40dvh] min-h-0 flex-col rounded-xl border border-sidebar-border bg-sidebar p-1.5 text-sidebar-foreground shadow-sm"
     >
       <ul className="shrink-0">
@@ -26,7 +21,6 @@ export function SidebarNeedsYouPanel(props: {
       >
         {props.children}
       </ul>
-    </section>,
-    props.target,
+    </section>
   );
 }
