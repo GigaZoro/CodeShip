@@ -1216,11 +1216,11 @@ export function PullRequestsPage() {
             {...(serverTooOld
               ? {
                   title: "Pull requests unavailable",
-                  error: "Update your CodeShip servers to browse pull requests.",
+                  error: "Update your T3.CodeShip servers to browse pull requests.",
                 }
               : {
                   title: "No server connected",
-                  error: "Connect to a CodeShip server to browse its pull requests.",
+                  error: "Connect to a T3.CodeShip server to browse its pull requests.",
                 })}
           />
         ) : (
@@ -1229,7 +1229,7 @@ export function PullRequestsPage() {
       ) : !pullRequestsSupported ? (
         <PullRequestsUnavailableState
           title="Pull requests unavailable"
-          error="Update your CodeShip servers to browse pull requests."
+          error="Update your T3.CodeShip servers to browse pull requests."
         />
       ) : firstLoad ? (
         <PullRequestListGhost rows={7} caption="Loading pull requests…" />

@@ -37,7 +37,7 @@ function layerElectronApp(
 
   return Layer.succeed(ElectronApp.ElectronApp, {
     metadata: Effect.die("unexpected metadata read"),
-    name: Effect.succeed("CodeShip"),
+    name: Effect.succeed("T3.CodeShip"),
     systemLocale: Effect.succeed("en-US"),
     whenReady: Effect.void,
     requestSingleInstanceLock: Effect.succeed(true),
@@ -257,16 +257,16 @@ describe("DesktopLifecycle", () => {
         return yield* Deferred.await(relaunched);
       }).pipe(
         Effect.provide(layer),
-        Effect.provideService(HostProcess.ExecutablePath, "/opt/CodeShip/t3code"),
+        Effect.provideService(HostProcess.ExecutablePath, "/opt/T3.CodeShip/t3code"),
         Effect.provideService(HostProcess.Arguments, [
-          "/opt/CodeShip/t3code",
+          "/opt/T3.CodeShip/t3code",
           "--no-sandbox",
           "T3CODE://pair?token=spent",
           "t3code://new?prompt=hello",
         ]),
       );
 
-      assert.deepEqual(options, { execPath: "/opt/CodeShip/t3code", args: ["--no-sandbox"] });
+      assert.deepEqual(options, { execPath: "/opt/T3.CodeShip/t3code", args: ["--no-sandbox"] });
     }),
   );
 

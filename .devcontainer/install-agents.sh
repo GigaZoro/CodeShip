@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs the Claude Code and Codex CLIs and the plugins this fork's
-# maintainers use, so CodeShip in a codespace has providers to run and
+# maintainers use, so T3.CodeShip in a codespace has providers to run and
 # plugins to show. Idempotent: rerun it after an offline container creation.
 set -euo pipefail
 

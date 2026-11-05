@@ -71,7 +71,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chan
         },
       );
       expect(code, output).toBe(0);
-      expect(output).toContain(`Installed CodeShip ${version}`);
+      expect(output).toContain(`Installed T3.CodeShip ${version}`);
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -183,7 +183,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chec
           } else {
             expect(code).not.toBe(0);
             expect(output).toContain("checksum mismatch");
-            expect(output).not.toContain("Installed CodeShip");
+            expect(output).not.toContain("Installed T3.CodeShip");
             expect(await NodeFSP.readdir(versions)).toEqual([]);
           }
         } finally {

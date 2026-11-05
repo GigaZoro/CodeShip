@@ -71,7 +71,7 @@ const make = Effect.gen(function* () {
       ? Effect.fail(
           failure(
             "thread_credential_required",
-            "Worktree handoff and status act as the calling CodeShip thread, so they need an agent running inside CodeShip.",
+            "Worktree handoff and status act as the calling T3.CodeShip thread, so they need an agent running inside T3.CodeShip.",
           ),
         )
       : Effect.succeed(scope as McpThreadInvocationScope);

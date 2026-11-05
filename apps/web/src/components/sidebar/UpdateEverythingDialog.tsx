@@ -138,7 +138,7 @@ function UpdateEverythingDialogContent({
         <AlertDialogDescription>
           {version !== null ? (
             <>
-              CodeShip <span className="font-mono text-xs">{version}</span>
+              T3.CodeShip <span className="font-mono text-xs">{version}</span>
             </>
           ) : null}
           {version !== null && providerCount > 0 ? " · " : null}
@@ -166,7 +166,7 @@ function UpdateEverythingDialogContent({
             <div className="col-span-full grid grid-cols-subgrid border-b pb-1.5 text-muted-foreground text-xs">
               {showCheckboxes ? <span /> : null}
               <span>Machine</span>
-              <span>CodeShip</span>
+              <span>T3.CodeShip</span>
               <span>Providers</span>
               <span />
             </div>

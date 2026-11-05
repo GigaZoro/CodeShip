@@ -3506,7 +3506,7 @@ export function permissionResultFromDecision(input: {
   readonly toolUseID: string;
   readonly suggestions?: Parameters<CanUseTool>[2]["suggestions"];
   readonly feedback?: string;
-  /** Under an administrator's ceiling, CodeShip's mode is the only one; Claude cannot switch it. */
+  /** Under an administrator's ceiling, T3.CodeShip's mode is the only one; Claude cannot switch it. */
   readonly managedCeiling?: boolean;
 }): PermissionResult {
   if (input.decision === "accept" || input.decision === "acceptForSession") {
@@ -4440,7 +4440,7 @@ function claudeTaskString(value: unknown, key: string): string | undefined {
 }
 
 // A Claude Code mod can hold a tool call until the user acts in its terminal
-// pane. CodeShip cannot provide the requested pane interaction.
+// pane. T3.CodeShip cannot provide the requested pane interaction.
 // Passive panes never request focus and keep working.
 function claudeFocusRequestedPanePlugin(message: SDKMessage): string | null {
   if (message.type !== "system" || claudeTaskField(message, "subtype") !== "ui_panes") return null;
@@ -8552,7 +8552,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               failure: makeProviderFailure({
                 class: "provider_error",
                 code: "claude_mod_ui_unsupported",
-                message: `The Claude Code mod "${focusedPlugin}" is waiting for input in its terminal pane, which CodeShip cannot show. Disable the mod for sessions run from CodeShip, or run the task in the Claude Code terminal.`,
+                message: `The Claude Code mod "${focusedPlugin}" is waiting for input in its terminal pane, which T3.CodeShip cannot show. Disable the mod for sessions run from T3.CodeShip, or run the task in the Claude Code terminal.`,
               }),
             });
             // Closing ends the CLI process and abandons the held tool call
@@ -11840,7 +11840,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
     const serverConfig = yield* ServerConfig.ServerConfig;
     const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
     // An added account drops the machine's sign-in token; re-applying only the instance's own
-    // entrypoint keeps it ahead of CodeShip's label.
+    // entrypoint keeps it ahead of T3.CodeShip's label.
     const baseEnvironment = yield* mergeClaudeProcessEnvironment(
       config,
       environment?.filter((variable) => variable.name === "CLAUDE_CODE_ENTRYPOINT"),

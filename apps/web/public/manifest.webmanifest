@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "CodeShip",
-  "short_name": "CodeShip",
+  "name": "T3.CodeShip",
+  "short_name": "T3.CodeShip",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

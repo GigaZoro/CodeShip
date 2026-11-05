@@ -480,7 +480,7 @@ export async function persistScopedSettingsPatch(
       return [
         {
           ...environment,
-          message: "This environment does not support this setting. Update CodeShip on it.",
+          message: "This environment does not support this setting. Update T3.CodeShip on it.",
         },
       ];
     }

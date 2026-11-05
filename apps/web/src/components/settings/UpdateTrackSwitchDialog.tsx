@@ -163,7 +163,7 @@ function SwitchPlan({
           ? ["This app's updates are off here, so reinstall it yourself to switch."]
           : []),
         ...(switchesLocal && isMacPlatform(navigator.platform)
-          ? ["If CodeShip does not reopen after it restarts, open it again."]
+          ? ["If T3.CodeShip does not reopen after it restarts, open it again."]
           : []),
       ]}
       restarts={everything.restarts}

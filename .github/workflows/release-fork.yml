@@ -278,7 +278,7 @@ jobs:
         with:
           tag_name: v${{ needs.preflight.outputs.version }}
           target_commitish: ${{ github.sha }}
-          name: CodeShip v${{ needs.preflight.outputs.version }}
+          name: T3.CodeShip v${{ needs.preflight.outputs.version }}
           generate_release_notes: true
           make_latest: true
           files: |

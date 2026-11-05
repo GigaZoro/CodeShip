@@ -69,7 +69,7 @@ const VisualStudioControlTool = Tool.make("visual_studio_control", {
 
 const VisualStudioAutoContinueTool = Tool.make("visual_studio_auto_continue", {
   description:
-    "While on, CodeShip presses Continue on every exception break in one Visual Studio window, so tests against the debugged app do not hang, and logs each exception for `visual_studio_status`. It ends when debugging stops, at a breakpoint, after `minutes`, or when turned off. Turn it off when your run is done.",
+    "While on, T3.CodeShip presses Continue on every exception break in one Visual Studio window, so tests against the debugged app do not hang, and logs each exception for `visual_studio_status`. It ends when debugging stops, at a breakpoint, after `minutes`, or when turned off. Turn it off when your run is done.",
   parameters: VisualStudioAutoContinueInput,
   success: VisualStudioAutoContinue,
   failure,

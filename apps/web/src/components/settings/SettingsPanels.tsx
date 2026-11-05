@@ -2088,7 +2088,7 @@ export function MaintenanceSettingsPanel() {
           {...searchableSetting("privacy-policy")}
           description={
             telemetryOff === undefined
-              ? "How we handle your data, including the anonymous usage data CodeShip collects."
+              ? "How we handle your data, including the anonymous usage data T3.CodeShip collects."
               : `How we handle your data. ${telemetryOff}`
           }
           control={
@@ -2103,7 +2103,7 @@ export function MaintenanceSettingsPanel() {
         />
         <SettingsRow
           {...searchableSetting("open-source-licenses")}
-          description="Notices for dependencies, assets, and optional tools used by CodeShip."
+          description="Notices for dependencies, assets, and optional tools used by T3.CodeShip."
           control={
             <Button
               render={<Link to="/settings/open-source-licenses" />}

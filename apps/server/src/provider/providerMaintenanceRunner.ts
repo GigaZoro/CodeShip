@@ -492,7 +492,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
                   message:
                     targetVersion !== undefined
                       ? "This version is no longer recommended or this installer cannot install a specific version. Refresh provider settings."
-                      : "The latest provider version is incompatible with this CodeShip release. Review provider settings.",
+                      : "The latest provider version is incompatible with this T3.CodeShip release. Review provider settings.",
                 }),
               );
             }
@@ -595,9 +595,9 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
                 startedAt,
                 finishedAt,
                 message: couldNotVerify
-                  ? "Update command completed, but CodeShip could not verify the provider version."
+                  ? "Update command completed, but T3.CodeShip could not verify the provider version."
                   : stillOutdated
-                    ? "Update command completed, but CodeShip still detects an outdated provider version."
+                    ? "Update command completed, but T3.CodeShip still detects an outdated provider version."
                     : "Provider updated.",
                 output: commandOutput(result),
               }),

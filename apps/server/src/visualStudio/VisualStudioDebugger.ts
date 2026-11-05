@@ -139,7 +139,7 @@ const make = Effect.gen(function* () {
   const directory = path.join(stateDir, "visual-studio");
   const scriptPath = path.join(directory, "vsdbg.ps1");
 
-  // Written once per server start, so an updated CodeShip always runs its own script.
+  // Written once per server start, so an updated T3.CodeShip always runs its own script.
   const ensureScript = scriptLock
     .withPermits(1)(
       Effect.gen(function* () {
@@ -287,7 +287,7 @@ const make = Effect.gen(function* () {
       Effect.catch((cause) =>
         Effect.logWarning("Visual Studio auto-continue failed", { cause }).pipe(
           Effect.andThen(
-            stopSession(run.id, "failed", "CodeShip lost its connection to Visual Studio."),
+            stopSession(run.id, "failed", "T3.CodeShip lost its connection to Visual Studio."),
           ),
         ),
       ),

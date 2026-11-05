@@ -85,7 +85,7 @@ function ThreadPageOpensInNewTab() {
           <EmptyTitle>ThreadPage opens in its own tab</EmptyTitle>
           <EmptyDescription>
             thread.page does not let other sites embed it, so in a browser it opens in a new tab.
-            The CodeShip desktop app shows it right here.
+            The T3.CodeShip desktop app shows it right here.
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent>

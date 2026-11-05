@@ -117,7 +117,7 @@ export const resolveNightlyReleaseMetadata = (
     baseVersion,
     version,
     tag: `v${version}`,
-    name: `CodeShip ${CHANNEL_RELEASE_LABELS[channel]} ${version} (${shortSha})`,
+    name: `T3.CodeShip ${CHANNEL_RELEASE_LABELS[channel]} ${version} (${shortSha})`,
     shortSha,
   };
 };

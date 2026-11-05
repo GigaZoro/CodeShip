@@ -143,7 +143,7 @@ export function museServeArgs(
 
 export function museInitializeParams(readOnly = false) {
   return {
-    clientInfo: { name: "t3_code", title: "CodeShip", version: "1" },
+    clientInfo: { name: "t3_code", title: "T3.CodeShip", version: "1" },
     capabilities: { requestedCapabilities: readOnly ? [] : ["sessionMcp"] },
   };
 }

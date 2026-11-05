@@ -62,7 +62,7 @@ const connectUnavailableCommand = Command.make("connect", {
 export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
   Command.make("t3", { ...sharedServerCommandFlags }).pipe(
     Command.withDescription(
-      "Run CodeShip in this terminal and open it in your browser. To use it from your other devices, run `t3 up`.",
+      "Run T3.CodeShip in this terminal and open it in your browser. To use it from your other devices, run `t3 up`.",
     ),
     Command.withHandler(runDefaultServerCommand),
     Command.withSubcommands([

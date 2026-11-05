@@ -281,7 +281,7 @@ export const exportBrandIconsCommand = Command.make(
     ),
   },
   ({ check }) => exportBrandIcons(check).pipe(Effect.scoped),
-).pipe(Command.withDescription("Render CodeShip application icons from the canonical SVG."));
+).pipe(Command.withDescription("Render T3.CodeShip application icons from the canonical SVG."));
 
 if (import.meta.main) {
   Command.run(exportBrandIconsCommand, { version: "0.0.0" }).pipe(

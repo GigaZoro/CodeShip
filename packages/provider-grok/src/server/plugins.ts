@@ -246,7 +246,7 @@ export const makeGrokPluginManagement = Effect.fn("makeGrokPluginManagement")(fu
 
   return {
     catalog,
-    // Choosing Install in CodeShip is the trust Grok asks for before a plugin's hooks can run.
+    // Choosing Install in T3.CodeShip is the trust Grok asks for before a plugin's hooks can run.
     install: (id) =>
       mutate("install", ["plugin", "install", id, "--trust"], FETCH_TIMEOUT).pipe(
         Effect.as({ appsNeedingAuth: [] }),

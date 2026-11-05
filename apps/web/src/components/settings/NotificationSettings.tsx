@@ -23,7 +23,7 @@ export function NotificationSettings() {
       {...searchableSetting("thread-notifications")}
       description={
         permissionMessage ??
-        "System alerts when a thread finishes, fails, or needs input or approval. Applies to this device while CodeShip is open."
+        "System alerts when a thread finishes, fails, or needs input or approval. Applies to this device while T3.CodeShip is open."
       }
       control={
         <Select

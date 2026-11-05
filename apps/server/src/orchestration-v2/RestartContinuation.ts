@@ -333,8 +333,8 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
           source: { kind: "system" },
           outcome: "updated",
           summary: note.settled
-            ? "CodeShip restarted and stopped background work"
-            : "CodeShip restarted and resumed this turn",
+            ? "T3.CodeShip restarted and stopped background work"
+            : "T3.CodeShip restarted and resumed this turn",
           detail: text,
         },
         attachments: [],

@@ -143,7 +143,7 @@ export function SimlockHostsRow() {
           >
             Simlock
           </a>{" "}
-          pool, added under Device sources. An alpha that may change or break. CodeShip never
+          pool, added under Device sources. An alpha that may change or break. T3.CodeShip never
           installs Simlock.
         </>
       }

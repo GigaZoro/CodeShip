@@ -4424,7 +4424,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           notification: {
             source: { kind: "system" as const },
             outcome: "updated" as const,
-            summary: "CodeShip restarted and resumed this turn",
+            summary: "T3.CodeShip restarted and resumed this turn",
             detail: "Continue where you left off.",
           },
           attachments: [],
@@ -4445,7 +4445,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           continuationItems.flatMap((item) =>
             item.type === "notification" ? [[item.summary, item.detail]] : [],
           ),
-          ["CodeShip restarted and resumed this turn", "Continue where you left off."],
+          ["T3.CodeShip restarted and resumed this turn", "Continue where you left off."],
         );
         yield* orchestrator.dispatch({
           ...command,

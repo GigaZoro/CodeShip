@@ -99,8 +99,8 @@ function SafeUpdateDialogContent({
           ?
         </AlertDialogTitle>
         <AlertDialogDescription>
-          CodeShip saves where each running chat is, installs the update and restarts, then resumes
-          every chat automatically.
+          T3.CodeShip saves where each running chat is, installs the update and restarts, then
+          resumes every chat automatically.
         </AlertDialogDescription>
       </AlertDialogHeader>
       <ScrollArea scrollFade>

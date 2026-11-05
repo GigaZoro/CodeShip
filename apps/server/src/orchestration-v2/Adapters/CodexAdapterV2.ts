@@ -1797,7 +1797,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return yield* new ProviderSetupError({
                 instanceId: adapterOptions.instanceId,
                 operation: "runtime",
-                detail: `Codex ${version} does not work with this CodeShip release. Update Codex to ${target}, then retry.`,
+                detail: `Codex ${version} does not work with this T3.CodeShip release. Update Codex to ${target}, then retry.`,
               });
             }
             yield* client.notify("initialized", undefined);

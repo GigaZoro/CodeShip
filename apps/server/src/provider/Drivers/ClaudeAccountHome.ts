@@ -11,7 +11,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { lock } from "proper-lockfile";
 
-/** An added Claude account keeps its own login here; CodeShip creates the folder and links the rest. */
+/** An added Claude account keeps its own login here; T3.CodeShip creates the folder and links the rest. */
 export const claudeAccountHomePath = (
   path: Path.Path,
   stateDir: string,

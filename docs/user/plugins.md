@@ -27,7 +27,7 @@ marketplace, `xai-org/plugin-marketplace`.
 ## Things to know
 
 - Some Codex plugins connect to apps such as Gmail or Google Drive. After installing one, connect
-  the app from the notice CodeShip shows, or in ChatGPT, before the plugin can use it.
+  the app from the notice T3.CodeShip shows, or in ChatGPT, before the plugin can use it.
 - Plugins marked **Managed** are installed by the provider itself, such as plugins synced from your
   claude.ai account. You can turn them off but not remove them here.
 - Removing a Claude or Grok plugin keeps its saved data, so installing it again picks up where it

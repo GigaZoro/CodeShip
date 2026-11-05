@@ -68,7 +68,9 @@ export function DesktopAppActivationCoordinator() {
         });
         if (result._tag === "Failure") {
           const error = squashAtomCommandFailure(result);
-          throw error instanceof Error ? error : new Error("CodeShip could not add the project.");
+          throw error instanceof Error
+            ? error
+            : new Error("T3.CodeShip could not add the project.");
         }
         return projectId;
       },

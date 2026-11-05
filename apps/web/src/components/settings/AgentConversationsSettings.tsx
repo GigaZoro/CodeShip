@@ -18,8 +18,8 @@ export function AgentConversationsSettings() {
         {...searchableSetting("import-agent-conversations")}
         description={
           isProjectScope
-            ? "Brings this project's past and new Claude Code and Codex conversations into CodeShip, including ones from while CodeShip was closed."
-            : "Brings past and new Claude Code and Codex conversations from the selected environments into CodeShip, including ones from while CodeShip was closed. Projects can override it."
+            ? "Brings this project's past and new Claude Code and Codex conversations into T3.CodeShip, including ones from while T3.CodeShip was closed."
+            : "Brings past and new Claude Code and Codex conversations from the selected environments into T3.CodeShip, including ones from while T3.CodeShip was closed. Projects can override it."
         }
         status={
           isProjectScope

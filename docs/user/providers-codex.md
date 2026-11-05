@@ -1,19 +1,19 @@
 # Codex
 
-Use your ChatGPT plan or an existing Codex CLI login to code in CodeShip.
+Use your ChatGPT plan or an existing Codex CLI login to code in T3.CodeShip.
 
 ## Connect with ChatGPT
 
 Connect during onboarding or in **Settings → Providers & models**. For a remote machine,
-select that environment first. CodeShip handles Codex installation; sign in on
+select that environment first. T3.CodeShip handles Codex installation; sign in on
 OpenAI and allow sharing of your ChatGPT plan.
 
-Manage shared usage and credits in ChatGPT through **Manage usage** in CodeShip.
+Manage shared usage and credits in ChatGPT through **Manage usage** in T3.CodeShip.
 Codex's built-in subagents are unavailable with ChatGPT sharing. If a request uses
 another feature that ChatGPT sharing does not support, use another provider for
 that request.
 
-When reconnecting, choose the same account in CodeShip and on OpenAI's sign-in
+When reconnecting, choose the same account in T3.CodeShip and on OpenAI's sign-in
 page. Disconnecting stops running threads but keeps their history and lets you
 reconnect later.
 
@@ -22,7 +22,7 @@ localhost page into the sign-in panel, even if that page could not load.
 
 ## Use an existing Codex login
 
-CodeShip can use your installed Codex and its existing login. Run `codex login`
+T3.CodeShip can use your installed Codex and its existing login. Run `codex login`
 on the environment's machine to sign in. [Provider setup](./install.md#providers)
 covers installation and custom configuration.
 
@@ -32,7 +32,7 @@ Add another ChatGPT account in **Settings → Providers & models**, then select 
 from the thread's model picker. Compatible accounts can continue the same thread.
 Every account uses the `AGENTS.md`, skills, and configuration in `~/.codex`,
 including its [MCP servers](./mcp.md); each added account signs in to those servers
-on its own. Connecting accounts through CodeShip leaves your CLI login unchanged.
+on its own. Connecting accounts through T3.CodeShip leaves your CLI login unchanged.
 
 ### Multiple CLI logins
 
@@ -55,7 +55,7 @@ Then add a second Codex instance in **Settings > Providers & models**:
 | Codex Work     | `~/.codex`      | Leave empty         |
 | Codex Personal | `~/.codex`      | `~/.codex_personal` |
 
-Both instances must use the same **CODEX_HOME path**. CodeShip prepares the shared
+Both instances must use the same **CODEX_HOME path**. T3.CodeShip prepares the shared
 state in the shadow directory; do not populate it by copying your whole Codex
 home.
 
@@ -69,7 +69,7 @@ from the other home.
 
 ## Switch accounts in an existing thread
 
-Choose the other account from the thread's model picker. CodeShip offers compatible
+Choose the other account from the thread's model picker. T3.CodeShip offers compatible
 Codex instances that share the thread's **CODEX_HOME path**. Changing accounts does
 not move the conversation into a separate Codex home.
 

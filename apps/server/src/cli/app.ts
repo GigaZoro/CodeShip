@@ -60,7 +60,7 @@ export class DesktopAppUnreachableError extends Schema.TaggedError<DesktopAppUnr
   },
 ) {
   override get message(): string {
-    return "Could not reach the CodeShip desktop app. Start or update the desktop app on this machine, then run `t3 app` again. A running CodeShip server is not enough.";
+    return "Could not reach the T3.CodeShip desktop app. Start or update the desktop app on this machine, then run `t3 app` again. A running T3.CodeShip server is not enough.";
   }
 }
 
@@ -74,7 +74,7 @@ export class DesktopAppRequestFailedError extends Schema.TaggedError<DesktopAppR
   },
 ) {
   override get message(): string {
-    return `CodeShip could not open ${this.workspaceRoot} (${this.code}).`;
+    return `T3.CodeShip could not open ${this.workspaceRoot} (${this.code}).`;
   }
 }
 
@@ -266,7 +266,7 @@ const runAppCommand = Effect.fn("cli.app")(function* (flags: {
     });
   }
 
-  yield* Console.log(`Opened ${workspaceRoot} in CodeShip.`);
+  yield* Console.log(`Opened ${workspaceRoot} in T3.CodeShip.`);
 });
 
 export const appCommand = Command.make("app", {
@@ -276,6 +276,6 @@ export const appCommand = Command.make("app", {
     Argument.optional,
   ),
 }).pipe(
-  Command.withDescription("Open a project in the running CodeShip desktop app."),
+  Command.withDescription("Open a project in the running T3.CodeShip desktop app."),
   Command.withHandler(runAppCommand),
 );

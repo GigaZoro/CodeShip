@@ -36,7 +36,7 @@ export interface McpClientCaller {
   readonly label: string;
   readonly access: AuthMcpClientAccess;
   /**
-   * Another CodeShip environment's peer link. What it starts here carries its
+   * Another T3.CodeShip environment's peer link. What it starts here carries its
    * session as `linkOrigin`, and it changes only that work (`linkOrigin.ts`).
    */
   readonly linked?: boolean | undefined;
@@ -134,7 +134,7 @@ export interface McpInvocationScope {
 }
 
 /**
- * CodeShip renders `t3-thread://` links as thread chips. Other MCP clients cannot open them, so
+ * T3.CodeShip renders `t3-thread://` links as thread chips. Other MCP clients cannot open them, so
  * they get a web URL on the origin they reached instead.
  */
 export const threadLinkFor = (
@@ -218,7 +218,7 @@ export const requireThreadMcpCapability = <const C extends "preview" | "device">
 const threadCallerRequired = (operation: string) =>
   new OrchestratorMcpFailure({
     code: "thread_credential_required",
-    message: `${operation} acts as the calling CodeShip thread, so it needs an agent running inside CodeShip. This MCP client signed in from outside a thread.`,
+    message: `${operation} acts as the calling T3.CodeShip thread, so it needs an agent running inside T3.CodeShip. This MCP client signed in from outside a thread.`,
   });
 
 export type McpThreadInvocationScope = McpInvocationScope & { readonly thread: McpThreadCaller };

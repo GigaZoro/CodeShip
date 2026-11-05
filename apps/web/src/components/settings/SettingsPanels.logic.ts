@@ -432,7 +432,7 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   restorable("/settings/source-control", "New worktrees start from remote", [
     "newWorktreesStartFromOrigin",
   ]),
-  restorable("/settings/source-control", "Open pull requests in CodeShip", [
+  restorable("/settings/source-control", "Open pull requests in T3.CodeShip", [
     "pullRequestLinksOpenInApp",
   ]),
   GIT_FETCH_INTERVAL_ENTRY,

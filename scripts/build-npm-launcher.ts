@@ -36,7 +36,7 @@ export function npmLauncherPackageManifest(version: string, databaseMigration: n
     name: NPM_LAUNCHER_PACKAGE_NAME,
     version,
     description:
-      "CodeShip CLI. Downloads the self-contained executable for this platform from the GitHub Release.",
+      "T3.CodeShip CLI. Downloads the self-contained executable for this platform from the GitHub Release.",
     license: serverPackageJson.license,
     repository: serverPackageJson.repository,
     bin: { t3: "./bin/t3.mjs" },

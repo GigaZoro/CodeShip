@@ -308,7 +308,7 @@ export const buildInitialPiProviderSnapshot = Effect.fn(
         version: null,
         status: "warning",
         auth: { status: "unknown" },
-        message: "Pi is disabled in CodeShip settings.",
+        message: "Pi is disabled in T3.CodeShip settings.",
       },
     });
   }
@@ -346,7 +346,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
         version: null,
         status: "warning",
         auth: { status: "unknown" },
-        message: "Pi is disabled in CodeShip settings.",
+        message: "Pi is disabled in T3.CodeShip settings.",
       },
     });
   }
@@ -421,7 +421,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
         version: null,
         status: "error",
         auth: { status: "unknown" },
-        message: `CodeShip could not determine the Pi version. Pi ${MINIMUM_PI_VERSION} or newer is required.`,
+        message: `T3.CodeShip could not determine the Pi version. Pi ${MINIMUM_PI_VERSION} or newer is required.`,
       },
     });
   }
@@ -480,7 +480,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
         status: "ready",
         auth: { status: "unknown" },
         message:
-          "Pi is available, but CodeShip could not refresh its models and commands. The live session will retry startup.",
+          "Pi is available, but T3.CodeShip could not refresh its models and commands. The live session will retry startup.",
       },
     });
   }

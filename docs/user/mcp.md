@@ -25,12 +25,12 @@ Choose **Add server**, give it a name, then pick a type:
 
 Claude adds the server for all of your projects. Both providers keep headers and environment
 variables in their own config file, `~/.claude.json` for Claude and `config.toml` for Codex. Each
-Claude account you add in CodeShip keeps a copy of those servers in its own folder.
+Claude account you add in T3.CodeShip keeps a copy of those servers in its own folder.
 
 ## Sign in
 
 **Sign in** opens the server's sign-in page in your browser. After you approve access, the browser
-returns to the provider and the dialog finishes on its own. When CodeShip runs on another machine,
+returns to the provider and the dialog finishes on its own. When T3.CodeShip runs on another machine,
 the browser shows a connection error after you approve instead. Copy the address from its address
 bar, paste it into the dialog, and choose **Finish sign-in**.
 

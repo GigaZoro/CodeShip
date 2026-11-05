@@ -1589,7 +1589,7 @@ function ScheduledTaskEditorForm({
     if (schedule.type === "once" && !offersOnce) {
       reportFailure(
         "Once is not available here",
-        "This environment runs an older CodeShip. Update it to schedule a one-time task, or pick another schedule.",
+        "This environment runs an older T3.CodeShip. Update it to schedule a one-time task, or pick another schedule.",
       );
       return;
     }

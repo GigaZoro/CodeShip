@@ -13,7 +13,7 @@ const repoRoot = NodePath.resolve(desktopDir, "..", "..");
 const devBundleIdSuffix = NodePath.basename(repoRoot)
   .toLowerCase()
   .replaceAll(/[^a-z0-9]+/g, "");
-const APP_DISPLAY_NAME = isDevelopment ? "CodeShip (Dev)" : "CodeShip (Beta)";
+const APP_DISPLAY_NAME = isDevelopment ? "T3.CodeShip (Dev)" : "T3.CodeShip (Beta)";
 const APP_BUNDLE_ID = isDevelopment
   ? `com.t3tools.t3code.dev.${devBundleIdSuffix || "local"}`
   : "com.t3tools.t3code";
@@ -268,8 +268,9 @@ function resolveMacBundleInfoPlistStrings(executableName) {
     CFBundleExecutable: executableName,
     CFBundleIconFile: "icon.icns",
     NSScreenCaptureUsageDescription:
-      "CodeShip captures the active window when you use the snapshot shortcut.",
-    NSDocumentsFolderUsageDescription: "CodeShip reads project files you open in the desktop app.",
+      "T3.CodeShip captures the active window when you use the snapshot shortcut.",
+    NSDocumentsFolderUsageDescription:
+      "T3.CodeShip reads project files you open in the desktop app.",
   };
 }
 

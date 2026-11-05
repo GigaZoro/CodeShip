@@ -876,7 +876,7 @@ function DiagnosticsSettingsBody() {
           type: "info",
           title: "Process already exited",
           description:
-            "The process is not a child of the CodeShip server. It might already have exited.",
+            "The process is not a child of the T3.CodeShip server. It might already have exited.",
         });
         return;
       }
@@ -999,7 +999,7 @@ function DiagnosticsSettingsBody() {
           <StatBlock
             label="CPU Time"
             value={resourceData ? formatCpuTime(resourceData.totalCpuSecondsApprox) : "..."}
-            tooltip="Approximate active CPU time for the CodeShip server root process and its descendants during the selected window. It grows only while sampled processes use CPU and older samples leave as the window moves."
+            tooltip="Approximate active CPU time for the T3.CodeShip server root process and its descendants during the selected window. It grows only while sampled processes use CPU and older samples leave as the window moves."
           />
           <StatBlock
             label="Samples"

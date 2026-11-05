@@ -67,7 +67,7 @@ export interface McpToolSession {
 }
 
 /**
- * One initialized MCP session over CodeShip's HTTP endpoint, terminated when
+ * One initialized MCP session over T3.CodeShip's HTTP endpoint, terminated when
  * the scope closes. Used by the ACP terminal fallback and `t3 thread`.
  */
 export const mcpToolSession = (
@@ -102,7 +102,7 @@ export const mcpToolSession = (
     if (!response.ok) {
       yield* discardResponseBody(response);
       return yield* Effect.fail(
-        new AcpMcpBridgeError(`CodeShip MCP endpoint responded with HTTP ${response.status}.`),
+        new AcpMcpBridgeError(`T3.CodeShip MCP endpoint responded with HTTP ${response.status}.`),
       );
     }
     const payloads = yield* Stream.runCollect(responsePayloads(response, bridgeError));
@@ -122,7 +122,7 @@ export const mcpToolSession = (
     if (envelope === null || envelope.error !== undefined) {
       return yield* Effect.fail(
         new AcpMcpBridgeError(
-          `CodeShip MCP ${method} failed${envelope?.error === undefined ? "." : `: ${JSON.stringify(envelope.error)}`}`,
+          `T3.CodeShip MCP ${method} failed${envelope?.error === undefined ? "." : `: ${JSON.stringify(envelope.error)}`}`,
         ),
       );
     }
@@ -230,7 +230,7 @@ export function runAcpMcpStdioBridge(options: AcpMcpStdioBridgeOptions): Effect.
           if (envelope.id !== undefined) {
             yield* respondWithError(
               envelope.id,
-              `CodeShip MCP endpoint responded with HTTP ${response.status}.`,
+              `T3.CodeShip MCP endpoint responded with HTTP ${response.status}.`,
             );
           }
           return yield* discardResponseBody(response);
@@ -244,7 +244,7 @@ export function runAcpMcpStdioBridge(options: AcpMcpStdioBridgeOptions): Effect.
             const error = Cause.squash(cause);
             return respondWithError(
               envelope.id,
-              `CodeShip MCP bridge request failed: ${error instanceof Error ? error.message : String(error)}`,
+              `T3.CodeShip MCP bridge request failed: ${error instanceof Error ? error.message : String(error)}`,
             );
           }),
         ),

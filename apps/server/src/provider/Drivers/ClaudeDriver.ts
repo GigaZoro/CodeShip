@@ -153,7 +153,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       .current(DRIVER_KIND)
       .pipe(Effect.map(resolveClaudeModelCatalog));
     // An added account drops the machine's sign-in token; re-applying only the instance's own
-    // entrypoint keeps it ahead of CodeShip's label.
+    // entrypoint keeps it ahead of T3.CodeShip's label.
     const instanceEnv = yield* mergeClaudeInstanceEnvironment(
       instanceId,
       environment,

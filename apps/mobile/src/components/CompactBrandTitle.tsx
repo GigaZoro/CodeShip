@@ -40,7 +40,7 @@ export function CompactBrandTitle(
         props.fit && showStage ? (event) => setFullWidth(event.nativeEvent.layout.width) : undefined
       }
       aria-level={1}
-      accessibilityLabel={props.accessibilityLabel ?? "CodeShip, Threads"}
+      accessibilityLabel={props.accessibilityLabel ?? "T3.CodeShip, Threads"}
       accessible
       role="heading"
       className="flex-row items-center gap-1.5"
@@ -60,7 +60,7 @@ export function CompactBrandTitle(
         numberOfLines={1}
         style={{ fontSize: 21 * scale, letterSpacing: -0.5 * scale }}
       >
-        CodeShip
+        T3.CodeShip
       </Text>
       {showStage ? (
         <View

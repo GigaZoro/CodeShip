@@ -2,18 +2,18 @@
 
 Install and authenticate OpenCode on the machine running your environment, then
 enable it in **Settings > Providers & models**. See [provider setup](./install.md#providers).
-CodeShip requires OpenCode 1.14.19 or newer, including when you connect an existing
+T3.CodeShip requires OpenCode 1.14.19 or newer, including when you connect an existing
 OpenCode server.
 
 ## OpenCode 2
 
-CodeShip supports OpenCode 2.0.18 and newer. It detects the version on its own, so
+T3.CodeShip supports OpenCode 2.0.18 and newer. It detects the version on its own, so
 the same provider settings work for OpenCode 1.x and 2.x. OpenCode 1.x shows
 **Limited support** in its provider settings.
 
 OpenCode 2 is a separate package, `@opencode/cli`. To move from 1.x, install it
 yourself, for example `npm install -g @opencode/cli`. Then refresh provider status.
-CodeShip's update button updates whichever package you have installed. It never
+T3.CodeShip's update button updates whichever package you have installed. It never
 switches a 1.x install to 2.x.
 
 OpenCode 2 converts the shared OpenCode database to its own format the first time it
@@ -24,7 +24,7 @@ For planning, choose OpenCode's `plan` agent where the model options offer it.
 
 ## Compaction
 
-OpenCode compacts long conversations itself, and CodeShip has no setting for it. On
+OpenCode compacts long conversations itself, and T3.CodeShip has no setting for it. On
 OpenCode 2, change it under `compaction` in an OpenCode configuration file, such as
 `opencode.json`: `auto` turns
 automatic compaction on or off, `buffer` sets the token headroom, and `keep.tokens`
@@ -33,13 +33,13 @@ Send `/compact` to compact a thread yourself.
 
 ## Local or external server
 
-Leave **Server URL** empty to let CodeShip start OpenCode locally. A password in
-provider settings applies to both that server and CodeShip's connection. With no
+Leave **Server URL** empty to let T3.CodeShip start OpenCode locally. A password in
+provider settings applies to both that server and T3.CodeShip's connection. With no
 password setting, the local server uses `OPENCODE_SERVER_PASSWORD` from its
 environment.
 
 To use an existing OpenCode server, set **Server URL** and its password in provider
-settings. CodeShip uses only that configured password for an external server; it
+settings. T3.CodeShip uses only that configured password for an external server; it
 does not forward a local `OPENCODE_SERVER_PASSWORD`. If connection or version checks
 fail, check the URL, credentials, and OpenCode version, then refresh provider status.
 
@@ -69,7 +69,7 @@ Credential changes are read on refresh. Native OpenCode configuration can remain
 cached while the local helper is running. Let it sit for 30 seconds without model
 refreshes or text-generation work, then refresh again to reload the files. Repeated
 refreshes keep the helper alive. An external server may need its own reload or
-restart before CodeShip can see configuration changes.
+restart before T3.CodeShip can see configuration changes.
 
 Existing threads keep their selected model and options even when it disappears
 from the catalog. If OpenCode rejects that model, select an available one and retry.

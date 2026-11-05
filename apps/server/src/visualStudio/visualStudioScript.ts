@@ -145,7 +145,7 @@ function Get-Instances {
   if ($instances.Count -gt 0) { return $instances }
   if ($Solution) { throw "No open Visual Studio solution matches '$Solution'." }
   if (Get-Process devenv -ErrorAction SilentlyContinue) {
-    throw 'Visual Studio is running but CodeShip cannot reach it. Visual Studio and CodeShip must run at the same elevation: both as administrator, or neither.'
+    throw 'Visual Studio is running but T3.CodeShip cannot reach it. Visual Studio and T3.CodeShip must run at the same elevation: both as administrator, or neither.'
   }
   throw 'Visual Studio is not running on this machine.'
 }

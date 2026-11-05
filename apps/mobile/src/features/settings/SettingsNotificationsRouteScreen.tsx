@@ -345,7 +345,7 @@ function ConfiguredSettingsNotificationsRouteScreen() {
 
     Dialog.alert(
       "Disable notifications",
-      "Open system Settings to disable notifications for CodeShip.",
+      "Open system Settings to disable notifications for T3.CodeShip.",
       [
         { text: "Cancel", style: "cancel" },
         { text: "Open Settings", onPress: () => void Linking.openSettings() },
@@ -477,7 +477,7 @@ function ConfiguredSettingsNotificationsRouteScreen() {
                 void openAndroidLiveUpdateSettings().catch(() => {
                   Dialog.alert(
                     "Couldn't open Settings",
-                    "Open Android Settings, select CodeShip, then enable Live Updates in Notifications.",
+                    "Open Android Settings, select T3.CodeShip, then enable Live Updates in Notifications.",
                   );
                 });
               }}
