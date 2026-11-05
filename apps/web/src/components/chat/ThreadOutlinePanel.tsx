@@ -11,6 +11,7 @@ import {
   revealTimelinePrompt,
   useTimelineOutline,
 } from "./timelineOutlineStore";
+import { t } from "~/i18n";
 
 // One prompt is the whole thread, so there is nothing to move between.
 const OUTLINE_MIN_PROMPTS = 2;
@@ -41,7 +42,7 @@ export function ThreadOutlinePanel(props: {
     <ThreadDetailsSection
       data-thread-details-flexible
       headingId="thread-details-outline-heading"
-      title="Your prompts"
+      title={t("Your prompts")}
     >
       {/* Scrolls on its own, so a long thread keeps the sections above it in view. */}
       <ol
@@ -80,7 +81,7 @@ export function ThreadOutlinePanel(props: {
                       current ? "text-foreground" : "font-normal text-foreground/70",
                     )}
                   >
-                    {text.length > 0 ? text : "Attachment"}
+                    {text.length > 0 ? text : t("Attachment")}
                   </span>
                 </TooltipTrigger>
                 {/* The row shows a few words; this shows the rest of the prompt's opening. */}

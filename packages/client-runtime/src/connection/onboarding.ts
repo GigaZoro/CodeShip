@@ -33,6 +33,7 @@ import * as Persistence from "../platform/persistence.ts";
 import * as EnvironmentRegistry from "./registry.ts";
 import { orchestrationProtocolCompatibilityError } from "./compatibility.ts";
 import { connectionRoutes, routeEntry, sshTargetKey } from "./routes.ts";
+import { t } from "@t3tools/shared/i18n";
 
 export interface PairingConnectionInput {
   readonly pairingUrl?: string;
@@ -81,7 +82,7 @@ const resolvePairingTarget = Effect.fn("clientRuntime.connection.onboarding.reso
       catch: (cause) =>
         new ConnectionBlockedError({
           reason: "configuration",
-          detail: cause instanceof Error ? cause.message : "The pairing details are invalid.",
+          detail: cause instanceof Error ? cause.message : t("The pairing details are invalid."),
         }),
     });
   },
@@ -94,7 +95,10 @@ function bearerConnectionId(environmentId: EnvironmentId, httpBaseUrl: string): 
 function differentMachineError(label: string) {
   return new ConnectionBlockedError({
     reason: "configuration",
-    detail: `That address reaches ${label}, a different machine. Add it as its own environment instead.`,
+    detail: t(
+      "That address reaches {label}, a different machine. Add it as its own environment instead.",
+      { label },
+    ),
   });
 }
 
@@ -213,7 +217,7 @@ export const prepareBearerConnectionUpdate = Effect.fn(
   ) {
     return yield* new ConnectionBlockedError({
       reason: "configuration",
-      detail: "Only saved bearer environments can be edited.",
+      detail: t("Only saved bearer environments can be edited."),
     });
   }
 
@@ -221,7 +225,7 @@ export const prepareBearerConnectionUpdate = Effect.fn(
   if (Option.isNone(credential) || !isBearerCredential(credential.value)) {
     return yield* new ConnectionBlockedError({
       reason: "authentication",
-      detail: "The saved bearer credential is unavailable.",
+      detail: t("The saved bearer credential is unavailable."),
     });
   }
 
@@ -229,7 +233,7 @@ export const prepareBearerConnectionUpdate = Effect.fn(
   if (label === "") {
     return yield* new ConnectionBlockedError({
       reason: "configuration",
-      detail: "Environment label cannot be empty.",
+      detail: t("Environment label cannot be empty."),
     });
   }
   const httpBaseUrl = yield* Effect.try({
@@ -237,7 +241,7 @@ export const prepareBearerConnectionUpdate = Effect.fn(
     catch: (cause) =>
       new ConnectionBlockedError({
         reason: "configuration",
-        detail: cause instanceof Error ? cause.message : "The environment URL is invalid.",
+        detail: cause instanceof Error ? cause.message : t("The environment URL is invalid."),
       }),
   });
   const connectionId = entry.target.connectionId;

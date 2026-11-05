@@ -15,6 +15,7 @@ import { environmentPresentations } from "../../state/presentation";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { providerClients } from "../settings/providerDriverMeta";
 import type { ProgressRingTone } from "../ui/progress-ring";
+import { t, tn } from "~/i18n";
 
 export function useLimitPools(now: number) {
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
@@ -73,7 +74,7 @@ export function UsageLimitsGlance({
               <span className="truncate">{label}</span>
               {pool.accounts.length > 1 ? (
                 <span className="shrink-0 font-normal text-muted-foreground">
-                  · {pool.accounts.length} accounts
+                  · {tn(pool.accounts.length, "{count} account", "{count} accounts")}
                 </span>
               ) : null}
             </h3>
@@ -91,14 +92,17 @@ export function UsageLimitsGlance({
                         toneTextClassName[limitTone(window.remainingPercent)],
                       )}
                     >
-                      {window.remainingPercent}% left
+                      {t("{percent}% left", { percent: window.remainingPercent })}
                     </dd>
                     <dd className="text-end text-muted-foreground tabular-nums">
                       {nextReset ? (
                         <>
-                          <span className="sr-only">resets in </span>
-                          <span aria-hidden>↻ </span>
-                          {formatDuration(nextReset.at - now)}
+                          <span className="sr-only">
+                            {t("resets in {duration}", {
+                              duration: formatDuration(nextReset.at - now),
+                            })}
+                          </span>
+                          <span aria-hidden>↻ {formatDuration(nextReset.at - now)}</span>
                         </>
                       ) : null}
                     </dd>
@@ -110,7 +114,7 @@ export function UsageLimitsGlance({
         );
       })}
       <p className="border-t border-border/60 pt-1.5 text-muted-foreground">
-        Click for details{shortcut ? ` (${shortcut})` : null}
+        {shortcut ? t("Click for details ({shortcut})", { shortcut }) : t("Click for details")}
       </p>
     </div>
   );

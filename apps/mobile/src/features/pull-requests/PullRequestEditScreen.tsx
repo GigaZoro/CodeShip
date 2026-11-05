@@ -16,6 +16,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { PullRequestSheetContent } from "./PullRequestSheetContent";
 import { pullRequestTarget, type PullRequestParams } from "./usePullRequestDiff";
 import { usePullRequestPermissions } from "./usePullRequestPermissions";
+import { t } from "../../lib/i18n";
 
 export type PullRequestEditParams = PullRequestParams &
   (
@@ -67,12 +68,12 @@ export function PullRequestEditScreen({ route }: StaticScreenProps<PullRequestEd
     !pr || allowed
       ? null
       : !permissions.connected
-        ? "Reconnect to save changes."
+        ? t("Reconnect to save changes.")
         : !canWrite
-          ? "This device isn't allowed to change source control on this environment."
+          ? t("This device isn't allowed to change source control on this environment.")
           : params.field === "comment"
-            ? "You can't edit this comment."
-            : `You can't edit this ${singular}.`;
+            ? t("You can't edit this comment.")
+            : t("You can't edit this {term}.", { term: singular });
   const unchanged = draft === null || draft === original;
   const invalid = params.field === "title" && value.trim().length === 0;
   const save = async () => {
@@ -102,7 +103,7 @@ export function PullRequestEditScreen({ route }: StaticScreenProps<PullRequestEd
     setBusy(false);
     if (AsyncResult.isFailure(result)) {
       const cause = squashAtomCommandFailure(result);
-      setError(cause instanceof Error ? cause.message : "The provider refused the change.");
+      setError(cause instanceof Error ? cause.message : t("The provider refused the change."));
       return;
     }
     // updateComment refreshes the activity on its own; a title or body lives on the detail.
@@ -111,10 +112,10 @@ export function PullRequestEditScreen({ route }: StaticScreenProps<PullRequestEd
   };
   const title =
     params.field === "title"
-      ? "Edit title"
+      ? t("Edit title")
       : params.field === "body"
-        ? "Edit description"
-        : "Edit comment";
+        ? t("Edit description")
+        : t("Edit comment");
   return (
     <PullRequestSheetContent
       busy={busy}
@@ -124,7 +125,7 @@ export function PullRequestEditScreen({ route }: StaticScreenProps<PullRequestEd
         <Button
           fullWidth
           tone="contrast"
-          label={busy ? "Saving…" : "Save"}
+          label={busy ? t("Saving…") : t("Save")}
           loading={busy}
           disabled={!allowed || unchanged || invalid || original === null}
           onPress={() => void save()}
@@ -137,12 +138,12 @@ export function PullRequestEditScreen({ route }: StaticScreenProps<PullRequestEd
         autoFocus
         accessibilityLabel={
           params.field === "title"
-            ? `${capitalizeTerm(singular)} title`
+            ? t("{term} title", { term: capitalizeTerm(singular) })
             : params.field === "body"
-              ? `${capitalizeTerm(singular)} description`
-              : "Comment"
+              ? t("{term} description", { term: capitalizeTerm(singular) })
+              : t("Comment")
         }
-        placeholder={params.field === "title" ? "Title" : "Write in Markdown…"}
+        placeholder={params.field === "title" ? t("Title") : t("Write in Markdown…")}
         placeholderTextColorClassName="accent-foreground-muted"
         maxLength={params.field === "title" ? 1024 : 65536}
         value={value}

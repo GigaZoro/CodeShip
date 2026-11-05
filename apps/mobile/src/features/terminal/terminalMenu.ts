@@ -3,6 +3,7 @@ import { DEFAULT_TERMINAL_ID, type ProjectScript } from "@t3tools/contracts";
 import { nextTerminalId, resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
 import * as Arr from "effect/Array";
 import * as Order from "effect/Order";
+import { t } from "../../lib/i18n";
 
 export { resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
 
@@ -42,19 +43,19 @@ export function getTerminalStatusLabel(input: {
   readonly hasRunningSubprocess?: boolean;
 }): string {
   if (input.status === "running") {
-    return input.hasRunningSubprocess ? "Task running" : "Ready";
+    return input.hasRunningSubprocess ? t("Task running") : t("Ready");
   }
   if (input.status === "starting") {
-    return "Starting";
+    return t("Starting");
   }
   if (input.status === "exited") {
-    return "Exited";
+    return t("Exited");
   }
   if (input.status === "error") {
-    return "Error";
+    return t("Error");
   }
 
-  return "Not started";
+  return t("Not started");
 }
 
 /** Count the mounted terminal before sessions load, or new-terminal navigation may replace it with itself. */

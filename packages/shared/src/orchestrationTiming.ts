@@ -1,5 +1,7 @@
 import { isOrchestrationV2WorkActive, type OrchestrationV2Subagent } from "@t3tools/contracts";
 
+import { t } from "./i18n.ts";
+
 export function deriveSubagentElapsedMs(
   agent: {
     readonly status: OrchestrationV2Subagent["status"];
@@ -20,18 +22,18 @@ export function deriveSubagentElapsedMs(
 }
 
 export function formatDuration(durationMs: number): string {
-  if (!Number.isFinite(durationMs) || durationMs < 0) return "0ms";
-  if (durationMs < 1_000) return `${Math.max(1, Math.round(durationMs))}ms`;
-  if (durationMs < 10_000) return `${Math.round(durationMs / 100) / 10}s`;
+  if (!Number.isFinite(durationMs) || durationMs < 0) return t("{count}ms", { count: 0 });
+  if (durationMs < 1_000) return t("{count}ms", { count: Math.max(1, Math.round(durationMs)) });
+  if (durationMs < 10_000) return t("{count}s", { count: Math.round(durationMs / 100) / 10 });
   const totalSeconds = Math.round(durationMs / 1_000);
   // Choose the unit after rounding so 59.5 seconds never renders as "60s".
-  if (totalSeconds < 60) return `${totalSeconds}s`;
+  if (totalSeconds < 60) return t("{count}s", { count: totalSeconds });
   const hours = Math.floor(totalSeconds / 3_600);
   const minutes = Math.floor((totalSeconds % 3_600) / 60);
   const seconds = totalSeconds % 60;
   const parts: string[] = [];
-  if (hours > 0) parts.push(`${hours}h`);
-  if (minutes > 0) parts.push(`${minutes}m`);
-  if (seconds > 0) parts.push(`${seconds}s`);
+  if (hours > 0) parts.push(t("{count}h", { count: hours }));
+  if (minutes > 0) parts.push(t("{count}m", { count: minutes }));
+  if (seconds > 0) parts.push(t("{count}s", { count: seconds }));
   return parts.join(" ");
 }

@@ -15,6 +15,7 @@ import { waitForThreadShell } from "../../state/entities";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
+import { t } from "~/i18n";
 
 /**
  * Starts side chats from `threadRef`, or offers none when it is null. `open` forks the
@@ -43,10 +44,11 @@ export function useSideChat(input: {
     const targetThreadId = newThreadId();
     const fork = await forkSideChat({
       environmentId: threadRef.environmentId,
+      // oxlint-disable-next-line t3code/no-untranslated-text -- stored thread title sent to the server
       input: { sourceThreadId: threadRef.threadId, targetThreadId, title: "Side chat" },
     });
     if (fork._tag === "Failure") {
-      reportFailure(fork, "Could not start a side chat.");
+      reportFailure(fork, t("Could not start a side chat."));
       return false;
     }
     // Drops the empty side chat a failed start leaves behind; one that got its message stays.
@@ -56,7 +58,7 @@ export function useSideChat(input: {
         input: { threadId: targetThreadId, onlyIfUnused: true },
       });
     if (!(await waitForThreadShell(scopeThreadRef(threadRef.environmentId, targetThreadId)))) {
-      input.onError("The side chat was created, but it did not reach this client.");
+      input.onError(t("The side chat was created, but it did not reach this client."));
       discard();
       return false;
     }
@@ -76,7 +78,7 @@ export function useSideChat(input: {
         },
       });
       if (turn._tag === "Failure") {
-        reportFailure(turn, "Could not send the side chat message.");
+        reportFailure(turn, t("Could not send the side chat message."));
         discard();
         return false;
       }

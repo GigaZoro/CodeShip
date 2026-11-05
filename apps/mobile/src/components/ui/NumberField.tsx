@@ -19,6 +19,7 @@ import { useState } from "react";
 import { NativeThemeHost } from "./NativeThemeHost";
 import { useControlTheme } from "./useControlTheme";
 import type { NumberFieldProps } from "./NumberField.types";
+import { t } from "../../lib/i18n";
 
 export function NumberField(props: NumberFieldProps) {
   const { colors, fontSize } = useControlTheme();
@@ -76,7 +77,7 @@ export function NumberField(props: NumberFieldProps) {
             </Picker>
             <HStack>
               <Button
-                label="Cancel"
+                label={t("Cancel")}
                 systemImage="xmark"
                 onPress={() => setOpen(false)}
                 modifiers={[
@@ -88,7 +89,7 @@ export function NumberField(props: NumberFieldProps) {
               />
               <Spacer />
               <Button
-                label="Done"
+                label={t("Done")}
                 systemImage="checkmark"
                 onPress={() => {
                   setOpen(false);

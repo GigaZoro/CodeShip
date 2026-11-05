@@ -26,6 +26,7 @@ import { useV2ItemSupport } from "../../state/v2ItemSupport";
 import { TimelineRowCtx, TimelineRowActivityCtx, type TimelineRow } from "./timelineRowContext";
 import { MESSAGE_HEADING_LEVEL, MessageAuthorHeading } from "./TimelineRowParts";
 import { markRetryRewind } from "./timelineRetry";
+import { t } from "~/i18n";
 
 export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
@@ -35,12 +36,12 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
     row.projectedItem?.item.id,
   );
   const text = liveText ?? row.message.text;
-  const messageText = text || (row.message.streaming ? "" : "(empty response)");
+  const messageText = text || (row.message.streaming ? "" : t("(empty response)"));
 
   return (
     <>
       <div className="relative min-w-0 px-1 py-0.5">
-        <MessageAuthorHeading>T3.CodeShip</MessageAuthorHeading>
+        <MessageAuthorHeading>{"T3.CodeShip"}</MessageAuthorHeading>
         <div data-thread-find-text="true">
           <AssistantCitationSource
             messageId={row.message.id}
@@ -128,13 +129,13 @@ function AssistantForkButton({
                 () => setBusy(false),
               );
             }}
-            aria-label="Fork from this response"
+            aria-label={t("Fork from this response")}
           />
         }
       >
         <GitForkIcon className={cn("size-3", busy && "animate-pulse")} />
       </TooltipTrigger>
-      <TooltipPopup side="top">Fork from this response</TooltipPopup>
+      <TooltipPopup side="top">{t("Fork from this response")}</TooltipPopup>
     </Tooltip>
   );
 }
@@ -162,14 +163,14 @@ function AssistantRetryButton({ messageId }: { readonly messageId: ChatMessage["
               markRetryRewind(target.userMessageId);
               ctx.onRevertToTurnCount(target.turnCount, target.userMessageId);
             }}
-            aria-label="Retry this response"
+            aria-label={t("Retry this response")}
           />
         }
       >
         <RotateCcwIcon className="size-3" />
       </TooltipTrigger>
       <TooltipPopup side="top">
-        {activity.isWorking ? "Stop the agent to retry" : "Retry this response"}
+        {activity.isWorking ? t("Stop the agent to retry") : t("Retry this response")}
       </TooltipPopup>
     </Tooltip>
   );
@@ -324,7 +325,9 @@ export function HtmlRenderTimelineRow({
           onClick={() => setShown((current) => !current)}
           className="flex min-w-0 max-w-full cursor-pointer select-none items-center gap-1 rounded-md px-1 text-sm leading-relaxed text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
         >
-          <span className="truncate">{row.htmlRender.title} · Replaced by a newer version</span>
+          <span className="truncate">
+            {t("{title} · Replaced by a newer version", { title: row.htmlRender.title })}
+          </span>
           <MorphIcon className="size-3.5 shrink-0" icon={shown ? ChevronDown : ChevronRight} />
         </button>
       ) : null}

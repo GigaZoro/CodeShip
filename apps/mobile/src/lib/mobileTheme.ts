@@ -14,6 +14,7 @@ import {
   STANDARD_THEME_PREVIEW_COLORS,
   type ThemePreviewColors,
 } from "@t3tools/shared/themePreview";
+import { msg, type Message } from "./i18n";
 
 export const DEFAULT_MOBILE_THEME_ID = MOBILE_DEFAULT_THEME_ID;
 export const MOBILE_THEME_IDS = [...SHARED_MOBILE_THEME_IDS, "material-you"] as const;
@@ -24,10 +25,13 @@ export type MobileThemeIds = Readonly<Record<MobileThemeAppearance, MobileThemeI
 
 export const MOBILE_THEME_OPTIONS: ReadonlyArray<{
   readonly id: MobileThemeId;
+  /** Display name; translate `message` instead when set. Built-in palette names are proper nouns. */
   readonly label: string;
+  readonly message?: Message;
 }> = [
-  { id: DEFAULT_MOBILE_THEME_ID, label: "T3.CodeShip" },
-  { id: "material-you", label: "Material You" },
+  { id: DEFAULT_MOBILE_THEME_ID, label: "T3.CodeShip", message: msg("T3.CodeShip") },
+  // oxlint-disable-next-line t3code/no-untranslated-text -- proper noun; `message` carries the translation
+  { id: "material-you", label: "Material You", message: msg("Material You") },
   ...BUILT_IN_THEMES.map((theme) => ({ id: theme.id as MobileThemeId, label: theme.label })),
 ];
 

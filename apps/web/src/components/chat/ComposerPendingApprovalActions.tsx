@@ -1,3 +1,4 @@
+import { msg, t, type Message } from "~/i18n";
 import {
   type ProviderApprovalDecision,
   type ProviderApprovalOption,
@@ -23,12 +24,16 @@ interface ComposerPendingApprovalActionsProps {
   ) => Promise<unknown>;
 }
 
-const DEFAULT_APPROVAL_OPTIONS = [
-  { decision: "cancel", label: "Cancel" },
-  { decision: "decline", label: "Decline" },
-  { decision: "acceptForSession", label: "Always allow this session" },
-  { decision: "accept", label: "Approve" },
-] satisfies ReadonlyArray<ProviderApprovalOption>;
+const DEFAULT_APPROVAL_LABELS = {
+  cancel: msg("Cancel"),
+  decline: msg("Decline"),
+  acceptForSession: msg("Always allow this session"),
+  accept: msg("Approve"),
+} satisfies Partial<Record<ProviderApprovalDecision, Message>>;
+
+const DEFAULT_APPROVAL_OPTIONS = (["cancel", "decline", "acceptForSession", "accept"] as const).map(
+  (decision) => ({ decision, label: DEFAULT_APPROVAL_LABELS[decision] }),
+);
 
 export const ComposerPendingApprovalActions = memo(function ComposerPendingApprovalActions({
   presentation = "composer",
@@ -39,6 +44,13 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
   options = DEFAULT_APPROVAL_OPTIONS,
   onRespondToApproval,
 }: ComposerPendingApprovalActionsProps) {
+  const optionLabel = (option: ProviderApprovalOption) => {
+    const defaultLabel =
+      options === DEFAULT_APPROVAL_OPTIONS
+        ? DEFAULT_APPROVAL_LABELS[option.decision as keyof typeof DEFAULT_APPROVAL_LABELS]
+        : undefined;
+    return defaultLabel === undefined ? option.label : t(defaultLabel);
+  };
   const primaryOptions = options.filter(
     (option) => option.decision === "decline" || option.decision === "accept",
   );
@@ -62,7 +74,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
           <>
             {option.warning ? <TriangleAlertIcon className="size-3 shrink-0" /> : null}
             <span className={presentation === "inline" ? "whitespace-normal" : "max-w-40 truncate"}>
-              {option.label}
+              {optionLabel(option)}
             </span>
           </>
         );
@@ -100,13 +112,13 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
             disabled={disabled || isResponding || !canRespond}
             render={
               presentation === "inline" ? (
-                <InlineButton tone="muted" aria-label="More approval options" />
+                <InlineButton tone="muted" aria-label={t("More approval options")} />
               ) : (
-                <Button size="icon-xs" variant="outline" aria-label="More approval options" />
+                <Button size="icon-xs" variant="outline" aria-label={t("More approval options")} />
               )
             }
           >
-            {presentation === "inline" ? "More" : <EllipsisIcon />}
+            {presentation === "inline" ? t("More") : <EllipsisIcon />}
           </MenuTrigger>
           <MenuPopup {...composerFloatingLayerProps} side="top" align="end" width="content">
             {moreOptions.map((option) => {
@@ -121,7 +133,9 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
                   }}
                 >
                   {option.warning ? <TriangleAlertIcon className="size-3 text-warning" /> : null}
-                  <span className="min-w-0 whitespace-normal wrap-break-word">{option.label}</span>
+                  <span className="min-w-0 whitespace-normal wrap-break-word">
+                    {optionLabel(option)}
+                  </span>
                 </MenuItem>
               );
               return option.warning ? (

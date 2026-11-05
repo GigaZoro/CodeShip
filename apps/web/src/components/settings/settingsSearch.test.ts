@@ -5,6 +5,7 @@ import {
   SourceControlProviderKind,
 } from "@t3tools/contracts";
 import { UNKNOWN_SOURCE_CONTROL_CLIENT } from "@t3tools/client-runtime/source-control-clients";
+import { msg } from "~/i18n";
 import * as Schema from "effect/Schema";
 
 import {
@@ -29,30 +30,30 @@ vi.mock("~/env", async (importOriginal) => ({
 const ITEMS: ReadonlyArray<SettingsSearchItem> = [
   {
     id: "word-wrap",
-    title: "Word wrap",
+    title: msg("Word wrap"),
     to: "/settings/general",
     searchTerms: ["long lines in code previews"],
   },
   {
     id: "network-access",
-    title: "Network access",
+    title: msg("Network access"),
     to: "/settings/connections",
     searchTerms: ["remote pairing backend"],
   },
   {
     id: "providers",
-    title: "Providers",
+    title: msg("Providers"),
     to: "/settings/providers",
     searchTerms: ["claude codex agents"],
   },
   {
     id: "provider-updates",
-    title: "Update checks",
+    title: msg("Update checks"),
     to: "/settings/general",
   },
   {
     id: "automatic-updates",
-    title: "Automatic updates",
+    title: msg("Automatic updates"),
     to: "/settings/general",
   },
 ];

@@ -1,4 +1,5 @@
 import type { PullRequestReaction, PullRequestReactionContent } from "@t3tools/contracts";
+import { msg, t, tn, type Message } from "@t3tools/shared/i18n";
 
 export const PULL_REQUEST_REACTION_ORDER: ReadonlyArray<PullRequestReactionContent> = [
   "thumbs-up",
@@ -22,15 +23,15 @@ const REACTION_EMOJI: Record<PullRequestReactionContent, string> = {
   eyes: "👀",
 };
 
-const REACTION_NAME: Record<PullRequestReactionContent, string> = {
-  "thumbs-up": "thumbs up",
-  "thumbs-down": "thumbs down",
-  laugh: "laugh",
-  hooray: "hooray",
-  confused: "confused",
-  heart: "heart",
-  rocket: "rocket",
-  eyes: "eyes",
+const REACTION_NAME: Record<PullRequestReactionContent, Message> = {
+  "thumbs-up": msg("thumbs up"),
+  "thumbs-down": msg("thumbs down"),
+  laugh: msg("laugh"),
+  hooray: msg("hooray"),
+  confused: msg("confused"),
+  heart: msg("heart"),
+  rocket: msg("rocket"),
+  eyes: msg("eyes"),
 };
 
 export function pullRequestReactionEmoji(content: PullRequestReactionContent): string {
@@ -38,31 +39,36 @@ export function pullRequestReactionEmoji(content: PullRequestReactionContent): s
 }
 
 export function pullRequestReactionName(content: PullRequestReactionContent): string {
-  return REACTION_NAME[content];
+  return t(REACTION_NAME[content]);
 }
 
 const NAMED_ACTOR_LIMIT = 3;
 
 function joinNames(parts: ReadonlyArray<string>): string {
   if (parts.length <= 1) return parts[0] ?? "";
-  if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
-  return `${parts.slice(0, -1).join(", ")}, and ${parts.at(-1)}`;
+  if (parts.length === 2) return t("{first} and {second}", { first: parts[0]!, second: parts[1]! });
+  return t("{head}, and {last}", { head: parts.slice(0, -1).join(", "), last: parts.at(-1)! });
 }
 
 function countRemainder(count: number, named: boolean): string {
-  if (named) return `${count} ${count === 1 ? "other" : "others"}`;
-  return `${count} ${count === 1 ? "person" : "people"}`;
+  if (named) return tn(count, "{count} other", "{count} others");
+  return tn(count, "{count} person", "{count} people");
 }
 
 /** Hosts omit the viewer from actors; add You only if count has room, since viewer login is unavailable. */
 export function pullRequestReactionTooltip(reaction: PullRequestReaction): string {
   const viewerHasRoom = reaction.actors.length < reaction.count;
   const names =
-    reaction.viewerHasReacted && viewerHasRoom ? ["You", ...reaction.actors] : [...reaction.actors];
+    reaction.viewerHasReacted && viewerHasRoom
+      ? [t("You"), ...reaction.actors]
+      : [...reaction.actors];
   const shown = names.slice(0, Math.min(NAMED_ACTOR_LIMIT, reaction.count));
   const others = Math.max(0, reaction.count - shown.length);
   const parts = [...shown, ...(others > 0 ? [countRemainder(others, shown.length > 0)] : [])];
-  return `${joinNames(parts)} reacted with ${pullRequestReactionName(reaction.content)} emoji`;
+  return t("{names} reacted with {reaction} emoji", {
+    names: joinNames(parts),
+    reaction: pullRequestReactionName(reaction.content),
+  });
 }
 
 /** Changes whenever the host reports different reactions, so pending overlays can reset. */

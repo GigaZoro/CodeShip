@@ -6,6 +6,7 @@ import type {
 import { appSignInTargetForRemote } from "@t3tools/client-runtime/source-control-clients";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import { Alert, Linking } from "react-native";
+import { t } from "../../lib/i18n";
 
 /**
  * After a clone, suggests installing the forge app on the repository's owner when the server is
@@ -25,12 +26,15 @@ export async function suggestAppAccessForRemote(
   if (result._tag !== "Success" || result.value.status !== "not-covered") return;
   const owner = target.input.repository.split("/")[0] ?? target.input.repository;
   Alert.alert(
-    `Give ${target.appSignIn.appName} access to ${owner}`,
-    `It isn't installed there, so GitHub requests for ${target.input.repository} use your own login and its lower rate limit.`,
+    t("Give {app} access to {owner}", { app: target.appSignIn.appName, owner }),
+    t(
+      "It isn't installed there, so GitHub requests for {repository} use your own login and its lower rate limit.",
+      { repository: target.input.repository },
+    ),
     [
-      { text: "Not now", style: "cancel" },
+      { text: t("Not now"), style: "cancel" },
       {
-        text: "Install",
+        text: t("Install"),
         onPress: () => void Linking.openURL(target.appSignIn.installUrl).catch(() => undefined),
       },
     ],

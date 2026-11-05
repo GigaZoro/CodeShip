@@ -28,6 +28,7 @@ import { useDeviceType } from "../../native/native-layout-metrics";
 import { WorkspaceSidebarTabs } from "./WorkspaceSidebarTabs";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { useSelectWorkspaceTab } from "./useSelectWorkspaceTab";
+import { t } from "../../lib/i18n";
 
 const PULL_REQUEST_ICON = require("../../../assets/icons/pull-request.png");
 
@@ -125,7 +126,9 @@ export function WorkspaceNativeTabs(props: {
               key={slot}
               screenKey={slot}
               title=""
-              tabBarItemAccessibilityLabel={settings ? "Settings" : NAVIGATION_TAB_LABELS[tab]}
+              tabBarItemAccessibilityLabel={
+                settings ? t("Settings") : t(NAVIGATION_TAB_LABELS[tab])
+              }
               ios={{
                 icon: settings
                   ? { type: "sfSymbol", name: "gearshape" }

@@ -1,4 +1,5 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { t } from "~/i18n";
 import {
   type AtomCommandResult,
   isAtomCommandInterrupted,
@@ -19,10 +20,10 @@ import { useScratchProject } from "./useScratchProject";
 export const TRIAGE_CLI_COMMAND = "npx t3 triage";
 
 const copyTriageCliCommand = () =>
-  writeTextToClipboard(TRIAGE_CLI_COMMAND, "command").catch(() =>
+  writeTextToClipboard(TRIAGE_CLI_COMMAND, t("command")).catch(() =>
     toastManager.add({
       type: "error",
-      title: `Could not copy. Type ${TRIAGE_CLI_COMMAND} instead.`,
+      title: t("Could not copy. Type {command} instead.", { command: TRIAGE_CLI_COMMAND }),
     }),
   );
 
@@ -47,10 +48,13 @@ export function useStartTriage() {
     toastManager.add(
       stackedThreadToast({
         type: "error",
-        title: "Could not start triage",
-        description: `${description} Run ${TRIAGE_CLI_COMMAND} in a terminal on that machine instead.`,
+        title: t("Could not start triage"),
+        description: t("{error} Run {command} in a terminal on that machine instead.", {
+          error: description,
+          command: TRIAGE_CLI_COMMAND,
+        }),
         timeout: 0,
-        actionProps: { children: "Copy command", onClick: () => void copyTriageCliCommand() },
+        actionProps: { children: t("Copy command"), onClick: () => void copyTriageCliCommand() },
         // "Copy command" is the copy that helps here, not the error text.
         data: { hideCopyButton: true },
       }),
@@ -60,7 +64,7 @@ export function useStartTriage() {
   ) => {
     if (isAtomCommandInterrupted(result)) return;
     const error = squashAtomCommandFailure(result);
-    fail(error instanceof Error ? error.message : "An error occurred.");
+    fail(error instanceof Error ? error.message : t("An error occurred."));
   };
 
   // `routeChanged` tells the steps the user went elsewhere while they waited;
@@ -77,12 +81,12 @@ export function useStartTriage() {
     // A null result means the user went elsewhere; only a throw is a failure.
     await handleNewThread(scopeProjectRef(project.value.environmentId, project.value.id), {
       prompt: prepared.value.prompt,
-    }).catch(() => fail("T3.CodeShip could not open a new thread."));
+    }).catch(() => fail(t("T3.CodeShip could not open a new thread.")));
   };
 
   return async (environmentId: EnvironmentId) => {
     if (scratchWorkspaceRootFor(environmentId) === null) {
-      fail("This machine cannot start threads without a project.");
+      fail(t("This machine cannot start threads without a project."));
       return;
     }
     const requestingRouteHref = router.state.location.href;
@@ -92,7 +96,7 @@ export function useStartTriage() {
     const pendingTimer = setTimeout(() => {
       pendingToastId = toastManager.add({
         type: "loading",
-        title: "Starting triage…",
+        title: t("Starting triage…"),
         timeout: 0,
       });
     }, 400);

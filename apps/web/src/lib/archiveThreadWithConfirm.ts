@@ -1,4 +1,5 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
+import { t } from "~/i18n";
 import {
   isAtomCommandInterrupted,
   settlePromise,
@@ -20,7 +21,7 @@ export async function archiveThreadWithConfirm(input: {
     const api = readLocalApi();
     if (!api) return;
     const confirmed = await settlePromise(() =>
-      api.dialogs.confirm(`Archive thread "${input.title}"?`),
+      api.dialogs.confirm(t('Archive thread "{title}"?', { title: input.title })),
     );
     if (confirmed._tag === "Failure" || !confirmed.value) return;
   }
@@ -35,8 +36,10 @@ export async function archiveThreadWithConfirm(input: {
     toastManager.add(
       stackedThreadToast({
         type: "error",
-        title: didArchive ? "Thread archived, but navigation failed" : "Failed to archive thread",
-        description: error instanceof Error ? error.message : "An error occurred.",
+        title: didArchive
+          ? t("Thread archived, but navigation failed")
+          : t("Failed to archive thread"),
+        description: error instanceof Error ? error.message : t("An error occurred."),
       }),
     );
   }

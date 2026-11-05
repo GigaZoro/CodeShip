@@ -6,19 +6,23 @@ import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import type { EnvironmentArtifact } from "./artifactList";
 import { refreshConnectedArtifacts } from "./useArtifacts";
+import { t } from "../../lib/i18n";
 
 /** Confirms, then removes the page from the gallery; its thread keeps showing it inline. */
 export function useDeleteArtifact() {
   const hideArtifact = useAtomCommand(threadEnvironment.hideArtifact, { reportFailure: false });
   return (artifact: EnvironmentArtifact, onDeleted?: () => void) => {
     if (!readEnvironmentScope(artifact.environmentId, AuthOrchestrationOperateScope)) {
-      Dialog.alert("Could not delete artifact", "This connection cannot change threads.");
+      Dialog.alert(t("Could not delete artifact"), t("This connection cannot change threads."));
       return;
     }
     Dialog.confirm({
-      title: "Delete artifact?",
-      message: `“${artifact.title}” leaves the Artifacts list. Its thread keeps showing the page in the conversation.`,
-      confirmText: "Delete",
+      title: t("Delete artifact?"),
+      message: t(
+        "“{title}” leaves the Artifacts list. Its thread keeps showing the page in the conversation.",
+        { title: artifact.title },
+      ),
+      confirmText: t("Delete"),
       destructive: true,
       onConfirm: () => {
         void hideArtifact({
@@ -30,7 +34,7 @@ export function useDeleteArtifact() {
             onDeleted?.();
             return;
           }
-          Dialog.alert("Could not delete artifact", "Try again in a moment.");
+          Dialog.alert(t("Could not delete artifact"), t("Try again in a moment."));
         });
       },
     });

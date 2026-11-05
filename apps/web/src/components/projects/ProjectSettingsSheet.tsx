@@ -5,6 +5,7 @@ import { SettingsScopeProvider } from "../settings/SettingsScopeContext";
 import type { SettingsScopeSearch } from "../settings/settingsScope";
 import { Sheet, SheetDescription, SheetPopup, SheetTitle } from "../ui/sheet";
 
+import { t } from "~/i18n";
 /** Project settings opened in place, so the Projects page stays behind it. */
 export function ProjectSettingsSheet(props: {
   /** The settings key of the project to show, or null while closed. */
@@ -20,10 +21,10 @@ export function ProjectSettingsSheet(props: {
   }
   return (
     <Sheet open={props.projectKey !== null} onOpenChange={(open) => !open && props.onClose()}>
-      <SheetPopup className="max-w-2xl" aria-label="Project settings">
-        <SheetTitle className="sr-only">Project settings</SheetTitle>
+      <SheetPopup className="max-w-2xl" aria-label={t("Project settings")}>
+        <SheetTitle className="sr-only">{t("Project settings")}</SheetTitle>
         <SheetDescription className="sr-only">
-          Name, icon, checkouts and actions for this project.
+          {t("Name, icon, checkouts and actions for this project.")}
         </SheetDescription>
         <SettingsScopeProvider search={scope} onChange={setScope}>
           <ProjectsSettings />

@@ -46,6 +46,7 @@ self.addEventListener("message", (event: MessageEvent<OfficeWorkerRequest>) => {
   void handle(event.data).catch((cause: unknown) =>
     reply({
       type: "error",
+      // oxlint-disable-next-line t3code/no-untranslated-text -- worker has no language catalog; fallback only for non-Error causes
       message: cause instanceof Error ? cause.message : "Could not parse this file.",
     }),
   );

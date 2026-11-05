@@ -20,6 +20,7 @@ import {
 } from "./guideRunStore";
 import { stepTourPosition, stopFilePaths } from "@t3tools/client-runtime/review-guide-tour";
 import { useGuideDiffFiles } from "./useGuideDiffFiles";
+import { t } from "~/i18n";
 
 export function GuideTour({
   environmentId,
@@ -104,11 +105,15 @@ export function GuideTour({
           {banner}
           {diff.error !== null ? (
             <p className="text-xs text-muted-foreground">
-              The diff could not be loaded, so excerpts are missing: {diff.error}
+              {t("The diff could not be loaded, so excerpts are missing: {error}", {
+                error: diff.error,
+              })}
             </p>
           ) : null}
           {stop === null ? (
-            <p className="text-sm text-muted-foreground">This change has no files to tour.</p>
+            <p className="text-sm text-muted-foreground">
+              {t("This change has no files to tour.")}
+            </p>
           ) : (
             <GuideStop
               key={position}

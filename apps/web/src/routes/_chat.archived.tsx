@@ -9,12 +9,13 @@ import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 
+import { t } from "~/i18n";
 function ArchivedRoute() {
   const scopeSearch = Route.useSearch();
   const navigate = Route.useNavigate();
   return (
     <SidebarInset
-      {...workspaceAreaProps("archived", 1, "Archived threads")}
+      {...workspaceAreaProps("archived", 1, t("Archived threads"))}
       role="main"
       className="h-dvh min-h-0 overflow-hidden overscroll-y-none"
     >
@@ -33,9 +34,9 @@ function ArchivedRoute() {
         }}
       >
         <WorkspacePageHeader electron={isElectron} className="border-b">
-          <WorkspaceBreadcrumb ariaLabel="Archived threads breadcrumb">
+          <WorkspaceBreadcrumb ariaLabel={t("Archived threads breadcrumb")}>
             <WorkspaceBreadcrumbItem current>
-              <h1>Archived threads</h1>
+              <h1>{t("Archived threads")}</h1>
             </WorkspaceBreadcrumbItem>
           </WorkspaceBreadcrumb>
         </WorkspacePageHeader>

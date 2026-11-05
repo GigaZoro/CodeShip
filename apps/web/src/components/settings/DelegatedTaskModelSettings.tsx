@@ -21,14 +21,15 @@ import {
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
+import { msg, t, type Message } from "~/i18n";
 
-const ROLES: ReadonlyArray<{ readonly role: DelegatedTaskRole; readonly title: string }> = [
-  { role: "implementation", title: "Implementation" },
-  { role: "research", title: "Research" },
-  { role: "review", title: "Review" },
-  { role: "design", title: "Design" },
-  { role: "test", title: "Testing" },
-  { role: "general", title: "Other tasks" },
+const ROLES: ReadonlyArray<{ readonly role: DelegatedTaskRole; readonly title: Message }> = [
+  { role: "implementation", title: msg("Implementation") },
+  { role: "research", title: msg("Research") },
+  { role: "review", title: msg("Review") },
+  { role: "design", title: msg("Design") },
+  { role: "test", title: msg("Testing") },
+  { role: "general", title: msg("Other tasks") },
 ];
 
 /** A settings model choice with its effort, or Auto; `selection` null shows `emptyLabel`. */
@@ -77,7 +78,7 @@ export function SettingsModelSelectionControl({
       : createModelSelection(fallbackEntry.instanceId, fallbackEntry.models[0]?.slug ?? ""));
   const entry = entries.find((candidate) => candidate.instanceId === selection?.instanceId);
   if (shown === null) {
-    return <span className="text-sm text-muted-foreground">No providers available</span>;
+    return <span className="text-sm text-muted-foreground">{t("No providers available")}</span>;
   }
   return (
     <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
@@ -148,20 +149,22 @@ export function DelegatedTaskModelSettings({
   return (
     <SettingsSection {...searchableSetting("delegated-task-models")}>
       <SettingsRow
-        title="Models by role"
-        description="When an agent hands work to a child task without naming a model, the task runs on the model set for its role. Unset roles use the thread's own model."
+        title={t("Models by role")}
+        description={t(
+          "When an agent hands work to a child task without naming a model, the task runs on the model set for its role. Unset roles use the thread's own model.",
+        )}
       />
       {ROLES.map(({ role, title }) => {
         const selection = settings.delegatedTaskModelSelections?.[role] ?? null;
         return (
           <SettingsRow
             key={role}
-            title={title}
+            title={t(title)}
             resetAction={
               selection !== null && !readOnly ? (
                 <SettingResetButton
-                  label={`${title.toLowerCase()} model`}
-                  tooltip="Use the thread's model"
+                  label={t("{role} model", { role: t(title).toLowerCase() })}
+                  tooltip={t("Use the thread's model")}
                   onClick={() => setRole(role, null)}
                 />
               ) : null
@@ -172,9 +175,9 @@ export function DelegatedTaskModelSettings({
                 settings={settings}
                 providers={providers}
                 readOnly={readOnly}
-                label={`${title} model`}
+                label={t("{role} model", { role: t(title) })}
                 selection={selection}
-                emptyLabel="Same as the thread"
+                emptyLabel={t("Same as the thread")}
                 onChange={(next) => setRole(role, next)}
               />
             }

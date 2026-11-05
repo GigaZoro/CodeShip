@@ -1,3 +1,5 @@
+import { tn } from "../../lib/i18n";
+
 export interface ZipEntry {
   readonly path: string;
   readonly name: string;
@@ -134,6 +136,6 @@ export function zipDownloadTimeLeft(input: {
     ((input.totalBytes - input.receivedBytes) * input.elapsedMs) / input.receivedBytes / 1000,
   );
   return seconds < 60
-    ? `About ${seconds} ${seconds === 1 ? "second" : "seconds"} left`
-    : `About ${Math.ceil(seconds / 60)} minutes left`;
+    ? tn(seconds, "About {count} second left", "About {count} seconds left")
+    : tn(Math.ceil(seconds / 60), "About {count} minute left", "About {count} minutes left");
 }

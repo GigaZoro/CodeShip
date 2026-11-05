@@ -30,6 +30,10 @@ it("initializes React refresh before a shared UI chunk runs in bundled dev", asy
       await NodeFSP.copyFile(new URL(`../${file}`, import.meta.url), NodePath.join(root, file));
     }
     await NodeFSP.writeFile(
+      NodePath.join(root, "src/languageBoot.ts"),
+      "export const startLanguage = () => Promise.resolve();",
+    );
+    await NodeFSP.writeFile(
       NodePath.join(root, "src/shared.tsx"),
       "export function Shared() { return <div>ready</div>; }",
     );
@@ -45,7 +49,12 @@ export const startup = Promise.resolve().then(() => globalThis.onStarted(Shared(
       publicDir: NodeURL.fileURLToPath(new URL("../public", import.meta.url)),
       logLevel: "silent",
       resolve: {
-        alias: { react: NodePath.dirname(NodeURL.fileURLToPath(import.meta.resolve("react"))) },
+        alias: {
+          react: NodePath.dirname(NodeURL.fileURLToPath(import.meta.resolve("react"))),
+          "@t3tools/shared/i18n": NodeURL.fileURLToPath(
+            import.meta.resolve("@t3tools/shared/i18n"),
+          ),
+        },
       },
       experimental: { bundledDev: true },
       plugins: [

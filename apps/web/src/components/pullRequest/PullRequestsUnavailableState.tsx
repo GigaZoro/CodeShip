@@ -5,9 +5,10 @@ import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { PullRequestGlyph } from "./pullRequestIcons";
 import { SourceControlMessage } from "./PullRequestListGapsNotice";
+import { t } from "~/i18n";
 
 export function PullRequestsUnavailableState({
-  title = "Could not load pull requests",
+  title = t("Could not load pull requests"),
   error,
   onRetry,
   refreshing = false,
@@ -44,7 +45,7 @@ export function PullRequestsUnavailableState({
               aria-busy={refreshing}
             >
               <RefreshIcon size="sm" refreshing={refreshing} />
-              Retry
+              {t("Retry")}
             </Button>
           ) : null}
           {host ? (
@@ -60,7 +61,7 @@ export function PullRequestsUnavailableState({
           {onOpenSettings ? (
             <Button size="sm" variant="outline" onClick={onOpenSettings}>
               <SettingsIcon aria-hidden className="size-3.5" />
-              Source control settings
+              {t("Source control settings")}
             </Button>
           ) : null}
         </div>

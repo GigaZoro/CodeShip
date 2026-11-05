@@ -1,4 +1,5 @@
 import type { OrchestrationV2UserMessageInputIntent } from "@t3tools/contracts";
+import { t } from "../../lib/i18n";
 
 export interface UserMessageIntentBadgePresentation {
   readonly label: string;
@@ -11,13 +12,13 @@ export function resolveUserMessageIntentBadge(
   switch (intent) {
     case "steer":
       return {
-        label: "Steer",
-        accessibilityLabel: "Steered the active turn",
+        label: t("Steer"),
+        accessibilityLabel: t("Steered the active turn"),
       };
     case "promoted_queued_to_steer":
       return {
-        label: "Steer",
-        accessibilityLabel: "Originally queued, then promoted to steer the active turn",
+        label: t("Steer"),
+        accessibilityLabel: t("Originally queued, then promoted to steer the active turn"),
       };
     case "queued_turn":
     case "turn_start":

@@ -1,6 +1,6 @@
 import {
   resolveScheduledTaskPlacement,
-  SCHEDULED_TASK_PLACEMENT_OPTIONS,
+  scheduledTaskPlacementOptions,
 } from "@t3tools/client-runtime/scheduled-task-pins";
 import type { ScheduledTask, ScheduledTaskPlacement } from "@t3tools/contracts";
 
@@ -15,7 +15,7 @@ export function ScheduledTaskPlacementRadioGroup(props: {
       value={resolveScheduledTaskPlacement(props.task)}
       onValueChange={(value) => props.onChange(value as ScheduledTaskPlacement)}
     >
-      {SCHEDULED_TASK_PLACEMENT_OPTIONS.map((option) => (
+      {scheduledTaskPlacementOptions().map((option) => (
         <MenuRadioItem key={option.value} value={option.value}>
           {option.label}
         </MenuRadioItem>

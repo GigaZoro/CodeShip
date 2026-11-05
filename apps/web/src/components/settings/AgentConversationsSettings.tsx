@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
@@ -11,26 +12,32 @@ export function AgentConversationsSettings() {
   const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
 
   return (
-    <SettingsSection id="agent-conversations" title="Claude Code and Codex">
+    <SettingsSection id="agent-conversations" title={t("Claude Code and Codex")}>
       <SettingsRow
         serverScoped
         settingKeys={["importAgentConversations"]}
         {...searchableSetting("import-agent-conversations")}
         description={
           isProjectScope
-            ? "Brings this project's past and new Claude Code and Codex conversations into T3.CodeShip, including ones from while T3.CodeShip was closed."
-            : "Brings past and new Claude Code and Codex conversations from the selected environments into T3.CodeShip, including ones from while T3.CodeShip was closed. Projects can override it."
+            ? t(
+                "Brings this project's past and new Claude Code and Codex conversations into T3.CodeShip, including ones from while T3.CodeShip was closed.",
+              )
+            : t(
+                "Brings past and new Claude Code and Codex conversations from the selected environments into T3.CodeShip, including ones from while T3.CodeShip was closed. Projects can override it.",
+              )
         }
         status={
           isProjectScope
             ? undefined
-            : "Only folders added as projects are imported, plus Codex app chats without a project, which go to No project."
+            : t(
+                "Only folders added as projects are imported, plus Codex app chats without a project, which go to No project.",
+              )
         }
         resetAction={
           settings.importAgentConversations ? (
             <SettingResetButton
-              label="import conversations"
-              tooltip="Reset importing conversations to off"
+              label={t("import conversations")}
+              tooltip={t("Reset importing conversations to off")}
               onClick={() => updateSettings({ importAgentConversations: false })}
             />
           ) : null
@@ -42,7 +49,7 @@ export function AgentConversationsSettings() {
             onCheckedChange={(checked) =>
               updateSettings({ importAgentConversations: Boolean(checked) })
             }
-            aria-label="Import Claude Code and Codex conversations"
+            aria-label={t("Import Claude Code and Codex conversations")}
           />
         }
       />

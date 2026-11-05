@@ -5,6 +5,7 @@ import {
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "./runtime.ts";
+import { t } from "@t3tools/shared/i18n";
 
 type CodexFeedbackSubmissionDetails = {
   readonly id: MessageId;
@@ -33,14 +34,17 @@ export function codexFeedbackNotice(submission: CodexFeedbackSubmission) {
     case "interrupted":
       return null;
     case "uploading":
-      return { title: "Sending feedback to OpenAI...", description: undefined };
+      return { title: t("Sending feedback to OpenAI..."), description: undefined };
     case "sent":
       return {
-        title: "Feedback sent to OpenAI",
-        description: `Thread ID: ${submission.feedbackId}`,
+        title: t("Feedback sent to OpenAI"),
+        description: t("Thread ID: {id}", { id: submission.feedbackId }),
       };
     case "failed":
-      return { title: "Could not send feedback to OpenAI", description: submission.errorMessage };
+      return {
+        title: t("Could not send feedback to OpenAI"),
+        description: submission.errorMessage,
+      };
   }
 }
 
@@ -62,10 +66,10 @@ export function codexFeedbackMessage(
     role === "user"
       ? submission.command
       : submission.status === "sent"
-        ? `Feedback sent to OpenAI.\n\nThread ID: \`${submission.feedbackId}\``
+        ? t("Feedback sent to OpenAI.\n\nThread ID: `{id}`", { id: submission.feedbackId })
         : submission.status === "failed"
-          ? `Could not send feedback to OpenAI.\n\n${submission.errorMessage}`
-          : "Sending feedback to OpenAI...";
+          ? t("Could not send feedback to OpenAI.\n\n{error}", { error: submission.errorMessage })
+          : t("Sending feedback to OpenAI...");
 
   return {
     id: role === "user" ? submission.id : MessageId.make(`${submission.id}:feedback`),
@@ -101,7 +105,7 @@ export async function submitCodexFeedback<E>(input: {
     input.onUpdate({
       ...input.submission,
       status: "failed",
-      errorMessage: error instanceof Error ? error.message : "An error occurred.",
+      errorMessage: error instanceof Error ? error.message : t("An error occurred."),
     });
   }
 

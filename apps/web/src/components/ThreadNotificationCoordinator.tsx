@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import {
   type EnvironmentThreadShell,
   type PendingSubagentRequest,
@@ -131,16 +132,16 @@ export function startThreadNotifications(
     };
     const title =
       kind === "completion"
-        ? "Thread completed"
+        ? t("Thread completed")
         : status === "approval"
-          ? "Approval needed"
+          ? t("Approval needed")
           : status === "limited"
-            ? "Usage limit reached"
+            ? t("Usage limit reached")
             : status === "failed"
-              ? "Thread failed"
+              ? t("Thread failed")
               : status === "request"
-                ? "Guest request"
-                : "Input needed";
+                ? t("Guest request")
+                : t("Input needed");
     if (hasNotificationSound(mode)) {
       void playNotificationSound(kind, () =>
         hasNotificationSound(getClientSettings().notificationMode),
@@ -174,7 +175,7 @@ export function startThreadNotifications(
             ),
         },
         actionProps: {
-          children: "Open thread",
+          children: t("Open thread"),
           onClick: () => {
             toastManager.close(toastId);
             void router.navigate({

@@ -38,6 +38,7 @@ import {
 } from "./models.ts";
 import { commandDisplayText } from "../work-log/commandLabel.ts";
 import { formatSubagentDisplayTitle } from "./subagentDisplay.ts";
+import { msg, t, tn, type Message } from "@t3tools/shared/i18n";
 
 const ACTIVITY_RUN_STATUSES = new Set(["preparing", "starting", "running", "waiting"]);
 const INTERRUPTIBLE_RUN_STATUSES = new Set(["preparing", "starting", "running"]);
@@ -173,24 +174,24 @@ export function formatModelSelectionEffort(
   return null;
 }
 
-const SUBAGENT_STATUS_LABELS: Record<OrchestrationV2ExecutionNode["status"], string> = {
-  idle: "Idle",
-  pending: "Working",
-  running: "Working",
-  waiting: "Waiting",
-  completed: "Completed",
-  interrupted: "Interrupted",
-  failed: "Failed",
-  cancelled: "Cancelled",
-  rolled_back: "Cancelled",
+const SUBAGENT_STATUS_LABELS: Record<OrchestrationV2ExecutionNode["status"], Message> = {
+  idle: msg("Idle"),
+  pending: msg("Working"),
+  running: msg("Working"),
+  waiting: msg("Waiting"),
+  completed: msg("Completed"),
+  interrupted: msg("Interrupted"),
+  failed: msg("Failed"),
+  cancelled: msg("Cancelled"),
+  rolled_back: msg("Cancelled"),
 };
 
 export function formatProviderSubagentStatus(
   status: ProviderSubagentStatus | null,
   nowMs: number,
 ): string {
-  if (status === null) return "Starting";
-  const label = SUBAGENT_STATUS_LABELS[status.status];
+  if (status === null) return t("Starting");
+  const label = t(SUBAGENT_STATUS_LABELS[status.status]);
   const live = isOrchestrationV2WorkActive(status.status);
   if (!live && status.status !== "completed") return label;
   const start = status.startedAt === null ? Number.NaN : Date.parse(status.startedAt);
@@ -201,7 +202,9 @@ export function formatProviderSubagentStatus(
       : Date.parse(status.completedAt);
   if (!Number.isFinite(start) || !Number.isFinite(end)) return label;
   const elapsed = formatDuration(Math.max(1_000, Math.floor((end - start) / 1_000) * 1_000));
-  return live ? `${label} ${elapsed}` : `${label} in ${elapsed}`;
+  return live
+    ? t("{label} {elapsed}", { label, elapsed })
+    : t("{label} in {elapsed}", { label, elapsed });
 }
 
 /** The run a manual continuation resumes; the server holds the queue until it does. */
@@ -295,13 +298,51 @@ type BackgroundWorkKind = OrchestrationV2PendingBackgroundTask["kind"];
 
 const BACKGROUND_WORK_KINDS: Record<
   BackgroundWorkKind,
-  { readonly order: number; readonly singular: string; readonly plural: string }
+  {
+    readonly order: number;
+    readonly singular: Message;
+    readonly waitingOnOne: Message;
+    readonly runningOne: Message;
+  }
 > = {
-  subagent: { order: 0, singular: "subagent", plural: "subagents" },
-  command: { order: 1, singular: "command", plural: "commands" },
-  monitor: { order: 2, singular: "monitor", plural: "monitors" },
-  background_task: { order: 3, singular: "background task", plural: "background tasks" },
+  subagent: {
+    order: 0,
+    singular: msg("subagent"),
+    waitingOnOne: msg("Waiting on a subagent"),
+    runningOne: msg("Running a subagent"),
+  },
+  command: {
+    order: 1,
+    singular: msg("command"),
+    waitingOnOne: msg("Waiting on a command"),
+    runningOne: msg("Running a command"),
+  },
+  monitor: {
+    order: 2,
+    singular: msg("monitor"),
+    waitingOnOne: msg("Waiting on a monitor"),
+    runningOne: msg("Running a monitor"),
+  },
+  background_task: {
+    order: 3,
+    singular: msg("background task"),
+    waitingOnOne: msg("Waiting on a background task"),
+    runningOne: msg("Running a background task"),
+  },
 };
+
+function backgroundWorkCount(kind: BackgroundWorkKind, count: number): string {
+  switch (kind) {
+    case "subagent":
+      return tn(count, "{count} subagent", "{count} subagents");
+    case "command":
+      return tn(count, "{count} command", "{count} commands");
+    case "monitor":
+      return tn(count, "{count} monitor", "{count} monitors");
+    case "background_task":
+      return tn(count, "{count} background task", "{count} background tasks");
+  }
+}
 
 export interface RunStopPresentation {
   /** `unresponsive`: the provider did not confirm the stop in time, so Force stop is offered. */
@@ -367,7 +408,7 @@ export interface PendingBackgroundWorkPresentation {
 
 function joinWithAnd(parts: ReadonlyArray<string>): string {
   if (parts.length <= 1) return parts.join("");
-  return `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+  return t("{head} and {last}", { head: parts.slice(0, -1).join(", "), last: parts.at(-1) ?? "" });
 }
 
 // The Claude adapter forces a stuck query closed after 10 seconds.
@@ -411,7 +452,7 @@ export function presentPendingBackgroundWork(
         kind: task.kind,
         label:
           label === undefined || label.length === 0
-            ? BACKGROUND_WORK_KINDS[task.kind].singular
+            ? t(BACKGROUND_WORK_KINDS[task.kind].singular)
             : label,
         childThreadId: task.kind === "subagent" ? task.childThreadId : undefined,
       };
@@ -423,22 +464,26 @@ export function presentPendingBackgroundWork(
     );
   const [only] = items;
   if (items.length === 1 && only !== undefined) {
-    const noun = BACKGROUND_WORK_KINDS[only.kind].singular;
-    const named = only.label !== noun;
+    const kindLabels = BACKGROUND_WORK_KINDS[only.kind];
+    const named = only.label !== t(kindLabels.singular);
     const title = named
-      ? `${waiting ? "Waiting" : "Running"} · ${only.label}`
-      : waiting
-        ? `Waiting on a ${noun}`
-        : `Running a ${noun}`;
+      ? waiting
+        ? t("Waiting · {label}", { label: only.label })
+        : t("Running · {label}", { label: only.label })
+      : t(waiting ? kindLabels.waitingOnOne : kindLabels.runningOne);
     return { title, items, waiting };
   }
   const counts = new Map<BackgroundWorkKind, number>();
   for (const item of items) counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
-  const groups = Array.from(counts, ([kind, count]) => {
-    const { singular, plural } = BACKGROUND_WORK_KINDS[kind];
-    return `${count} ${count === 1 ? singular : plural}`;
-  });
-  return { title: `${waiting ? "Waiting on" : "Running"} ${joinWithAnd(groups)}`, items, waiting };
+  const groups = Array.from(counts, ([kind, count]) => backgroundWorkCount(kind, count));
+  const joined = joinWithAnd(groups);
+  return {
+    title: waiting
+      ? t("Waiting on {groups}", { groups: joined })
+      : t("Running {groups}", { groups: joined }),
+    items,
+    waiting,
+  };
 }
 
 export interface ProviderGoalPresentation {
@@ -448,13 +493,13 @@ export interface ProviderGoalPresentation {
   readonly canResume: boolean;
 }
 
-const PROVIDER_GOAL_TITLES: Record<OrchestrationV2ProviderGoal["status"], string> = {
-  active: "Pursuing goal",
-  paused: "Goal paused",
-  blocked: "Goal blocked",
-  usage_limited: "Goal hit a usage limit",
-  budget_limited: "Goal reached its token budget",
-  complete: "Goal complete",
+const PROVIDER_GOAL_TITLES: Record<OrchestrationV2ProviderGoal["status"], Message> = {
+  active: msg("Pursuing goal"),
+  paused: msg("Goal paused"),
+  blocked: msg("Goal blocked"),
+  usage_limited: msg("Goal hit a usage limit"),
+  budget_limited: msg("Goal reached its token budget"),
+  complete: msg("Goal complete"),
 };
 
 function formatGoalTokens(tokens: number): string {
@@ -473,18 +518,22 @@ export function presentProviderGoal(
     // Codex goal accounting excludes cached input, unlike total thread usage.
     usage.push(
       goal.tokenBudget == null
-        ? `${formatGoalTokens(goal.tokensUsed)} uncached tokens`
-        : `${formatGoalTokens(goal.tokensUsed)} / ${formatGoalTokens(goal.tokenBudget)} uncached tokens`,
+        ? t("{used} uncached tokens", { used: formatGoalTokens(goal.tokensUsed) })
+        : t("{used} / {budget} uncached tokens", {
+            used: formatGoalTokens(goal.tokensUsed),
+            budget: formatGoalTokens(goal.tokenBudget),
+          }),
     );
   }
   if (goal.timeUsedSeconds !== undefined && goal.timeUsedSeconds >= 60) {
-    usage.push(`${formatDuration(goal.timeUsedSeconds * 1_000)} active`);
+    usage.push(t("{duration} active", { duration: formatDuration(goal.timeUsedSeconds * 1_000) }));
   }
   if (goal.checks !== undefined && goal.checks > 0) {
-    usage.push(`${goal.checks} ${goal.checks === 1 ? "check" : "checks"}`);
+    usage.push(tn(goal.checks, "{count} check", "{count} checks"));
   }
   return {
-    title: goal.status === "active" && !working ? "Goal set" : PROVIDER_GOAL_TITLES[goal.status],
+    title:
+      goal.status === "active" && !working ? t("Goal set") : t(PROVIDER_GOAL_TITLES[goal.status]),
     objective: goal.objective,
     usage: usage.length === 0 ? null : usage.join(" · "),
     canResume: goal.status !== "active" && goal.status !== "complete",

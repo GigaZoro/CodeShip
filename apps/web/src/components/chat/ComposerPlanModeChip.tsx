@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import { useState } from "react";
 
 import { Badge } from "../ui/badge";
@@ -16,18 +17,18 @@ export function ComposerPlanModeChip(props: {
   return (
     <div className="flex shrink-0 items-center gap-1" data-chat-composer-plan-mode="true">
       <Badge variant="info" size="control">
-        Plan mode
+        {t("Plan mode")}
       </Badge>
       {onLeave ? (
         <Button
           type="button"
           size="xs"
           variant="ghost"
-          aria-label="Leave plan mode"
+          aria-label={t("Leave plan mode")}
           disabled={leaving}
           onClick={() => leave(onLeave)}
         >
-          Leave
+          {t("Leave")}
         </Button>
       ) : null}
     </div>

@@ -9,6 +9,7 @@ import { IPAD_HOME_TITLE_OFFSET } from "../lib/layoutMetrics";
 import { resolveMobileStageLabel } from "../lib/mobileBranding";
 import { useAndroidControlSizing } from "./ui/useAndroidControlSizing";
 import { CodeShipMark } from "./CodeShipMark";
+import { t } from "../lib/i18n";
 
 const BRAND_MAX_FONT_SCALE = 1.4;
 
@@ -40,7 +41,7 @@ export function CompactBrandTitle(
         props.fit && showStage ? (event) => setFullWidth(event.nativeEvent.layout.width) : undefined
       }
       aria-level={1}
-      accessibilityLabel={props.accessibilityLabel ?? "T3.CodeShip, Threads"}
+      accessibilityLabel={props.accessibilityLabel ?? t("T3.CodeShip, Threads")}
       accessible
       role="heading"
       className="flex-row items-center gap-1.5"
@@ -60,7 +61,7 @@ export function CompactBrandTitle(
         numberOfLines={1}
         style={{ fontSize: 21 * scale, letterSpacing: -0.5 * scale }}
       >
-        T3.CodeShip
+        {"T3.CodeShip"}
       </Text>
       {showStage ? (
         <View
@@ -106,7 +107,7 @@ export function getCompactBrandHeaderOptions(
   return {
     headerTitle: renderCompactBrandTitle,
     headerTitleStyle: fallbackTitleStyle,
-    title: "Threads",
+    title: t("Threads"),
     unstable_headerLeftItems: undefined,
   };
 }

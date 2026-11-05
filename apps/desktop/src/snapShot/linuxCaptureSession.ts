@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Reads portal-owned screenshot files at the native boundary.
+import { t } from "@t3tools/shared/i18n";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeURL from "node:url";
 import type { SnapShotKeyChord } from "@t3tools/contracts";
@@ -101,7 +102,9 @@ export function portalShortcutTrigger(shortcut: SnapShotKeyChord): string {
     KEY_NAMES[key] ??
     (/^[a-z0-9]$/.test(key) || /^f([1-9]|1\d|2[0-4])$/.test(key) ? key.toUpperCase() : undefined);
   if (!keysym)
-    throw new Error("This key isn't supported as a Wayland capture shortcut. Choose another key.");
+    throw new Error(
+      t("This key isn't supported as a Wayland capture shortcut. Choose another key."),
+    );
   return [
     shortcut.ctrlKey || shortcut.modKey ? "CTRL" : null,
     shortcut.altKey ? "ALT" : null,

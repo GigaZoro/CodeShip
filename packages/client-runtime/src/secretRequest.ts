@@ -1,5 +1,7 @@
 import type { OrchestrationV2TurnItem, SecretRequestAnswerInput } from "@t3tools/contracts";
 
+import { msg, t } from "@t3tools/shared/i18n";
+
 export type SecretRequestItem = Extract<
   OrchestrationV2TurnItem,
   { readonly type: "secret_request" }
@@ -8,9 +10,9 @@ export type SecretRequestItem = Extract<
 /** A `file` request lets the agent's commands read the value, so its card must not promise more. */
 export const secretRequestPrivacyNote = (item: Pick<SecretRequestItem, "delivery">) =>
   item.delivery === "file"
-    ? "Kept out of chat, in a private file this agent's commands can read for 24 hours"
-    : "Stored securely, never shown to the agent";
-export const SECRET_REQUEST_DEFAULT_PLACEHOLDER = "Paste the secret";
+    ? t("Kept out of chat, in a private file this agent's commands can read for 24 hours")
+    : t("Stored securely, never shown to the agent");
+export const SECRET_REQUEST_DEFAULT_PLACEHOLDER = msg("Paste the secret");
 
 export type SecretRequestDisplay =
   | { readonly kind: "pending" }
@@ -21,26 +23,26 @@ export type SecretRequestDisplay =
       readonly label: string;
     };
 
-const SAVED_DISPLAY: SecretRequestDisplay = {
+const savedDisplay = (): SecretRequestDisplay => ({
   kind: "answered",
   outcome: "saved",
-  label: "Saved securely and kept private",
-};
-const DECLINED_DISPLAY: SecretRequestDisplay = {
+  label: t("Saved securely and kept private"),
+});
+const declinedDisplay = (): SecretRequestDisplay => ({
   kind: "answered",
   outcome: "declined",
-  label: "Declined",
-};
-const ENDED_DISPLAY: SecretRequestDisplay = {
+  label: t("Declined"),
+});
+const endedDisplay = (): SecretRequestDisplay => ({
   kind: "answered",
   outcome: "ended",
-  label: "Request ended",
-};
+  label: t("Request ended"),
+});
 const PENDING_DISPLAY: SecretRequestDisplay = { kind: "pending" };
-const PENDING_ELSEWHERE_DISPLAY: SecretRequestDisplay = {
+const pendingElsewhereDisplay = (): SecretRequestDisplay => ({
   kind: "pending-elsewhere",
-  label: "Waiting for an answer in the original thread",
-};
+  label: t("Waiting for an answer in the original thread"),
+});
 
 /**
  * `visibility` is the projected row's: a request inherited from another
@@ -52,13 +54,13 @@ export function secretRequestDisplay(
 ): SecretRequestDisplay {
   switch (item.secretStatus) {
     case "pending":
-      return visibility === "local" ? PENDING_DISPLAY : PENDING_ELSEWHERE_DISPLAY;
+      return visibility === "local" ? PENDING_DISPLAY : pendingElsewhereDisplay();
     case "saved":
-      return SAVED_DISPLAY;
+      return savedDisplay();
     case "declined":
-      return DECLINED_DISPLAY;
+      return declinedDisplay();
     case "cancelled":
-      return ENDED_DISPLAY;
+      return endedDisplay();
   }
 }
 
@@ -93,5 +95,5 @@ export function secretRequestFailureMessage(failure: unknown): string {
   ) {
     return failure.message;
   }
-  return "Could not answer the request. Try again.";
+  return t("Could not answer the request. Try again.");
 }

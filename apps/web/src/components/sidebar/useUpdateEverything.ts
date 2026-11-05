@@ -32,6 +32,7 @@ import {
   waitForUpdateRestart,
 } from "./updateEverythingRun";
 
+import { t } from "~/i18n";
 const UPDATE_RESTART_DELAY_MS = 5_000;
 
 /** Servers this desktop app runs; they update with it. */
@@ -159,7 +160,9 @@ export function useUpdateEverything(
               if (runOutcome.status !== "updated") {
                 providerFailures.set(
                   run.environmentId,
-                  runOutcome.status === "failed" ? runOutcome.line : "Provider update interrupted",
+                  runOutcome.status === "failed"
+                    ? runOutcome.line
+                    : t("Provider update interrupted"),
                 );
               }
               return runOutcome;

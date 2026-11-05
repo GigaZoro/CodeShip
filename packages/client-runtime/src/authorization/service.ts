@@ -42,6 +42,7 @@ import {
   DPOP_ACCESS_TOKEN_REFRESH_SKEW_MS,
   type PreparedHttpAuthorization,
 } from "../connection/model.ts";
+import { t } from "@t3tools/shared/i18n";
 
 export interface AuthorizedRemoteEnvironment {
   readonly environmentId: EnvironmentId;
@@ -208,7 +209,7 @@ export const make = Effect.gen(function* () {
               () =>
                 new ConnectionBlockedError({
                   reason: "configuration",
-                  detail: "Could not create the websocket authorization proof.",
+                  detail: t("Could not create the websocket authorization proof."),
                 }),
             ),
           ),
@@ -223,7 +224,7 @@ export const make = Effect.gen(function* () {
   const sessionChanged = () =>
     new ConnectionBlockedError({
       reason: "authentication",
-      detail: "Your cloud sign-in changed. Sign in again to authorize the environment.",
+      detail: t("Your cloud sign-in changed. Sign in again to authorize the environment."),
     });
 
   // A missing identity before the attempt captures one means the cloud session
@@ -232,7 +233,7 @@ export const make = Effect.gen(function* () {
   const sessionPending = () =>
     new ConnectionTransientError({
       reason: "session-pending",
-      detail: "Waiting for the T3 Connect sign-in to load.",
+      detail: t("Waiting for the T3 Connect sign-in to load."),
     });
 
   const assertSession = Effect.fnUntraced(function* (
@@ -313,7 +314,7 @@ export const make = Effect.gen(function* () {
             () =>
               new ConnectionBlockedError({
                 reason: "configuration",
-                detail: "Could not create the environment authorization proof.",
+                detail: t("Could not create the environment authorization proof."),
               }),
           ),
         );
@@ -354,7 +355,7 @@ export const make = Effect.gen(function* () {
         () =>
           new ConnectionBlockedError({
             reason: "configuration",
-            detail: "Could not load the environment authorization key.",
+            detail: t("Could not load the environment authorization key."),
           }),
       ),
       Effect.withSpan("environment.authorization.dpopKey.resolve"),
@@ -425,7 +426,7 @@ export const make = Effect.gen(function* () {
               Effect.fail(
                 new ConnectionTransientError({
                   reason: "timeout",
-                  detail: "Timed out renewing the environment credential.",
+                  detail: t("Timed out renewing the environment credential."),
                 }),
               ),
           }),

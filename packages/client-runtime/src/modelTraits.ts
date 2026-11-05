@@ -12,6 +12,7 @@ import {
   getProviderOptionDescriptors,
   isClaudeUltrathinkPrompt,
 } from "@t3tools/shared/model";
+import { t } from "@t3tools/shared/i18n";
 
 const REASONING_DESCRIPTOR_IDS: ReadonlySet<string> = new Set([
   ...REASONING_EFFORT_OPTION_IDS,
@@ -131,6 +132,12 @@ export function getTraitSelectChange(
   };
 }
 
+function displaySpeedLabel(speedLabel: string): string {
+  if (speedLabel === "Fast") return t("Fast");
+  if (speedLabel === "Ultrafast") return t("Ultrafast");
+  return speedLabel;
+}
+
 export function buildTraitsTriggerDisplay(input: {
   provider: ProviderDriverKind;
   descriptors: ReadonlyArray<ProviderOptionDescriptor>;
@@ -150,7 +157,7 @@ export function buildTraitsTriggerDisplay(input: {
   for (const descriptor of input.descriptors) {
     if (descriptor.id === "fastMode" && descriptor.type === "boolean") {
       speedLabel = descriptor.currentValue === true ? "Fast" : null;
-      fastModeFallbackLabel = speedLabel ?? "Normal";
+      fastModeFallbackLabel = speedLabel === null ? t("Normal") : t("Fast");
       continue;
     }
     if (
@@ -173,7 +180,7 @@ export function buildTraitsTriggerDisplay(input: {
               ? "Fast"
               : null;
         fastModeFallbackLabel =
-          descriptor.options.find(({ id }) => id === currentValue)?.label ?? "Normal";
+          descriptor.options.find(({ id }) => id === currentValue)?.label ?? t("Normal");
         continue;
       }
     }
@@ -181,7 +188,9 @@ export function buildTraitsTriggerDisplay(input: {
       input.ultrathinkPromptControlled && descriptor.id === input.primarySelectDescriptorId
         ? "Ultrathink"
         : descriptor.type === "boolean"
-          ? `${descriptor.label} ${descriptor.currentValue === true ? "On" : "Off"}`
+          ? descriptor.currentValue === true
+            ? t("{label} On", { label: descriptor.label })
+            : t("{label} Off", { label: descriptor.label })
           : getProviderOptionCurrentLabel(
               descriptor,
               input.modelSelection,
@@ -200,9 +209,10 @@ export function buildTraitsTriggerDisplay(input: {
   }
   if (speedLabel) {
     if (reasoningLabelIndex >= 0) {
-      labels[reasoningLabelIndex] = `${labels[reasoningLabelIndex]} ${speedLabel}`;
+      labels[reasoningLabelIndex] =
+        `${labels[reasoningLabelIndex]} ${displaySpeedLabel(speedLabel)}`;
     } else {
-      labels.push(speedLabel);
+      labels.push(displaySpeedLabel(speedLabel));
     }
   }
   return { label: labels.join(" · "), speedLabel };

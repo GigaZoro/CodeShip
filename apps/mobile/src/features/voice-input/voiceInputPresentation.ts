@@ -1,4 +1,5 @@
 import type { VoiceInputState } from "@t3tools/client-runtime/voice-input";
+import { t } from "../../lib/i18n";
 
 export type VoiceComposerPresentation = {
   readonly leadingAction: "cancel" | null;
@@ -38,7 +39,7 @@ export function resolveVoiceComposerPresentation(
         trailingAction: "confirm",
         showsSend: false,
         statusKind: "active",
-        statusLabel: "Preparing",
+        statusLabel: t("Preparing"),
         confirmationEnabled: false,
       };
     case "recording": {
@@ -48,7 +49,9 @@ export function resolveVoiceComposerPresentation(
         trailingAction: "confirm",
         showsSend: false,
         statusKind: "active",
-        statusLabel: `Recording ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`,
+        statusLabel: t("Recording {time}", {
+          time: `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`,
+        }),
         confirmationEnabled: true,
       };
     }
@@ -58,7 +61,7 @@ export function resolveVoiceComposerPresentation(
         trailingAction: "confirm",
         showsSend: false,
         statusKind: "active",
-        statusLabel: "Transcribing",
+        statusLabel: t("Transcribing"),
         confirmationEnabled: false,
       };
   }

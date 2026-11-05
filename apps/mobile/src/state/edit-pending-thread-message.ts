@@ -21,6 +21,7 @@ import {
   holdEditingQueuedMessage,
   releaseEditingQueuedMessage,
 } from "./use-thread-outbox";
+import { t } from "../lib/i18n";
 
 /** Take delivery ownership before any await; the durable draft then takes ownership of the files. */
 export async function editPendingThreadMessage(message: QueuedThreadMessage): Promise<boolean> {
@@ -45,7 +46,7 @@ export async function editPendingThreadMessage(message: QueuedThreadMessage): Pr
     const attachmentIds = new Set(snapshot.attachments.map((attachment) => attachment.id));
     for (const attachment of message.attachments) attachmentIds.add(attachment.id);
     if (attachmentIds.size > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
-      throw new Error("Remove attachments from the composer before editing this message.");
+      throw new Error(t("Remove attachments from the composer before editing this message."));
     }
     try {
       await mergeComposerDraftContent(draftKey, message);

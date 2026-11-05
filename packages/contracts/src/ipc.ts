@@ -1043,6 +1043,11 @@ export interface DesktopBridge {
    * regardless of OS settings.
    */
   getSystemLocale: () => string | null;
+  /** The saved UI language preference and the OS's preferred UI languages, read before first render. */
+  getLanguageSettings: () => {
+    readonly preference: string;
+    readonly systemLanguages: readonly string[];
+  };
   getLocalEnvironmentBootstraps: () => readonly DesktopEnvironmentBootstrap[];
   getLocalEnvironmentEnabled: () => boolean;
   setLocalEnvironmentEnabled: (enabled: boolean) => Promise<void>;

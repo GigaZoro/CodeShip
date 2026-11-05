@@ -25,6 +25,7 @@ import {
 import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
 import * as RpcSession from "../rpc/session.ts";
 import { fetchRemoteEnvironmentDescriptor } from "../environment/descriptor.ts";
+import { t } from "@t3tools/shared/i18n";
 
 export type ConnectionDriverProgress =
   | {
@@ -133,7 +134,7 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
       blocked ??
       new ConnectionTransientError({
         reason: "endpoint-unavailable",
-        detail: `${entry.target.label} did not answer on any saved route.`,
+        detail: t("{label} did not answer on any saved route.", { label: entry.target.label }),
       })
   );
 });

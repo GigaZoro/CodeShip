@@ -10,6 +10,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 
 import { threadKey } from "./entities.ts";
 import { hiddenThreadKeys, type TagFilteredEnvironment } from "./threadTagFilter.ts";
+import { t } from "@t3tools/shared/i18n";
 
 export interface ArchivedSnapshotEntry {
   readonly environmentId: EnvironmentId;
@@ -81,7 +82,7 @@ export function createArchivedThreadSnapshotsAtomFamily<E>(options: {
         });
 
         if (error === null && result._tag === "Failure") {
-          error = "Failed to load archived threads.";
+          error = t("Failed to load archived threads.");
         }
       }
 

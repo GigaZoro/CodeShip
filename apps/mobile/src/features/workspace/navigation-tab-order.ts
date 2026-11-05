@@ -1,3 +1,4 @@
+import { msg, type Message } from "../../lib/i18n";
 export const NAVIGATION_TAB_ORDER = ["threads", "scheduledTasks", "pullRequests", "usage"] as const;
 export type NavigationTab = (typeof NAVIGATION_TAB_ORDER)[number];
 
@@ -14,11 +15,11 @@ export function navigationCustomizationAvailable(
   return registeredSections > 4;
 }
 
-export const NAVIGATION_TAB_LABELS: Readonly<Record<NavigationTab, string>> = {
-  threads: "Threads",
-  scheduledTasks: "Tasks",
-  pullRequests: "PRs",
-  usage: "Usage",
+export const NAVIGATION_TAB_LABELS: Readonly<Record<NavigationTab, Message>> = {
+  threads: msg("Threads"),
+  scheduledTasks: msg("Tasks"),
+  pullRequests: msg("PRs"),
+  usage: msg("Usage"),
 };
 
 function isNavigationTab(value: unknown): value is NavigationTab {

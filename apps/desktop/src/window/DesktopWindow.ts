@@ -1,3 +1,5 @@
+import { t } from "@t3tools/shared/i18n";
+
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -576,7 +578,7 @@ export const make = Effect.gen(function* () {
             });
           }
           if (params.dictionarySuggestions.length === 0) {
-            menuTemplate.push({ label: "No suggestions", enabled: false });
+            menuTemplate.push({ label: t("No suggestions"), enabled: false });
           }
           menuTemplate.push({ type: "separator" });
         }
@@ -584,7 +586,7 @@ export const make = Effect.gen(function* () {
         if (Option.isSome(ElectronShell.parseSafeExternalUrl(params.linkURL))) {
           menuTemplate.push(
             {
-              label: "Copy Link",
+              label: t("Copy Link"),
               click: () => {
                 void runPromise(electronShell.copyText(params.linkURL));
               },
@@ -595,7 +597,7 @@ export const make = Effect.gen(function* () {
 
         if (params.mediaType === "image") {
           menuTemplate.push({
-            label: "Copy Image",
+            label: t("Copy Image"),
             click: () => {
               void runPromise(
                 Effect.tryPromise(() => copyContextMenuImage(contents, params)).pipe(

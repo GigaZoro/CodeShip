@@ -5,6 +5,7 @@ import {
   type PreviewStreamHostSetup,
   type PreviewViewportSetting,
 } from "@t3tools/contracts";
+import { t } from "@t3tools/shared/i18n";
 
 export const PREVIEW_STREAM_BASE_PATH = "/api/preview-stream";
 
@@ -28,16 +29,16 @@ export interface PreviewStreamControl {
 
 export const previewStreamControlLabel = (control: PreviewStreamControl | null): string =>
   !control
-    ? "Connecting..."
+    ? t("Connecting...")
     : !control.canOperate
-      ? "Read-only"
+      ? t("Read-only")
       : control.controller === "you"
-        ? "You have control"
+        ? t("You have control")
         : control.controller === "agent"
-          ? "Agent has control"
+          ? t("Agent has control")
           : control.controller === "another-viewer"
-            ? "Another viewer has control"
-            : "Watching";
+            ? t("Another viewer has control")
+            : t("Watching");
 
 const isPreviewStreamDialog = (value: unknown): value is PreviewStreamControl["dialog"] =>
   value === null ||
@@ -456,5 +457,9 @@ const decodeHostSetup = (reason: string): PreviewStreamHostSetup => {
 
 export const previewStreamHostSetupMessage = (setup: PreviewStreamHostSetup) =>
   setup.need === "sandbox"
-    ? "This server's host blocks the sandbox its browser runs in. Run this once on the host, then try again:"
-    : "This server's host is missing libraries its browser needs. Run this once on the host, then try again:";
+    ? t(
+        "This server's host blocks the sandbox its browser runs in. Run this once on the host, then try again:",
+      )
+    : t(
+        "This server's host is missing libraries its browser needs. Run this once on the host, then try again:",
+      );

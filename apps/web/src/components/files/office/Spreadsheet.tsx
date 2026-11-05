@@ -32,6 +32,7 @@ import {
   type Painted,
 } from "./sheet-paint";
 import { externalUrl } from "./links";
+import { t } from "~/i18n";
 
 type Client = ReturnType<typeof createWorkerClient<SheetMethods>>;
 type Opened = {
@@ -65,7 +66,7 @@ export default function Spreadsheet(props: {
     void engine
       .call("open", { bytes }, { transfer: [bytes], signal: controller.signal })
       .then((value) => {
-        if (!value) throw new Error("This workbook has no visible sheets.");
+        if (!value) throw new Error(t("This workbook has no visible sheets."));
         setOpened({ ...value, engine });
         onDetails(`${value.tabs.length} sheets`);
       })
@@ -89,7 +90,7 @@ export default function Spreadsheet(props: {
         setOpened({ ...opened, layout, target });
       })
       .catch(() => {
-        if (!controller.signal.aborted) setError("This sheet could not be opened.");
+        if (!controller.signal.aborted) setError(t("This sheet could not be opened."));
       });
   };
   if (!opened) return <FileSurfaceLoading />;
@@ -108,7 +109,7 @@ export default function Spreadsheet(props: {
       />
       <div
         role="tablist"
-        aria-label="Sheets"
+        aria-label={t("Sheets")}
         className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-t border-border px-2"
         onKeyDown={(event) => {
           const current = opened.tabs.findIndex(
@@ -254,7 +255,7 @@ function SpreadsheetGrid(props: {
             }
             received = order;
             if (!reply) {
-              setNotice("These cells could not be drawn. Try scrolling to another area.");
+              setNotice(t("These cells could not be drawn. Try scrolling to another area."));
               return;
             }
             setNotice("");
@@ -265,7 +266,7 @@ function SpreadsheetGrid(props: {
           })
           .catch((cause: unknown) => {
             if (!(cause instanceof SupersededError) && !controller.signal.aborted)
-              setNotice("These cells could not be drawn.");
+              setNotice(t("These cells could not be drawn."));
           });
       }
       if (
@@ -461,7 +462,7 @@ function SpreadsheetGrid(props: {
         right: Math.min(selected.right, Math.max(selected.left, used?.right ?? 0)),
       };
       if ((clipped.bottom - clipped.top + 1) * (clipped.right - clipped.left + 1) > 200_000) {
-        setNotice("Select fewer than 200,000 cells to copy.");
+        setNotice(t("Select fewer than 200,000 cells to copy."));
         return;
       }
       void engine
@@ -471,7 +472,7 @@ function SpreadsheetGrid(props: {
           return navigator.clipboard.writeText(text);
         })
         .catch(() => {
-          if (!controller.signal.aborted) setNotice("The selected cells could not be copied.");
+          if (!controller.signal.aborted) setNotice(t("The selected cells could not be copied."));
         });
     };
     const key = (event: KeyboardEvent) => {

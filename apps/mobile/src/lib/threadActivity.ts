@@ -76,6 +76,7 @@ import {
   IDLE_COMPACTION_TITLES,
   IDLE_COMPACTING_LABELS,
 } from "@t3tools/client-runtime/user-message";
+import { t, tn } from "./i18n";
 
 export type PendingApproval = ThreadPendingApproval;
 export type PendingUserInput = ThreadPendingUserInput;
@@ -256,7 +257,7 @@ function compactWorkEntryText(value: string): string {
 export function workEntryRowLabel(entry: WorkLogPresentationEntry, expanded = false): string {
   if (entry.itemType === "fork") return entry.label;
   if (expanded && entry.itemType === "reasoning")
-    return entry.toolLifecycleStatus === "inProgress" ? "Thinking" : "Thought";
+    return entry.toolLifecycleStatus === "inProgress" ? t("Thinking") : t("Thought");
   const presentation = resolveWorkEntryToolPresentation(entry);
   if (presentation) return presentation.displayName;
   if (entry.command?.trim()) return compactWorkEntryText(commandDisplayText(entry.command));
@@ -278,7 +279,7 @@ export function workEntryRowLabel(entry: WorkLogPresentationEntry, expanded = fa
     if (firstPath) {
       return formatReadToolLabel(firstPath, Math.max(0, (entry.changedFiles?.length ?? 1) - 1));
     }
-    if (!expanded) return "Read file";
+    if (!expanded) return t("Read file");
   }
   const preview =
     entry.command ??
@@ -353,8 +354,8 @@ export function threadFeedCompactionLabels(feed: ReadonlyArray<ThreadFeedEntry>)
           (age === undefined
             ? undefined
             : {
-                title: `Context compacted after ${age} idle`,
-                compacting: "Compacting…",
+                title: t("Context compacted after {age} idle", { age }),
+                compacting: t("Compacting…"),
               });
         if (labels) labelsByEntryId.set(entry.id, labels);
         pendingResumeAgeByRunId.delete(entry.runId);
@@ -586,43 +587,43 @@ function itemSummary(
     (item.type === "dynamic_tool"
       ? dynamicToolTitle(item.toolName, item.input, item.title)
       : undefined) ?? item.title?.trim();
-  if (item.type === "subagent") return formatSubagentDisplayTitle(title || "Subagent");
+  if (item.type === "subagent") return formatSubagentDisplayTitle(title || t("Subagent"));
   if (title) return toolPresentation?.displayName ?? capitalizePhrase(title);
   switch (item.type) {
     case "reasoning":
-      return "Thinking";
+      return t("Thinking");
     case "command_execution":
-      return "Command";
+      return t("Command");
     case "file_change":
       return item.changes !== undefined && item.changes.length > 1
-        ? `Changed ${item.changes.length} files`
-        : `Changed ${item.fileName}`;
+        ? tn(item.changes.length, "Changed {count} file", "Changed {count} files")
+        : t("Changed {name}", { name: item.fileName });
     case "file_search":
-      return item.title?.trim() || formatSearchToolLabel(item) || "Searched files";
+      return item.title?.trim() || formatSearchToolLabel(item) || t("Searched files");
     case "web_search":
-      return "Searched the web";
+      return t("Searched the web");
     case "approval_request":
-      return "Approval requested";
+      return t("Approval requested");
     case "user_input_request":
-      return "Input requested";
+      return t("Input requested");
     case "checkpoint":
-      return "Checkpoint captured";
+      return t("Checkpoint captured");
     case "run_interrupt_request":
-      return "Interrupt requested";
+      return t("Interrupt requested");
     case "run_interrupt_result":
-      return "Run interrupted";
+      return t("Run interrupted");
     case "error":
-      return item.failure.class === "usage_limit" ? "Usage limit reached" : "Provider error";
+      return item.failure.class === "usage_limit" ? t("Usage limit reached") : t("Provider error");
     case "handoff":
-      return "Context handed off";
+      return t("Context handed off");
     case "fork":
-      return "Thread forked";
+      return t("Thread forked");
     case "thread_created":
-      return "Thread created";
+      return t("Thread created");
     case "secret_request":
       return item.label;
     case "link_request":
-      return `Link ${item.label ?? item.url ?? "an environment"}`;
+      return t("Link {target}", { target: item.label ?? item.url ?? t("an environment") });
     case "dynamic_tool": {
       const classified = classifyToolActivity({
         itemType: "dynamic_tool_call",
@@ -633,18 +634,18 @@ function itemSummary(
         return formatReadToolLabel(path ?? "");
       }
       if (classified === "search") {
-        return formatSearchToolLabel({ input: item.input }) ?? item.toolName ?? "Tool call";
+        return formatSearchToolLabel({ input: item.input }) ?? item.toolName ?? t("Tool call");
       }
-      return toolPresentation?.displayName ?? item.toolName ?? "Tool call";
+      return toolPresentation?.displayName ?? item.toolName ?? t("Tool call");
     }
     case "proposed_plan":
-      return "Proposed plan";
+      return t("Proposed plan");
     case "todo_list":
-      return "Plan updated";
+      return t("Plan updated");
     case "user_message":
-      return "User message";
+      return t("User message");
     case "assistant_message":
-      return "Assistant message";
+      return t("Assistant message");
   }
 }
 
@@ -728,28 +729,28 @@ function toWorkLogEntry(
         ...common,
         command: item.input,
         rawCommand: item.input,
-        toolTitle: title ?? "Command",
+        toolTitle: title ?? t("Command"),
         toolData: item,
       };
     case "file_change":
       return {
         ...common,
         changedFiles: [item.fileName],
-        toolTitle: title ?? "File change",
+        toolTitle: title ?? t("File change"),
         toolData: item,
       };
     case "file_search":
       return {
         ...common,
         ...(item.pattern ? { detail: item.pattern } : {}),
-        toolTitle: title ?? "File search",
+        toolTitle: title ?? t("File search"),
         toolData: item,
       };
     case "web_search":
       return {
         ...common,
         ...(item.patterns?.length ? { detail: item.patterns.join(", ") } : {}),
-        toolTitle: title ?? "Web search",
+        toolTitle: title ?? t("Web search"),
         toolData: item,
       };
     case "checkpoint":
@@ -764,7 +765,7 @@ function toWorkLogEntry(
     case "dynamic_tool":
       return {
         ...common,
-        toolTitle: title ?? item.toolName ?? "Tool",
+        toolTitle: title ?? item.toolName ?? t("Tool"),
         toolData: { input: item.input, output: item.output },
       };
     default:
@@ -855,8 +856,8 @@ function toFeedActivity(
 function singleToolCallLabel(activity: ThreadFeedActivity, expanded: boolean): string {
   if (activity.workEntry.itemType === "reasoning")
     return expanded
-      ? "Thought"
-      : compactWorkEntryText(activity.workEntry.detail ?? "") || "Thought";
+      ? t("Thought")
+      : compactWorkEntryText(activity.workEntry.detail ?? "") || t("Thought");
   const presentation = resolveWorkEntryToolPresentation(activity.workEntry, "completed");
   if (presentation) return presentation.displayName;
   const command = activity.workEntry.command?.trim();
@@ -1218,11 +1219,11 @@ function deriveThreadFeedRunFolds(
       hiddenEntryIds,
       label: interrupted
         ? duration
-          ? `You stopped after ${duration}`
-          : "You stopped this response"
+          ? t("You stopped after {duration}", { duration })
+          : t("You stopped this response")
         : duration
-          ? `Worked for ${duration}`
-          : "Worked",
+          ? t("Worked for {duration}", { duration })
+          : t("Worked"),
     });
   }
   const covered = new Set(
@@ -1238,7 +1239,7 @@ function deriveThreadFeedRunFolds(
       runId: RunId.make(`deferred-work:${entry.id}`),
       createdAt: entry.createdAt,
       hiddenEntryIds: new Set([entry.id]),
-      label: "Earlier work",
+      label: t("Earlier work"),
       deferredWorkItemIds,
     });
   }
@@ -1779,8 +1780,8 @@ function appendToolGroupRows(
   const summary = live
     ? (expanded || thought) && latestActivity.workEntry.itemType === "reasoning"
       ? latestActivity.lifecycleStatus === "inProgress"
-        ? "Thinking"
-        : "Thought"
+        ? t("Thinking")
+        : t("Thought")
       : liveToolActivitySummary(latestActivity, live)
     : singleActivity !== null &&
         singleActivity.toolLike &&
@@ -1874,7 +1875,7 @@ function liveToolActivitySummary(activity: ThreadFeedActivity, presentTense: boo
   const status = liveActivityToolStatus(activity.lifecycleStatus, presentTense);
   if (activity.workEntry.itemType === "reasoning") {
     return compactWorkEntryText(
-      activity.workEntry.detail?.trim() || (status === "inProgress" ? "Thinking" : "Thought"),
+      activity.workEntry.detail?.trim() || (status === "inProgress" ? t("Thinking") : t("Thought")),
     );
   }
   const presentation = resolveWorkEntryToolPresentation({
@@ -1885,17 +1886,17 @@ function liveToolActivitySummary(activity: ThreadFeedActivity, presentTense: boo
   const command = activity.workEntry.command?.trim();
   if (command) {
     const program = commandProgramName(command);
-    const verb =
+    const label =
       status === "inProgress"
-        ? "Running"
+        ? t("Running {program}", { program: program ?? t("command") })
         : status === "failed"
-          ? "Failed"
+          ? t("Failed {program}", { program: program ?? t("command") })
           : status === "declined"
-            ? "Declined"
+            ? t("Declined {program}", { program: program ?? t("command") })
             : status === "stopped"
-              ? "Stopped"
-              : "Ran";
-    return `${verb} ${program ?? "command"}`;
+              ? t("Stopped {program}", { program: program ?? t("command") })
+              : t("Ran {program}", { program: program ?? t("command") });
+    return label;
   }
   return compactWorkEntryText(activity.detail ?? activity.summary);
 }

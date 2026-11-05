@@ -1,5 +1,6 @@
 import type { FileDiffMetadata } from "@pierre/diffs";
 import type { PullRequestReviewGuideExcerpt, PullRequestReviewGuideStop } from "@t3tools/contracts";
+import { t, tn } from "@t3tools/shared/i18n";
 
 export function stepTourPosition(current: number, delta: 1 | -1, stopCount: number): number {
   return Math.max(Math.min(current + delta, stopCount - 1), 0);
@@ -16,8 +17,8 @@ export function stopFilePaths(stop: PullRequestReviewGuideStop): ReadonlyArray<s
 
 export function stopSubline(stop: PullRequestReviewGuideStop): string {
   const count = stopFilePaths(stop).length;
-  if (count === 0) return "Context, no code";
-  return count === 1 ? "1 file" : `${count} files`;
+  if (count === 0) return t("Context, no code");
+  return tn(count, "{count} file", "{count} files");
 }
 
 function noteMarker(index: number): string {

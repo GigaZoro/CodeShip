@@ -4,6 +4,7 @@ import {
   COMPOSER_CONTEXT_CLIPBOARD_MIME,
   encodeComposerContextClipboardHtml,
 } from "@t3tools/shared/composerContextClipboard";
+import { t } from "~/i18n";
 import { useStableCallback } from "./useStableCallback";
 
 export class ClipboardApiUnavailableError extends Schema.TaggedError<ClipboardApiUnavailableError>()(
@@ -13,7 +14,7 @@ export class ClipboardApiUnavailableError extends Schema.TaggedError<ClipboardAp
   },
 ) {
   override get message(): string {
-    return `Clipboard API is unavailable while copying ${this.target}.`;
+    return t("Clipboard API is unavailable while copying {target}.", { target: this.target });
   }
 }
 
@@ -25,7 +26,7 @@ export class ClipboardWriteError extends Schema.TaggedError<ClipboardWriteError>
   },
 ) {
   override get message(): string {
-    return `Failed to copy ${this.target} to the clipboard.`;
+    return t("Failed to copy {target} to the clipboard.", { target: this.target });
   }
 }
 
@@ -36,7 +37,7 @@ export class ClipboardReadUnavailableError extends Schema.TaggedError<ClipboardR
   },
 ) {
   override get message(): string {
-    return `Clipboard API is unavailable while reading ${this.target}.`;
+    return t("Clipboard API is unavailable while reading {target}.", { target: this.target });
   }
 }
 
@@ -48,7 +49,7 @@ export class ClipboardReadError extends Schema.TaggedError<ClipboardReadError>()
   },
 ) {
   override get message(): string {
-    return `Failed to read ${this.target} from the clipboard.`;
+    return t("Failed to read {target} from the clipboard.", { target: this.target });
   }
 }
 
@@ -97,7 +98,7 @@ function writeTextWithExecCommand(
 
 export async function writeTextToClipboard(
   value: string,
-  target = "text",
+  target = t("text"),
   extraFlavors?: Readonly<Record<string, string>>,
 ) {
   if (typeof window === "undefined") {
@@ -171,7 +172,7 @@ export async function writeTextToClipboard(
   }
 }
 
-export async function readTextFromClipboard(target = "text"): Promise<string> {
+export async function readTextFromClipboard(target = t("text")): Promise<string> {
   if (
     typeof window === "undefined" ||
     typeof navigator === "undefined" ||
@@ -194,7 +195,7 @@ export async function readTextFromClipboard(target = "text"): Promise<string> {
 
 export function useCopyToClipboard<TContext = void>({
   timeout = 2000,
-  target = "text",
+  target = t("text"),
   onCopy,
   onError,
   extraFlavors,

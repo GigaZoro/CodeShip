@@ -5,6 +5,7 @@ import { TriangleAlertIcon, XIcon } from "lucide-react";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
+import { t, tx } from "~/i18n";
 
 /** A host or project the list could not read, so its pull requests are missing. */
 export interface PullRequestListGap {
@@ -60,27 +61,33 @@ export function PullRequestListGapsNotice({
       <TriangleAlertIcon aria-hidden />
       <AlertTitle>
         {gaps.length === 1 && only
-          ? `Pull requests from ${only.label} are missing`
-          : `Pull requests from ${gaps.length} sources are missing`}
+          ? t("Pull requests from {label} are missing", { label: only.label })
+          : t("Pull requests from {count} sources are missing", { count: gaps.length })}
       </AlertTitle>
       <AlertDescription>
         <ul className="flex flex-col gap-1">
           {gaps.map((gap) => (
             <li key={gap.key} className="break-words">
-              {gaps.length > 1 ? `${gap.label}: ` : null}
-              <SourceControlMessage text={gap.detail} />
+              {gaps.length > 1 ? (
+                tx("{label}: {detail}", {
+                  label: gap.label,
+                  detail: <SourceControlMessage text={gap.detail} />,
+                })
+              ) : (
+                <SourceControlMessage text={gap.detail} />
+              )}
             </li>
           ))}
         </ul>
       </AlertDescription>
       <AlertAction>
         <Button size="xs" variant="outline" onClick={openSettings}>
-          Settings
+          {t("Settings")}
         </Button>
         <Button
           size="icon-xs"
           variant="ghost"
-          aria-label="Dismiss"
+          aria-label={t("Dismiss")}
           onClick={() => setDismissed(signature)}
         >
           <XIcon aria-hidden />

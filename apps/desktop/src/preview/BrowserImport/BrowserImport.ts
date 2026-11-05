@@ -4,11 +4,7 @@ import type {
   BrowserImportSource,
   BrowserImportUnavailableReason,
 } from "@t3tools/contracts";
-import {
-  BrowserImportFailureReason,
-  type ManagedPolicyDocument,
-  managedPolicyDeniedMessage,
-} from "@t3tools/contracts";
+import { BrowserImportFailureReason, type ManagedPolicyDocument } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type { Session } from "electron";
 import * as Effect from "effect/Effect";
@@ -20,7 +16,9 @@ import * as Scope from "effect/Scope";
 import { ChildProcessSpawner } from "effect/process";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { t } from "@t3tools/shared/i18n";
 import type { ManagedPolicyFileError } from "@t3tools/shared/managedPolicyFile";
+import { managedPolicyDeniedMessage } from "@t3tools/shared/managedPolicyMessages";
 
 import * as DesktopManagedPolicy from "../../app/DesktopManagedPolicy.ts";
 import * as BrowserSession from "../BrowserSession.ts";
@@ -65,8 +63,11 @@ export class BrowserImportPolicyError extends Schema.TaggedError<BrowserImportPo
 ) {
   override get message(): string {
     return this.organization === undefined
-      ? `The managed policy at ${this.policyPath} could not be read, so importing browser cookies is not allowed.`
-      : managedPolicyDeniedMessage(this.organization, "importing browser cookies");
+      ? t(
+          "The managed policy at {path} could not be read, so importing browser cookies is not allowed.",
+          { path: this.policyPath },
+        )
+      : managedPolicyDeniedMessage(this.organization, t("importing browser cookies"));
   }
 }
 

@@ -1,3 +1,4 @@
+import { msg, t } from "../../../lib/i18n";
 import type { MenuAction } from "@react-native-menu/menu";
 import { useAtomValue } from "@effect/atom-react";
 import type { ModelSelection, ServerSettingsPatch } from "@t3tools/contracts";
@@ -15,16 +16,18 @@ import { SettingsSwitchRow } from "./SettingsSwitchRow";
 
 const MODEL_SETTINGS = {
   defaultModelSelection: {
-    title: "Default model",
-    unsetLabel: "Automatic",
-    footer:
+    title: msg("Default model"),
+    unsetLabel: msg("Automatic"),
+    footer: msg(
       "Automatically use an available provider, or choose a model for new threads and new scheduled tasks.",
+    ),
   },
   scheduledTaskModelSelection: {
-    title: "Scheduled tasks model",
-    unsetLabel: "Same as new threads",
-    footer:
+    title: msg("Scheduled tasks model"),
+    unsetLabel: msg("Same as new threads"),
+    footer: msg(
       "Runs scheduled tasks that use the default model. Same as new threads follows the default model above.",
+    ),
   },
 } as const;
 
@@ -98,18 +101,21 @@ export function DefaultModelSettings(props: {
     );
   const selectedOption = findOption(shown);
   const label = mixed
-    ? "Mixed"
+    ? t("Mixed")
     : shown === null
-      ? copy.unsetLabel
+      ? t(copy.unsetLabel)
       : selectedOption
         ? autoChecked
-          ? `Auto · ${selectedOption.label}`
-          : `${selectedOption.providerLabel} · ${selectedOption.label}`
+          ? t("Auto · {model}", { model: selectedOption.label })
+          : t("{provider} · {model}", {
+              provider: selectedOption.providerLabel,
+              model: selectedOption.label,
+            })
         : shown.model;
   const actions: MenuAction[] = [
     {
       id: "automatic",
-      title: copy.unsetLabel,
+      title: t(copy.unsetLabel),
       state: !mixed && selection === null ? "on" : "off",
     },
     ...groupByProvider(options).map((group) => ({
@@ -122,7 +128,7 @@ export function DefaultModelSettings(props: {
       })),
     })),
   ];
-  const row = <ListRowLayout label="Model" detail={label} disabled={props.disabled} />;
+  const row = <ListRowLayout label={t("Model")} detail={label} disabled={props.disabled} />;
   const showAuto =
     !mixed &&
     props.targets.every(
@@ -138,11 +144,14 @@ export function DefaultModelSettings(props: {
     : null;
   return (
     <SettingsSection
-      title={copy.title}
+      title={t(copy.title)}
       footer={
         props.targets.length > 1 && options.length === 0
-          ? `Select one environment to choose from its models. ${copy.unsetLabel} applies on each environment.`
-          : copy.footer
+          ? t(
+              "Select one environment to choose from its models. {unsetLabel} applies on each environment.",
+              { unsetLabel: t(copy.unsetLabel) },
+            )
+          : t(copy.footer)
       }
     >
       {props.disabled ? (
@@ -151,8 +160,8 @@ export function DefaultModelSettings(props: {
         <Menu
           accessible
           accessibilityRole="button"
-          accessibilityLabel={`${copy.title}: ${label}`}
-          title={copy.title}
+          accessibilityLabel={t("{title}: {value}", { title: t(copy.title), value: label })}
+          title={t(copy.title)}
           actions={actions}
           onPressAction={({ nativeEvent }) => {
             if (nativeEvent.event === "automatic") {
@@ -170,8 +179,10 @@ export function DefaultModelSettings(props: {
       )}
       {showAuto ? (
         <SettingsSwitchRow
-          label="Auto"
-          subtitle={`Runs ${autoDetail}. Set Auto mode in Settings › Providers on web or desktop.`}
+          label={t("Auto")}
+          subtitle={t("Runs {model}. Set Auto mode in Settings › Providers on web or desktop.", {
+            model: autoDetail ?? "",
+          })}
           value={autoChecked}
           disabled={props.disabled}
           onValueChange={(value) => {
@@ -182,8 +193,10 @@ export function DefaultModelSettings(props: {
       ) : null}
       {props.lastPicked ? (
         <SettingsSwitchRow
-          label="Use last picked model"
-          subtitle="New threads start on the model you last picked on this device, Auto included. Until you pick one, they use the model above. Scheduled tasks are not affected."
+          label={t("Use last picked model")}
+          subtitle={t(
+            "New threads start on the model you last picked on this device, Auto included. Until you pick one, they use the model above. Scheduled tasks are not affected.",
+          )}
           value={props.lastPicked.value}
           disabled={props.lastPicked.disabled}
           onValueChange={(value) => props.onChange({ newThreadsUseLastModel: value })}

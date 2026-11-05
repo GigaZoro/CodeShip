@@ -1,4 +1,5 @@
 import type { UsageProviderKind, UsageSummary } from "@t3tools/contracts";
+import { t } from "@t3tools/shared/i18n";
 
 interface UsageProgressEnvironment {
   readonly label: string;
@@ -32,8 +33,8 @@ export function updatingProvidersLabel(
   providerLabel: (provider: UsageProviderKind) => string,
 ) {
   return providers.length === 1
-    ? `Updating ${providerLabel(providers[0]!)}…`
-    : `Updating ${providers.length} providers…`;
+    ? t("Updating {provider}…", { provider: providerLabel(providers[0]!) })
+    : t("Updating {count} providers…", { count: providers.length });
 }
 
 export function usageProgress(
@@ -63,10 +64,10 @@ export function usageProgress(
           ? null
           : updatingProvidersLabel(providers, providerLabel)
         : environments.length === 1
-          ? "Updating…"
+          ? t("Updating…")
           : waiting.length === 1
-            ? `Updating ${waiting[0]!.label}…`
-            : `Updating ${waiting.length} environments…`,
+            ? t("Updating {label}…", { label: waiting[0]!.label })
+            : t("Updating {count} environments…", { count: waiting.length }),
   };
 }
 

@@ -5,6 +5,7 @@ import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
 import { ControlledOpenContext, renderRetainedPopup } from "~/components/ui/dialog";
 
+import { t } from "~/i18n";
 function Sheet<Payload>(props: SheetPrimitive.Root.Props<Payload>) {
   return (
     <ControlledOpenContext value={props.open}>
@@ -113,7 +114,7 @@ function SheetPopup({
           {children}
           {showCloseButton && (
             <SheetPrimitive.Close
-              aria-label="Close"
+              aria-label={t("Close")}
               className="absolute end-2 top-2"
               render={<Button size="icon" variant="ghost" />}
             >

@@ -1,28 +1,29 @@
+import { activateLanguage, msg } from "@t3tools/shared/i18n";
 import { describe, expect, it } from "vite-plus/test";
 
 import { filterSettingsSections } from "./settings-search";
 
 const SECTIONS = [
-  { rows: [{ id: "usage", label: "Usage" }] },
+  { rows: [{ id: "usage", label: msg("Usage") }] },
   {
-    title: "Connections",
+    title: msg("Connections"),
     rows: [
-      { id: "account", label: "T3 Account" },
-      { id: "SettingsEnvironments", label: "Environments" },
+      { id: "account", label: msg("T3 Account") },
+      { id: "SettingsEnvironments", label: msg("Environments") },
     ],
   },
   {
-    title: "Interface",
+    title: msg("Interface"),
     rows: [
-      { id: "SettingsAppearance", label: "Appearance" },
-      { id: "SettingsKeyboard", label: "Keyboard" },
+      { id: "SettingsAppearance", label: msg("Appearance") },
+      { id: "SettingsKeyboard", label: msg("Keyboard") },
     ],
   },
   {
-    title: "Server settings",
+    title: msg("Server settings"),
     rows: [
-      { id: "SettingsProviderAccounts", label: "Provider accounts" },
-      { id: "SettingsEnvironmentSourceControl", label: "Source control" },
+      { id: "SettingsProviderAccounts", label: msg("Provider accounts") },
+      { id: "SettingsEnvironmentSourceControl", label: msg("Source control") },
     ],
   },
 ];
@@ -64,5 +65,19 @@ describe("filterSettingsSections", () => {
 
   it("drops sections that start empty", () => {
     expect(filterSettingsSections([{ rows: [] }, ...SECTIONS], "").length).toBe(SECTIONS.length);
+  });
+
+  it("matches a query in the active language and in English", () => {
+    activateLanguage({
+      language: "uk",
+      catalog: { Keyboard: "Клавіатура", Interface: "Інтерфейс" },
+      formattingLocale: "uk",
+    });
+    try {
+      expect(visible("клавіат")).toEqual([["Interface", ["Keyboard"]]]);
+      expect(visible("keyboard")).toEqual([["Interface", ["Keyboard"]]]);
+    } finally {
+      activateLanguage({ language: "en", catalog: {}, formattingLocale: undefined });
+    }
   });
 });

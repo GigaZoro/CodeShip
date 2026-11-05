@@ -29,6 +29,7 @@ import {
 import { createCommandPermissions } from "./commandPermissions.ts";
 import { vcsCommandScheduler } from "./vcsCommandScheduler.ts";
 import { invalidateCachedVcsRefs } from "./vcsRefInvalidation.ts";
+import { t } from "@t3tools/shared/i18n";
 
 export const VcsActionOperation = Schema.Literals([
   "refresh_status",
@@ -231,7 +232,7 @@ function failVcsActionState(
     ...EMPTY_VCS_ACTION_STATE,
     operation,
     actionId,
-    error: error instanceof Error ? error.message : "Source control action failed.",
+    error: error instanceof Error ? error.message : t("Source control action failed."),
   };
 }
 
@@ -362,7 +363,7 @@ export function applyVcsActionProgressEvent(
         actionId: event.actionId,
         action: event.action,
         operation: "run_change_request",
-        currentLabel: `Running ${event.hookName}...`,
+        currentLabel: t("Running {hookName}...", { hookName: event.hookName }),
         hookName: event.hookName,
         hookStartedAtMs: now,
         lastOutputLine: null,
@@ -460,7 +461,7 @@ export function createVcsActionManager<R, E>(
           stateAtom,
           beginVcsActionState({
             operation: "run_change_request",
-            label: "Running source control action",
+            label: t("Running source control action"),
             actionId: input.actionId,
           }),
         );

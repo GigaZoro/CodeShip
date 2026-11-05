@@ -4,6 +4,7 @@ import {
 } from "@t3tools/client-runtime/state/composer-dispatch";
 
 import type { FollowUpBehavior } from "../../lib/followUpBehavior";
+import { msg, t, type Message } from "../../lib/i18n";
 
 export interface ComposerSendPresentation {
   readonly label: string;
@@ -18,10 +19,10 @@ export interface ComposerSendPresentation {
   readonly offersFollowUpChoice: boolean;
 }
 
-const ACTION_LABEL: Record<ActiveTurnComposerAction, string> = {
-  queue: "Queue",
-  steer: "Steer",
-  restart: "Restart",
+const ACTION_LABEL: Record<ActiveTurnComposerAction, Message> = {
+  queue: msg("Queue"),
+  steer: msg("Steer"),
+  restart: msg("Restart"),
 };
 
 export function resolveComposerSendPresentation(input: {
@@ -33,7 +34,7 @@ export function resolveComposerSendPresentation(input: {
 }): ComposerSendPresentation {
   if (input.editingQueuedMessage) {
     return {
-      label: "Update queued message",
+      label: t("Update queued message"),
       icon: "checkmark",
       action: null,
       alternate: null,
@@ -42,7 +43,7 @@ export function resolveComposerSendPresentation(input: {
   }
   if (!input.running) {
     return {
-      label: input.deliveryDeferred ? "Queue" : "Send",
+      label: input.deliveryDeferred ? t("Queue") : t("Send"),
       icon: input.deliveryDeferred ? "tray.and.arrow.up" : "arrow.up",
       action: null,
       alternate: null,
@@ -52,7 +53,7 @@ export function resolveComposerSendPresentation(input: {
   const action: ActiveTurnComposerAction = input.canSteer ? input.followUpBehavior : "queue";
   const alternate = alternateComposerDispatchAction(action);
   return {
-    label: ACTION_LABEL[action],
+    label: t(ACTION_LABEL[action]),
     icon: action === "steer" ? "arrow.turn.left.up" : "list.number",
     action,
     alternate: input.canSteer ? alternate : null,

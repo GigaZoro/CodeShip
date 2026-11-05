@@ -502,6 +502,17 @@ export default defineConfig({
         rules: { "t3code/no-em-dash-copy": "error" },
       },
       {
+        // UI text goes through the translator; see docs/internals/i18n.md.
+        files: ["apps/{web,mobile,desktop}/src/**/*.{ts,tsx}"],
+        excludeFiles: [
+          "**/*.{test,spec,bench}.{ts,tsx}",
+          "**/test-fixtures.ts",
+          "apps/mobile/src/features/development/**",
+          "apps/mobile/src/features/showcase/**",
+        ],
+        rules: { "t3code/no-untranslated-text": "error" },
+      },
+      {
         files: ["apps/web/src/**"],
         rules: { "shadcn/no-raw-colors": "error" },
       },

@@ -1,3 +1,4 @@
+import { t, tn } from "~/i18n";
 import {
   EasDeviceHostConfig,
   type EasDeviceHostConfig as EasDeviceHostConfigType,
@@ -9,6 +10,7 @@ export const parseEasDeviceHostDraft = Schema.decodeUnknownOption(EasDeviceHostC
 export const newEasDeviceHost = (id: string): EasDeviceHostConfigType => ({
   kind: "eas",
   id,
+  // oxlint-disable-next-line t3code/no-untranslated-text -- default host name stored in settings
   label: "EAS Simulator",
   accessToken: "",
   maxSessionMinutes: 30,
@@ -36,7 +38,12 @@ export function updateEasDeviceHosts(
 }
 
 export function easSessionLimits(host: EasDeviceHostConfigType) {
-  const sessions =
-    host.maxConcurrentSessions === 1 ? "1 session" : `${host.maxConcurrentSessions} sessions`;
-  return `Up to ${sessions} at once, each stopped after ${host.maxSessionMinutes} min or ${host.idleMinutes} idle min`;
+  return t(
+    "Up to {sessions} at once, each stopped after {maxMinutes} min or {idleMinutes} idle min",
+    {
+      sessions: tn(host.maxConcurrentSessions, "{count} session", "{count} sessions"),
+      maxMinutes: host.maxSessionMinutes,
+      idleMinutes: host.idleMinutes,
+    },
+  );
 }

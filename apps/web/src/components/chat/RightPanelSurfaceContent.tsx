@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import type {
   EditorId,
   EnvironmentId,
@@ -130,8 +131,8 @@ export function RightPanelSurfaceContent(props: {
       if (!pullRequest.supported) {
         return (
           <PullRequestsUnavailableState
-            title="Pull requests unavailable"
-            error="Update this environment's T3.CodeShip server to browse pull requests."
+            title={t("Pull requests unavailable")}
+            error={t("Update this environment's T3.CodeShip server to browse pull requests.")}
           />
         );
       }

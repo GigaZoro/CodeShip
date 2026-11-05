@@ -7,6 +7,7 @@ export function authClientMetadata(appVersion?: string): AuthClientPresentationM
   const deviceModel = Device.modelName?.trim();
 
   return {
+    // oxlint-disable-next-line t3code/no-untranslated-text -- client name sent to the server
     label: "T3.CodeShip Mobile",
     deviceType:
       Device.deviceType === Device.DeviceType.TABLET

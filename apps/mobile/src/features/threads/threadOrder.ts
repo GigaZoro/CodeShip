@@ -6,6 +6,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-sort";
 import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentId } from "@t3tools/contracts";
+import { t } from "../../lib/i18n";
 
 export type ThreadMoveDestination =
   | "up"
@@ -289,10 +290,10 @@ export type ThreadDragSection = "pinned" | "active" | "snoozed" | "settled";
 
 export function threadDragAction(source: ThreadDragSection, destination: ThreadDragSection) {
   if (destination === "snoozed") return null;
-  if (destination === "settled") return source === "settled" ? null : "Settle";
-  if (source === destination) return "Reorder";
-  if (destination === "pinned") return "Pin";
-  if (source === "pinned") return "Unpin";
-  if (source === "settled") return "Unsettle";
-  return "Unsnooze";
+  if (destination === "settled") return source === "settled" ? null : t("Settle");
+  if (source === destination) return t("Reorder");
+  if (destination === "pinned") return t("Pin");
+  if (source === "pinned") return t("Unpin");
+  if (source === "settled") return t("Unsettle");
+  return t("Unsnooze");
 }

@@ -21,6 +21,7 @@ import type {
 
 import { toSortableTimestamp } from "@t3tools/client-runtime/state/thread-sort";
 import type { PullRequestListSort } from "./pullRequestListPreferences";
+import { msg, t, type Message } from "~/i18n";
 
 export interface EnvironmentPullRequestEntry extends PullRequestListEntry {
   readonly environmentId: EnvironmentId;
@@ -59,10 +60,10 @@ type ScopedEntry = PullRequestListEntry & { readonly environmentId?: string };
 const pullRequestViewerKey = (entry: ScopedEntry): string =>
   `${entry.environmentId ?? ""} ${entry.host}`;
 
-const GROUP_LABELS: Record<PullRequestGroupKey, string> = {
-  reviewRequested: "Review requested",
-  authored: "Authored",
-  others: "Others",
+const GROUP_LABELS: Record<PullRequestGroupKey, Message> = {
+  reviewRequested: msg("Review requested"),
+  authored: msg("Authored"),
+  others: msg("Others"),
 };
 
 function normalize(value: string | null | undefined): string | null {
@@ -292,7 +293,7 @@ export function groupPullRequestsByInvolvement<Entry extends ScopedEntry>(
   }
   return (["authored", "reviewRequested", "others"] as const)
     .filter((key) => buckets[key].length > 0)
-    .map((key) => ({ key, label: GROUP_LABELS[key], entries: buckets[key] }));
+    .map((key) => ({ key, label: t(GROUP_LABELS[key]), entries: buckets[key] }));
 }
 
 export function pullRequestEntryKey(entry: ScopedEntry): string {
@@ -483,7 +484,7 @@ export function partitionPullRequestsWithPriority<Entry extends PullRequestListE
     ] as const
   )
     .filter((group) => group.entries.length > 0)
-    .map((group) => ({ ...group, label: GROUP_LABELS[group.key] }));
+    .map((group) => ({ ...group, label: t(GROUP_LABELS[group.key]) }));
 }
 
 export type PullRequestDiffStats = ReadonlyMap<

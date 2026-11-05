@@ -1,33 +1,31 @@
-import {
-  managedRuntimeModeDenial,
-  type ManagedPolicySummary,
-  type RuntimeMode,
-} from "@t3tools/contracts";
+import { type ManagedPolicySummary, type RuntimeMode } from "@t3tools/contracts";
+import { managedRuntimeModeDenial } from "@t3tools/shared/managedPolicyMessages";
+import { msg, type Message } from "../../lib/i18n";
 
 export const RUNTIME_MODE_CHOICES: ReadonlyArray<{
   readonly mode: RuntimeMode;
-  readonly label: string;
-  readonly description: string;
+  readonly label: Message;
+  readonly description: Message;
 }> = [
   {
     mode: "approval-required",
-    label: "Supervised",
-    description: "Ask before commands and file changes.",
+    label: msg("Supervised"),
+    description: msg("Ask before commands and file changes."),
   },
   {
     mode: "auto-accept-edits",
-    label: "Auto-accept edits",
-    description: "Auto-approve edits, ask before other actions.",
+    label: msg("Auto-accept edits"),
+    description: msg("Auto-approve edits, ask before other actions."),
   },
   {
     mode: "auto",
-    label: "Auto",
-    description: "Supported providers approve routine actions; others still ask.",
+    label: msg("Auto"),
+    description: msg("Supported providers approve routine actions; others still ask."),
   },
   {
     mode: "full-access",
-    label: "Full access",
-    description: "Allow commands and edits without prompts.",
+    label: msg("Full access"),
+    description: msg("Allow commands and edits without prompts."),
   },
 ];
 

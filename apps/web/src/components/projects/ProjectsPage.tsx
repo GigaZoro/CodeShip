@@ -104,6 +104,7 @@ import {
   type ProjectThreadState,
 } from "./projectsOverview.logic";
 
+import { msg, t, tn, type Message } from "~/i18n";
 /** A card lists this many threads before the rest fold behind "Show more". */
 const PROJECT_CARD_PREVIEW_COUNT = 6;
 
@@ -150,10 +151,10 @@ interface ProjectSection {
   readonly counts: ProjectThreadCounts;
 }
 
-const FILTER_EMPTY_MESSAGE: Record<Exclude<ProjectsOverviewFilter, "all">, string> = {
-  attention: "Nothing needs you right now.",
-  working: "No threads are working.",
-  done: "No finished threads are waiting for you to read them.",
+const FILTER_EMPTY_MESSAGE: Record<Exclude<ProjectsOverviewFilter, "all">, Message> = {
+  attention: msg("Nothing needs you right now."),
+  working: msg("No threads are working."),
+  done: msg("No finished threads are waiting for you to read them."),
 };
 
 const threadKeyOf = (thread: Pick<EnvironmentThreadShell, "environmentId" | "id">) =>
@@ -187,9 +188,13 @@ export function ProjectsPage() {
   const { settleThread, confirmSettlingUnmergedWork } = useThreadActions();
   const { copyToClipboard: copyPath } = useCopyToClipboard<{ path: string }>({
     onCopy: ({ path }) =>
-      toastManager.add({ type: "success", title: "Path copied", description: path }),
+      toastManager.add({ type: "success", title: t("Path copied"), description: path }),
     onError: (error) =>
-      toastManager.add({ type: "error", title: "Failed to copy path", description: error.message }),
+      toastManager.add({
+        type: "error",
+        title: t("Failed to copy path"),
+        description: error.message,
+      }),
   });
   const filter: ProjectsOverviewFilter = search.show ?? "all";
   // The field keeps what is typed while focused; the address catches up a moment later.
@@ -374,8 +379,8 @@ export function ProjectsPage() {
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Failed to settle thread",
-            description: error instanceof Error ? error.message : "An error occurred.",
+            title: t("Failed to settle thread"),
+            description: error instanceof Error ? error.message : t("An error occurred."),
           }),
         );
       }
@@ -418,23 +423,23 @@ export function ProjectsPage() {
     readonly label: string;
     readonly count: number;
   }> = [
-    { value: "all", label: "All", count: totals.open },
-    { value: "attention", label: "Needs you", count: totals.attention },
-    { value: "working", label: "Working", count: totals.working },
-    { value: "done", label: "Done", count: totals.done },
+    { value: "all", label: t("All"), count: totals.open },
+    { value: "attention", label: t("Needs you"), count: totals.attention },
+    { value: "working", label: t("Working"), count: totals.working },
+    { value: "done", label: t("Done"), count: totals.done },
   ];
 
   return (
     <SidebarInset
-      {...workspaceAreaProps("projects", 1, "Projects")}
+      {...workspaceAreaProps("projects", 1, t("Projects"))}
       role="main"
       className="h-dvh min-h-0 overflow-hidden overscroll-y-none"
     >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <WorkspacePageHeader electron={isElectron} className="border-b">
-          <WorkspaceBreadcrumb ariaLabel="Projects breadcrumb" className="min-w-0">
+          <WorkspaceBreadcrumb ariaLabel={t("Projects breadcrumb")} className="min-w-0">
             <WorkspaceBreadcrumbItem current>
-              <h1>Projects</h1>
+              <h1>{t("Projects")}</h1>
             </WorkspaceBreadcrumbItem>
           </WorkspaceBreadcrumb>
           <div className="ml-auto flex items-center gap-2">
@@ -443,8 +448,8 @@ export function ProjectsPage() {
                 <SearchIcon aria-hidden className="size-3" />
               </InputGroupAddon>
               <InputGroupInput
-                aria-label="Search projects and threads"
-                placeholder="Search projects and threads"
+                aria-label={t("Search projects and threads")}
+                placeholder={t("Search projects and threads")}
                 size="sm"
                 value={query}
                 onFocus={() => setTypedQuery(search.q ?? "")}
@@ -467,7 +472,7 @@ export function ProjectsPage() {
               onClick={() => openCommandPalette({ open: "add-project" })}
             >
               <FolderPlusIcon aria-hidden />
-              <span className="max-sm:sr-only">Add project</span>
+              <span className="max-sm:sr-only">{t("Add project")}</span>
             </Button>
           </div>
         </WorkspacePageHeader>
@@ -478,15 +483,15 @@ export function ProjectsPage() {
               projectsReady ? (
                 <Empty>
                   <EmptyHeader>
-                    <EmptyTitle>No projects yet</EmptyTitle>
+                    <EmptyTitle>{t("No projects yet")}</EmptyTitle>
                     <EmptyDescription>
-                      Add a folder to start threads in it and follow them here.
+                      {t("Add a folder to start threads in it and follow them here.")}
                     </EmptyDescription>
                   </EmptyHeader>
                   <EmptyContent>
                     <Button onClick={() => openCommandPalette({ open: "add-project" })}>
                       <FolderPlusIcon aria-hidden />
-                      Add project
+                      {t("Add project")}
                     </Button>
                   </EmptyContent>
                 </Empty>
@@ -502,7 +507,7 @@ export function ProjectsPage() {
                 {/* On the narrowest phones the filters scroll on their own, never the page. */}
                 <div className="max-w-full overflow-x-auto">
                   <ToggleGroup
-                    aria-label="Show threads"
+                    aria-label={t("Show threads")}
                     value={[filter]}
                     onValueChange={(next) => {
                       const value = filterOptions.find((option) => option.value === next[0]);
@@ -521,10 +526,10 @@ export function ProjectsPage() {
                 {sections.length === 0 ? (
                   <p role="status" className="py-10 text-center text-sm text-muted-foreground">
                     {query.trim().length > 0
-                      ? `No projects or threads match “${query.trim()}”.`
+                      ? t("No projects or threads match “{query}”.", { query: query.trim() })
                       : filter === "all"
-                        ? "No projects."
-                        : FILTER_EMPTY_MESSAGE[filter]}
+                        ? t("No projects.")
+                        : t(FILTER_EMPTY_MESSAGE[filter])}
                   </p>
                 ) : (
                   sections.map((section) => (
@@ -568,12 +573,12 @@ function ProjectSectionView(props: { section: ProjectSection; handlers: ProjectC
         <div className="flex flex-col gap-2">
           {activeCards.length > 0 ? (
             <h3 id={quietHeadingId} className="text-xs font-medium text-muted-foreground">
-              No open threads
+              {t("No open threads")}
             </h3>
           ) : null}
           <ul
             aria-labelledby={activeCards.length > 0 ? quietHeadingId : undefined}
-            aria-label={activeCards.length > 0 ? undefined : "Projects with no open threads"}
+            aria-label={activeCards.length > 0 ? undefined : t("Projects with no open threads")}
             className="m-0 grid list-none grid-cols-[repeat(auto-fill,minmax(min(16rem,100%),1fr))] gap-2 p-0"
           >
             {quietCards.map((card) => (
@@ -597,7 +602,7 @@ function ProjectSectionView(props: { section: ProjectSection; handlers: ProjectC
           {machine.label}
         </h2>
         {machine.disconnected ? (
-          <span className="text-xs text-muted-foreground">Offline</span>
+          <span className="text-xs text-muted-foreground">{t("Offline")}</span>
         ) : null}
         <ProjectCountsSummary counts={props.section.counts} />
       </div>
@@ -614,7 +619,9 @@ function ProjectQuietRow(props: { card: ProjectCard; handlers: ProjectCardHandle
       <ProjectFavicon project={card.group} className="size-4 shrink-0" />
       <span className="min-w-0 flex-1 truncate text-sm font-medium">{card.group.displayName}</span>
       {card.snoozedCount > 0 ? (
-        <span className="shrink-0 text-xs text-muted-foreground">{card.snoozedCount} snoozed</span>
+        <span className="shrink-0 text-xs text-muted-foreground">
+          {tn(card.snoozedCount, "{count} snoozed", "{count} snoozed")}
+        </span>
       ) : card.lastActivityAt !== null ? (
         <span className="shrink-0 text-xs text-muted-foreground">
           <RelativeTime timestamp={card.lastActivityAt} />
@@ -632,19 +639,19 @@ function ProjectCountsSummary(props: { counts: ProjectThreadCounts; className?: 
     {
       key: "attention",
       count: counts.attention,
-      text: `${counts.attention} need${counts.attention === 1 ? "s" : ""} you`,
+      text: tn(counts.attention, "{count} needs you", "{count} need you"),
       className: "text-warning-foreground",
     },
     {
       key: "working",
       count: counts.working,
-      text: `${counts.working} working`,
+      text: tn(counts.working, "{count} working", "{count} working"),
       className: "text-info-foreground",
     },
     {
       key: "done",
       count: counts.done,
-      text: `${counts.done} done`,
+      text: tn(counts.done, "{count} done", "{count} done"),
       className: "text-success-foreground",
     },
   ].filter((part) => part.count > 0);
@@ -661,9 +668,7 @@ function ProjectCountsSummary(props: { counts: ProjectThreadCounts; className?: 
           <span aria-hidden>·</span>
         </span>
       ))}
-      <span>
-        {counts.open} open {counts.open === 1 ? "thread" : "threads"}
-      </span>
+      <span>{tn(counts.open, "{count} open thread", "{count} open threads")}</span>
     </p>
   );
 }
@@ -673,8 +678,8 @@ function NewThreadButton(props: { card: ProjectCard; handlers: ProjectCardHandle
   const { card, handlers } = props;
   const canStartThread = card.newThreadTarget !== null;
   const label = canStartThread
-    ? `New thread in ${card.group.displayName}`
-    : `${card.group.displayName} is offline`;
+    ? t("New thread in {name}", { name: card.group.displayName })
+    : t("{name} is offline", { name: card.group.displayName });
   return (
     <Tooltip>
       <TooltipTrigger
@@ -709,7 +714,7 @@ function ProjectCardMenu(props: { card: ProjectCard; handlers: ProjectCardHandle
             size="icon-xs"
             variant="ghost-muted"
             data-project-menu-trigger
-            aria-label={`More actions for ${card.group.displayName}`}
+            aria-label={t("More actions for {name}", { name: card.group.displayName })}
           />
         }
       >
@@ -720,12 +725,16 @@ function ProjectCardMenu(props: { card: ProjectCard; handlers: ProjectCardHandle
           disabled={card.newThreadTarget === null}
           onClick={() => handlers.onNewThread(card)}
         >
-          New thread
+          {t("New thread")}
         </MenuItem>
         <MenuItem disabled={finishedCount === 0} onClick={() => handlers.onSettleFinished(card)}>
           {finishedCount === 0
-            ? "Settle finished threads"
-            : `Settle ${finishedCount} finished ${finishedCount === 1 ? "thread" : "threads"}`}
+            ? t("Settle finished threads")
+            : tn(
+                finishedCount,
+                "Settle {count} finished thread",
+                "Settle {count} finished threads",
+              )}
         </MenuItem>
         {sidebarFolderOpen === null ? null : (
           <>
@@ -734,13 +743,13 @@ function ProjectCardMenu(props: { card: ProjectCard; handlers: ProjectCardHandle
               checked={sidebarFolderOpen}
               onCheckedChange={() => handlers.onToggleSidebarFolder(card)}
             >
-              Expand in thread list
+              {t("Expand in thread list")}
             </MenuCheckboxItem>
           </>
         )}
         <MenuSeparator />
-        <MenuItem onClick={() => handlers.onCopyPath(card)}>Copy path</MenuItem>
-        <MenuItem onClick={() => handlers.onOpenSettings(card)}>Project settings</MenuItem>
+        <MenuItem onClick={() => handlers.onCopyPath(card)}>{t("Copy path")}</MenuItem>
+        <MenuItem onClick={() => handlers.onOpenSettings(card)}>{t("Project settings")}</MenuItem>
       </MenuPopup>
     </Menu>
   );
@@ -795,14 +804,16 @@ function ProjectCardView(props: { card: ProjectCard; handlers: ProjectCardHandle
               className="w-full justify-start"
               onClick={() => setShowingAll((value) => !value)}
             >
-              {showingAll ? "Show less" : `Show ${preview.overflow.length} more`}
+              {showingAll
+                ? t("Show less")
+                : t("Show {count} more", { count: preview.overflow.length })}
             </Button>
           </li>
         ) : null}
       </ul>
       {card.snoozedCount > 0 ? (
         <p className="border-t px-3 py-2 text-xs text-muted-foreground">
-          {card.snoozedCount} snoozed
+          {tn(card.snoozedCount, "{count} snoozed", "{count} snoozed")}
         </p>
       ) : null}
     </section>
@@ -832,7 +843,7 @@ function ProjectThreadRow(props: {
         className="flex h-9 min-w-0 items-center gap-2 rounded-md px-2 text-sm outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
         {thread.pinnedAt != null ? (
-          <PinIcon aria-label="Pinned" className="size-3 shrink-0 text-muted-foreground" />
+          <PinIcon aria-label={t("Pinned")} className="size-3 shrink-0 text-muted-foreground" />
         ) : null}
         <span
           className={cn(
@@ -876,7 +887,7 @@ function ProjectThreadRow(props: {
                 <Button
                   size="icon-xs"
                   variant="ghost-muted"
-                  aria-label={`Settle ${thread.title}`}
+                  aria-label={t("Settle {title}", { title: thread.title })}
                   onClick={(event) => {
                     // The row leaves once the thread settles, so focus moves to a neighbour first.
                     const row = event.currentTarget.closest("li");
@@ -895,7 +906,7 @@ function ProjectThreadRow(props: {
             >
               <CheckIcon aria-hidden />
             </TooltipTrigger>
-            <TooltipPopup>Settle thread</TooltipPopup>
+            <TooltipPopup>{t("Settle thread")}</TooltipPopup>
           </Tooltip>
         </span>
       )}

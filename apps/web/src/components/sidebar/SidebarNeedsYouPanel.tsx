@@ -6,6 +6,7 @@ import { attachSidebarTree } from "../../lib/sidebarTree";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { t } from "~/i18n";
 import { SidebarNeedsYouHeader } from "./SidebarListMarkers";
 import { useNeedsYouColumnVisible } from "./needsYouColumn";
 
@@ -17,7 +18,7 @@ export function SidebarNeedsYouPanel(props: {
   const [, setNeedsYouColumnVisible] = useNeedsYouColumnVisible();
   return createPortal(
     <section
-      {...workspaceAreaProps("needs-you", 6, "Needs you")}
+      {...workspaceAreaProps("needs-you", 6, t("Needs you"))}
       className="flex max-h-[40dvh] min-h-0 flex-col rounded-xl border border-sidebar-border bg-sidebar p-1.5 text-sidebar-foreground shadow-sm"
     >
       <ul className="shrink-0">
@@ -30,14 +31,14 @@ export function SidebarNeedsYouPanel(props: {
                   <Button
                     variant="ghost-muted"
                     size="icon-xs"
-                    aria-label="Move Needs you to the thread list"
+                    aria-label={t("Move Needs you to the thread list")}
                     onClick={() => setNeedsYouColumnVisible(false)}
                   />
                 }
               >
                 <PanelRightCloseIcon />
               </TooltipTrigger>
-              <TooltipPopup side="top">Move to the thread list</TooltipPopup>
+              <TooltipPopup side="top">{t("Move to the thread list")}</TooltipPopup>
             </Tooltip>
           }
         />
@@ -45,7 +46,7 @@ export function SidebarNeedsYouPanel(props: {
       <ul
         ref={attachSidebarTree}
         role="tree"
-        aria-label="Threads needing you"
+        aria-label={t("Threads needing you")}
         className="flex min-h-0 flex-col gap-px overflow-y-auto overscroll-contain"
       >
         {props.children}

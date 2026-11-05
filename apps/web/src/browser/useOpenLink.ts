@@ -16,6 +16,7 @@ import {
 } from "./browserLinkTarget";
 import { BrowserSettingsReadError, openUrlInPreview } from "./openFileInPreview";
 
+import { t } from "~/i18n";
 const NO_MODIFIER = { metaKey: false, ctrlKey: false } as const;
 
 /** Rejects on settings read failure without opening a browser, or if the system-browser fallback fails. */
@@ -62,7 +63,7 @@ export function useOpenLink(threadRef: ScopedThreadRef | null | undefined): (
       console.error(result.cause);
     }
     const api = readLocalApi();
-    if (!api) throw new Error("Link opening is unavailable.");
+    if (!api) throw new Error(t("Link opening is unavailable."));
     await api.shell.openExternal(url);
   };
 }

@@ -1,5 +1,6 @@
 import type { EnvironmentId, ScheduledTask, ScheduledTaskPlacement } from "@t3tools/contracts";
 
+import { msg, t, type Message } from "@t3tools/shared/i18n";
 import { planPinnedReorder } from "./state/threadSort.ts";
 
 export type PinnedTaskStatus =
@@ -110,17 +111,25 @@ export function intervalWaitProgress(
   return Math.min(1, Math.max(0, 1 - remainingMs / task.schedule.everyMs));
 }
 
-export const SCHEDULED_TASK_PLACEMENT_OPTIONS: ReadonlyArray<{
+const SCHEDULED_TASK_PLACEMENTS = [
+  { value: "none", label: msg("None") },
+  { value: "chat", label: msg("Regular chat") },
+  { value: "pinned", label: msg("Pinned") },
+] as const satisfies ReadonlyArray<{
+  readonly value: ScheduledTaskPlacement;
+  readonly label: Message;
+}>;
+
+/** The placement choices, labelled in the active language. */
+export function scheduledTaskPlacementOptions(): ReadonlyArray<{
   readonly value: ScheduledTaskPlacement;
   readonly label: string;
-}> = [
-  { value: "none", label: "None" },
-  { value: "chat", label: "Regular chat" },
-  { value: "pinned", label: "Pinned" },
-];
+}> {
+  return SCHEDULED_TASK_PLACEMENTS.map(({ value, label }) => ({ value, label: t(label) }));
+}
 
 export function scheduledTaskPlacementLabel(placement: ScheduledTaskPlacement): string {
-  return SCHEDULED_TASK_PLACEMENT_OPTIONS.find((option) => option.value === placement)!.label;
+  return t(SCHEDULED_TASK_PLACEMENTS.find((option) => option.value === placement)!.label);
 }
 
 /** Servers that predate placements only know pinned tasks. */

@@ -26,6 +26,7 @@ import {
   threadKey,
   threadRefsEqual,
 } from "./entities.ts";
+import { t, tn } from "@t3tools/shared/i18n";
 
 const EMPTY_THREADS: ReadonlyArray<OrchestrationV2ThreadShell> = Object.freeze([]);
 const EMPTY_SCOPED_THREAD_REFS: ReadonlyArray<ScopedThreadRef> = Object.freeze([]);
@@ -160,9 +161,47 @@ export function childThreadInputsTitle(
   const sideChats = children.filter((child) => child.lineage.sideChat === true).length;
   const noun =
     sideChats === children.length ? "side chat" : sideChats === 0 ? "subagent" : "thread";
-  return children.length === 1
-    ? `${noun === "side chat" ? "Side chat" : "Subagent"} needs ${need}`
-    : `${children.length} ${noun}s need ${need}`;
+  const count = children.length;
+  if (count === 1) {
+    const sideChat = noun === "side chat";
+    switch (need) {
+      case "input":
+        return sideChat ? t("Side chat needs input") : t("Subagent needs input");
+      case "approval":
+        return sideChat ? t("Side chat needs approval") : t("Subagent needs approval");
+      case "you":
+        return sideChat ? t("Side chat needs you") : t("Subagent needs you");
+    }
+  }
+  switch (noun) {
+    case "side chat":
+      switch (need) {
+        case "input":
+          return tn(count, "{count} side chat needs input", "{count} side chats need input");
+        case "approval":
+          return tn(count, "{count} side chat needs approval", "{count} side chats need approval");
+        case "you":
+          return tn(count, "{count} side chat needs you", "{count} side chats need you");
+      }
+    case "subagent":
+      switch (need) {
+        case "input":
+          return tn(count, "{count} subagent needs input", "{count} subagents need input");
+        case "approval":
+          return tn(count, "{count} subagent needs approval", "{count} subagents need approval");
+        case "you":
+          return tn(count, "{count} subagent needs you", "{count} subagents need you");
+      }
+    case "thread":
+      switch (need) {
+        case "input":
+          return tn(count, "{count} thread needs input", "{count} threads need input");
+        case "approval":
+          return tn(count, "{count} thread needs approval", "{count} threads need approval");
+        case "you":
+          return tn(count, "{count} thread needs you", "{count} threads need you");
+      }
+  }
 }
 
 const sameWireThreadShell = Schema.toEquivalence(OrchestrationV2ThreadShell);

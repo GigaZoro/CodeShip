@@ -1,5 +1,7 @@
 import type { ToolLifecycleItemType } from "@t3tools/contracts";
 
+import { t } from "./i18n.ts";
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -58,11 +60,11 @@ export function dynamicToolTitle(
     return (
       asTrimmedString(asRecord(input)?.title) ??
       meaningfulTitle ??
-      (dynamicToolSurface(toolName, input) === "computer" ? "Computer use" : "Run JavaScript")
+      (dynamicToolSurface(toolName, input) === "computer" ? t("Computer use") : t("Run JavaScript"))
     );
   }
   const skill = claudeSkillInvocation(toolName, input);
-  return skill === undefined ? undefined : `Skill: ${skill.name}`;
+  return skill === undefined ? undefined : t("Skill: {name}", { name: skill.name });
 }
 
 function recordHasKeys(
@@ -366,30 +368,31 @@ export function formatSearchToolLabel(
   const glob = firstInputString(input, SEARCH_GLOB_KEYS);
   const target = searchTargetName(firstInputString(input, SEARCH_TARGET_KEYS));
   if (query && target) {
-    return `Searched ${query} in ${target}`;
+    return t("Searched {query} in {target}", { query, target });
   }
   if (glob && target) {
-    return `Searched files ${glob} in ${target}`;
+    return t("Searched files {glob} in {target}", { glob, target });
   }
   if (glob) {
-    return `Searched files ${glob}`;
+    return t("Searched files {glob}", { glob });
   }
   if (query) {
-    return `Searched ${query}`;
+    return t("Searched {query}", { query });
   }
   if (target) {
-    return `Searched in ${target}`;
+    return t("Searched in {target}", { target });
   }
   return undefined;
 }
 
 export function formatReadToolLabel(path: string, extraCount = 0): string {
   const trimmed = path.trim();
-  const suffix = extraCount > 0 ? ` +${extraCount} more` : "";
   if (!trimmed) {
-    return `Read file${suffix}`;
+    return extraCount > 0 ? t("Read file +{count} more", { count: extraCount }) : t("Read file");
   }
-  return `Read ${trimmed}${suffix}`;
+  return extraCount > 0
+    ? t("Read {path} +{count} more", { path: trimmed, count: extraCount })
+    : t("Read {path}", { path: trimmed });
 }
 
 export interface ToolActivityPresentationInput {

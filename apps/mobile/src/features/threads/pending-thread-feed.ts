@@ -11,6 +11,7 @@ import type {
   AcknowledgedThreadMessage,
   QueuedThreadMessage,
 } from "../../state/thread-outbox-model";
+import { t } from "../../lib/i18n";
 
 /**
  * A guest's message waiting for the owner's Send or Dismiss. It is a feed row, not the list
@@ -105,7 +106,7 @@ export function appendGuestPendingMessages(
 ): ReadonlyArray<ThreadFeedRow> {
   const pending = share?.messages.filter((message) => message.status === "pending") ?? [];
   if (share === null || pending.length === 0) return presentedFeed;
-  const guestName = share.guestName ?? "Guest";
+  const guestName = share.guestName ?? t("Guest");
   return [
     ...presentedFeed,
     ...pending.map((message): GuestPendingFeedEntry => ({

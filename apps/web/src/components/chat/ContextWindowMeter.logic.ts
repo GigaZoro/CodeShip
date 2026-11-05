@@ -1,3 +1,4 @@
+import { getFormattingLocale, t } from "~/i18n";
 import type { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import {
   CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
@@ -88,9 +89,11 @@ export function formatContextWindowCompactionMessage(
   autoCompactThreshold?: number | null,
 ): string {
   if (typeof autoCompactThreshold === "number" && autoCompactThreshold > 0) {
-    return `Compacts automatically at about ${autoCompactThreshold.toLocaleString("en-US")} tokens.`;
+    return t("Compacts automatically at about {tokens} tokens.", {
+      tokens: autoCompactThreshold.toLocaleString(getFormattingLocale()),
+    });
   }
   return modelDisplayName
-    ? `Context for ${modelDisplayName} compacts automatically when needed.`
-    : "Context compacts automatically when needed.";
+    ? t("Context for {model} compacts automatically when needed.", { model: modelDisplayName })
+    : t("Context compacts automatically when needed.");
 }

@@ -7,6 +7,7 @@ import {
 import { copySorted } from "@t3tools/shared/Array";
 
 import type { ThreadStructure } from "./models.ts";
+import { t } from "@t3tools/shared/i18n";
 
 type Projection = ThreadStructure;
 type Run = Projection["runs"][number];
@@ -155,7 +156,7 @@ export function deriveThreadQueueWorkflowState(projection: Projection): ThreadQu
     return {
       run,
       // A queued guest message shows the guest's words; the agent still gets the attributed text.
-      text: message?.context?.guest?.text ?? message?.text ?? "Queued message",
+      text: message?.context?.guest?.text ?? message?.text ?? t("Queued message"),
       attachments: message?.attachments ?? [],
       messageId: run.userMessageId,
       ...(message?.context ? { context: message.context } : {}),

@@ -10,22 +10,40 @@ import { environmentThreadShells } from "../../state/threads";
 import { useMobileProjectGroupingSettings } from "../../state/project-grouping";
 import { buildHomeProjectScopes, sortHomeProjectScopes } from "../home/homeThreadList";
 import { DEFAULT_PR_LIST_CONTROLS, type PullRequestListControls } from "./pullRequestList";
+import { t, msg, type Message } from "../../lib/i18n";
 
-const STATES = { open: "Open", closed: "Closed", merged: "Merged", all: "All states" } as const;
-const INVOLVEMENT = { all: "All PRs", reviewing: "Your review", authored: "By you" } as const;
-const DRAFTS = { all: "All drafts", only: "Drafts only", hide: "Hide drafts" } as const;
-const REVIEWS = {
-  all: "All reviews",
-  approved: "Approved",
-  "changes-requested": "Changes requested",
-  "review-required": "Review required",
-  none: "No reviews",
+const STATES = {
+  open: msg("Open"),
+  closed: msg("Closed"),
+  merged: msg("Merged"),
+  all: msg("All states"),
 } as const;
-const CHECKS = { all: "All checks", passing: "Passing", failing: "Failing" } as const;
+const INVOLVEMENT = {
+  all: msg("All PRs"),
+  reviewing: msg("Your review"),
+  authored: msg("By you"),
+} as const;
+const DRAFTS = {
+  all: msg("All drafts"),
+  only: msg("Drafts only"),
+  hide: msg("Hide drafts"),
+} as const;
+const REVIEWS = {
+  all: msg("All reviews"),
+  approved: msg("Approved"),
+  "changes-requested": msg("Changes requested"),
+  "review-required": msg("Review required"),
+  none: msg("No reviews"),
+} as const;
+const CHECKS = {
+  all: msg("All checks"),
+  passing: msg("Passing"),
+  failing: msg("Failing"),
+} as const;
 const SORTS = {
-  updated: "Recently updated",
-  created: "Newest created",
-  oldest: "Oldest updated",
+  updated: msg("Recently updated"),
+  created: msg("Newest created"),
+  oldest: msg("Oldest updated"),
 } as const;
 // A 12dp inset keeps 16dp chips concentric with Android's 28dp ScreenContent corner.
 const ROW_STYLE =
@@ -33,6 +51,8 @@ const ROW_STYLE =
     ? { paddingHorizontal: 12, paddingTop: 12, paddingBottom: 8, gap: 8 }
     : { paddingHorizontal: 16, paddingTop: 2, paddingBottom: 10, gap: 8 };
 const id = (field: string, value: string) => JSON.stringify([field, value]);
+const translated = (table: Readonly<Record<string, Message>>) =>
+  Object.fromEntries(Object.entries(table).map(([value, title]) => [value, t(title)]));
 function choices(field: string, options: Readonly<Record<string, string>>, selected: string) {
   return Object.entries(options).map(([value, title]) => ({
     id: id(field, value),
@@ -223,18 +243,20 @@ export function usePullRequestListFilters(props: {
   const more: MenuProps["actions"] = [
     {
       id: "drafts",
-      title: value.filters.draft ? DRAFTS[value.filters.draft] : "Drafts",
-      subactions: choices("draft", DRAFTS, value.filters.draft ?? "all"),
+      title: value.filters.draft ? t(DRAFTS[value.filters.draft]) : t("Drafts"),
+      subactions: choices("draft", translated(DRAFTS), value.filters.draft ?? "all"),
     },
     {
       id: "reviews",
-      title: value.filters.review ? REVIEWS[value.filters.review] : "Reviews",
-      subactions: choices("review", REVIEWS, value.filters.review ?? "all"),
+      title: value.filters.review ? t(REVIEWS[value.filters.review]) : t("Reviews"),
+      subactions: choices("review", translated(REVIEWS), value.filters.review ?? "all"),
     },
     {
       id: "checks",
-      title: value.filters.checks ? `${CHECKS[value.filters.checks]} checks` : "Checks",
-      subactions: choices("checks", CHECKS, value.filters.checks ?? "all"),
+      title: value.filters.checks
+        ? t("{state} checks", { state: t(CHECKS[value.filters.checks]) })
+        : t("Checks"),
+      subactions: choices("checks", translated(CHECKS), value.filters.checks ?? "all"),
     },
     {
       id: "projects",
@@ -242,11 +264,11 @@ export function usePullRequestListFilters(props: {
         projects.find(
           (project) =>
             project.id === value.projectId && project.environmentId === value.projectEnvironmentId,
-        )?.title ?? "Project",
+        )?.title ?? t("Project"),
       subactions: choices(
         "project",
         Object.fromEntries([
-          ["", "All projects"],
+          ["", t("All projects")],
           ...projects.map((project) => [
             JSON.stringify([project.environmentId, project.id]),
             project.title,
@@ -255,11 +277,15 @@ export function usePullRequestListFilters(props: {
         value.projectId ? JSON.stringify([value.projectEnvironmentId, value.projectId]) : "",
       ),
     },
-    { id: "sort", title: SORTS[value.sort], subactions: choices("sort", SORTS, value.sort) },
+    {
+      id: "sort",
+      title: t(SORTS[value.sort]),
+      subactions: choices("sort", translated(SORTS), value.sort),
+    },
   ];
   const reset = (withEnvironment: boolean): MenuProps["actions"][number] => ({
     id: id("reset", withEnvironment ? "environment" : ""),
-    title: "Reset filters",
+    title: t("Reset filters"),
     attributes: {
       disabled:
         count === 0 &&
@@ -274,16 +300,16 @@ export function usePullRequestListFilters(props: {
   const environmentActions = choices(
     "environment",
     Object.fromEntries([
-      ["", "All environments"],
+      ["", t("All environments")],
       ...props.environments.map((environment) => [environment.id, environment.label]),
     ]),
     props.environmentId ?? "",
   );
-  const stateActions = choices("state", STATES, value.state);
-  const involvementActions = choices("involvement", INVOLVEMENT, value.involvement);
+  const stateActions = choices("state", translated(STATES), value.state);
+  const involvementActions = choices("involvement", translated(INVOLVEMENT), value.involvement);
   const labelActions: MenuProps["actions"] = [
-    { id: id("search", "labels"), title: "Search labels…", image: "magnifyingglass" },
-    { id: id("labels", ""), title: "All labels", state: selectedLabels.length ? "off" : "on" },
+    { id: id("search", "labels"), title: t("Search labels…"), image: "magnifyingglass" },
+    { id: id("labels", ""), title: t("All labels"), state: selectedLabels.length ? "off" : "on" },
     ...labels.map((label) => {
       const color = props.labelColors[label.toLowerCase()];
       return {
@@ -295,12 +321,12 @@ export function usePullRequestListFilters(props: {
     }),
   ];
   const authorActions: MenuProps["actions"] = [
-    { id: id("search", "authors"), title: "Search authors…", image: "magnifyingglass" },
+    { id: id("search", "authors"), title: t("Search authors…"), image: "magnifyingglass" },
     ...choices(
       "author",
       Object.fromEntries([
-        ["", "All authors"],
-        ["me", "Me"],
+        ["", t("All authors")],
+        ["me", t("Me")],
         ...authors.map((login) => [login, login]),
       ]),
       author ?? "",
@@ -312,11 +338,11 @@ export function usePullRequestListFilters(props: {
     Platform.OS === "android"
       ? {
           actions: [
-            { id: "environment", title: "Environment", subactions: environmentActions },
-            { id: "state", title: "State", subactions: stateActions },
-            { id: "involvement", title: "Involvement", subactions: involvementActions },
-            { id: "labels", title: "Labels", subactions: labelActions },
-            { id: "author", title: "Author", subactions: authorActions },
+            { id: "environment", title: t("Environment"), subactions: environmentActions },
+            { id: "state", title: t("State"), subactions: stateActions },
+            { id: "involvement", title: t("Involvement"), subactions: involvementActions },
+            { id: "labels", title: t("Labels"), subactions: labelActions },
+            { id: "author", title: t("Author"), subactions: authorActions },
             ...more,
             reset(true),
           ],
@@ -333,7 +359,7 @@ export function usePullRequestListFilters(props: {
     environmentLabel:
       props.environments.length > 1
         ? (props.environments.find((environment) => environment.id === props.environmentId)
-            ?.label ?? "All environments")
+            ?.label ?? t("All environments"))
         : null,
     environmentActions,
     state: value.state,
@@ -367,10 +393,10 @@ export function PullRequestListFilters(props: {
     >
       {Platform.OS === "android" ? null : (
         <ListFilterMenu
-          label={count ? String(count) : "Filters"}
+          label={count ? String(count) : t("Filters")}
           icon
           active={count > 0}
-          accessibilityLabel={count ? `Filters, ${count} active` : "More filters"}
+          accessibilityLabel={count ? t("Filters, {count} active", { count }) : t("More filters")}
           actions={[...more, reset(false)]}
           onSelect={select}
         />
@@ -378,36 +404,38 @@ export function PullRequestListFilters(props: {
       {props.filters.environmentLabel !== null ? (
         <ListFilterMenu
           label={props.filters.environmentLabel}
-          accessibilityLabel="Choose pull request environment"
+          accessibilityLabel={t("Choose pull request environment")}
           actions={props.filters.environmentActions}
           onSelect={select}
         />
       ) : null}
       <ListFilterMenu
-        label={STATES[props.filters.state]}
+        label={t(STATES[props.filters.state])}
         active={props.filters.state !== "open"}
-        accessibilityLabel="Filter by state"
+        accessibilityLabel={t("Filter by state")}
         actions={props.filters.stateActions}
         onSelect={select}
       />
       <ListFilterMenu
-        label={INVOLVEMENT[props.filters.involvement]}
+        label={t(INVOLVEMENT[props.filters.involvement])}
         active={props.filters.involvement !== "all"}
-        accessibilityLabel="Filter by involvement"
+        accessibilityLabel={t("Filter by involvement")}
         actions={props.filters.involvementActions}
         onSelect={select}
       />
       <ListFilterMenu
-        label={selectedLabelCount ? `Labels ${selectedLabelCount}` : "Labels"}
+        label={
+          selectedLabelCount ? t("Labels {count}", { count: selectedLabelCount }) : t("Labels")
+        }
         active={selectedLabelCount > 0}
-        accessibilityLabel="Filter by label"
+        accessibilityLabel={t("Filter by label")}
         actions={props.filters.labelActions}
         onSelect={select}
       />
       <ListFilterMenu
-        label={author === "me" ? "By you" : (author ?? "Author")}
+        label={author === "me" ? t("By you") : (author ?? t("Author"))}
         active={Boolean(author)}
-        accessibilityLabel="Filter by author"
+        accessibilityLabel={t("Filter by author")}
         actions={props.filters.authorActions}
         onSelect={select}
       />

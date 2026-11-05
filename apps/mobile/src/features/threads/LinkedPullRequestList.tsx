@@ -33,6 +33,7 @@ import {
   pullRequestConflict,
   pullRequestStatus,
 } from "../pull-requests/pullRequestStatus";
+import { t } from "../../lib/i18n";
 
 export function useLinkedPullRequestLines(
   thread: EnvironmentThreadShell | null,
@@ -84,15 +85,34 @@ export const LinkedPullRequestRow = memo(function LinkedPullRequestRow(props: {
     sourceControlClients.findByChangeRequestUrl(link.url) ?? sourceControlClients.get(undefined)
   ).changeRequest;
   const metaLineHeight = useScaledTextRole("label").lineHeight * useWindowDimensions().fontScale;
+  const accessibilityLabel = [
+    t("{term} {number}, {title}", {
+      term: capitalizeTerm(singular),
+      number: link.number,
+      title: snapshot?.title ?? t("waiting for host state"),
+    }),
+    status?.label,
+    conflict?.label.toLowerCase(),
+    link.repository,
+    stack ? t("stack of {size}", { size: stack.size }) : null,
+    watching ? t("watching") : null,
+    checks ? t("checks {state}", { state: snapshot?.checksState ?? "" }) : null,
+    review?.accessibleLabel,
+  ]
+    .filter(Boolean)
+    .join(", ");
   const row = (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${capitalizeTerm(singular)} ${link.number}, ${snapshot?.title ?? "waiting for host state"}${status ? `, ${status.label}` : ""}${conflict ? `, ${conflict.label.toLowerCase()}` : ""}, ${link.repository}${stack ? `, stack of ${stack.size}` : ""}${watching ? ", watching" : ""}${checks ? `, checks ${snapshot?.checksState}` : ""}${review ? `, ${review.accessibleLabel}` : ""}`}
-      accessibilityHint={props.actions ? "Touch and hold for actions." : undefined}
+      accessibilityLabel={accessibilityLabel}
+      accessibilityHint={props.actions ? t("Touch and hold for actions.") : undefined}
       onPress={() => {
         void props.openPullRequest(link.url).then((opened) => {
           if (!opened)
-            Dialog.alert(`Unable to open ${shortLabel}`, `The ${singular} could not be opened.`);
+            Dialog.alert(
+              t("Unable to open {label}", { label: shortLabel }),
+              t("The {term} could not be opened.", { term: singular }),
+            );
         });
       }}
       style={{ paddingLeft: 16 + Math.min(depth, 3) * 16 }}
@@ -161,7 +181,7 @@ export const LinkedPullRequestRow = memo(function LinkedPullRequestRow(props: {
           numberOfLines={2}
           ellipsizeMode="tail"
         >
-          {snapshot?.title ?? "Waiting for host state"}
+          {snapshot?.title ?? t("Waiting for host state")}
         </Text>
       </View>
     </Pressable>

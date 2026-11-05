@@ -4,6 +4,7 @@ import * as Option from "effect/Option";
 import type { ConnectionCatalogEntry } from "./catalog.ts";
 import type { ConnectionTarget, SupervisorConnectionState } from "./model.ts";
 import { connectionRouteId, connectionRoutes, routeHttpBaseUrl } from "./routes.ts";
+import { t } from "@t3tools/shared/i18n";
 
 export type EnvironmentConnectionPhase =
   | "available"
@@ -67,23 +68,23 @@ export function presentConnectionState(
 export function connectionStatusText(connection: EnvironmentConnectionPresentation): string {
   switch (connection.phase) {
     case "available":
-      return "Available";
+      return t("Available");
     case "offline":
-      return "Offline";
+      return t("Offline");
     case "connecting":
-      return "Connecting...";
+      return t("Connecting...");
     case "reconnecting":
       return connection.error
-        ? `Failed to connect. Reconnecting... Reason: ${connection.error}`
-        : "Reconnecting...";
+        ? t("Failed to connect. Reconnecting... Reason: {error}", { error: connection.error })
+        : t("Reconnecting...");
     case "connected":
-      return "Connected";
+      return t("Connected");
     case "unsupported":
-      return "Client not supported";
+      return t("Client not supported");
     case "error":
       return connection.error
-        ? `Connection failed. Reason: ${connection.error}`
-        : "Connection failed";
+        ? t("Connection failed. Reason: {error}", { error: connection.error })
+        : t("Connection failed");
   }
 }
 
@@ -94,7 +95,7 @@ export function connectionMayStillAnswer(phase: EnvironmentConnectionPhase): boo
 
 export function connectionStatusTitle(connection: EnvironmentConnectionPresentation): string {
   if (connection.phase === "reconnecting" && connection.error) {
-    return "Failed to connect. Reconnecting...";
+    return t("Failed to connect. Reconnecting...");
   }
   return connectionStatusText({ ...connection, error: null });
 }

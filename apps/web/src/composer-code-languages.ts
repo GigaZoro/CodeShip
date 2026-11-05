@@ -1,3 +1,6 @@
+/* oxlint-disable t3code/no-untranslated-text -- programming-language names; "Plain text" is translated by codeLanguageLabel */
+import { t } from "~/i18n";
+
 export const CODE_BLOCK_LANGUAGES = [
   { id: "", label: "Plain text" },
   { id: "asm", label: "Assembly" },
@@ -80,5 +83,7 @@ export function codeLanguageEntry(language: string): CodeBlockLanguage | null {
 }
 
 export function codeLanguageLabel(language: string): string {
-  return codeLanguageEntry(language)?.label ?? language;
+  const entry = codeLanguageEntry(language);
+  if (entry === null) return language;
+  return entry.id === "" ? t("Plain text") : entry.label;
 }

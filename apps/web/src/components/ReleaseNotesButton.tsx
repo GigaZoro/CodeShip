@@ -1,4 +1,5 @@
 import { NotebookTextIcon } from "lucide-react";
+import { t } from "~/i18n";
 
 import releaseNotes from "../../../../docs/release-notes.md?raw";
 import ChatMarkdown from "./ChatMarkdown";
@@ -21,21 +22,23 @@ export function ReleaseNotesButton() {
         <TooltipTrigger
           render={
             <DialogTrigger
-              render={<Button variant="ghost" size="sm" aria-label="Release notes" />}
+              render={<Button variant="ghost" size="sm" aria-label={t("Release notes")} />}
             />
           }
         >
           <NotebookTextIcon aria-hidden className="size-4" />
           <span aria-hidden className="hidden xl:inline">
-            Release notes
+            {t("Release notes")}
           </span>
         </TooltipTrigger>
-        <TooltipPopup side="bottom">Release notes</TooltipPopup>
+        <TooltipPopup side="bottom">{t("Release notes")}</TooltipPopup>
       </Tooltip>
       <DialogPopup className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Release notes</DialogTitle>
-          <DialogDescription>Changes included in this version of T3.CodeShip.</DialogDescription>
+          <DialogTitle>{t("Release notes")}</DialogTitle>
+          <DialogDescription>
+            {t("Changes included in this version of T3.CodeShip.")}
+          </DialogDescription>
         </DialogHeader>
         <DialogPanel>
           <ChatMarkdown text={releaseNotes} cwd={undefined} parseRawHtml={false} />

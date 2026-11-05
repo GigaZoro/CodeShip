@@ -1,3 +1,4 @@
+/* oxlint-disable t3code/no-untranslated-text -- the widget function is serialized into its own runtime, where imports such as t() are unavailable */
 import { HStack, ProgressView, Spacer, Text, VStack } from "@expo/ui/swift-ui";
 import {
   accessibilityElement,

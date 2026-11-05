@@ -10,6 +10,7 @@ import { FilePreviewLoading, FilePreviewNotice } from "../features/files/FilePre
 import { pdfInitialPage, pdfLinkUrl, preparePdfPreview } from "../lib/pdfPreview";
 import { tryOpenExternalUrl } from "../lib/openExternalUrl";
 import { ControlPill } from "./ui/ControlPill";
+import { t } from "../lib/i18n";
 
 const preparedPdfAtom = Atom.family((uri: string) =>
   Atom.make(
@@ -57,14 +58,15 @@ export function PdfPreview(props: { readonly uri: string }) {
   if (error) {
     return (
       <View className="flex-1 gap-4 bg-card">
-        <FilePreviewNotice title="Could not load PDF">{error}</FilePreviewNotice>
+        <FilePreviewNotice title={t("Could not load PDF")}>{error}</FilePreviewNotice>
         <View className="items-center">
-          <ControlPill label="Try again" variant="pill" onPress={refresh} />
+          <ControlPill label={t("Try again")} variant="pill" onPress={refresh} />
         </View>
       </View>
     );
   }
-  if (localUri === null) return <FilePreviewLoading message="Loading PDF..." background="card" />;
+  if (localUri === null)
+    return <FilePreviewLoading message={t("Loading PDF...")} background="card" />;
 
   return (
     <Pdf

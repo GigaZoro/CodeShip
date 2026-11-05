@@ -35,6 +35,7 @@ import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { rewindToMessage } from "./chatViewSend";
 import { makeThreadErrorSetter } from "../ChatView.logic";
 import { markRetryRewind, takeRetryRewind } from "./timelineRetry";
+import { t } from "~/i18n";
 /** Whether any turn that a rewind to `turnCount` would undo changed files. */
 function turnsAfterChangedFiles(
   checkpoints: ReadonlyArray<OrchestrationV2Checkpoint>,
@@ -125,19 +126,26 @@ export function useTimelineRewind(input: TimelineRewindInput) {
     if (!supportsConversationRollback) {
       setThreadError(
         activeThread.id,
-        "This provider does not support reverting conversation history. Start a new thread instead.",
+        t(
+          "This provider does not support reverting conversation history. Start a new thread instead.",
+        ),
       );
       return;
     }
     if (activeEnvironmentUnavailable && activeEnvironmentUnavailableLabel) {
       setThreadError(
         activeThread.id,
-        `Reconnect ${activeEnvironmentUnavailableLabel} before reverting checkpoints.`,
+        t("Reconnect {name} before reverting checkpoints.", {
+          name: activeEnvironmentUnavailableLabel,
+        }),
       );
       return;
     }
     if (phase === "running" || isSendBusy) {
-      setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
+      setThreadError(
+        activeThread.id,
+        t("Interrupt the current turn before reverting checkpoints."),
+      );
       return;
     }
     // A retry that changed no files has nothing to restore, so it skips the dialog.
@@ -154,7 +162,7 @@ export function useTimelineRewind(input: TimelineRewindInput) {
       // The rewind appends to the composer, so an unsent draft would be sent with the retry.
       const draft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
       if (composerDraftHasUserContent(draft)) {
-        setThreadError(activeThread.id, "Clear the message box before retrying.");
+        setThreadError(activeThread.id, t("Clear the message box before retrying."));
         return;
       }
     }
@@ -198,7 +206,7 @@ export function useTimelineRewind(input: TimelineRewindInput) {
         requestAnimationFrame(() => {
           if (currentRouteThreadKeyRef.current !== routeThreadKey) return;
           if (promptRef.current !== rewind.prompt || composerRef.current?.submit() !== true)
-            setThreadError(activeThread.id, "Message restored. Press send to retry.");
+            setThreadError(activeThread.id, t("Message restored. Press send to retry."));
         });
       });
     }
@@ -236,7 +244,7 @@ export function useTimelineRewind(input: TimelineRewindInput) {
         const error = squashAtomCommandFailure(result);
         setThreadError(
           activeThread.id,
-          error instanceof Error ? error.message : "Failed to fork this response.",
+          error instanceof Error ? error.message : t("Failed to fork this response."),
         );
       }
       return;
@@ -245,7 +253,9 @@ export function useTimelineRewind(input: TimelineRewindInput) {
     if (!targetThreadReady) {
       setThreadError(
         activeThread.id,
-        "The fork was created, but its thread data did not reach this client. Reconnect and try opening it from the sidebar.",
+        t(
+          "The fork was created, but its thread data did not reach this client. Reconnect and try opening it from the sidebar.",
+        ),
       );
       return;
     }

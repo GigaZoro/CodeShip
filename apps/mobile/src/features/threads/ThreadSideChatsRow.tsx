@@ -6,6 +6,7 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { cn } from "../../lib/cn";
 import { useSideChats } from "../../state/entities";
 import { useOpenLinkedThread } from "./useOpenLinkedThread";
+import { t } from "../../lib/i18n";
 
 /**
  * The thread's side chats, started on web or desktop. Each opens as a normal thread, so its
@@ -25,7 +26,7 @@ export function ThreadSideChatsRow(props: {
         size={12}
         tintColorClassName="accent-foreground-muted"
       />
-      <Text className="text-xs text-foreground-muted">Side chats</Text>
+      <Text className="text-xs text-foreground-muted">{t("Side chats")}</Text>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} className="flex-1">
         <View className="flex-row gap-1 pr-4">
           {sideChats.map((sideChat) => {
@@ -39,7 +40,13 @@ export function ThreadSideChatsRow(props: {
               <Pressable
                 key={sideChat.id}
                 accessibilityRole="button"
-                accessibilityLabel={`Open side chat ${sideChat.title}${needs === null ? "" : `, needs ${needs}`}`}
+                accessibilityLabel={
+                  needs === null
+                    ? t("Open side chat {title}", { title: sideChat.title })
+                    : needs === "approval"
+                      ? t("Open side chat {title}, needs approval", { title: sideChat.title })
+                      : t("Open side chat {title}, needs input", { title: sideChat.title })
+                }
                 className="max-w-48 flex-row items-center gap-1.5 rounded-full bg-subtle px-2.5 py-1"
                 onPress={() =>
                   openLinkedThread({ environmentId: props.environmentId, threadId: sideChat.id })

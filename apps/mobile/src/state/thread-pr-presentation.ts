@@ -9,6 +9,7 @@ import {
   resolveThreadCurrentPullRequestLink,
   resolveThreadPullRequestBadge,
 } from "@t3tools/client-runtime/thread-pull-requests";
+import { t, tn } from "../lib/i18n";
 
 export type ThreadPr = NonNullable<VcsStatusResult["pr"]>;
 
@@ -48,7 +49,11 @@ export function presentThreadPr(
     url: pr.url,
     changeRequest,
     label: String(pr.number),
-    accessibilityLabel: `#${pr.number} ${changeRequest.singular} ${isDraft ? "draft" : pr.state}`,
+    accessibilityLabel: t("#{number} {term} {status}", {
+      number: pr.number,
+      term: changeRequest.singular,
+      status: isDraft ? t("draft") : pr.state,
+    }),
     textClassName: isDraft ? "text-foreground-muted" : PR_STATE_TEXT_CLASS[pr.state],
   };
 }
@@ -90,10 +95,32 @@ export function presentThreadLinkedPullRequests(
     label,
     accessibilityLabel:
       badge.kind === "stack"
-        ? `${badge.layers} ${changeRequest.singular}s in stack, ${isDraft ? "draft" : (state ?? "status pending")}`
+        ? tn(
+            badge.layers,
+            "{count} {singular} in stack, {status}",
+            "{count} {plural} in stack, {status}",
+            {
+              singular: changeRequest.singular,
+              plural: changeRequest.plural,
+              status: isDraft ? t("draft") : (state ?? t("status pending")),
+            },
+          )
         : linkedCount !== null
-          ? `${linkedCount} linked ${changeRequest.plural}, overall ${badge.state}`
-          : `#${link.number} ${changeRequest.singular} ${state === null ? "status pending" : isDraft ? "draft" : state}`,
+          ? tn(
+              linkedCount,
+              "{count} linked {singular}, overall {state}",
+              "{count} linked {plural}, overall {state}",
+              {
+                singular: changeRequest.singular,
+                plural: changeRequest.plural,
+                state: badge.state,
+              },
+            )
+          : t("#{number} {term} {status}", {
+              number: link.number,
+              term: changeRequest.singular,
+              status: state === null ? t("status pending") : isDraft ? t("draft") : state,
+            }),
     textClassName:
       state === null || isDraft
         ? "text-foreground-muted"
@@ -122,8 +149,14 @@ export function resolveThreadPrSource(
 
 export function resolveThreadPrBadgeAction(pr: ThreadPrPresentation) {
   return pr.kind === "stack" || pr.others > 0
-    ? { kind: "list" as const, accessibilityLabel: `Show ${pr.accessibilityLabel}` }
-    : { kind: "open" as const, accessibilityLabel: `Open ${pr.accessibilityLabel}` };
+    ? {
+        kind: "list" as const,
+        accessibilityLabel: t("Show {label}", { label: pr.accessibilityLabel }),
+      }
+    : {
+        kind: "open" as const,
+        accessibilityLabel: t("Open {label}", { label: pr.accessibilityLabel }),
+      };
 }
 
 /** Records `value` as the newest entry, evicting the least recently answered beyond `limit`. */

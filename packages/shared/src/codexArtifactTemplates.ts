@@ -1,3 +1,5 @@
+import { msg, t, type Message } from "./i18n.ts";
+
 const CODEX_ARTIFACT_TEMPLATE_KINDS = [
   "document",
   "presentation",
@@ -27,17 +29,17 @@ export interface CodexArtifactTemplate {
 }
 
 const CODEX_ARTIFACT_TEMPLATE_LABEL_BY_KIND = {
-  document: "Document template",
-  presentation: "Presentation template",
-  spreadsheet: "Spreadsheet template",
-  site: "Site template",
-  "google-docs": "Google Doc template",
-  "google-slides": "Google Slides template",
-  "google-sheets": "Google Sheet template",
-  image: "Image template",
-  email: "Email template",
-  slack: "Slack template",
-} satisfies Record<CodexArtifactTemplateKind, string>;
+  document: msg("Document template"),
+  presentation: msg("Presentation template"),
+  spreadsheet: msg("Spreadsheet template"),
+  site: msg("Site template"),
+  "google-docs": msg("Google Doc template"),
+  "google-slides": msg("Google Slides template"),
+  "google-sheets": msg("Google Sheet template"),
+  image: msg("Image template"),
+  email: msg("Email template"),
+  slack: msg("Slack template"),
+} satisfies Record<CodexArtifactTemplateKind, Message>;
 
 export type CodexArtifactTemplateAttributes = Readonly<Record<string, string | null | undefined>>;
 
@@ -111,7 +113,7 @@ export function codexArtifactTemplateUsePrompt(template: CodexArtifactTemplate):
 }
 
 export function codexArtifactTemplatePresentationLabel(kind: CodexArtifactTemplateKind): string {
-  return CODEX_ARTIFACT_TEMPLATE_LABEL_BY_KIND[kind];
+  return t(CODEX_ARTIFACT_TEMPLATE_LABEL_BY_KIND[kind]);
 }
 
 export function appendCodexArtifactTemplateUsePrompt(

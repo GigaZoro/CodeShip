@@ -19,14 +19,17 @@ import { useAtomCommand } from "~/state/use-atom-command";
 
 import { openUrlInPreview } from "./openFileInPreview";
 
+import { t } from "~/i18n";
 export const BROWSER_ASSISTANTS: Readonly<
   Record<
     BrowserAssistantKind,
     { readonly label: string; readonly url: string; readonly Icon: Icon }
   >
 > = {
+  // oxlint-disable-next-line t3code/no-untranslated-text -- product name, reads the same in every language
   dot: { label: "ChatGPT dot", url: "https://chatgpt.com/dots", Icon: OpenAI },
   // Duet has no page of its own on the web; Anthropic opens it from claude.ai.
+  // oxlint-disable-next-line t3code/no-untranslated-text -- product name, reads the same in every language
   duet: { label: "Claude Duet", url: "https://claude.ai/", Icon: ClaudeAI },
 };
 
@@ -58,8 +61,8 @@ export function useOpenBrowserAssistant(threadRef: ScopedThreadRef) {
     toastManager.add(
       stackedThreadToast({
         type: "error",
-        title: `Unable to open ${browserAssistantLabel(assistant)}`,
-        description: error instanceof Error ? error.message : "An error occurred.",
+        title: t("Unable to open {assistant}", { assistant: browserAssistantLabel(assistant) }),
+        description: error instanceof Error ? error.message : t("An error occurred."),
       }),
     );
   };

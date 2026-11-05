@@ -8,6 +8,7 @@ import type {
   ProviderInteractionMode,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import { t } from "../../lib/i18n";
 
 export function draftThreadShell(input: {
   readonly environmentId: EnvironmentId;
@@ -24,7 +25,7 @@ export function draftThreadShell(input: {
   return presentThreadShell(input.environmentId, {
     id: input.threadId,
     projectId: input.projectId,
-    title: "New thread",
+    title: t("New thread"),
     providerInstanceId: input.modelSelection.instanceId,
     modelSelection: input.modelSelection,
     runtimeMode: input.runtimeMode,

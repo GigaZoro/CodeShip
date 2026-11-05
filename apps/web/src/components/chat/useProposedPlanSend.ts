@@ -42,6 +42,7 @@ import {
 import { draftSendState } from "./chatViewSend";
 import type { useLocalDispatchState } from "./useLocalDispatchState";
 import type { useTimelineFollow } from "./useTimelineFollow";
+import { t } from "~/i18n";
 
 type LocalDispatchState = ReturnType<typeof useLocalDispatchState>;
 
@@ -382,11 +383,11 @@ export function useImplementPlanInNewThread(input: ImplementPlanInNewThreadInput
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Could not start implementation thread",
+            title: t("Could not start implementation thread"),
             description:
               error instanceof Error
                 ? error.message
-                : "An error occurred while creating the new thread.",
+                : t("An error occurred while creating the new thread."),
           }),
         );
       }

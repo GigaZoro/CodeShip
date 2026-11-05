@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { t } from "./i18n.ts";
 
 const PAIRING_TOKEN_PARAM = "token";
 const HOSTED_PAIRING_HOST_PARAM = "host";
@@ -15,7 +16,7 @@ export class RemoteBackendUrlMissingError extends Schema.TaggedError<RemoteBacke
   {},
 ) {
   override get message(): string {
-    return "Enter a backend URL.";
+    return t("Enter a backend URL.");
   }
 }
 
@@ -27,7 +28,7 @@ export class RemotePairingUrlInvalidError extends Schema.TaggedError<RemotePairi
   },
 ) {
   override get message(): string {
-    return "Pairing URL is invalid.";
+    return t("Pairing URL is invalid.");
   }
 }
 
@@ -40,7 +41,7 @@ export class RemoteBackendUrlInvalidError extends Schema.TaggedError<RemoteBacke
   },
 ) {
   override get message(): string {
-    return "Backend URL is invalid.";
+    return t("Backend URL is invalid.");
   }
 }
 
@@ -49,7 +50,7 @@ export class RemotePairingTokenMissingError extends Schema.TaggedError<RemotePai
   { host: Schema.String },
 ) {
   override get message(): string {
-    return "Pairing URL is missing its token.";
+    return t("Pairing URL is missing its token.");
   }
 }
 
@@ -58,7 +59,7 @@ export class RemotePairingCodeMissingError extends Schema.TaggedError<RemotePair
   { host: Schema.String },
 ) {
   override get message(): string {
-    return "Enter a pairing code.";
+    return t("Enter a pairing code.");
   }
 }
 

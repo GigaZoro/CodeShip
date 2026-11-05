@@ -1,5 +1,6 @@
 import { View } from "react-native";
 import { Notice } from "../../components/ui/Notice";
+import { t } from "../../lib/i18n";
 
 export function ComposerErrorNotice(props: {
   readonly message: string;
@@ -13,7 +14,7 @@ export function ComposerErrorNotice(props: {
         iconTone="danger"
         floating
         onDismiss={props.onDismiss}
-        dismissLabel="Dismiss error"
+        dismissLabel={t("Dismiss error")}
       />
     </View>
   );

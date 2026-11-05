@@ -50,6 +50,7 @@ import {
   THREAD_DETAILS_PANEL_LABEL_CLASS,
 } from "./threadDetailsPanelStyles";
 import { Menu, MenuPopup } from "../ui/menu";
+import { t } from "~/i18n";
 
 const GitActionsControl = memo(BaseGitActionsControl);
 
@@ -212,7 +213,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
               {foldsControls ? (
                 <ThreadDetailsSection
                   headingId="thread-details-summary-heading"
-                  title="Workspace summary"
+                  title={t("Workspace summary")}
                   separated={false}
                   showHeading={false}
                 >
@@ -231,7 +232,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
               (show.environment || show.openIn || show.scripts || show.assistants) ? (
                 <ThreadDetailsSection
                   headingId="thread-details-workspace-heading"
-                  title="Workspace"
+                  title={t("Workspace")}
                   separated={foldsControls}
                   showHeading={false}
                 >
@@ -288,7 +289,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
               {showControls && props.gitCwd && (show.branch || show.git) ? (
                 <ThreadDetailsSection
                   headingId="thread-details-version-control-heading"
-                  title="Version Control"
+                  title={t("Version Control")}
                   showHeading={false}
                   separated={density === "full"}
                 >
@@ -368,7 +369,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 >
                   <SlidersHorizontalIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} aria-hidden />
                   <span className={cn("ml-0.5", THREAD_DETAILS_PANEL_LABEL_CLASS)}>
-                    Choose what to show
+                    {t("Choose what to show")}
                   </span>
                 </ThreadDetailsControl>
               </div>

@@ -4,6 +4,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import type { SavedRemoteConnection } from "../../lib/connection";
 import { linkEnvironmentToCloudWithPreference } from "../cloud/linkEnvironment";
 import { updateAgentAwarenessRegistrationPreferences } from "./remoteRegistration";
+import { t } from "../../lib/i18n";
 
 export const setLiveActivityUpdatesEnabled = Effect.fn("setLiveActivityUpdatesEnabled")(
   function* (input: {
@@ -51,7 +52,7 @@ export const setLiveActivityUpdatesEnabled = Effect.fn("setLiveActivityUpdatesEn
         liveActivitiesEnabled: input.previousEnabled,
       }).pipe(
         Effect.catchCause((cause) =>
-          Effect.logWarning("Could not restore Live Activity device preference.", cause),
+          Effect.logWarning(t("Could not restore Live Activity device preference."), cause),
         ),
       );
 

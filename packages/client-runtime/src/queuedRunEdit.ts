@@ -6,6 +6,7 @@
  */
 import type { RunId } from "@t3tools/contracts";
 import { Atom, type AtomRegistry } from "effect/reactivity";
+import { t } from "@t3tools/shared/i18n";
 
 export interface QueuedRunStatus {
   readonly id: RunId;
@@ -69,7 +70,7 @@ export function resolveQueuedEditExit(input: {
 export function queuedRunEditBlockedReason(input: {
   readonly openQuestionCount: number;
 }): string | null {
-  return input.openQuestionCount > 0 ? "Answer the question to edit queued messages" : null;
+  return input.openQuestionCount > 0 ? t("Answer the question to edit queued messages") : null;
 }
 
 interface ExitWatch<E> {

@@ -4,6 +4,7 @@ import { AndroidHeaderIconButton } from "../../components/ui/AndroidScreenHeader
 import { CompactBrandTitle } from "../../components/CompactBrandTitle";
 import { useToolbarLayout } from "../../components/ui/useToolbarLayout";
 import { WorkspaceConnectionTitle } from "../home/WorkspaceConnectionTitle";
+import { t } from "../../lib/i18n";
 
 /**
  * The Android header row above each workspace tab's list. Both tabs draw this same row, so
@@ -28,7 +29,7 @@ export function WorkspaceListToolbarRow(props: {
       {props.searching ? (
         <>
           <AndroidHeaderIconButton
-            accessibilityLabel="Close search"
+            accessibilityLabel={t("Close search")}
             icon="arrow.left"
             onPress={props.onCloseSearch}
           />

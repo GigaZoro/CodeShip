@@ -11,6 +11,7 @@ import { serverEnvironment } from "../../state/server";
 import { ScheduledTaskScheduleLine } from "../settings/ScheduledTasksSettings";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
+import { t } from "~/i18n";
 // Rows without a task keep the same empty array, so a task update re-renders only its own rows.
 const threadScheduledTasksAtom = Atom.family((key: string) => {
   const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, ThreadId];
@@ -53,7 +54,7 @@ export const ThreadScheduledTaskIndicator = memo(function ThreadScheduledTaskInd
         render={
           <button
             type="button"
-            aria-label={`Open scheduled task ${first.title}`}
+            aria-label={t("Open scheduled task {title}", { title: first.title })}
             data-testid={`sidebar-scheduled-indicator-${props.threadId}`}
             onClick={openTask}
             onDoubleClick={(event) => event.stopPropagation()}

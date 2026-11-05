@@ -102,6 +102,7 @@ import {
 } from "./new-task-flow-state";
 import { useEnvironmentShellReadiness } from "../../state/shell";
 import { useConnectionsReady, useWorkspaceEnvironments } from "../../state/workspace";
+import { t } from "../../lib/i18n";
 
 type WorkspaceMode = "local" | "worktree";
 
@@ -636,10 +637,10 @@ export function NewTaskFlowProvider(
     if (!isAtomCommandInterrupted(result)) {
       const error = squashAtomCommandFailure(result);
       Dialog.alert(
-        "Could not switch machine",
+        t("Could not switch machine"),
         error instanceof Error
           ? error.message
-          : "The folder for threads without a project could not be created.",
+          : t("The folder for threads without a project could not be created."),
       );
     }
     return false;

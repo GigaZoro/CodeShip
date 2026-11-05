@@ -18,6 +18,7 @@ import {
   THREAD_DETAILS_PANEL_CHEVRON_CLASS,
   THREAD_DETAILS_PANEL_ICON_CLASS,
 } from "./threadDetailsPanelStyles";
+import { t } from "~/i18n";
 
 /**
  * Where the thread works, folded into one control: machine, branch, pull request, and changes.
@@ -59,7 +60,7 @@ export function ThreadDetailsSummary(props: {
         aria-expanded={props.expanded}
         onClick={props.onToggle}
       >
-        <span className="sr-only">Workspace and Git controls: </span>
+        <span className="sr-only">{t("Workspace and Git controls:")} </span>
         <span className="flex min-w-0 flex-1 flex-col gap-1 py-1">
           <span className="flex min-w-0 items-center gap-2.5">
             <EnvironmentMachineIcon
@@ -67,7 +68,7 @@ export function ThreadDetailsSummary(props: {
               kind={machine?.machineKind ?? "server"}
               className={THREAD_DETAILS_PANEL_ICON_CLASS}
             />
-            <span className="min-w-0 flex-1 truncate">{machine?.label ?? "This machine"}</span>
+            <span className="min-w-0 flex-1 truncate">{machine?.label ?? t("This machine")}</span>
             {changes &&
             hasNonZeroStat({ additions: changes.insertions, deletions: changes.deletions }) ? (
               <DiffStatLabel
@@ -106,7 +107,11 @@ export function ThreadDetailsSummary(props: {
             render={
               // An inline button keeps a small target, so it never takes taps meant for the toggle.
               <InlineButton
-                aria-label={`Open pull request #${pr.number}, ${prState.label.toLowerCase()}: ${pr.title}`}
+                aria-label={t("Open pull request #{number}, {state}: {title}", {
+                  number: pr.number,
+                  state: prState.label.toLowerCase(),
+                  title: pr.title,
+                })}
                 className="absolute end-9 bottom-2"
                 onClick={(event) => openPrLink(event, pr.url, threadRef)}
                 onAuxClick={(event) => openPrLink(event, pr.url, threadRef)}

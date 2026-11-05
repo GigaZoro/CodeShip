@@ -467,6 +467,7 @@ const makeBackendOutputLogShape = (
         details: string,
       ) {
         yield* writeBackendChildLogRecord(logFile, {
+          // oxlint-disable-next-line t3code/no-untranslated-text -- log output, not UI text
           message: "backend child process failure output start",
           level: "ERROR",
           annotations: {
@@ -479,6 +480,7 @@ const makeBackendOutputLogShape = (
         });
         for (const output of session.chunks) {
           yield* writeBackendChildLogRecord(logFile, {
+            // oxlint-disable-next-line t3code/no-untranslated-text -- log output, not UI text
             message: "backend child process output",
             level: output.streamName === "stderr" ? "ERROR" : "INFO",
             annotations: {
@@ -491,6 +493,7 @@ const makeBackendOutputLogShape = (
           });
         }
         yield* writeBackendChildLogRecord(logFile, {
+          // oxlint-disable-next-line t3code/no-untranslated-text -- log output, not UI text
           message: "backend child process failure output end",
           level: "ERROR",
           annotations: {

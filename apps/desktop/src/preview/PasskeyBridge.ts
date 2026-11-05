@@ -15,6 +15,7 @@ type CreationOptions = CredentialCreationOptions & {
 type InvokePasskeyCeremony = (channel: PasskeyChannel, publicKey: unknown) => Promise<unknown>;
 
 const NOT_ALLOWED_MESSAGE =
+  // oxlint-disable-next-line t3code/no-untranslated-text -- WebAuthn spec-mandated DOMException message, injected into the guest page without a translator
   "The operation either timed out or was not allowed. See: https://www.w3.org/TR/webauthn-2/#sctn-privacy-considerations-client.";
 const DOM_EXCEPTION_NAMES = new Set([
   "AbortError",

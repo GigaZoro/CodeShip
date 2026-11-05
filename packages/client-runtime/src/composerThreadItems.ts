@@ -9,6 +9,7 @@ import { foldSearchQuery, rankSearchItems, scoreThreadSearch } from "@t3tools/sh
 
 import type { EnvironmentThreadShell } from "./state/models.ts";
 import { threadSearchSubject, type ThreadSearchShell } from "./state/threadSearch.ts";
+import { t } from "@t3tools/shared/i18n";
 
 const COMPOSER_THREAD_RESULT_LIMIT = 5;
 
@@ -66,7 +67,7 @@ export function matchComposerThreadItems(input: {
         type: "thread",
         thread: { environmentId: shell.environmentId, threadId: shell.id },
         label: shell.title,
-        description: machine === undefined ? "Thread" : `Thread on ${machine}`,
+        description: machine === undefined ? t("Thread") : t("Thread on {machine}", { machine }),
       };
     });
 }
@@ -110,6 +111,6 @@ export function matchComposerEnvironmentItems(input: {
       environmentId: environment.environmentId,
       machine: environment.machine,
       label: environment.label,
-      description: "Machine",
+      description: t("Machine"),
     }));
 }

@@ -1,3 +1,4 @@
+import { msg, t, type Message } from "../../lib/i18n";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import type { SidebarProjectGroupingMode } from "@t3tools/contracts";
@@ -21,23 +22,23 @@ import {
 
 const GROUPING_OPTIONS: ReadonlyArray<{
   readonly mode: SidebarProjectGroupingMode;
-  readonly label: string;
-  readonly description: string;
+  readonly label: Message;
+  readonly description: Message;
 }> = [
   {
     mode: "repository",
-    label: "Same repository",
-    description: "The same repository on any machine or path is one project.",
+    label: msg("Same repository"),
+    description: msg("The same repository on any machine or path is one project."),
   },
   {
     mode: "repository_path",
-    label: "Same repository and path",
-    description: "Keep monorepo paths separate.",
+    label: msg("Same repository and path"),
+    description: msg("Keep monorepo paths separate."),
   },
   {
     mode: "separate",
-    label: "Keep separate",
-    description: "Show every workspace as its own project.",
+    label: msg("Keep separate"),
+    description: msg("Show every workspace as its own project."),
   },
 ];
 
@@ -54,7 +55,7 @@ export function SettingsProjectGroupingRouteScreen() {
     preferencesResult.value.threadListGroupByMachine === true;
 
   return (
-    <SettingsScreen title="General">
+    <SettingsScreen title={t("General")}>
       <ScrollView
         contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
@@ -63,18 +64,20 @@ export function SettingsProjectGroupingRouteScreen() {
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
         <SettingsSection
-          title="Combine matching projects"
+          title={t("Combine matching projects")}
           footer={
             groupedByMachine
-              ? "Machine folders still list a project under each machine it is on. This decides how it shows in filters and the project picker."
+              ? t(
+                  "Machine folders still list a project under each machine it is on. This decides how it shows in filters and the project picker.",
+                )
               : undefined
           }
         >
           {GROUPING_OPTIONS.map((option, index) => (
             <SettingsChoiceRow
               key={option.mode}
-              label={option.label}
-              description={option.description}
+              label={t(option.label)}
+              description={t(option.description)}
               selected={selectedMode === option.mode}
               separated={index > 0}
               disabled={!preferencesReady}

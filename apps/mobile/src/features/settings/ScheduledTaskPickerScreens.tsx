@@ -1,3 +1,4 @@
+import { t } from "../../lib/i18n";
 import { useNavigation } from "@react-navigation/native";
 import * as Haptics from "expo-haptics";
 import { useMemo, useState } from "react";
@@ -14,8 +15,10 @@ import { useScheduledTaskEditor } from "./scheduled-task-editor";
 
 function MissingTaskDraft() {
   return (
-    <SettingsScreen title="Scheduled task">
-      <Text className="p-5 text-base text-foreground-muted">Open a scheduled task form first.</Text>
+    <SettingsScreen title={t("Scheduled task")}>
+      <Text className="p-5 text-base text-foreground-muted">
+        {t("Open a scheduled task form first.")}
+      </Text>
     </SettingsScreen>
   );
 }
@@ -142,7 +145,7 @@ export function ScheduledTaskBranchPickerRouteScreen() {
 
   return (
     <BranchPickerScreen
-      title="Base branch"
+      title={t("Base branch")}
       project={project}
       branches={visibleBranches}
       selectedBranchName={editor.draft.baseRef}
@@ -151,7 +154,7 @@ export function ScheduledTaskBranchPickerRouteScreen() {
       loading={
         query.trim() !== debouncedQuery.trim() || (branches.isPending && branches.data === null)
       }
-      error={project ? branches.error : "This project is no longer available."}
+      error={project ? branches.error : t("This project is no longer available.")}
       refreshing={branches.isFetchingNextPage}
       hasMore={branches.data?.nextCursor != null}
       onRefresh={branches.refresh}

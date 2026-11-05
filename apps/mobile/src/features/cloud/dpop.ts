@@ -10,6 +10,7 @@ import * as SecureStore from "expo-secure-store";
 import { p256 } from "@noble/curves/nist";
 import { DpopPublicJwk, normalizeDpopHtu } from "@t3tools/shared/dpopCommon";
 import * as Layer from "effect/Layer";
+import { t } from "../../lib/i18n";
 
 export class CloudDpopError extends Data.TaggedError("CloudDpopError")<{
   readonly message: string;
@@ -123,7 +124,7 @@ function computeDpopJwkThumbprintEffect(
 ): Effect.Effect<string, CloudDpopError, Crypto.Crypto> {
   return base64UrlSha256(
     new TextEncoder().encode(dpopThumbprintInput(jwk)),
-    "Could not hash the DPoP public key thumbprint.",
+    t("Could not hash the DPoP public key thumbprint."),
   );
 }
 
@@ -132,7 +133,7 @@ function computeDpopAccessTokenHashEffect(
 ): Effect.Effect<string, CloudDpopError, Crypto.Crypto> {
   return base64UrlSha256(
     new TextEncoder().encode(accessToken),
-    "Could not hash the DPoP access token.",
+    t("Could not hash the DPoP access token."),
   );
 }
 
@@ -171,7 +172,7 @@ export const generateDpopProofKeyPair = Effect.fn("dpop.generateDpopProofKeyPair
     do {
       privateKey = yield* secureRandomBytes(
         p256.CURVE.nByteLength,
-        "Could not generate DPoP key pair randomness.",
+        t("Could not generate DPoP key pair randomness."),
       );
     } while (!p256.utils.isValidPrivateKey(privateKey));
     const publicJwk = yield* Effect.try({
@@ -232,7 +233,7 @@ function normalizeHtu(url: string): Effect.Effect<string, CloudDpopError> {
   const normalized = normalizeDpopHtu(url);
   return normalized
     ? Effect.succeed(normalized)
-    : Effect.fail(new CloudDpopError({ message: "DPoP URL is invalid." }));
+    : Effect.fail(new CloudDpopError({ message: t("DPoP URL is invalid.") }));
 }
 
 export const createDpopProof = Effect.fn("dpop.createDpopProof")(function* (input: {
@@ -277,7 +278,7 @@ export const createDpopProof = Effect.fn("dpop.createDpopProof")(function* (inpu
   );
   const signatureInputHash = yield* sha256Digest(
     new TextEncoder().encode(`${header}.${payload}`),
-    "Could not hash DPoP signing input.",
+    t("Could not hash DPoP signing input."),
   );
   const signature = yield* Effect.try({
     try: () => p256.sign(signatureInputHash, privateKey, { prehash: false }).toCompactRawBytes(),

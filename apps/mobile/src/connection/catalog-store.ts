@@ -19,6 +19,7 @@ export const LEGACY_CONNECTIONS_KEY = "t3code.connections";
 function catalogError(operation: string, cause: unknown) {
   return new ConnectionTransientError({
     reason: "remote-unavailable",
+    // oxlint-disable-next-line t3code/no-untranslated-text -- error detail for logs and error causes, never rendered
     detail: `Could not ${operation} the local connection catalog: ${String(cause)}`,
   });
 }

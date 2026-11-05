@@ -1,3 +1,4 @@
+import { msg, t, type Message } from "../../lib/i18n";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
@@ -57,34 +58,34 @@ function useMicrophonePermission() {
 const KINDS: Record<
   MicrophoneKind,
   {
-    readonly label: string;
-    readonly row: string;
-    readonly rowDescription: string;
+    readonly label: Message;
+    readonly row: Message;
+    readonly rowDescription: Message;
     readonly icon: AppSymbolName;
   }
 > = {
   wired: {
-    label: "Wired",
-    row: "Other wired",
-    rowDescription: "Headsets and USB microphones not listed",
+    label: msg("Wired"),
+    row: msg("Other wired"),
+    rowDescription: msg("Headsets and USB microphones not listed"),
     icon: "cable.connector",
   },
   bluetooth: {
-    label: "Bluetooth",
-    row: "Other Bluetooth",
-    rowDescription: "AirPods, headsets, and cars not listed",
+    label: msg("Bluetooth"),
+    row: msg("Other Bluetooth"),
+    rowDescription: msg("AirPods, headsets, and cars not listed"),
     icon: "headphones",
   },
   builtIn: {
-    label: "Built-in",
-    row: "Built-in microphone",
-    rowDescription: "The microphone on this device",
+    label: msg("Built-in"),
+    row: msg("Built-in microphone"),
+    rowDescription: msg("The microphone on this device"),
     icon: "iphone",
   },
   carPlay: {
-    label: "CarPlay",
-    row: "CarPlay",
-    rowDescription: "The car’s microphone",
+    label: msg("CarPlay"),
+    row: msg("CarPlay"),
+    rowDescription: msg("The car’s microphone"),
     icon: "car",
   },
 };
@@ -104,14 +105,13 @@ function VoiceInputUnavailable() {
         contentContainerClassName="gap-3 px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
-        <SettingsSection title="Voice input">
-          <ListRowLayout icon="mic" label="Not available on this device" />
+        <SettingsSection title={t("Voice input")}>
+          <ListRowLayout icon="mic" label={t("Not available on this device")} />
         </SettingsSection>
         <Text className="px-2 text-sm text-foreground-muted">
-          T3.CodeShip's voice input uses Apple's on-device speech transcription, which needs iOS 26
-          or later on a device that supports it. Without it, the composer has no microphone button,
-          and allowing microphone access won't add one. Apple keyboard dictation is separate and
-          isn't affected.
+          {t(
+            "T3.CodeShip's voice input uses Apple's on-device speech transcription, which needs iOS 26 or later on a device that supports it. Without it, the composer has no microphone button, and allowing microphone access won't add one. Apple keyboard dictation is separate and isn't affected.",
+          )}
         </Text>
       </ScrollView>
     </View>
@@ -176,10 +176,10 @@ function MicrophoneSettings() {
       >
         {permission === "ask" || permission === "denied" ? (
           <>
-            <SettingsSection title="Microphone access">
+            <SettingsSection title={t("Microphone access")}>
               <SettingsActionRow
                 icon="mic"
-                label={permission === "ask" ? "Allow microphone access" : "Open Settings"}
+                label={permission === "ask" ? t("Allow microphone access") : t("Open Settings")}
                 onPress={
                   permission === "ask" ? requestPermission : () => void Linking.openSettings()
                 }
@@ -187,12 +187,16 @@ function MicrophoneSettings() {
             </SettingsSection>
             <Text className="px-2 text-sm text-foreground-muted">
               {permission === "ask"
-                ? "Voice input needs microphone access before it can record or list your microphones."
-                : "Microphone access is off for T3.CodeShip. Turn it on in Settings to use voice input."}
+                ? t(
+                    "Voice input needs microphone access before it can record or list your microphones.",
+                  )
+                : t(
+                    "Microphone access is off for T3.CodeShip. Turn it on in Settings to use voice input.",
+                  )}
             </Text>
           </>
         ) : null}
-        <SettingsSection title="Preferred order">
+        <SettingsSection title={t("Preferred order")}>
           {entries.map((entry, index) => {
             const key = microphoneEntryKey(entry);
             const shift =
@@ -227,9 +231,9 @@ function MicrophoneSettings() {
           })}
         </SettingsSection>
         <Text className="px-2 text-sm text-foreground-muted">
-          Voice input records from the first connected microphone in this list. Wired and Bluetooth
-          devices are added by name after you use voice input with them connected; until then, the
-          Other row ranks them. Swipe a device left to forget it.
+          {t(
+            "Voice input records from the first connected microphone in this list. Wired and Bluetooth devices are added by name after you use voice input with them connected; until then, the Other row ranks them. Swipe a device left to forget it.",
+          )}
         </Text>
       </ScrollView>
     </View>
@@ -252,7 +256,7 @@ function MicrophoneRow(props: {
 }) {
   const { lifted, offset, entry, onForget } = props;
   const kind = KINDS[entry.kind];
-  const title = isMicrophoneDevice(entry) ? entry.name : kind.row;
+  const title = isMicrophoneDevice(entry) ? entry.name : t(kind.row);
   const { width: windowWidth } = useWindowDimensions();
   const style = useAnimatedStyle(() => ({
     transform: [
@@ -269,8 +273,13 @@ function MicrophoneRow(props: {
     <View className="flex-row items-center bg-grouped-card">
       <View
         accessible
-        accessibilityLabel={`${title}, ${kind.label}, ${props.position} of ${props.count}`}
-        accessibilityActions={onForget ? [{ name: "forget", label: "Forget" }] : undefined}
+        accessibilityLabel={t("{title}, {kind}, {position} of {count}", {
+          title,
+          kind: t(kind.label),
+          position: props.position,
+          count: props.count,
+        })}
+        accessibilityActions={onForget ? [{ name: "forget", label: t("Forget") }] : undefined}
         onAccessibilityAction={({ nativeEvent }) => {
           if (nativeEvent.actionName === "forget") onForget?.();
         }}
@@ -279,7 +288,7 @@ function MicrophoneRow(props: {
         <ListRowLayout
           icon={kind.icon}
           label={title}
-          description={isMicrophoneDevice(entry) ? kind.label : kind.rowDescription}
+          description={isMicrophoneDevice(entry) ? t(kind.label) : t(kind.rowDescription)}
         />
       </View>
       {props.reorderable ? (
@@ -311,10 +320,10 @@ function MicrophoneRow(props: {
           fullSwipeWidth={windowWidth - 40}
           onDelete={onForget}
           primaryAction={{
-            accessibilityLabel: `Forget ${title}`,
+            accessibilityLabel: t("Forget {title}", { title }),
             destructive: true,
             icon: "trash",
-            label: "Forget",
+            label: t("Forget"),
             onPress: onForget,
           }}
           secondaryAction={null}

@@ -19,6 +19,7 @@ import { FLOATING_TABS, floatingTabsMetrics } from "./floating-workspace-tabs";
 import { WorkspaceTabsContext, useWorkspaceTabs } from "./WorkspaceTabsContext";
 import { WorkspaceTabPanes } from "./WorkspaceTabPanes";
 import type { WorkspaceTab } from "./workspace-tabs-state";
+import { t } from "../../lib/i18n";
 
 const TABS: readonly WorkspaceTab[] = NAVIGATION_TAB_ORDER;
 
@@ -84,11 +85,11 @@ export function WorkspaceRootScreen() {
                 ) : layout.usesSplitView ? (
                   <>
                     <NativeStackScreenOptions options={{ headerShown: false }} />
-                    <AndroidScreenHeader title="Pull requests" />
+                    <AndroidScreenHeader title={t("Pull requests")} />
                     <View className="flex-1 items-center justify-center px-10">
                       <EmptyState
-                        title="Select a pull request"
-                        detail="Choose a pull request from the sidebar to review it."
+                        title={t("Select a pull request")}
+                        detail={t("Choose a pull request from the sidebar to review it.")}
                         variant="plain"
                       />
                     </View>

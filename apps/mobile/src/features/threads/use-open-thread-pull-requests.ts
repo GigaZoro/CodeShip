@@ -7,6 +7,7 @@ import {
   resolveThreadPrBadgeAction,
   type ThreadPrPresentation,
 } from "../../state/thread-pr-presentation";
+import { t } from "../../lib/i18n";
 
 /** Called once per thread list so virtualized rows share one stable handler. */
 export function useOpenThreadPullRequests() {
@@ -26,8 +27,8 @@ export function useOpenThreadPullRequests() {
     }).then((opened) => {
       if (!opened)
         Dialog.alert(
-          `Unable to open ${pr.changeRequest.shortLabel}`,
-          `The ${pr.changeRequest.singular} could not be opened.`,
+          t("Unable to open {label}", { label: pr.changeRequest.shortLabel }),
+          t("The {term} could not be opened.", { term: pr.changeRequest.singular }),
         );
     });
   };

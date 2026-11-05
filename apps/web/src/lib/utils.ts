@@ -1,4 +1,5 @@
 import { MessageId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { t } from "~/i18n";
 import { isMacPlatform } from "@t3tools/shared/keybindings";
 import { type CxOptions, cx } from "class-variance-authority";
 import * as Hex from "effect/encoding/Hex";
@@ -35,7 +36,7 @@ export function getLocalFileManagerName(platform: string): string {
   if (isWindowsPlatform(platform)) {
     return "File Explorer";
   }
-  return "Files";
+  return t("Files");
 }
 
 export function randomUUID(): string {

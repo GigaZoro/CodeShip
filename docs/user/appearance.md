@@ -1,4 +1,4 @@
-# Appearance and themes
+# Appearance, themes, and language
 
 On web and desktop, open **Settings → Appearance** to choose a theme and follow the system
 appearance or stay in light or dark mode. To use different themes for light and dark mode, select
@@ -20,6 +20,18 @@ can be selected separately for light and dark appearances.
 Android uses **Material You Layout** by default unless you have turned it off in Appearance.
 It changes shapes, spacing, and controls independently
 of the selected theme.
+
+## Language
+
+T3.CodeShip's interface is available in English and Ukrainian. On web and desktop, choose a language
+under **Settings → General → Language**; the app reloads in that language. On mobile, choose it
+under **Settings → Appearance → Language**. **System default** follows your browser, operating
+system, or phone language and falls back to English. The language is saved separately on each
+device or browser.
+
+The language changes T3.CodeShip's own text, and dates and numbers follow it. Agent replies, your
+messages, and names from your projects or git host stay as they are, and T3.CodeShip still writes
+English in prompts, commit messages, and pull requests it prepares for you.
 
 ## Branch and machine pickers
 

@@ -6,19 +6,40 @@ import {
   type UsageSummaryInput,
 } from "@t3tools/contracts";
 
+import { getFormattingLocale, t } from "./i18n.ts";
 import type { UsageContractMismatch } from "./usageMerge.ts";
 
-const CURRENCY = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
+const numberFormatters = new Map<string, Intl.NumberFormat>();
 
-const INTEGER = new Intl.NumberFormat("en-US");
+function numberFormatter(kind: "currency" | "integer"): Intl.NumberFormat {
+  const locale = getFormattingLocale() ?? "en-US";
+  const key = `${kind}:${locale}`;
+  let formatter = numberFormatters.get(key);
+  if (formatter === undefined) {
+    formatter =
+      kind === "currency"
+        ? new Intl.NumberFormat(locale, {
+            style: "currency",
+            currency: "USD",
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          })
+        : new Intl.NumberFormat(locale);
+    numberFormatters.set(key, formatter);
+  }
+  return formatter;
+}
 
+/** The wording servers append to a source message; clients match on it, so it stays English. */
 export function formatMalformedUsageWarning(count: number): string {
   return `${count} malformed or inconsistent usage record(s) were skipped; usage may be incomplete.`;
+}
+
+function displayMalformedUsageWarning(count: number): string {
+  return t(
+    "{count} malformed or inconsistent usage record(s) were skipped; usage may be incomplete.",
+    { count },
+  );
 }
 
 export function usageSourceMessages(sources: readonly UsageSource[]): readonly string[] {
@@ -52,16 +73,16 @@ export function usageSourceMessages(sources: readonly UsageSource[]): readonly s
     (total, count) => total + count,
     0,
   );
-  if (malformedRecords > 0) messages.add(formatMalformedUsageWarning(malformedRecords));
+  if (malformedRecords > 0) messages.add(displayMalformedUsageWarning(malformedRecords));
   return [...messages];
 }
 
 export function formatUsd(value: number): string {
-  return CURRENCY.format(value);
+  return numberFormatter("currency").format(value);
 }
 
 export function formatCount(value: number): string {
-  return INTEGER.format(Math.round(value));
+  return numberFormatter("integer").format(Math.round(value));
 }
 
 export function formatTokens(value: number): string {
@@ -70,7 +91,7 @@ export function formatTokens(value: number): string {
   if (abs >= 1e9) return `${trim(value / 1e9)}B`;
   if (abs >= 1e6) return `${trim(value / 1e6)}M`;
   if (abs >= 1e3) return `${trim(value / 1e3)}K`;
-  return INTEGER.format(Math.round(value));
+  return numberFormatter("integer").format(Math.round(value));
 }
 
 function trim(value: number): string {
@@ -91,28 +112,25 @@ export function formatUsageContractMismatch(
   mismatch: Pick<UsageContractMismatch, "direction">,
 ): string {
   return mismatch.direction === "serverBehind"
-    ? `${environmentLabel} runs an older server version and is excluded from totals.`
-    : `This client is older than the server on ${environmentLabel}; its usage is excluded from totals.`;
+    ? t("{environment} runs an older server version and is excluded from totals.", {
+        environment: environmentLabel,
+      })
+    : t(
+        "This client is older than the server on {environment}; its usage is excluded from totals.",
+        {
+          environment: environmentLabel,
+        },
+      );
 }
 
 export function formatDayShort(day: string): string {
   const [year, month, dayOfMonth] = day.split("-").map((part) => Number(part));
   if (year === undefined || month === undefined || dayOfMonth === undefined) return day;
-  const MONTHS = [
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-  ];
-  return `${MONTHS[month - 1] ?? ""} ${dayOfMonth}`;
+  return dateTimeFormatter(displayLocale(), {
+    timeZone: "UTC",
+    month: "short",
+    day: "numeric",
+  }).format(new Date(Date.UTC(year, month - 1, dayOfMonth)));
 }
 
 export function enumerateDays(sinceDay: string, untilDay: string): readonly string[] {
@@ -128,6 +146,10 @@ export function enumerateDays(sinceDay: string, untilDay: string): readonly stri
 }
 
 const HOUR_MS = 60 * 60 * 1000;
+
+function displayLocale(): string {
+  return getFormattingLocale() ?? "en-US";
+}
 
 const dateTimeFormatters = new Map<string, Intl.DateTimeFormat>();
 
@@ -180,7 +202,7 @@ export function formatHourShort(hourStart: string, timeZone?: string, hour12 = t
   const instant = new Date(hourStart);
   if (Number.isNaN(instant.getTime())) return hourStart;
   const options = timeZone === undefined ? {} : { timeZone };
-  const hourFormat = dateTimeFormatter("en-US", {
+  const hourFormat = dateTimeFormatter(displayLocale(), {
     ...options,
     ...hourOptions(hour12),
   });
@@ -198,7 +220,7 @@ export function formatHourShort(hourStart: string, timeZone?: string, hour12 = t
   );
 
   if (!isRepeatedHour) return formatHour(hourFormat, instant, hour12);
-  const zonedHourFormat = dateTimeFormatter("en-US", {
+  const zonedHourFormat = dateTimeFormatter(displayLocale(), {
     ...options,
     ...hourOptions(hour12),
     timeZoneName: "short",
@@ -209,7 +231,7 @@ export function formatHourShort(hourStart: string, timeZone?: string, hour12 = t
 export function formatDateTimeShort(instant: string, timeZone?: string, hour12 = true): string {
   const date = new Date(instant);
   if (Number.isNaN(date.getTime())) return instant;
-  const dateFormat = dateTimeFormatter("en-US", {
+  const dateFormat = dateTimeFormatter(displayLocale(), {
     ...(timeZone === undefined ? {} : { timeZone }),
     month: "short",
     day: "numeric",
@@ -240,8 +262,8 @@ export function formatRelativeHourShort(
   const calendarDaysAgo = Math.round((referenceDay - instantDay) / (24 * HOUR_MS));
   const hour = formatHourShort(hourStart, timeZone, hour12);
 
-  if (calendarDaysAgo === 0) return `${hour} today`;
-  if (calendarDaysAgo === 1) return `${hour} yesterday`;
+  if (calendarDaysAgo === 0) return t("{hour} today", { hour });
+  if (calendarDaysAgo === 1) return t("{hour} yesterday", { hour });
   return formatDateTimeShort(hourStart, timeZone, hour12);
 }
 

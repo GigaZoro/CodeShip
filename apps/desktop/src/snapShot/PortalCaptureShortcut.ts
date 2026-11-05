@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Stable shortcut IDs and unique portal request tokens.
 // @effect-diagnostics globalTimers:off -- Bounded D-Bus calls and user-consent requests at the native boundary.
+import { t } from "@t3tools/shared/i18n";
 import * as NodeCrypto from "node:crypto";
 import {
   DBusError,
@@ -63,7 +64,9 @@ export class PortalCaptureShortcut {
   state: PortalShortcutState = {
     shortcutRegistered: false,
     shortcutPending: true,
-    shortcutMessage: "Waiting for shortcut permission. Approve the desktop prompt if one appears.",
+    shortcutMessage: t(
+      "Waiting for shortcut permission. Approve the desktop prompt if one appears.",
+    ),
   };
   readonly ready: Promise<void>;
   private closed = false;
@@ -97,7 +100,7 @@ export class PortalCaptureShortcut {
       this.state = {
         shortcutRegistered: false,
         shortcutPending: true,
-        shortcutMessage: "Connecting to Hyprland shortcuts…",
+        shortcutMessage: t("Connecting to Hyprland shortcuts…"),
       };
     this.stopped = new Promise((_, reject) => {
       this.rejectStopped = reject;
@@ -127,10 +130,10 @@ export class PortalCaptureShortcut {
 
   async configure() {
     if (this.managedByHyprland)
-      throw new Error("Change the capture binding in your Hyprland config, then save it.");
+      throw new Error(t("Change the capture binding in your Hyprland config, then save it."));
     if (!this.hasSession || this.version < 2)
       throw new Error(
-        "Open your desktop's shortcut settings and allow T3.CodeShip's capture shortcut.",
+        t("Open your desktop's shortcut settings and allow T3.CodeShip's capture shortcut."),
       );
     await this.call({
       destination: this.owner,
@@ -158,10 +161,12 @@ export class PortalCaptureShortcut {
       shortcutPending: false,
       shortcutCanRetry: !this.managedByHyprland,
       shortcutMessage: this.managedByHyprland
-        ? "Couldn't connect to Hyprland shortcuts. Make sure xdg-desktop-portal-hyprland is running, then restart T3.CodeShip."
+        ? t(
+            "Couldn't connect to Hyprland shortcuts. Make sure xdg-desktop-portal-hyprland is running, then restart T3.CodeShip.",
+          )
         : error instanceof Error
           ? error.message
-          : "Could not register the capture shortcut.",
+          : t("Could not register the capture shortcut."),
     });
     this.close();
   };
@@ -174,7 +179,7 @@ export class PortalCaptureShortcut {
         this.stopped,
         new Promise<never>((_, reject) => {
           timer = setTimeout(
-            () => reject(new Error("Shortcut permission request timed out. Try again.")),
+            () => reject(new Error(t("Shortcut permission request timed out. Try again."))),
             timeoutMs,
           );
         }),
@@ -212,7 +217,9 @@ export class PortalCaptureShortcut {
       message.body[0] === PORTAL &&
       message.body[1] === this.owner
     ) {
-      this.failed(new Error("The desktop shortcut service restarted. Retry the shortcut request."));
+      this.failed(
+        new Error(t("The desktop shortcut service restarted. Retry the shortcut request.")),
+      );
       return;
     }
     if (!this.owner || message.sender !== this.owner) return;
@@ -232,7 +239,7 @@ export class PortalCaptureShortcut {
       message.member === "Closed"
     ) {
       this.failed(
-        new Error("Your desktop closed the capture shortcut. Retry the shortcut request."),
+        new Error(t("Your desktop closed the capture shortcut. Retry the shortcut request.")),
       );
       return;
     }
@@ -297,12 +304,14 @@ export class PortalCaptureShortcut {
             shortcutPending: false,
             shortcutMessage:
               this.version >= 2
-                ? "Shortcut permission wasn't granted. Open shortcut permissions to allow it."
-                : "Shortcut permission wasn't granted. Allow T3.CodeShip in your desktop's shortcut settings.",
+                ? t("Shortcut permission wasn't granted. Open shortcut permissions to allow it.")
+                : t(
+                    "Shortcut permission wasn't granted. Allow T3.CodeShip in your desktop's shortcut settings.",
+                  ),
           });
           return undefined;
         }
-        throw new Error("Your desktop could not create a capture shortcut session.");
+        throw new Error(t("Your desktop could not create a capture shortcut session."));
       }
       return results;
     } finally {
@@ -320,8 +329,10 @@ export class PortalCaptureShortcut {
         shortcutActionRegistered: Boolean(shortcut),
         shortcutPending: false,
         shortcutMessage: shortcut
-          ? "Managed by Hyprland. Add the binding to your config and save it."
-          : "Hyprland did not register the capture action. Check that xdg-desktop-portal-hyprland is running, then restart T3.CodeShip.",
+          ? t("Managed by Hyprland. Add the binding to your config and save it.")
+          : t(
+              "Hyprland did not register the capture action. Check that xdg-desktop-portal-hyprland is running, then restart T3.CodeShip.",
+            ),
       });
       return;
     }
@@ -331,10 +342,10 @@ export class PortalCaptureShortcut {
       shortcutPending: false,
       ...(label ? { shortcutLabel: label } : {}),
       shortcutMessage: label
-        ? `Desktop shortcut: ${label}`
+        ? t("Desktop shortcut: {label}", { label })
         : this.version >= 2
-          ? "No shortcut is assigned. Open shortcut permissions to choose one."
-          : "No shortcut is assigned. Choose one in your desktop's shortcut settings.",
+          ? t("No shortcut is assigned. Open shortcut permissions to choose one.")
+          : t("No shortcut is assigned. Choose one in your desktop's shortcut settings."),
     });
   }
 

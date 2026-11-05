@@ -12,11 +12,13 @@ import { isDesktopLocalConnectionTarget } from "~/connection/desktopLocal";
 import { isElectron } from "~/env";
 import { readPreparedConnection } from "~/state/session";
 
+import { t } from "~/i18n";
 export { normalizeHostname, isLocalLoopbackHost } from "@t3tools/shared/hostClassification";
 
 const readEnvironmentUrl = (environmentId: EnvironmentId): URL => {
   const connection = readPreparedConnection(environmentId);
-  if (!connection) throw new Error(`Environment ${environmentId} is not connected.`);
+  if (!connection)
+    throw new Error(t("Environment {environmentId} is not connected.", { environmentId }));
   return new URL(connection.httpBaseUrl);
 };
 
@@ -29,7 +31,9 @@ const resolveEnvironmentPortTarget = (
 ): PreviewUrlResolution => {
   if (!isPrivateNetworkHost(environmentUrl.hostname)) {
     throw new Error(
-      "This environment port needs the planned authenticated preview gateway; its server address is not directly private-network reachable.",
+      t(
+        "This environment port needs the planned authenticated preview gateway; its server address is not directly private-network reachable.",
+      ),
     );
   }
   const protocol = target.protocol ?? "http";

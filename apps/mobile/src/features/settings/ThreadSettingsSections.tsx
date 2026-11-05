@@ -1,6 +1,7 @@
+import { msg, t } from "../../lib/i18n";
 import { Button } from "../../components/ui/Button";
 import {
-  SCHEDULED_TASK_PLACEMENT_OPTIONS,
+  scheduledTaskPlacementOptions,
   scheduledTaskPlacementLabel,
 } from "@t3tools/client-runtime/scheduled-task-pins";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
@@ -101,36 +102,40 @@ export function AutoSettleSettingsRows(props: {
   return (
     <View className="gap-6">
       {!projectSelected ? (
-        <SettingsSection title="Usage limits">
+        <SettingsSection title={t("Usage limits")}>
           <SettingsSwitchRow
             icon="clock"
-            label="Resume after usage limits"
-            subtitle="Automatically resume threads when their usage limits reset. You can cancel auto-resume in each thread."
+            label={t("Resume after usage limits")}
+            subtitle={t(
+              "Automatically resume threads when their usage limits reset. You can cancel auto-resume in each thread.",
+            )}
             value={uniformMobileSetting(displayTargets, "autoResumeLimitedThreads")}
             disabled={disabledFor("autoResumeLimitedThreads")}
             onValueChange={(value) => writeToAll({ autoResumeLimitedThreads: value })}
           />
           <SettingsSwitchRow
             icon="clock"
-            label="Snooze until limits reset"
-            subtitle="Snooze threads until their usage limits reset. Enable auto-resume to continue the agent after the reset."
+            label={t("Snooze until limits reset")}
+            subtitle={t(
+              "Snooze threads until their usage limits reset. Enable auto-resume to continue the agent after the reset.",
+            )}
             value={uniformMobileSetting(displayTargets, "snoozeLimitedThreads")}
             disabled={disabledFor("snoozeLimitedThreads")}
             onValueChange={(value) => writeToAll({ snoozeLimitedThreads: value })}
           />
         </SettingsSection>
       ) : null}
-      <SettingsSection title="Auto-settle">
+      <SettingsSection title={t("Auto-settle")}>
         <SettingsSwitchRow
           icon="arrow.triangle.branch"
-          label="Auto-settle merged threads"
+          label={t("Auto-settle merged threads")}
           value={referenceSettings.sidebarAutoSettleOnMerge}
           disabled={disabledFor("sidebarAutoSettleOnMerge")}
           onValueChange={(value) => writeToAll({ sidebarAutoSettleOnMerge: value })}
         />
         <SettingsSwitchRow
           icon="clock"
-          label="Auto-settle inactive threads"
+          label={t("Auto-settle inactive threads")}
           value={afterDays !== null}
           disabled={disabledFor("sidebarAutoSettleAfterDays")}
           onValueChange={(value) =>
@@ -140,7 +145,9 @@ export function AutoSettleSettingsRows(props: {
         {afterDays !== null ? (
           <View className="flex-row items-center gap-4 px-4 py-4 android:min-h-14 android:py-3">
             <View className="w-[22px] android:w-6" />
-            <Text className="flex-1 text-foreground text-lg android:text-base">Inactive days</Text>
+            <Text className="flex-1 text-foreground text-lg android:text-base">
+              {t("Inactive days")}
+            </Text>
             <AutoSettleDaysField
               value={afterDays}
               disabled={disabledFor("sidebarAutoSettleAfterDays")}
@@ -150,14 +157,14 @@ export function AutoSettleSettingsRows(props: {
         ) : null}
       </SettingsSection>
       {!props.pending && mismatches.length > 0 ? (
-        <SettingsSection title="Across environments">
+        <SettingsSection title={t("Across environments")}>
           <View className="gap-3 p-4">
-            <Text className="text-base text-foreground">Auto-settle defaults differ</Text>
+            <Text className="text-base text-foreground">{t("Auto-settle defaults differ")}</Text>
             <Text className="text-sm text-foreground-muted">
               {mismatches.map((mismatch) => mismatch.label).join(", ")}
             </Text>
             <Button
-              label="Apply auto-settle defaults"
+              label={t("Apply auto-settle defaults")}
               tone="secondary"
               disabled={disabledFor("sidebarAutoSettleOnMerge", "sidebarAutoSettleAfterDays")}
               onPress={() => writeToAll(autoSettlePatch)}
@@ -170,8 +177,8 @@ export function AutoSettleSettingsRows(props: {
 }
 
 const PROJECT_GROUPING_OPTIONS = [
-  { project: false, label: "None", description: "List active threads together." },
-  { project: true, label: "By project", description: "A folder for each project." },
+  { project: false, label: msg("None"), description: msg("List active threads together.") },
+  { project: true, label: msg("By project"), description: msg("A folder for each project.") },
 ] as const;
 
 export function ThreadGroupingSettingsSection() {
@@ -184,12 +191,12 @@ export function ThreadGroupingSettingsSection() {
 
   return (
     <View className="gap-3">
-      <SettingsSection title="Group threads">
+      <SettingsSection title={t("Group threads")}>
         {PROJECT_GROUPING_OPTIONS.map((option, index) => (
           <SettingsChoiceRow
             key={option.label}
-            label={option.label}
-            description={option.description}
+            label={t(option.label)}
+            description={t(option.description)}
             selected={grouping.project === option.project}
             separated={index > 0}
             disabled={!loaded}
@@ -201,8 +208,10 @@ export function ThreadGroupingSettingsSection() {
         <SettingsSection>
           <SettingsSwitchRow
             icon="desktopcomputer"
-            label="Group by machine"
-            subtitle="A folder for each machine. Grouped by project too, it holds its project folders."
+            label={t("Group by machine")}
+            subtitle={t(
+              "A folder for each machine. Grouped by project too, it holds its project folders.",
+            )}
             value={grouping.machine}
             disabled={!loaded}
             onValueChange={toggleMachineGrouping}
@@ -210,9 +219,9 @@ export function ThreadGroupingSettingsSection() {
         </SettingsSection>
       ) : null}
       <Text className="px-2 text-sm text-foreground-muted">
-        Working threads show in their folder and in the Working section. Pinned threads and the
-        Snoozed and Settled sections stay shared across folders. While threads are grouped, active
-        threads are ordered by their latest message.
+        {t(
+          "Working threads show in their folder and in the Working section. Pinned threads and the Snoozed and Settled sections stay shared across folders. While threads are grouped, active threads are ordered by their latest message.",
+        )}
       </Text>
     </View>
   );
@@ -226,18 +235,18 @@ export function WorkingSectionSettings() {
 
   return (
     <View className="gap-3">
-      <SettingsSection title="Sidebar">
+      <SettingsSection title={t("Sidebar")}>
         <SettingsSwitchRow
           icon="bolt.circle"
-          label="Working section"
+          label={t("Working section")}
           value={workingShelfEnabled}
           onValueChange={(value) => savePreferences({ workingShelfEnabled: value })}
         />
       </SettingsSection>
       <Text className="px-2 text-sm text-foreground-muted">
-        Fold working and monitoring threads into a Working section. They return to the top of the
-        list when they need you. While this is on, active threads are ordered by time and cannot be
-        moved.
+        {t(
+          "Fold working and monitoring threads into a Working section. They return to the top of the list when they need you. While this is on, active threads are ordered by time and cannot be moved.",
+        )}
       </Text>
     </View>
   );
@@ -262,13 +271,13 @@ export function ScheduledTaskPlacementSettings() {
     targets.length === 0 ||
     managed !== undefined ||
     targets.some((target) => !writable.has(target.environment.environmentId));
-  const label = current === null ? "Mixed" : scheduledTaskPlacementLabel(current);
+  const label = current === null ? t("Mixed") : scheduledTaskPlacementLabel(current);
   const row = (
     <ListRowLayout
       icon="pin"
-      label="Show new scheduled tasks in"
+      label={t("Show new scheduled tasks in")}
       description={
-        managed ?? "Where new scheduled tasks appear. Change a task's place from its menu."
+        managed ?? t("Where new scheduled tasks appear. Change a task's place from its menu.")
       }
       detail={label}
       disabled={disabled}
@@ -276,22 +285,22 @@ export function ScheduledTaskPlacementSettings() {
   );
 
   return (
-    <SettingsSection title="Scheduled tasks">
+    <SettingsSection title={t("Scheduled tasks")}>
       {disabled ? (
         row
       ) : (
         <Menu
           accessible
           accessibilityRole="button"
-          accessibilityLabel={`Show new scheduled tasks in: ${label}`}
-          title="Show new scheduled tasks in"
-          actions={SCHEDULED_TASK_PLACEMENT_OPTIONS.map((option) => ({
+          accessibilityLabel={t("Show new scheduled tasks in: {label}", { label })}
+          title={t("Show new scheduled tasks in")}
+          actions={scheduledTaskPlacementOptions().map((option) => ({
             id: option.value,
             title: option.label,
             state: option.value === current ? ("on" as const) : ("off" as const),
           }))}
           onPressAction={async ({ nativeEvent }) => {
-            const placement = SCHEDULED_TASK_PLACEMENT_OPTIONS.find(
+            const placement = scheduledTaskPlacementOptions().find(
               (option) => option.value === nativeEvent.event,
             )?.value;
             if (placement === undefined) return;
@@ -322,11 +331,11 @@ export function NewThreadSettingsSection() {
     AsyncResult.isSuccess(preferences) && preferences.value.useLastProjectForNewThreads !== false;
 
   return (
-    <SettingsSection title="New threads">
+    <SettingsSection title={t("New threads")}>
       <SettingsSwitchRow
         icon="square.and.pencil"
-        label="Use last project"
-        subtitle="Start new threads in the last project you used on this device."
+        label={t("Use last project")}
+        subtitle={t("Start new threads in the last project you used on this device.")}
         value={useLastProject}
         onValueChange={(value) => savePreferences({ useLastProjectForNewThreads: value })}
       />
@@ -350,7 +359,7 @@ export function LinkedEnvironmentsSettingsSection() {
   if (supported.length === 0) return null;
   return (
     <View className="gap-3">
-      <SettingsSection title="Beta: Linked environments">
+      <SettingsSection title={t("Beta: Linked environments")}>
         {supported.map((environment) => {
           const policy = environment.serverConfig?.managedPolicy;
           const managed = isManagedSettingPath(policy, "linkedEnvironmentsEnabled");
@@ -359,7 +368,13 @@ export function LinkedEnvironmentsSettingsSection() {
               key={environment.environmentId}
               icon="link"
               label={environment.label}
-              {...(managed ? { subtitle: `Managed by ${policy?.organization}.` } : {})}
+              {...(managed
+                ? {
+                    subtitle: t("Managed by {organization}.", {
+                      organization: policy?.organization ?? "",
+                    }),
+                  }
+                : {})}
               value={environment.serverConfig?.settings.linkedEnvironmentsEnabled === true}
               disabled={managed || !writable.has(environment.environmentId)}
               onValueChange={(value) =>
@@ -373,8 +388,9 @@ export function LinkedEnvironmentsSettingsSection() {
         })}
       </SettingsSection>
       <Text className="px-2 text-sm text-foreground-muted">
-        Let agents on a machine work on your other machines, and theirs on it. Turn it on for each
-        machine. While it is off, nothing new starts over a link; tasks already running finish.
+        {t(
+          "Let agents on a machine work on your other machines, and theirs on it. Turn it on for each machine. While it is off, nothing new starts over a link; tasks already running finish.",
+        )}
       </Text>
     </View>
   );

@@ -1,6 +1,7 @@
 import { replaceTextRange } from "@t3tools/shared/composerTrigger";
 
 import type { PreparedVoiceTranscription, VoiceTranscriber } from "./transcription.ts";
+import { t } from "@t3tools/shared/i18n";
 
 export const VOICE_RECORDING_LIMIT_SECONDS = 5 * 60;
 
@@ -162,19 +163,19 @@ function errorCode(error: unknown): string | null {
 
 function preparationErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message === "voice-operation-busy") {
-    return "Voice transcription is still finishing. Try again shortly.";
+    return t("Voice transcription is still finishing. Try again shortly.");
   }
   if (errorCode(error) === "unsupported-locale") {
-    return "Voice transcription is not available for this language.";
+    return t("Voice transcription is not available for this language.");
   }
-  return "Could not prepare voice transcription.";
+  return t("Could not prepare voice transcription.");
 }
 
 function transcriptionErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message === "voice-operation-busy") {
-    return "Voice transcription is still finishing. Try again shortly.";
+    return t("Voice transcription is still finishing. Try again shortly.");
   }
-  return "Could not transcribe this recording.";
+  return t("Could not transcribe this recording.");
 }
 
 const IDLE_STATE: VoiceInputState = { phase: "idle", error: null, errorAction: null };
@@ -204,7 +205,7 @@ export class VoiceInputController {
     if (this.state.phase !== "idle" && this.state.phase !== "error") return;
     const initiatingDraft = this.dependencies.readDraft();
     if (!initiatingDraft) {
-      this.setError("This draft is no longer available.", "retry");
+      this.setError(t("This draft is no longer available."), "retry");
       return;
     }
     let sessionToken: VoiceInputSession | null = null;
@@ -222,7 +223,7 @@ export class VoiceInputController {
       }
       sessionToken = acquireSession();
       if (!sessionToken) {
-        this.setError("Another voice recording is already active.", "retry");
+        this.setError(t("Another voice recording is already active."), "retry");
         return;
       }
       this.sessionToken = sessionToken;
@@ -231,7 +232,7 @@ export class VoiceInputController {
 
       const transcriber = this.dependencies.getTranscriber();
       if (!transcriber) {
-        this.setError("Voice transcription is not available.", null);
+        this.setError(t("Voice transcription is not available."), null);
         return;
       }
 
@@ -239,7 +240,7 @@ export class VoiceInputController {
       if (!this.isCurrent(operationToken)) return;
       if (!permission.granted) {
         this.setError(
-          "Microphone access is required for voice input.",
+          t("Microphone access is required for voice input."),
           permission.canAskAgain ? "retry" : "settings",
         );
         return;
@@ -265,7 +266,7 @@ export class VoiceInputController {
 
       const capturedDraft = this.dependencies.readDraft();
       if (!capturedDraft || capturedDraft.ownerKey !== initiatingDraft.ownerKey) {
-        this.setError("This draft is no longer available.", "retry");
+        this.setError(t("This draft is no longer available."), "retry");
         return;
       }
       this.capturedDraft = capturedDraft;
@@ -273,7 +274,7 @@ export class VoiceInputController {
       this.setState({ phase: "recording", error: null, errorAction: null });
     } catch {
       if (this.isCurrent(operationToken))
-        this.setError("Could not start voice recording.", "retry");
+        this.setError(t("Could not start voice recording."), "retry");
     } finally {
       if (sessionToken && this.sessionToken === sessionToken) {
         if (this.isCurrent(operationToken) && this.state.phase === "error") {
@@ -312,7 +313,7 @@ export class VoiceInputController {
   }
 
   interruptRecording(
-    message = "Voice recording was interrupted.",
+    message = t("Voice recording was interrupted."),
     completedUri: string | null = null,
   ): Promise<void> | void {
     if (this.state.phase !== "recording") return;
@@ -324,7 +325,7 @@ export class VoiceInputController {
   appMovedToBackground(): Promise<void> | void {
     if (this.state.phase === "preparing") {
       this.invalidateOperation();
-      this.setError("Voice input stopped when the app moved to the background.", "retry");
+      this.setError(t("Voice input stopped when the app moved to the background."), "retry");
       return;
     }
     return this.interruptRecording();
@@ -334,7 +335,7 @@ export class VoiceInputController {
     if (this.state.phase !== "recording") return;
     if (status.hasError) {
       return this.interruptRecording(
-        status.error ?? "Voice recording was interrupted.",
+        status.error ?? t("Voice recording was interrupted."),
         status.url,
       );
     }
@@ -383,7 +384,7 @@ export class VoiceInputController {
         !this.transcriptionAbortController ||
         !this.capturedDraft
       ) {
-        this.setError("Could not finish voice recording.", "retry");
+        this.setError(t("Could not finish voice recording."), "retry");
         return;
       }
 
@@ -412,13 +413,13 @@ export class VoiceInputController {
       );
       if (result.kind === "stale") {
         this.setError(
-          "The draft changed while voice input was running. The transcript was not added.",
+          t("The draft changed while voice input was running. The transcript was not added."),
           "retry",
         );
         return;
       }
       if (result.kind === "empty") {
-        this.setError("No speech was detected.", "retry");
+        this.setError(t("No speech was detected."), "retry");
         return;
       }
 
@@ -426,7 +427,7 @@ export class VoiceInputController {
       this.setState(IDLE_STATE);
     } catch {
       if (this.isCurrent(operationToken)) {
-        this.setError("Could not finish voice recording.", "retry");
+        this.setError(t("Could not finish voice recording."), "retry");
       }
     } finally {
       this.finishing = false;

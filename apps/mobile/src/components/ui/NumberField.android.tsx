@@ -3,6 +3,7 @@ import { View } from "react-native";
 import { AppText } from "./AppText";
 import { IconButton } from "./IconButton";
 import type { NumberFieldProps } from "./NumberField.types";
+import { t } from "../../lib/i18n";
 
 export function NumberField(props: NumberFieldProps) {
   const adjust = (amount: number) => {
@@ -20,7 +21,7 @@ export function NumberField(props: NumberFieldProps) {
       />
       <IconButton
         icon="minus"
-        accessibilityLabel={`Decrease ${props.label}`}
+        accessibilityLabel={t("Decrease {label}", { label: props.label })}
         disabled={props.disabled || props.value <= props.min}
         onPress={() => adjust(-1)}
       />
@@ -35,7 +36,7 @@ export function NumberField(props: NumberFieldProps) {
       </AppText>
       <IconButton
         icon="plus"
-        accessibilityLabel={`Increase ${props.label}`}
+        accessibilityLabel={t("Increase {label}", { label: props.label })}
         disabled={props.disabled || props.value >= props.max}
         onPress={() => adjust(1)}
       />

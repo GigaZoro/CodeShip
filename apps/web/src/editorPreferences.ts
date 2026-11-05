@@ -5,6 +5,7 @@ import {
   EnvironmentAuthorizationError,
   EnvironmentId,
 } from "@t3tools/contracts";
+import { t } from "~/i18n";
 import {
   mapAtomCommandResult,
   type AtomCommandFailure,
@@ -103,7 +104,7 @@ export function useOpenInPreferredEditor(
         Cause.fail(
           new EnvironmentAuthorizationError({
             requiredScope: AuthOrchestrationOperateScope,
-            message: "This connection cannot open an editor on this environment.",
+            message: t("This connection cannot open an editor on this environment."),
           }),
         ),
       );

@@ -2,6 +2,7 @@ import { formatPercent } from "@t3tools/shared/usageFormat";
 import type { ReactNode } from "react";
 
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { t } from "~/i18n";
 
 export interface ShareSegment {
   readonly label: string;
@@ -32,7 +33,14 @@ export function UsageShareBar({
       </div>
       <div
         role="img"
-        aria-label={`${label}: ${visible.map((segment) => `${segment.label} ${format(segment.value)}`).join(", ")}`}
+        aria-label={t("{label}: {segments}", {
+          label,
+          segments: visible
+            .map((segment) =>
+              t("{label} {value}", { label: segment.label, value: format(segment.value) }),
+            )
+            .join(", "),
+        })}
         className="flex h-2 gap-0.5"
       >
         {visible.map((segment) => (

@@ -1,4 +1,5 @@
 import { DEFAULT_HOSTED_APP_URL } from "./connectAuth.ts";
+import { getFormattingLocale, t } from "./i18n.ts";
 
 export const PROMPT_LINK_MAX_PROMPT_LENGTH = 8_000;
 
@@ -107,15 +108,18 @@ function readPrompt(params: URLSearchParams): PromptLinkResult<LinkedPrompt | nu
   if (raw.length > PROMPT_LINK_MAX_PROMPT_LENGTH) {
     return {
       ok: false,
-      error: `This prompt is longer than ${PROMPT_LINK_MAX_PROMPT_LENGTH.toLocaleString("en-US")} characters, so T3.CodeShip did not open it.`,
+      error: t("This prompt is longer than {limit} characters, so T3.CodeShip did not open it.", {
+        limit: PROMPT_LINK_MAX_PROMPT_LENGTH.toLocaleString(getFormattingLocale() ?? "en-US"),
+      }),
     };
   }
   const prompt = sanitizeLinkedPrompt(raw);
   if (prompt.text.length === 0 && prompt.hiddenCharacters > 0) {
     return {
       ok: false,
-      error:
+      error: t(
         "This prompt had only hidden characters, so it may be malicious. T3.CodeShip did not open it.",
+      ),
     };
   }
   return { ok: true, value: prompt.text.length > 0 ? prompt : null };
@@ -131,15 +135,15 @@ export function parseNewThreadLink(search: string): PromptLinkResult<NewThreadLi
   if (pr !== null) {
     const pullRequest = parsePromptLinkPullRequest(pr);
     if (pullRequest === null) {
-      return { ok: false, error: "This link names a pull request T3.CodeShip cannot read." };
+      return { ok: false, error: t("This link names a pull request T3.CodeShip cannot read.") };
     }
     return { ok: true, value: { kind: "pull-request", pullRequest, prompt: prompt.value } };
   }
-  if (prompt.value === null) return { ok: false, error: "This link has no prompt." };
+  if (prompt.value === null) return { ok: false, error: t("This link has no prompt.") };
   const repo = params.get("repo");
   const repository = repo === null ? null : parsePromptLinkRepository(repo);
   if (repo !== null && repository === null) {
-    return { ok: false, error: "This link names a repository T3.CodeShip cannot read." };
+    return { ok: false, error: t("This link names a repository T3.CodeShip cannot read.") };
   }
   return {
     ok: true,

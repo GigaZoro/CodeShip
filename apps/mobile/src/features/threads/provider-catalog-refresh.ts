@@ -4,6 +4,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { t } from "../../lib/i18n";
 
 type RefreshProvidersTarget = {
   readonly environmentId: EnvironmentId;
@@ -29,5 +30,5 @@ export function providerCatalogRefreshError(
 ): string | null {
   if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return null;
   const error = squashAtomCommandFailure(result);
-  return error instanceof Error ? error.message : "Provider discovery failed.";
+  return error instanceof Error ? error.message : t("Provider discovery failed.");
 }

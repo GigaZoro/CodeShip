@@ -9,11 +9,12 @@ import {
   type ConnectionAttemptError,
   ConnectionTransientError,
 } from "./model.ts";
+import { t } from "@t3tools/shared/i18n";
 
 export function profileMissingError(connectionId: string): ConnectionBlockedError {
   return new ConnectionBlockedError({
     reason: "configuration",
-    detail: `Connection profile ${connectionId} is unavailable.`,
+    detail: t("Connection profile {connectionId} is unavailable.", { connectionId }),
     hop: "device",
   });
 }
@@ -21,7 +22,7 @@ export function profileMissingError(connectionId: string): ConnectionBlockedErro
 export function credentialMissingError(connectionId: string): ConnectionBlockedError {
   return new ConnectionBlockedError({
     reason: "authentication",
-    detail: `Connection credential ${connectionId} is unavailable.`,
+    detail: t("Connection credential {connectionId} is unavailable.", { connectionId }),
     hop: "device",
   });
 }
@@ -32,7 +33,10 @@ export function environmentMismatchError(input: {
 }): ConnectionBlockedError {
   return new ConnectionBlockedError({
     reason: "configuration",
-    detail: `Connected environment ${input.actual} does not match ${input.expected}.`,
+    detail: t("Connected environment {actual} does not match {expected}.", {
+      actual: input.actual,
+      expected: input.expected,
+    }),
   });
 }
 
@@ -191,7 +195,7 @@ export function mapRemoteEnvironmentError(
     case "EnvironmentAuthInvalidError":
       return new ConnectionBlockedError({
         reason: "authentication",
-        detail: "The environment credential is invalid.",
+        detail: t("The environment credential is invalid."),
         traceId: error.traceId,
         hop: "server",
         via,
@@ -200,7 +204,7 @@ export function mapRemoteEnvironmentError(
     case "EnvironmentOperationForbiddenError":
       return new ConnectionBlockedError({
         reason: "permission",
-        detail: "The environment credential does not grant the required access.",
+        detail: t("The environment credential does not grant the required access."),
         traceId: error.traceId,
         hop: "server",
         via,
@@ -208,7 +212,7 @@ export function mapRemoteEnvironmentError(
     case "EnvironmentRequestInvalidError":
       return new ConnectionBlockedError({
         reason: "configuration",
-        detail: "The environment rejected the authentication request.",
+        detail: t("The environment rejected the authentication request."),
         traceId: error.traceId,
         hop: "server",
         via,
@@ -216,7 +220,7 @@ export function mapRemoteEnvironmentError(
     case "EnvironmentResourceNotFoundError":
       return new ConnectionBlockedError({
         reason: "configuration",
-        detail: "The environment endpoint could not be found.",
+        detail: t("The environment endpoint could not be found."),
         traceId: error.traceId,
         hop: "server",
         via,
@@ -238,7 +242,7 @@ export function mapRemoteEnvironmentError(
     case "EnvironmentInternalError":
       return new ConnectionTransientError({
         reason: "remote-unavailable",
-        detail: "The environment could not authorize the connection.",
+        detail: t("The environment could not authorize the connection."),
         traceId: error.traceId,
         hop: "server",
         via,
@@ -265,7 +269,10 @@ export function mapRemoteDpopEnvironmentError(
   if (error._tag === "EnvironmentAuthInvalidError" && error.reason === "invalid_credential") {
     return new ConnectionBlockedError({
       reason: "authentication",
-      detail: dpopFailureMessage("The environment credential is invalid.", error.dpopFailureReason),
+      detail: dpopFailureMessage(
+        t("The environment credential is invalid."),
+        error.dpopFailureReason,
+      ),
       traceId: error.traceId,
       hop: "server",
       via: "relay",

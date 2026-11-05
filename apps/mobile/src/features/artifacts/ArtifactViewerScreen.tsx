@@ -16,6 +16,7 @@ import { HtmlRenderWebView } from "../threads/HtmlRenderWebView";
 import { useArtifacts } from "./useArtifacts";
 import { useDeleteArtifact } from "./useDeleteArtifact";
 import { artifactKey, type EnvironmentArtifact } from "./artifactList";
+import { t } from "../../lib/i18n";
 
 type ArtifactViewerProps = StaticScreenProps<{
   readonly environmentId: string;
@@ -72,8 +73,8 @@ function ArtifactPage(props: { readonly artifact: EnvironmentArtifact }) {
   if (failed || asset._tag === "Failure") {
     return (
       <View className="flex-1 items-center justify-center gap-3 px-8">
-        <Text className="text-sm text-foreground-muted">This page could not be loaded.</Text>
-        <Button label="Try again" tone="secondary" onPress={retry} />
+        <Text className="text-sm text-foreground-muted">{t("This page could not be loaded.")}</Text>
+        <Button label={t("Try again")} tone="secondary" onPress={retry} />
       </View>
     );
   }
@@ -108,7 +109,7 @@ export function ArtifactViewerScreen({ route }: ArtifactViewerProps) {
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
-        title={artifact?.title ?? "Artifact"}
+        title={artifact?.title ?? t("Artifact")}
         {...(artifact ? { subtitle: artifact.threadTitle } : undefined)}
         sidebar={false}
         onBack={goBack}
@@ -116,12 +117,12 @@ export function ArtifactViewerScreen({ route }: ArtifactViewerProps) {
           artifact
             ? [
                 {
-                  title: "Artifact options",
+                  title: t("Artifact options"),
                   icon: "ellipsis.circle",
                   items: [
                     {
                       id: "open-thread",
-                      title: "Open thread",
+                      title: t("Open thread"),
                       icon: "bubble.left",
                       onPress: () =>
                         navigation.dispatch(
@@ -133,7 +134,7 @@ export function ArtifactViewerScreen({ route }: ArtifactViewerProps) {
                     },
                     {
                       id: "delete",
-                      title: "Delete",
+                      title: t("Delete"),
                       icon: "trash",
                       onPress: () => deleteArtifact(artifact, goBack),
                     },
@@ -147,7 +148,7 @@ export function ArtifactViewerScreen({ route }: ArtifactViewerProps) {
         <>
           {offline ? (
             <Text className="px-4 py-2 text-center text-xs text-foreground-muted">
-              Environment offline. Showing the last loaded page.
+              {t("Environment offline. Showing the last loaded page.")}
             </Text>
           ) : null}
           <ArtifactPage key={artifactKey(artifact)} artifact={artifact} />
@@ -155,9 +156,9 @@ export function ArtifactViewerScreen({ route }: ArtifactViewerProps) {
       ) : offline ? (
         <View className="flex-1 justify-center">
           <EmptyState
-            title="Environment offline"
-            detail="Reconnect to this environment to open the artifact."
-            actionLabel="Back to artifacts"
+            title={t("Environment offline")}
+            detail={t("Reconnect to this environment to open the artifact.")}
+            actionLabel={t("Back to artifacts")}
             onAction={goBack}
           />
         </View>
@@ -168,9 +169,9 @@ export function ArtifactViewerScreen({ route }: ArtifactViewerProps) {
       ) : (
         <View className="flex-1 justify-center">
           <EmptyState
-            title={error === null ? "Artifact not found" : "Could not load the artifact"}
-            detail={error === null ? "It may have been deleted from another device." : error}
-            actionLabel={error === null ? "Back to artifacts" : "Try again"}
+            title={error === null ? t("Artifact not found") : t("Could not load the artifact")}
+            detail={error === null ? t("It may have been deleted from another device.") : error}
+            actionLabel={error === null ? t("Back to artifacts") : t("Try again")}
             onAction={error === null ? goBack : refresh}
           />
         </View>

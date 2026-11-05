@@ -13,6 +13,7 @@ import { useScaledTextRole } from "../../features/settings/appearance/useScaledT
 import { useToolbarLayout } from "./useToolbarLayout";
 import { useControlTheme } from "./useControlTheme";
 import { RoutedFormSheetContext } from "./RoutedFormSheetContext";
+import { t } from "../../lib/i18n";
 
 export interface AndroidHeaderAction {
   readonly accessibilityLabel: string;
@@ -83,7 +84,7 @@ export function AndroidScreenHeader(props: {
             <View collapsable={false} className="flex-row items-center">
               {props.onBack ? (
                 <IconButton
-                  accessibilityLabel="Navigate up"
+                  accessibilityLabel={t("Navigate up")}
                   icon="arrow.left"
                   tintColorClassName="accent-header-foreground"
                   onPress={props.onBack}
@@ -192,7 +193,7 @@ export function AndroidScreenHeader(props: {
                 >
                   {(open) => (
                     <IconButton
-                      accessibilityLabel="More actions"
+                      accessibilityLabel={t("More actions")}
                       icon="ellipsis"
                       tintColorClassName="accent-header-foreground"
                       onPress={open}

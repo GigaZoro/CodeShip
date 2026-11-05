@@ -3,6 +3,7 @@ import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/at
 
 import { parseLegacyNewTaskDraftKey } from "../state/new-task-draft-key";
 import type { DraftComposerAttachment } from "./composerImages";
+import { t } from "./i18n";
 
 export interface ComposerAttachmentUploadRequest {
   readonly environmentId: EnvironmentId;
@@ -77,7 +78,7 @@ export function composerAttachmentUploadBlockReason(input: {
   for (const attachment of input.attachments) {
     if (!canUploadComposerAttachment(attachment, input.serverConfig)) continue;
     const state = input.states[composerAttachmentUploadKey(input.environmentId, attachment.id)];
-    if (state?.status === "failed") return "Retry or remove the failed attachment";
+    if (state?.status === "failed") return t("Retry or remove the failed attachment");
   }
   return null;
 }
@@ -156,7 +157,7 @@ export function createComposerAttachmentUploadQueue(options: {
           if (!controller.signal.aborted && desired.has(key)) {
             setState(key, {
               status: "failed",
-              reason: error instanceof Error ? error.message : "Upload failed. Tap to retry.",
+              reason: error instanceof Error ? error.message : t("Upload failed. Tap to retry."),
             });
           }
         })

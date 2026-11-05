@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import { useSyncExternalStore } from "react";
 
 import { isMacPlatform } from "../lib/utils";
@@ -55,8 +56,8 @@ export function QuitHoldOverlay() {
   const shortcut = isMacPlatform(navigator.platform) ? "⌘Q" : "Ctrl+Q";
   const message =
     visibleMode === "hold"
-      ? `Hold ${shortcut} or press twice to quit`
-      : `Press ${shortcut} again to quit`;
+      ? t("Hold {shortcut} or press twice to quit", { shortcut })
+      : t("Press {shortcut} again to quit", { shortcut });
   return (
     <div
       role="status"

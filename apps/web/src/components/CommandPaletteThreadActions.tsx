@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import { canSnooze, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
@@ -45,7 +46,7 @@ function failureToast(title: string, result: AtomCommandResult<unknown, unknown>
     stackedThreadToast({
       type: "error",
       title,
-      description: error instanceof Error ? error.message : "An error occurred.",
+      description: error instanceof Error ? error.message : t("An error occurred."),
     }),
   );
 }
@@ -86,7 +87,7 @@ export function useActiveThreadPaletteItems(
       kind: "action",
       value: "action:thread-pin",
       searchTerms: ["pin", "unpin", "favorite", "keep", "thread"],
-      title: pinned ? "Unpin thread" : "Pin thread",
+      title: pinned ? t("Unpin thread") : t("Pin thread"),
       icon: pinned ? (
         <PinOffIcon className={ITEM_ICON_CLASS} />
       ) : (
@@ -95,7 +96,7 @@ export function useActiveThreadPaletteItems(
       shortcutCommand: "thread.pin",
       run: async () => {
         failureToast(
-          pinned ? "Failed to unpin thread" : "Failed to pin thread",
+          pinned ? t("Failed to unpin thread") : t("Failed to pin thread"),
           await (pinned ? confirmAndUnpinThread(threadRef) : pinThread(threadRef)),
         );
       },
@@ -106,12 +107,12 @@ export function useActiveThreadPaletteItems(
       kind: "action",
       value: "action:thread-settle",
       searchTerms: ["settle", "unsettle", "done", "finish", "close", "thread"],
-      title: settled ? "Un-settle thread" : "Settle thread",
+      title: settled ? t("Un-settle thread") : t("Settle thread"),
       icon: <CheckCircle2Icon className={ITEM_ICON_CLASS} />,
       shortcutCommand: "thread.settle",
       run: async () => {
         failureToast(
-          settled ? "Failed to un-settle thread" : "Failed to settle thread",
+          settled ? t("Failed to un-settle thread") : t("Failed to settle thread"),
           await (settled ? unsettleThread(threadRef) : settleThread(threadRef)),
         );
       },
@@ -122,22 +123,22 @@ export function useActiveThreadPaletteItems(
         kind: "action",
         value: "action:thread-unsnooze",
         searchTerms: ["snooze", "wake", "unsnooze", "thread"],
-        title: "Wake thread",
+        title: t("Wake thread"),
         icon: <AlarmClockOffIcon className={ITEM_ICON_CLASS} />,
         run: async () => {
-          failureToast("Failed to wake thread", await unsnoozeThread(threadRef));
+          failureToast(t("Failed to wake thread"), await unsnoozeThread(threadRef));
         },
       });
     } else if (canSnooze(thread, { now: now.toISOString() })) {
       const presets = resolveSnoozePresets(now, timestampFormat, thread.environmentId);
       const snoozeWith = async (snoozedUntil: string) =>
-        failureToast("Failed to snooze thread", await snoozeThread(threadRef, snoozedUntil));
+        failureToast(t("Failed to snooze thread"), await snoozeThread(threadRef, snoozedUntil));
       for (const [index, preset] of presets.entries()) {
         items.push({
           kind: "action",
           value: `${SNOOZE_ROW_PREFIX}${preset.id}`,
           searchTerms: ["snooze", "later", "remind", "hide", "thread", preset.label],
-          title: `Snooze: ${preset.label}`,
+          title: t("Snooze: {when}", { when: preset.label }),
           description: preset.whenLabel,
           icon: <AlarmClockIcon className={ITEM_ICON_CLASS} />,
           // The shortcut lists the presets rather than picking one, so only the first row shows it.
@@ -157,7 +158,7 @@ export function useActiveThreadPaletteItems(
         kind: "action",
         value: `${SNOOZE_ROW_PREFIX}custom`,
         searchTerms: ["snooze", "later", "remind", "custom", "thread"],
-        title: "Snooze: Custom…",
+        title: t("Snooze: Custom…"),
         icon: <AlarmClockIcon className={ITEM_ICON_CLASS} />,
         run: async () => {
           const choice = await requestCustomSnooze();
@@ -171,7 +172,7 @@ export function useActiveThreadPaletteItems(
     kind: "action",
     value: "action:thread-rename",
     searchTerms: ["rename", "title", "name", "thread"],
-    title: "Rename thread",
+    title: t("Rename thread"),
     icon: <PencilIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
       requestThreadRename({ threadRef, title: thread.title });
@@ -183,8 +184,8 @@ export function useActiveThreadPaletteItems(
     kind: "action",
     value: "action:thread-archive",
     searchTerms: ["archive", "hide", "remove", "thread"],
-    title: "Archive thread",
-    description: running ? "Stop the agent first" : undefined,
+    title: t("Archive thread"),
+    description: running ? t("Stop the agent first") : undefined,
     disabled: running,
     icon: <ArchiveIcon className={ITEM_ICON_CLASS} />,
     shortcutCommand: "thread.archive",

@@ -15,6 +15,7 @@ import { environmentIdsKey } from "../../state/environmentAtomList";
 import { serverEnvironment } from "../../state/server";
 import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { tn, t } from "~/i18n";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { scheduledTasksListAtom } from "./ScheduledTasksSettings";
@@ -28,10 +29,6 @@ interface TaskGroup {
 
 function countTasks(groups: ReadonlyArray<TaskGroup>) {
   return groups.reduce((total, group) => total + group.ids.length, 0);
-}
-
-function taskCount(count: number) {
-  return count === 1 ? "1 task" : `${count} tasks`;
 }
 
 /** Moves every task that picked its own model onto the scheduled tasks model, with Undo. */
@@ -68,7 +65,7 @@ export function ScheduledTasksOwnModelRow() {
         if (!isAtomCommandInterrupted(result)) {
           toastManager.add({
             type: "error",
-            title: "Could not update scheduled tasks",
+            title: t("Could not update scheduled tasks"),
             description: String(squashAtomCommandFailure(result)),
           });
         }
@@ -89,9 +86,13 @@ export function ScheduledTasksOwnModelRow() {
     const switched = countTasks(changed);
     toastManager.add({
       type: "success",
-      title: `${taskCount(switched)} now ${switched === 1 ? "uses" : "use"} the scheduled tasks model`,
+      title: tn(
+        switched,
+        "{count} task now uses the scheduled tasks model",
+        "{count} tasks now use the scheduled tasks model",
+      ),
       actionProps: {
-        children: "Undo",
+        children: t("Undo"),
         onClick: () => void apply(changed, false),
       },
     });
@@ -99,8 +100,12 @@ export function ScheduledTasksOwnModelRow() {
 
   return (
     <SettingsRow
-      title="Tasks with their own model"
-      description={`${taskCount(count)} ${count === 1 ? "runs a model" : "run models"} picked for that task instead of the scheduled tasks model.`}
+      title={t("Tasks with their own model")}
+      description={tn(
+        count,
+        "{count} task runs a model picked for that task instead of the scheduled tasks model.",
+        "{count} tasks run models picked for that task instead of the scheduled tasks model.",
+      )}
       control={
         <Button
           size="sm"
@@ -108,7 +113,7 @@ export function ScheduledTasksOwnModelRow() {
           disabled={busy}
           onClick={() => void switchAllToDefault()}
         >
-          Use default for all
+          {t("Use default for all")}
         </Button>
       }
     />

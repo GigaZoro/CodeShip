@@ -10,7 +10,7 @@ import {
   resolvePinnedTaskStatus,
   resolveScheduledTaskPlacement,
   scheduledTaskHiddenThreadKeys,
-  SCHEDULED_TASK_PLACEMENT_OPTIONS,
+  scheduledTaskPlacementOptions,
   type PinnedTaskStatus,
 } from "@t3tools/client-runtime/scheduled-task-pins";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
@@ -53,6 +53,7 @@ import {
 import { resolveThreadListV2Status } from "./threadListV2";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
 import { useVisibleWorkingDurationLabel } from "./use-visible-working-duration-label";
+import { msg, t, type Message } from "../../lib/i18n";
 
 const pinnedTasksAtom = Atom.family((environmentIdsKey: string) =>
   Atom.make((get) =>
@@ -95,34 +96,34 @@ const WORKING_TONE = {
 const STATUS_DISPLAY: Record<
   Exclude<PinnedTaskStatus, "idle">,
   {
-    readonly label: string;
+    readonly label: Message;
     readonly icon: AppSymbolName;
     readonly className: string;
     readonly iconTintClassName: string;
   }
 > = {
-  starting: { label: "Starting", icon: "circle.dashed", ...WORKING_TONE },
-  working: { label: "Working", icon: "circle.dashed", ...WORKING_TONE },
+  starting: { label: msg("Starting"), icon: "circle.dashed", ...WORKING_TONE },
+  working: { label: msg("Working"), icon: "circle.dashed", ...WORKING_TONE },
   approval: {
-    label: "Approval",
+    label: msg("Approval"),
     icon: "exclamationmark.shield",
     className: "text-warning-foreground",
     iconTintClassName: "accent-warning-foreground",
   },
   input: {
-    label: "Input",
+    label: msg("Input"),
     icon: "questionmark.bubble",
     className: "text-adaptive-indigo-600-300",
     iconTintClassName: "accent-adaptive-indigo-600-300",
   },
   failed: {
-    label: "Failed",
+    label: msg("Failed"),
     icon: "exclamationmark.circle",
     className: "text-danger-foreground",
     iconTintClassName: "accent-danger-foreground",
   },
   paused: {
-    label: "Paused",
+    label: msg("Paused"),
     icon: "slash.circle",
     className: "text-foreground-muted",
     iconTintClassName: "accent-foreground-muted",
@@ -201,15 +202,15 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
     else openScheduledTasks();
   };
   const actions: MenuAction[] = [
-    ...(runThread !== null ? [{ id: "open-run", title: "Open last run" }] : []),
-    { id: "edit", title: "Edit task" },
+    ...(runThread !== null ? [{ id: "open-run", title: t("Open last run") }] : []),
+    { id: "edit", title: t("Edit task") },
     // Webhook tasks run only when their URL receives a request.
     ...(task.schedule.type === "webhook"
       ? []
       : [
           {
             id: "run",
-            title: "Run now",
+            title: t("Run now"),
             attributes: { disabled: !canOperate || status === "starting" },
           },
         ]),
@@ -218,9 +219,9 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
       : [
           {
             id: "show-in",
-            title: "Show in",
+            title: t("Show in"),
             attributes: { disabled: !canOperate },
-            subactions: SCHEDULED_TASK_PLACEMENT_OPTIONS.map((option) => ({
+            subactions: scheduledTaskPlacementOptions().map((option) => ({
               id: `placement:${option.value}`,
               title: option.label,
               state:
@@ -235,7 +236,7 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
     if (action === "open-run") return openRun();
     if (action === "edit") return openScheduledTasks();
     if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
-    const placement = SCHEDULED_TASK_PLACEMENT_OPTIONS.find(
+    const placement = scheduledTaskPlacementOptions().find(
       (option) => `placement:${option.value}` === action,
     )?.value;
     const result =
@@ -246,7 +247,7 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
           : null;
     if (result?._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       Dialog.alert(
-        action === "run" ? "Could not update task" : "Could not move task",
+        action === "run" ? t("Could not update task") : t("Could not move task"),
         String(squashAtomCommandFailure(result)),
       );
     }
@@ -276,7 +277,7 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
               type="monochrome"
             />
             <Text className={cn("text-xs font-t3-medium tabular-nums", display.className)}>
-              {display.label}
+              {t(display.label)}
               {status === "working" && runThread !== null ? (
                 <WorkingDuration thread={runThread} />
               ) : null}
@@ -324,11 +325,13 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
       >
         <RowPressable
           accessibilityRole="button"
-          accessibilityLabel={[task.title, display?.label, props.machineLabel]
+          accessibilityLabel={[task.title, display ? t(display.label) : null, props.machineLabel]
             .filter(Boolean)
             .join(", ")}
           accessibilityHint={
-            runThread !== null ? "Opens the task's last run." : "Opens scheduled task settings."
+            runThread !== null
+              ? t("Opens the task's last run.")
+              : t("Opens scheduled task settings.")
           }
           accessibilityState={{ selected }}
           className={appearance.className}

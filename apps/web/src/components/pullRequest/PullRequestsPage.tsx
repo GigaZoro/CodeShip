@@ -59,6 +59,7 @@ import {
   PullRequestSearchInput,
   pullRequestHostLabel,
   pullRequestProjectKey,
+  translatePullRequestFilterOptions,
   type PullRequestFilterOption,
 } from "./PullRequestListFilters";
 import { PullRequestCompactFilterMenu } from "./PullRequestCompactFilterMenu";
@@ -123,6 +124,7 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { cn } from "~/lib/utils";
 import { primaryServerKeybindingsAtom } from "~/state/server";
 import { getSourceControlPresentationForKind } from "~/sourceControlPresentation";
+import { t, tx } from "~/i18n";
 
 function getShortcutContext() {
   return {
@@ -1130,7 +1132,7 @@ export function PullRequestsPage() {
       .map((host) => ({
         key: `host:${host.host}`,
         label: pullRequestHostLabel(hosts, host),
-        detail: host.detail ?? "This host could not be read.",
+        detail: host.detail ?? t("This host could not be read."),
       })),
     ...listErrors
       .filter(
@@ -1179,7 +1181,7 @@ export function PullRequestsPage() {
       rightPanelAvailable={rightPanelAvailable}
       rightPanelOpen={rightPanelState.isOpen}
       rightPanelShortcutLabel={shortcutLabelForCommand(keybindings, "rightPanel.toggle")}
-      rightPanelUnavailableLabel="Select a pull request first"
+      rightPanelUnavailableLabel={t("Select a pull request first")}
       onToggleTerminal={() => undefined}
       onToggleRightPanel={toggleRightPanel}
     />
@@ -1215,24 +1217,24 @@ export function PullRequestsPage() {
           <PullRequestsUnavailableState
             {...(serverTooOld
               ? {
-                  title: "Pull requests unavailable",
-                  error: "Update your T3.CodeShip servers to browse pull requests.",
+                  title: t("Pull requests unavailable"),
+                  error: t("Update your T3.CodeShip servers to browse pull requests."),
                 }
               : {
-                  title: "No server connected",
-                  error: "Connect to a T3.CodeShip server to browse its pull requests.",
+                  title: t("No server connected"),
+                  error: t("Connect to a T3.CodeShip server to browse its pull requests."),
                 })}
           />
         ) : (
-          <PullRequestListGhost rows={7} caption="Loading pull requests…" />
+          <PullRequestListGhost rows={7} caption={t("Loading pull requests…")} />
         )
       ) : !pullRequestsSupported ? (
         <PullRequestsUnavailableState
-          title="Pull requests unavailable"
-          error="Update your T3.CodeShip servers to browse pull requests."
+          title={t("Pull requests unavailable")}
+          error={t("Update your T3.CodeShip servers to browse pull requests.")}
         />
       ) : firstLoad ? (
-        <PullRequestListGhost rows={7} caption="Loading pull requests…" />
+        <PullRequestListGhost rows={7} caption={t("Loading pull requests…")} />
       ) : listQuery.error && shownCount === 0 ? (
         <PullRequestsUnavailableState
           error={listQuery.error}
@@ -1284,13 +1286,14 @@ export function PullRequestsPage() {
         <Alert variant="warning" role="status">
           <AlertDescription>
             <span>
-              <SourceControlMessage text={listQuery.error} /> Some pull requests may be missing or
-              out of date.
+              {tx("{error} Some pull requests may be missing or out of date.", {
+                error: <SourceControlMessage text={listQuery.error} />,
+              })}
             </span>
           </AlertDescription>
           <AlertAction>
             <Button size="xs" variant="outline" onClick={() => listQuery.refresh()}>
-              Retry
+              {t("Retry")}
             </Button>
           </AlertAction>
         </Alert>
@@ -1300,7 +1303,7 @@ export function PullRequestsPage() {
           {loadingMore ? (
             <span className="flex items-center gap-2">
               <Spinner aria-hidden size="sm" />
-              {sentCursors === null ? "Updating pull requests" : "Loading more"}
+              {sentCursors === null ? t("Updating pull requests") : t("Loading more")}
             </span>
           ) : canContinue || pageSize < MAX_PAGE_SIZE ? (
             <Button
@@ -1309,10 +1312,10 @@ export function PullRequestsPage() {
               onClick={loadMore}
               disabled={listQuery.isPending || showingCarried}
             >
-              Load more pull requests
+              {t("Load more pull requests")}
             </Button>
           ) : (
-            <span>Narrow your search to find more pull requests.</span>
+            <span>{t("Narrow your search to find more pull requests.")}</span>
           )}
         </div>
       ) : null}
@@ -1320,7 +1323,7 @@ export function PullRequestsPage() {
   );
   const hostEntries = hosts.length > 0 ? hosts : expectedHosts;
   const hostMenuOptions: ReadonlyArray<PullRequestFilterOption<string>> = [
-    { value: "", label: "All", Icon: Plug2Icon },
+    { value: "", label: t("All"), Icon: Plug2Icon },
     ...hostEntries.map((entry) => {
       const summary = hosts.find((host) => host.host === entry.host);
       return {
@@ -1329,12 +1332,12 @@ export function PullRequestsPage() {
         Icon: getSourceControlPresentationForKind(entry.kind).Icon,
         ...(summary === undefined || summary.configured
           ? {}
-          : { unavailable: summary.detail ?? "This host could not be read." }),
+          : { unavailable: summary.detail ?? t("This host could not be read.") }),
       };
     }),
   ];
   const serverMenuOptions: ReadonlyArray<PullRequestFilterOption<string>> = [
-    { value: "", label: "All servers", Icon: LayersIcon },
+    { value: "", label: t("All servers"), Icon: LayersIcon },
     ...capableEnvironments.map((environment) => ({
       value: environment.environmentId,
       label: environment.label,
@@ -1343,12 +1346,12 @@ export function PullRequestsPage() {
   ];
   const sortMenu = (
     <PullRequestCompactFilterMenu
-      label="Sort pull requests"
+      label={t("Sort pull requests")}
       triggerIcon={<ArrowDownUpIcon aria-hidden className="size-4" />}
-      triggerLabel="Sort"
+      triggerLabel={t("Sort")}
       outlined
       value={sort}
-      options={SORT_OPTIONS}
+      options={translatePullRequestFilterOptions(SORT_OPTIONS)}
       onChange={(next) => updateListScope({ sort: next })}
     />
   );
@@ -1356,10 +1359,10 @@ export function PullRequestsPage() {
     <PullRequestFiltersMenuInSidebarOrder
       onOpenChange={setFiltersOpen}
       state={search.state}
-      stateOptions={STATE_TABS}
+      stateOptions={translatePullRequestFilterOptions(STATE_TABS)}
       onState={(state) => updateListScope({ state })}
       involvement={search.involvement}
-      involvementOptions={INVOLVEMENT_TABS}
+      involvementOptions={translatePullRequestFilterOptions(INVOLVEMENT_TABS)}
       onInvolvement={(involvement) => updateListScope({ involvement })}
       filters={
         typedParsed.filters.draft
@@ -1491,20 +1494,20 @@ export function PullRequestsPage() {
     const { shortLabel, singular } = (
       sourceControlClients.findByChangeRequestUrl(url) ?? sourceControlClients.get(undefined)
     ).changeRequest;
-    void writeTextToClipboard(url, `${singular} link`).then(
+    void writeTextToClipboard(url, t("{singular} link", { singular })).then(
       (didCopy) => {
         if (didCopy)
           toastManager.add({
             type: "success",
-            title: `${shortLabel} link copied`,
+            title: t("{shortLabel} link copied", { shortLabel }),
             description: url,
           });
       },
       (error) => {
         toastManager.add({
           type: "error",
-          title: `Failed to copy ${shortLabel} link`,
-          description: error instanceof Error ? error.message : "An error occurred.",
+          title: t("Failed to copy {shortLabel} link", { shortLabel }),
+          description: error instanceof Error ? error.message : t("An error occurred."),
         });
       },
     );

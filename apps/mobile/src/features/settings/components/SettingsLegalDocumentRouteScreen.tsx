@@ -1,3 +1,4 @@
+import { t } from "../../../lib/i18n";
 import { SheetCloseButton } from "../../../components/ui/SheetHeader";
 import { useNavigation } from "@react-navigation/native";
 import { useState } from "react";
@@ -18,7 +19,7 @@ export function SettingsLegalDocumentCloseHeaderButton() {
 
   return (
     <SheetCloseButton
-      accessibilityLabel="Close legal document"
+      accessibilityLabel={t("Close legal document")}
       onClose={() => navigation.goBack()}
     />
   );
@@ -33,7 +34,7 @@ export function SettingsLegalDocumentExternalHeaderButton({
 
   return (
     <IconButton
-      accessibilityLabel="Open legal documents in external browser"
+      accessibilityLabel={t("Open legal documents in external browser")}
       icon="safari"
       onPress={() => void Linking.openURL(safeExternalUrl).catch(() => undefined)}
     />
@@ -82,7 +83,7 @@ export function SettingsLegalDocumentRouteScreen({
         />
         <View className="items-center gap-2">
           <Text className="text-center font-t3-bold text-lg text-foreground">
-            Couldn&apos;t load the {documentName.toLowerCase()}
+            {t("Couldn't load the {document}", { document: documentName.toLowerCase() })}
           </Text>
           <Text selectable className="text-center text-sm leading-normal text-foreground-muted">
             {loadError}
@@ -90,7 +91,7 @@ export function SettingsLegalDocumentRouteScreen({
         </View>
         <View className="w-full max-w-[320px] gap-2">
           <Button
-            label="Try Again"
+            label={t("Try Again")}
             tone="contrast"
             fullWidth
             onPress={() => {
@@ -103,7 +104,9 @@ export function SettingsLegalDocumentRouteScreen({
             onPress={() => openExternalUrl(documentUrl)}
             className="items-center rounded-xl px-4 py-3 active:bg-foreground/5"
           >
-            <Text className="font-t3-medium text-base text-foreground-muted">Open in Browser</Text>
+            <Text className="font-t3-medium text-base text-foreground-muted">
+              {t("Open in Browser")}
+            </Text>
           </Pressable>
         </View>
       </View>
@@ -149,12 +152,14 @@ export function SettingsLegalDocumentRouteScreen({
         }}
         onError={(event) => {
           setLoadProgress(0);
-          setLoadError(event.nativeEvent.description || "The page could not be loaded.");
+          setLoadError(event.nativeEvent.description || t("The page could not be loaded."));
         }}
         onHttpError={(event) => {
           if (!isLegalDocumentUrl(event.nativeEvent.url)) return;
           setLoadProgress(0);
-          setLoadError(`The server returned status ${event.nativeEvent.statusCode}.`);
+          setLoadError(
+            t("The server returned status {status}.", { status: event.nativeEvent.statusCode }),
+          );
         }}
         renderLoading={() => (
           <View className="absolute inset-0 items-center justify-center bg-sheet">

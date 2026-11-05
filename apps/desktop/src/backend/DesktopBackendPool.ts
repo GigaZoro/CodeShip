@@ -1,3 +1,4 @@
+import { t } from "@t3tools/shared/i18n";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -123,8 +124,11 @@ export const layer = Layer.effect(
             { reason },
           );
           yield* electronDialog.showErrorBox(
-            "WSL backend is still unavailable",
-            `${reason}\n\nT3.CodeShip will use the Windows backend for this launch and retry WSL the next time the app starts.`,
+            t("WSL backend is still unavailable"),
+            t(
+              "{reason}\n\nT3.CodeShip will use the Windows backend for this launch and retry WSL the next time the app starts.",
+              { reason },
+            ),
           );
           yield* appSettings.applyWslWindowsFallbackInMemory;
           return true;
@@ -134,8 +138,11 @@ export const layer = Layer.effect(
           reason,
         });
         yield* electronDialog.showErrorBox(
-          "WSL backend couldn't start",
-          `${reason}\n\nFalling back to the Windows backend so T3.CodeShip can open. Re-enable the WSL backend from Settings > Sharing & access once the WSL distro is fixed.`,
+          t("WSL backend couldn't start"),
+          t(
+            "{reason}\n\nFalling back to the Windows backend so T3.CodeShip can open. Re-enable the WSL backend from Settings > Sharing & access once the WSL distro is fixed.",
+            { reason },
+          ),
         );
         // Clear wslOnly too so enabling WSL cannot restore a failed mode.
         // Keep the in-memory fallback if persistence fails.
@@ -176,8 +183,10 @@ export const layer = Layer.effect(
       onStateDirOwned: () =>
         electronDialog
           .showErrorBox(
-            "This T3 home is unavailable",
-            "Another T3.CodeShip server, such as the background service, is using this data directory, or an older background service is set up for it. Stop that server or try `t3 update`. If the older launcher cannot update, run `t3 service uninstall` and optionally reinstall with `t3 service install` from a current CLI. Use `npx t3@latest` if `t3` is missing or outdated, and pass `--base-dir` with the service's T3 home to each command. Then reopen T3.CodeShip. You can also set a separate T3CODE_HOME and pair with the running server.",
+            t("This T3 home is unavailable"),
+            t(
+              "Another T3.CodeShip server, such as the background service, is using this data directory, or an older background service is set up for it. Stop that server or try `t3 update`. If the older launcher cannot update, run `t3 service uninstall` and optionally reinstall with `t3 service install` from a current CLI. Use `npx t3@latest` if `t3` is missing or outdated, and pass `--base-dir` with the service's T3 home to each command. Then reopen T3.CodeShip. You can also set a separate T3CODE_HOME and pair with the running server.",
+            ),
           )
           .pipe(Effect.andThen(electronApp.quit)),
     });

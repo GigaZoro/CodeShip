@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   type ProviderInstanceId,
@@ -228,7 +229,9 @@ function ModelPickerProviderNotices({
                   onOpenProviderSetup?.(entry.instanceId);
                 }}
               >
-                {setupEntries.length > 1 ? `Set up ${entry.displayName}` : "Open provider setup"}
+                {setupEntries.length > 1
+                  ? t("Set up {provider}", { provider: entry.displayName })
+                  : t("Open provider setup")}
               </InlineButton>
             </div>
           ))}
@@ -248,7 +251,7 @@ function ModelPickerProviderNotices({
               void navigate({ to: "/settings/providers" });
             }}
           >
-            Provider settings
+            {t("Provider settings")}
           </InlineButton>
         </p>
       ))}
@@ -269,15 +272,33 @@ function AutoModeNote(props: {
   return (
     <p className="shrink-0 border-t border-border/70 px-3 py-2 text-xs leading-snug text-muted-foreground">
       {props.auto === null
-        ? "Auto runs a coordinator model you choose. It hands routine work to cheaper models and checks the result."
-        : `${props.auto.coordinates ? `Hands routine work to cheaper ${props.auto.providerName} models and checks the result. ` : ""}Starts on the first ${props.auto.providerName} account${props.auto.switchesAccounts ? " with usage left and switches accounts at usage limits" : ""}.`}{" "}
+        ? t(
+            "Auto runs a coordinator model you choose. It hands routine work to cheaper models and checks the result.",
+          )
+        : [
+            props.auto.coordinates
+              ? t("Hands routine work to cheaper {provider} models and checks the result.", {
+                  provider: props.auto.providerName,
+                })
+              : null,
+            props.auto.switchesAccounts
+              ? t(
+                  "Starts on the first {provider} account with usage left and switches accounts at usage limits.",
+                  { provider: props.auto.providerName },
+                )
+              : t("Starts on the first {provider} account.", {
+                  provider: props.auto.providerName,
+                }),
+          ]
+            .filter((sentence) => sentence !== null)
+            .join(" ")}{" "}
       <InlineButton
         onClick={() => {
           props.onRequestClose?.();
           void navigate({ to: "/settings/providers", hash: "account-failover" });
         }}
       >
-        {props.auto === null ? "Turn on in Settings" : "Change in Settings"}
+        {props.auto === null ? t("Turn on in Settings") : t("Change in Settings")}
       </InlineButton>
     </p>
   );
@@ -870,9 +891,9 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       handleSelectInstance(next);
       announce(
         next === "favorites"
-          ? "Favorites"
+          ? t("Favorites")
           : next === "auto"
-            ? "Auto"
+            ? t("Auto")
             : (entryByInstanceId.get(next)?.displayName ?? next),
         "model-picker",
       );
@@ -898,7 +919,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     const name = flatModels.find(
       (item) => item.slug === selectedSlug && item.instanceId === model.instanceId,
     )?.name;
-    announce(`Model: ${name ?? selectedSlug}`, "model-picker");
+    announce(t("Model: {name}", { name: name ?? selectedSlug }), "model-picker");
   };
 
   return (
@@ -1001,7 +1022,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           >
             <ComboboxSearchInput
               ref={searchInputRef}
-              placeholder="Search models..."
+              placeholder={t("Search models...")}
               value={searchQuery}
               onChange={(e) => {
                 if (!isSearching) setSearchHeight(pickerContentRef.current?.offsetHeight ?? 0);
@@ -1110,7 +1131,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                       className="group w-full !min-w-0 max-w-full cursor-pointer"
                     >
                       <SparklesIcon className="size-4 shrink-0" aria-hidden />
-                      <span className="shrink-0 text-sm leading-snug">Auto</span>
+                      <span className="shrink-0 text-sm leading-snug">{t("Auto")}</span>
                       <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
                         {props.auto.detail}
                       </span>
@@ -1131,7 +1152,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                       className="group w-full cursor-pointer"
                     >
                       <span className="text-sm leading-snug text-muted-foreground group-hover:text-foreground group-data-highlighted:text-foreground">
-                        {legacySection.isExpanded ? "Show less" : "Show more"}
+                        {legacySection.isExpanded ? t("Show less") : t("Show more")}
                       </span>
                     </ComboboxItem>
                   );
@@ -1177,10 +1198,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
               updateRequiredNotices={updateRequiredNotices}
               emptyLabel={
                 showAutoTab
-                  ? "Auto mode is off"
+                  ? t("Auto mode is off")
                   : selectedInstanceId === "favorites" && !isSearching
-                    ? "No favorites yet"
-                    : "No models found"
+                    ? t("No favorites yet")
+                    : t("No models found")
               }
               onRequestClose={onRequestClose}
               onOpenProviderSetup={onOpenProviderSetup}

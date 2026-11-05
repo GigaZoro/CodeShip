@@ -40,6 +40,7 @@ import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ComposerControl, ComposerControlIcon, type ComposerControlSize } from "./ComposerControl";
 import { useComposerMenuState } from "./useComposerMenuState";
+import { msg, t, type Message } from "~/i18n";
 
 type ProviderOptions = ReadonlyArray<ProviderOptionSelection>;
 
@@ -54,16 +55,17 @@ export function readPromptUltrathink(prompt: string): PromptUltrathink {
   return isClaudeUltrathinkPrompt(prompt.replace(/^Ultrathink:\s*/i, "")) ? "body" : "prefix";
 }
 
-const SAVED_OPTION_LABELS: Readonly<Record<string, string>> = {
-  agent: "Agent",
-  effort: "Effort",
-  reasoningEffort: "Reasoning effort",
-  variant: "Reasoning",
+const SAVED_OPTION_LABELS: Readonly<Record<string, Message>> = {
+  agent: msg("Agent"),
+  effort: msg("Effort"),
+  reasoningEffort: msg("Reasoning effort"),
+  variant: msg("Reasoning"),
 };
 
 function savedOptionLabel(id: string): string {
+  const label = SAVED_OPTION_LABELS[id];
   return (
-    SAVED_OPTION_LABELS[id] ??
+    (label === undefined ? undefined : t(label)) ??
     id.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, (character) => character.toUpperCase())
   );
 }
@@ -103,7 +105,7 @@ type TraitsPersistence =
 function DefaultBadge() {
   return (
     <Badge variant="outline" size="sm" className="min-w-0">
-      Default
+      {t("Default")}
     </Badge>
   );
 }
@@ -457,7 +459,7 @@ const TraitsMenuContent = memo(function TraitsMenuContentImpl(props: TraitsSelec
               {(["on", "off"] as const).map((value) => (
                 <MenuRadioItem key={value} value={value} hideIndicator closeOnClick>
                   <span className="flex w-full min-w-0 items-center justify-between gap-3">
-                    <span>{value === "on" ? "On" : "Off"}</span>
+                    <span>{value === "on" ? t("On") : t("Off")}</span>
                   </span>
                 </MenuRadioItem>
               ))}

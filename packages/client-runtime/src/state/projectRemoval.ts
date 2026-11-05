@@ -1,4 +1,5 @@
 import type { EnvironmentProject, EnvironmentThreadShell } from "./models.ts";
+import { t, tn } from "@t3tools/shared/i18n";
 
 export function planProjectRemoval<
   Thread extends Pick<EnvironmentThreadShell, "environmentId" | "projectId">,
@@ -27,25 +28,47 @@ export function planProjectRemoval<
   const targetLabel = singleMember?.title ?? displayName;
   const confirmationMessage = [
     threadCount > 0
-      ? `Remove ${targetKind} "${targetLabel}" and delete its ${threadCount} thread${threadCount === 1 ? "" : "s"}?`
-      : `Remove ${targetKind} "${targetLabel}"?`,
+      ? targetKind === "checkout"
+        ? tn(
+            threadCount,
+            'Remove checkout "{label}" and delete its {count} thread?',
+            'Remove checkout "{label}" and delete its {count} threads?',
+            { label: targetLabel },
+          )
+        : tn(
+            threadCount,
+            'Remove project "{label}" and delete its {count} thread?',
+            'Remove project "{label}" and delete its {count} threads?',
+            { label: targetLabel },
+          )
+      : targetKind === "checkout"
+        ? t('Remove checkout "{label}"?', { label: targetLabel })
+        : t('Remove project "{label}"?', { label: targetLabel }),
     ...(singleMember
       ? [
-          `Path: ${singleMember.workspaceRoot}`,
+          t("Path: {path}", { path: singleMember.workspaceRoot }),
           ...(singleMember.environmentLabel
-            ? [`Environment: ${singleMember.environmentLabel}`]
+            ? [t("Environment: {environment}", { environment: singleMember.environmentLabel })]
             : []),
         ]
-      : [`This removes ${members.length} grouped project entries.`]),
+      : [
+          tn(
+            members.length,
+            "This removes {count} grouped project entry.",
+            "This removes {count} grouped project entries.",
+          ),
+        ]),
     ...(threadCount > 0
       ? [
-          "Those threads and any archived threads are deleted from T3.CodeShip. Provider sessions are kept.",
+          t(
+            "Those threads and any archived threads are deleted from T3.CodeShip. Provider sessions are kept.",
+          ),
         ]
-      : ["Any archived threads are deleted from T3.CodeShip. Provider sessions are kept."]),
+      : [t("Any archived threads are deleted from T3.CodeShip. Provider sessions are kept.")]),
     isWholeGroup && !hasOtherMembers
-      ? "This removes only the project entries, not the files on disk."
-      : "Other entries in this grouped project are unaffected.",
-    "This action cannot be undone.",
+      ? t("This removes only the project entries, not the files on disk.")
+      : t("Other entries in this grouped project are unaffected."),
+    t("This action cannot be undone."),
   ].join("\n");
 
   return { projectThreads, isWholeGroup, targetKind, confirmationMessage };

@@ -28,6 +28,7 @@ import {
   markProjectFaviconFailed,
   markProjectFaviconLoaded,
 } from "../lib/projectFaviconRequests";
+import { t } from "../lib/i18n";
 
 const EMPTY_FAVICON_URL = Atom.make<string | null>(null);
 
@@ -193,7 +194,7 @@ function ProjectFaviconImage(props: {
           }
           cachePolicy={faviconRequest.faviconUrl.startsWith("data:") ? "memory" : "memory-disk"}
           recyclingKey={faviconRequest.cacheKey}
-          accessibilityLabel={`${props.projectTitle} favicon`}
+          accessibilityLabel={t("{project} favicon", { project: props.projectTitle })}
           style={{
             width: props.size,
             height: props.size,

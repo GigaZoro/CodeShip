@@ -1,3 +1,4 @@
+import { t } from "../../lib/i18n";
 import type { EnvironmentId, ServerSettingsPatch } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
@@ -33,12 +34,15 @@ export function useSettingsWriter() {
           targets.find((target) => target.environment.environmentId === entry.environmentId)
             ?.environment.label ?? entry.environmentId;
         const error = squashAtomCommandFailure(result);
-        return `${label}: ${error instanceof Error ? error.message : String(error)}`;
+        return t("{label}: {message}", {
+          label,
+          message: error instanceof Error ? error.message : String(error),
+        });
       }),
     );
     const failures = outcomes.filter((outcome) => outcome !== null);
     if (failures.length > 0) {
-      Dialog.alert("Could not save settings", failures.join("\n\n"));
+      Dialog.alert(t("Could not save settings"), failures.join("\n\n"));
     }
   };
 }

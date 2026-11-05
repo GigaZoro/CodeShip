@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import type { EnvironmentId, EnvironmentMachineKind } from "@t3tools/contracts";
 
 import type { SidebarProjectSnapshot } from "../sidebarProjectGrouping";
@@ -21,6 +22,7 @@ export interface CommandPaletteProjectLocation {
 
 const UNKNOWN_PROJECT_LOCATION: CommandPaletteProjectLocation = {
   kind: "remote",
+  // oxlint-disable-next-line t3code/no-untranslated-text -- sentinel fallback; the render path shows t("Remote") for it
   label: "Remote",
   machine: "server",
 };
@@ -112,7 +114,9 @@ function ProjectLocationDescription(props: {
             className={COMMAND_PALETTE_META_ICON_CLASS}
           />
         ) : null}
-        <span className="truncate">{location.label}</span>
+        <span className="truncate">
+          {location === UNKNOWN_PROJECT_LOCATION ? t("Remote") : location.label}
+        </span>
       </span>
       <CommandPaletteMetaDot />
       <span className="truncate">{props.workspaceRoot}</span>

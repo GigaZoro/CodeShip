@@ -12,10 +12,11 @@ import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../WorkspaceBreadc
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { EXTENSIONS_TABS, type ExtensionsTab } from "./extensionsSearch";
 
-const TAB_LABELS: Record<ExtensionsTab, string> = {
-  skills: "Skills",
-  plugins: "Plugins",
-  mcp: "MCP servers",
+import { msg, t, type Message } from "~/i18n";
+const TAB_LABELS: Record<ExtensionsTab, Message> = {
+  skills: msg("Skills"),
+  plugins: msg("Plugins"),
+  mcp: msg("MCP servers"),
 };
 
 export function ExtensionsPage() {
@@ -27,19 +28,19 @@ export function ExtensionsPage() {
 
   return (
     <SidebarInset
-      {...workspaceAreaProps("extensions", 1, "Extensions")}
+      {...workspaceAreaProps("extensions", 1, t("Extensions"))}
       role="main"
       className="h-dvh min-h-0 overflow-hidden overscroll-y-none"
     >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <WorkspacePageHeader electron={isElectron} className="border-b">
-          <WorkspaceBreadcrumb ariaLabel="Extensions breadcrumb" className="shrink-0">
+          <WorkspaceBreadcrumb ariaLabel={t("Extensions breadcrumb")} className="shrink-0">
             <WorkspaceBreadcrumbItem current>
-              <h1>Extensions</h1>
+              <h1>{t("Extensions")}</h1>
             </WorkspaceBreadcrumbItem>
           </WorkspaceBreadcrumb>
           <ToggleGroup
-            aria-label="Extension type"
+            aria-label={t("Extension type")}
             className="min-w-0 overflow-x-auto"
             value={[tab]}
             onValueChange={(next) => {
@@ -55,7 +56,7 @@ export function ExtensionsPage() {
           >
             {EXTENSIONS_TABS.map((candidate) => (
               <Toggle key={candidate} value={candidate}>
-                {TAB_LABELS[candidate]}
+                {t(TAB_LABELS[candidate])}
               </Toggle>
             ))}
           </ToggleGroup>

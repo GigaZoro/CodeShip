@@ -13,6 +13,7 @@ import * as Option from "effect/Option";
 import type { EnvironmentPresentation } from "./connection/presentation.ts";
 import { connectionRoutes, routeHttpBaseUrl } from "./connection/routes.ts";
 import type { RelayDiscoveredEnvironment } from "./relay/discovery.ts";
+import { t } from "@t3tools/shared/i18n";
 
 export type LinkRequestItem = Extract<OrchestrationV2TurnItem, { readonly type: "link_request" }>;
 
@@ -219,25 +220,32 @@ export function linkRequestDisplay(
     case "pending":
       return visibility === "local"
         ? { kind: "pending" }
-        : { kind: "pending-elsewhere", label: "Waiting for an answer in the original thread" };
+        : { kind: "pending-elsewhere", label: t("Waiting for an answer in the original thread") };
     case "linked":
       return {
         kind: "answered",
         outcome: "linked",
-        label: `Linked ${item.linkedLabel ?? linkRequestTargetName(item)}${
-          item.linkedAccess === undefined ? "" : ` · ${accessLabel(item.linkedAccess)}`
-        }`,
+        label:
+          item.linkedAccess === undefined
+            ? t("Linked {target}", { target: item.linkedLabel ?? linkRequestTargetName(item) })
+            : t("Linked {target} · {access}", {
+                target: item.linkedLabel ?? linkRequestTargetName(item),
+                access: accessLabel(item.linkedAccess),
+              }),
       };
     case "declined":
-      return { kind: "answered", outcome: "declined", label: "Declined" };
+      return { kind: "answered", outcome: "declined", label: t("Declined") };
     case "failed":
       return {
         kind: "answered",
         outcome: "failed",
-        label: `Could not link: ${item.failure ?? "the other environment refused"}`,
+        label:
+          item.failure == null
+            ? t("Could not link: the other environment refused")
+            : t("Could not link: {failure}", { failure: item.failure }),
       };
     case "cancelled":
-      return { kind: "answered", outcome: "ended", label: "Request ended" };
+      return { kind: "answered", outcome: "ended", label: t("Request ended") };
   }
 }
 
@@ -310,5 +318,5 @@ export function linkRequestFailureMessage(failure: unknown): string {
   ) {
     return failure.message;
   }
-  return "Could not answer the request. Try again.";
+  return t("Could not answer the request. Try again.");
 }

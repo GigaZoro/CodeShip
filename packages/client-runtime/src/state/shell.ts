@@ -39,6 +39,7 @@ import {
 } from "./shellReducer.ts";
 import { type EnvironmentCatalogState, enabledEnvironmentIds } from "./connections.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
+import { msg, t } from "@t3tools/shared/i18n";
 
 export type EnvironmentShellStatus = "empty" | "cached" | "synchronizing" | "live";
 
@@ -80,7 +81,7 @@ function withoutDeferredPullRequests(value: DeferredShellSnapshot): Orchestratio
   return snapshot;
 }
 
-const SHELL_SYNCHRONIZATION_ERROR_MESSAGE = "Could not synchronize environment data.";
+const SHELL_SYNCHRONIZATION_ERROR_MESSAGE = msg("Could not synchronize environment data.");
 
 export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")(function* () {
   const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
@@ -197,7 +198,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         SubscriptionRef.update(state, (current) => ({
           ...current,
           status: shellStatusForSnapshot(current.snapshot),
-          error: Option.some(SHELL_SYNCHRONIZATION_ERROR_MESSAGE),
+          error: Option.some(t(SHELL_SYNCHRONIZATION_ERROR_MESSAGE)),
         })),
       ),
     );

@@ -20,6 +20,7 @@ export const PROVIDER_PRESENTATION = {
     driverKind: ProviderDriverKind.make("claudeAgent"),
   },
   grok: {
+    // oxlint-disable-next-line t3code/no-untranslated-text -- product name, reads the same in every language
     label: "Grok Build",
     color: "color-mix(in oklab, var(--contrast-foreground) 72%, var(--background))",
     driverKind: ProviderDriverKind.make("grok"),
@@ -36,11 +37,13 @@ export const PROVIDER_PRESENTATION = {
     driverKind: ProviderDriverKind.make("antigravity"),
   },
   pi: {
+    // oxlint-disable-next-line t3code/no-untranslated-text -- product name, reads the same in every language
     label: "Pi",
     color: "#4d9f8a",
     driverKind: ProviderDriverKind.make("pi"),
   },
   muse: {
+    // oxlint-disable-next-line t3code/no-untranslated-text -- product name, reads the same in every language
     label: "Muse Code",
     color: "#0866ff",
     driverKind: ProviderDriverKind.make("muse"),

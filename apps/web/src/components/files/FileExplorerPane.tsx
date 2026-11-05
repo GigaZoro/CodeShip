@@ -4,6 +4,7 @@ import { RightPanelResizeHandle } from "~/components/preview/RightPanelResizeHan
 import { RESIZABLE_WIDTH_PROPERTY, useResizableWidth } from "~/hooks/useResizableWidth";
 import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
+import { t } from "~/i18n";
 
 const MIN_WIDTH = 160;
 const MAX_WIDTH = 560;
@@ -20,7 +21,7 @@ export function FileExplorerPane({
   defaultWidth = 256,
   defaultWidthFraction,
   minWidth = MIN_WIDTH,
-  resizeLabel = "Resize file explorer",
+  resizeLabel,
 }: {
   resizable: boolean;
   children: ReactNode;
@@ -61,7 +62,7 @@ export function FileExplorerPane({
         measure();
         return observeResize(row, measure);
       }}
-      aria-label="File explorer"
+      aria-label={t("File explorer")}
       className={cn(
         "relative flex min-h-0 min-w-0 shrink-0 bg-background",
         resizable ? "border-l border-border/60" : "flex-1",
@@ -78,7 +79,7 @@ export function FileExplorerPane({
       {resizable ? (
         <RightPanelResizeHandle
           handlers={handlers}
-          label={resizeLabel}
+          label={resizeLabel ?? t("Resize file explorer")}
           tabIndex={0}
           aria-valuenow={width}
           aria-valuemin={minWidth}

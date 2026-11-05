@@ -15,10 +15,10 @@ export function CodeShipBrand({
         className,
       )}
       role="img"
-      aria-label="T3.CodeShip"
+      aria-label={"T3.CodeShip"}
     >
       <CodeShipMark className={cn("size-5 shrink-0 text-primary", markClassName)} />
-      <span className="truncate">T3.CodeShip</span>
+      <span className="truncate">{"T3.CodeShip"}</span>
     </span>
   );
 }

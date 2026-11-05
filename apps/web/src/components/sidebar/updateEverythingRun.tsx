@@ -21,6 +21,7 @@ import {
   type UpdateRunMachine,
 } from "./updateEverything.logic";
 
+import { t } from "~/i18n";
 const updateEverythingRunAtom = Atom.make<UpdateEverythingRun | null>(null).pipe(
   Atom.keepAlive,
   Atom.withLabel("update-everything-run"),
@@ -91,7 +92,7 @@ export function retryFailedUpdateRunServers(
           ? providerFailure
           : outcome.status === "failed"
             ? outcome.message
-            : "Could not start the update",
+            : t("Could not start the update"),
         { serverUpdated: outcome.status === "updated" },
       ),
     );
@@ -303,7 +304,7 @@ function followHandedOffServers(servers: ReadonlyArray<HandedOffServer>): void {
       }
     };
     const timer = setTimeout(
-      () => settle(`Not back after ${HANDOFF_TIMEOUT_MS / 60_000} minutes`),
+      () => settle(t("Not back after {minutes} minutes", { minutes: HANDOFF_TIMEOUT_MS / 60_000 })),
       server.startedAt + HANDOFF_TIMEOUT_MS - Date.now(),
     );
     const unsubscribe = appAtomRegistry.subscribe(
@@ -341,8 +342,11 @@ export function startDesktopUpdateLaunchNotice(): () => void {
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Update did not apply",
-          description: `T3.CodeShip is still on ${APP_VERSION}. Install ${notAppliedVersion} again from the update button.`,
+          title: t("Update did not apply"),
+          description: t(
+            "T3.CodeShip is still on {current}. Install {next} again from the update button.",
+            { current: APP_VERSION, next: notAppliedVersion },
+          ),
         }),
       );
     },

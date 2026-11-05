@@ -11,7 +11,7 @@ export function CodeShipMark(props: {
 }) {
   return (
     <Svg
-      accessibilityLabel="T3.CodeShip"
+      accessibilityLabel={"T3.CodeShip"}
       height={props.height}
       width={props.height}
       viewBox="0 0 32 32"

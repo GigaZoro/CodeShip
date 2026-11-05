@@ -7,6 +7,7 @@ import { textDirection } from "~/textDirection";
 
 import { isCommentSubmitShortcut } from "./commentSubmitShortcut";
 
+import { t } from "~/i18n";
 interface DiffCommentSecondaryAction {
   readonly label: string;
   readonly icon?: ReactNode;
@@ -37,8 +38,8 @@ export function DiffCommentAnnotation({
   onCancel,
   onComment,
   onDelete,
-  placeholder = "Add a comment…",
-  submitLabel = "Comment",
+  placeholder = t("Add a comment…"),
+  submitLabel = t("Comment"),
   pending = false,
   secondaryAction,
   focusOnMount = true,
@@ -77,7 +78,7 @@ export function DiffCommentAnnotation({
             <Button
               variant="ghost-muted"
               size="icon-xs"
-              aria-label="Delete comment"
+              aria-label={t("Delete comment")}
               onClick={onDelete}
             >
               <Trash2 className="size-3" />
@@ -103,7 +104,7 @@ export function DiffCommentAnnotation({
         value={displayedText}
         dir={textDirection(displayedText)}
         placeholder={placeholder}
-        aria-label={`Comment on lines ${rangeLabel}`}
+        aria-label={t("Comment on lines {rangeLabel}", { rangeLabel })}
         onChange={(event) => (onTextChange ?? setLocalDraftText)(event.target.value)}
         onFocus={(event) => {
           const end = event.currentTarget.value.length;
@@ -121,9 +122,11 @@ export function DiffCommentAnnotation({
         }}
       />
       <div className="mt-1.5 flex items-center gap-1">
-        <span className="mr-auto text-3xs text-muted-foreground/70">⌘/Ctrl Enter to send</span>
+        <span className="mr-auto text-3xs text-muted-foreground/70">
+          {t("⌘/Ctrl Enter to send")}
+        </span>
         <Button variant="ghost-muted" size="xs" onClick={onCancel}>
-          Cancel
+          {t("Cancel")}
         </Button>
         {secondaryAction ? (
           <Button

@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import type { ChatComposerProps } from "./ChatComposer";
 import type { PromptUltrathink } from "./TraitsPicker";
 import type { ProviderInstanceEntry } from "../../providerInstances";
@@ -237,7 +238,7 @@ export function ComposerControlsBar(props: {
       {...(modelPickerIconClassName
         ? { activeProviderIconClassName: modelPickerIconClassName }
         : {})}
-      {...(showProviderUnavailable ? { triggerLabel: "Choose model" } : {})}
+      {...(showProviderUnavailable ? { triggerLabel: t("Choose model") } : {})}
       onOpenChange={onModelPickerOpenChange}
       getModelDisabledReason={getModelDisabledReason}
       onOpenProviderSetup={onOpenProviderSetup}

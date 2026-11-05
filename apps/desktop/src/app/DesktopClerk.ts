@@ -26,6 +26,7 @@ import * as DesktopUserData from "./DesktopUserData.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import { openClerkTokenStorage } from "./ClerkTokenStore.ts";
 import * as DesktopWebLinks from "./DesktopWebLinks.ts";
+import { t } from "@t3tools/shared/i18n";
 
 declare const __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: string | undefined;
 
@@ -210,8 +211,9 @@ export const make = Effect.gen(function* () {
                 ),
               catch: () =>
                 new CodexAuthCallbackError({
-                  detail:
+                  detail: t(
                     "Could not receive hosted web ChatGPT sign-in. Retry or use the redirect URL in the web app.",
+                  ),
                 }),
             });
           }).pipe(

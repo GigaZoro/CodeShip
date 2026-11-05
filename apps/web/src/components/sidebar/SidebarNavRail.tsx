@@ -33,6 +33,7 @@ import {
 import { isSettingsPage, isSidebarSectionPage, useNavigateToMainApp } from "./mainAppLocation";
 import { SidebarUpdatePill } from "./SidebarUpdatePill";
 
+import { t } from "~/i18n";
 type SidebarNavDestination =
   | "threads"
   | "projects"
@@ -112,8 +113,8 @@ function SidebarNavRailUsageItem({
     return (
       <SidebarNavRailItem
         icon={<ChartNoAxesColumnIcon />}
-        label="Usage"
-        tooltip={shortcut ? `Usage (${shortcut})` : "Usage"}
+        label={t("Usage")}
+        tooltip={shortcut ? t("Usage ({shortcut})", { shortcut }) : t("Usage")}
         isActive={isActive}
         onClick={onClick}
       />
@@ -129,7 +130,11 @@ function SidebarNavRailUsageItem({
           className="size-4"
         />
       }
-      label={`Usage: ${limitPoolLabel(pool)} ${limitWindowLabel(pool, window)} ${window.remainingPercent}% left`}
+      label={t("Usage: {pool} {window} {percent}% left", {
+        pool: limitPoolLabel(pool),
+        window: limitWindowLabel(pool, window),
+        percent: window.remainingPercent,
+      })}
       tooltip={<UsageLimitsGlance pools={pools} now={now} shortcut={shortcut} />}
       onTooltipOpenChange={(open) => {
         if (open) setNow(Date.now());
@@ -154,27 +159,27 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
 
   return (
     <nav
-      aria-label="Sections"
+      aria-label={t("Sections")}
       className="flex shrink-0 flex-col items-center justify-between border-r border-sidebar-border pt-2 pb-1"
       style={{ width: THREAD_SIDEBAR_NAV_RAIL_WIDTH }}
     >
       <SidebarMenu className="items-center">
         <SidebarNavRailItem
           icon={<MessagesSquareIcon />}
-          label="Threads"
+          label={t("Threads")}
           isActive={active === "threads"}
           onClick={go(navigateToMainApp)}
         />
         <SidebarNavRailItem
           icon={<LayoutGridIcon />}
-          label="Projects"
+          label={t("Projects")}
           isActive={active === "projects"}
           onClick={go(() => navigate({ to: "/projects" }))}
         />
         {pullRequestsSupported ? (
           <SidebarNavRailItem
             icon={<PullRequestGlyph.pullRequest />}
-            label="Pull requests"
+            label={t("Pull requests")}
             isActive={active === "pull-requests"}
             onClick={go(() =>
               navigate({ to: "/pull-requests", search: readPullRequestListPreferences() }),
@@ -183,19 +188,19 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
         ) : null}
         <SidebarNavRailItem
           icon={<CalendarClockIcon />}
-          label="Scheduled tasks"
+          label={t("Scheduled tasks")}
           isActive={active === "scheduled-tasks"}
           onClick={go(() => navigate({ to: "/scheduled-tasks" }))}
         />
         <SidebarNavRailItem
           icon={<PuzzleIcon />}
-          label="Extensions"
+          label={t("Extensions")}
           isActive={active === "extensions"}
           onClick={go(() => navigate({ to: "/extensions" }))}
         />
         <SidebarNavRailItem
           icon={<ShapesIcon />}
-          label="Artifacts"
+          label={t("Artifacts")}
           isActive={active === "artifacts"}
           onClick={go(() => navigate({ to: "/artifacts" }))}
         />
@@ -203,7 +208,7 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
         {isElectron ? (
           <SidebarNavRailItem
             icon={<NotebookPenIcon />}
-            label="ThreadPage"
+            label={"ThreadPage"}
             isActive={active === "thread-page"}
             onClick={go(() => navigate({ to: "/thread-page" }))}
           />
@@ -217,7 +222,7 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
         />
         <SidebarNavRailItem
           icon={<SettingsIcon />}
-          label="Settings"
+          label={t("Settings")}
           isActive={active === "settings"}
           onClick={go(() => navigate({ to: "/settings" }))}
         />

@@ -3,6 +3,7 @@ import { unified } from "unified";
 import remarkParse from "remark-parse";
 
 import { decodeHtmlEntities, markdownHtmlTags } from "./markdownDocument";
+import { t } from "./i18n";
 
 export type MarkdownDetailsSegment =
   | { readonly kind: "markdown"; readonly markdown: string; readonly sourceOffset: number }
@@ -86,7 +87,7 @@ export function splitMarkdownDetails(markdown: string): ReadonlyArray<MarkdownDe
     const label = summary ? decodeHtmlEntities(summary[1]!.replace(/<[^>]*>/g, "")).trim() : "";
     segments.push({
       kind: "details",
-      summary: label || "Details",
+      summary: label || t("Details"),
       body,
       open: fold.open,
       sourceOffset: fold.start,

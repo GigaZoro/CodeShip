@@ -7,6 +7,7 @@ import {
   createEnvironmentRpcCommand,
   createEnvironmentRpcSubscriptionAtomFamily,
 } from "./runtime.ts";
+import { msg, t } from "@t3tools/shared/i18n";
 
 export function createDeviceEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
@@ -94,27 +95,43 @@ export function createDeviceEnvironmentAtoms<R, E>(
 }
 
 export function deviceToolVersionLabels(tools: DeviceToolVersions | undefined) {
-  if (!tools) return ["Device tool versions have not been checked."];
+  if (!tools) return [t("Device tool versions have not been checked.")];
   return (
     [
-      ["Device hub", tools.hub],
-      ["Agent tools", tools.agent],
+      [t("Device hub"), tools.hub],
+      [t("Agent tools"), tools.agent],
     ] as const
   ).map(([name, tool]) => {
-    const installed = tool.installedVersions.length ? tool.installedVersions.join(", ") : "none";
-    return `${name}: installed ${installed}; required ${tool.requiredVersion}${tool.runningVersion ? `; running ${tool.runningVersion}` : ""}.`;
+    const installed = tool.installedVersions.length ? tool.installedVersions.join(", ") : t("none");
+    return tool.runningVersion
+      ? t("{name}: installed {installed}; required {required}; running {running}.", {
+          name,
+          installed,
+          required: tool.requiredVersion,
+          running: tool.runningVersion,
+        })
+      : t("{name}: installed {installed}; required {required}.", {
+          name,
+          installed,
+          required: tool.requiredVersion,
+        });
   });
 }
 
 export function deviceToolUpdatePolicy(tools: DeviceToolVersions | undefined) {
-  if (!tools) return "Versions have not been checked. Reconnect the host and check versions.";
+  if (!tools) return t("Versions have not been checked. Reconnect the host and check versions.");
   const outdated = [tools.hub, tools.agent].filter(
     (tool) =>
       tool.installedVersions.length > 0 && !tool.installedVersions.includes(tool.requiredVersion),
   );
   return outdated.length > 0
-    ? "Update pending. Required tools will install automatically when next used. The host needs network access; an older install is not used as a fallback."
-    : "Required tools are installed automatically when needed. Checking versions does not install or start anything.";
+    ? t(
+        "Update pending. Required tools will install automatically when next used. The host needs network access; an older install is not used as a fallback.",
+      )
+    : t(
+        "Required tools are installed automatically when needed. Checking versions does not install or start anything.",
+      );
 }
-export const deviceToolUpdateOwnership =
-  "This environment's T3.CodeShip server chooses device tool versions for itself and its SSH hosts. Update that server to receive newer tool versions; updating only your browser or mobile app does not update a remote server.";
+export const deviceToolUpdateOwnership = msg(
+  "This environment's T3.CodeShip server chooses device tool versions for itself and its SSH hosts. Update that server to receive newer tool versions; updating only your browser or mobile app does not update a remote server.",
+);

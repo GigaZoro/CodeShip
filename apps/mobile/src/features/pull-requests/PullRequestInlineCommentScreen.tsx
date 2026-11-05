@@ -15,6 +15,7 @@ import { usePullRequestReviewDraft } from "./usePullRequestReviewDraft";
 import { reviewPositionLabel } from "./pullRequestDiffComments";
 import { pullRequestTarget, type PullRequestParams } from "./usePullRequestDiff";
 import { usePullRequestPermissions } from "./usePullRequestPermissions";
+import { t } from "../../lib/i18n";
 
 export type InlineCommentParams = PullRequestParams & {
   readonly draftId?: string;
@@ -75,13 +76,13 @@ export function PullRequestInlineCommentScreen({ route }: StaticScreenProps<Inli
   return (
     <PullRequestSheetContent
       busy={busy}
-      title={saved ? "Edit review comment" : "Review comment"}
+      title={saved ? t("Edit review comment") : t("Review comment")}
       subtitle={`#${params.number} · ${reviewPositionLabel(params.position)}`}
       footer={
         <Button
           fullWidth
           tone="contrast"
-          label={busy ? "Saving…" : "Save draft"}
+          label={busy ? t("Saving…") : t("Save draft")}
           loading={busy}
           disabled={
             !store.ready ||
@@ -105,8 +106,8 @@ export function PullRequestInlineCommentScreen({ route }: StaticScreenProps<Inli
         multiline
         editable={store.ready && !busy}
         autoFocus
-        accessibilityLabel="Inline review comment"
-        placeholder="Write feedback on this line…"
+        accessibilityLabel={t("Inline review comment")}
+        placeholder={t("Write feedback on this line…")}
         placeholderTextColorClassName="accent-foreground-muted"
         maxLength={65536}
         value={body}
@@ -115,11 +116,11 @@ export function PullRequestInlineCommentScreen({ route }: StaticScreenProps<Inli
         style={{ textAlignVertical: "top" }}
       />
       <Text className="text-xs text-foreground-muted">
-        Saved comments are private until you submit your review.
+        {t("Saved comments are private until you submit your review.")}
       </Text>
       {stale ? (
         <Text className="text-sm text-danger-foreground">
-          The branch changed. Return to the current diff and select the line again.
+          {t("The branch changed. Return to the current diff and select the line again.")}
         </Text>
       ) : null}
       {store.error || detail.error ? (
@@ -127,12 +128,12 @@ export function PullRequestInlineCommentScreen({ route }: StaticScreenProps<Inli
       ) : null}
       {saved ? (
         <Button
-          label="Delete draft"
+          label={t("Delete draft")}
           onPress={() =>
-            Dialog.alert("Delete this draft?", "Your other review comments will be kept.", [
-              { text: "Cancel", style: "cancel" },
+            Dialog.alert(t("Delete this draft?"), t("Your other review comments will be kept."), [
+              { text: t("Cancel"), style: "cancel" },
               {
-                text: "Delete",
+                text: t("Delete"),
                 style: "destructive",
                 onPress: () => {
                   store.update((draft) => ({

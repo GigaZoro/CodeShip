@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import {
   ClientSettingsSchema,
   type ClientSettingsPatch,
@@ -332,10 +333,14 @@ export function planScopedSettingsPatch(
       : scope.kind === "unavailable"
         ? scope.message
         : unscopableKeys.length > 0
-          ? "This setting is environment-wide and cannot be overridden by a project."
+          ? t("This setting is environment-wide and cannot be overridden by a project.")
           : isProjectScope
-            ? "Connect the selected checkouts, or update their environments, to save a project override."
-            : `Connect ${scope.kind === "environment" ? scope.label : "an environment"} to save this setting.`;
+            ? t(
+                "Connect the selected checkouts, or update their environments, to save a project override.",
+              )
+            : scope.kind === "environment"
+              ? t("Connect {environment} to save this setting.", { environment: scope.label })
+              : t("Connect an environment to save this setting.");
   return { clientPatch, hasClientWrite, serverWrites, unavailableReason };
 }
 
@@ -357,7 +362,9 @@ export function planScopedSettingsClear(
     unavailableReason:
       serverWrites.length > 0
         ? null
-        : "Connect the selected checkouts, or update their environments, to reset this override.",
+        : t(
+            "Connect the selected checkouts, or update their environments, to reset this override.",
+          ),
   };
 }
 
@@ -413,7 +420,7 @@ export function planProjectOverridesClear(
     hasClientWrite: false,
     serverWrites,
     unavailableReason:
-      serverWrites.length > 0 ? null : "Connect the environments to reset these overrides.",
+      serverWrites.length > 0 ? null : t("Connect the environments to reset these overrides."),
   };
 }
 
@@ -480,7 +487,7 @@ export async function persistScopedSettingsPatch(
       return [
         {
           ...environment,
-          message: "This environment does not support this setting. Update T3.CodeShip on it.",
+          message: t("This environment does not support this setting. Update T3.CodeShip on it."),
         },
       ];
     }
@@ -496,7 +503,7 @@ export async function persistScopedSettingsPatch(
         message:
           error instanceof Error
             ? error.message
-            : "The save failed. Try reconnecting and saving again.",
+            : t("The save failed. Try reconnecting and saving again."),
       },
     ];
   });

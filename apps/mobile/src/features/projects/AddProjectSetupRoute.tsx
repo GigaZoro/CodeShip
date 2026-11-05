@@ -5,6 +5,7 @@ import {
   AddProjectLocalFolderScreen,
   AddProjectNewScreen,
 } from "./AddProjectScreen";
+import { t } from "../../lib/i18n";
 
 type AddProjectSetupRouteParams = {
   /** The path segment the retired per-step routes used, so their links keep working. */
@@ -29,7 +30,7 @@ export function AddProjectSetupRoute({
   if (mode === "local") {
     return (
       <>
-        <NativeStackScreenOptions options={{ title: "Local folder" }} />
+        <NativeStackScreenOptions options={{ title: t("Local folder") }} />
         <AddProjectLocalFolderScreen environmentId={params.environmentId} />
       </>
     );
@@ -37,7 +38,7 @@ export function AddProjectSetupRoute({
   if (mode === "new") {
     return (
       <>
-        <NativeStackScreenOptions options={{ title: "New project" }} />
+        <NativeStackScreenOptions options={{ title: t("New project") }} />
         <AddProjectNewScreen environmentId={params.environmentId} />
       </>
     );

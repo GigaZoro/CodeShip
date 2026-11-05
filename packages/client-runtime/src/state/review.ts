@@ -19,6 +19,7 @@ import {
   type QueryAnswerHandler,
 } from "./runtime.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
+import { t } from "@t3tools/shared/i18n";
 
 export function createReviewEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
@@ -82,7 +83,7 @@ export function createReviewEnvironmentAtoms<R, E>(
                   new VcsUnsupportedOperationError({
                     operation: "review.diffFilePatch",
                     kind: "git",
-                    detail: "Diff no longer available. Refresh the comparison.",
+                    detail: t("Diff no longer available. Refresh the comparison."),
                   }),
                 );
           }),

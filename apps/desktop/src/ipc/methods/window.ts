@@ -1,3 +1,5 @@
+import { t } from "@t3tools/shared/i18n";
+
 import {
   ContextMenuItemSchema,
   DesktopAppBrandingSchema,
@@ -151,7 +153,10 @@ export const getLocalEnvironmentBootstraps = DesktopIpc.makeSyncIpcMethod({
       const runningDistro = config.value.runningDistro ?? null;
       bootstraps.push({
         id: instance.id,
-        label: runningDistro === null ? yield* instance.label : `WSL (${runningDistro})`,
+        label:
+          runningDistro === null
+            ? yield* instance.label
+            : t("WSL ({distro})", { distro: runningDistro }),
         runningDistro,
         httpBaseUrl: httpBaseUrl.href,
         wsBaseUrl: toWebSocketBaseUrl(httpBaseUrl),
@@ -262,7 +267,7 @@ export const pickProjectFavicon = DesktopIpc.makeIpcMethod({
       multiple: false,
       filters: [
         {
-          name: "Images",
+          name: t("Images"),
           extensions: PROJECT_FAVICON_EXTENSIONS.map((extension) => extension.slice(1)),
         },
       ],

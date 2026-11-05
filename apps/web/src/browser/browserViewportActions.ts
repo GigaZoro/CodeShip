@@ -6,6 +6,7 @@ import { updatePreviewServerSnapshot } from "~/previewStateStore";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { previewEnvironment } from "~/state/preview";
 
+import { t } from "~/i18n";
 /** One browser tab as both the server (thread + tab id) and this window's runtime know it. */
 export interface BrowserViewportTarget {
   readonly threadRef: ScopedThreadRef;
@@ -79,8 +80,8 @@ async function resizeBrowserViewport(
     const error = squashAtomCommandFailure(result);
     toastManager.add({
       type: "error",
-      title: "Unable to resize browser viewport",
-      description: error instanceof Error ? error.message : "An error occurred.",
+      title: t("Unable to resize browser viewport"),
+      description: error instanceof Error ? error.message : t("An error occurred."),
     });
     throw error;
   }

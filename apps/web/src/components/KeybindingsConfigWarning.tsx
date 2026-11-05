@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import {
   AuthOrchestrationOperateScope,
   type EditorId,
@@ -40,13 +41,14 @@ export function KeybindingsConfigWarning({
             toastManager.add(
               stackedThreadToast({
                 type: "error",
-                title: "Unable to open keybindings file",
-                description: error instanceof Error ? error.message : "Unknown error opening file.",
+                title: t("Unable to open keybindings file"),
+                description:
+                  error instanceof Error ? error.message : t("Unknown error opening file."),
               }),
             );
           }}
         >
-          Open keybindings.json
+          {"Open keybindings.json"}
         </Button>
       </span>
     </>

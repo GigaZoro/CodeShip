@@ -20,13 +20,16 @@ import { createRemoteEnvironmentProjectionAtoms } from "./remote-environment-pro
 import { serverEnvironment } from "./server";
 import { relayEnvironmentDiscovery } from "./relay";
 import { connectPairingUrl as connectPairingUrlCommand } from "../connection/onboarding";
+import { msg, t, type Message } from "../lib/i18n";
 
-const RELAY_REMOVAL_ACCOUNT_NOTE: Record<Discovery.RelayEnvironmentRegistration, string> = {
-  registered:
+const RELAY_REMOVAL_ACCOUNT_NOTE: Record<Discovery.RelayEnvironmentRegistration, Message> = {
+  registered: msg(
     "It stays on your T3 Connect account and keeps its host space. Deregister it under T3 Account → T3 Connect to free it.",
-  unregistered: "It's no longer on your T3 Connect account.",
-  unknown:
+  ),
+  unregistered: msg("It's no longer on your T3 Connect account."),
+  unknown: msg(
     "This doesn't change your T3 Connect account. To deregister it there, use T3 Account → T3 Connect.",
+  ),
 };
 
 const connectionPairingUrlAtom = Atom.make("").pipe(
@@ -65,14 +68,15 @@ export async function pairEnvironment(
     return { ok: true, error: null };
   }
   const error = Cause.squash(result.cause);
-  const message = error instanceof Error ? error.message : "Failed to pair with the environment.";
+  const message =
+    error instanceof Error ? error.message : t("Failed to pair with the environment.");
   if (
     error !== null &&
     typeof error === "object" &&
     "reason" in error &&
     error.reason === "unsupported"
   ) {
-    Dialog.alert("Client not supported", message);
+    Dialog.alert(t("Client not supported"), message);
     return { ok: false, error: null };
   }
   return { ok: false, error: message };
@@ -183,7 +187,7 @@ export function useRemoteConnections() {
       return;
     }
     const remove = {
-      text: "Remove",
+      text: t("Remove"),
       style: "destructive",
       onPress: () => {
         void controller.removeEnvironment(environmentId);
@@ -195,22 +199,27 @@ export function useRemoteConnections() {
         environmentId,
       );
       const openAccount = {
-        text: "Open T3 Account",
+        text: t("Open T3 Account"),
         onPress: () => navigation.navigate("SettingsAuth"),
       };
       Dialog.alert(
-        "Remove from this device?",
-        `Forget ${environment.environmentLabel} and its cached threads on this device.\n\n${RELAY_REMOVAL_ACCOUNT_NOTE[registration]}`,
+        t("Remove from this device?"),
+        `${t("Forget {environment} and its cached threads on this device.", {
+          environment: environment.environmentLabel,
+        })}\n\n${t(RELAY_REMOVAL_ACCOUNT_NOTE[registration])}`,
         registration === "unregistered" || !hasCloudPublicConfig()
-          ? [{ text: "Cancel", style: "cancel" }, remove]
-          : [{ text: "Cancel", style: "cancel" }, openAccount, remove],
+          ? [{ text: t("Cancel"), style: "cancel" }, remove]
+          : [{ text: t("Cancel"), style: "cancel" }, openAccount, remove],
       );
       return;
     }
     Dialog.alert(
-      "Remove from this device?",
-      `Forget ${environment.environmentLabel} and its cached threads on this device. Switch it off instead to keep it saved.`,
-      [{ text: "Cancel", style: "cancel" }, remove],
+      t("Remove from this device?"),
+      t(
+        "Forget {environment} and its cached threads on this device. Switch it off instead to keep it saved.",
+        { environment: environment.environmentLabel },
+      ),
+      [{ text: t("Cancel"), style: "cancel" }, remove],
     );
   };
 

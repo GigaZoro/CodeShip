@@ -41,6 +41,7 @@ import {
   type PendingApproval,
   deriveTimelineEntriesFromVisibleTurnItems,
 } from "../../session-logic";
+import { msg } from "~/i18n";
 import { remarkThoughtPreview } from "./TimelineWorkEntryRow.logic";
 import { parseMarkdownWithMath } from "@t3tools/shared/markdownMath";
 import { collectThreadFindRanges } from "./threadFindHighlights";
@@ -1200,7 +1201,7 @@ describe("MessagesTimeline thread find", () => {
 describe("compact reasoning math", () => {
   it("keeps formulas while flattening compact reasoning previews", () => {
     const tree = parseMarkdownWithMath("## Reasoning\n\nUse **norm** $|x|$ and \\[x^2\\]");
-    remarkThoughtPreview("Reasoning")(tree);
+    remarkThoughtPreview(msg("Reasoning"))(tree);
     expect(tree.children.map((node) => node.type)).toEqual([
       "text",
       "inlineMath",

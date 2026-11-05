@@ -1,3 +1,6 @@
+import type { EnvironmentConnectReachability } from "@t3tools/contracts";
+
+import { tn, t } from "./i18n.ts";
 import { readHashParams } from "./remote.ts";
 
 const CONNECT_AUTH_STATE_PARAM = "state";
@@ -74,4 +77,16 @@ export function buildConnectClerkAuthorizeUrl(input: {
   url.searchParams.set("code_challenge", input.challenge);
   url.searchParams.set("code_challenge_method", "S256");
   return url.toString();
+}
+
+/** "Tunnel connected · 4 connections · QUIC" for a healthy check. */
+export function formatConnectReachable(
+  result: Extract<EnvironmentConnectReachability, { status: "reachable" }>,
+): string {
+  const count = result.readyConnections;
+  return [
+    t("Tunnel connected"),
+    ...(count === null ? [] : [tn(count, "{count} connection", "{count} connections")]),
+    ...(result.protocol ? [result.protocol.toUpperCase()] : []),
+  ].join(" · ");
 }

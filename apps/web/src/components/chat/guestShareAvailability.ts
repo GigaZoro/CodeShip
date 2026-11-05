@@ -1,4 +1,5 @@
-import { type EnvironmentId, managedCapabilityDenial } from "@t3tools/contracts";
+import { type EnvironmentId } from "@t3tools/contracts";
+import { managedCapabilityDenial } from "@t3tools/shared/managedPolicyMessages";
 import { Atom } from "effect/reactivity";
 
 import { environmentPresentations } from "~/state/presentation";

@@ -8,6 +8,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { useServerConfigs } from "../../state/entities";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { useEnvironmentQuery } from "../../state/query";
+import { t } from "../../lib/i18n";
 
 const FOLLOW_SLACK = 8;
 
@@ -39,12 +40,12 @@ export function ThreadCommandOutput(props: {
   );
   if (text.length === 0) {
     const message = error
-      ? `Couldn't load output: ${error}`
+      ? t("Couldn't load output: {error}", { error: String(error) })
       : data === null
-        ? "Loading output…"
+        ? t("Loading output…")
         : data.running
           ? null
-          : "No output.";
+          : t("No output.");
     return message === null ? null : (
       <Text className="pt-1.5 font-mono text-2xs leading-normal text-foreground-muted">
         {message}
@@ -54,7 +55,9 @@ export function ThreadCommandOutput(props: {
   return (
     <View className="pt-1.5">
       {data?.output.truncated ? (
-        <Text className="pb-0.5 text-3xs text-foreground-subtle">Earlier output not shown</Text>
+        <Text className="pb-0.5 text-3xs text-foreground-subtle">
+          {t("Earlier output not shown")}
+        </Text>
       ) : null}
       <ScrollView
         ref={scrollRef}

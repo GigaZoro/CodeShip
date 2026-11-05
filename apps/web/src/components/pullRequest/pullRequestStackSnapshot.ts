@@ -1,4 +1,5 @@
 import type { PullRequestRef, PullRequestStack, ThreadPullRequestLink } from "@t3tools/contracts";
+import { t } from "~/i18n";
 
 /** Saved membership supports navigation, never action head SHAs. */
 export function savedPullRequestStack(
@@ -64,9 +65,9 @@ export function pullRequestStackView(
       data === null
         ? null
         : query.error
-          ? "Stack data may be stale. We couldn’t refresh it."
+          ? t("Stack data may be stale. We couldn’t refresh it.")
           : !query.isSuccess || query.isPending
-            ? "Refreshing stack… Showing saved data."
+            ? t("Refreshing stack… Showing saved data.")
             : null,
   };
 }

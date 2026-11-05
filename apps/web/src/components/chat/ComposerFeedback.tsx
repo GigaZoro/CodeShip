@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import {
   codexFeedbackNotice,
   type CodexFeedbackSubmission,
@@ -27,22 +28,22 @@ export function feedbackBannerItem(
           size="xs"
           variant="ghost"
           onClick={() => {
-            void writeTextToClipboard(submission.feedbackId, "Codex feedback thread ID").catch(
+            void writeTextToClipboard(submission.feedbackId, t("Codex feedback thread ID")).catch(
               (error: unknown) => {
                 toastManager.add({
                   type: "error",
-                  title: "Could not copy thread ID",
-                  description: error instanceof Error ? error.message : "An error occurred.",
+                  title: t("Could not copy thread ID"),
+                  description: error instanceof Error ? error.message : t("An error occurred."),
                 });
               },
             );
           }}
         >
-          Copy ID
+          {t("Copy ID")}
         </Button>
       ) : undefined,
     ...(submission.status !== "uploading"
-      ? { dismissLabel: "Dismiss feedback notice", onDismiss }
+      ? { dismissLabel: t("Dismiss feedback notice"), onDismiss }
       : {}),
   };
 }

@@ -11,6 +11,7 @@ import {
   releaseEditingQueuedMessage,
 } from "../../state/use-thread-outbox";
 import { withThreadDismissal } from "./thread-dismissal";
+import { t } from "../../lib/i18n";
 
 export function usePendingTaskListActions(
   selectThreadRoute: (params: ReactNavigation.RootParamList["Thread"]) => void,
@@ -40,10 +41,10 @@ export function usePendingTaskListActions(
 
   const confirmDeletePendingTask = useCallback((pendingTask: PendingNewTask) => {
     if (pendingTask.kind === "draft") {
-      Dialog.alert("Discard draft?", `“${pendingTask.title}” will be removed.`, [
-        { text: "Cancel", style: "cancel" },
+      Dialog.alert(t("Discard draft?"), `“${pendingTask.title}” will be removed.`, [
+        { text: t("Cancel"), style: "cancel" },
         {
-          text: "Discard",
+          text: t("Discard"),
           style: "destructive",
           onPress: () => {
             void withThreadDismissal(
@@ -61,12 +62,12 @@ export function usePendingTaskListActions(
       return;
     }
     Dialog.alert(
-      "Delete pending task?",
+      t("Delete pending task?"),
       `“${pendingTask.title}” has not been sent yet and will be removed from the outbox.`,
       [
-        { text: "Cancel", style: "cancel" },
+        { text: t("Cancel"), style: "cancel" },
         {
-          text: "Delete",
+          text: t("Delete"),
           style: "destructive",
           onPress: () => {
             // Hold delivery from confirmation so reconnects cannot send a task during removal.
@@ -90,8 +91,10 @@ export function usePendingTaskListActions(
               .catch((error) => {
                 releaseUnlessEditing();
                 Dialog.alert(
-                  "Could not delete pending task",
-                  error instanceof Error ? error.message : "The pending task could not be removed.",
+                  t("Could not delete pending task"),
+                  error instanceof Error
+                    ? error.message
+                    : t("The pending task could not be removed."),
                 );
               });
           },

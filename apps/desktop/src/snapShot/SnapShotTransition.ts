@@ -114,6 +114,7 @@ function createWindow(
     resizable: false,
     show: false,
     skipTaskbar: true,
+    // oxlint-disable-next-line t3code/no-untranslated-text -- internal window title, never visible
     title: "T3.CodeShip Snapshot Animation",
     transparent: true,
     webPreferences: {

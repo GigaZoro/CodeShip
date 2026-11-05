@@ -1,3 +1,5 @@
+import { msg, type Message } from "@t3tools/shared/i18n";
+
 export const MAC_PERMISSION_SETTINGS_URLS = {
   "screen-recording":
     "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
@@ -8,8 +10,8 @@ export const MAC_PERMISSION_SETTINGS_URLS = {
 
 export type MacPermission = keyof typeof MAC_PERMISSION_SETTINGS_URLS;
 
-export const MAC_PERMISSION_TITLES: Record<MacPermission, string> = {
-  "screen-recording": "Screen Recording",
-  accessibility: "Accessibility",
-  "full-disk-access": "Full Disk Access",
+export const MAC_PERMISSION_TITLES: Record<MacPermission, Message> = {
+  "screen-recording": msg("Screen Recording"),
+  accessibility: msg("Accessibility"),
+  "full-disk-access": msg("Full Disk Access"),
 };

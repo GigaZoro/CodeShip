@@ -2,19 +2,20 @@ import { InlineButton } from "../ui/button";
 import { useId, useState } from "react";
 
 import { cn } from "../../lib/utils";
+import { msg, t, type Message } from "~/i18n";
 
 export function ExpandableText({
   text,
   collapsedText = text,
   className,
   collapsedClassName = "line-clamp-3",
-  expandLabel = "Show full error",
+  expandLabel = msg("Show full error"),
 }: {
   text: string;
   collapsedText?: string;
   className?: string;
   collapsedClassName?: string;
-  expandLabel?: string;
+  expandLabel?: Message;
 }) {
   const textId = useId();
   const [expanded, setExpanded] = useState(false);
@@ -39,7 +40,7 @@ export function ExpandableText({
           className="mt-1"
           onClick={() => setExpanded((value) => !value)}
         >
-          {expanded ? "Show less" : expandLabel}
+          {expanded ? t("Show less") : t(expandLabel)}
         </InlineButton>
       ) : null}
     </div>

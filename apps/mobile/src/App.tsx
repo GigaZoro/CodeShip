@@ -197,6 +197,15 @@ disposeOnFoundationReplace(typeof module === "undefined" ? undefined : module.ho
   for (const dispose of appServiceDisposers) dispose();
 });
 
+// The root navigation state captured just before the UI remounts for a language change.
+let navigationStateToRestore: NavigationState | undefined;
+
+function rememberNavigationState(): void {
+  navigationStateToRestore = rootNavigationRef.isReady()
+    ? rootNavigationRef.getRootState()
+    : undefined;
+}
+
 function SplashScreenCoordinator() {
   const { isReady } = useAppearancePreferences();
 
@@ -212,7 +221,7 @@ export default function App() {
   return (
     <RegistryContext.Provider value={appAtomRegistry}>
       <CloudAuthProvider>
-        <AppearancePreferencesProvider>
+        <AppearancePreferencesProvider onBeforeLanguageRemount={rememberNavigationState}>
           <AppContent />
         </AppearancePreferencesProvider>
       </CloudAuthProvider>
@@ -221,36 +230,39 @@ export default function App() {
 }
 
 function AppContent() {
-  const { themeAppearance } = useAppearancePreferences();
+  const { themeAppearance, isReady, languageVersion } = useAppearancePreferences();
   const navigationTheme = useMobileNavigationTheme();
 
   return (
     <>
       <SplashScreenCoordinator />
       <SubscriptionUsageCoordinator />
-      <GestureHandlerRootView className="flex-1">
-        <KeyboardProvider statusBarTranslucent>
-          <SafeAreaProvider>
-            <StatusBar barStyle={themeAppearance === "dark" ? "light-content" : "dark-content"} />
-            {/* native-stack needs the theme's dark flag to select dark native headers. */}
-            <GlobalVoiceInputControl>
-              <NativeLayoutMetricsProvider>
-                <Navigation
-                  ref={attachRootNavigation}
-                  linking={appLinking}
-                  onReady={handleNavigationReady}
-                  theme={navigationTheme}
-                  onStateChange={handleNavigationStateChange}
-                />
-                <Dialog.Host />
-                <ThreadArrangementHost />
-                <ProjectChipIconRasterizer />
-              </NativeLayoutMetricsProvider>
-            </GlobalVoiceInputControl>
-            <OverlayPortalHost />
-          </SafeAreaProvider>
-        </KeyboardProvider>
-      </GestureHandlerRootView>
+      {isReady ? (
+        <GestureHandlerRootView key={languageVersion} className="flex-1">
+          <KeyboardProvider statusBarTranslucent>
+            <SafeAreaProvider>
+              <StatusBar barStyle={themeAppearance === "dark" ? "light-content" : "dark-content"} />
+              {/* native-stack needs the theme's dark flag to select dark native headers. */}
+              <GlobalVoiceInputControl>
+                <NativeLayoutMetricsProvider>
+                  <Navigation
+                    ref={attachRootNavigation}
+                    linking={appLinking}
+                    onReady={handleNavigationReady}
+                    theme={navigationTheme}
+                    onStateChange={handleNavigationStateChange}
+                    initialState={navigationStateToRestore}
+                  />
+                  <Dialog.Host />
+                  <ThreadArrangementHost />
+                  <ProjectChipIconRasterizer />
+                </NativeLayoutMetricsProvider>
+              </GlobalVoiceInputControl>
+              <OverlayPortalHost />
+            </SafeAreaProvider>
+          </KeyboardProvider>
+        </GestureHandlerRootView>
+      ) : null}
     </>
   );
 }

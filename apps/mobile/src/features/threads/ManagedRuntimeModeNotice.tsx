@@ -1,9 +1,9 @@
 import {
   clampManagedRuntimeMode,
-  managedRuntimeModeDenial,
   type ManagedPolicySummary,
   type RuntimeMode,
 } from "@t3tools/contracts";
+import { managedRuntimeModeDenial } from "@t3tools/shared/managedPolicyMessages";
 import { View } from "react-native";
 
 import { AppText } from "../../components/ui/AppText";
@@ -13,6 +13,7 @@ import {
   useComposerDraftSettings,
 } from "../../state/use-composer-drafts";
 import { runtimeModeChoicesForSupportedModes } from "./thread-settings-options";
+import { t } from "../../lib/i18n";
 
 /**
  * Shown while a thread's mode is above its environment's managed ceiling, where the server
@@ -38,11 +39,11 @@ export function ManagedRuntimeModeNotice(props: {
   return (
     <View className="gap-2 px-4 pb-3">
       <AppText textRole="footnote" className="text-foreground-muted">
-        {`${denial} Switch this thread's mode to continue.`}
+        {t("{denial} Switch this thread's mode to continue.", { denial })}
       </AppText>
       {target === undefined || targetLabel === undefined ? null : (
         <Button
-          label={`Switch to ${targetLabel}`}
+          label={t("Switch to {mode}", { mode: t(targetLabel) })}
           onPress={() => updateComposerDraftSettings(props.threadKey, { runtimeMode: target })}
         />
       )}

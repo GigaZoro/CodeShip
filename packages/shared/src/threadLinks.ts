@@ -1,6 +1,7 @@
 import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { t } from "./i18n.ts";
 
 export const THREAD_LINK_PROTOCOL = "t3-thread";
 const V1_PREFIX = `${THREAD_LINK_PROTOCOL}://v1/`;
@@ -115,8 +116,8 @@ export function unknownThreadLinkLabel(
   messageEnvironmentId: EnvironmentId,
 ): string {
   return link.environmentId === null || link.environmentId === messageEnvironmentId
-    ? "Thread no longer available"
-    : "Thread on another machine";
+    ? t("Thread no longer available")
+    : t("Thread on another machine");
 }
 
 /**

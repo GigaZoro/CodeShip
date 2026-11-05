@@ -8,6 +8,7 @@ import { isJavaScriptReplTool } from "@t3tools/shared/toolActivity";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import { type TimelineWorkEntry, type TimelineRow } from "./timelineRowContext";
 import { type WorkEntryIconName } from "./TimelineToolActivityIcon";
+import { msg, t, type Message } from "~/i18n";
 
 export function toolGroupSummaryIconName(
   kind: Extract<TimelineRow, { kind: "work-toggle" }>["summaryKind"],
@@ -113,7 +114,7 @@ export function buildToolCallExpandedBody(
             "input" in workEntry.toolData
           ? workEntry.toolData.input
           : undefined;
-    if (input !== undefined) addBlock(`Tool input\n${JSON.stringify(input, null, 2)}`);
+    if (input !== undefined) addBlock(`${t("Tool input")}\n${JSON.stringify(input, null, 2)}`);
   }
   const command = workEntry.command?.trim();
   const raw = workEntryRawCommand(workEntry);
@@ -193,7 +194,7 @@ export function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconNa
 }
 
 /** Compact reasoning keeps formulas while flattening other Markdown into label text. */
-export function remarkThoughtPreview(fallback: string) {
+export function remarkThoughtPreview(fallback: Message) {
   return (tree: Root) => {
     const children: RootContent[] = [];
     const append = (value: string) => {
@@ -235,9 +236,9 @@ export function remarkThoughtPreview(fallback: string) {
     if (last?.type === "text") last.value = last.value.trimEnd();
     tree.children = children.some((child) => child.type !== "text" || child.value)
       ? children
-      : [{ type: "text", value: fallback }];
+      : [{ type: "text", value: t(fallback) }];
   };
 }
 
-export const THOUGHT_PREVIEW_PLUGINS: PluggableList = [[remarkThoughtPreview, "Thought"]];
-export const THINKING_PREVIEW_PLUGINS: PluggableList = [[remarkThoughtPreview, "Thinking"]];
+export const THOUGHT_PREVIEW_PLUGINS: PluggableList = [[remarkThoughtPreview, msg("Thought")]];
+export const THINKING_PREVIEW_PLUGINS: PluggableList = [[remarkThoughtPreview, msg("Thinking")]];

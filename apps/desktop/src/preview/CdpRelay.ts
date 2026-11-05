@@ -88,6 +88,7 @@ export function createCdpRelayConnection(
       write(
         JSON.stringify({
           id: message["id"],
+          // oxlint-disable-next-line t3code/no-untranslated-text -- CDP protocol error payload
           error: { code: -32000, message: "CDP payload too large" },
           ...(message["sessionId"] === undefined ? {} : { sessionId: message["sessionId"] }),
         }),

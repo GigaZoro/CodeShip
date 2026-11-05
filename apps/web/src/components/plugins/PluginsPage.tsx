@@ -44,11 +44,13 @@ import { Switch } from "../ui/switch";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
+import { getFormattingLocale, msg, t, tn } from "~/i18n";
 
 const SEARCH_DEBOUNCE_MS = 300;
-const installCountFormat = new Intl.NumberFormat(undefined, { notation: "compact" });
+const formatInstallCount = (count: number) =>
+  new Intl.NumberFormat(getFormattingLocale(), { notation: "compact" }).format(count);
 
-const FAILURE_FALLBACK = "The provider could not finish the change.";
+const FAILURE_FALLBACK = msg("The provider could not finish the change.");
 
 const pluginLabel = (plugin: ProviderPlugin) => plugin.displayName ?? plugin.name;
 
@@ -76,7 +78,9 @@ function PluginRow(props: {
           {version ? <span className="text-muted-foreground text-xs">{version}</span> : null}
           {plugin.installCount ? (
             <span className="text-muted-foreground text-xs tabular-nums">
-              {installCountFormat.format(plugin.installCount)} installs
+              {tn(plugin.installCount, "{count} install", "{count} installs", {
+                count: formatInstallCount(plugin.installCount),
+              })}
             </span>
           ) : null}
         </div>
@@ -114,7 +118,7 @@ function AddMarketplaceDialog(props: {
     event.preventDefault();
     const trimmed = source.trim();
     if (!trimmed) {
-      setError("Enter a GitHub repository, a git URL, or a folder path.");
+      setError(t("Enter a GitHub repository, a git URL, or a folder path."));
       return;
     }
     setAdding(true);
@@ -127,15 +131,15 @@ function AddMarketplaceDialog(props: {
     if (result._tag === "Success") {
       toastManager.add({
         type: "success",
-        title: `Added ${result.value.marketplace}`,
-        description: "Its plugins are listed under Available.",
+        title: t("Added {name}", { name: result.value.marketplace }),
+        description: t("Its plugins are listed under Available."),
       });
       setSource("");
       props.onOpenChange(false);
       props.onAdded();
       return;
     }
-    setError(failureMessage(result, FAILURE_FALLBACK));
+    setError(failureMessage(result, t(FAILURE_FALLBACK)));
   };
 
   return (
@@ -143,18 +147,20 @@ function AddMarketplaceDialog(props: {
       <DialogPopup className="sm:max-w-md">
         <form className="flex min-h-0 flex-col" onSubmit={(event) => void submit(event)}>
           <DialogHeader>
-            <DialogTitle>Add marketplace</DialogTitle>
+            <DialogTitle>{t("Add marketplace")}</DialogTitle>
             <DialogDescription>
-              {props.target.label} lists the plugins the marketplace offers, ready to install.
+              {t("{target} lists the plugins the marketplace offers, ready to install.", {
+                target: props.target.label,
+              })}
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
             <div className="flex flex-col gap-2">
-              <Label htmlFor={sourceId}>Source</Label>
+              <Label htmlFor={sourceId}>{t("Source")}</Label>
               <Input
                 id={sourceId}
                 autoFocus
-                placeholder="owner/repo"
+                placeholder={"owner/repo"}
                 value={source}
                 maxLength={2048}
                 disabled={adding}
@@ -166,8 +172,10 @@ function AddMarketplaceDialog(props: {
                 }}
               />
               <p id={`${sourceId}-hint`} className="text-muted-foreground text-xs">
-                A GitHub repository, a git or https URL, or a folder path on the machine{" "}
-                {props.target.naming.title} runs on.
+                {t(
+                  "A GitHub repository, a git or https URL, or a folder path on the machine {provider} runs on.",
+                  { provider: props.target.naming.title },
+                )}
               </p>
               {error ? (
                 <p role="alert" className="text-destructive-foreground text-xs">
@@ -178,11 +186,11 @@ function AddMarketplaceDialog(props: {
           </DialogPanel>
           <DialogFooter>
             <Button type="button" variant="outline" disabled={adding} onClick={() => close(false)}>
-              Cancel
+              {t("Cancel")}
             </Button>
             <Button type="submit" disabled={adding}>
               {adding ? <Spinner /> : null}
-              Add marketplace
+              {t("Add marketplace")}
             </Button>
           </DialogFooter>
         </form>
@@ -257,7 +265,11 @@ function ProviderPluginsPanel(props: { readonly target: ProviderTarget }) {
       install({ environmentId, input: { instanceId, pluginId: plugin.id } }),
     );
     if (outcome._tag !== "Success") {
-      reportFailure(`Could not install ${pluginLabel(plugin)}`, outcome, FAILURE_FALLBACK);
+      reportFailure(
+        t("Could not install {plugin}", { plugin: pluginLabel(plugin) }),
+        outcome,
+        t(FAILURE_FALLBACK),
+      );
       return;
     }
     plugins.refresh();
@@ -265,16 +277,18 @@ function ProviderPluginsPanel(props: { readonly target: ProviderTarget }) {
     const connectable = apps.find((app) => app.installUrl !== undefined);
     toastManager.add({
       type: "success",
-      title: `Installed ${pluginLabel(plugin)}`,
+      title: t("Installed {plugin}", { plugin: pluginLabel(plugin) }),
       description:
         apps.length === 0
-          ? `New ${providerName} sessions load it.`
-          : `Connect ${apps.map((app) => app.name).join(", ")} before using it.`,
+          ? t("New {provider} sessions load it.", { provider: providerName })
+          : t("Connect {apps} before using it.", {
+              apps: apps.map((app) => app.name).join(", "),
+            }),
       ...(connectable?.installUrl
         ? {
             timeout: 0,
             actionProps: {
-              children: `Connect ${connectable.name}`,
+              children: t("Connect {name}", { name: connectable.name }),
               onClick: () => {
                 void readLocalApi()
                   ?.shell.openExternal(connectable.installUrl ?? "")
@@ -290,11 +304,18 @@ function ProviderPluginsPanel(props: { readonly target: ProviderTarget }) {
       uninstall({ environmentId, input: { instanceId, pluginId: plugin.id } }),
     );
     if (outcome._tag !== "Success") {
-      reportFailure(`Could not uninstall ${pluginLabel(plugin)}`, outcome, FAILURE_FALLBACK);
+      reportFailure(
+        t("Could not uninstall {plugin}", { plugin: pluginLabel(plugin) }),
+        outcome,
+        t(FAILURE_FALLBACK),
+      );
       return;
     }
     plugins.refresh();
-    toastManager.add({ type: "success", title: `Uninstalled ${pluginLabel(plugin)}` });
+    toastManager.add({
+      type: "success",
+      title: t("Uninstalled {plugin}", { plugin: pluginLabel(plugin) }),
+    });
   };
   const handleSetEnabled = async (plugin: ProviderPlugin, enabled: boolean) => {
     const outcome = await track(plugin.id, () =>
@@ -302,7 +323,9 @@ function ProviderPluginsPanel(props: { readonly target: ProviderTarget }) {
     );
     if (outcome._tag !== "Success") {
       reportFailure(
-        `Could not ${enabled ? "enable" : "disable"} ${pluginLabel(plugin)}`,
+        enabled
+          ? t("Could not enable {plugin}", { plugin: pluginLabel(plugin) })
+          : t("Could not disable {plugin}", { plugin: pluginLabel(plugin) }),
         outcome,
         FAILURE_FALLBACK,
       );
@@ -318,7 +341,7 @@ function ProviderPluginsPanel(props: { readonly target: ProviderTarget }) {
     });
     setRefreshing(false);
     if (outcome._tag === "Success") plugins.refresh();
-    else reportFailure("Could not refresh plugins", outcome, FAILURE_FALLBACK);
+    else reportFailure(t("Could not refresh plugins"), outcome, t(FAILURE_FALLBACK));
   };
 
   const installedActions = (plugin: ProviderPlugin) => {
@@ -330,7 +353,7 @@ function ProviderPluginsPanel(props: { readonly target: ProviderTarget }) {
           size="sm"
           checked={plugin.enabled}
           disabled={!canManage || busy}
-          aria-label={`Enable ${pluginLabel(plugin)}`}
+          aria-label={t("Enable {plugin}", { plugin: pluginLabel(plugin) })}
           onCheckedChange={(enabled) => void handleSetEnabled(plugin, enabled)}
         />
         {plugin.removable ? (
@@ -340,7 +363,7 @@ function ProviderPluginsPanel(props: { readonly target: ProviderTarget }) {
                 <Button
                   size="icon-xs"
                   variant="ghost-destructive"
-                  aria-label={`Uninstall ${pluginLabel(plugin)}`}
+                  aria-label={t("Uninstall {plugin}", { plugin: pluginLabel(plugin) })}
                   disabled={!canManage || busy}
                   onClick={() => void handleUninstall(plugin)}
                 >
@@ -348,12 +371,16 @@ function ProviderPluginsPanel(props: { readonly target: ProviderTarget }) {
                 </Button>
               }
             />
-            <TooltipPopup>Uninstall</TooltipPopup>
+            <TooltipPopup>{t("Uninstall")}</TooltipPopup>
           </Tooltip>
         ) : (
           <Tooltip>
-            <TooltipTrigger render={<Badge size="sm" variant="outline" />}>Managed</TooltipTrigger>
-            <TooltipPopup>{providerName} keeps this plugin installed.</TooltipPopup>
+            <TooltipTrigger render={<Badge size="sm" variant="outline" />}>
+              {t("Managed")}
+            </TooltipTrigger>
+            <TooltipPopup>
+              {t("{provider} keeps this plugin installed.", { provider: providerName })}
+            </TooltipPopup>
           </Tooltip>
         )}
       </>
@@ -366,16 +393,16 @@ function ProviderPluginsPanel(props: { readonly target: ProviderTarget }) {
         size="compact"
         variant="outline"
         disabled={!canManage || busy}
-        aria-label={`Install ${pluginLabel(plugin)}`}
+        aria-label={t("Install {plugin}", { plugin: pluginLabel(plugin) })}
         onClick={() => void handleInstall(plugin)}
       >
         {busy ? <Spinner /> : null}
-        Install
+        {t("Install")}
       </Button>
     );
   };
 
-  const searchLabel = `Search ${providerName} plugins`;
+  const searchLabel = t("Search {provider} plugins", { provider: providerName });
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-2">
@@ -404,7 +431,7 @@ function ProviderPluginsPanel(props: { readonly target: ProviderTarget }) {
                 <Button
                   size="icon"
                   variant="outline"
-                  aria-label="Refresh plugins"
+                  aria-label={t("Refresh plugins")}
                   disabled={refreshing}
                   onClick={() => void handleRefresh()}
                 >
@@ -412,22 +439,24 @@ function ProviderPluginsPanel(props: { readonly target: ProviderTarget }) {
                 </Button>
               }
             />
-            <TooltipPopup>Read the marketplaces again</TooltipPopup>
+            <TooltipPopup>{t("Read the marketplaces again")}</TooltipPopup>
           </Tooltip>
           <Button
             variant="outline"
-            aria-label="Add marketplace"
+            aria-label={t("Add marketplace")}
             disabled={!canManage}
             onClick={() => setAddingMarketplace(true)}
           >
             <PlusIcon />
-            <span className="hidden sm:inline">Add marketplace</span>
+            <span className="hidden sm:inline">{t("Add marketplace")}</span>
           </Button>
         </div>
         <p className="text-muted-foreground text-xs">
-          Plugins add skills, commands, agents, hooks, and MCP servers to {providerName}. New
-          sessions load changes; running ones keep what they started with.
-          {canManage ? null : " Changing plugins needs permission to manage providers."}
+          {t(
+            "Plugins add skills, commands, agents, hooks, and MCP servers to {provider}. New sessions load changes; running ones keep what they started with.",
+            { provider: providerName },
+          )}
+          {canManage ? null : ` ${t("Changing plugins needs permission to manage providers.")}`}
         </p>
       </div>
 
@@ -437,13 +466,13 @@ function ProviderPluginsPanel(props: { readonly target: ProviderTarget }) {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span>{plugins.error}</span>
               <Button size="compact" variant="outline" onClick={() => plugins.refresh()}>
-                Try again
+                {t("Try again")}
               </Button>
             </div>
           </AlertDescription>
         </Alert>
       ) : result === null ? (
-        <ProviderListSkeleton label="Loading plugins" />
+        <ProviderListSkeleton label={t("Loading plugins")} />
       ) : (
         <>
           {result.warnings.length > 0 ? (
@@ -465,12 +494,14 @@ function ProviderPluginsPanel(props: { readonly target: ProviderTarget }) {
               id={`plugins-installed-${target.key}`}
               className="flex items-center gap-2 font-medium text-sm"
             >
-              Installed
+              {t("Installed")}
               <span className="text-muted-foreground text-xs tabular-nums">{installed.length}</span>
             </h2>
             {installed.length === 0 ? (
               <p className="text-muted-foreground text-sm">
-                {query ? `No installed plugins match “${query}”.` : "No plugins installed yet."}
+                {query
+                  ? t("No installed plugins match “{query}”.", { query })
+                  : t("No plugins installed yet.")}
               </p>
             ) : (
               <ul className="divide-y rounded-lg border">
@@ -493,7 +524,7 @@ function ProviderPluginsPanel(props: { readonly target: ProviderTarget }) {
               id={`plugins-available-${target.key}`}
               className="flex items-center gap-2 font-medium text-sm"
             >
-              Available
+              {t("Available")}
               <span className="text-muted-foreground text-xs tabular-nums">
                 {result.availableTotal}
               </span>
@@ -502,8 +533,10 @@ function ProviderPluginsPanel(props: { readonly target: ProviderTarget }) {
             {result.available.length === 0 ? (
               <p className="text-muted-foreground text-sm">
                 {query
-                  ? `No plugins to install match “${query}”.`
-                  : "Every plugin your marketplaces offer is installed. Add a marketplace to find more."}
+                  ? t("No plugins to install match “{query}”.", { query })
+                  : t(
+                      "Every plugin your marketplaces offer is installed. Add a marketplace to find more.",
+                    )}
               </p>
             ) : (
               <ul className="divide-y rounded-lg border">
@@ -524,7 +557,7 @@ function ProviderPluginsPanel(props: { readonly target: ProviderTarget }) {
                 disabled={plugins.isPending}
                 onClick={() => setPaging({ query, limit: limit + PROVIDER_PLUGINS_PAGE_SIZE })}
               >
-                Show more
+                {t("Show more")}
               </Button>
             ) : null}
           </section>
@@ -549,7 +582,7 @@ export function PluginsPanel(props: { readonly controlsSlot: HTMLElement | null 
       return (
         <ScrollArea className="min-h-0 flex-1">
           <WorkspacePageContainer width="wide">
-            <ProviderListSkeleton label="Loading plugins" />
+            <ProviderListSkeleton label={t("Loading plugins")} />
           </WorkspacePageContainer>
         </ScrollArea>
       );
@@ -560,10 +593,11 @@ export function PluginsPanel(props: { readonly controlsSlot: HTMLElement | null 
           <EmptyMedia variant="icon">
             <BlocksIcon />
           </EmptyMedia>
-          <EmptyTitle>No provider installs plugins here</EmptyTitle>
+          <EmptyTitle>{t("No provider installs plugins here")}</EmptyTitle>
           <EmptyDescription>
-            Claude, Codex, and Grok install plugins from their marketplaces. Turn one on in Settings
-            to browse and install them here.
+            {t(
+              "Claude, Codex, and Grok install plugins from their marketplaces. Turn one on in Settings to browse and install them here.",
+            )}
           </EmptyDescription>
         </EmptyHeader>
       </Empty>
@@ -581,7 +615,9 @@ export function PluginsPanel(props: { readonly controlsSlot: HTMLElement | null 
         <WorkspacePageContainer width="wide">
           {machine.machine.disconnected ? (
             <p className="rounded-lg border border-dashed px-4 py-6 text-center text-muted-foreground text-sm">
-              {machine.machine.label} is offline. Its plugins show up once it reconnects.
+              {t("{label} is offline. Its plugins show up once it reconnects.", {
+                label: machine.machine.label,
+              })}
             </p>
           ) : (
             <>

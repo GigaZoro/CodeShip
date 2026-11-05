@@ -54,6 +54,7 @@ import {
   type EnvironmentThreadState,
   type EnvironmentThreadStatus,
 } from "./threadState.ts";
+import { t } from "@t3tools/shared/i18n";
 
 function statusWithoutLiveData(
   data: Option.Option<OrchestrationV2ThreadProjection>,
@@ -65,14 +66,14 @@ function formatThreadError(cause: Cause.Cause<unknown>): string {
   const error = Cause.squash(cause);
   return error instanceof Error && error.message.trim().length > 0
     ? error.message
-    : "Could not synchronize the thread.";
+    : t("Could not synchronize the thread.");
 }
 
 function formatHistoryError(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) {
     return error.message;
   }
-  return "Could not load earlier activity.";
+  return t("Could not load earlier activity.");
 }
 
 function historyMetaFromCachedSnapshot(
@@ -689,7 +690,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       latest: EnvironmentThreadState,
     ): ThreadHistoryController.ThreadHistoryLoadEarlierResult =>
       workAnchorId !== undefined && workCursor(latest) !== null
-        ? { _tag: "error", message: "Work history changed. Retry loading it." }
+        ? { _tag: "error", message: t("Work history changed. Retry loading it.") }
         : { _tag: "noop" };
     if (workAnchorId === undefined)
       yield* patchHistoryMeta((history) =>
@@ -724,7 +725,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       while (true) {
         const preparedOption = yield* SubscriptionRef.get(supervisor.prepared);
         if (Option.isNone(preparedOption) || Option.isNone(httpClient))
-          return yield* failLoad("Environment is not connected.");
+          return yield* failLoad(t("Environment is not connected."));
         const views =
           workAnchorId !== undefined
             ? ["work" as const]
@@ -758,8 +759,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           if (keepPaging && (page.nextCursor === null || page.nextCursor === requestCursor))
             return yield* failLoad(
               workAnchorId === undefined
-                ? "History did not advance."
-                : "Work history did not advance.",
+                ? t("History did not advance.")
+                : t("Work history did not advance."),
             );
           const waiting = yield* Ref.get(awaitingCompletion);
           const result = yield* applyLock.withPermits(1)(
@@ -1028,7 +1029,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         };
       }),
       {
-        onDefect: () => setStreamError("Could not synchronize the thread."),
+        onDefect: () => setStreamError(t("Could not synchronize the thread.")),
         onExpectedFailure: (cause) => setStreamError(formatThreadError(cause)),
         retryExpectedFailureAfter: "250 millis",
         resubscribe: foregroundResubscriptions,

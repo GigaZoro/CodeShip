@@ -1,3 +1,5 @@
+import { loadMessageCatalog } from "@t3tools/client-runtime/i18n/catalogs";
+import { activateLanguage } from "@t3tools/shared/i18n";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -41,4 +43,28 @@ it("ignores composing keys in the search", async () => {
   await vi.waitFor(() =>
     expect(screen.router?.state.location.pathname).toBe("/settings/appearance"),
   );
+});
+
+it("renders the real Ukrainian catalog and searches in either language", async () => {
+  activateLanguage({
+    language: "uk",
+    catalog: await loadMessageCatalog("uk"),
+    formattingLocale: "uk",
+  });
+  try {
+    await using _screen = await render(
+      <SidebarProvider defaultOpen>
+        <SettingsSidebarNav pathname="/settings/general" />
+      </SidebarProvider>,
+      { router: "/settings/general" },
+    );
+    const search = page.getByRole("combobox", { name: "Шукати в налаштуваннях" });
+    await expect.element(page.getByRole("treeitem", { name: "Загальні" })).toBeVisible();
+    for (const query of ["тема", "theme"]) {
+      await search.fill(query);
+      await expect.element(page.getByRole("option", { name: /Тема/ })).toBeVisible();
+    }
+  } finally {
+    activateLanguage({ language: "en", catalog: {}, formattingLocale: undefined });
+  }
 });

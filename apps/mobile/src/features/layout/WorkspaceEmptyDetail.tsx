@@ -6,6 +6,7 @@ import { NewThreadButton } from "../../components/NewThreadButton";
 import { FloatingActionButton } from "../../components/ui/FloatingActionButton";
 import { EmptyState } from "../../components/ui/EmptyState";
 import type { WorkspaceTab } from "../workspace/workspace-tabs-state";
+import { t } from "../../lib/i18n";
 
 export function WorkspaceEmptyDetail(props: {
   readonly tab?: WorkspaceTab | "settings";
@@ -27,12 +28,12 @@ export function WorkspaceEmptyDetail(props: {
       {props.onAddConnection ? (
         <View className="w-full max-w-[430px]">
           <EmptyState
-            title="No environments connected"
-            detail="Add an environment to load projects and start coding sessions."
+            title={t("No environments connected")}
+            detail={t("Add an environment to load projects and start coding sessions.")}
             variant="plain"
             action={
               <FloatingActionButton
-                label="Add environment"
+                label={t("Add environment")}
                 icon="plus"
                 variant="extended"
                 tone="primary"
@@ -51,19 +52,19 @@ export function WorkspaceEmptyDetail(props: {
           />
           <Text className="text-center text-xl font-t3-bold">
             {settings
-              ? "Select a setting"
+              ? t("Select a setting")
               : pullRequests
-                ? "Select a pull request"
-                : "Select a thread"}
+                ? t("Select a pull request")
+                : t("Select a thread")}
           </Text>
           <Text className="text-center text-base text-foreground-muted">
             {settings
-              ? "Choose a page from the sidebar."
+              ? t("Choose a page from the sidebar.")
               : pullRequests
-                ? "Choose a pull request from the sidebar to review it."
+                ? t("Choose a pull request from the sidebar to review it.")
                 : Platform.OS === "android"
-                  ? "Choose a thread from the sidebar or start a new thread."
-                  : "Choose a thread from the sidebar or start a new task."}
+                  ? t("Choose a thread from the sidebar or start a new thread.")
+                  : t("Choose a thread from the sidebar or start a new task.")}
           </Text>
           {props.onStartNewTask && !pullRequests && !settings ? (
             Platform.OS === "android" ? (
@@ -74,7 +75,9 @@ export function WorkspaceEmptyDetail(props: {
                 className="mt-2 flex-row items-center gap-2 rounded-full bg-primary px-5 py-3 active:opacity-70"
                 onPress={props.onStartNewTask}
               >
-                <Text className="text-base font-t3-bold text-primary-foreground">New thread</Text>
+                <Text className="text-base font-t3-bold text-primary-foreground">
+                  {t("New thread")}
+                </Text>
               </Pressable>
             )
           ) : null}

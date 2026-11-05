@@ -113,6 +113,7 @@ import { isNavigationPageTab } from "../workspace/navigation-tab-order";
 import type { WorkspaceTab } from "../workspace/workspace-tabs-state";
 import { workspaceRoutesOf } from "./workspace-overlay-routes";
 import { SettingsWorkspaceLayout } from "../settings/SettingsWorkspaceLayout";
+import { t } from "../../lib/i18n";
 
 export { useAdaptiveWorkspaceLayout };
 
@@ -926,8 +927,8 @@ function AdaptiveWorkspaceLayoutContent(
               renderFallback={(fallback) => (
                 <RenderFailureView
                   {...fallback}
-                  title="The sidebar couldn't be displayed"
-                  exit={{ label: "Open settings", onPress: handleOpenSettings }}
+                  title={t("The sidebar couldn't be displayed")}
+                  exit={{ label: t("Open settings"), onPress: handleOpenSettings }}
                 />
               )}
             >

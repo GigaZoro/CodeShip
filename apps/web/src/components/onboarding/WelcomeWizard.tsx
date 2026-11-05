@@ -107,12 +107,15 @@ import { toastManager } from "../ui/toast";
 import { cn } from "../../lib/utils";
 import { formatRelativeTime } from "../../timestampFormat";
 
+import { msg, t, tn, tx } from "~/i18n";
 type WizardStep = "connection" | "agents" | "import";
 const NO_ENVIRONMENTS: readonly EnvironmentId[] = [];
 
 const AGENT_ONBOARDING_THREAD_ID = ThreadId.make("onboarding-agent-setup");
-const ONBOARDING_STAGES = ["Connect", "Agents", "Projects"] as const;
-const SCAN_LIMIT_MESSAGE = "Scan limit reached. Some projects or conversations may be missing.";
+const ONBOARDING_STAGES = [msg("Connect"), msg("Agents"), msg("Projects")] as const;
+const SCAN_LIMIT_MESSAGE = msg(
+  "Scan limit reached. Some projects or conversations may be missing.",
+);
 
 export function WelcomeWizard({
   localAvailable,
@@ -190,14 +193,14 @@ export function WelcomeWizard({
         if (importWarning) {
           toastManager.add({
             type: "warning",
-            title: "Some history was not imported",
+            title: t("Some history was not imported"),
             description: importWarning,
             timeout: 0,
           });
         } else if (importedThreadCount > 0) {
           toastManager.add({
             type: "success",
-            title: `Imported ${importedThreadCount} ${importedThreadCount === 1 ? "thread" : "threads"}`,
+            title: tn(importedThreadCount, "Imported {count} thread", "Imported {count} threads"),
           });
         }
         return true;
@@ -205,8 +208,8 @@ export function WelcomeWizard({
       .catch(() => {
         const errorToast = {
           type: "error",
-          title: "Could not finish setup",
-          description: "Your settings could not be saved. Try again.",
+          title: t("Could not finish setup"),
+          description: t("Your settings could not be saved. Try again."),
         } as const;
         if (completionErrorToastIdRef.current === null) {
           completionErrorToastIdRef.current = toastManager.add(errorToast);
@@ -239,13 +242,13 @@ export function WelcomeWizard({
         initialFocus={() => document.getElementById("onboarding-pairing-url") ?? true}
       >
         <WizardHeader
-          title="Set up T3.CodeShip"
+          title={t("Set up T3.CodeShip")}
           identity={
             <CodeShipBrand className="gap-2.5 text-2xl text-foreground" markClassName="size-8" />
           }
         >
           <WizardSteps
-            steps={ONBOARDING_STAGES}
+            steps={ONBOARDING_STAGES.map((stage) => t(stage))}
             currentStep={stageIndex}
             isStepDisabled={(index) => isImporting || index >= stageIndex}
             onStepChange={(index) => {
@@ -339,14 +342,14 @@ function ConnectionStep({
   return (
     <>
       <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-        Connect your computers
+        {t("Connect your computers")}
       </h1>
       <p className="mt-2.5 text-sm leading-relaxed text-muted-foreground">
-        Choose one or more computers. We’ll set up agents and projects on each.
+        {t("Choose one or more computers. We’ll set up agents and projects on each.")}
       </p>
       {directEnvironments.length > 0 ? (
         <fieldset className="mt-5 space-y-2">
-          <legend className="sr-only">Computers to set up</legend>
+          <legend className="sr-only">{t("Computers to set up")}</legend>
           {directEnvironments.map((environment) => (
             <label
               key={environment.environmentId}
@@ -369,7 +372,7 @@ function ConnectionStep({
                   </span>
                   <span className="shrink-0 text-xs text-muted-foreground">
                     {!environment.entry.enabled && environment.connection.phase !== "unsupported"
-                      ? "Off"
+                      ? t("Off")
                       : presentSavedCloudEnvironmentConnection(environment.connection).buttonLabel}
                   </span>
                 </span>
@@ -410,7 +413,7 @@ function ConnectionStep({
               }
             >
               <LinkIcon className="size-4 text-muted-foreground" />
-              <span className="flex-1 text-left">Add a computer</span>
+              <span className="flex-1 text-left">{t("Add a computer")}</span>
               <ChevronRightIcon
                 className={cn("size-4 text-muted-foreground", pairingOpen && "rotate-90")}
               />
@@ -433,24 +436,36 @@ function ConnectionStep({
       </div>
       {skippedLabels.length > 0 ? (
         <p className="mt-4 text-xs text-muted-foreground">
-          Not connected, so setup skips {skippedLabels.join(", ")}. You can set{" "}
-          {skippedLabels.length === 1 ? "it" : "them"} up later from Settings.
+          {skippedLabels.length === 1
+            ? t("Not connected, so setup skips {labels}. You can set it up later from Settings.", {
+                labels: skippedLabels.join(", "),
+              })
+            : t(
+                "Not connected, so setup skips {labels}. You can set them up later from Settings.",
+                { labels: skippedLabels.join(", ") },
+              )}
         </p>
       ) : null}
       <div className="mt-6 flex flex-col-reverse gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
         <p className="min-w-0 text-xs leading-relaxed text-muted-foreground">
-          {telemetryOff ?? "T3.CodeShip collects anonymous usage data to help us improve it."} To
-          read more about how your data is used
-          {telemetryOff === undefined ? " and how to opt out" : ""}, see our{" "}
-          <a
-            className="underline underline-offset-2 hover:text-foreground"
-            href={PRIVACY_POLICY_URL}
-            target="_blank"
-            rel="noreferrer noopener"
-          >
-            privacy policy
-          </a>
-          .
+          {telemetryOff ?? t("T3.CodeShip collects anonymous usage data to help us improve it.")}{" "}
+          {tx(
+            telemetryOff === undefined
+              ? "To read more about how your data is used and how to opt out, see our {link}."
+              : "To read more about how your data is used, see our {link}.",
+            {
+              link: (
+                <a
+                  className="underline underline-offset-2 hover:text-foreground"
+                  href={PRIVACY_POLICY_URL}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >
+                  {t("privacy policy")}
+                </a>
+              ),
+            },
+          )}
         </p>
         <Button
           className="shrink-0 self-end"
@@ -459,7 +474,7 @@ function ConnectionStep({
           disabled={!ready || isPairing}
           onClick={onContinue}
         >
-          Continue
+          {t("Continue")}
           <ArrowRightIcon className="size-3.5" />
         </Button>
       </div>
@@ -502,14 +517,14 @@ function ConnectAccountOption({
           }
         >
           <CloudIcon className="size-4 text-muted-foreground" />
-          <span className="flex-1 text-left">T3 Connect</span>
+          <span className="flex-1 text-left">{"T3 Connect"}</span>
           <span className="text-xs text-muted-foreground">
             {!isLoaded
-              ? "Loading sign-in…"
+              ? t("Loading sign-in…")
               : !isSignedIn
-                ? "Sign in"
+                ? t("Sign in")
                 : !discoveryReady
-                  ? "Loading computers…"
+                  ? t("Loading computers…")
                   : null}
           </span>
           <ChevronRightIcon
@@ -528,17 +543,19 @@ function ConnectAccountOption({
                   selection={{ selectedIds, onChange: onToggleEnvironment, autoSelectedComputers }}
                   refreshWhileEmpty
                   empty={
-                    <p className="py-3 text-sm text-muted-foreground">No computers linked yet.</p>
+                    <p className="py-3 text-sm text-muted-foreground">
+                      {t("No computers linked yet.")}
+                    </p>
                   }
                 />
               ) : null}
             </div>
             <p className="text-sm text-muted-foreground">
-              Run this on each computer you want to connect.
+              {t("Run this on each computer you want to connect.")}
             </p>
             <CommandBlock command="npx t3 connect" className="mt-3" />
             <p className="mt-3 text-xs text-muted-foreground">
-              Keep T3.CodeShip running. Select the computers you want to set up above.
+              {t("Keep T3.CodeShip running. Select the computers you want to set up above.")}
             </p>
           </div>
         </CollapsiblePanel>
@@ -582,7 +599,7 @@ function PairingForm({
     }
     if (isAtomCommandInterrupted(result)) return;
     const cause = squashAtomCommandFailure(result);
-    setErrorMessage(cause instanceof Error ? cause.message : "Pairing failed.");
+    setErrorMessage(cause instanceof Error ? cause.message : t("Pairing failed."));
   };
 
   return (
@@ -596,7 +613,7 @@ function PairingForm({
       >
         <div>
           <label className="block text-sm text-muted-foreground" htmlFor="onboarding-pairing-url">
-            Pairing link
+            {t("Pairing link")}
           </label>
           <Input
             id="onboarding-pairing-url"
@@ -611,7 +628,7 @@ function PairingForm({
             spellCheck={false}
             nativeInput
             readOnly={isPairing}
-            placeholder="https://your-server:5230/pair#token=…"
+            placeholder={"https://your-server:5230/pair#token=…"}
             value={pairingUrl}
             onChange={(event) => setPairingUrl(event.currentTarget.value)}
             onKeyDown={(event) => {
@@ -636,20 +653,23 @@ function PairingForm({
               className="group flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
             >
               <ChevronRightIcon className="size-3.5 group-data-panel-open:rotate-90" />
-              Need a pairing link?
+              {t("Need a pairing link?")}
             </CollapsibleTrigger>
             <Button type="submit" disabled={isPairing || pairingUrl.trim().length === 0}>
-              {isPairing ? "Pairing..." : "Pair"}
+              {isPairing ? t("Pairing...") : t("Pair")}
             </Button>
           </div>
           <CollapsiblePanel>
             <p className="pt-3 text-sm text-muted-foreground">
-              On the computer with your code, start T3.CodeShip or run{" "}
-              <code className="font-mono">npx t3 serve</code>, then run:
+              {tx("On the computer with your code, start T3.CodeShip or run {command}, then run:", {
+                command: <code className="font-mono">{"npx t3 serve"}</code>,
+              })}
             </p>
             <CommandBlock command="npx t3 pair" className="mt-2" />
             <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-              On a tailnet, run <code className="font-mono">npx t3 pair --tailscale</code> instead.
+              {tx("On a tailnet, run {command} instead.", {
+                command: <code className="font-mono">{"npx t3 pair --tailscale"}</code>,
+              })}
             </p>
           </CollapsiblePanel>
         </Collapsible>
@@ -680,8 +700,8 @@ function AgentsStep({
   const { environments } = useEnvironments();
   return (
     <StepShell
-      title="Connect your agents"
-      description="Choose an agent to start coding. You can add more later."
+      title={t("Connect your agents")}
+      description={t("Choose an agent to start coding. You can add more later.")}
     >
       <ScrollArea scrollFade className="mt-5 h-auto max-h-[min(32rem,55dvh)]">
         <div className="space-y-5 pr-3">
@@ -691,7 +711,7 @@ function AgentsStep({
               environmentId={environmentId}
               machineLabel={
                 environments.find((environment) => environment.environmentId === environmentId)
-                  ?.label ?? "Computer"
+                  ?.label ?? t("Computer")
               }
             />
           ))}
@@ -699,7 +719,7 @@ function AgentsStep({
       </ScrollArea>
       <div className="mt-6 flex justify-end">
         <Button autoFocus onClick={onContinue}>
-          Continue
+          {t("Continue")}
           <ArrowRightIcon className="size-3.5" />
         </Button>
       </div>
@@ -768,7 +788,7 @@ function ConnectedAgentsStep({
       <h2 className="mb-2 text-sm font-medium">{machineLabel}</h2>
       {!canOperateTerminal ? (
         <p className="mb-2 text-sm text-muted-foreground">
-          This connection cannot control terminals.
+          {t("This connection cannot control terminals.")}
         </p>
       ) : null}
       <div className="space-y-1.5">
@@ -852,7 +872,7 @@ function ConnectedAgentsStep({
       ) ? (
         <div className="mt-3">
           <Button size="xs" variant="ghost-muted" onClick={() => setAddingAccount(true)}>
-            Connect another ChatGPT account
+            {t("Connect another ChatGPT account")}
           </Button>
         </div>
       ) : null}
@@ -993,7 +1013,7 @@ function AgentCard({
       <div className="min-w-0 flex-1">
         <span className="block text-sm font-medium text-foreground">{displayName}</span>
         <p className="mt-0.5 text-xs leading-relaxed break-words whitespace-pre-wrap text-muted-foreground">
-          {providerState === "ready" ? "Ready to code." : summary.headline}
+          {providerState === "ready" ? t("Ready to code.") : summary.headline}
           {providerState !== "ready" && summary.detail ? ` · ${summary.detail}` : ""}
         </p>
       </div>
@@ -1001,12 +1021,12 @@ function AgentCard({
         {providerState === "ready" ? (
           <span className="inline-flex items-center gap-1.5 text-xs font-medium text-success-foreground">
             <CheckIcon className="size-3.5" />
-            Ready
+            {t("Ready")}
           </span>
         ) : providerState === "checking" ? (
-          <span className="text-xs text-muted-foreground">Checking...</span>
+          <span className="text-xs text-muted-foreground">{t("Checking...")}</span>
         ) : providerState === "disabled" ? (
-          <span className="text-xs text-muted-foreground">Disabled</span>
+          <span className="text-xs text-muted-foreground">{t("Disabled")}</span>
         ) : providerState === "attention" ? (
           <span className="text-xs text-muted-foreground">{summary.headline}</span>
         ) : (
@@ -1017,7 +1037,7 @@ function AgentCard({
             disabled={terminalOpen || !terminalAvailable}
           >
             <TerminalIcon className="size-3.5" />
-            {providerState === "signIn" ? "Sign in" : "Install"}
+            {providerState === "signIn" ? t("Sign in") : t("Install")}
           </Button>
         )}
       </div>
@@ -1130,20 +1150,17 @@ function AgentInstallTerminal({
     >
       <div className="flex items-center justify-between border-b border-border/60 bg-background/60 px-3 py-1.5">
         <span className="text-2xs font-medium text-muted-foreground">
-          {!canOperateTerminal ? (
-            "This connection cannot control terminals."
-          ) : setupState === "writeFailed" ? (
-            <>
-              Run <code className="rounded bg-muted px-1 font-mono">{command}</code> in this
-              terminal.
-            </>
-          ) : setupState === "ready" ? (
-            "Review the command, then press Enter to run it."
-          ) : setupState === "openFailed" ? (
-            "Could not open the setup terminal."
-          ) : (
-            "Preparing command..."
-          )}
+          {!canOperateTerminal
+            ? t("This connection cannot control terminals.")
+            : setupState === "writeFailed"
+              ? tx("Run {command} in this terminal.", {
+                  command: <code className="rounded bg-muted px-1 font-mono">{command}</code>,
+                })
+              : setupState === "ready"
+                ? t("Review the command, then press Enter to run it.")
+                : setupState === "openFailed"
+                  ? t("Could not open the setup terminal.")
+                  : t("Preparing command...")}
         </span>
         <div className="flex items-center gap-1">
           {setupState === "openFailed" ? (
@@ -1157,11 +1174,11 @@ function AgentInstallTerminal({
                 }
               }}
             >
-              Retry
+              {t("Retry")}
             </Button>
           ) : null}
           <Button size="xs" variant="ghost-muted" onClick={onClose}>
-            Close
+            {t("Close")}
           </Button>
         </div>
       </div>
@@ -1186,7 +1203,7 @@ function AgentInstallTerminal({
   );
 }
 
-const IMPORT_PERMISSION_MESSAGE = "This connection cannot import projects or thread history.";
+const IMPORT_PERMISSION_MESSAGE = msg("This connection cannot import projects or thread history.");
 
 interface ImportSelection {
   // Computers whose projects were listed when the selection changed; later ones get the defaults.
@@ -1264,8 +1281,8 @@ function ImportStep({
   );
   const [importError, setImportError] = useState("");
   const visibleImportError = !canImport
-    ? IMPORT_PERMISSION_MESSAGE
-    : importError === IMPORT_PERMISSION_MESSAGE
+    ? t(IMPORT_PERMISSION_MESSAGE)
+    : importError === t(IMPORT_PERMISSION_MESSAGE)
       ? ""
       : importError;
 
@@ -1307,7 +1324,7 @@ function ImportStep({
       );
     const stopForDeniedAccess = () => {
       setIsImporting(false);
-      setImportError(IMPORT_PERMISSION_MESSAGE);
+      setImportError(t(IMPORT_PERMISSION_MESSAGE));
     };
     if (!hasAccess()) {
       stopForDeniedAccess();
@@ -1421,13 +1438,17 @@ function ImportStep({
     importedThreadCountRef.current = importedThreadCount;
     if (importedProjectsCount < selection.length) {
       if (importedThreadCount > 0 && skippedThreadCount > 0) {
-        importWarningRef.current = `Imported ${importedThreadCount} ${importedThreadCount === 1 ? "thread" : "threads"}. ${skippedThreadCount} ${skippedThreadCount === 1 ? "thread" : "threads"} could not be imported.`;
+        importWarningRef.current = `${tn(importedThreadCount, "Imported {count} thread.", "Imported {count} threads.")} ${tn(skippedThreadCount, "{count} thread could not be imported.", "{count} threads could not be imported.")}`;
       } else if (skippedThreadCount > 0) {
-        importWarningRef.current = `${skippedThreadCount} ${skippedThreadCount === 1 ? "thread could" : "threads could"} not be imported.`;
+        importWarningRef.current = tn(
+          skippedThreadCount,
+          "{count} thread could not be imported.",
+          "{count} threads could not be imported.",
+        );
       } else if (importedThreadCount > 0) {
-        importWarningRef.current = `Imported ${importedThreadCount} ${importedThreadCount === 1 ? "thread" : "threads"}. Some thread history could not be imported.`;
+        importWarningRef.current = `${tn(importedThreadCount, "Imported {count} thread.", "Imported {count} threads.")} ${t("Some thread history could not be imported.")}`;
       } else {
-        importWarningRef.current = "Could not import thread history.";
+        importWarningRef.current = t("Could not import thread history.");
       }
     }
     finishAfterImport();
@@ -1436,16 +1457,18 @@ function ImportStep({
   if (scans.every((scan) => scan.data === null) && scans.some((scan) => scan.isPending)) {
     return (
       <div className="flex h-full min-h-40 flex-col">
-        <h1 className="text-2xl font-semibold tracking-tight text-foreground">Your projects</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+          {t("Your projects")}
+        </h1>
         <div className="flex flex-1 flex-col items-center justify-center gap-3 py-6">
           <Spinner size="lg" tone="muted" />
           <p className="text-center text-sm text-muted-foreground">
-            Looking for projects from Claude Code and Codex…
+            {t("Looking for projects from Claude Code and Codex…")}
           </p>
         </div>
         <div className="flex justify-end">
           <Button variant="ghost-muted" onClick={() => void onDone()}>
-            Do not import projects
+            {t("Do not import projects")}
           </Button>
         </div>
       </div>
@@ -1454,13 +1477,18 @@ function ImportStep({
 
   return (
     <StepShell
-      title="Import your projects"
-      description="Import projects and conversations from Claude Code and Codex on your selected computers."
+      title={t("Import your projects")}
+      description={t(
+        "Import projects and conversations from Claude Code and Codex on your selected computers.",
+      )}
     >
       {candidates.length > 0 ? (
         <div className="mt-5 flex items-center justify-between gap-3 text-xs text-muted-foreground">
           <span role="status">
-            {selected.length} of {candidates.length} selected
+            {t("{selected} of {total} selected", {
+              selected: selected.length,
+              total: candidates.length,
+            })}
           </span>
           <div className="flex items-center gap-1">
             <Button
@@ -1469,7 +1497,7 @@ function ImportStep({
               disabled={isImporting || selected.length === candidates.length}
               onClick={() => setSelectedKeys(new Set(candidates.map((item) => item.key)))}
             >
-              Select all
+              {t("Select all")}
             </Button>
             <Button
               variant="ghost"
@@ -1477,7 +1505,7 @@ function ImportStep({
               disabled={isImporting || selected.length === 0}
               onClick={() => setSelectedKeys(new Set())}
             >
-              Select none
+              {t("Select none")}
             </Button>
           </div>
         </div>
@@ -1490,7 +1518,7 @@ function ImportStep({
             );
             const label =
               environments.find((environment) => environment.environmentId === scan.environmentId)
-                ?.label ?? "Computer";
+                ?.label ?? t("Computer");
             return (
               <fieldset
                 key={scan.environmentId}
@@ -1503,26 +1531,26 @@ function ImportStep({
                 {scan.isPending && scan.data === null ? (
                   <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground">
                     <Spinner size="md" />
-                    Looking for projects…
+                    {t("Looking for projects…")}
                   </div>
                 ) : scan.error !== null ? (
                   <div
                     role="alert"
                     className="flex items-center justify-between gap-3 text-sm text-muted-foreground"
                   >
-                    <span>Could not check projects. {scan.error}</span>
+                    <span>{t("Could not check projects. {error}", { error: scan.error })}</span>
                     <Button variant="ghost" size="sm" onClick={scan.refresh}>
-                      Retry
+                      {t("Retry")}
                     </Button>
                   </div>
                 ) : scanCandidates.length === 0 ? (
                   <p className="py-2 text-sm text-muted-foreground">
-                    No existing Claude Code or Codex projects found.
+                    {t("No existing Claude Code or Codex projects found.")}
                   </p>
                 ) : null}
                 {scan.data?.truncated ? (
                   <p className="text-xs text-muted-foreground" role="status">
-                    {SCAN_LIMIT_MESSAGE}
+                    {t(SCAN_LIMIT_MESSAGE)}
                   </p>
                 ) : null}
                 <ImportCandidateList
@@ -1540,7 +1568,7 @@ function ImportStep({
       ) : null}
       <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
         <Button variant="ghost-muted" disabled={isImporting} onClick={finishAfterImport}>
-          Do not import projects
+          {t("Do not import projects")}
         </Button>
         <Button
           autoFocus
@@ -1548,8 +1576,8 @@ function ImportStep({
           onClick={() => void runImport(selected)}
         >
           {isImporting
-            ? "Importing…"
-            : `Import ${selected.length} ${selected.length === 1 ? "project" : "projects"}`}
+            ? t("Importing…")
+            : tn(selected.length, "Import {count} project", "Import {count} projects")}
         </Button>
       </div>
     </StepShell>
@@ -1606,9 +1634,9 @@ function ImportCandidateList({
             />
             <CollapsibleTrigger className="group flex min-w-0 flex-1 items-center gap-1.5 text-left">
               <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-panel-open:rotate-90" />
-              <span className="truncate text-sm text-muted-foreground">Other folders</span>
+              <span className="truncate text-sm text-muted-foreground">{t("Other folders")}</span>
               <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
-                {other.length} {other.length === 1 ? "folder" : "folders"}
+                {tn(other.length, "{count} folder", "{count} folders")}
               </span>
             </CollapsibleTrigger>
           </div>
@@ -1768,7 +1796,7 @@ function ImportRowMeta({
   readonly lastActiveAt: string | null;
 }) {
   const relative = lastActiveAt === null ? null : formatRelativeTime(lastActiveAt);
-  const age = relative === null ? "" : relative.suffix === null ? "now" : relative.value;
+  const age = relative === null ? "" : relative.suffix === null ? t("now") : relative.value;
   return (
     <span className="ml-auto grid shrink-0 grid-cols-[1rem_1rem_1rem_2.5rem_2.25rem] items-center gap-x-1 text-xs text-muted-foreground tabular-nums">
       {AgentSessionSource.literals.map((source) => (

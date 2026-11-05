@@ -1,12 +1,13 @@
 // @effect-diagnostics globalFetch:off - This browser transport runs without an Effect runtime, like the live stream.
 import { withDeviceHubQuery } from "./hubAccess.ts";
 import type { DeviceStreamTarget } from "./stream.ts";
+import { t } from "@t3tools/shared/i18n";
 
 export class DeviceScreenshotError extends Error {
   readonly status: number;
 
   constructor(status: number) {
-    super(`Screenshot capture failed (${status}). Try again.`);
+    super(t("Screenshot capture failed ({status}). Try again.", { status }));
     this.status = status;
   }
 }

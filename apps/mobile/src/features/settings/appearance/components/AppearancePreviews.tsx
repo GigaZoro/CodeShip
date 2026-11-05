@@ -1,3 +1,4 @@
+import { t } from "../../../../lib/i18n";
 import { Platform, ScrollView, type StyleProp, type TextStyle, View } from "react-native";
 
 import { AppText as Text } from "../../../../components/ui/AppText";
@@ -27,18 +28,19 @@ export function TextAppearancePreview(props: { readonly fontSize: number }) {
         className="text-foreground"
         style={{ fontSize: sizes.m, lineHeight: sizes.bodyLineHeight }}
       >
-        The quick brown fox jumps over the lazy dog.
+        {t("The quick brown fox jumps over the lazy dog.")}
       </Text>
       <Text
         className="text-foreground-muted"
         style={{ fontSize: sizes.s, lineHeight: Math.round(sizes.s * 1.4) }}
       >
-        Messages, labels, and headings scale with this size.
+        {t("Messages, labels, and headings scale with this size.")}
       </Text>
     </View>
   );
 }
 
+/* oxlint-disable t3code/no-untranslated-text -- sample terminal output */
 export function TerminalAppearancePreview(props: { readonly fontSize: number }) {
   const { themeAppearance: scheme, themeId } = useAppearancePreferences();
   const theme = getMobileTerminalTheme(themeId, scheme);
@@ -91,6 +93,8 @@ export function TerminalAppearancePreview(props: { readonly fontSize: number }) 
     </View>
   );
 }
+
+/* oxlint-enable t3code/no-untranslated-text */
 
 interface CodePreviewToken {
   readonly text: string;

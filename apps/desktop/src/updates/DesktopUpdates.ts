@@ -1,3 +1,4 @@
+import { t } from "@t3tools/shared/i18n";
 import {
   DESKTOP_UPDATE_RESTART_MARKER_FILE,
   DESKTOP_UPDATE_RESUME_THREADS_MARKER_FILE,
@@ -349,16 +350,16 @@ function getAutoUpdateDisabledReason(args: {
   hasUpdateFeedConfig: boolean;
 }): string | null {
   if (args.policy.mode === "off") {
-    return args.policy.message ?? "Updates are turned off on this machine.";
+    return args.policy.message ?? t("Updates are turned off on this machine.");
   }
   if (!args.hasUpdateFeedConfig) {
-    return "Automatic updates are not available because no update feed is configured.";
+    return t("Automatic updates are not available because no update feed is configured.");
   }
   if (args.isDevelopment || !args.isPackaged) {
-    return "Automatic updates are only available in packaged production builds.";
+    return t("Automatic updates are only available in packaged production builds.");
   }
   if (args.disabledByEnv) {
-    return "Automatic updates are disabled by the T3CODE_DISABLE_AUTO_UPDATE setting.";
+    return t("Automatic updates are disabled by the T3CODE_DISABLE_AUTO_UPDATE setting.");
   }
   if (args.platform === "linux" && !args.appImage && !args.isDebPackage) {
     return "Automatic updates on Linux require the AppImage or the .deb package.";
@@ -489,7 +490,13 @@ export const make = Effect.gen(function* () {
   const channelBlockedReason = (channel: DesktopUpdateChannel): Option.Option<string> =>
     channel === "nightly" && !policy.allowNightly
       ? Option.some(
-          `${policy.message ?? "Nightly updates are turned off on this machine."} Switch to the stable channel to keep getting updates.`,
+          policy.message === undefined || policy.message === null
+            ? t(
+                "Nightly updates are turned off on this machine. Switch to the stable channel to keep getting updates.",
+              )
+            : t("{message} Switch to the stable channel to keep getting updates.", {
+                message: policy.message,
+              }),
         )
       : Option.none();
 
@@ -1232,7 +1239,7 @@ export const make = Effect.gen(function* () {
       if (Option.isSome(channelBlockedReason(nextChannel))) {
         return yield* new DesktopUpdateChannelManagedError({
           channel: nextChannel,
-          policyMessage: policy.message ?? "Your administrator manages T3.CodeShip updates.",
+          policyMessage: policy.message ?? t("Your administrator manages T3.CodeShip updates."),
         });
       }
       // A background check holds the updater only briefly, so wait it out instead of refusing.

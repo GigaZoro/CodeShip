@@ -46,6 +46,7 @@ type CacheOperation = Persistence.ConnectionPersistenceError["operation"];
 function persistenceError(operation: CacheOperation, cause: unknown) {
   return new Persistence.ConnectionPersistenceError({
     operation,
+    // oxlint-disable-next-line t3code/no-untranslated-text -- error detail for logs and error causes, never rendered
     message: `Could not ${operation.replaceAll("-", " ")}: ${String(cause)}`,
   });
 }

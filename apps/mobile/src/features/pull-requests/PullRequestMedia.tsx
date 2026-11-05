@@ -22,6 +22,7 @@ import {
   type FilePreviewSource,
   type FilePreviewItem,
 } from "../../components/FilePreviewModal";
+import { t } from "../../lib/i18n";
 
 export const PullRequestMediaVisibleContext = createContext(true);
 
@@ -130,7 +131,7 @@ export function PullRequestImageAttachment(props: {
     <>
       <Pressable
         accessibilityRole="imagebutton"
-        accessibilityLabel={`View attachment: ${props.caption}`}
+        accessibilityLabel={t("View attachment: {caption}", { caption: props.caption })}
         onPress={() => setPreview({ ...props.source, gallery: props.gallery })}
         className="gap-2 active:opacity-70"
         style={{ width: 176 }}

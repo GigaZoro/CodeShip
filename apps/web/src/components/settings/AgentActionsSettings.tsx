@@ -14,6 +14,7 @@ import {
   useClientSettingsHydrated,
 } from "../../hooks/useSettings";
 import { randomUUID } from "../../lib/utils";
+import { t, tn } from "~/i18n";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
@@ -42,7 +43,9 @@ export function AgentActionsSettings() {
   return (
     <SettingsRow
       {...searchableSetting("agent-actions")}
-      description="Add your own requests next to Commit & open PR, Run tests and Review changes in the thread details card and the command palette. Each sends its text to the agent as your message, in the order listed here."
+      description={t(
+        "Add your own requests next to Commit & open PR, Run tests and Review changes in the thread details card and the command palette. Each sends its text to the agent as your message, in the order listed here.",
+      )}
     >
       {hydrated ? <AgentActionsEditor /> : null}
     </SettingsRow>
@@ -104,11 +107,15 @@ function AgentActionsEditor() {
           }
         >
           <PlusIcon aria-hidden />
-          Add a request
+          {t("Add a request")}
         </Button>
         {atLimit ? (
           <span className="text-xs text-muted-foreground">
-            You can add up to {MAX_CUSTOM_AGENT_ACTIONS} requests.
+            {tn(
+              MAX_CUSTOM_AGENT_ACTIONS,
+              "You can add up to {count} request.",
+              "You can add up to {count} requests.",
+            )}
           </span>
         ) : null}
       </div>
@@ -128,20 +135,20 @@ function AgentActionEditorRow(props: {
   const { row, first, last } = props;
   const labelId = useId();
   const promptId = useId();
-  const name = row.label.trim() || "this request";
+  const name = row.label.trim() || t("this request");
   const incomplete = row.label.trim().length === 0 || row.prompt.trim().length === 0;
   return (
     <li className="flex flex-col gap-2 rounded-lg border p-3">
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
         <div className="flex min-w-0 flex-col gap-1">
-          <Label htmlFor={labelId}>Button name</Label>
+          <Label htmlFor={labelId}>{t("Button name")}</Label>
           <Input
             id={labelId}
             size="sm"
             // A new row starts with an empty name, so it takes focus to be filled in.
             autoFocus={row.label.length === 0 && row.prompt.length === 0}
             maxLength={MAX_AGENT_ACTION_LABEL_LENGTH}
-            placeholder="Update the docs"
+            placeholder={t("Update the docs")}
             value={row.label}
             onChange={(event) => props.onEdit({ label: event.currentTarget.value })}
             onBlur={props.onCommit}
@@ -152,7 +159,7 @@ function AgentActionEditorRow(props: {
           <Button
             size="icon-sm"
             variant="ghost-muted"
-            aria-label={`Move ${name} up`}
+            aria-label={t("Move {name} up", { name })}
             aria-disabled={first || undefined}
             onClick={(event) => {
               if (!first) props.onMove(-1, event.currentTarget);
@@ -163,7 +170,7 @@ function AgentActionEditorRow(props: {
           <Button
             size="icon-sm"
             variant="ghost-muted"
-            aria-label={`Move ${name} down`}
+            aria-label={t("Move {name} down", { name })}
             aria-disabled={last || undefined}
             onClick={(event) => {
               if (!last) props.onMove(1, event.currentTarget);
@@ -174,7 +181,7 @@ function AgentActionEditorRow(props: {
           <Button
             size="icon-sm"
             variant="ghost-muted"
-            aria-label={`Remove ${name}`}
+            aria-label={t("Remove {name}", { name })}
             onClick={props.onRemove}
           >
             <XIcon aria-hidden />
@@ -185,12 +192,12 @@ function AgentActionEditorRow(props: {
         {row.label.length} / {MAX_AGENT_ACTION_LABEL_LENGTH}
       </p>
       <div className="flex flex-col gap-1">
-        <Label htmlFor={promptId}>Request sent to the agent</Label>
+        <Label htmlFor={promptId}>{t("Request sent to the agent")}</Label>
         <Textarea
           id={promptId}
           rows={3}
           maxLength={MAX_AGENT_ACTION_PROMPT_LENGTH}
-          placeholder="Update the README and the user docs for the changes in this thread."
+          placeholder={t("Update the README and the user docs for the changes in this thread.")}
           value={row.prompt}
           onChange={(event) => props.onEdit({ prompt: event.currentTarget.value })}
           onBlur={props.onCommit}
@@ -198,7 +205,7 @@ function AgentActionEditorRow(props: {
       </div>
       <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
         <span role="status">
-          {incomplete ? "Add a name and a request to show this button." : null}
+          {incomplete ? t("Add a name and a request to show this button.") : null}
         </span>
         <span className="tabular-nums">
           {row.prompt.length} / {MAX_AGENT_ACTION_PROMPT_LENGTH}

@@ -173,6 +173,8 @@ export const comparisonBase = Effect.fn("checkChanged.comparisonBase")(function*
 });
 
 const CODE = /\.[cm]?[jt]sx?$/;
+// Directories `scripts/i18n-catalog.ts` reads messages from.
+const TRANSLATED_SOURCE = /^(apps\/(web|mobile|desktop)|packages\/(client-runtime|shared))\/src\//;
 const TEST = /\.test\.[cm]?[jt]sx?$/;
 // CI runs the .github/scripts tests with `node --test`; vitest passes a failing node:test file.
 const NODE_TEST = /^\.github[/\\]scripts[/\\]/;
@@ -471,6 +473,9 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       ? [command("format", ["fmt", "--check", "--no-error-on-unmatched-pattern", ...present])]
       : []),
     ...(code.length > 0 ? [command("lint", ["lint", ...code])] : []),
+    ...(code.some((file) => TRANSLATED_SOURCE.test(file))
+      ? [command("translations", ["run", "i18n:check"])]
+      : []),
     ...(runKnip
       ? knipPasses.map((args, index) => command(`knip ${index + 1}/${knipPasses.length}`, args))
       : []),

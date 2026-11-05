@@ -12,6 +12,7 @@ import {
   useThreadGitCenterHeaderItems,
   useThreadGitRightHeaderItems,
 } from "./ThreadGitControls";
+import { t } from "../../lib/i18n";
 
 type NativeHeaderItems = ReadonlyArray<Record<string, unknown>>;
 
@@ -44,7 +45,7 @@ export function useThreadHeaderOptions(props: {
     ...(props.onReturnToThread
       ? [
           withNativeGlassHeaderItem({
-            accessibilityLabel: "Return to chat",
+            accessibilityLabel: t("Return to chat"),
             icon: { name: "chevron.left", type: "sfSymbol" as const },
             identifier: "thread-left-return",
             onPress: props.onReturnToThread,
@@ -56,10 +57,10 @@ export function useThreadHeaderOptions(props: {
     ...(!usesDuoHeader && !props.draft
       ? [
           withNativeGlassHeaderItem({
-            accessibilityLabel: "New task",
+            accessibilityLabel: t("New task"),
             icon: { name: "square.and.pencil", type: "sfSymbol" as const },
             identifier: "thread-left-new-task",
-            label: "New task",
+            label: t("New task"),
             onPress: startNewTask,
             type: "button" as const,
           }),
@@ -69,7 +70,7 @@ export function useThreadHeaderOptions(props: {
   const canGoBack = navigation.canGoBack();
   const compactHomeHeaderItems: NativeHeaderItems = [
     withNativeGlassHeaderItem({
-      accessibilityLabel: "Go to threads list",
+      accessibilityLabel: t("Go to threads list"),
       icon: { name: "list.bullet", type: "sfSymbol" as const },
       identifier: "thread-left-home",
       onPress: () => navigation.dispatch(StackActions.replace("Home")),

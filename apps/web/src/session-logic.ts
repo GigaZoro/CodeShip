@@ -1,4 +1,5 @@
 import type { ThreadStructure, ThreadStructureRuntime } from "@t3tools/client-runtime/state/shell";
+import { t, tn } from "~/i18n";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
 import {
   type AssetResource,
@@ -368,8 +369,8 @@ export function providerErrorPresentation(
     return {
       label:
         item.failure.class === "usage_limit"
-          ? "Usage limit reached"
-          : item.title?.trim() || "Provider error",
+          ? t("Usage limit reached")
+          : item.title?.trim() || t("Provider error"),
       detail: item.failure.message,
     };
   }
@@ -379,21 +380,40 @@ export function providerErrorPresentation(
       : `${item.retry.attempt}/${item.retry.maxAttempts}`;
   const label =
     item.status === "running"
-      ? `Retrying provider (${progress})`
+      ? t("Retrying provider ({progress})", { progress })
       : item.status === "completed"
-        ? `Provider recovered (${progress} retries)`
+        ? tn(
+            item.retry.attempt,
+            "Provider recovered ({progress} retry)",
+            "Provider recovered ({progress} retries)",
+            { progress },
+          )
         : item.status === "failed"
-          ? `${item.failure.class === "usage_limit" ? "Usage limit reached" : "Provider error"} after ${progress} retries`
-          : `Provider retry stopped (${progress})`;
+          ? item.failure.class === "usage_limit"
+            ? tn(
+                item.retry.attempt,
+                "Usage limit reached after {progress} retry",
+                "Usage limit reached after {progress} retries",
+                { progress },
+              )
+            : tn(
+                item.retry.attempt,
+                "Provider error after {progress} retry",
+                "Provider error after {progress} retries",
+                { progress },
+              )
+          : t("Provider retry stopped ({progress})", { progress });
   const retryDelay =
     item.status === "running" && item.retry.retryDelayMs !== null && item.retry.retryDelayMs > 0
       ? item.retry.retryDelayMs < 1_000
-        ? ` Retrying in ${item.retry.retryDelayMs}ms.`
-        : ` Retrying in ${(item.retry.retryDelayMs / 1_000).toFixed(1).replace(/\.0$/u, "")}s.`
-      : "";
+        ? t("Retrying in {delay}ms.", { delay: item.retry.retryDelayMs })
+        : t("Retrying in {delay}s.", {
+            delay: (item.retry.retryDelayMs / 1_000).toFixed(1).replace(/\.0$/u, ""),
+          })
+      : null;
   return {
     label,
-    detail: `${item.failure.message}${retryDelay}`,
+    detail: retryDelay === null ? item.failure.message : `${item.failure.message} ${retryDelay}`,
   };
 }
 
@@ -416,7 +436,7 @@ function projectedWorkEntry(row: OrchestrationV2ProjectedTurnItem): WorkLogEntry
     case "thread_created":
       return {
         ...common,
-        label: "Created thread",
+        label: t("Created thread"),
       };
     case "compaction":
       return {
@@ -428,16 +448,16 @@ function projectedWorkEntry(row: OrchestrationV2ProjectedTurnItem): WorkLogEntry
     case "reasoning":
       return {
         ...common,
-        label: title ?? "Thinking",
+        label: title ?? t("Thinking"),
         ...(item.text ? { detail: item.text } : {}),
       };
     case "command_execution":
       return {
         ...common,
-        label: title ?? "Ran command",
+        label: title ?? t("Ran command"),
         command: item.input,
         rawCommand: item.input,
-        toolTitle: title ?? "Command",
+        toolTitle: title ?? t("Command"),
         toolData: item,
       };
     case "file_change": {
@@ -446,33 +466,33 @@ function projectedWorkEntry(row: OrchestrationV2ProjectedTurnItem): WorkLogEntry
         label:
           title ??
           (item.changes !== undefined && item.changes.length > 1
-            ? `Changed ${item.changes.length} files`
-            : `Changed ${item.fileName}`),
+            ? tn(item.changes.length, "Changed {count} file", "Changed {count} files")
+            : t("Changed {name}", { name: item.fileName })),
         changedFiles: item.changes?.map((change) => change.path) ?? [item.fileName],
-        toolTitle: title ?? "File change",
+        toolTitle: title ?? t("File change"),
         toolData: item,
       };
     }
     case "file_search":
       return {
         ...common,
-        label: title ?? formatSearchToolLabel(item) ?? "Searched files",
+        label: title ?? formatSearchToolLabel(item) ?? t("Searched files"),
         ...(item.pattern ? { detail: item.pattern } : {}),
-        toolTitle: title ?? "File search",
+        toolTitle: title ?? t("File search"),
         toolData: item,
       };
     case "web_search":
       return {
         ...common,
-        label: title ?? "Searched the web",
+        label: title ?? t("Searched the web"),
         ...(item.patterns?.length ? { detail: item.patterns.join(", ") } : {}),
-        toolTitle: title ?? "Web search",
+        toolTitle: title ?? t("Web search"),
         toolData: item,
       };
     case "checkpoint":
       return {
         ...common,
-        label: title ?? "Checkpoint captured",
+        label: title ?? t("Checkpoint captured"),
         changedFiles: item.files.map((file) => file.path),
         toolData: item,
       };
@@ -508,9 +528,9 @@ function projectedWorkEntry(row: OrchestrationV2ProjectedTurnItem): WorkLogEntry
           (classified === "read"
             ? formatReadToolLabel(readPath ?? "")
             : classified === "search"
-              ? (formatSearchToolLabel({ input: item.input }) ?? item.toolName ?? "Tool call")
-              : (item.toolName ?? "Tool call")),
-        toolTitle: title ?? item.toolName ?? "Tool",
+              ? (formatSearchToolLabel({ input: item.input }) ?? item.toolName ?? t("Tool call"))
+              : (item.toolName ?? t("Tool call"))),
+        toolTitle: title ?? item.toolName ?? t("Tool"),
         toolData: { input: item.input, output: item.output },
       };
     }
@@ -522,20 +542,26 @@ function projectedWorkEntry(row: OrchestrationV2ProjectedTurnItem): WorkLogEntry
         item.steps.find((step) => step.status === "pending");
       return {
         ...common,
-        label: `Tasks ${done}/${item.steps.length}${current ? ` · ${current.text}` : ""}`,
+        label: current
+          ? t("Tasks {done}/{total} · {current}", {
+              done,
+              total: item.steps.length,
+              current: current.text,
+            })
+          : t("Tasks {done}/{total}", { done, total: item.steps.length }),
       };
     }
     case "approval_request":
       return {
         ...common,
-        label: title ?? "Approval requested",
+        label: title ?? t("Approval requested"),
         detail: item.prompt ?? item.requestKind,
         toolData: item,
       };
     case "user_input_request":
       return {
         ...common,
-        label: title ?? (item.questionAnswer ? "Answered questions" : "Input requested"),
+        label: title ?? (item.questionAnswer ? t("Answered questions") : t("Input requested")),
         ...(item.questionAnswer ? { questionAnswer: item.questionAnswer } : {}),
         toolData: item,
       };

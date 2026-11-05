@@ -9,6 +9,7 @@ import { AppText } from "./ui/AppText";
 import { MediaActionsMenu } from "./MediaActionsMenu";
 import { PresentationSource } from "./ui/NativePresentation";
 import { VideoThumbnailImage } from "./VideoThumbnailImage";
+import { t } from "../lib/i18n";
 
 export function VideoAttachmentTile(props: {
   readonly name: string;
@@ -28,7 +29,7 @@ export function VideoAttachmentTile(props: {
       identifier={props.sourceIdentifier}
       accessible={Platform.OS === "ios"}
       accessibilityRole="button"
-      accessibilityLabel={`Play ${props.name}`}
+      accessibilityLabel={t("Play {name}", { name: props.name })}
       accessibilityState={{ disabled: props.disabled ?? false }}
       onAccessibilityTap={() => {
         if (!props.disabled) props.onPress(props.sourceIdentifier);
@@ -45,8 +46,8 @@ export function VideoAttachmentTile(props: {
       <MediaActionsMenu media={mediaActions}>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`Play ${props.name}`}
-          accessibilityHint={hasActions ? "Touch and hold for media actions" : undefined}
+          accessibilityLabel={t("Play {name}", { name: props.name })}
+          accessibilityHint={hasActions ? t("Touch and hold for media actions") : undefined}
           accessibilityState={{ disabled: props.disabled ?? false }}
           disabled={props.disabled}
           onPress={() => props.onPress(props.sourceIdentifier)}

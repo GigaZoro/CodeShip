@@ -1,3 +1,4 @@
+import { t } from "@t3tools/shared/i18n";
 /**
  * DesktopUpdatePolicy - what the administrator's managed policy allows the desktop updater to do.
  * The desktop reads the policy file itself, before any backend runs, and fails closed: a policy it
@@ -5,11 +6,8 @@
  *
  * @module DesktopUpdatePolicy
  */
-import {
-  managedUpdatesMessage,
-  type ManagedPolicyDocument,
-  type ManagedUpdatesMode,
-} from "@t3tools/contracts";
+import type { ManagedPolicyDocument, ManagedUpdatesMode } from "@t3tools/contracts";
+import { managedUpdatesMessage } from "@t3tools/shared/managedPolicyMessages";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -76,7 +74,10 @@ const make = Effect.gen(function* () {
             mode: "off",
             feedUrl: undefined,
             allowNightly: false,
-            message: `Updates are off because T3.CodeShip cannot use the managed policy at ${error.path}. Contact your administrator.`,
+            message: t(
+              "Updates are off because T3.CodeShip cannot use the managed policy at {path}. Contact your administrator.",
+              { path: error.path },
+            ),
           }),
         ),
     }),

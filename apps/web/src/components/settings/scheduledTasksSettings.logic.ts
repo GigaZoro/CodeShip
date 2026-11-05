@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import { isWebhookDedupeTemplate } from "@t3tools/contracts";
 import {
   EnvironmentId,
@@ -148,11 +149,14 @@ export function scheduleDraftErrors(draft: DraftState) {
   if (draft.scheduleMode === "once") {
     const runAt = new Date(draft.runAt);
     if (Number.isNaN(runAt.getTime()))
-      return [{ title: "Invalid run time", description: "Pick a date and time." }];
+      return [{ title: t("Invalid run time"), description: t("Pick a date and time.") }];
     // A time skipped by a daylight saving change parses to a different clock time.
     if (toDateTimeLocalValue(runAt) !== draft.runAt)
       return [
-        { title: "Invalid run time", description: "That time does not exist in your time zone." },
+        {
+          title: t("Invalid run time"),
+          description: t("That time does not exist in your time zone."),
+        },
       ];
     return [];
   }
@@ -160,26 +164,25 @@ export function scheduleDraftErrors(draft: DraftState) {
   if (parseMaxDeliveryAge(draft.maxDeliveryAgeMinutes) === undefined)
     return [
       {
-        title: "Invalid age limit",
-        description: `Enter whole minutes from 1 to ${MAX_WEBHOOK_DELIVERY_AGE_MINUTES}, or leave it blank.`,
+        title: t("Invalid age limit"),
+        description: t("Enter whole minutes from 1 to {max}, or leave it blank.", {
+          max: MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
+        }),
       },
     ];
   const errors: Array<{ title: string; description: string }> = [];
-  for (const [label, value] of [
-    ["Duplicate request key", draft.replayKey],
-    ["Coalesce key", draft.coalesceKey],
+  for (const [description, value] of [
+    [t("Duplicate request key must contain a valid request placeholder."), draft.replayKey],
+    [t("Coalesce key must contain a valid request placeholder."), draft.coalesceKey],
   ] as const) {
     if (value.trim() && !isWebhookDedupeTemplate(value.trim()))
-      errors.push({
-        title: "Invalid webhook settings",
-        description: `${label} must contain a valid request placeholder.`,
-      });
+      errors.push({ title: t("Invalid webhook settings"), description });
   }
   const window = draft.coalesceWindowSeconds.trim();
   if (window && (!Number.isInteger(Number(window)) || Number(window) < 10 || Number(window) > 3600))
     errors.push({
-      title: "Invalid webhook settings",
-      description: "Coalesce window must be whole seconds from 10 to 3600.",
+      title: t("Invalid webhook settings"),
+      description: t("Coalesce window must be whole seconds from 10 to 3600."),
     });
   return errors;
 }
@@ -188,16 +191,17 @@ export function webhookDeliveryLabel(delivery: {
   readonly outcome: string;
   readonly pendingWindow?: boolean | undefined;
 }) {
-  if (delivery.outcome === "accepted") return delivery.pendingWindow ? "Opened window" : "Ran";
+  if (delivery.outcome === "accepted")
+    return delivery.pendingWindow ? t("Opened window") : t("Ran");
   const labels: Record<string, string> = {
-    dispatch_failed: "Run failed",
-    duplicate: "Duplicate",
-    coalesced: "Coalesced",
-    filtered: "Filtered",
-    rejected_signature: "Bad signature",
-    disabled: "Task paused",
-    rate_limited: "Rate limited",
-    expired: "Too old",
+    dispatch_failed: t("Run failed"),
+    duplicate: t("Duplicate"),
+    coalesced: t("Coalesced"),
+    filtered: t("Filtered"),
+    rejected_signature: t("Bad signature"),
+    disabled: t("Task paused"),
+    rate_limited: t("Rate limited"),
+    expired: t("Too old"),
   };
   return labels[delivery.outcome] ?? delivery.outcome.replaceAll("_", " ");
 }

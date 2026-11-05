@@ -35,6 +35,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useProjects } from "../../state/entities";
 import { type NewProjectScriptInput } from "../ProjectScriptsControl";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+import { t } from "~/i18n";
 
 /** Write script settings before reconciling shortcuts in environment keybindings. */
 export function useProjectScriptEditing(input: {
@@ -79,7 +80,7 @@ export function useProjectScriptEditing(input: {
         Cause.fail(
           new EnvironmentAuthorizationError({
             requiredScope: AuthSettingsWriteScope,
-            message: "This connection cannot change keyboard shortcuts.",
+            message: t("This connection cannot change keyboard shortcuts."),
           }),
         ),
       );
@@ -124,8 +125,12 @@ export function useProjectScriptEditing(input: {
           new EnvironmentAuthorizationError({
             requiredScope: AuthSettingsWriteScope,
             message: isDeletingScript
-              ? "The script was deleted, but its keyboard shortcut could not be removed because permission changed."
-              : "The script was saved, but this connection can no longer change keyboard shortcuts.",
+              ? t(
+                  "The script was deleted, but its keyboard shortcut could not be removed because permission changed.",
+                )
+              : t(
+                  "The script was saved, but this connection can no longer change keyboard shortcuts.",
+                ),
           }),
         ),
       );
@@ -213,7 +218,7 @@ export function useProjectScriptEditing(input: {
     }
     const existingScript = scripts.find((script) => script.id === scriptId);
     if (!existingScript) {
-      return AsyncResult.failure(Cause.fail(new Error("Script not found.")));
+      return AsyncResult.failure(Cause.fail(new Error(t("Script not found."))));
     }
 
     const updatedScript = buildProjectScript(existingScript.id, input);
@@ -251,15 +256,15 @@ export function useProjectScriptEditing(input: {
     if (result._tag === "Success") {
       toastManager.add({
         type: "success",
-        title: `Deleted action "${deletedName ?? "Unknown"}"`,
+        title: t('Deleted action "{name}"', { name: deletedName ?? t("Unknown") }),
       });
     } else if (!isAtomCommandInterrupted(result)) {
       const error = squashAtomCommandFailure(result);
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Could not delete action",
-          description: error instanceof Error ? error.message : "An unexpected error occurred.",
+          title: t("Could not delete action"),
+          description: error instanceof Error ? error.message : t("An unexpected error occurred."),
         }),
       );
     }

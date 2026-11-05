@@ -5,6 +5,7 @@ import {
   PROVIDER_MCP_NEW_SERVER_NAME_PATTERN,
   type ProviderMcpServerConfig,
 } from "@t3tools/contracts";
+import { t } from "~/i18n";
 
 export type McpServerKind = "remote" | "local";
 
@@ -69,7 +70,7 @@ function parseKeyValueLines(
   text: string,
   separator: "=" | ":",
   namePattern: RegExp,
-  label: string,
+  label: "header" | "variable",
 ): { readonly values: Record<string, string> } | { readonly error: string } {
   const values: Record<string, string> = {};
   const lines = text.split(/\r?\n/u);
@@ -79,12 +80,23 @@ function parseKeyValueLines(
     const at = line.indexOf(separator);
     const name = at > 0 ? line.slice(0, at).trim() : "";
     if (!name || !namePattern.test(name)) {
-      return { error: `Line ${index + 1} needs a ${label} name, then ${separator} and its value.` };
+      return {
+        error:
+          label === "header"
+            ? t("Line {line} needs a header name, then {separator} and its value.", {
+                line: index + 1,
+                separator,
+              })
+            : t("Line {line} needs a variable name, then {separator} and its value.", {
+                line: index + 1,
+                separator,
+              }),
+      };
     }
     values[name] = line.slice(at + 1).trim();
   }
   if (Object.keys(values).length > MAX_ENTRIES) {
-    return { error: `Use at most ${MAX_ENTRIES} lines.` };
+    return { error: t("Use at most {max} lines.", { max: MAX_ENTRIES }) };
   }
   return { values };
 }
@@ -92,19 +104,22 @@ function parseKeyValueLines(
 export function readMcpServerForm(form: McpServerForm): McpServerFormResult {
   const errors: Partial<Record<McpServerFormField, string>> = {};
   const name = form.name.trim();
-  if (!name) errors.name = "Enter a name.";
+  if (!name) errors.name = t("Enter a name.");
   else if (name.length > PROVIDER_MCP_NEW_SERVER_NAME_MAX_LENGTH) {
-    errors.name = `Use at most ${PROVIDER_MCP_NEW_SERVER_NAME_MAX_LENGTH} characters.`;
+    errors.name = t("Use at most {max} characters.", {
+      max: PROVIDER_MCP_NEW_SERVER_NAME_MAX_LENGTH,
+    });
   } else if (!PROVIDER_MCP_NEW_SERVER_NAME_PATTERN.test(name)) {
-    errors.name = "Use only letters, numbers, hyphens, and underscores.";
+    errors.name = t("Use only letters, numbers, hyphens, and underscores.");
   }
 
   if (form.kind === "remote") {
     const url = form.url.trim();
-    if (!url) errors.url = "Enter the server's URL.";
-    else if (url.length > URL_MAX_LENGTH) errors.url = `Use at most ${URL_MAX_LENGTH} characters.`;
+    if (!url) errors.url = t("Enter the server's URL.");
+    else if (url.length > URL_MAX_LENGTH)
+      errors.url = t("Use at most {max} characters.", { max: URL_MAX_LENGTH });
     else if (!URL.canParse(url) || !/^https?:$/u.test(new URL(url).protocol)) {
-      errors.url = "Enter an http:// or https:// URL.";
+      errors.url = t("Enter an http:// or https:// URL.");
     }
     const headers = parseKeyValueLines(
       form.headers,
@@ -118,10 +133,10 @@ export function readMcpServerForm(form: McpServerForm): McpServerFormResult {
   }
 
   const words = splitCommandLine(form.command);
-  if (words === undefined) errors.command = "Close the quote in the command.";
-  else if (words.length === 0) errors.command = "Enter the command that starts the server.";
+  if (words === undefined) errors.command = t("Close the quote in the command.");
+  else if (words.length === 0) errors.command = t("Enter the command that starts the server.");
   else if (form.command.trim().length > COMMAND_MAX_LENGTH || words.length > MAX_ARGS + 1) {
-    errors.command = "This command is too long.";
+    errors.command = t("This command is too long.");
   }
   const env = parseKeyValueLines(form.env, "=", PROVIDER_MCP_ENV_NAME_PATTERN, "variable");
   if ("error" in env) errors.env = env.error;

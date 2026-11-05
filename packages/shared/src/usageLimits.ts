@@ -19,6 +19,7 @@ import {
 import * as DateTime from "effect/DateTime";
 
 import { resolveAutoModelSelection } from "./serverSettings.ts";
+import { msg, t } from "./i18n.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -173,23 +174,24 @@ export function usesChatGptSharing(provider: ServerProvider | null | undefined):
 export const CURSOR_USAGE_WINDOWS = [
   {
     id: "totalPercentUsed",
-    label: "Overall",
-    description: "Combined usage across both allowances, not a third quota.",
+    label: msg("Overall"),
+    description: msg("Combined usage across both allowances, not a third quota."),
   },
   {
     id: "autoPercentUsed",
-    label: "Cursor Models",
-    description: "Grok and Composer use this first. Auto can use either pool.",
+    label: msg("Cursor Models"),
+    description: msg("Grok and Composer use this first. Auto can use either pool."),
   },
   {
     id: "apiPercentUsed",
-    label: "Other Models",
-    description: "Claude, GPT, and Gemini use this pool. Grok and Composer fall back here.",
+    label: msg("Other Models"),
+    description: msg("Claude, GPT, and Gemini use this pool. Grok and Composer fall back here."),
   },
 ] as const;
 
 export function cursorUsageWindowDetails(id: string) {
-  return CURSOR_USAGE_WINDOWS.find((window) => window.id === id);
+  const window = CURSOR_USAGE_WINDOWS.find((candidate) => candidate.id === id);
+  return window && { id: window.id, label: t(window.label), description: t(window.description) };
 }
 
 function cursorUsageWindowRank(id: string): number {
@@ -437,6 +439,8 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
 export function collectLimitNotices(presentations: LimitPresentations): readonly string[] {
   const label = (environmentLabel: string, subject: string) =>
     presentations.size > 1 ? `${environmentLabel} · ${subject}` : subject;
+  const noticeLine = (environmentLabel: string, subject: string, notice: string) =>
+    t("{subject}: {notice}", { subject: label(environmentLabel, subject), notice });
   const notices: string[] = [];
   for (const presentation of presentations.values()) {
     const environmentLabel = presentation.entry.target.label;
@@ -444,13 +448,13 @@ export function collectLimitNotices(presentations: LimitPresentations): readonly
       if (provider.usageLimits?.unavailable?.reason === "unsupported") continue;
       const notice = provider.usageLimits ? limitsNotice(provider.usageLimits) : null;
       const name = provider.displayName?.trim() || String(provider.driver);
-      if (notice) notices.push(`${label(environmentLabel, name)}: ${notice}`);
+      if (notice) notices.push(noticeLine(environmentLabel, name, notice));
     }
     for (const source of presentation.serverConfig?.usageLimitSources ?? []) {
       if (source.error) {
-        notices.push(`${label(environmentLabel, source.label)}: ${source.error}`);
+        notices.push(noticeLine(environmentLabel, source.label, source.error));
       } else if (source.accounts.length === 0) {
-        notices.push(`${label(environmentLabel, source.label)}: No accounts reported.`);
+        notices.push(noticeLine(environmentLabel, source.label, t("No accounts reported.")));
       }
     }
   }
@@ -677,12 +681,12 @@ function poolWindows(accounts: readonly LimitAccount[], now: number): readonly L
 
 export function limitsNotice(limits: ServerProviderUsageLimits): string | null {
   if (limits.unavailable?.reason === "unsupported") {
-    return limits.unavailable.message ?? "This account has no subscription limits.";
+    return limits.unavailable.message ?? t("This account has no subscription limits.");
   }
   if (limits.unavailable?.reason === "probeFailed") {
-    return limits.unavailable.message ?? "Could not read limits.";
+    return limits.unavailable.message ?? t("Could not read limits.");
   }
-  return limits.windows.length === 0 ? "No limits reported." : null;
+  return limits.windows.length === 0 ? t("No limits reported.") : null;
 }
 
 export function remainingPercent(window: ServerProviderUsageWindow): number {
@@ -731,17 +735,37 @@ export function formatDuration(ms: number): string {
   const days = Math.floor(remaining / DAY);
   const hours = Math.floor((remaining % DAY) / HOUR);
   const minutes = Math.floor((remaining % HOUR) / MINUTE);
-  if (days > 0) return `${days}d ${hours}h`;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  return `${minutes}m`;
+  if (days > 0) return t("{days}d {hours}h", { days, hours });
+  if (hours > 0) return t("{hours}h {minutes}m", { hours, minutes });
+  return t("{minutes}m", { minutes });
 }
 
-export function formatResetsIn(window: ServerProviderUsageWindow, now: number): string | null {
+/**
+ * `full` reads "resets in 2h 5m", `after` reads "in 2h 5m", `arrow` reads "↻ 2h 5m", and
+ * `duration` is just "2h 5m".
+ */
+export type ResetsInForm = "full" | "after" | "arrow" | "duration";
+
+export function formatResetsIn(
+  window: ServerProviderUsageWindow,
+  now: number,
+  form: ResetsInForm = "full",
+): string | null {
   const resetsAt = resetMillis(window);
   if (resetsAt === null) return null;
-  if (resetsAt <= now) return "resets now";
-  if (resetsAt - now < MINUTE) return "Resets momentarily";
-  return `resets in ${formatDuration(resetsAt - now)}`;
+  if (resetsAt <= now) return form === "after" ? t("now") : t("resets now");
+  if (resetsAt - now < MINUTE) return t("Resets momentarily");
+  const duration = formatDuration(resetsAt - now);
+  switch (form) {
+    case "duration":
+      return duration;
+    case "arrow":
+      return t("↻ {duration}", { duration });
+    case "after":
+      return t("in {duration}", { duration });
+    case "full":
+      return t("resets in {duration}", { duration });
+  }
 }
 
 export const USAGE_LIMITS_COMMAND = {

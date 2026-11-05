@@ -1,3 +1,4 @@
+import { msg, t, type Message } from "~/i18n";
 import type { ProviderSkillSourceKind } from "@t3tools/client-runtime/providerSkills";
 import {
   BlocksIcon,
@@ -19,17 +20,17 @@ const SKILL_SOURCE_ICON_BY_KIND: Record<ProviderSkillSourceKind, LucideIcon> = {
   other: PackageIcon,
 };
 
-const SKILL_SOURCE_LABEL_BY_KIND: Record<ProviderSkillSourceKind, string> = {
-  app: "App",
-  repo: "Repo",
-  project: "Project",
-  personal: "Personal",
-  system: "System",
-  other: "Provider",
+const SKILL_SOURCE_LABEL_BY_KIND: Record<ProviderSkillSourceKind, Message> = {
+  app: msg("App"),
+  repo: msg("Repo"),
+  project: msg("Project"),
+  personal: msg("Personal"),
+  system: msg("System"),
+  other: msg("Provider"),
 };
 
 export function skillSourcePresentation(kind: ProviderSkillSourceKind) {
-  return { Icon: SKILL_SOURCE_ICON_BY_KIND[kind], label: SKILL_SOURCE_LABEL_BY_KIND[kind] };
+  return { Icon: SKILL_SOURCE_ICON_BY_KIND[kind], label: t(SKILL_SOURCE_LABEL_BY_KIND[kind]) };
 }
 
 export function SkillSourceBadge(props: {
@@ -41,8 +42,7 @@ export function SkillSourceBadge(props: {
   return (
     <Badge className={props.className} variant="secondary">
       <Icon aria-hidden="true" className="text-current" />
-      {label}
-      {props.showSkillSuffix ? " Skill" : null}
+      {props.showSkillSuffix ? t("{source} Skill", { source: label }) : label}
     </Badge>
   );
 }

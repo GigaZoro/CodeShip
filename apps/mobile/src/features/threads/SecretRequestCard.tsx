@@ -1,6 +1,5 @@
 import { pipe } from "effect/Function";
 import {
-  SECRET_REQUEST_DEFAULT_PLACEHOLDER,
   secretRequestAnswerInput,
   secretRequestDisplay,
   secretRequestFailureMessage,
@@ -20,6 +19,7 @@ import { AppText as Text, AppTextInput as TextInput } from "../../components/ui/
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../../components/ui/Button";
+import { t } from "../../lib/i18n";
 
 const LOCK_SYMBOL: AppSymbolName = { ios: "lock", android: "lock" };
 const PRIVATE_SYMBOL: AppSymbolName = { ios: "checkmark.shield", android: "lock" };
@@ -108,7 +108,7 @@ function PendingSecretRequestForm(props: {
       </View>
       <TextInput
         accessibilityLabel={item.label}
-        placeholder={item.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER}
+        placeholder={item.placeholder ?? t("Paste the secret")}
         value={secret}
         onChangeText={setSecret}
         editable={!submitting}
@@ -132,7 +132,7 @@ function PendingSecretRequestForm(props: {
         </Text>
       ) : null}
       <Button
-        label="Save securely"
+        label={t("Save securely")}
         tone="primary"
         fullWidth
         disabled={submitting || secret.trim().length === 0}
@@ -151,7 +151,7 @@ function PendingSecretRequestForm(props: {
           </Text>
         </View>
         <Button
-          label="Decline"
+          label={t("Decline")}
           tone="text"
           disabled={submitting}
           onPress={() => void send({ type: "decline" })}

@@ -31,6 +31,7 @@ import {
 } from "./composerImages";
 import { imageMimeType } from "@t3tools/shared/image";
 import { uuidv4 } from "./uuid";
+import { t, tn } from "./i18n";
 
 export type UploadedMobileAttachment =
   | UploadChatImageAttachment
@@ -69,7 +70,7 @@ export async function releasePendingAttachmentUploads(
 ): Promise<void> {
   const deleteOnce = async (attachmentId: string): Promise<boolean> => {
     if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) {
-      throw new Error("This connection cannot delete pending attachments.");
+      throw new Error(t("This connection cannot delete pending attachments."));
     }
     const result = await runAtomCommand(
       appAtomRegistry,
@@ -91,7 +92,12 @@ export async function releasePendingAttachmentUploads(
   }
   if (failedAttachmentIds.length > 0) {
     throw new Error(
-      `Could not delete ${failedAttachmentIds.length} pending attachment upload(s): ${failedAttachmentIds.join(", ")}.`,
+      tn(
+        failedAttachmentIds.length,
+        "Could not delete {count} pending attachment upload: {ids}.",
+        "Could not delete {count} pending attachment uploads: {ids}.",
+        { ids: failedAttachmentIds.join(", ") },
+      ),
     );
   }
 }
@@ -131,7 +137,8 @@ function supportedImageWireMimeType(
   const mimeType = PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES.find(
     (type) => type === attachment.mimeType.toLowerCase() || type === inferred,
   );
-  if (!mimeType) throw new Error(`Unsupported image type for '${attachment.name}'.`);
+  if (!mimeType)
+    throw new Error(t("Unsupported image type for '{name}'.", { name: attachment.name }));
   return mimeType;
 }
 
@@ -205,9 +212,9 @@ async function uploadFileBytes(
   onProgress?: (progress: number) => void,
 ): Promise<void> {
   const { File, Paths, UploadType } = await import("expo-file-system");
-  if (signal.aborted) throw new Error("Upload cancelled.");
+  if (signal.aborted) throw new Error(t("Upload cancelled."));
   if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) {
-    throw new Error("This connection cannot upload attachments.");
+    throw new Error(t("This connection cannot upload attachments."));
   }
   const fileUri = attachment.fileUri;
   const inlineDataUrl = attachment.type === "image" ? attachment.dataUrl : undefined;
@@ -239,7 +246,12 @@ async function uploadFileBytes(
         : {}),
     });
     if (result.status < 200 || result.status >= 300) {
-      throw new Error(`Upload failed for '${attachment.name}' (${result.status}).`);
+      throw new Error(
+        t("Upload failed for '{name}' ({status}).", {
+          name: attachment.name,
+          status: result.status,
+        }),
+      );
     }
   } finally {
     if (fileUri === undefined && file.exists) file.delete();
@@ -286,7 +298,7 @@ export async function prepareTurnAttachments(input: {
 
   const requireUploadAccess = () => {
     if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) {
-      throw new Error("This connection cannot upload attachments.");
+      throw new Error(t("This connection cannot upload attachments."));
     }
   };
   requireUploadAccess();
@@ -295,7 +307,7 @@ export async function prepareTurnAttachments(input: {
     environmentSession.preparedConnectionValueAtom(environmentId),
   );
   if (Option.isNone(connection)) {
-    throw new Error("The environment is not connected.");
+    throw new Error(t("The environment is not connected."));
   }
 
   const uploadedAttachments: UploadedMobileAttachment[] = [];
@@ -306,7 +318,7 @@ export async function prepareTurnAttachments(input: {
   input.signal?.addEventListener("abort", abort, { once: true });
   try {
     for (const attachment of input.attachments) {
-      if (controller.signal.aborted) throw new Error("Upload cancelled.");
+      if (controller.signal.aborted) throw new Error(t("Upload cancelled."));
       requireUploadAccess();
       if (attachment.type === "image" && !input.supportsImageUploads) {
         uploadedAttachments.push(...(await toUploadChatImageAttachments([attachment])));
@@ -372,12 +384,12 @@ export async function prepareTurnAttachments(input: {
       if (result.status !== "uploaded") {
         throw result.status === "failed" && result.error !== undefined
           ? result.error
-          : new Error(`Upload failed for '${attachment.name}'.`);
+          : new Error(t("Upload failed for '{name}'.", { name: attachment.name }));
       }
       uploadedAttachments.push(uploadedReference(attachment, result.attachmentId));
     }
 
-    if (controller.signal.aborted) throw new Error("Upload cancelled.");
+    if (controller.signal.aborted) throw new Error(t("Upload cancelled."));
 
     const draftAttachments = withUploadedMobileAttachmentReferences({
       environmentId,

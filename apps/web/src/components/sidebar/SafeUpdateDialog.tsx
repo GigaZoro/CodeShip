@@ -22,6 +22,7 @@ import {
 } from "./runningThreads";
 import { isHostedByThisApp } from "./useUpdateEverything";
 
+import { t, tx } from "~/i18n";
 const LISTED_THREADS = 5;
 
 /**
@@ -89,35 +90,33 @@ function SafeUpdateDialogContent({
     <>
       <AlertDialogHeader className="shrink-0">
         <AlertDialogTitle>
-          Safe update
-          {version !== null ? (
-            <>
-              {" "}
-              to <span className="font-mono">{version}</span>
-            </>
-          ) : null}
-          ?
+          {version !== null
+            ? tx("Safe update to {version}?", {
+                version: <span className="font-mono">{version}</span>,
+              })
+            : t("Safe update?")}
         </AlertDialogTitle>
         <AlertDialogDescription>
-          T3.CodeShip saves where each running chat is, installs the update and restarts, then
-          resumes every chat automatically.
+          {t(
+            "T3.CodeShip saves where each running chat is, installs the update and restarts, then resumes every chat automatically.",
+          )}
         </AlertDialogDescription>
       </AlertDialogHeader>
       <ScrollArea scrollFade>
         <div className="flex flex-col gap-4 px-6 pb-4 text-sm">
-          <ThreadGroup title="Resume after the restart" threads={resuming} />
+          <ThreadGroup title={t("Resume after the restart")} threads={resuming} />
           <ThreadGroup
-            title="Waiting for your answer"
-            note="These stop, and need a reply after the restart."
+            title={t("Waiting for your answer")}
+            note={t("These stop, and need a reply after the restart.")}
             threads={waitingOnYou}
           />
         </div>
       </ScrollArea>
       <AlertDialogFooter>
         <AlertDialogClose ref={cancelRef} render={<Button variant="outline" />}>
-          Cancel
+          {t("Cancel")}
         </AlertDialogClose>
-        <Button onClick={onConfirm}>Safe update</Button>
+        <Button onClick={onConfirm}>{t("Safe update")}</Button>
       </AlertDialogFooter>
     </>
   );
@@ -146,7 +145,9 @@ function ThreadGroup({
             {thread.title}
           </li>
         ))}
-        {hidden > 0 ? <li className="text-muted-foreground">and {hidden} more</li> : null}
+        {hidden > 0 ? (
+          <li className="text-muted-foreground">{t("and {count} more", { count: hidden })}</li>
+        ) : null}
       </ul>
     </section>
   );

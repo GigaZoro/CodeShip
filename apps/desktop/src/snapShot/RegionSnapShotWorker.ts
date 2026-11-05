@@ -23,6 +23,7 @@ async function capture() {
 void capture().catch((error: unknown) =>
   process.send?.({
     type: "error",
+    // oxlint-disable-next-line t3code/no-untranslated-text -- runs in a worker process without the i18n catalog; error is relayed to the main process
     message: error instanceof Error ? error.message : "Windows window capture failed.",
   } satisfies RegionSnapShotResult),
 );

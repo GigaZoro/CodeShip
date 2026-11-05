@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import {
   AuthProvidersManageScope,
   type EnvironmentId,
@@ -105,7 +106,7 @@ export function ProviderUpdatesAction() {
             disabled={isPending}
             onClick={() => void handleUpdate()}
           >
-            {isPending ? "Updating…" : "Update all"}
+            {isPending ? t("Updating…") : t("Update all")}
           </Button>
         }
       />

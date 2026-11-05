@@ -29,6 +29,7 @@ import { ProviderIcon, ProviderInstanceIcon } from "../../components/ProviderIco
 import { environmentThreadDetails } from "../../state/threads";
 import { serverEnvironment } from "../../state/server";
 import { ThreadContextDivider } from "./thread-context-divider";
+import { t } from "../../lib/i18n";
 
 type HandoffProvider = ServerProvider & {
   readonly driverKind: ServerProvider["driver"];
@@ -98,7 +99,7 @@ export function ThreadHandoffRow(props: {
       endpoints={endpoints}
       iconColor={color}
       surfaceColor={props.surfaceColor}
-      label="Context handoff"
+      label={t("Context handoff")}
       failed={item.status === "failed"}
     />
   );
@@ -179,7 +180,7 @@ function HandoffEndpoint(props: {
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
-      accessibilityHint="Show provider account"
+      accessibilityHint={t("Show provider account")}
       className="min-h-6 max-w-full flex-row items-center justify-center gap-1.5"
       hitSlop={{ top: 8, bottom: 8 }}
       onPress={() =>

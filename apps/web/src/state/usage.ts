@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { t } from "~/i18n";
 import {
   AuthDiagnosticsReadScope,
   USAGE_CONTRACT_VERSION,
@@ -78,7 +79,9 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
         isConnected,
         error:
           result._tag === "Failure"
-            ? `This environment could not report usage: ${formatEnvironmentQueryError(result.cause)}`
+            ? t("This environment could not report usage: {error}", {
+                error: formatEnvironmentQueryError(result.cause),
+              })
             : null,
         summary,
         needsCursorKeychainAccess: needsCursorKeychainAccess(

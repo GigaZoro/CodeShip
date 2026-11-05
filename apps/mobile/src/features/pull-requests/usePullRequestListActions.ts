@@ -23,6 +23,7 @@ import { scopedPullRequestListKey, type EnvironmentPullRequestListEntry } from "
 import { copyPullRequestLink, sharePullRequestLink } from "./pullRequestLink";
 import { pullRequestTarget } from "./usePullRequestDiff";
 import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
+import { t } from "../../lib/i18n";
 
 export function usePullRequestListActions(
   environmentIds: readonly EnvironmentId[],
@@ -78,7 +79,9 @@ export function usePullRequestListActions(
           !pr.capabilities.reviewers.request ||
           !pr.viewerPermissions.requestReviewers
         )
-          throw new Error(`Review requests aren't available for this ${terminology.singular}.`);
+          throw new Error(
+            t("Review requests aren't available for this {term}.", { term: terminology.singular }),
+          );
         if (Platform.OS === "android") {
           selectDetail(
             { name: "PullRequest", params: params(entry) },
@@ -91,7 +94,9 @@ export function usePullRequestListActions(
         !registry.get(composerPullRequests.runAction.permissionAtom(environmentId)) ||
         !canPerformPullRequestAction(pr, action)
       )
-        throw new Error(`This action isn't available for this ${terminology.singular}.`);
+        throw new Error(
+          t("This action isn't available for this {term}.", { term: terminology.singular }),
+        );
       const result = await run({ ...target, input: { ...target.input, action } });
       if (result._tag === "Failure") throw squashAtomCommandFailure(result);
       onChanged(
@@ -108,8 +113,8 @@ export function usePullRequestListActions(
     if (AsyncResult.isFailure(result)) {
       const cause = squashAtomCommandFailure(result);
       Dialog.alert(
-        `Couldn't update this ${terminology.singular}`,
-        cause instanceof Error ? cause.message : "Try again.",
+        t("Couldn't update this {term}", { term: terminology.singular }),
+        cause instanceof Error ? cause.message : t("Try again."),
       );
     }
   };
@@ -142,8 +147,8 @@ export function usePullRequestListActions(
       supported,
       sourceControlClients.get(entry.provider).changeRequest,
     );
-    Dialog.alert(`${label}?`, `#${entry.number} · ${entry.title}`, [
-      { text: "Cancel", style: "cancel" },
+    Dialog.alert(t("{action}?", { action: label }), `#${entry.number} · ${entry.title}`, [
+      { text: t("Cancel"), style: "cancel" },
       {
         text: label,
         style: supported === "close" ? "destructive" : "default",
@@ -156,19 +161,19 @@ export function usePullRequestListActions(
     return [
       {
         id: "open",
-        title: `Open ${terminology.singular}`,
+        title: t("Open {term}", { term: terminology.singular }),
         image: Platform.OS === "ios" ? "arrow.up.right" : "open_in_new",
       },
       ...(writableEnvironments.has(entry.environmentId) && entry.state === "open"
         ? [
             {
               id: "request-review",
-              title: "Request review",
+              title: t("Request review"),
               image: Platform.OS === "ios" ? "person.badge.plus" : "person_add",
             },
             {
               id: entry.isDraft ? "ready" : "draft",
-              title: entry.isDraft ? "Mark ready for review" : "Convert to draft",
+              title: entry.isDraft ? t("Mark ready for review") : t("Convert to draft"),
               image: Platform.OS === "ios" ? "pencil" : "edit",
             },
             {
@@ -189,10 +194,10 @@ export function usePullRequestListActions(
           : []),
       {
         id: "share",
-        title: "Share…",
+        title: t("Share…"),
         image: Platform.OS === "ios" ? "square.and.arrow.up" : "share",
       },
-      { id: "copy", title: "Copy link", image: Platform.OS === "ios" ? "link" : "link" },
+      { id: "copy", title: t("Copy link"), image: Platform.OS === "ios" ? "link" : "link" },
       {
         id: "provider",
         title: openOnProviderLabel(entry.provider),

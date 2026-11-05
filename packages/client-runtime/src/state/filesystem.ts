@@ -21,6 +21,7 @@ import {
   isFilesystemBrowseQuery,
 } from "./projects.ts";
 import { createEnvironmentRpcQueryAtomFamily } from "./runtime.ts";
+import { t } from "@t3tools/shared/i18n";
 
 const BROWSE_IDLE_TTL_MS = 5_000;
 
@@ -44,7 +45,9 @@ export function resolveFilesystemReadAccess(input: {
     return {
       canReadFiles: false,
       isPending,
-      error: isPending ? null : (input.connection?.error ?? "This environment is not connected."),
+      error: isPending
+        ? null
+        : (input.connection?.error ?? t("This environment is not connected.")),
     };
   }
   return {

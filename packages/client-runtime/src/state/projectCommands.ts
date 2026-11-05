@@ -30,6 +30,7 @@ import { createProject, deleteProject, updateProject } from "../operations/comma
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import { createFileMetadataAtoms } from "./fileMetadata.ts";
 import { resolveWorkspaceFilePath } from "@t3tools/shared/path";
+import { t } from "@t3tools/shared/i18n";
 
 export type {
   CreateProjectInput,
@@ -68,7 +69,9 @@ export class ScratchProjectNotLoadedError extends Schema.TaggedError<ScratchProj
   { projectId: ProjectId },
 ) {
   override get message(): string {
-    return "The folder for threads without a project has not reached this device yet. Try again.";
+    return t(
+      "The folder for threads without a project has not reached this device yet. Try again.",
+    );
   }
 }
 

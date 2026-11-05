@@ -383,6 +383,14 @@
       "types": "./src/thirdPartyLicenses.ts",
       "import": "./src/thirdPartyLicenses.ts"
     },
+    "./managedPolicyMessages": {
+      "types": "./src/managedPolicyMessages.ts",
+      "import": "./src/managedPolicyMessages.ts"
+    },
+    "./browserImport": {
+      "types": "./src/browserImport.ts",
+      "import": "./src/browserImport.ts"
+    },
     "./claudeCompaction": {
       "types": "./src/claudeCompaction.ts",
       "import": "./src/claudeCompaction.ts"
@@ -526,6 +534,10 @@
     "./cloneUrl": {
       "types": "./src/cloneUrl.ts",
       "import": "./src/cloneUrl.ts"
+    },
+    "./i18n": {
+      "types": "./src/i18n.ts",
+      "import": "./src/i18n.ts"
     }
   },
   "scripts": {

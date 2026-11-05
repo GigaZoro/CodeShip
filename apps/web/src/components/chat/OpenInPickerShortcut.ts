@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import {
   buildRemoteOpenUrl,
   type EditorId,
@@ -83,7 +84,7 @@ export function useOpenFavoriteEditorShortcut({
         });
         if (url === undefined) return;
         void openRemoteEditorUrl(url).then((opened) => {
-          if (opened) announce(`Opened in ${label}`);
+          if (opened) announce(t("Opened in {editor}", { editor: label }));
         });
         return;
       }
@@ -94,7 +95,7 @@ export function useOpenFavoriteEditorShortcut({
           editor: preferredEditor,
         },
       }).then((result) => {
-        if (result._tag === "Success") announce(`Opened in ${label}`);
+        if (result._tag === "Success") announce(t("Opened in {editor}", { editor: label }));
       });
     };
     window.addEventListener("keydown", handler);

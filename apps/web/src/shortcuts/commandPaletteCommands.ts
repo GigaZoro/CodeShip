@@ -1,4 +1,5 @@
 import type { AnyRouter } from "@tanstack/react-router";
+import { t } from "~/i18n";
 
 import {
   dispatchCommandPalette,
@@ -6,7 +7,7 @@ import {
   useCommandPaletteStore,
 } from "../commandPaletteStore";
 import { overlayModeForCommand } from "../components/CommandPalette.logic";
-import { APPEARANCE_OPTIONS, notifyThemeSaveFailure } from "../components/CommandPaletteThemeItems";
+import { notifyThemeSaveFailure } from "../components/CommandPaletteThemeItems";
 import { toggleThemeEditorForTheme } from "../components/settings/themeEditorStore";
 import { toastManager } from "../components/ui/toast";
 import { getThemeSnapshot, setAppearanceMode } from "../hooks/useTheme";
@@ -73,7 +74,12 @@ export function installCommandPaletteCommands(
         }
         toastManager.add({
           id: "appearance-cycle",
-          title: `Appearance: ${APPEARANCE_OPTIONS.find((option) => option.mode === nextMode)?.label}`,
+          title:
+            nextMode === "light"
+              ? t("Appearance: Light")
+              : nextMode === "dark"
+                ? t("Appearance: Dark")
+                : t("Appearance: System"),
           timeout: 1500,
         });
       },

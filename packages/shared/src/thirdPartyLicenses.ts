@@ -1,3 +1,5 @@
+import { msg, t, type Message } from "./i18n.ts";
+
 export interface ThirdPartyLicenseEntry {
   readonly bundles: ReadonlyArray<string>;
   readonly kind: "custom" | "package";
@@ -96,21 +98,23 @@ export function filterThirdPartyLicenseEntries(
   });
 }
 
-const BUNDLE_LABELS: Readonly<Record<string, string>> = {
-  android: "Android",
-  assets: "Assets",
-  desktop: "Desktop",
-  "device-tools": "Device tools",
-  ios: "iOS",
-  mobile: "Mobile",
-  server: "Server",
-  web: "Web",
+const BUNDLE_LABELS: Readonly<Record<string, Message>> = {
+  android: msg("Android"),
+  assets: msg("Assets"),
+  desktop: msg("Desktop"),
+  "device-tools": msg("Device tools"),
+  ios: msg("iOS"),
+  mobile: msg("Mobile"),
+  server: msg("Server"),
+  web: msg("Web"),
 };
 
 export function formatLicenseBundles(bundles: ReadonlyArray<string>): string {
   return bundles
     .map((bundle) =>
-      Object.prototype.hasOwnProperty.call(BUNDLE_LABELS, bundle) ? BUNDLE_LABELS[bundle] : bundle,
+      Object.prototype.hasOwnProperty.call(BUNDLE_LABELS, bundle)
+        ? t(BUNDLE_LABELS[bundle]!)
+        : bundle,
     )
     .join(", ");
 }

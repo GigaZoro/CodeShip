@@ -20,6 +20,7 @@ import { boundedSnapshotProjection } from "@t3tools/shared/orchestrationV2Bounde
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { t, tn } from "~/i18n";
 export interface GuestStreamState {
   readonly view: GuestShareView | null;
   /** The thread as the owner's client holds it, built with the same reducer. */
@@ -190,8 +191,10 @@ export function unplacedGuestMessages(
 /** "23h left" or "5m left", rounded down, for the guest page header. */
 export function formatGuestExpiry(expiresAt: string, nowMs: number): string {
   const minutes = Math.floor((Date.parse(expiresAt) - nowMs) / 60_000);
-  if (minutes <= 0) return "Expired";
-  return minutes >= 60 ? `${Math.floor(minutes / 60)}h left` : `${minutes}m left`;
+  if (minutes <= 0) return t("Expired");
+  return minutes >= 60
+    ? t("{hours}h left", { hours: Math.floor(minutes / 60) })
+    : t("{minutes}m left", { minutes });
 }
 
 /**
@@ -219,10 +222,14 @@ export function guestFilesProblem(
   files: ReadonlyArray<Pick<File, "type" | "size">>,
 ): string | null {
   if (files.length > GUEST_MESSAGE_MAX_ATTACHMENTS) {
-    return `Attach up to ${GUEST_MESSAGE_MAX_ATTACHMENTS} files to a message.`;
+    return tn(
+      GUEST_MESSAGE_MAX_ATTACHMENTS,
+      "Attach up to {count} file to a message.",
+      "Attach up to {count} files to a message.",
+    );
   }
   if (files.reduce((total, file) => total + file.size, 0) > GUEST_MESSAGE_MAX_ATTACHMENT_BYTES) {
-    return "Attached files can total up to 10 MB per message.";
+    return t("Attached files can total up to 10 MB per message.");
   }
   const unsupported = files.some(
     (file) =>
@@ -231,7 +238,7 @@ export function guestFilesProblem(
         !isProviderSendTurnSupportedImageMimeType(file.type)),
   );
   return unsupported
-    ? "This file cannot be attached. Images must be PNG, JPEG, GIF, or WebP."
+    ? t("This file cannot be attached. Images must be PNG, JPEG, GIF, or WebP.")
     : null;
 }
 

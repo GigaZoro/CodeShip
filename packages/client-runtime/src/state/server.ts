@@ -59,6 +59,7 @@ import {
   type ServerConfigProjection,
   withoutEnvironmentThemes,
 } from "./serverConfigProjection.ts";
+import { t } from "@t3tools/shared/i18n";
 
 export type { ServerConfigProjection } from "./serverConfigProjection.ts";
 
@@ -103,7 +104,10 @@ export class ServerUpdateResumeTimeoutError extends Schema.TaggedError<ServerUpd
   },
 ) {
   override get message(): string {
-    return `Could not confirm that the server resumed on t3@${this.targetVersion}. Reconnect to check the update outcome.`;
+    return t(
+      "Could not confirm that the server resumed on t3@{version}. Reconnect to check the update outcome.",
+      { version: this.targetVersion },
+    );
   }
 }
 
@@ -114,7 +118,9 @@ export class ServerUpdateProgressIncompleteError extends Schema.TaggedError<Serv
   },
 ) {
   override get message(): string {
-    return `The t3@${this.targetVersion} update ended before the server accepted the restart.`;
+    return t("The t3@{version} update ended before the server accepted the restart.", {
+      version: this.targetVersion,
+    });
   }
 }
 
@@ -127,7 +133,10 @@ export class ServerUpdateTerminalError extends Schema.TaggedError<ServerUpdateTe
   },
 ) {
   override get message(): string {
-    return this.reason ?? `The t3@${this.targetVersion} update ${this.status}.`;
+    return (
+      this.reason ??
+      t("The t3@{version} update {status}.", { version: this.targetVersion, status: this.status })
+    );
   }
 }
 
@@ -174,7 +183,7 @@ export function validateServerUpdateReadyEvent(
       status: outcome?.status ?? "failed",
       reason:
         outcome?.reason ??
-        "The service launcher resumed without committing the requested server version.",
+        t("The service launcher resumed without committing the requested server version."),
     }),
   );
 }
@@ -272,7 +281,7 @@ export const waitForDesktopUpdateTarget = Effect.fn("waitForDesktopUpdateTarget"
   return yield* new ServerUpdateTerminalError({
     targetVersion,
     status: "failed",
-    reason: "The desktop app resumed without installing the prepared update.",
+    reason: t("The desktop app resumed without installing the prepared update."),
   });
 });
 
@@ -307,7 +316,7 @@ export function serverUpdateStateForServerVersion(
 }
 
 export function serverUpdateFailureMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Server update failed.";
+  return error instanceof Error ? error.message : t("Server update failed.");
 }
 
 function isRpcSocketError(error: unknown): boolean {

@@ -11,6 +11,7 @@ import { MediaImagePreview } from "./MediaImagePreview";
 import { PdfPreview } from "./PdfPreview";
 import { ControlPill } from "./ui/ControlPill";
 import { AppText as Text } from "./ui/AppText";
+import { t } from "../lib/i18n";
 
 function PdfDocumentPreview(props: {
   readonly source: ResolvedFilePreviewSource;
@@ -30,9 +31,9 @@ function PdfDocumentPreview(props: {
       >
         <View className="flex-row items-center gap-3 border-b border-border px-4 py-2">
           <Text className="flex-1 font-t3-semibold text-foreground" numberOfLines={1}>
-            {props.source.name ?? "PDF"}
+            {props.source.name ?? t("PDF")}
           </Text>
-          <ControlPill label="Close" variant="pill" onPress={props.onRequestClose} />
+          <ControlPill label={t("Close")} variant="pill" onPress={props.onRequestClose} />
         </View>
         <PdfPreview uri={props.source.uri} />
       </View>
@@ -51,8 +52,8 @@ function DocumentPreview(props: {
     if (props.onOpenError) props.onOpenError(error);
     else
       Dialog.alert(
-        "Could not open document",
-        "A compatible viewer must be installed. Check your connection and try again.",
+        t("Could not open document"),
+        t("A compatible viewer must be installed. Check your connection and try again."),
       );
   });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- opens the attachment in an external viewer and aborts the open on cleanup
@@ -82,12 +83,12 @@ function DocumentPreview(props: {
     <Modal transparent animationType="fade" onRequestClose={props.onRequestClose}>
       <View className="flex-1 items-center justify-center bg-backdrop p-6">
         <View className="w-full max-w-sm gap-4 rounded-2xl bg-sheet-solid p-6">
-          <Text className="font-t3-semibold text-foreground">Opening document…</Text>
+          <Text className="font-t3-semibold text-foreground">{t("Opening document…")}</Text>
           <Text className="text-foreground-muted" numberOfLines={2}>
-            {name ?? "Document"}
+            {name ?? t("Document")}
           </Text>
           <View className="items-end">
-            <Button label="Cancel" tone="text" onPress={props.onRequestClose} />
+            <Button label={t("Cancel")} tone="text" onPress={props.onRequestClose} />
           </View>
         </View>
       </View>

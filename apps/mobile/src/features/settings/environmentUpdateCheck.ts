@@ -1,3 +1,4 @@
+import { t } from "../../lib/i18n";
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -11,7 +12,7 @@ export interface EnvironmentReleaseCheck {
 }
 
 const asError = (cause: unknown) =>
-  cause instanceof Error ? cause : new Error("Could not check for updates.");
+  cause instanceof Error ? cause : new Error(t("Could not check for updates."));
 
 /**
  * Looks up the newest T3.CodeShip release for one environment. The atom is not
@@ -29,7 +30,7 @@ export const environmentReleaseCheckAtom = Atom.family((environmentId: Environme
       }).pipe(
         Effect.timeoutOrElse({
           duration: "20 seconds",
-          orElse: () => Effect.fail(new Error("Checking for updates timed out. Try again.")),
+          orElse: () => Effect.fail(new Error(t("Checking for updates timed out. Try again."))),
         }),
       );
       return { fromVersion, targetVersion } satisfies EnvironmentReleaseCheck;

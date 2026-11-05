@@ -13,6 +13,7 @@ import { SearchField } from "./SearchField";
 import { androidHeaderMenuActions, findHeaderMenuAction } from "./headerMenu.android";
 import type { AppBarProps } from "./AppBar.types";
 import { useAndroidControlSizing } from "./useAndroidControlSizing";
+import { t } from "../../lib/i18n";
 
 export function AppBar(props: AppBarProps) {
   const { search } = props;
@@ -90,7 +91,7 @@ export function AppBar(props: AppBarProps) {
           <View className="flex-row items-center gap-2" style={{ minHeight: buttonSize }}>
             {props.onBack ? (
               <Pressable
-                accessibilityLabel="Navigate up"
+                accessibilityLabel={t("Navigate up")}
                 accessibilityRole="button"
                 hitSlop={8}
                 onPress={props.onBack}
@@ -160,7 +161,7 @@ export function AppBar(props: AppBarProps) {
               ...(search.refreshInToolbar && search.onRefresh
                 ? [
                     {
-                      accessibilityLabel: search.refreshAccessibilityLabel ?? "Refresh",
+                      accessibilityLabel: search.refreshAccessibilityLabel ?? t("Refresh"),
                       icon: "arrow.clockwise" as const,
                       onPress: search.onRefresh,
                     },
@@ -201,14 +202,14 @@ export function AppBar(props: AppBarProps) {
             >
               <View className="flex-1 flex-row items-center gap-1">
                 <ScreenHeaderButton
-                  accessibilityLabel={search.closeAccessibilityLabel ?? "Close search"}
+                  accessibilityLabel={search.closeAccessibilityLabel ?? t("Close search")}
                   icon="arrow.left"
                   onPress={closeSearch}
                 />
                 <SearchField
                   inputRef={inputRef}
                   accessibilityLabel={search.placeholder}
-                  clearAccessibilityLabel={search.clearAccessibilityLabel ?? "Clear search"}
+                  clearAccessibilityLabel={search.clearAccessibilityLabel ?? t("Clear search")}
                   placeholder={search.placeholder}
                   value={search.value}
                   onChangeText={search.onChangeText}

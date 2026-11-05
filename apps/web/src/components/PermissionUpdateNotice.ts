@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import { sessionHasLegacyPermissions, type EnvironmentId } from "@t3tools/contracts";
 import type { AnyRouter } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
@@ -42,13 +43,14 @@ function showPermissionNotice(
     toastManager.close(id);
   };
   const id = toastManager.add({
-    title: `Permissions have changed for ${label}`,
-    description:
+    title: t("Permissions have changed for {machine}", { machine: label }),
+    description: t(
       "This connection still uses the old permissions, so some actions may no longer be available. Pair again using a new link with the permissions you need.",
+    ),
     timeout: 0,
     onClose: persistDismissal,
     actionProps: {
-      children: "Open Machines & access",
+      children: t("Open Machines & access"),
       onClick: () => {
         dismiss();
         void router.navigate({ to: "/settings/connections" });
@@ -56,7 +58,7 @@ function showPermissionNotice(
     },
     data: {
       actionLayout: "stacked-end",
-      secondaryActionProps: { children: "Dismiss", onClick: dismiss },
+      secondaryActionProps: { children: t("Dismiss"), onClick: dismiss },
       secondaryActionVariant: "ghost",
     },
   });

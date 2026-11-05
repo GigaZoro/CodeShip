@@ -32,6 +32,7 @@ import {
 
 import { resolveBrowserDefaults } from "./browserDefaults";
 
+import { t } from "~/i18n";
 export const isBrowserPreviewFile = (path: string): boolean =>
   /\.(?:html?|pdf)$/i.test(path.split(/[?#]/, 1)[0] ?? "");
 
@@ -45,7 +46,7 @@ export class BrowserSettingsReadError extends Data.TaggedError("BrowserSettingsR
   readonly cause: unknown;
 }> {
   override get message(): string {
-    return "Saved browser settings could not be loaded.";
+    return t("Saved browser settings could not be loaded.");
   }
 }
 
@@ -127,7 +128,7 @@ export async function openFileInPreview<AssetError, PreviewError>(input: {
     return AsyncResult.failure(
       Cause.fail(
         new BrowserPreviewUnavailableError({
-          message: "The integrated browser is unavailable in this runtime.",
+          message: t("The integrated browser is unavailable in this runtime."),
         }),
       ),
     );

@@ -4,6 +4,7 @@ import {
   type ScheduledTask,
   type ScheduledTaskPlacement,
 } from "@t3tools/contracts";
+import { t } from "~/i18n";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -37,7 +38,7 @@ export function useSetScheduledTaskPlacement() {
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: tasks.length === 1 ? "Could not move task" : "Could not move tasks",
+          title: tasks.length === 1 ? t("Could not move task") : t("Could not move tasks"),
           description: String(squashAtomCommandFailure(result)),
         }),
       );

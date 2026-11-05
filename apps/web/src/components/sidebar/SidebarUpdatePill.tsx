@@ -47,6 +47,7 @@ import {
 } from "./updateEverythingRun";
 import { type ReportLocalUpdateError, useUpdateEverything } from "./useUpdateEverything";
 
+import { t } from "~/i18n";
 type SidebarUpdatePopoverChangeDetails = Parameters<
   NonNullable<ComponentProps<typeof Popover>["onOpenChange"]>
 >[1];
@@ -117,7 +118,7 @@ function SidebarUpdateArchitectureWarningContent() {
   return (
     <Alert variant="warning">
       <TriangleAlertIcon />
-      <AlertTitle>Intel build on Apple Silicon</AlertTitle>
+      <AlertTitle>{t("Intel build on Apple Silicon")}</AlertTitle>
       <AlertDescription>{description}</AlertDescription>
     </Alert>
   );
@@ -142,12 +143,12 @@ export async function downloadLocalUpdate(
     const actionError = shouldToastDesktopUpdateActionResult(result)
       ? getDesktopUpdateActionError(result)
       : null;
-    if (actionError) reportError("Could not download update", actionError);
+    if (actionError) reportError(t("Could not download update"), actionError);
     return result.completed;
   } catch (error) {
     reportError(
-      "Could not start update download",
-      error instanceof Error ? error.message : "An unexpected error occurred.",
+      t("Could not start update download"),
+      error instanceof Error ? error.message : t("An unexpected error occurred."),
     );
     return false;
   }
@@ -169,12 +170,12 @@ export async function installLocalUpdate(
       ? getDesktopUpdateActionError(result)
       : null;
     if (!actionError) return true;
-    reportError("Could not install update", actionError);
+    reportError(t("Could not install update"), actionError);
     return false;
   } catch (error) {
     reportError(
-      "Could not install update",
-      error instanceof Error ? error.message : "An unexpected error occurred.",
+      t("Could not install update"),
+      error instanceof Error ? error.message : t("An unexpected error occurred."),
     );
     return false;
   }
@@ -219,7 +220,7 @@ function SidebarUpdateControl() {
         ? getSafeUpdateButtonTooltip(state, thisAppThreads.count)
         : state
           ? getDesktopUpdateButtonTooltip(state)
-          : "Update available";
+          : t("Update available");
   const disabled = isWaitingOnRecheck || isDesktopUpdateButtonDisabled(state);
   const isInteractionDisabled = disabled || isActionPending || isRunningEverything;
   const showReleaseNotesPopover =
@@ -268,8 +269,8 @@ function SidebarUpdateControl() {
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Could not confirm update",
-          description: error instanceof Error ? error.message : "Update confirmation failed.",
+          title: t("Could not confirm update"),
+          description: error instanceof Error ? error.message : t("Update confirmation failed."),
         }),
       );
       return;
@@ -304,8 +305,8 @@ function SidebarUpdateControl() {
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Could not update everything",
-          description: error instanceof Error ? error.message : "An unexpected error occurred.",
+          title: t("Could not update everything"),
+          description: error instanceof Error ? error.message : t("An unexpected error occurred."),
         }),
       );
     }
@@ -428,7 +429,7 @@ function SidebarUpdateControl() {
         </Tooltip>
         {showReleaseNotesPopover && state ? (
           <PopoverPopup
-            aria-label="Update release notes"
+            aria-label={t("Update release notes")}
             initialFocus={false}
             onKeyDownCapture={(event) => {
               if (

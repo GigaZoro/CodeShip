@@ -17,6 +17,7 @@ import {
   readThreadUndoNotice,
   useThreadUndoNotice,
 } from "./thread-undo-notice";
+import { t } from "../../lib/i18n";
 
 export function ThreadUndoNotice(props: { readonly visible: boolean }) {
   const floatingTabsEnabled = useAndroidFloatingTabs();
@@ -78,9 +79,15 @@ export function ThreadUndoNotice(props: { readonly visible: boolean }) {
       pointerEvents="box-none"
     >
       <Toast
-        message={`${notice.action} thread`}
+        message={
+          notice.action === "Settled"
+            ? t("Settled thread")
+            : notice.action === "Snoozed"
+              ? t("Snoozed thread")
+              : t("Unpinned thread")
+        }
         action={{
-          label: "Undo",
+          label: t("Undo"),
           onPress: () => {
             void notice.undo();
           },

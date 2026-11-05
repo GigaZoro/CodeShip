@@ -101,6 +101,7 @@ export const make = Effect.gen(function* () {
           httpBaseUrl: config.httpBaseUrl.href,
           credential,
           clientMetadata: {
+            // oxlint-disable-next-line t3code/no-untranslated-text -- client name sent to the server
             label: "T3.CodeShip Desktop",
             deviceType: "desktop",
           },

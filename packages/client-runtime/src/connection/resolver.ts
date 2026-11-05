@@ -45,6 +45,7 @@ import {
 } from "./compatibility.ts";
 import { credentialConnectionId } from "./routes.ts";
 import { fetchRemoteEnvironmentDescriptor } from "../environment/descriptor.ts";
+import { t } from "@t3tools/shared/i18n";
 
 export class ConnectionResolver extends Context.Service<
   ConnectionResolver,
@@ -131,7 +132,9 @@ const makeBearerBroker = Effect.fn("clientRuntime.connection.broker.makeBearer")
     if (!isBearerProfile(profile)) {
       return yield* new ConnectionBlockedError({
         reason: "configuration",
-        detail: `Connection profile ${target.connectionId} is not a bearer connection.`,
+        detail: t("Connection profile {connectionId} is not a bearer connection.", {
+          connectionId: target.connectionId,
+        }),
       });
     }
     if (profile.environmentId !== target.environmentId) {
@@ -205,7 +208,9 @@ const makeSshBroker = Effect.fn("clientRuntime.connection.broker.makeSsh")(funct
     if (!isSshProfile(profile)) {
       return yield* new ConnectionBlockedError({
         reason: "configuration",
-        detail: `Connection profile ${target.connectionId} is not an SSH connection.`,
+        detail: t("Connection profile {connectionId} is not an SSH connection.", {
+          connectionId: target.connectionId,
+        }),
       });
     }
     if (profile.environmentId !== target.environmentId) {

@@ -47,6 +47,7 @@ import {
 } from "./useSystemWorkspaceTabBar";
 import { openSettings } from "../settings/settings-navigation";
 import { useSelectWorkspaceTab } from "./useSelectWorkspaceTab";
+import { t } from "../../lib/i18n";
 
 const TAB_TITLES = NAVIGATION_TAB_LABELS;
 
@@ -58,14 +59,16 @@ function WorkspaceRootTitle(props: {
   const maxWidth = Math.max(0, props.columnWidth - (use(HeaderItemsWidthContext) ?? 160));
   const enabled = useEnabledNavigationTabs();
   const tabTitle = settingsOpen
-    ? "Settings"
+    ? t("Settings")
     : enabled.length
-      ? TAB_TITLES[state.selectedTab]
-      : "Navigation";
+      ? t(TAB_TITLES[state.selectedTab])
+      : t("Navigation");
   return (
     <View style={{ width: maxWidth, minHeight: 32, justifyContent: "center" }}>
       <WorkspaceConnectionTitle
-        brand={<CompactBrandTitle accessibilityLabel={`T3.CodeShip, ${tabTitle}`} fit />}
+        brand={
+          <CompactBrandTitle accessibilityLabel={t("T3.CodeShip, {tab}", { tab: tabTitle })} fit />
+        }
         maxWidth={maxWidth}
         onPress={props.onOpenEnvironments}
       />
@@ -142,10 +145,10 @@ function WorkspaceRootContent() {
             ]}
             options={{
               title: settingsOpen
-                ? "Settings"
+                ? t("Settings")
                 : enabled.length
-                  ? TAB_TITLES[state.selectedTab]
-                  : "Navigation",
+                  ? t(TAB_TITLES[state.selectedTab])
+                  : t("Navigation"),
               headerShown: true,
               headerTransparent: NATIVE_LIQUID_GLASS_SUPPORTED,
               headerStyle: NATIVE_LIQUID_GLASS_SUPPORTED
@@ -166,14 +169,16 @@ function WorkspaceRootContent() {
           />
         ) : (
           <AndroidScreenHeader
-            title="T3.CodeShip"
+            title={"T3.CodeShip"}
             titleContent={renderHeaderTitle()}
             actions={[
               ...(state.selectedTab === "threads" || state.selectedTab === "pullRequests"
                 ? [
                     {
                       accessibilityLabel:
-                        state.selectedTab === "threads" ? "Search threads" : "Search pull requests",
+                        state.selectedTab === "threads"
+                          ? t("Search threads")
+                          : t("Search pull requests"),
                       icon: "magnifyingglass" as const,
                       onPress: () => {
                         dispatchHardwareKeyboardCommand("focusSearch");
@@ -182,7 +187,7 @@ function WorkspaceRootContent() {
                   ]
                 : []),
               {
-                accessibilityLabel: "Settings",
+                accessibilityLabel: t("Settings"),
                 icon: "gearshape",
                 onPress: () => selectTab("settings"),
               },

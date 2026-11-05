@@ -30,7 +30,7 @@ import {
   resolvePinnedTaskStatus,
   type HeldPinOrder,
   resolveScheduledTaskPlacement,
-  SCHEDULED_TASK_PLACEMENT_OPTIONS,
+  scheduledTaskPlacementOptions,
   scheduledTaskHiddenThreadKeys,
   type PinnedTaskStatus,
 } from "@t3tools/client-runtime/scheduled-task-pins";
@@ -90,6 +90,7 @@ import { CollapsibleSectionHeader } from "../ui/collapsible-section-header";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { WorkingDuration } from "./SidebarThreadRow";
 
+import { msg, t, tx, type Message } from "~/i18n";
 const pinnedTasksAtom = Atom.family((environmentIdsKey: string) =>
   Atom.make((get) =>
     collectPinnedTasks(
@@ -126,18 +127,22 @@ export function useScheduledTaskHiddenThreadKeys(environmentIdsKey: string): Rea
 
 const STATUS_DISPLAY: Record<
   Exclude<PinnedTaskStatus, "idle">,
-  { readonly label: string; readonly icon: typeof CircleDashedIcon; readonly className: string }
+  { readonly label: Message; readonly icon: typeof CircleDashedIcon; readonly className: string }
 > = {
-  starting: { label: "Starting", icon: CircleDashedIcon, className: "text-info-foreground" },
-  working: { label: "Working", icon: CircleDashedIcon, className: "text-info-foreground" },
-  approval: { label: "Approval", icon: ShieldQuestionIcon, className: "text-warning-foreground" },
+  starting: { label: msg("Starting"), icon: CircleDashedIcon, className: "text-info-foreground" },
+  working: { label: msg("Working"), icon: CircleDashedIcon, className: "text-info-foreground" },
+  approval: {
+    label: msg("Approval"),
+    icon: ShieldQuestionIcon,
+    className: "text-warning-foreground",
+  },
   input: {
-    label: "Input",
+    label: msg("Input"),
     icon: MessageCircleQuestionIcon,
     className: "text-indigo-600 dark:text-indigo-300",
   },
-  failed: { label: "Failed", icon: CircleAlertIcon, className: "text-error-foreground" },
-  paused: { label: "Paused", icon: PauseIcon, className: "text-muted-foreground" },
+  failed: { label: msg("Failed"), icon: CircleAlertIcon, className: "text-error-foreground" },
+  paused: { label: msg("Paused"), icon: PauseIcon, className: "text-muted-foreground" },
 };
 
 type PinnedTaskMenuId =
@@ -227,7 +232,7 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
   const isActive = runThreadRef !== null && scopedThreadKey(runThreadRef) === props.routeThreadKey;
   const accessibility = resolveSidebarRowAccessibility({
     title: task.title,
-    statusLabel: display?.label ?? null,
+    statusLabel: display ? t(display.label) : null,
     projectDisplayName:
       [props.projectDisplayName, props.machineLabel].filter(Boolean).join(", ") || null,
     isActive,
@@ -247,16 +252,16 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
     if (!api) return;
     const items: ContextMenuItem<PinnedTaskMenuId>[] = [
       ...(runThread !== null
-        ? [{ id: "open-run" as const, label: "Open last run", icon: "message-square" }]
+        ? [{ id: "open-run" as const, label: t("Open last run"), icon: "message-square" }]
         : []),
-      { id: "edit", label: "Edit task", icon: "pencil" },
+      { id: "edit", label: t("Edit task"), icon: "pencil" },
       // Webhook tasks run only when their URL receives a request.
       ...(task.schedule.type === "webhook"
         ? []
         : [
             {
               id: "run-now" as const,
-              label: "Run now",
+              label: t("Run now"),
               icon: "refresh-cw",
               disabled: !canOperate || status === "starting",
             },
@@ -265,14 +270,14 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
         ? [
             {
               id: "move-up" as const,
-              label: "Move up",
+              label: t("Move up"),
               icon: "arrow-up",
               disabled: !props.canMoveUp,
               separatorBefore: true,
             },
             {
               id: "move-down" as const,
-              label: "Move down",
+              label: t("Move down"),
               icon: "arrow-down",
               disabled: !props.canMoveDown,
             },
@@ -282,11 +287,11 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
         ? [
             {
               id: "show-in" as const,
-              label: "Show in",
+              label: t("Show in"),
               icon: "pin",
               disabled: !canOperate,
               separatorBefore: true,
-              children: SCHEDULED_TASK_PLACEMENT_OPTIONS.map((option) => ({
+              children: scheduledTaskPlacementOptions().map((option) => ({
                 id: `place:${option.value}` as const,
                 label: option.label,
                 checked: option.value === currentPlacement,
@@ -311,7 +316,7 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
           toastManager.add(
             stackedThreadToast({
               type: "error",
-              title: "Could not run task",
+              title: t("Could not run task"),
               description: String(squashAtomCommandFailure(result)),
             }),
           );
@@ -325,7 +330,7 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
         props.onMove(props.sortableId, 1);
         return;
       default: {
-        const placement = SCHEDULED_TASK_PLACEMENT_OPTIONS.find(
+        const placement = scheduledTaskPlacementOptions().find(
           (option) => `place:${option.value}` === clicked.value,
         )?.value;
         if (placement !== undefined) await setPlacement(environmentId, [task], placement);
@@ -394,7 +399,7 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
                 )}
               >
                 <StatusIcon aria-hidden className="size-3.5 shrink-0" />
-                {display.label}
+                {t(display.label)}
                 {status === "working" && runThread !== null ? (
                   <span aria-hidden>
                     <WorkingDuration startedAt={resolveWorkingStartedAt(runThread)} />
@@ -408,7 +413,7 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
                   render={
                     <button
                       type="button"
-                      aria-label={`Unpin ${task.title} from sidebar`}
+                      aria-label={t("Unpin {title} from sidebar", { title: task.title })}
                       disabled={!canOperate}
                       onClick={handleUnpin}
                       className="pointer-events-none inline-flex shrink-0 cursor-pointer items-center rounded-md bg-transparent px-1 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-any-hover/sidebar-row:pointer-events-auto group-any-hover/sidebar-row:opacity-100 motion-reduce:transition-none"
@@ -417,7 +422,7 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
                     </button>
                   }
                 />
-                <TooltipPopup side="top">Unpin from sidebar</TooltipPopup>
+                <TooltipPopup side="top">{t("Unpin from sidebar")}</TooltipPopup>
               </Tooltip>
             ) : null}
           </div>
@@ -426,13 +431,15 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
               {scheduleLabel(task.schedule)}
               {task.enabled && task.nextRunAt !== null ? (
                 <>
-                  {" · next "}
-                  <NextRunCountdown nextRunAt={task.nextRunAt} />
+                  {" · "}
+                  {tx("next {countdown}", {
+                    countdown: <NextRunCountdown nextRunAt={task.nextRunAt} />,
+                  })}
                 </>
               ) : task.lastRunAt !== null ? (
                 <>
-                  {" · last run "}
-                  <LastRunAgo lastRunAt={task.lastRunAt} />
+                  {" · "}
+                  {tx("last run {ago}", { ago: <LastRunAgo lastRunAt={task.lastRunAt} /> })}
                 </>
               ) : null}
             </span>
@@ -534,7 +541,7 @@ export const SidebarPinnedTasksBlock = memo(function SidebarPinnedTasksBlock(pro
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Could not reorder pinned tasks",
+          title: t("Could not reorder pinned tasks"),
           description: String(squashAtomCommandFailure(failure)),
         }),
       );
@@ -558,7 +565,7 @@ export const SidebarPinnedTasksBlock = memo(function SidebarPinnedTasksBlock(pro
           onClick={() => setExpanded((value) => !value)}
           accessory={<span className="font-normal tabular-nums">{entries.length}</span>}
         >
-          Scheduled
+          {t("Scheduled")}
         </CollapsibleSectionHeader>
       </li>
       {expanded && (

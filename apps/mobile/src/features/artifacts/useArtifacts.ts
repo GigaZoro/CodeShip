@@ -12,6 +12,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { connectedEnvironmentIdsAtom } from "../../state/presentation";
 import { sortArtifactsNewestFirst, type EnvironmentArtifact } from "./artifactList";
+import { t } from "../../lib/i18n";
 
 const rendersAtom = (environmentId: EnvironmentId) =>
   orchestrationEnvironment.htmlRenders({
@@ -40,7 +41,7 @@ function failureMessage(cause: Cause.Cause<unknown>) {
   const error = Cause.squash(cause);
   return error instanceof Error && error.message.trim().length > 0
     ? error.message
-    : "The environment request failed.";
+    : t("The environment request failed.");
 }
 
 /** Every connected environment's published pages, newest first. */

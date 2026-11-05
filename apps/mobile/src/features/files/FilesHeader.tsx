@@ -9,6 +9,7 @@ import { AndroidAnchoredMenu } from "../../components/ui/AndroidAnchoredMenu";
 import { SearchField } from "../../components/ui/SearchField";
 import { useToolbarLayout } from "../../components/ui/useToolbarLayout";
 import { useHardwareBack } from "../../lib/backHandler";
+import { t } from "../../lib/i18n";
 
 export function FilesHeader(props: {
   readonly projectName: string;
@@ -44,29 +45,29 @@ export function FilesHeader(props: {
         style={{ opacity: searching ? 0 : 1 }}
       >
         <AndroidScreenHeader
-          title="Files"
+          title={t("Files")}
           subtitle={props.projectName}
           hideBottomBorder
           onBack={props.onBack}
           leading={props.leading}
           actions={[
             {
-              accessibilityLabel: "Search files",
+              accessibilityLabel: t("Search files"),
               icon: "magnifyingglass",
               onPress: () => setSearchOpen(true),
             },
           ]}
           trailing={
             <AndroidAnchoredMenu
-              title="File options"
-              actions={[{ id: "refresh", title: "Refresh files" }]}
+              title={t("File options")}
+              actions={[{ id: "refresh", title: t("Refresh files") }]}
               onPressAction={({ nativeEvent }) => {
                 if (nativeEvent.event === "refresh") props.onRefresh();
               }}
             >
               {(open) => (
                 <AndroidHeaderIconButton
-                  accessibilityLabel="File options"
+                  accessibilityLabel={t("File options")}
                   icon="ellipsis"
                   onPress={open}
                 />
@@ -79,15 +80,15 @@ export function FilesHeader(props: {
         <View className="absolute inset-0 bg-header px-2" style={{ paddingTop, paddingBottom }}>
           <View className="flex-1 flex-row items-center gap-1">
             <AndroidHeaderIconButton
-              accessibilityLabel="Close file search"
+              accessibilityLabel={t("Close file search")}
               icon="arrow.left"
               onPress={closeSearch}
             />
             <SearchField
               inputRef={searchRef}
-              accessibilityLabel="Search files"
-              clearAccessibilityLabel="Clear file search"
-              placeholder="Search files"
+              accessibilityLabel={t("Search files")}
+              clearAccessibilityLabel={t("Clear file search")}
+              placeholder={t("Search files")}
               value={props.searchQuery}
               onChangeText={onSearchQueryChange}
             />

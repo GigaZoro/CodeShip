@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import type { EnvironmentId } from "@t3tools/contracts";
 
 import type { ProviderInstanceEntry } from "../../providerInstances";
@@ -75,7 +76,10 @@ export function buildProviderMachines<M extends MachineLike>(input: {
           accounts,
           naming: providerNaming,
           label: multipleMachines
-            ? `${providerNaming.title} on ${machine.label}`
+            ? t("{provider} on {machine}", {
+                provider: providerNaming.title,
+                machine: machine.label,
+              })
             : providerNaming.title,
         };
       }),

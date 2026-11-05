@@ -25,6 +25,7 @@ import {
   type EnvironmentPullRequestListEntry,
   type PullRequestListPages,
 } from "./pullRequestList";
+import { t } from "../../lib/i18n";
 
 type ListTarget = { readonly environmentId: EnvironmentId; readonly input: PullRequestListInput };
 type Read = <A>(atom: Atom.Atom<A>) => A;
@@ -95,7 +96,7 @@ async function loadNextPages(
         JSON.stringify(Object.entries(input.cursors).sort()) ===
           JSON.stringify(Object.entries(next.nextCursors).sort())
       )
-        throw new Error("Couldn't advance the list. Try again.");
+        throw new Error(t("Couldn't advance the list. Try again."));
     }),
   );
   return requestErrors(responses);
@@ -308,7 +309,7 @@ export function usePullRequestList(targets: readonly ListTarget[]) {
           {
             environmentId: target.environmentId,
             projectTitle: "",
-            message: cause instanceof Error ? cause.message : "Couldn't load pull requests.",
+            message: cause instanceof Error ? cause.message : t("Couldn't load pull requests."),
           },
         ];
       }),
@@ -345,7 +346,7 @@ function requestErrors(results: readonly PromiseSettledResult<unknown>[]) {
           ? [
               result.reason instanceof Error
                 ? result.reason.message
-                : "Couldn't load pull requests.",
+                : t("Couldn't load pull requests."),
             ]
           : [],
       )

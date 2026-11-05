@@ -738,7 +738,8 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             ...current,
             surfaces: current.surfaces.map((surface) =>
               surface.id === surfaceId && surface.kind === "device"
-                ? { ...surface, title: title.trim() || surface.target?.name || "Device" }
+                ? // oxlint-disable-next-line t3code/no-untranslated-text -- stored surface title fallback
+                  { ...surface, title: title.trim() || surface.target?.name || "Device" }
                 : surface,
             ),
           })),

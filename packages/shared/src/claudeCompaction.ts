@@ -1,3 +1,7 @@
+import type { IdleCompactionMode } from "@t3tools/contracts";
+
+import { msg, t, type Message } from "./i18n.ts";
+
 /** Adapter and client match these dialog strings; reword them only here. */
 export const CLAUDE_RESUME_COMPACTION_NEVER_ANSWER = "Don't ask again";
 export const CLAUDE_RESUME_COMPACTION_COMPACT_ANSWER = "Compact and continue";
@@ -44,3 +48,13 @@ export function claudeResumeCompactionAge(questionAnswer: {
  * idleCompaction default of 200K.
  */
 export const COMPACTION_SUGGESTION_MIN_TOKENS = 200_000;
+
+const IDLE_COMPACTION_MODE_LABELS: Readonly<Record<IdleCompactionMode, Message>> = {
+  onReturn: msg("When you return"),
+  beforeCacheExpires: msg("Before the cache expires (beta)"),
+  off: msg("Never"),
+};
+
+export function idleCompactionModeLabel(mode: IdleCompactionMode): string {
+  return t(IDLE_COMPACTION_MODE_LABELS[mode]);
+}

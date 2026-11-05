@@ -7,6 +7,7 @@ import type { ThreadInspectorMode } from "./thread-inspector-content-stack";
 import { useThreadHeaderOptions } from "./useThreadHeaderOptions";
 import { useWorkspaceBackNavigation } from "../workspace/useAndroidWorkspaceNavigation";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
+import { t } from "../../lib/i18n";
 
 export function ThreadHeader(
   props: Parameters<typeof useThreadHeaderOptions>[0] & {
@@ -28,7 +29,7 @@ export function ThreadHeader(
     const actions: AppBarAction[] = [];
     if (props.onReturnToThread) {
       actions.push({
-        accessibilityLabel: "Return to chat",
+        accessibilityLabel: t("Return to chat"),
         icon: "chevron.left",
         onPress: props.onReturnToThread,
       });
@@ -36,7 +37,7 @@ export function ThreadHeader(
     if (props.hasThreadCwd) {
       const filesVisible = props.inspectorMode === "files" && panes.auxiliaryPaneVisible;
       actions.push({
-        accessibilityLabel: filesVisible ? "Close files" : "Open files",
+        accessibilityLabel: filesVisible ? t("Close files") : t("Open files"),
         selected: filesVisible,
         icon: "folder",
         onPress: filesVisible ? toggleAuxiliaryPane : props.onOpenFilesInspector,
@@ -44,19 +45,19 @@ export function ThreadHeader(
     }
     if (props.hasWorkspaceRoot && props.gitControls.canOpenTerminal) {
       actions.push({
-        accessibilityLabel: "Open terminal",
+        accessibilityLabel: t("Open terminal"),
         icon: "terminal",
         onPress: () => onOpenTerminal(null),
       });
     }
     actions.push({
-      accessibilityLabel: "Open git controls",
+      accessibilityLabel: t("Open git controls"),
       icon: "point.topleft.down.curvedto.point.bottomright.up",
       onPress: props.onOpenGitInspector,
     });
     if (onMergeBack) {
       actions.push({
-        accessibilityLabel: "Merge back to source",
+        accessibilityLabel: t("Merge back to source"),
         icon: PullRequestGlyph.merged,
         onPress: onMergeBack,
       });
@@ -89,8 +90,8 @@ export function ThreadHeader(
             <ScreenHeaderButton
               accessibilityLabel={
                 props.inspectorMode !== null && panes.auxiliaryPaneVisible
-                  ? "Hide inspector"
-                  : "Show inspector"
+                  ? t("Hide inspector")
+                  : t("Show inspector")
               }
               icon="sidebar.right"
               selected={props.inspectorMode !== null && panes.auxiliaryPaneVisible}

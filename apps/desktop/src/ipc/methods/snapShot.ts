@@ -1,3 +1,5 @@
+import { t } from "@t3tools/shared/i18n";
+
 import {
   DesktopPendingSnapShot,
   DesktopSnapShot as DesktopSnapShotSchema,
@@ -118,7 +120,7 @@ export const previewSnapShotConfig = DesktopIpc.makeIpcMethod({
         defaultPath: Option.fromUndefinedOr(state.shortcutConfigPath),
         filters: [
           {
-            name: "Desktop config",
+            name: t("Desktop config"),
             extensions: state.linuxBackend === "niri" ? ["kdl"] : ["conf", "lua"],
           },
         ],

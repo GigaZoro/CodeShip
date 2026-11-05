@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import { useAtomValue } from "@effect/atom-react";
 import * as Schema from "effect/Schema";
 import {
@@ -389,12 +390,14 @@ function SidebarControl() {
                 "pointer-events-auto",
                 isSidebarVisible && stageBackdropVariant && "relative top-auto translate-y-0",
               )}
-              aria-label="Toggle main sidebar"
+              aria-label={t("Toggle main sidebar")}
             />
           }
         />
         <TooltipPopup side="bottom">
-          Toggle main sidebar{shortcutLabel ? ` (${shortcutLabel})` : ""}
+          {shortcutLabel
+            ? t("Toggle main sidebar ({shortcut})", { shortcut: shortcutLabel })
+            : t("Toggle main sidebar")}
         </TooltipPopup>
       </Tooltip>
     </div>
@@ -404,7 +407,8 @@ function SidebarControl() {
 export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const sidebarPanel = useSidebarPanel();
   const railOnly = sidebarPanel === "none";
-  const sidebarLabel = sidebarPanel === "settings" ? "Settings" : railOnly ? "Sidebar" : "Threads";
+  const sidebarLabel =
+    sidebarPanel === "settings" ? t("Settings") : railOnly ? t("Sidebar") : t("Threads");
   const sidebarArea = workspaceAreaProps("sidebar", 0, sidebarLabel);
   const [sidebarRouteReveal] = useState<SidebarRouteReveal>(() => ({
     observedKey: null,

@@ -27,6 +27,7 @@ import {
 import type { EnvironmentProject } from "../state/models.ts";
 import { sourceControlClients } from "../sourceControlClients.ts";
 import type { SourceControlDefinition } from "../sourceControlClients.ts";
+import { msg, t } from "@t3tools/shared/i18n";
 
 export type AddProjectRemoteSource = SourceControlProviderKind | "url";
 
@@ -73,7 +74,7 @@ const ADD_PROJECT_REMOTE_PROVIDER_SOURCES: ReadonlyArray<SourceControlProviderKi
   sourceControlClients.definitions.map((definition) => definition.kind);
 
 export function addProjectRemoteSourceLabel(source: AddProjectRemoteSource): string {
-  return source === "url" ? "Git URL" : sourceControlClients.get(source).pickerLabel;
+  return source === "url" ? t("Git URL") : sourceControlClients.get(source).pickerLabel;
 }
 
 export function addProjectRemoteSourcePathHint(source: AddProjectRemoteSource): string {
@@ -110,7 +111,7 @@ export function defaultHostCloneUrl(repository: string): string | null {
 /** Owner present, repository name missing: `owner/` or `owner//`. */
 const INCOMPLETE_GITHUB_OWNER_PATH = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,38})\/+$/;
 
-const INCOMPLETE_GITHUB_OWNER_REPOSITORY_MESSAGE = "Enter the full owner/repository name.";
+const INCOMPLETE_GITHUB_OWNER_REPOSITORY_MESSAGE = msg("Enter the full owner/repository name.");
 
 /**
  * Message to show when a GitHub add-project field is only `owner/`.
@@ -123,7 +124,7 @@ export function githubIncompleteOwnerRepositoryMessage(
 ): string | null {
   if (source !== "github") return null;
   if (!INCOMPLETE_GITHUB_OWNER_PATH.test(input.trim())) return null;
-  return INCOMPLETE_GITHUB_OWNER_REPOSITORY_MESSAGE;
+  return t(INCOMPLETE_GITHUB_OWNER_REPOSITORY_MESSAGE);
 }
 
 export function normalizePastedCloneUrl(input: string): string {
@@ -158,10 +159,10 @@ export function sortAddProjectProviderSources(
 }
 
 const READY: AddProjectRemoteSourceReadinessEntry = { ready: true, hint: null };
-const UNAVAILABLE: AddProjectRemoteSourceReadinessEntry = {
+const unavailable = (): AddProjectRemoteSourceReadinessEntry => ({
   ready: false,
-  hint: "Provider status unavailable. Open Source Control settings and rescan.",
-};
+  hint: t("Provider status unavailable. Open Source Control settings and rescan."),
+});
 
 export function buildAddProjectRemoteSourceReadiness(
   discovery: SourceControlDiscoveryResult | null,
@@ -172,14 +173,16 @@ export function buildAddProjectRemoteSourceReadiness(
   return (source) => {
     if (source === "url") return READY;
     const provider = providerByKind.get(source);
-    if (!provider) return UNAVAILABLE;
+    if (!provider) return unavailable();
     if (provider.status !== "available") return { ready: false, hint: provider.installHint };
     if (provider.auth.status === "unauthenticated") {
       return {
         ready: false,
         hint:
           Option.getOrNull(provider.auth.detail) ??
-          `${provider.label} is not authenticated. Open Source Control settings for setup guidance.`,
+          t("{label} is not authenticated. Open Source Control settings for setup guidance.", {
+            label: provider.label,
+          }),
       };
     }
     return READY;
@@ -305,16 +308,19 @@ export function resolveAddProjectPath(input: {
 }): { readonly ok: true; readonly path: string } | { readonly ok: false; readonly error: string } {
   const rawPath = input.rawPath.trim();
   if (rawPath.length === 0) {
-    return { ok: false, error: "Enter a project path." };
+    return { ok: false, error: t("Enter a project path.") };
   }
   if (isUnsupportedWindowsProjectPath(rawPath, input.platform)) {
-    return { ok: false, error: "Windows-style paths are only supported on Windows environments." };
+    return {
+      ok: false,
+      error: t("Windows-style paths are only supported on Windows environments."),
+    };
   }
   if (isExplicitRelativeProjectPath(rawPath) && !input.currentProjectCwd) {
-    return { ok: false, error: "Relative paths require an active project in this environment." };
+    return { ok: false, error: t("Relative paths require an active project in this environment.") };
   }
   const path = resolveProjectPathForDispatch(rawPath, input.currentProjectCwd);
-  return path.length === 0 ? { ok: false, error: "Enter a project path." } : { ok: true, path };
+  return path.length === 0 ? { ok: false, error: t("Enter a project path.") } : { ok: true, path };
 }
 
 export function findExistingAddProject(input: {

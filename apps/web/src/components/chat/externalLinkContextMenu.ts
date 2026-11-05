@@ -1,4 +1,5 @@
 import type { ContextMenuItem } from "@t3tools/contracts";
+import { t } from "~/i18n";
 
 type ExternalLinkContextMenuAction =
   | "open-in-preview"
@@ -23,25 +24,29 @@ const FAILURE_OPERATION_BY_ACTION = {
   "unlink-from-thread": "unlink-pull-request-from-thread",
 } as const satisfies Record<ExternalLinkContextMenuAction, ExternalLinkContextMenuFailureOperation>;
 
-const EXTERNAL_LINK_CONTEXT_MENU_ITEMS = [
-  { id: "open-in-preview", label: "Open in integrated browser" },
-  { id: "open-external", label: "Open in system browser" },
-  { id: "copy-link", label: "Copy Link" },
-] as const satisfies readonly ContextMenuItem<ExternalLinkContextMenuAction>[];
+const externalLinkContextMenuBaseItems = () =>
+  [
+    { id: "open-in-preview", label: t("Open in integrated browser") },
+    { id: "open-external", label: t("Open in system browser") },
+    { id: "copy-link", label: t("Copy Link") },
+  ] as const satisfies readonly ContextMenuItem<ExternalLinkContextMenuAction>[];
 
 function externalLinkContextMenuItems(options: {
   readonly canOpenInPreview: boolean;
   readonly threadLinkAction?: "link-to-thread" | "unlink-from-thread" | undefined;
 }): readonly ContextMenuItem<ExternalLinkContextMenuAction>[] {
+  const baseItems = externalLinkContextMenuBaseItems();
   const items = options.canOpenInPreview
-    ? EXTERNAL_LINK_CONTEXT_MENU_ITEMS
-    : EXTERNAL_LINK_CONTEXT_MENU_ITEMS.filter((item) => item.id !== "open-in-preview");
+    ? baseItems
+    : baseItems.filter((item) => item.id !== "open-in-preview");
   if (options.threadLinkAction === undefined) return items;
   return [
     {
       id: options.threadLinkAction,
       label:
-        options.threadLinkAction === "link-to-thread" ? "Link to thread" : "Unlink from thread",
+        options.threadLinkAction === "link-to-thread"
+          ? t("Link to thread")
+          : t("Unlink from thread"),
     },
     ...items,
   ];

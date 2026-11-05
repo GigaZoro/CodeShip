@@ -1,3 +1,9 @@
+## 2026-11-05 — Choose your language
+
+- T3.CodeShip is now available in Ukrainian as well as English. Choose it in Settings → General → Language on web and desktop, or Settings → Appearance → Language on mobile.
+- System default follows your browser, computer or phone language and falls back to English.
+- Dates, times and counts follow the language you choose. Agent replies, your messages and names from your projects stay as they are.
+
 ## 2026-11-05 — Needs you steps aside for the panel
 
 - Pinned scheduled tasks always appear in the Scheduled section at the top of the thread list.

@@ -8,6 +8,7 @@ import { resolveProviderOptionDescriptors } from "../lib/providerOptions";
 import { AppText as Text } from "./ui/AppText";
 import { ComposerInlineControl } from "./ComposerToolbar";
 import { ProviderIcon, ProviderInstanceIcon } from "./ProviderIcon";
+import { t } from "../lib/i18n";
 
 export function ComposerModelControl(props: {
   readonly modelOption: ModelOption | null;
@@ -37,11 +38,11 @@ export function ComposerModelControl(props: {
       }).label
     : "";
   const badge = props.modelOption?.providerBadge;
-  const label = props.modelOption?.label ?? props.selection?.model ?? "Choose model";
+  const label = props.modelOption?.label ?? props.selection?.model ?? t("Choose model");
   return (
     <ComposerInlineControl
       accessibilityLabel={[
-        "Model and reasoning settings",
+        t("Model and reasoning settings"),
         label,
         badge?.showBadge ? badge.displayName : null,
         summary,

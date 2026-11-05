@@ -3,6 +3,7 @@ import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { cn } from "~/lib/utils";
 
 import { Button } from "../ui/button";
+import { t } from "~/i18n";
 
 export function PullRequestActivityUnavailableState({
   error,
@@ -23,11 +24,13 @@ export function PullRequestActivityUnavailableState({
         compact ? "py-3" : "min-h-48 px-4 py-10",
       )}
     >
-      <p className="text-sm font-medium text-foreground">Could not load {term} activity</p>
+      <p className="text-sm font-medium text-foreground">
+        {t("Could not load {term} activity", { term })}
+      </p>
       <p className="max-w-md text-xs text-muted-foreground">{error}</p>
       <Button size="sm" variant="outline" onClick={onRetry}>
         <RefreshIcon aria-hidden size="sm" />
-        Retry
+        {t("Retry")}
       </Button>
     </div>
   );

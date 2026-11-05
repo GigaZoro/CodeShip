@@ -1,4 +1,5 @@
 import { AuthPreviewOperateScope, type EnvironmentId } from "@t3tools/contracts";
+import { t } from "~/i18n";
 import { resolveSidebarGrouping } from "@t3tools/contracts/settings";
 import type { AnyRouter } from "@tanstack/react-router";
 
@@ -147,8 +148,8 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
           toastManager.add(
             stackedThreadToast({
               type: "info",
-              title: "Preview is desktop-only",
-              description: "Open T3.CodeShip in the desktop app to use the in-app preview.",
+              title: t("Preview is desktop-only"),
+              description: t("Open T3.CodeShip in the desktop app to use the in-app preview."),
             }),
           );
           return;

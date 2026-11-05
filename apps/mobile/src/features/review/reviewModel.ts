@@ -9,12 +9,11 @@ import { quoteGitPatchPath } from "@t3tools/shared/gitPatchPath";
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
 import * as Order from "effect/Order";
+import { t, tn } from "../../lib/i18n";
 
 export type ReviewSectionKind = "turn" | "working-tree" | "branch-range";
 
 const CHANGES_SECTION_ID = "git:branch-range";
-const CHANGES_TITLE = "Changes";
-const UNCOMMITTED_SUBTITLE = "Staged, unstaged, and untracked files";
 
 export interface ReviewSectionItem {
   readonly id: string;
@@ -106,15 +105,15 @@ export type ReviewParsedDiff =
     };
 
 function checkpointTitle(checkpoint: ThreadCheckpointSummary): string {
-  return `Turn ${checkpoint.checkpointTurnCount}`;
+  return t("Turn {number}", { number: checkpoint.checkpointTurnCount });
 }
 
 function checkpointSubtitle(checkpoint: ThreadCheckpointSummary): string {
   const fileCount = checkpointFileTotals(checkpoint).count;
   if (checkpoint.status !== "ready") {
-    return `Diff ${checkpoint.status}`;
+    return t("Diff {status}", { status: checkpoint.status });
   }
-  return `${fileCount} file${fileCount === 1 ? "" : "s"} changed`;
+  return tn(fileCount, "{count} file changed", "{count} files changed");
 }
 
 function compareCheckpointTurnCountDescending(
@@ -134,12 +133,12 @@ const readyCheckpointOrder = Order.make<ThreadCheckpointSummary>(
 
 function gitSubtitle(section: ReviewDiffPreviewSource): string | null {
   if (section.kind === "working-tree") {
-    return UNCOMMITTED_SUBTITLE;
+    return t("Staged, unstaged, and untracked files");
   }
   if (section.baseRef) {
     return `${section.baseRef} ... ${section.headRef ?? "HEAD"}`;
   }
-  return "Base branch unavailable";
+  return t("Base branch unavailable");
 }
 
 function stripTrailingNewline(value: string): string {
@@ -270,8 +269,8 @@ export function getReviewFilePreviewState(file: ReviewRenderableFile): ReviewFil
     return {
       kind: "suppressed",
       reason: "non-text",
-      title: "Non-text file",
-      message: "Diff preview is not available for this file format.",
+      title: t("Non-text file"),
+      message: t("Diff preview is not available for this file format."),
       actionLabel: null,
     };
   }
@@ -282,9 +281,9 @@ export function getReviewFilePreviewState(file: ReviewRenderableFile): ReviewFil
     return {
       kind: "suppressed",
       reason: "large",
-      title: "Large diff",
-      message: "Large diffs are not rendered by default.",
-      actionLabel: "Load diff",
+      title: t("Large diff"),
+      message: t("Large diffs are not rendered by default."),
+      actionLabel: t("Load diff"),
     };
   }
 
@@ -557,7 +556,7 @@ export function buildReviewSectionItems(input: {
           {
             id: CHANGES_SECTION_ID,
             kind: "branch-range",
-            title: CHANGES_TITLE,
+            title: t("Changes"),
             subtitle: null,
             diff: null,
             isLoading: true,
@@ -603,7 +602,7 @@ export function buildReviewParsedDiff(
   }
 
   const notice = truncated
-    ? "Diff output hit the server size cap. Showing the available excerpt."
+    ? t("Diff output hit the server size cap. Showing the available excerpt.")
     : null;
 
   try {
@@ -636,8 +635,8 @@ export function buildReviewParsedDiff(
         kind: "raw",
         text,
         reason: truncated
-          ? "Diff was truncated before it could be parsed completely. Showing the raw excerpt."
-          : "Unsupported diff format. Showing raw patch.",
+          ? t("Diff was truncated before it could be parsed completely. Showing the raw excerpt.")
+          : t("Unsupported diff format. Showing raw patch."),
         notice,
       };
     }
@@ -655,8 +654,8 @@ export function buildReviewParsedDiff(
       kind: "raw",
       text,
       reason: truncated
-        ? "Diff was truncated before it could be parsed completely. Showing the raw excerpt."
-        : "Failed to parse patch. Showing raw patch.",
+        ? t("Diff was truncated before it could be parsed completely. Showing the raw excerpt.")
+        : t("Failed to parse patch. Showing raw patch."),
       notice,
     };
   }
@@ -668,7 +667,11 @@ export function applyReviewDiffMetadata(
 ): ReviewParsedDiff {
   if (previewDiff.kind === "empty") return previewDiff;
   const notice = selectedSection?.truncated
-    ? `This preview exceeds the size limit. Changes shown are incomplete.${selectedSection.files ? " Counts include all changes." : ""}`
+    ? selectedSection.files
+      ? t(
+          "This preview exceeds the size limit. Changes shown are incomplete. Counts include all changes.",
+        )
+      : t("This preview exceeds the size limit. Changes shown are incomplete.")
     : previewDiff.notice;
   if (previewDiff.kind !== "files" || !selectedSection?.files) return { ...previewDiff, notice };
   const totals = selectedSection.files.reduce(

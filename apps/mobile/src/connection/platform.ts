@@ -29,6 +29,7 @@ import { clearComposerDraftsEnvironment } from "../state/use-composer-drafts";
 import { clearThreadComposerErrorsForEnvironment } from "../state/thread-composer-error";
 import { mobileApplicationActiveWakeup } from "./app-state-wakeups";
 import * as ConnectionStorage from "./storage";
+import { t } from "../lib/i18n";
 
 function networkStatus(state: Network.NetworkState): "unknown" | "offline" | "online" {
   if (state.isConnected === false) {
@@ -181,7 +182,7 @@ const layerCapabilities = Layer.effectContext(
           if (session === null) {
             return yield* new ConnectionBlockedError({
               reason: "authentication",
-              detail: "Sign in to T3 Connect to connect this environment.",
+              detail: t("Sign in to T3 Connect to connect this environment."),
             });
           }
           const token = yield* session.readClerkToken().pipe(
@@ -196,7 +197,7 @@ const layerCapabilities = Layer.effectContext(
           if (token === null) {
             return yield* new ConnectionBlockedError({
               reason: "authentication",
-              detail: "The T3 Connect session is unavailable.",
+              detail: t("The T3 Connect session is unavailable."),
             });
           }
           return token;
@@ -221,6 +222,7 @@ const layerCapabilities = Layer.effectContext(
               (cause) =>
                 new ConnectionTransientError({
                   reason: "remote-unavailable",
+                  // oxlint-disable-next-line t3code/no-untranslated-text -- error detail for logs and error causes, never rendered
                   detail: `Could not load the mobile device identity: ${String(cause)}`,
                 }),
             ),
@@ -241,14 +243,14 @@ const layerCapabilities = Layer.effectContext(
             Effect.fail(
               new ConnectionBlockedError({
                 reason: "unsupported",
-                detail: "SSH environments are only available in the desktop app.",
+                detail: t("SSH environments are only available in the desktop app."),
               }),
             ),
           prepare: () =>
             Effect.fail(
               new ConnectionBlockedError({
                 reason: "unsupported",
-                detail: "SSH environments are only available in the desktop app.",
+                detail: t("SSH environments are only available in the desktop app."),
               }),
             ),
           disconnect: () => Effect.void,

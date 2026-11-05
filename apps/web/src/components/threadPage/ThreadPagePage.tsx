@@ -20,6 +20,7 @@ import { SidebarInset } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 
+import { t } from "~/i18n";
 const THREAD_PAGE_TAB_ID = "codeship-thread-page";
 // Its own persistent session: clearing a thread browser profile must never erase
 // notes that ThreadPage Free keeps in this machine's browser storage.
@@ -67,7 +68,7 @@ function ThreadPageShell(props: { readonly controls?: ReactNode; readonly childr
     >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <WorkspacePageHeader electron={isElectron} className="border-b">
-          <h1 className="min-w-0 truncate text-sm font-medium">ThreadPage</h1>
+          <h1 className="min-w-0 truncate text-sm font-medium">{"ThreadPage"}</h1>
           <div className="ms-auto flex shrink-0 items-center gap-1">{props.controls}</div>
         </WorkspacePageHeader>
         {props.children}
@@ -82,10 +83,11 @@ function ThreadPageOpensInNewTab() {
     <ThreadPageShell>
       <Empty>
         <EmptyHeader>
-          <EmptyTitle>ThreadPage opens in its own tab</EmptyTitle>
+          <EmptyTitle>{t("ThreadPage opens in its own tab")}</EmptyTitle>
           <EmptyDescription>
-            thread.page does not let other sites embed it, so in a browser it opens in a new tab.
-            The T3.CodeShip desktop app shows it right here.
+            {t(
+              "thread.page does not let other sites embed it, so in a browser it opens in a new tab. The T3.CodeShip desktop app shows it right here.",
+            )}
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
@@ -94,7 +96,7 @@ function ThreadPageOpensInNewTab() {
             render={<a href={THREAD_PAGE_APP_URL} target="_blank" rel="noreferrer noopener" />}
           >
             <ExternalLinkIcon className="size-3.5" />
-            Open ThreadPage
+            {t("Open ThreadPage")}
           </Button>
         </EmptyContent>
       </Empty>
@@ -225,34 +227,40 @@ function ThreadPageBrowser({
   const controls = (
     <>
       <HeaderIconButton
-        label="Back"
+        label={t("Back")}
         disabled={!tab?.canGoBack || crashed}
         onClick={() => void bridge.goBack(THREAD_PAGE_TAB_ID)}
       >
         <ArrowLeftIcon />
       </HeaderIconButton>
       <HeaderIconButton
-        label="Forward"
+        label={t("Forward")}
         disabled={!tab?.canGoForward || crashed}
         onClick={() => void bridge.goForward(THREAD_PAGE_TAB_ID)}
       >
         <ArrowRightIcon />
       </HeaderIconButton>
-      <HeaderIconButton label="Reload" busy={loading} disabled={tab === null} onClick={reload}>
+      <HeaderIconButton label={t("Reload")} busy={loading} disabled={tab === null} onClick={reload}>
         <RefreshIcon size="sm" refreshing={loading} />
       </HeaderIconButton>
-      <HeaderIconButton label="Open in browser" onClick={() => openInSystemBrowser(currentUrl)}>
+      <HeaderIconButton
+        label={t("Open in browser")}
+        onClick={() => openInSystemBrowser(currentUrl)}
+      >
         <ExternalLinkIcon />
       </HeaderIconButton>
     </>
   );
 
   const failure = crashed
-    ? { title: "ThreadPage stopped", description: "The page crashed. Reload to open it again." }
+    ? {
+        title: t("ThreadPage stopped"),
+        description: t("The page crashed. Reload to open it again."),
+      }
     : loadFailed
       ? {
-          title: "ThreadPage didn't load",
-          description: loadFailed.description || "Check your connection and reload.",
+          title: t("ThreadPage didn't load"),
+          description: loadFailed.description || t("Check your connection and reload."),
         }
       : null;
 
@@ -282,7 +290,7 @@ function ThreadPageBrowser({
             role="status"
             className="absolute inset-0 flex items-center justify-center bg-background text-muted-foreground text-sm"
           >
-            Opening ThreadPage…
+            {t("Opening ThreadPage…")}
           </p>
         ) : null}
         {failure ? (
@@ -296,7 +304,7 @@ function ThreadPageBrowser({
               <EmptyContent>
                 <Button size="sm" onClick={reload}>
                   <RefreshIcon />
-                  Reload
+                  {t("Reload")}
                 </Button>
               </EmptyContent>
             </Empty>

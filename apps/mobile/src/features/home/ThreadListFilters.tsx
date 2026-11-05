@@ -13,6 +13,7 @@ import {
   projectGroupingMenuItems,
   threadListGroupingLabel,
 } from "./home-list-filter-menu";
+import { t } from "../../lib/i18n";
 
 export function ThreadListFilters(
   props: Pick<
@@ -48,13 +49,13 @@ export function ThreadListFilters(
       contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 2, paddingBottom: 10, gap: 8 }}
     >
       <ListFilterMenu
-        label={selectedEnvironment?.label ?? "All environments"}
-        accessibilityLabel="Filter threads by environment"
+        label={selectedEnvironment?.label ?? t("All environments")}
+        accessibilityLabel={t("Filter threads by environment")}
         active={selectedEnvironment !== undefined}
         actions={[
           {
             id: "all",
-            title: "All environments",
+            title: t("All environments"),
             state: props.selectedEnvironmentId === null ? "on" : "off",
           },
           ...props.environments.map((environment) => ({
@@ -77,13 +78,13 @@ export function ThreadListFilters(
         }}
       />
       <ListFilterMenu
-        label={selectedProject?.label ?? "All projects"}
-        accessibilityLabel="Filter threads by project"
+        label={selectedProject?.label ?? t("All projects")}
+        accessibilityLabel={t("Filter threads by project")}
         active={selectedProject !== undefined}
         actions={[
           {
             id: "all",
-            title: "All projects",
+            title: t("All projects"),
             state: props.selectedProjectKey === null ? "on" : "off",
           },
           ...props.projects.map((project) => ({
@@ -104,7 +105,7 @@ export function ThreadListFilters(
       />
       <ListFilterMenu
         label={threadListGroupingLabel(props.grouping)}
-        accessibilityLabel="Group threads"
+        accessibilityLabel={t("Group threads")}
         active={props.grouping.project || props.grouping.machine}
         actions={[
           ...projectGroupingMenuItems(props.grouping),
@@ -124,25 +125,25 @@ export function ThreadListFilters(
         }}
       />
       <Chip
-        label="Archived"
+        label={t("Archived")}
         icon="archivebox"
         glass
         colorScheme={themeAppearance}
-        accessibilityLabel="Archived threads"
+        accessibilityLabel={t("Archived threads")}
         onPress={openArchivedThreads}
       />
       <Chip
-        label="Artifacts"
+        label={t("Artifacts")}
         icon="square.on.square"
         glass
         colorScheme={themeAppearance}
-        accessibilityLabel="Artifacts"
+        accessibilityLabel={t("Artifacts")}
         onPress={openArtifacts}
       />
       {props.selectedEnvironmentId !== null || props.selectedProjectKey !== null ? (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Reset thread filters"
+          accessibilityLabel={t("Reset thread filters")}
           className="h-8 w-8 items-center justify-center"
           onPress={() => {
             props.onEnvironmentChange(null);

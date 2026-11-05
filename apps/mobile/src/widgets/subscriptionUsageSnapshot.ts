@@ -1,3 +1,4 @@
+/* oxlint-disable t3code/no-untranslated-text -- widget runtime has no `t`; these strings are shown or compared literally by the widget, so they stay English */
 import {
   collectLimitAccounts,
   collectLimitPools,

@@ -13,6 +13,7 @@ import {
   type WordSpan,
   type WordLink,
 } from "./word-protocol";
+import { msg, t } from "~/i18n";
 
 type Opened = {
   pages: readonly WordPageSize[];
@@ -69,7 +70,7 @@ export default function WordDocument(props: {
         while (!controller.signal.aborted) {
           const step = await engine.call("layout", undefined, { signal: controller.signal });
           if (!step.done) continue;
-          if (step.pages.length > 1000) throw new Error("Preview limited to 1,000 pages.");
+          if (step.pages.length > 1000) throw new Error(t("Preview limited to 1,000 pages."));
           setOpened({ pages: step.pages, paint, engine });
           onDetails(`${step.pages.length} pages`);
           break;
@@ -98,7 +99,7 @@ export default function WordDocument(props: {
     <OfficePages
       pages={opened.pages}
       paint={opened.paint}
-      label="Page"
+      label={msg("Page")}
       scrollRef={scroll}
       onError={onError}
       overlay={(index) => (

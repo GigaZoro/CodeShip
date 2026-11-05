@@ -7,6 +7,7 @@ import {
 import { resolveSubagentMetadata } from "@t3tools/client-runtime/state/subagent-display";
 import type { EnvironmentId, OrchestrationV2Subagent } from "@t3tools/contracts";
 import type { ReactNode } from "react";
+
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -17,6 +18,11 @@ import { useEnvironmentServerConfig, useProject, useThreadShell } from "../../st
 import { subagentCardDetail } from "./subagent-card-presentation";
 import { SUBAGENT_TONE_TEXT_CLASS, SubagentStatusDot } from "./SubagentStatusDot";
 import { resolveSubagentRowPresentation } from "./threadAgentsPresentation";
+import { t } from "../../lib/i18n";
+
+type SubagentWorkspaceKind = ReturnType<
+  typeof resolveSubagentMetadata
+>["workspace"][number]["kind"];
 
 type SubagentRowSubagent = Pick<
   OrchestrationV2Subagent,
@@ -73,7 +79,7 @@ export function SubagentRow(props: {
             </Text>
             {presentation.runsOn !== null ? (
               <Text numberOfLines={1} className="shrink text-xs text-foreground-muted">
-                on {presentation.runsOn}
+                {t("on {machine}", { machine: presentation.runsOn })}
               </Text>
             ) : null}
           </View>
@@ -97,6 +103,19 @@ export function SubagentRow(props: {
       </View>
     </View>
   );
+}
+
+function workspaceAccessibilityLabel(kind: SubagentWorkspaceKind, value: string) {
+  switch (kind) {
+    case "project":
+      return t("Project: {value}", { value });
+    case "branch":
+      return t("Branch: {value}", { value });
+    case "worktree":
+      return t("Worktree: {value}", { value });
+    case "workspace":
+      return t("Workspace: {value}", { value });
+  }
 }
 
 function SubagentMetadata(props: {
@@ -159,20 +178,22 @@ function SubagentMetadata(props: {
         />
       )}
       <Text className="min-w-0 shrink text-xs text-foreground-muted" numberOfLines={1}>
-        {provider ? `${resolveProviderInstanceDisplayName(provider)} · ` : ""}
+        {provider
+          ? t("{provider} · ", { provider: resolveProviderInstanceDisplayName(provider) })
+          : ""}
         {modelLabel}
       </Text>
-      {workspace.map(({ label, value }) => (
+      {workspace.map(({ kind, label, value }) => (
         // Preserve the label against flattening without making it a separate accessibility stop.
         <View
           key={label}
           collapsable={false}
-          accessibilityLabel={`${label}: ${value}`}
+          accessibilityLabel={workspaceAccessibilityLabel(kind, value)}
           className="min-w-0 shrink flex-row items-center gap-1.5"
         >
           <Text className="text-xs text-foreground-muted">·</Text>
           <SymbolView
-            name={label === "Branch" ? "arrow.triangle.branch" : "folder"}
+            name={kind === "branch" ? "arrow.triangle.branch" : "folder"}
             size={11}
             tintColorClassName="accent-icon-muted"
           />

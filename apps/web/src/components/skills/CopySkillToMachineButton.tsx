@@ -18,8 +18,9 @@ import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 import { toastManager } from "../ui/toast";
 
+import { msg, t, tn } from "~/i18n";
 const isProviderSkillError = Schema.is(ProviderSkillError);
-const COPY_FALLBACK = "The skill could not be copied.";
+const COPY_FALLBACK = msg("The skill could not be copied.");
 
 export interface CopySkillToMachineButtonProps {
   readonly sourceEnvironmentId: EnvironmentId;
@@ -38,7 +39,7 @@ export interface CopySkillToMachineButtonProps {
 
 /** Copies one skill's folder from the source machine to the target's personal skills folder. */
 export function CopySkillToMachineButton(props: CopySkillToMachineButtonProps) {
-  const label = `Copy to ${props.targetMachineLabel}`;
+  const label = t("Copy to {machine}", { machine: props.targetMachineLabel });
   const { environments } = useEnvironments();
   const providerEntries = useEnvironmentProviderEntries();
   const advertises = (environmentId: EnvironmentId) =>
@@ -71,19 +72,26 @@ export function CopySkillToMachineButton(props: CopySkillToMachineButtonProps) {
       input: { instanceId: props.sourceInstanceId, skillPath: props.skillPath },
     });
     if (exported._tag !== "Success") {
-      const description = failureMessage(exported, COPY_FALLBACK);
+      const description = failureMessage(exported, t(COPY_FALLBACK));
       const exportError = squashAtomCommandFailure(exported);
       if (isProviderSkillError(exportError) && exportError.reason === "linkedSkill") {
-        const source = props.sourceMachineLabel ?? "the source machine";
+        const source = props.sourceMachineLabel ?? t("the source machine");
         toastManager.add({
           type: "error",
-          title: `${props.skillName} is managed by a repository`,
-          description: `On ${source} it lives in ${exportError.linkTarget ?? "a linked folder"}. Pull that repository on ${props.targetMachineLabel} to get it; for agent-config, its check --fix also links missing skills.`,
+          title: t("{skill} is managed by a repository", { skill: props.skillName }),
+          description: t(
+            "On {source} it lives in {location}. Pull that repository on {target} to get it; for agent-config, its check --fix also links missing skills.",
+            {
+              source,
+              location: exportError.linkTarget ?? t("a linked folder"),
+              target: props.targetMachineLabel,
+            },
+          ),
         });
       } else if (description !== null) {
         toastManager.add({
           type: "error",
-          title: `Could not read ${props.skillName}`,
+          title: t("Could not read {skill}", { skill: props.skillName }),
           description,
         });
       }
@@ -102,23 +110,38 @@ export function CopySkillToMachineButton(props: CopySkillToMachineButtonProps) {
     if (installed._tag === "Success") {
       toastManager.add({
         type: "success",
-        title: `Copied ${props.skillName} to ${props.targetMachineLabel}`,
+        title: t("Copied {skill} to {machine}", {
+          skill: props.skillName,
+          machine: props.targetMachineLabel,
+        }),
         ...(skippedLinks > 0
           ? {
-              description: `${skippedLinks} ${skippedLinks === 1 ? "link" : "links"} pointing outside the skill ${skippedLinks === 1 ? "was" : "were"} left out.`,
+              description: tn(
+                skippedLinks,
+                "{count} link pointing outside the skill was left out.",
+                "{count} links pointing outside the skill were left out.",
+              ),
             }
           : {}),
       });
       return;
     }
-    const description = failureMessage(installed, COPY_FALLBACK);
+    const description = failureMessage(installed, t(COPY_FALLBACK));
     if (description === null) return;
     const error = squashAtomCommandFailure(installed);
     if (isProviderSkillError(error) && error.reason === "linkedSkill") {
       toastManager.add({
         type: "error",
-        title: `Nothing was written on ${props.targetMachineLabel}`,
-        description: `Its skills there are a link or live in a git repository${error.linkTarget ? ` (${error.linkTarget})` : ""}. Add ${props.skillName} through that repository, such as by pulling agent-config.`,
+        title: t("Nothing was written on {machine}", { machine: props.targetMachineLabel }),
+        description: error.linkTarget
+          ? t(
+              "Its skills there are a link or live in a git repository ({target}). Add {skill} through that repository, such as by pulling agent-config.",
+              { target: error.linkTarget, skill: props.skillName },
+            )
+          : t(
+              "Its skills there are a link or live in a git repository. Add {skill} through that repository, such as by pulling agent-config.",
+              { skill: props.skillName },
+            ),
       });
       return;
     }
@@ -126,13 +149,16 @@ export function CopySkillToMachineButton(props: CopySkillToMachineButtonProps) {
     toastManager.add({
       type: "error",
       title: exists
-        ? `${props.skillName} already exists on ${props.targetMachineLabel}`
-        : `Could not copy ${props.skillName}`,
-      description: exists ? "Replace it with this version?" : description,
+        ? t("{skill} already exists on {machine}", {
+            skill: props.skillName,
+            machine: props.targetMachineLabel,
+          })
+        : t("Could not copy {skill}", { skill: props.skillName }),
+      description: exists ? t("Replace it with this version?") : description,
       ...(exists
         ? {
             timeout: 0,
-            actionProps: { children: "Replace", onClick: () => copy(true) },
+            actionProps: { children: t("Replace"), onClick: () => copy(true) },
           }
         : {}),
     });
@@ -146,7 +172,11 @@ export function CopySkillToMachineButton(props: CopySkillToMachineButtonProps) {
       size="xs"
       variant="outline"
       disabled={!canInstall || pending}
-      title={canInstall ? undefined : `You can't change skills on ${props.targetMachineLabel}.`}
+      title={
+        canInstall
+          ? undefined
+          : t("You can't change skills on {machine}.", { machine: props.targetMachineLabel })
+      }
       onClick={() => copy(false)}
     >
       {pending ? <Spinner size="sm" tone="muted" /> : <CopyIcon />}

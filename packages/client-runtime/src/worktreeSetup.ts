@@ -1,4 +1,5 @@
-import type { WorktreeSetupSnapshot } from "@t3tools/contracts";
+import type { WorktreeSetupSnapshot, WorktreeSetupStageId } from "@t3tools/contracts";
+import { t } from "@t3tools/shared/i18n";
 
 export function resolveVisibleWorktreeSetup(input: {
   live: WorktreeSetupSnapshot | null;
@@ -20,4 +21,19 @@ export function resolveVisibleWorktreeSetup(input: {
 
 export function worktreeSetupAgentStarted(snapshot: WorktreeSetupSnapshot): boolean {
   return snapshot.stages.some((stage) => stage.id === "agent" && stage.status === "done");
+}
+
+export function worktreeSetupStageLabel(id: WorktreeSetupStageId): string {
+  switch (id) {
+    case "fetch":
+      return t("Fetch base branch");
+    case "checkout":
+      return t("Check out files");
+    case "submodules":
+      return t("Init submodules");
+    case "setup-script":
+      return t("Run setup script");
+    case "agent":
+      return t("Start agent");
+  }
 }

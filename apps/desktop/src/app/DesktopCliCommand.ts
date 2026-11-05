@@ -1,3 +1,4 @@
+import { t } from "@t3tools/shared/i18n";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- FileSystem.access has no execute check.
 import * as NodeFSP from "node:fs/promises";
 
@@ -206,7 +207,8 @@ export const make = Effect.gen(function* () {
     Effect.provideService(FileSystem.FileSystem, fs),
     Effect.flatMap(
       Option.match({
-        onNone: () => Effect.fail(fail(`Could not set up the t3 launcher at ${launcher}.`)),
+        onNone: () =>
+          Effect.fail(fail(t("Could not set up the t3 launcher at {launcher}.", { launcher }))),
         onSome: () => Effect.void,
       }),
     ),
@@ -231,12 +233,17 @@ export const make = Effect.gen(function* () {
       if (Option.getOrUndefined(target) === launcher) return yield* state;
       yield* fs
         .remove(existing.value)
-        .pipe(Effect.mapError(() => fail(`Could not replace ${existing.value}.`)));
+        .pipe(
+          Effect.mapError(() => fail(t("Could not replace {path}.", { path: existing.value }))),
+        );
     }
     const shadowedBy = yield* foreignFirstOnPath;
     if (Option.isSome(shadowedBy)) {
       return yield* fail(
-        `Another t3 at ${shadowedBy.value} runs first in a new terminal. Remove it, or run the launcher directly at ${launcher}.`,
+        t(
+          "Another t3 at {path} runs first in a new terminal. Remove it, or run the launcher directly at {launcher}.",
+          { path: shadowedBy.value, launcher },
+        ),
       );
     }
     const onPath = pathEntries(process.env.PATH, ":");
@@ -260,7 +267,10 @@ export const make = Effect.gen(function* () {
       if (linked) return yield* state;
     }
     return yield* fail(
-      `Another t3 command is already installed, or no folder on your PATH is writable. Run the launcher directly at ${launcher}.`,
+      t(
+        "Another t3 command is already installed, or no folder on your PATH is writable. Run the launcher directly at {launcher}.",
+        { launcher },
+      ),
     );
   }).pipe(Effect.withSpan("desktop.cliCommand.install"));
 

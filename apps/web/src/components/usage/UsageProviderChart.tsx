@@ -14,6 +14,7 @@ import {
 import { cn } from "~/lib/utils";
 import { PROVIDER_ORDER, PROVIDER_PRESENTATION } from "./usageProviders";
 import { observeResize } from "~/lib/observeResize";
+import { t } from "~/i18n";
 
 const VIEW_WIDTH = 960;
 const VIEW_HEIGHT = 260;
@@ -317,7 +318,7 @@ function UsageChartTooltip({
         );
       })}
       <div className="mt-1 flex items-center justify-between gap-3 border-t border-border pt-1">
-        <span className="text-muted-foreground">Total</span>
+        <span className="text-muted-foreground">{t("Total")}</span>
         <span className={cn("tabular-nums", partial ? "text-muted-foreground" : "text-foreground")}>
           {format(column?.total ?? 0)}
         </span>
@@ -530,7 +531,15 @@ export function UsageProviderChart({
           loadingProviders={loadingProviders}
           format={format}
           formatTooltipPeriod={formatTooltipPeriod}
-          ariaLabel={`${resolution === "hour" ? "Hourly" : "Daily"} ${metric === "tokens" ? "processed tokens" : "cost"} by provider`}
+          ariaLabel={
+            resolution === "hour"
+              ? metric === "tokens"
+                ? t("Hourly processed tokens by provider")
+                : t("Hourly cost by provider")
+              : metric === "tokens"
+                ? t("Daily processed tokens by provider")
+                : t("Daily cost by provider")
+          }
         >
           {scale.ticks.map((tick) => {
             const y = toY(tick);

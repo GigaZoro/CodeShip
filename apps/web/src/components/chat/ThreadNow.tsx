@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { threadSyncLabel, type ThreadSyncPhase } from "../../threadSync";
 import { cn } from "~/lib/utils";
 import { NoticeText } from "./ComposerBannerStack";
+import { t } from "~/i18n";
 
 /** A line of thread state for the end of the timeline. */
 export interface ThreadNowItem {
@@ -46,7 +47,9 @@ function ThreadNowLine({
           reachable; when it is cut, its details button shows all of it. */}
       <NoticeText
         detailsLabel={
-          typeof item.title === "string" ? `Show details: ${item.title}` : "Show details"
+          typeof item.title === "string"
+            ? t("Show details: {title}", { title: item.title })
+            : t("Show details")
         }
         className="min-w-0 truncate"
       >

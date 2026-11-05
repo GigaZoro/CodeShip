@@ -44,6 +44,7 @@ import {
 import { resolveCloudPublicConfig } from "../cloud/publicConfig";
 import { supportsAgentAwarenessPush } from "./capabilities";
 import { makeRelayDeviceRegistrationRequest, resolveApsEnvironment } from "./registrationPayload";
+import { t } from "../../lib/i18n";
 
 const REMOTE_ACTIVITY_REGISTRATION_RETRY_MS = 15_000;
 
@@ -457,7 +458,7 @@ function armAgentAwarenessLiveActivityForLocalWorkNow(input: {
     const activity = startAgentLiveActivity(
       {
         title: "T3.CodeShip",
-        subtitle: "Agent work in progress",
+        subtitle: t("Agent work in progress"),
         activeCount: 1,
         updatedAt: nowIso,
         activities: [
@@ -468,7 +469,7 @@ function armAgentAwarenessLiveActivityForLocalWorkNow(input: {
             threadTitle: input.threadTitle,
             modelTitle: "",
             phase: "starting",
-            status: "Connecting",
+            status: t("Connecting"),
             updatedAt: nowIso,
             deepLink: "/",
           },
@@ -668,6 +669,7 @@ const registerDevice = Effect.fn("remoteRegistration.registerDevice")(function* 
       deviceId,
       label:
         Constants.deviceName?.trim() ||
+        // oxlint-disable-next-line t3code/no-untranslated-text -- client name sent to the server
         (Platform.OS === "android" ? "Android device" : "iOS device"),
       ...(Platform.OS === "android"
         ? { platform: "android" as const, androidApiLevel: Number(Platform.Version) }

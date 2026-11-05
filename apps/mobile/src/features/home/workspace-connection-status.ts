@@ -1,4 +1,5 @@
 import type { WorkspaceState } from "../../state/workspaceModel";
+import { t, tn } from "../../lib/i18n";
 
 export interface WorkspaceConnectionStatusPresentation {
   readonly label: string;
@@ -17,21 +18,25 @@ function shouldShowWorkspaceConnectionStatus(state: WorkspaceState): boolean {
 }
 
 function workspaceConnectionStatusLabel(state: WorkspaceState): string {
-  if (state.networkStatus === "offline") return "You are offline";
+  if (state.networkStatus === "offline") return t("You are offline");
   if (state.hasReadyEnvironment && state.hasSyncingConnectedEnvironment) {
-    return state.hasLoadedShellSnapshot ? "Syncing threads..." : "Loading threads...";
+    return state.hasLoadedShellSnapshot ? t("Syncing threads...") : t("Loading threads...");
   }
   if (state.connectingEnvironments.length === 1) {
-    return `Reconnecting to ${state.connectingEnvironments[0]!.environmentLabel}`;
+    return t("Reconnecting to {name}", { name: state.connectingEnvironments[0]!.environmentLabel });
   }
   if (state.connectingEnvironments.length > 1) {
-    return `Reconnecting ${state.connectingEnvironments.length} environments`;
+    return tn(
+      state.connectingEnvironments.length,
+      "Reconnecting {count} environment",
+      "Reconnecting {count} environments",
+    );
   }
   if (state.connectionError !== null) return state.connectionError;
   if (state.hasPendingShellSnapshot) {
-    return state.hasLoadedShellSnapshot ? "Syncing threads..." : "Loading threads...";
+    return state.hasLoadedShellSnapshot ? t("Syncing threads...") : t("Loading threads...");
   }
-  return "Not connected";
+  return t("Not connected");
 }
 
 export function workspaceConnectionStatusPresentation(

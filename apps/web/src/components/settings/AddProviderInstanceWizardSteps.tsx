@@ -1,3 +1,4 @@
+import { t, type Message } from "~/i18n";
 import { WizardSteps } from "../ui/wizard";
 import {
   ADD_PROVIDER_WIZARD_STEPS,
@@ -9,7 +10,7 @@ interface AddProviderInstanceWizardStepsProps {
   readonly currentStep: number;
   readonly summaries: readonly (string | null)[];
   readonly instanceIdError: string | null;
-  readonly steps?: readonly string[];
+  readonly steps?: readonly Message[];
   readonly identityStep?: number;
   readonly prerequisite?: {
     readonly step: number;
@@ -31,7 +32,7 @@ export function AddProviderInstanceWizardSteps({
 }: AddProviderInstanceWizardStepsProps) {
   return (
     <WizardSteps
-      steps={steps}
+      steps={steps.map((step) => t(step))}
       currentStep={currentStep}
       summaries={summaries}
       isStepDisabled={() => disabled}

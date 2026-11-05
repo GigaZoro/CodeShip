@@ -2,6 +2,7 @@ import type { RepositoryIdentity } from "@t3tools/contracts";
 import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
 
 import { sourceControlClients, type ChangeRequestTerminology } from "./sourceControlClients.ts";
+import { t } from "@t3tools/shared/i18n";
 
 const PULL_REQUEST_NUMBER_PATTERN = /^#?(\d+)$/;
 
@@ -84,7 +85,12 @@ export function resolveLinkPullRequestInput(input: {
   const url = sourceControlClients.parseChangeRequestUrl(parsed)?.link;
   if (url !== undefined) {
     if (!input.hasProject({ ...url, url: parsed })) {
-      return { error: `No project in this environment can read ${url.host}/${url.repository}.` };
+      return {
+        error: t("No project in this environment can read {host}/{repository}.", {
+          host: url.host,
+          repository: url.repository,
+        }),
+      };
     }
     return {
       link: {
@@ -99,8 +105,9 @@ export function resolveLinkPullRequestInput(input: {
   if (!Number.isSafeInteger(number) || number < 1) return null;
   if (input.project === null) {
     return {
-      error:
+      error: t(
         "Paste the full pull request URL; this thread has no repository to resolve the number against.",
+      ),
     };
   }
   const webUrl = input.project.webUrl(number);
@@ -108,7 +115,9 @@ export function resolveLinkPullRequestInput(input: {
     webUrl === null ? undefined : sourceControlClients.parseChangeRequestUrl(webUrl)?.link;
   if (webUrl === null || webReference === undefined) {
     return {
-      error: `Paste a full URL; this project's host has no known ${input.project.terminology.singular} URL.`,
+      error: t("Paste a full URL; this project's host has no known {singular} URL.", {
+        singular: input.project.terminology.singular,
+      }),
     };
   }
   return {

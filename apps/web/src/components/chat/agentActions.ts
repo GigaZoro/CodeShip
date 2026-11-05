@@ -4,12 +4,13 @@ import { MessageSquareTextIcon, ScanSearchIcon, TestTubeDiagonalIcon } from "luc
 import { create } from "zustand";
 
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
+import { msg, t } from "~/i18n";
 
 // The agent reads these as the user's own message, so they say what done looks like.
 const AGENT_ACTIONS = [
   {
     id: "ship",
-    label: "Commit & open PR",
+    label: msg("Commit & open PR"),
     icon: PullRequestGlyph.pullRequest,
     needsGit: true,
     needsChanges: true,
@@ -19,7 +20,7 @@ const AGENT_ACTIONS = [
   },
   {
     id: "test",
-    label: "Run tests",
+    label: msg("Run tests"),
     icon: TestTubeDiagonalIcon,
     needsGit: false,
     needsChanges: false,
@@ -28,7 +29,7 @@ const AGENT_ACTIONS = [
   },
   {
     id: "review",
-    label: "Review changes",
+    label: msg("Review changes"),
     icon: ScanSearchIcon,
     needsGit: false,
     needsChanges: true,
@@ -66,6 +67,7 @@ export function availableAgentActions(
       (action) => (isGitRepo || !action.needsGit) && (hasChanges !== false || !action.needsChanges),
     ).map((action) => ({
       ...action,
+      label: t(action.label),
       preview: action.prompt,
     })),
     ...custom.map((action) => ({

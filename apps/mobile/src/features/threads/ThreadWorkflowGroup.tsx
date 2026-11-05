@@ -33,6 +33,7 @@ import {
   type WorkflowRailTone,
 } from "./threadAgentsPresentation";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
+import { msg, t } from "../../lib/i18n";
 
 const RAIL_ICON = {
   working: "circle.inset.filled",
@@ -41,6 +42,14 @@ const RAIL_ICON = {
   stopped: "circle",
   queued: "circle.dashed",
 } as const satisfies Record<WorkflowRailTone, AppSymbolName>;
+
+const RAIL_TONE_LABEL = {
+  working: msg("working"),
+  completed: msg("completed"),
+  failed: msg("failed"),
+  stopped: msg("stopped"),
+  queued: msg("queued"),
+} as const satisfies Record<WorkflowRailTone, string>;
 
 export function ThreadWorkflowGroup(props: {
   readonly environmentId: EnvironmentId;
@@ -64,8 +73,8 @@ export function ThreadWorkflowGroup(props: {
         <View className="flex-row items-center">
           <RowPressable
             accessibilityRole="button"
-            accessibilityLabel={`${label} workflow, ${statusLabel}`}
-            accessibilityHint={open ? "Collapses the workflow" : "Opens the current phase"}
+            accessibilityLabel={t("{label} workflow, {status}", { label, status: statusLabel })}
+            accessibilityHint={open ? t("Collapses the workflow") : t("Opens the current phase")}
             accessibilityState={{ expanded: open !== undefined }}
             disabled={rail.length === 0}
             onPress={() => setSelected(nextWorkflowSelection(rail, selected))}
@@ -109,7 +118,18 @@ export function ThreadWorkflowGroup(props: {
                   icon={RAIL_ICON[item.tone]}
                   label={count ? `${count} ${item.title}` : item.title}
                   selected={item.key === selected}
-                  accessibilityLabel={`${item.title} phase, ${item.tone}${count ? `, ${count} completed` : ""}`}
+                  accessibilityLabel={
+                    count
+                      ? t("{title} phase, {tone}, {count} completed", {
+                          title: item.title,
+                          tone: t(RAIL_TONE_LABEL[item.tone]),
+                          count,
+                        })
+                      : t("{title} phase, {tone}", {
+                          title: item.title,
+                          tone: t(RAIL_TONE_LABEL[item.tone]),
+                        })
+                  }
                   onPress={() => setSelected(nextWorkflowSelection(rail, selected, item.key))}
                 />
               );
@@ -121,7 +141,7 @@ export function ThreadWorkflowGroup(props: {
             textRole="footnote"
             className="border-t border-border-subtle px-4 py-3 text-foreground-muted"
           >
-            No agents yet
+            {t("No agents yet")}
           </Text>
         ) : (
           open.members.map((member) => (
@@ -171,7 +191,9 @@ function WorkflowMemberRow(props: {
         ...(metadata.speed === null ? [] : [metadata.speed]),
         ...(error === null ? [] : [error]),
       ].join(", ")}
-      accessibilityHint={canOpen ? "Opens this agent's thread" : "Its thread is not available yet"}
+      accessibilityHint={
+        canOpen ? t("Opens this agent's thread") : t("Its thread is not available yet")
+      }
       disabled={!canOpen}
       onPress={() => threadId !== null && props.onOpen(threadId)}
       className="min-h-11 flex-row gap-3 border-t border-border-subtle px-4 py-3 active:opacity-70"

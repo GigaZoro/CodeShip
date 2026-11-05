@@ -33,6 +33,7 @@ import {
   waitForComposerDraftsLoaded,
 } from "../state/use-composer-drafts";
 import { loadLocalAttachmentPreview } from "./localAttachmentPreview";
+import { t } from "./i18n";
 
 export interface NativeContextClipboard {
   readonly text: string;
@@ -56,7 +57,7 @@ export function writeComposerContextClipboard(
   const encoded = encodeComposerContextFragment(fragment);
   if (!encoded)
     return Promise.reject(
-      new Error("This context selection is too large to copy. Select fewer items."),
+      new Error(t("This context selection is too large to copy. Select fewer items.")),
     );
   return nativeClipboard().writeContextClipboard(text, encoded);
 }
@@ -87,7 +88,7 @@ export async function importComposerContextClipboard(
   const skippedIds = new Set(skippedThreads.map((record) => record.contextId));
   const retained = imported.context.records.filter((record) => !skippedIds.has(record.contextId));
   if (existingContextCount + retained.length > COMPOSER_CONTEXT_MAX_RECORDS)
-    throw new Error("Remove some context items from the draft before pasting more.");
+    throw new Error(t("Remove some context items from the draft before pasting more."));
   const attachments: DraftComposerAttachment[] = [];
   const records: ComposerContextRecord[] = [];
   const failures: string[] = [];

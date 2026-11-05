@@ -14,6 +14,7 @@ import {
   type ReviewRenderableLineRow,
 } from "./reviewModel";
 import type { ReviewInlineComment } from "./reviewCommentSelection";
+import { t } from "../../lib/i18n";
 
 const NATIVE_REVIEW_MAX_WORD_DIFF_RANGE_COUNT = 4;
 const NATIVE_REVIEW_MAX_WORD_DIFF_COVERAGE = 0.45;
@@ -21,7 +22,6 @@ const NATIVE_REVIEW_MAX_WORD_DIFF_COVERAGE = 0.45;
 const NATIVE_REVIEW_MAX_WORD_DIFF_COMPARISONS = 1_000;
 // Bound the rows serialized to the native heap before mapping and word matching.
 const NATIVE_REVIEW_MAX_FILE_ROWS = 100_000;
-const TRUNCATED_FILE_NOTICE = "This diff is too large to show in full.";
 const NATIVE_HEX_COLOR = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})([\da-f]{2})?$/i;
 const NATIVE_RGBA_COLOR =
   /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)$/;
@@ -252,12 +252,16 @@ function noticeRowsForFile(file: ReviewRenderableFile): ReadonlyArray<NativeRevi
   const previewState = getReviewFilePreviewState(file);
   if (previewState.kind === "suppressed" && previewState.reason === "non-text") {
     return [
-      createNoticeRow(file.id, "non-text", "Unsupported format. Diff contents are not available."),
+      createNoticeRow(
+        file.id,
+        "non-text",
+        t("Unsupported format. Diff contents are not available."),
+      ),
     ];
   }
 
   if (file.changeType === "rename-pure") {
-    return [createNoticeRow(file.id, "rename", "This file was renamed without modifications.")];
+    return [createNoticeRow(file.id, "rename", t("This file was renamed without modifications."))];
   }
 
   return [];
@@ -420,16 +424,16 @@ function prepareFileRows(file: ReviewRenderableFile): PreparedNativeReviewFileRo
   });
 
   if (sourceRows !== file.rows) {
-    rows.push(createNoticeRow(file.id, "truncated", TRUNCATED_FILE_NOTICE));
+    rows.push(createNoticeRow(file.id, "truncated", t("This diff is too large to show in full.")));
   }
   rows.push(...noticeRowsForFile(file));
   if (file.noEOFCRAdditions || file.noEOFCRDeletions) {
-    const side = file.noEOFCRAdditions
+    const notice = file.noEOFCRAdditions
       ? file.noEOFCRDeletions
-        ? "Old and new files have"
-        : "New file has"
-      : "Old file has";
-    rows.push(createNoticeRow(file.id, "eof", `${side} no newline at end of file.`));
+        ? t("Old and new files have no newline at end of file.")
+        : t("New file has no newline at end of file.")
+      : t("Old file has no newline at end of file.");
+    rows.push(createNoticeRow(file.id, "eof", notice));
   }
   const prepared: PreparedNativeReviewFileRows = {
     fileId: file.id,

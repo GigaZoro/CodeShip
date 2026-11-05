@@ -5,6 +5,7 @@ import { CircleAlertIcon } from "lucide-react";
 import type { EnvironmentUsageStatus } from "../../state/usage";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
+import { t } from "~/i18n";
 
 /**
  * Environments whose usage is missing or old, so a failed scan never reads as zero spend.
@@ -23,7 +24,15 @@ function usageGaps(
       return [
         {
           environment,
-          message: `${environment.label}: ${environment.error}${stale ? " Showing its last values." : ""}`,
+          message: stale
+            ? t("{environment}: {error} Showing its last values.", {
+                environment: environment.label,
+                error: environment.error,
+              })
+            : t("{environment}: {error}", {
+                environment: environment.label,
+                error: environment.error,
+              }),
           excluded: !stale,
           // Only a scan can be retried; a closed connection or missing access cannot.
           retryable: environment.canReadDiagnostics,
@@ -64,10 +73,10 @@ export function UsageGapsNotice({
       <CircleAlertIcon aria-hidden />
       <AlertTitle>
         {onlyExcluded === undefined
-          ? "Some totals may be out of date"
+          ? t("Some totals may be out of date")
           : excluded.length === 1
-            ? `Totals leave out ${onlyExcluded.environment.label}`
-            : `Totals leave out ${excluded.length} environments`}
+            ? t("Totals leave out {environment}", { environment: onlyExcluded.environment.label })
+            : t("Totals leave out {count} environments", { count: excluded.length })}
       </AlertTitle>
       <AlertDescription>
         <ul className="flex flex-col gap-1">
@@ -81,7 +90,7 @@ export function UsageGapsNotice({
       {gaps.some((gap) => gap.retryable) ? (
         <AlertAction>
           <Button size="xs" variant="outline" disabled={retrying} onClick={onRetry}>
-            Retry
+            {t("Retry")}
           </Button>
         </AlertAction>
       ) : null}

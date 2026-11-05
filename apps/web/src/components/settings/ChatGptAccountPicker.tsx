@@ -10,6 +10,7 @@ import {
   DialogFooter,
 } from "../ui/dialog";
 import { ChatGptConnectionButton } from "./ChatGptConnectionButton";
+import { t } from "~/i18n";
 
 export function ChatGptAccountPicker({
   open,
@@ -39,14 +40,14 @@ export function ChatGptAccountPicker({
     >
       <DialogPopup>
         <DialogHeader>
-          <DialogTitle>Reconnect ChatGPT</DialogTitle>
+          <DialogTitle>{t("Reconnect ChatGPT")}</DialogTitle>
           <DialogDescription>
-            On OpenAI, sign in with the account you choose here.
+            {t("On OpenAI, sign in with the account you choose here.")}
           </DialogDescription>
         </DialogHeader>
         <div className="px-6 pb-6">
           <RadioGroup
-            aria-label="ChatGPT account to connect"
+            aria-label={t("ChatGPT account to connect")}
             value={selectedMethodId}
             onValueChange={(value) => setSelection(value)}
           >
@@ -61,7 +62,7 @@ export function ChatGptAccountPicker({
             ))}
             <label className="flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-3 text-sm">
               <Radio value="chatgpt-change-account" />
-              <span className="font-medium">Use a different account</span>
+              <span className="font-medium">{t("Use a different account")}</span>
             </label>
           </RadioGroup>
         </div>

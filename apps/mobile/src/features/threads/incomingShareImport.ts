@@ -7,6 +7,7 @@ import type {
   IncomingShareDraft,
   selectIncomingShareAttachmentsForServer,
 } from "../sharing/incoming-share-model";
+import { t } from "../../lib/i18n";
 
 export type ShareImportPhase =
   | "idle"
@@ -210,10 +211,10 @@ export function makeIncomingShareImports(deps: ShareImportDeps) {
       if (stopped()) return;
       advance(entry, "reserved");
       const share = deps.getShare(shareId);
-      if (!share) throw new Error("The shared content is no longer in the inbox.");
+      if (!share) throw new Error(t("The shared content is no longer in the inbox."));
       const selected = deps.selectAttachments(share, destination.environmentId);
       if (selected.status === "pending") {
-        throw new Error("Server attachment support is still loading.");
+        throw new Error(t("Server attachment support is still loading."));
       }
       entry.needsRestore = true;
       let skippedAttachmentCount: number;

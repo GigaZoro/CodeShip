@@ -7,6 +7,7 @@ import {
   type EnvironmentId,
 } from "@t3tools/contracts";
 import type { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
+import { t, tn } from "@t3tools/shared/i18n";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import {
@@ -195,16 +196,16 @@ export function clampFileAttachmentUploadBytes(advertisedMaxUploadBytes: number)
 
 export function formatAttachmentSize(sizeBytes: number): string {
   return sizeBytes >= 1024 * 1024
-    ? `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
-    : `${Math.max(1, Math.ceil(sizeBytes / 1024))} KB`;
+    ? t("{size} MB", { size: (sizeBytes / (1024 * 1024)).toFixed(1) })
+    : t("{size} KB", { size: Math.max(1, Math.ceil(sizeBytes / 1024)) });
 }
 
 export function fileAttachmentTooLargeMessage(name: string, maxUploadBytes: number): string {
   const maxUploadSize =
     maxUploadBytes >= 1024 * 1024 && maxUploadBytes % (1024 * 1024) === 0
-      ? `${maxUploadBytes / (1024 * 1024)} MB`
+      ? t("{size} MB", { size: maxUploadBytes / (1024 * 1024) })
       : maxUploadBytes >= 1024 && maxUploadBytes % 1024 === 0
-        ? `${maxUploadBytes / 1024} KB`
-        : `${maxUploadBytes} ${maxUploadBytes === 1 ? "byte" : "bytes"}`;
-  return `'${name}' exceeds the ${maxUploadSize} attachment limit.`;
+        ? t("{size} KB", { size: maxUploadBytes / 1024 })
+        : tn(maxUploadBytes, "{count} byte", "{count} bytes");
+  return t("'{name}' exceeds the {size} attachment limit.", { name, size: maxUploadSize });
 }

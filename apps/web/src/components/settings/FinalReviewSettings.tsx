@@ -16,6 +16,7 @@ import { Textarea } from "../ui/textarea";
 import { SettingsModelSelectionControl } from "./DelegatedTaskModelSettings";
 import { searchableSetting } from "./settingsSearch";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
+import { t } from "~/i18n";
 
 export function FinalReviewSettings({
   environmentId,
@@ -40,11 +41,13 @@ export function FinalReviewSettings({
   return (
     <SettingsSection {...searchableSetting("final-review")}>
       <SettingsRow
-        title="Review new threads"
-        description="After a request you send changes files, each reviewer checks those changes as a read-only task, and the thread's agent fixes what it confirms. Reviews use turns on the reviewers' accounts. Turn it on or off for one thread from its menu."
+        title={t("Review new threads")}
+        description={t(
+          "After a request you send changes files, each reviewer checks those changes as a read-only task, and the thread's agent fixes what it confirms. Reviews use turns on the reviewers' accounts. Turn it on or off for one thread from its menu.",
+        )}
         control={
           <Switch
-            aria-label="Review new threads"
+            aria-label={t("Review new threads")}
             checked={settings.finalReviewByDefault}
             disabled={readOnly}
             onCheckedChange={(checked) => updateSettings({ finalReviewByDefault: checked })}
@@ -52,11 +55,13 @@ export function FinalReviewSettings({
         }
       />
       <SettingsRow
-        title="Reviewers"
+        title={t("Reviewers")}
         description={
           reviewers.length === 0
-            ? "Add at least one reviewer. Reviewers on different providers catch different issues."
-            : "Each reviews the same changes on its own."
+            ? t(
+                "Add at least one reviewer. Reviewers on different providers catch different issues.",
+              )
+            : t("Each reviews the same changes on its own.")
         }
         control={
           <Button
@@ -72,7 +77,7 @@ export function FinalReviewSettings({
             }}
           >
             <PlusIcon />
-            Add reviewer
+            {t("Add reviewer")}
           </Button>
         }
       />
@@ -81,7 +86,7 @@ export function FinalReviewSettings({
           // Reviewers have no id of their own, and the same model may be listed twice.
           // oxlint-disable-next-line react/no-array-index-key -- a reviewer is its position in the list
           key={index}
-          title={`Reviewer ${index + 1}`}
+          title={t("Reviewer {number}", { number: index + 1 })}
           control={
             <div className="flex min-w-0 items-center justify-end gap-1.5">
               <SettingsModelSelectionControl
@@ -89,7 +94,7 @@ export function FinalReviewSettings({
                 settings={settings}
                 providers={providers}
                 readOnly={readOnly}
-                label={`Reviewer ${index + 1} model`}
+                label={t("Reviewer {number} model", { number: index + 1 })}
                 selection={reviewer}
                 onChange={(next) =>
                   setReviewers(reviewers.map((current, at) => (at === index ? next : current)))
@@ -98,7 +103,7 @@ export function FinalReviewSettings({
               <Button
                 variant="ghost-muted"
                 size="icon-sm"
-                aria-label={`Remove reviewer ${index + 1}`}
+                aria-label={t("Remove reviewer {number}", { number: index + 1 })}
                 disabled={readOnly}
                 onClick={() => setReviewers(reviewers.filter((_, at) => at !== index))}
               >
@@ -109,17 +114,21 @@ export function FinalReviewSettings({
         />
       ))}
       <SettingsRow
-        title="Review instructions"
-        description="Added to every reviewer's brief, such as project rules, checklists, or the checks to run."
+        title={t("Review instructions")}
+        description={t(
+          "Added to every reviewer's brief, such as project rules, checklists, or the checks to run.",
+        )}
       >
         <div className="mt-3 max-w-2xl pb-3.5">
           <Textarea
             key={settings.finalReviewInstructions}
-            aria-label="Review instructions"
+            aria-label={t("Review instructions")}
             rows={4}
             disabled={readOnly}
             defaultValue={settings.finalReviewInstructions}
-            placeholder="Check tenant and permission boundaries. Run the focused tests for changed services."
+            placeholder={t(
+              "Check tenant and permission boundaries. Run the focused tests for changed services.",
+            )}
             onChange={() => {
               instructionsEdited.current = true;
             }}

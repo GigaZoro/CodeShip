@@ -10,6 +10,7 @@ import {
   THREAD_DETAILS_PANEL_ICON_CLASS,
   THREAD_DETAILS_PANEL_LABEL_CLASS,
 } from "./threadDetailsPanelStyles";
+import { t } from "~/i18n";
 
 /** One-click requests sent to the agent in this thread, for work the user would otherwise type. */
 export function ThreadAgentActionsPanel(props: {
@@ -25,7 +26,7 @@ export function ThreadAgentActionsPanel(props: {
   return (
     <ThreadDetailsSection
       headingId="thread-details-agent-actions-heading"
-      title="Ask the agent"
+      title={t("Ask the agent")}
       actions={
         <Tooltip>
           <TooltipTrigger
@@ -34,7 +35,7 @@ export function ThreadAgentActionsPanel(props: {
                 size="icon-xs"
                 variant="ghost"
                 part="icon"
-                aria-label="Edit your requests"
+                aria-label={t("Edit your requests")}
                 onClick={() =>
                   void navigate({
                     to: "/settings/appearance",
@@ -47,7 +48,7 @@ export function ThreadAgentActionsPanel(props: {
               </ThreadDetailsControl>
             }
           />
-          <TooltipPopup>Edit your requests</TooltipPopup>
+          <TooltipPopup>{t("Edit your requests")}</TooltipPopup>
         </Tooltip>
       }
     >
@@ -73,7 +74,7 @@ export function ThreadAgentActionsPanel(props: {
               <span className={THREAD_DETAILS_PANEL_LABEL_CLASS}>{action.label}</span>
             </TooltipTrigger>
             <TooltipPopup side="left" className="max-w-72">
-              {props.unavailableReason ?? `Sends: “${action.preview}”`}
+              {props.unavailableReason ?? t("Sends: “{preview}”", { preview: action.preview })}
             </TooltipPopup>
           </Tooltip>
         ))}

@@ -17,6 +17,7 @@ import type {
   FilePreviewSource,
   ResolvedFilePreviewSource,
 } from "./FilePreviewModal.types";
+import { t } from "../lib/i18n";
 
 export type {
   FilePreviewItem,
@@ -46,7 +47,7 @@ async function resolvePreviewItem(
   if ("attachment" in item) {
     const file = await loadLocalAttachmentPreview(item.attachment, signal).catch(
       (error: unknown) => {
-        throw new PreviewResolutionError(error, "Attach the file again and retry.");
+        throw new PreviewResolutionError(error, t("Attach the file again and retry."));
       },
     );
     return file && { source: { ...item, name, uri: file.uri }, dispose: file.dispose };
@@ -61,7 +62,7 @@ async function resolvePreviewItem(
     .catch((error: unknown) => {
       throw new PreviewResolutionError(
         error,
-        "Reconnect to this environment and try again. The file may have been moved or deleted.",
+        t("Reconnect to this environment and try again. The file may have been moved or deleted."),
       );
     });
   return { source: { ...item, name, uri: url + (item.srcFragment ?? "") } };
@@ -82,7 +83,7 @@ function ResolvedFilePreview(props: {
   );
   const onResolutionError = useEffectEvent((error: PreviewResolutionError) => {
     if (props.onOpenError) props.onOpenError(error.cause);
-    else Dialog.alert("Could not open preview", error.fallbackMessage);
+    else Dialog.alert(t("Could not open preview"), error.fallbackMessage);
     props.onRequestClose();
   });
   // Resolves once per presentation and holds local file leases until it closes.
@@ -97,7 +98,7 @@ function ResolvedFilePreview(props: {
       onResolutionError(
         error instanceof PreviewResolutionError
           ? error
-          : new PreviewResolutionError(error, "Try again."),
+          : new PreviewResolutionError(error, t("Try again.")),
       );
     };
     const resolving = Promise.allSettled(
@@ -126,12 +127,12 @@ function ResolvedFilePreview(props: {
   if (!gallery || !selected) return null;
   const onOpenError = (error: unknown) => {
     if (props.onOpenError) return props.onOpenError(error);
-    Dialog.alert("Could not open preview", nativeViewerErrorMessage(error), [
-      { text: "Cancel", style: "cancel" },
+    Dialog.alert(t("Could not open preview"), nativeViewerErrorMessage(error), [
+      { text: t("Cancel"), style: "cancel" },
       ...(selected.kind === "document"
         ? [
             {
-              text: "Save or share",
+              text: t("Save or share"),
               onPress: () => {
                 const input = {
                   attachment: {
@@ -143,7 +144,9 @@ function ResolvedFilePreview(props: {
                 const sharing = /^(file|content):/.test(selected.uri)
                   ? shareLocalAttachment({ ...input, uri: selected.uri })
                   : downloadAndShareAttachment({ ...input, url: selected.uri });
-                void sharing.catch(() => Dialog.alert("Could not share file", "Please try again."));
+                void sharing.catch(() =>
+                  Dialog.alert(t("Could not share file"), t("Please try again.")),
+                );
               },
             },
           ]

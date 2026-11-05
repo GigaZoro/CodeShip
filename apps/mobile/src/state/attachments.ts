@@ -10,6 +10,7 @@ import { AsyncResult } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { readEnvironmentScope } from "./session";
+import { t } from "../lib/i18n";
 
 function requireAttachmentWriteAccess<W extends { readonly environmentId: EnvironmentId }, A, E>(
   command: AtomCommand<W, A, E>,
@@ -21,7 +22,7 @@ function requireAttachmentWriteAccess<W extends { readonly environmentId: Enviro
         return AsyncResult.failure(
           Cause.fail(
             new EnvironmentAuthorizationError({
-              message: "This connection cannot change attachments.",
+              message: t("This connection cannot change attachments."),
               requiredScope: AuthOrchestrationOperateScope,
             }),
           ),

@@ -526,6 +526,10 @@
     "./provider-clients": {
       "types": "./src/providerClients.ts",
       "default": "./src/providerClients.ts"
+    },
+    "./i18n/catalogs": {
+      "types": "./src/i18n/catalogs.ts",
+      "default": "./src/i18n/catalogs.ts"
     }
   },
   "scripts": {

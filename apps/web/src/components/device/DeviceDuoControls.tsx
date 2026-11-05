@@ -9,6 +9,7 @@ import type { DeviceScreenSize } from "@t3tools/client-runtime/device/stream";
 import { DeviceDuoGlyph } from "./DeviceDuoGlyph";
 import { Button } from "~/components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
+import { msg, t } from "~/i18n";
 
 const FOLDS = [
   { id: "closed", angle: 0 },
@@ -16,8 +17,8 @@ const FOLDS = [
   { id: "open", angle: 180 },
 ] as const;
 const STANDS = [
-  { id: "laptop", label: "Laptop stand" },
-  { id: "tent", label: "Tent stand" },
+  { id: "laptop", label: msg("Laptop stand") },
+  { id: "tent", label: msg("Tent stand") },
 ] as const;
 
 export function DeviceDuoControls(props: {
@@ -36,9 +37,9 @@ export function DeviceDuoControls(props: {
   // correct display frame.
   const foldWaits = props.state.pending && (stand || props.state.requested?.control === "pose");
   const foldLabels = {
-    closed: "Closed",
-    half: phoneVertical ? "Book" : "Laptop",
-    open: "Open",
+    closed: t("Closed"),
+    half: phoneVertical ? t("Book") : t("Laptop"),
+    open: t("Open"),
   };
   const button = (
     key: string,
@@ -70,8 +71,8 @@ export function DeviceDuoControls(props: {
   const group =
     "pointer-events-auto flex shrink-0 flex-col items-center gap-1 rounded-full border border-border/50 bg-background/80 p-1 shadow-sm";
   return (
-    <div aria-label="iPhone Duo stands" className="flex flex-col items-center gap-2">
-      <div role="group" aria-label="Fold shape" className={group}>
+    <div aria-label={t("iPhone Duo stands")} className="flex flex-col items-center gap-2">
+      <div role="group" aria-label={t("Fold shape")} className={group}>
         {FOLDS.map(({ id, angle: value }) =>
           button(
             id,
@@ -90,11 +91,11 @@ export function DeviceDuoControls(props: {
           ),
         )}
       </div>
-      <div role="group" aria-label="Device stance" className={group}>
+      <div role="group" aria-label={t("Device stance")} className={group}>
         {STANDS.map(({ id, label }) =>
           button(
             id,
-            label,
+            t(label),
             screen.hingePose === id,
             () => {
               if (!stand) setStandVertical(settledVertical);
@@ -114,7 +115,7 @@ export function DeviceDuoControls(props: {
                 aria-label={props.state.error}
                 className="pointer-events-auto text-xs text-destructive"
               >
-                !
+                {"!"}
               </span>
             }
           />

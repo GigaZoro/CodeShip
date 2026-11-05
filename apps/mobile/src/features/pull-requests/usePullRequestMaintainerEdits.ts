@@ -11,6 +11,7 @@ import * as Dialog from "../../components/ui/Dialog";
 import { composerPullRequests } from "../../state/pull-requests";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { pullRequestTarget, type PullRequestParams } from "./usePullRequestDiff";
+import { t } from "../../lib/i18n";
 
 export function usePullRequestMaintainerEdits(
   params: PullRequestParams,
@@ -44,8 +45,8 @@ export function usePullRequestMaintainerEdits(
       setChoice(previousChoice);
       const cause = squashAtomCommandFailure(response);
       Dialog.alert(
-        "Could not save maintainer access",
-        cause instanceof Error ? cause.message : "Try again.",
+        t("Could not save maintainer access"),
+        cause instanceof Error ? cause.message : t("Try again."),
       );
       return;
     }
@@ -56,8 +57,10 @@ export function usePullRequestMaintainerEdits(
     value,
     saving,
     subtitle: saving
-      ? "Saving…"
-      : "Maintainers can push to this branch. If your fork has workflows, this can also give access to its secrets.",
+      ? t("Saving…")
+      : t(
+          "Maintainers can push to this branch. If your fork has workflows, this can also give access to its secrets.",
+        ),
     toggle: () => void save(!value),
   };
 }

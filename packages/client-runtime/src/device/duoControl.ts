@@ -1,5 +1,6 @@
 // @effect-diagnostics globalTimers:off - The stream owns this browser control queue and its timeout.
 import type { DeviceScreenSize } from "./stream.ts";
+import { t } from "@t3tools/shared/i18n";
 
 export type DuoPose = "closed" | "book" | "open" | "laptop" | "tent";
 export type DuoOrientation =
@@ -78,10 +79,10 @@ export function createDuoControl(options: {
     queued = null;
     const id = active.requestId;
     timer = setTimeout(() => {
-      if (active?.requestId === id) clear("Device control timed out. Its position is unknown.");
+      if (active?.requestId === id) clear(t("Device control timed out. Its position is unknown."));
     }, options.timeoutMs ?? 5_000);
     publish();
-    if (!options.send(active)) clear("Device is disconnected.");
+    if (!options.send(active)) clear(t("Device is disconnected."));
   };
   return {
     enqueue(command: DuoCommand) {
@@ -100,7 +101,7 @@ export function createDuoControl(options: {
       timer = null;
       active = null;
       if (!reply.ok) {
-        clear(reply.error ?? "Device control failed. Its position is unknown.");
+        clear(reply.error ?? t("Device control failed. Its position is unknown."));
         return;
       }
       if (queued) drain();

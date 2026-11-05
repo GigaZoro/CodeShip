@@ -1,3 +1,4 @@
+import { t } from "../../lib/i18n";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { useAdaptiveWorkspaceLayout } from "../layout/adaptive-workspace-context";
@@ -39,7 +40,7 @@ export function SettingsNavigationRouteScreen() {
   const ready = customizable && AsyncResult.isSuccess(preferences) && !preferences.waiting;
   const save = useAtomSet(updateMobilePreferencesAtom);
   return (
-    <SettingsScreen title="Navigation tabs">
+    <SettingsScreen title={t("Navigation tabs")}>
       <ScreenScrollView
         contentInsetAdjustmentBehavior="automatic"
         contentContainerClassName="gap-4 px-5 pt-4"
@@ -47,10 +48,14 @@ export function SettingsNavigationRouteScreen() {
       >
         <Text className="px-2 text-sm text-foreground-muted">
           {customizable
-            ? "Phones show the first four enabled sections; Android tablet rails show all enabled sections. Remaining sections appear at the top of Settings. Hidden sections appear only here. Settings always stays last. Saved on this device."
-            : "Tab customization becomes available when there are six sections, including Settings."}
+            ? t(
+                "Phones show the first four enabled sections; Android tablet rails show all enabled sections. Remaining sections appear at the top of Settings. Hidden sections appear only here. Settings always stays last. Saved on this device.",
+              )
+            : t(
+                "Tab customization becomes available when there are six sections, including Settings.",
+              )}
         </Text>
-        <SettingsSection title="Tab order">
+        <SettingsSection title={t("Tab order")}>
           {order.map((tab, index) => (
             <View key={tab} className="flex-row items-center gap-3 px-4 py-3">
               <SymbolView
@@ -59,18 +64,22 @@ export function SettingsNavigationRouteScreen() {
                 tintColorClassName="accent-icon"
               />
               <View className="flex-1">
-                <Text>{NAVIGATION_TAB_LABELS[tab]}</Text>
+                <Text>{t(NAVIGATION_TAB_LABELS[tab])}</Text>
                 <Text className="text-xs text-foreground-muted">
                   {hidden.includes(tab)
-                    ? "Hidden"
+                    ? t("Hidden")
                     : enabled.indexOf(tab) < capacity
-                      ? `Tab ${enabled.indexOf(tab) + 1}`
-                      : "In Settings"}
+                      ? t("Tab {number}", { number: enabled.indexOf(tab) + 1 })
+                      : t("In Settings")}
                 </Text>
               </View>
               <IconButton
                 icon={hidden.includes(tab) ? "eye.slash" : "eye"}
-                accessibilityLabel={`${hidden.includes(tab) ? "Show" : "Hide"} ${NAVIGATION_TAB_LABELS[tab]}`}
+                accessibilityLabel={
+                  hidden.includes(tab)
+                    ? t("Show {tab}", { tab: t(NAVIGATION_TAB_LABELS[tab]) })
+                    : t("Hide {tab}", { tab: t(NAVIGATION_TAB_LABELS[tab]) })
+                }
                 disabled={!ready}
                 onPress={() =>
                   save({
@@ -85,7 +94,7 @@ export function SettingsNavigationRouteScreen() {
               />
               <IconButton
                 icon="arrow.up"
-                accessibilityLabel={`Move ${NAVIGATION_TAB_LABELS[tab]} up`}
+                accessibilityLabel={t("Move {tab} up", { tab: t(NAVIGATION_TAB_LABELS[tab]) })}
                 disabled={!ready || index === 0}
                 onPress={() =>
                   save({
@@ -101,7 +110,7 @@ export function SettingsNavigationRouteScreen() {
               />
               <IconButton
                 icon="arrow.down"
-                accessibilityLabel={`Move ${NAVIGATION_TAB_LABELS[tab]} down`}
+                accessibilityLabel={t("Move {tab} down", { tab: t(NAVIGATION_TAB_LABELS[tab]) })}
                 disabled={!ready || index === order.length - 1}
                 onPress={() =>
                   save({
@@ -119,7 +128,7 @@ export function SettingsNavigationRouteScreen() {
           ))}
         </SettingsSection>
         <Button
-          label="Reset tabs"
+          label={t("Reset tabs")}
           tone="text"
           disabled={!ready}
           onPress={() => save({ navigationTabOrder: [], hiddenNavigationTabs: [] })}

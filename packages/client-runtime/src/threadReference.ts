@@ -9,6 +9,7 @@ import {
 } from "@t3tools/shared/composerContextReferences";
 
 import { resolveThreadCurrentPullRequestLink } from "./threadPullRequests.ts";
+import { t } from "@t3tools/shared/i18n";
 
 export interface ThreadReferenceCopyTarget {
   readonly kind: "pull-request" | "thread";
@@ -34,9 +35,9 @@ export function threadChipCopyTarget(
     value: formatComposerContextReference(record),
     description: record.title,
     fragment: { version: 1, source: { environmentId: threadRef.environmentId }, records: [record] },
-    clipboardTarget: "thread",
-    successTitle: "Thread copied",
-    failureTitle: "Failed to copy thread",
+    clipboardTarget: t("thread"),
+    successTitle: t("Thread copied"),
+    failureTitle: t("Failed to copy thread"),
   };
 }
 
@@ -58,9 +59,9 @@ export function resolveThreadReferenceCopyTarget(input: {
         kind: "pull-request",
         value: pullRequestUrl,
         description: pullRequestUrl,
-        clipboardTarget: "pull request link",
-        successTitle: "PR link copied",
-        failureTitle: "Failed to copy PR link",
+        clipboardTarget: t("pull request link"),
+        successTitle: t("PR link copied"),
+        failureTitle: t("Failed to copy PR link"),
       }
     : threadChipCopyTarget(input.threadRef, input.title);
 }

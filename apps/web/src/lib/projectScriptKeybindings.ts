@@ -4,9 +4,10 @@ import {
   type KeybindingRule,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
+import { msg, t } from "~/i18n";
 import * as Schema from "effect/Schema";
 
-export const PROJECT_SCRIPT_KEYBINDING_INVALID_MESSAGE = "Invalid keybinding.";
+export const PROJECT_SCRIPT_KEYBINDING_INVALID_MESSAGE = msg("Invalid keybinding.");
 
 const decodeKeybindingRule = Schema.decodeUnknownOption(KeybindingRuleSchema);
 
@@ -25,7 +26,7 @@ export function decodeProjectScriptKeybindingRule(input: {
   if (!normalizedKey) return null;
 
   if (input.command === null) {
-    throw new Error(PROJECT_SCRIPT_KEYBINDING_INVALID_MESSAGE);
+    throw new Error(t(PROJECT_SCRIPT_KEYBINDING_INVALID_MESSAGE));
   }
 
   const decoded = decodeKeybindingRule({
@@ -33,7 +34,7 @@ export function decodeProjectScriptKeybindingRule(input: {
     command: input.command,
   });
   if (decoded._tag === "None") {
-    throw new Error(PROJECT_SCRIPT_KEYBINDING_INVALID_MESSAGE);
+    throw new Error(t(PROJECT_SCRIPT_KEYBINDING_INVALID_MESSAGE));
   }
   return decoded.value;
 }

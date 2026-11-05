@@ -380,6 +380,7 @@ export const readChromiumLocalStorage = Effect.fn("desktop.chromiumLocalStorage.
   if (!/^MANIFEST-\d+$/.test(current)) {
     return yield* new ChromiumLocalStorageReadError({
       directory,
+      // oxlint-disable-next-line t3code/no-untranslated-text -- LevelDB parse error detail, only logged
       cause: new LevelDbFormatError({ detail: "bad CURRENT" }),
     });
   }
@@ -419,6 +420,7 @@ export const readChromiumLocalStorage = Effect.fn("desktop.chromiumLocalStorage.
   if (currentAfter !== current || Number(manifestAfter.size) !== manifest.length) {
     return yield* new ChromiumLocalStorageReadError({
       directory,
+      // oxlint-disable-next-line t3code/no-untranslated-text -- LevelDB parse error detail, only logged
       cause: new LevelDbFormatError({ detail: "database changed while reading" }),
     });
   }

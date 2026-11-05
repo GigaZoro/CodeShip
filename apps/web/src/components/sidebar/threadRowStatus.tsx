@@ -11,6 +11,7 @@ import {
 import { cn } from "~/lib/utils";
 import type { SidebarThreadStatus } from "../Sidebar.logic";
 
+import { t } from "~/i18n";
 const THREAD_ROW_STATUS_ICONS = {
   working: CircleDashedIcon,
   waiting: CircleDotDashedIcon,
@@ -48,33 +49,33 @@ export function resolveThreadRowStatus(input: {
   switch (input.status) {
     case "working":
       return {
-        label: input.goalActive ? "Goal" : "Working",
+        label: input.goalActive ? t("Goal") : t("Working"),
         icon: "working",
         className: "text-info-foreground",
       };
     case "waiting":
-      return { label: "Waiting", icon: "waiting", className: "text-muted-foreground" };
+      return { label: t("Waiting"), icon: "waiting", className: "text-muted-foreground" };
     case "approval":
-      return { label: "Approval", icon: "approval", className: "text-warning-foreground" };
+      return { label: t("Approval"), icon: "approval", className: "text-warning-foreground" };
     case "input":
       return {
-        label: "Input",
+        label: t("Input"),
         icon: "input",
         className: "text-indigo-600 dark:text-indigo-300",
       };
     case "request":
-      return { label: "Request", icon: "request", className: "text-guest-foreground" };
+      return { label: t("Request"), icon: "request", className: "text-guest-foreground" };
     case "limited":
-      return { label: "Limited", icon: "failed", className: "text-warning-foreground" };
+      return { label: t("Limited"), icon: "failed", className: "text-warning-foreground" };
     case "failed":
-      return { label: "Failed", icon: "failed", className: "text-error-foreground" };
+      return { label: t("Failed"), icon: "failed", className: "text-error-foreground" };
   }
   if (input.isWoke) {
-    return { label: "Woke", icon: "woke", className: "text-warning-foreground" };
+    return { label: t("Woke"), icon: "woke", className: "text-warning-foreground" };
   }
   if (input.isUnread) {
     return {
-      label: "Finished, not yet opened",
+      label: t("Finished, not yet opened"),
       className: "text-success-foreground",
       unseen: true,
     };

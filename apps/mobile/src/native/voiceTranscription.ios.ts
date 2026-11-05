@@ -8,6 +8,7 @@ import {
   type VoiceTranscriber,
   type VoiceTranscriptionOptions,
 } from "@t3tools/client-runtime/voice-input";
+import { t } from "../lib/i18n";
 
 function getDeviceLocale(): string {
   return Intl.DateTimeFormat().resolvedOptions().locale;
@@ -47,7 +48,7 @@ async function prepareVoiceTranscription(
   if (!AppleTranscription.isAvailable(locale)) {
     throw new VoiceTranscriptionError(
       "unavailable",
-      "Voice transcription requires a supported device with iOS 26 or later.",
+      t("Voice transcription requires a supported device with iOS 26 or later."),
     );
   }
 
@@ -63,14 +64,14 @@ async function prepareVoiceTranscription(
     if (getNativeErrorCode(error) === "AppleTranscriptionUnsupportedLocale") {
       throw new VoiceTranscriptionError(
         "unsupported-locale",
-        "Voice transcription does not support this device language.",
+        t("Voice transcription does not support this device language."),
         { cause: error },
       );
     }
 
     throw wrapError(
       "preparation-failed",
-      "Voice transcription could not prepare this language.",
+      t("Voice transcription could not prepare this language."),
       error,
     );
   }
@@ -93,6 +94,6 @@ async function transcribeVoiceRecording(
       .trim();
   } catch (error) {
     throwIfVoiceTranscriptionAborted(signal);
-    throw wrapError("transcription-failed", "Voice transcription failed.", error);
+    throw wrapError("transcription-failed", t("Voice transcription failed."), error);
   }
 }

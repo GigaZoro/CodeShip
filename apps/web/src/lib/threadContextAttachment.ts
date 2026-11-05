@@ -12,6 +12,7 @@ export function threadContextAttachment(
     "thread",
     `${environmentId}:${transcript.threadId}:${updatedAt}`,
   );
+  // oxlint-disable-next-line t3code/no-untranslated-text -- file name of an attachment sent to the agent
   const title = transcript.title.replace(/[^\p{L}\p{N}._ -]/gu, "_").slice(0, 64) || "Thread";
   return new File(
     [

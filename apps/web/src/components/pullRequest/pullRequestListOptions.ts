@@ -12,29 +12,30 @@ import {
   UserLockIcon,
 } from "lucide-react";
 
-import type { PullRequestFilterOption } from "./PullRequestListFilters";
+import type { PullRequestFilterOptionSource } from "./PullRequestListFilters";
 import type { PullRequestListSort } from "./pullRequestListPreferences";
 import { PullRequestGlyph } from "./pullRequestIcons";
+import { msg } from "~/i18n";
 
 export const INVOLVEMENT_TABS = [
-  { value: "all", label: "All", Icon: LayersIcon },
-  { value: "reviewing", label: "Reviewing", Icon: EyeIcon },
-  { value: "authored", label: "Authored", Icon: PenLineIcon },
-] as const satisfies ReadonlyArray<PullRequestFilterOption<PullRequestInvolvement>>;
+  { value: "all", label: msg("All"), Icon: LayersIcon },
+  { value: "reviewing", label: msg("Reviewing"), Icon: EyeIcon },
+  { value: "authored", label: msg("Authored"), Icon: PenLineIcon },
+] as const satisfies ReadonlyArray<PullRequestFilterOptionSource<PullRequestInvolvement>>;
 
 export const STATE_TABS = [
-  { value: "all", label: "All", Icon: LayersIcon },
-  { value: "open", label: "Open", Icon: PullRequestGlyph.pullRequest },
-  { value: "closed", label: "Closed", Icon: PullRequestGlyph.closed },
-  { value: "merged", label: "Merged", Icon: PullRequestGlyph.merged },
-] as const satisfies ReadonlyArray<PullRequestFilterOption<PullRequestListState>>;
+  { value: "all", label: msg("All"), Icon: LayersIcon },
+  { value: "open", label: msg("Open"), Icon: PullRequestGlyph.pullRequest },
+  { value: "closed", label: msg("Closed"), Icon: PullRequestGlyph.closed },
+  { value: "merged", label: msg("Merged"), Icon: PullRequestGlyph.merged },
+] as const satisfies ReadonlyArray<PullRequestFilterOptionSource<PullRequestListState>>;
 
 export const SORT_OPTIONS = [
-  { value: "ready", label: "Merge readiness", Icon: ListChecksIcon },
-  { value: "blocked", label: "Blocked on me", Icon: UserLockIcon },
-  { value: "updated", label: "Recently updated", Icon: ClockIcon },
-  { value: "newest", label: "Newest shown", Icon: CalendarArrowDownIcon },
-  { value: "oldest", label: "Oldest shown", Icon: CalendarArrowUpIcon },
-  { value: "largest", label: "Largest shown", Icon: Maximize2Icon },
-  { value: "smallest", label: "Smallest shown", Icon: Minimize2Icon },
-] as const satisfies ReadonlyArray<PullRequestFilterOption<PullRequestListSort>>;
+  { value: "ready", label: msg("Merge readiness"), Icon: ListChecksIcon },
+  { value: "blocked", label: msg("Blocked on me"), Icon: UserLockIcon },
+  { value: "updated", label: msg("Recently updated"), Icon: ClockIcon },
+  { value: "newest", label: msg("Newest shown"), Icon: CalendarArrowDownIcon },
+  { value: "oldest", label: msg("Oldest shown"), Icon: CalendarArrowUpIcon },
+  { value: "largest", label: msg("Largest shown"), Icon: Maximize2Icon },
+  { value: "smallest", label: msg("Smallest shown"), Icon: Minimize2Icon },
+] as const satisfies ReadonlyArray<PullRequestFilterOptionSource<PullRequestListSort>>;

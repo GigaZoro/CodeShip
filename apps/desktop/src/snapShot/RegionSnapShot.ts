@@ -1,5 +1,6 @@
 // @effect-diagnostics globalTimers:off -- Child-process deadlines run outside Effect fibers.
 // @effect-diagnostics nodeBuiltinImport:off -- This desktop-only helper owns a Node child process.
+import { t } from "@t3tools/shared/i18n";
 import * as NodeChildProcess from "node:child_process";
 
 import * as Electron from "electron";
@@ -77,7 +78,7 @@ export function startRegionSnapShotProcess(
     settled = true;
     ready.resolve();
     if (value) result.resolve(value);
-    else result.reject(error ?? new Error("Windows window capture failed."));
+    else result.reject(error ?? new Error(t("Windows window capture failed.")));
     child.kill();
   };
   child.onMessage((message) => {
@@ -105,7 +106,7 @@ export function startRegionSnapShotProcess(
     capture: async (region) => {
       if (settled) throw new Error("Windows window capture helper already used.");
       const timeout = setTimeout(
-        () => finish(new Error("Windows window capture timed out. Try again.")),
+        () => finish(new Error(t("Windows window capture timed out. Try again."))),
         CAPTURE_TIMEOUT_MS,
       );
       timeout.unref();
@@ -118,7 +119,7 @@ export function startRegionSnapShotProcess(
         clearTimeout(timeout);
       }
     },
-    close: () => finish(new Error("Windows window capture cancelled.")),
+    close: () => finish(new Error(t("Windows window capture cancelled."))),
   };
 }
 
@@ -152,7 +153,7 @@ export function makeRegionSnapShotPool(
     capture: async (region) => {
       if (closed) throw new Error("Windows window capture is unavailable.");
       if (inFlight?.alive) {
-        throw new Error("Windows window capture is still in progress. Try again.");
+        throw new Error(t("Windows window capture is still in progress. Try again."));
       }
       const current = standby?.alive ? standby : start(workerPath);
       standby = undefined;

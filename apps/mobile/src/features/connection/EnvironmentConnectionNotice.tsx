@@ -9,21 +9,22 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
+import { t } from "../../lib/i18n";
 
 function noticeTitle(phase: EnvironmentConnectionPhase, environmentLabel: string): string {
   switch (phase) {
     case "offline":
-      return "You are offline";
+      return t("You are offline");
     case "connecting":
-      return `Connecting to ${environmentLabel}...`;
+      return t("Connecting to {name}...", { name: environmentLabel });
     case "reconnecting":
-      return `Reconnecting to ${environmentLabel}...`;
+      return t("Reconnecting to {name}...", { name: environmentLabel });
     case "unsupported":
-      return "Client not supported";
+      return t("Client not supported");
     case "error":
-      return `${environmentLabel} is unavailable`;
+      return t("{name} is unavailable", { name: environmentLabel });
     case "available":
-      return `${environmentLabel} is disconnected`;
+      return t("{name} is disconnected", { name: environmentLabel });
     case "connected":
       return "";
   }
@@ -35,20 +36,29 @@ function noticeDetail(
   error: string | null,
 ): string {
   if (error) {
-    return phase === "reconnecting" ? `The app will keep retrying automatically. ${error}` : error;
+    return phase === "reconnecting"
+      ? t("The app will keep retrying automatically. {error}", { error })
+      : error;
   }
 
   switch (phase) {
     case "offline":
-      return `Cached data remains available. The ${resourceName} will load when your connection returns.`;
+      return t(
+        "Cached data remains available. The {resource} will load when your connection returns.",
+        {
+          resource: resourceName,
+        },
+      );
     case "connecting":
     case "reconnecting":
-      return `The ${resourceName} will load as soon as the environment is ready.`;
+      return t("The {resource} will load as soon as the environment is ready.", {
+        resource: resourceName,
+      });
     case "unsupported":
-      return "Use compatible versions of the app and server to connect.";
+      return t("Use compatible versions of the app and server to connect.");
     case "available":
     case "error":
-      return `Reconnect the environment to load the ${resourceName}.`;
+      return t("Reconnect the environment to load the {resource}.", { resource: resourceName });
     case "connected":
       return "";
   }
@@ -89,7 +99,7 @@ export function EnvironmentConnectionNotice(props: {
 
         {props.connection.phase !== "offline" && props.connection.phase !== "unsupported" ? (
           <View className="mt-1">
-            <Button label="Retry now" tone="secondary" onPress={props.onRetry} />
+            <Button label={t("Retry now")} tone="secondary" onPress={props.onRetry} />
           </View>
         ) : null}
       </View>

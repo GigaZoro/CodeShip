@@ -38,6 +38,7 @@ import {
   entryWithRoutes,
   type ReportedEndpoint,
 } from "./routes.ts";
+import { t } from "@t3tools/shared/i18n";
 
 const RETRY_BASE_DELAY_MS = 1_000;
 const RETRY_MAX_DELAY_MS = 300_000;
@@ -240,7 +241,7 @@ function failureFromExit<A>(
     failure: {
       error: new ConnectionTransientError({
         reason: "transport",
-        detail: `${target.label} connection failed unexpectedly.`,
+        detail: t("{label} connection failed unexpectedly.", { label: target.label }),
       }),
       attemptSpan: Option.none(),
     },
@@ -797,7 +798,9 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
           if (longResume) return true;
           return yield* new ConnectionTransientError({
             reason: "timeout",
-            detail: `${target.label} did not respond to a connection health check.`,
+            detail: t("{label} did not respond to a connection health check.", {
+              label: target.label,
+            }),
           });
         }
         if (probeEvent._tag === "ProbeCompleted") {

@@ -11,6 +11,7 @@ import {
   useHiddenNavigationTabs,
   useNavigationTabOrder,
 } from "./navigation-tabs";
+import { t } from "../../lib/i18n";
 
 export function WorkspaceDock(props: { readonly onNewTask: () => void }) {
   const workspace = useWorkspaceTabs()!;
@@ -36,7 +37,7 @@ export function WorkspaceDock(props: { readonly onNewTask: () => void }) {
               <Pressable
                 key={tab}
                 accessibilityRole="tab"
-                accessibilityLabel={NAVIGATION_TAB_LABELS[tab]}
+                accessibilityLabel={t(NAVIGATION_TAB_LABELS[tab])}
                 accessibilityState={{ selected }}
                 onPress={() => {
                   if (selected) return;
@@ -68,7 +69,7 @@ export function WorkspaceDock(props: { readonly onNewTask: () => void }) {
       >
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="New chat"
+          accessibilityLabel={t("New chat")}
           onPress={props.onNewTask}
           className="flex-1 items-center justify-center"
         >

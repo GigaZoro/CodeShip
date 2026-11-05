@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
@@ -59,8 +60,8 @@ function ThreadRenameDialog({ request }: { readonly request: RenameRequest }) {
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Failed to rename thread",
-          description: error instanceof Error ? error.message : "An error occurred.",
+          title: t("Failed to rename thread"),
+          description: error instanceof Error ? error.message : t("An error occurred."),
         }),
       );
     });
@@ -81,11 +82,11 @@ function ThreadRenameDialog({ request }: { readonly request: RenameRequest }) {
           }}
         >
           <DialogHeader>
-            <DialogTitle>Rename thread</DialogTitle>
+            <DialogTitle>{t("Rename thread")}</DialogTitle>
           </DialogHeader>
           <DialogPanel>
             <Input
-              aria-label="Thread title"
+              aria-label={t("Thread title")}
               autoFocus
               value={title}
               onChange={(event) => setTitle(event.target.value)}
@@ -94,10 +95,10 @@ function ThreadRenameDialog({ request }: { readonly request: RenameRequest }) {
           </DialogPanel>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={close}>
-              Cancel
+              {t("Cancel")}
             </Button>
             <Button type="submit" disabled={trimmed.length === 0}>
-              Rename
+              {t("Rename")}
             </Button>
           </DialogFooter>
         </form>

@@ -1,3 +1,4 @@
+import { msg, t } from "../../lib/i18n";
 import { useAtomValue } from "@effect/atom-react";
 import {
   isManagedDriverAllowed,
@@ -28,12 +29,12 @@ import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-en
 const MAX_SKILLS_SHOWN = 25;
 
 const MCP_STATUS_LABELS = {
-  connected: "Connected",
-  needsAuth: "Needs sign-in",
-  failed: "Failed",
-  starting: "Starting",
-  disabled: "Turned off",
-  notConfigured: "Not set up",
+  connected: msg("Connected"),
+  needsAuth: msg("Needs sign-in"),
+  failed: msg("Failed"),
+  starting: msg("Starting"),
+  disabled: msg("Turned off"),
+  notConfigured: msg("Not set up"),
 } as const satisfies Record<ProviderMcpServer["status"], string>;
 
 /** Read-only: what each agent on an environment can reach. Changes are made in web or desktop. */
@@ -44,7 +45,7 @@ export function SettingsCapabilitiesRouteScreen() {
   return (
     <>
       <SettingsEnvironmentFilterHeader />
-      <SettingsScreen title="Capabilities" trailing={<AndroidSettingsEnvironmentFilter />}>
+      <SettingsScreen title={t("Capabilities")} trailing={<AndroidSettingsEnvironmentFilter />}>
         <ScreenScrollView
           className="flex-1"
           contentInsetAdjustmentBehavior="automatic"
@@ -52,7 +53,7 @@ export function SettingsCapabilitiesRouteScreen() {
           contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
         >
           {selectedTargets.length === 0 ? (
-            <Text className="text-foreground-muted">Select a connected environment.</Text>
+            <Text className="text-foreground-muted">{t("Select a connected environment.")}</Text>
           ) : (
             selectedTargets.flatMap((environment) => {
               const providers = (
@@ -66,7 +67,9 @@ export function SettingsCapabilitiesRouteScreen() {
               return providers.length === 0
                 ? [
                     <SettingsSection key={environment.environmentId} title={environment.label}>
-                      <Text className="p-4 text-foreground-muted">No agents are available.</Text>
+                      <Text className="p-4 text-foreground-muted">
+                        {t("No agents are available.")}
+                      </Text>
                     </SettingsSection>,
                   ]
                 : providers.map((provider) => (
@@ -94,7 +97,9 @@ function ProviderCapabilities(props: {
   const [showAll, setShowAll] = useState(false);
   const visibleSkills = showAll ? skills : skills.slice(0, MAX_SKILLS_SHOWN);
   return (
-    <SettingsSection title={`${environment.label} · ${name}`}>
+    <SettingsSection
+      title={t("{environment} · {provider}", { environment: environment.label, provider: name })}
+    >
       {provider.supportsMcpServers ? (
         <McpServerRows
           environment={environment}
@@ -108,17 +113,17 @@ function ProviderCapabilities(props: {
           icon="sparkles"
           label={skillLabel(skill)}
           description={skill.shortDescription ?? skill.description}
-          detail="Skill"
+          detail={t("Skill")}
         />
       ))}
       {skills.length > MAX_SKILLS_SHOWN ? (
         <ListActionRow
-          label={showAll ? "Show fewer" : `Show all (${skills.length})`}
+          label={showAll ? t("Show fewer") : t("Show all ({count})", { count: skills.length })}
           onPress={() => setShowAll((value) => !value)}
         />
       ) : null}
       {!provider.supportsMcpServers && skills.length === 0 ? (
-        <Text className="p-4 text-foreground-muted">No servers or skills.</Text>
+        <Text className="p-4 text-foreground-muted">{t("No servers or skills.")}</Text>
       ) : null}
     </SettingsSection>
   );
@@ -141,11 +146,11 @@ function McpServerRows(props: {
         {servers.error}
       </Text>
     ) : (
-      <Text className="p-4 text-foreground-muted">Loading MCP servers…</Text>
+      <Text className="p-4 text-foreground-muted">{t("Loading MCP servers…")}</Text>
     );
   }
   if (servers.data.servers.length === 0 && !props.hasSkills) {
-    return <Text className="p-4 text-foreground-muted">No servers or skills.</Text>;
+    return <Text className="p-4 text-foreground-muted">{t("No servers or skills.")}</Text>;
   }
   return (
     <>
@@ -155,7 +160,7 @@ function McpServerRows(props: {
           icon="server.rack"
           label={server.displayName ?? server.name}
           description={server.message ?? server.plugin}
-          detail={MCP_STATUS_LABELS[server.status]}
+          detail={t(MCP_STATUS_LABELS[server.status])}
         />
       ))}
     </>

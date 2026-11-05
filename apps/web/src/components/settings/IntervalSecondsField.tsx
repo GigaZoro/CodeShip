@@ -7,6 +7,7 @@ import {
   NumberFieldInput,
 } from "../ui/number-field";
 import { normalizeIntervalSeconds } from "./SettingsPanels.logic";
+import { t } from "~/i18n";
 
 export function IntervalSecondsField({
   label,
@@ -66,11 +67,13 @@ export function IntervalSecondsField({
       }}
     >
       <NumberFieldGroup>
-        <NumberFieldDecrement aria-label={`Decrease ${label}`} />
+        <NumberFieldDecrement aria-label={t("Decrease {label}", { label })} />
         <NumberFieldInput
-          aria-label={`${label.charAt(0).toUpperCase()}${label.slice(1)} in seconds`}
+          aria-label={t("{label} in seconds", {
+            label: `${label.charAt(0).toUpperCase()}${label.slice(1)}`,
+          })}
         />
-        <NumberFieldIncrement aria-label={`Increase ${label}`} />
+        <NumberFieldIncrement aria-label={t("Increase {label}", { label })} />
       </NumberFieldGroup>
     </NumberField>
   );

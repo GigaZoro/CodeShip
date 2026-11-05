@@ -3,6 +3,7 @@ import { View, useWindowDimensions } from "react-native";
 import { withUniwind } from "uniwind";
 import { AndroidSheetHeader } from "../../components/ui/AndroidScreenHeader";
 import type { WorktreeSetupSheetProps } from "./worktree-setup-sheet";
+import { t } from "../../lib/i18n";
 
 const NativeBottomSheet = withUniwind(ModalBottomSheet, {
   containerColor: { fromClassName: "containerColorClassName", styleProperty: "accentColor" },
@@ -25,9 +26,9 @@ export function WorktreeSetupSheet({ children, height, onClose }: WorktreeSetupS
             }}
           >
             <AndroidSheetHeader
-              title="Worktree setup"
+              title={t("Worktree setup")}
               actions={[
-                { accessibilityLabel: "Close setup details", icon: "xmark", onPress: onClose },
+                { accessibilityLabel: t("Close setup details"), icon: "xmark", onPress: onClose },
               ]}
             />
             {children}

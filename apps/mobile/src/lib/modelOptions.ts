@@ -12,16 +12,17 @@ import type {
   ServerConfig as T3ServerConfig,
 } from "@t3tools/contracts";
 import {
-  disallowedProviderMessage,
   isManagedDriverAllowed,
   isProviderDriverKind,
   resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
+import { disallowedProviderMessage } from "@t3tools/shared/managedPolicyMessages";
 import {
   buildExplicitProviderOptionSelectionsFromDescriptors,
   getProviderOptionDescriptors,
 } from "@t3tools/shared/model";
 import { resolveModelShortName } from "@t3tools/client-runtime/provider-clients";
+import { t } from "./i18n";
 
 export type ModelOption = {
   readonly key: string;
@@ -209,18 +210,20 @@ export function describeUnavailableModelSelection(
       instanceId: selection.instanceId,
     });
     return {
-      title: "Provider not allowed",
-      detail: `${disallowedProviderMessage(config?.managedPolicy?.organization, label)} Choose another model.`,
+      title: t("Provider not allowed"),
+      detail: t("{message} Choose another model.", {
+        message: disallowedProviderMessage(config?.managedPolicy?.organization, label),
+      }),
     };
   }
   return isDisabledForProject(config, provider, selection.instanceId, projectId)
     ? {
-        title: "Model turned off for this project",
-        detail: "Turn it back on from web or desktop, or choose another model.",
+        title: t("Model turned off for this project"),
+        detail: t("Turn it back on from web or desktop, or choose another model."),
       }
     : {
-        title: "Model unavailable",
-        detail: "Set up its provider on the environment, or choose another model.",
+        title: t("Model unavailable"),
+        detail: t("Set up its provider on the environment, or choose another model."),
       };
 }
 

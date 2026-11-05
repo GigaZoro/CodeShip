@@ -16,17 +16,26 @@ import {
 import { filePreviewKind } from "@t3tools/shared/filePreview";
 import { imageMimeType } from "@t3tools/shared/image";
 import { videoMimeType } from "@t3tools/shared/video";
+import { t } from "@t3tools/shared/i18n";
 
 /** The working row while T3.CodeShip's own compaction runs. */
 export const IDLE_COMPACTING_LABELS = {
-  beforeCacheExpires: "Compacting before the cache expires…",
-  onReturn: "Compacting…",
+  get beforeCacheExpires() {
+    return t("Compacting before the cache expires…");
+  },
+  get onReturn() {
+    return t("Compacting…");
+  },
 } satisfies Record<OrchestrationV2IdleCompaction, string>;
 
 /** Leads the finished compaction's token counts, in place of "Context compacted". */
 export const IDLE_COMPACTION_TITLES = {
-  beforeCacheExpires: "Context automatically compacted before cache expiry",
-  onReturn: "Context compacted before sending",
+  get beforeCacheExpires() {
+    return t("Context automatically compacted before cache expiry");
+  },
+  get onReturn() {
+    return t("Context compacted before sending");
+  },
 } satisfies Record<OrchestrationV2IdleCompaction, string>;
 
 const LEGACY_AUTOMATION_PREFIX = /^\[Triggered by schedule task: [^\r\n]+\]\r?\n\r?\n/;

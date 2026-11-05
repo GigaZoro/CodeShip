@@ -1,4 +1,5 @@
 // @effect-diagnostics globalTimers:off -- Poll TCC only while the native permission helper is open.
+import { getActiveLanguage, t } from "@t3tools/shared/i18n";
 import * as Electron from "electron";
 import { MAC_PERMISSION_HELPER_CHANNEL } from "../ipc/channels.ts";
 
@@ -39,10 +40,10 @@ const escapeHtml = (value: string) =>
   });
 
 function helperHtml(permission: MacPermission, icon: string) {
-  const title = MAC_PERMISSION_TITLES[permission];
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+  const title = t(MAC_PERMISSION_TITLES[permission]);
+  return `<!doctype html><html lang="${getActiveLanguage()}"><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'">
-<title>Set up ${title}</title><style>
+<title>${t("Set up {title}", { title })}</title><style>
 :root { color-scheme: light dark; --base: #fff; --row: #e7e7e7; --text: #292929; --line: #e3e3e3; }
 @media (prefers-color-scheme: dark) { :root { --base: #242424; --row: #383838; --text: #f5f5f5; --line: #484848; } }
 * { box-sizing: border-box; }
@@ -58,9 +59,9 @@ button:focus-visible { outline: 2px solid #007aff; outline-offset: -2px; }
 #app:active { cursor: grabbing; }
 img { width: 32px; height: 32px; pointer-events: none; }
 </style></head><body><main id="panel">
-<button id="close" aria-label="Close permission helper">×</button>
-<header>↑ Drag T3.CodeShip into the list above</header>
-<button id="app" draggable="true" aria-label="Drag T3.CodeShip to System Settings, or click to reveal in Finder"><img src="${escapeHtml(icon)}" alt="" draggable="false">T3.CodeShip</button>
+<button id="close" aria-label="${t("Close permission helper")}">×</button>
+<header>${t("↑ Drag T3.CodeShip into the list above")}</header>
+<button id="app" draggable="true" aria-label="${t("Drag T3.CodeShip to System Settings, or click to reveal in Finder")}"><img src="${escapeHtml(icon)}" alt="" draggable="false">T3.CodeShip</button>
 </main></body></html>`;
 }
 
@@ -109,7 +110,7 @@ export class MacPermissionHelper {
       fullscreenable: false,
       alwaysOnTop: true,
       skipTaskbar: true,
-      title: `Set up ${MAC_PERMISSION_TITLES[permission]}`,
+      title: t("Set up {title}", { title: t(MAC_PERMISSION_TITLES[permission]) }),
       webPreferences: { preload, sandbox: true, contextIsolation: true, nodeIntegration: false },
     });
     this.window = window;

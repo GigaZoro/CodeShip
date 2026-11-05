@@ -5,6 +5,7 @@ import { View } from "react-native";
 import { AppText as Text } from "./ui/AppText";
 import { resolveMobileStageLabel } from "../lib/mobileBranding";
 import { CODESHIP_BRAND_MARK_SOURCE } from "./brandAssets";
+import { t } from "../lib/i18n";
 
 const appVariant = Constants.expoConfig?.extra?.appVariant;
 const DEFAULT_STAGE_LABEL = resolveMobileStageLabel(appVariant);
@@ -28,7 +29,7 @@ export function BrandMark(props: { readonly compact?: boolean; readonly stageLab
       <View className="min-w-0 shrink gap-1">
         <View className="flex-row items-center gap-2">
           <Text className="text-lg font-t3-bold tracking-[-0.4px] text-foreground">
-            T3.CodeShip
+            {"T3.CodeShip"}
           </Text>
           <View className="rounded-full bg-subtle px-2 py-1">
             <Text className="text-3xs font-t3-bold tracking-[1.1px] uppercase text-foreground-muted">
@@ -38,7 +39,7 @@ export function BrandMark(props: { readonly compact?: boolean; readonly stageLab
         </View>
         {!compact ? (
           <Text className="text-xs font-medium text-foreground-muted">
-            Your agents. Every machine.
+            {t("Your agents. Every machine.")}
           </Text>
         ) : null}
       </View>

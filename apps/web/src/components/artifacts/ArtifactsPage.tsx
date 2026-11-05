@@ -51,6 +51,7 @@ import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { type Artifact, artifactKey, useArtifacts } from "./artifactsState";
 import { useArtifactActions } from "./useArtifactActions";
 
+import { t } from "~/i18n";
 export interface ArtifactSelection {
   readonly environmentId: EnvironmentId;
   readonly attachmentId: string;
@@ -151,7 +152,11 @@ function ArtifactRow(props: {
         <Menu>
           <MenuTrigger
             render={
-              <Button size="icon-xs" variant="ghost" aria-label={`Actions for ${artifact.title}`} />
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                aria-label={t("Actions for {title}", { title: artifact.title })}
+              />
             }
           >
             <EllipsisIcon aria-hidden />
@@ -159,11 +164,11 @@ function ArtifactRow(props: {
           <MenuPopup align="end">
             <MenuItem onClick={props.onCopyLink}>
               <LinkIcon />
-              Copy link
+              {t("Copy link")}
             </MenuItem>
             <MenuItem variant="destructive" onClick={props.onDelete}>
               <Trash2Icon />
-              Delete…
+              {t("Delete…")}
             </MenuItem>
           </MenuPopup>
         </Menu>
@@ -187,7 +192,7 @@ function ArtifactPreview(props: {
       <div className="flex min-w-0 items-center gap-2 border-b px-4 py-2.5">
         {props.onBack ? (
           <Button
-            aria-label="Back to artifacts"
+            aria-label={t("Back to artifacts")}
             size="icon-sm"
             variant="ghost"
             onClick={props.onBack}
@@ -203,12 +208,12 @@ function ArtifactPreview(props: {
             <span className="shrink-0">
               <RelativeTime timestamp={artifact.publishedAt} />
             </span>
-            {artifact.archived ? <span className="shrink-0">· Archived thread</span> : null}
+            {artifact.archived ? <span className="shrink-0">{t("· Archived thread")}</span> : null}
           </p>
         </div>
         <Button size="sm" variant="outline" onClick={props.onCopyLink}>
           <LinkIcon />
-          Copy link
+          {t("Copy link")}
         </Button>
         <Button
           size="sm"
@@ -221,11 +226,11 @@ function ArtifactPreview(props: {
           }
         >
           <MessageSquareIcon />
-          Open thread
+          {t("Open thread")}
         </Button>
         <Button size="sm" variant="destructive-outline" onClick={props.onDelete}>
           <Trash2Icon />
-          Delete
+          {t("Delete")}
         </Button>
       </div>
       <ScrollArea className="min-h-0 flex-1">
@@ -284,7 +289,7 @@ export function ArtifactsPage(props: {
   const foldedQuery = query.trim().toLocaleLowerCase();
   const projects = new Map<string, string>();
   for (const artifact of artifacts)
-    projects.set(projectKey(artifact), artifact.projectTitle || "Untitled project");
+    projects.set(projectKey(artifact), artifact.projectTitle || t("Untitled project"));
   // A project whose pages all went away would otherwise leave the list empty with no way out.
   const activeProject = projects.has(project) ? project : ALL_PROJECTS;
   const shown = sortArtifacts(
@@ -312,7 +317,7 @@ export function ArtifactsPage(props: {
   // Wide screens always show a page; narrow ones show the list until one is picked.
   const selected = picked ?? (narrow ? undefined : shown[0]);
   const failedLabels = failedEnvironmentIds.map(
-    (environmentId) => labelFor(environmentId) ?? "this machine",
+    (environmentId) => labelFor(environmentId) ?? t("this machine"),
   );
 
   const list = (
@@ -326,8 +331,8 @@ export function ArtifactsPage(props: {
           </InputGroupAddon>
           <InputGroupInput
             type="search"
-            aria-label="Search artifacts"
-            placeholder="Search artifacts"
+            aria-label={t("Search artifacts")}
+            placeholder={t("Search artifacts")}
             value={query}
             onChange={(event) => setQuery(event.currentTarget.value)}
             onKeyDown={(event) => {
@@ -344,7 +349,7 @@ export function ArtifactsPage(props: {
         </InputGroup>
         <Menu>
           <MenuTrigger
-            render={<Button size="icon" variant="outline" aria-label="Filter and sort" />}
+            render={<Button size="icon" variant="outline" aria-label={t("Filter and sort")} />}
           >
             <ListFilterIcon aria-hidden />
             {filtersActive ? (
@@ -358,8 +363,8 @@ export function ArtifactsPage(props: {
             {projects.size > 1 ? (
               <>
                 <MenuRadioGroup value={activeProject} onValueChange={setProject}>
-                  <MenuGroupLabel>Project</MenuGroupLabel>
-                  <MenuRadioItem value={ALL_PROJECTS}>All projects</MenuRadioItem>
+                  <MenuGroupLabel>{t("Project")}</MenuGroupLabel>
+                  <MenuRadioItem value={ALL_PROJECTS}>{t("All projects")}</MenuRadioItem>
                   {[...projects].map(([key, title]) => (
                     <MenuRadioItem key={key} value={key}>
                       {title}
@@ -370,10 +375,10 @@ export function ArtifactsPage(props: {
               </>
             ) : null}
             <MenuRadioGroup value={sort} onValueChange={(next) => setSort(next as ArtifactSort)}>
-              <MenuGroupLabel>Sort by</MenuGroupLabel>
-              <MenuRadioItem value="newest">Newest</MenuRadioItem>
-              <MenuRadioItem value="oldest">Oldest</MenuRadioItem>
-              <MenuRadioItem value="name">Name</MenuRadioItem>
+              <MenuGroupLabel>{t("Sort by")}</MenuGroupLabel>
+              <MenuRadioItem value="newest">{t("Newest")}</MenuRadioItem>
+              <MenuRadioItem value="oldest">{t("Oldest")}</MenuRadioItem>
+              <MenuRadioItem value="name">{t("Name")}</MenuRadioItem>
             </MenuRadioGroup>
           </MenuPopup>
         </Menu>
@@ -381,11 +386,11 @@ export function ArtifactsPage(props: {
       {failedLabels.length > 0 ? (
         <Alert variant="error" role="status" className="mx-3 mb-2 w-auto">
           <AlertDescription>
-            Couldn't load artifacts from {failedLabels.join(", ")}.
+            {t("Couldn't load artifacts from {labels}.", { labels: failedLabels.join(", ") })}
           </AlertDescription>
           <AlertAction>
             <Button size="xs" variant="outline" onClick={refresh}>
-              Retry
+              {t("Retry")}
             </Button>
           </AlertAction>
         </Alert>
@@ -396,13 +401,13 @@ export function ArtifactsPage(props: {
         ) : shown.length === 0 && artifacts.length > 0 ? (
           <p className="px-5 py-6 text-muted-foreground text-sm">
             {foldedQuery === ""
-              ? "No artifacts in this project."
-              : `No artifacts match “${query}”.`}
+              ? t("No artifacts in this project.")
+              : t("No artifacts match “{query}”.", { query })}
           </p>
         ) : (
           <ul
             ref={listRef}
-            aria-label="Artifacts"
+            aria-label={t("Artifacts")}
             className="flex flex-col gap-0.5 px-1.5 pb-3"
             onKeyDown={(event) => {
               if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
@@ -442,7 +447,7 @@ export function ArtifactsPage(props: {
         )}
         {truncated ? (
           <p className="px-5 pb-4 text-muted-foreground text-xs">
-            Showing the newest {artifacts.length} pages.
+            {t("Showing the newest {count} pages.", { count: artifacts.length })}
           </p>
         ) : null}
       </ScrollArea>
@@ -453,15 +458,15 @@ export function ArtifactsPage(props: {
 
   return (
     <SidebarInset
-      {...workspaceAreaProps("artifacts", 1, "Artifacts")}
+      {...workspaceAreaProps("artifacts", 1, t("Artifacts"))}
       role="main"
       className="h-dvh min-h-0 overflow-hidden overscroll-y-none"
     >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <WorkspacePageHeader electron={isElectron} className="border-b">
-          <WorkspaceBreadcrumb ariaLabel="Artifacts breadcrumb" className="min-w-0 flex-1">
+          <WorkspaceBreadcrumb ariaLabel={t("Artifacts breadcrumb")} className="min-w-0 flex-1">
             <WorkspaceBreadcrumbItem current>
-              <h1>Artifacts</h1>
+              <h1>{t("Artifacts")}</h1>
             </WorkspaceBreadcrumbItem>
           </WorkspaceBreadcrumb>
           <Tooltip>
@@ -470,7 +475,7 @@ export function ArtifactsPage(props: {
                 <Button
                   size="icon-sm"
                   variant="ghost"
-                  aria-label="Refresh artifacts"
+                  aria-label={t("Refresh artifacts")}
                   aria-busy={isLoading}
                   disabled={isLoading || environmentIds.length === 0}
                   onClick={refresh}
@@ -479,7 +484,7 @@ export function ArtifactsPage(props: {
             >
               <RefreshIcon size="md" refreshing={isLoading} />
             </TooltipTrigger>
-            <TooltipPopup side="bottom">Refresh</TooltipPopup>
+            <TooltipPopup side="bottom">{t("Refresh")}</TooltipPopup>
           </Tooltip>
         </WorkspacePageHeader>
         {empty ? (
@@ -488,10 +493,11 @@ export function ArtifactsPage(props: {
               <EmptyMedia variant="icon">
                 <ShapesIcon />
               </EmptyMedia>
-              <EmptyTitle>No artifacts yet</EmptyTitle>
+              <EmptyTitle>{t("No artifacts yet")}</EmptyTitle>
               <EmptyDescription>
-                Ask an agent for a chart, diagram, or mockup. Each page it publishes shows up here
-                with a link back to its thread.
+                {t(
+                  "Ask an agent for a chart, diagram, or mockup. Each page it publishes shows up here with a link back to its thread.",
+                )}
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
@@ -516,7 +522,9 @@ export function ArtifactsPage(props: {
               />
             ) : (
               <div className="flex flex-1 items-center justify-center text-muted-foreground text-sm">
-                {isLoading || artifacts.length === 0 ? null : "Select an artifact to preview it."}
+                {isLoading || artifacts.length === 0
+                  ? null
+                  : t("Select an artifact to preview it.")}
               </div>
             )}
           </div>

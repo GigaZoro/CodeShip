@@ -7,11 +7,12 @@ import { cn } from "../../lib/utils";
 import { useQuietThreadProjection } from "../../state/entities";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { resolveThreadTaskList } from "./threadTaskList";
+import { msg, t } from "~/i18n";
 
 const STEP_ICON = {
-  completed: { Icon: CircleCheckIcon, className: "text-success-foreground", label: "Done" },
-  running: { Icon: CircleDotIcon, className: "text-info-foreground", label: "In progress" },
-  pending: { Icon: CircleIcon, className: "text-muted-foreground/70", label: "To do" },
+  completed: { Icon: CircleCheckIcon, className: "text-success-foreground", label: msg("Done") },
+  running: { Icon: CircleDotIcon, className: "text-info-foreground", label: msg("In progress") },
+  pending: { Icon: CircleIcon, className: "text-muted-foreground/70", label: msg("To do") },
 } as const;
 
 /** The agent's to-do list for its latest run, kept current as it works. Hidden without one. */
@@ -41,10 +42,13 @@ export function ThreadTasksPanel(props: {
       // It comes and goes with each run, so it scrolls rather than changing the card's density.
       data-thread-details-flexible
       headingId="thread-details-tasks-heading"
-      title="Tasks"
+      title={t("Tasks")}
       actions={
         <span className="text-2xs tabular-nums text-muted-foreground">
-          {tasks.completed} of {tasks.steps.length} done
+          {t("{completed} of {total} done", {
+            completed: tasks.completed,
+            total: tasks.steps.length,
+          })}
         </span>
       }
     >
@@ -61,7 +65,7 @@ export function ThreadTasksPanel(props: {
               className="flex min-w-0 items-start gap-2.5 text-sm leading-5"
             >
               <Icon aria-hidden className={cn("mt-0.5 size-4 shrink-0", className)} />
-              <span className="sr-only">{label}: </span>
+              <span className="sr-only">{t(label)}: </span>
               <span
                 className={cn(
                   "min-w-0 flex-1 [overflow-wrap:anywhere]",

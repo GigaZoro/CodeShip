@@ -3,6 +3,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { t, tn } from "~/i18n";
 import { create } from "zustand";
 
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
@@ -29,13 +30,23 @@ type UndoNotice = {
 export const useThreadUndoNotice = create<{ notice: UndoNotice | null }>(() => ({ notice: null }));
 
 function threadUndoNoticeSummary(notice: Pick<UndoNotice, "action" | "count">): string {
-  const noun = notice.action === "Discarded" ? "draft" : "thread";
-  return `${notice.action} ${notice.count} ${noun}${notice.count === 1 ? "" : "s"}`;
+  switch (notice.action) {
+    case "Settled":
+      return tn(notice.count, "Settled {count} thread", "Settled {count} threads");
+    case "Snoozed":
+      return tn(notice.count, "Snoozed {count} thread", "Snoozed {count} threads");
+    case "Unpinned":
+      return tn(notice.count, "Unpinned {count} thread", "Unpinned {count} threads");
+    case "Archived":
+      return tn(notice.count, "Archived {count} thread", "Archived {count} threads");
+    case "Discarded":
+      return tn(notice.count, "Discarded {count} draft", "Discarded {count} drafts");
+  }
 }
 
 export function threadUndoLabel(keybindings: Parameters<typeof shortcutLabelForCommand>[0]) {
   const shortcut = shortcutLabelForCommand(keybindings, "thread.undo");
-  return shortcut ? `${shortcut} to undo` : "Undo";
+  return shortcut ? t("{shortcut} to undo", { shortcut }) : t("Undo");
 }
 
 let announcedSummary: string | null = null;
@@ -50,7 +61,7 @@ function setNotice(notice: UndoNotice | null) {
   announcedSummary = summary;
   if (summary) {
     const label = threadUndoLabel(appAtomRegistry.get(primaryServerKeybindingsAtom));
-    announce(`${summary}, ${label}`, "thread-undo-notice");
+    announce(t("{summary}, {label}", { summary, label }), "thread-undo-notice");
   } else {
     cancelAnnouncement("thread-undo-notice");
   }
@@ -94,7 +105,7 @@ function refreshNotice() {
               stackedThreadToast({
                 type: "error",
                 title: failureTitle,
-                description: error instanceof Error ? error.message : "An error occurred.",
+                description: error instanceof Error ? error.message : t("An error occurred."),
               }),
             );
           };

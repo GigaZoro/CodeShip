@@ -21,6 +21,7 @@ import { MorphIcon } from "~/components/MorphIcon";
 import { linkedPullRequestSnapshotStatus, prStatusIndicator } from "../ThreadStatusIndicators";
 
 import { ThreadDetailsPrRow } from "./ThreadDetailsPrRow";
+import { t } from "~/i18n";
 
 function ThreadDetailsPrLinkRow({
   environmentId,
@@ -131,7 +132,7 @@ export function ThreadDetailsPrRows({
           // Chevrons, not plus and minus: the plus already means "add" in this card.
           icon={expanded ? ChevronUp : ChevronDown}
         />
-        {expanded ? "Show less" : `Show ${rest.length} more`}
+        {expanded ? t("Show less") : t("Show {count} more", { count: rest.length })}
       </ThreadDetailsControl>
     </>
   );

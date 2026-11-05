@@ -30,6 +30,7 @@ import { useAppearancePreferences } from "../settings/appearance/AppearancePrefe
 import { isZipFile, ZipArchiveView } from "./ZipArchiveView";
 import { AttachmentDocumentBody, nativeViewerKind } from "./AttachmentDocumentBody";
 import type { AttachmentFileRouteParams } from "../../lib/attachmentFileRoute";
+import { t } from "../../lib/i18n";
 
 type AttachmentFileScreenProps = StaticScreenProps<AttachmentFileRouteParams>;
 
@@ -90,7 +91,7 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
     const message = pendingNativeError.current;
     pendingNativeError.current = null;
     if (nativeViewer === null) {
-      if (message) Dialog.alert("Could not open document", message);
+      if (message) Dialog.alert(t("Could not open document"), message);
       return;
     }
     if (message) {
@@ -111,7 +112,7 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
     renderedMode
       ? ({
           id: "preview",
-          title: renderedMode === "table" ? "Table" : "Preview",
+          title: renderedMode === "table" ? t("Table") : t("Preview"),
           icon: renderedMode === "table" ? "tablecells" : "eye",
           inline: true,
           onPress: () => setRendered(true),
@@ -120,7 +121,7 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
     renderedMode
       ? ({
           id: "source",
-          title: "Source",
+          title: t("Source"),
           icon: "doc.text",
           inline: true,
           onPress: () => setRendered(false),
@@ -129,7 +130,7 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
     content && activeMode === "source"
       ? ({
           id: "word-wrap",
-          title: appearance.codeWordBreak ? "Disable word wrap" : "Enable word wrap",
+          title: appearance.codeWordBreak ? t("Disable word wrap") : t("Enable word wrap"),
           icon: "text.alignleft",
           inline: false,
           onPress: () => setCodeWordBreak(!appearance.codeWordBreak),
@@ -138,7 +139,7 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
     content
       ? ({
           id: "copy",
-          title: content.truncated ? "Copy preview" : "Copy contents",
+          title: content.truncated ? t("Copy preview") : t("Copy contents"),
           icon: "doc.on.doc",
           inline: false,
           onPress: () => copyTextWithHaptic(content.text),
@@ -147,7 +148,7 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
     uri
       ? ({
           id: "share",
-          title: sharing ? "Opening share sheet…" : "Save or share",
+          title: sharing ? t("Opening share sheet…") : t("Save or share"),
           icon: "square.and.arrow.up",
           inline: false,
           onPress: () => void share(),
@@ -156,7 +157,7 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
     uri
       ? ({
           id: "open-viewer",
-          title: "Open in file viewer",
+          title: t("Open in file viewer"),
           icon: "arrow.up.left.and.arrow.down.right",
           inline: false,
           onPress: () => {
@@ -168,7 +169,7 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
     draftKey
       ? ({
           id: "remove",
-          title: "Remove from draft",
+          title: t("Remove from draft"),
           icon: "trash",
           inline: false,
           destructive: true,
@@ -187,7 +188,11 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
   const handleAndroidMenuAction = (event: { nativeEvent: { event: string } }) => {
     menuActions.find(({ id }) => id === event.nativeEvent.event)?.onPress();
   };
-  const subtitle = `${draftKey ? "Draft attachment" : "Attachment"}${sizeBytes > 0 ? ` · ${formatAttachmentSize(sizeBytes)}` : ""}`;
+  const subtitleLabel = draftKey ? t("Draft attachment") : t("Attachment");
+  const subtitle =
+    sizeBytes > 0
+      ? t("{label} · {size}", { label: subtitleLabel, size: formatAttachmentSize(sizeBytes) })
+      : subtitleLabel;
   const refresh = useRefreshAssetUrl(environmentId, resource);
   const capabilities = useEnvironmentServerConfig(environmentId)?.environment.capabilities;
 
@@ -239,16 +244,16 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
             <Menu
               actions={androidMenuActions}
               isAnchoredToRight
-              title="File actions"
+              title={t("File actions")}
               onPressAction={handleAndroidMenuAction}
             >
-              <AndroidHeaderIconButton accessibilityLabel="File actions" icon="ellipsis" />
+              <AndroidHeaderIconButton accessibilityLabel={t("File actions")} icon="ellipsis" />
             </Menu>
           }
         />
       ) : null}
       <Toolbar placement="right">
-        <Toolbar.Menu accessibilityLabel="File actions" icon="ellipsis">
+        <Toolbar.Menu accessibilityLabel={t("File actions")} icon="ellipsis">
           {renderedMode ? (
             <Toolbar.Menu inline>
               {menuActions

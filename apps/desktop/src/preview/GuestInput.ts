@@ -21,6 +21,7 @@ const FOCUSED_DOCUMENT = `(() => {
 const EDITING_COMMANDS = new Set(["selectAll", "undo", "redo"]);
 
 const CROSS_SITE_FOCUS_MESSAGE =
+  // oxlint-disable-next-line t3code/no-untranslated-text -- error text returned to the agent driving the preview, not UI copy
   "The page's focus is inside a cross-site frame, which takes typed input only while the preview has focus. Click the field first.";
 
 const ARROW_KEYS: Record<string, string> = {

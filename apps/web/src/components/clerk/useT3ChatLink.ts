@@ -14,16 +14,17 @@ import { readLocalApi } from "../../localApi";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { toastManager } from "../ui/toast";
 
+import { t } from "~/i18n";
 function reportFailure(title: string, cause: unknown) {
   const traceId = findErrorTraceId(cause);
   toastManager.add({
     type: "error",
     title,
-    description: cause instanceof Error ? cause.message : "Try again.",
+    description: cause instanceof Error ? cause.message : t("Try again."),
     data: traceId
       ? {
           secondaryActionProps: {
-            children: "Copy trace ID",
+            children: t("Copy trace ID"),
             onClick: () => void navigator.clipboard?.writeText(traceId),
           },
         }
@@ -53,7 +54,7 @@ export function useT3ChatLink() {
         ?.shell.openExternal(result.value)
         .catch(() => undefined);
     } else if (!isAtomCommandInterrupted(result)) {
-      reportFailure("Could not start linking", squashAtomCommandFailure(result));
+      reportFailure(t("Could not start linking"), squashAtomCommandFailure(result));
     }
     setPending(null);
   };
@@ -67,7 +68,7 @@ export function useT3ChatLink() {
       setLinkUrl(null);
       linkState.refresh();
     } else if (!isAtomCommandInterrupted(result)) {
-      reportFailure("Could not unlink T3 Chat", squashAtomCommandFailure(result));
+      reportFailure(t("Could not unlink T3 Chat"), squashAtomCommandFailure(result));
     }
     setPending(null);
   };

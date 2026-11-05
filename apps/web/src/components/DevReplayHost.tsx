@@ -1,3 +1,4 @@
+/* oxlint-disable t3code/no-untranslated-text -- dev-only tool */
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";

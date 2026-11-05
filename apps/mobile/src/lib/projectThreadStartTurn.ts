@@ -86,6 +86,7 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
 }
 
 export function deriveThreadTitleFromPrompt(value: string): string {
+  // oxlint-disable-next-line t3code/no-untranslated-text -- default thread name saved with the thread
   const title = threadTitleTextFromPrompt(value) || "New thread";
   return title.length <= 72 ? title : `${title.slice(0, 69).trimEnd()}...`;
 }

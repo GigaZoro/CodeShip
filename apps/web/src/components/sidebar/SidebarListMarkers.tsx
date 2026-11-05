@@ -11,6 +11,7 @@ import {
 } from "../Sidebar.logic";
 import { SIDEBAR_SORTABLE_DRAG_DISABLED } from "./SidebarThreadRow";
 
+import { t } from "~/i18n";
 function SortableSidebarMarker(props: {
   marker: SidebarListMarker;
   className?: string;
@@ -117,7 +118,7 @@ export function SidebarNeedsYouHeader(props: { count: number; action?: ReactNode
       className="mx-0.5 flex h-8 list-none items-center gap-2 px-2 text-xs font-medium text-warning-foreground"
     >
       <BellDotIcon aria-hidden className="size-3.5 shrink-0" />
-      <span className="min-w-0 flex-1 truncate">Needs you</span>
+      <span className="min-w-0 flex-1 truncate">{t("Needs you")}</span>
       <span className="shrink-0 font-normal tabular-nums">{props.count}</span>
       {props.action}
     </li>

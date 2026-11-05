@@ -5,6 +5,7 @@ import { useResolveClassNames } from "uniwind";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { GlassSurface } from "../../components/ui/GlassSurface";
 import { WORKSPACE_TOOLBAR, type WorkspaceTab } from "./workspace-tabs-state";
+import { t } from "../../lib/i18n";
 
 export function WorkspaceSearchField({
   ref,
@@ -20,7 +21,7 @@ export function WorkspaceSearchField({
 }) {
   const inputStyle = useResolveClassNames("text-foreground font-sans text-base");
   const placeholderStyle = useResolveClassNames("text-foreground-muted");
-  const label = props.tab === "pullRequests" ? "Search pull requests" : "Search threads";
+  const label = props.tab === "pullRequests" ? t("Search pull requests") : t("Search threads");
   return (
     <GlassSurface
       className="min-w-0 flex-1"
@@ -47,7 +48,7 @@ export function WorkspaceSearchField({
         {props.query ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Clear search"
+            accessibilityLabel={t("Clear search")}
             onPress={props.onClear}
             className="h-11 w-11 items-center justify-center"
           >

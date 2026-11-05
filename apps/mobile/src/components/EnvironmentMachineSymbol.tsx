@@ -1,5 +1,6 @@
 import type { EnvironmentMachineKind } from "@t3tools/contracts";
 import { SymbolView, type AppSymbolName } from "./ui/AppSymbol";
+import { msg, t, type Message } from "../lib/i18n";
 
 export const ENVIRONMENT_MACHINE_SYMBOLS = {
   server: "server.rack",
@@ -11,14 +12,14 @@ export const ENVIRONMENT_MACHINE_SYMBOLS = {
   "mac-studio": "macstudio",
 } as const satisfies Record<EnvironmentMachineKind, AppSymbolName>;
 
-const ENVIRONMENT_MACHINE_KIND_LABELS: Record<EnvironmentMachineKind, string> = {
-  server: "Server",
-  cloud: "Cloud VM",
-  linux: "Linux/WSL",
-  desktop: "Desktop",
-  laptop: "Laptop",
-  "mac-mini": "Mini PC",
-  "mac-studio": "Workstation",
+const ENVIRONMENT_MACHINE_KIND_LABELS: Record<EnvironmentMachineKind, Message> = {
+  server: msg("Server"),
+  cloud: msg("Cloud VM"),
+  linux: msg("Linux/WSL"),
+  desktop: msg("Desktop"),
+  laptop: msg("Laptop"),
+  "mac-mini": msg("Mini PC"),
+  "mac-studio": msg("Workstation"),
 };
 
 export function EnvironmentMachineSymbol(props: {
@@ -28,7 +29,7 @@ export function EnvironmentMachineSymbol(props: {
 }) {
   return (
     <SymbolView
-      accessibilityLabel={ENVIRONMENT_MACHINE_KIND_LABELS[props.kind]}
+      accessibilityLabel={t(ENVIRONMENT_MACHINE_KIND_LABELS[props.kind])}
       name={ENVIRONMENT_MACHINE_SYMBOLS[props.kind]}
       size={props.size}
       tintColorClassName={props.tintColorClassName}

@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import type { ManagedPolicySummary } from "@t3tools/contracts";
 import { BuildingIcon } from "lucide-react";
 import type { ReactNode } from "react";
@@ -52,7 +53,7 @@ export function ManagedNotice({ children }: { children: ReactNode }) {
 export function ManagedByOrganization({ policy }: { policy: ManagedPolicySummary }) {
   return (
     <ManagedNotice>
-      This environment is managed by {policy.organization}.
+      {t("This environment is managed by {organization}.", { organization: policy.organization })}
       {policy.supportUrl ? (
         <>
           {" "}
@@ -62,7 +63,7 @@ export function ManagedByOrganization({ policy }: { policy: ManagedPolicySummary
             rel="noreferrer"
             className="text-foreground underline underline-offset-2"
           >
-            Get help
+            {t("Get help")}
           </a>
         </>
       ) : null}

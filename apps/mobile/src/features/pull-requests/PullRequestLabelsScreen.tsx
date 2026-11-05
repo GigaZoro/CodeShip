@@ -18,6 +18,7 @@ import { pullRequestLabelColor } from "./pullRequestList";
 import { PullRequestSearchSheet } from "./PullRequestSearchSheet";
 import { usePullRequestConnected } from "./usePullRequestConnected";
 import { pullRequestTarget, type PullRequestParams } from "./usePullRequestDiff";
+import { t } from "../../lib/i18n";
 
 export function PullRequestLabelsScreen({ route }: StaticScreenProps<PullRequestParams>) {
   const target = pullRequestTarget(route.params);
@@ -36,12 +37,12 @@ export function PullRequestLabelsScreen({ route }: StaticScreenProps<PullRequest
     !pr || allowed
       ? null
       : !connected
-        ? "Reconnect to change labels."
+        ? t("Reconnect to change labels.")
         : !canWrite
-          ? "This device isn't allowed to change source control on this environment."
+          ? t("This device isn't allowed to change source control on this environment.")
           : pr.capabilities.labels !== true
-            ? "This provider doesn't support changing labels."
-            : "Changing labels needs triage access on this repository.";
+            ? t("This provider doesn't support changing labels.")
+            : t("Changing labels needs triage access on this repository.");
   const result = useEnvironmentQuery(composerPullRequests.labelCandidates(target));
   const setLabels = useAtomCommand(composerPullRequests.setLabels, { reportFailure: false });
   const [query, setQuery] = useState("");
@@ -66,15 +67,17 @@ export function PullRequestLabelsScreen({ route }: StaticScreenProps<PullRequest
     setPending(undefined);
     if (AsyncResult.isFailure(response)) {
       const cause = squashAtomCommandFailure(response);
-      setError(cause instanceof Error ? cause.message : "Couldn't update this label. Try again.");
+      setError(
+        cause instanceof Error ? cause.message : t("Couldn't update this label. Try again."),
+      );
     }
   };
   return (
     <PullRequestSearchSheet
-      title="Labels"
-      placeholder="Search labels"
-      closeAccessibilityLabel="Close labels"
-      clearAccessibilityLabel="Clear label search"
+      title={t("Labels")}
+      placeholder={t("Search labels")}
+      closeAccessibilityLabel={t("Close labels")}
+      clearAccessibilityLabel={t("Clear label search")}
       searchTextChangeId="pr-label-search"
       query={query}
       onQueryChange={setQuery}
@@ -126,28 +129,29 @@ export function PullRequestLabelsScreen({ route }: StaticScreenProps<PullRequest
                 <EmptyState
                   title={
                     result.error
-                      ? "Couldn't load labels"
+                      ? t("Couldn't load labels")
                       : needle
-                        ? "No matching labels"
-                        : "This repository has no labels"
+                        ? t("No matching labels")
+                        : t("This repository has no labels")
                   }
                   detail={
                     result.error ??
                     (needle
-                      ? "Try another name."
-                      : "Create labels on the provider to use them here.")
+                      ? t("Try another name.")
+                      : t("Create labels on the provider to use them here."))
                   }
                   variant="plain"
                 />
-                {result.error ? <Button label="Retry" onPress={result.refresh} /> : null}
+                {result.error ? <Button label={t("Retry")} onPress={result.refresh} /> : null}
               </View>
             )
           }
           ListFooterComponent={
             result.data?.truncated ? (
               <Text className="py-4 text-xs text-foreground-muted">
-                This repository has more labels than are listed here. Apply the rest on the
-                provider.
+                {t(
+                  "This repository has more labels than are listed here. Apply the rest on the provider.",
+                )}
               </Text>
             ) : undefined
           }

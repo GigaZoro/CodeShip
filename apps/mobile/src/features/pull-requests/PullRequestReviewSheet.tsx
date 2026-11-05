@@ -19,6 +19,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { PullRequestSheetContent as SheetContent } from "./PullRequestSheetContent";
 import { pullRequestTarget, type PullRequestParams } from "./usePullRequestDiff";
 import { usePullRequestPermissions } from "./usePullRequestPermissions";
+import { t, tn, msg } from "../../lib/i18n";
 
 function useActionSubmission(params: PullRequestParams) {
   const navigation = useNavigation();
@@ -45,7 +46,7 @@ function useActionSubmission(params: PullRequestParams) {
       setError(
         cause instanceof Error
           ? cause.message
-          : "The provider could not complete this action. Try again.",
+          : t("The provider could not complete this action. Try again."),
       );
     }
   };
@@ -53,11 +54,11 @@ function useActionSubmission(params: PullRequestParams) {
 }
 
 const VERDICTS = [
-  { value: "comment", title: "Comment" },
-  { value: "approve", title: "Approve" },
+  { value: "comment", title: msg("Comment") },
+  { value: "approve", title: msg("Approve") },
   {
     value: "request-changes",
-    title: "Request changes",
+    title: msg("Request changes"),
   },
 ] as const;
 
@@ -106,7 +107,7 @@ export function PullRequestReviewSheet({
   const perform = () =>
     submission.submit(async () => {
       if (!canSubmit)
-        throw new Error("Add your feedback and check your permissions before submitting.");
+        throw new Error(t("Add your feedback and check your permissions before submitting."));
       const submitted = store.draft;
       const response =
         reviewing && verdict
@@ -132,21 +133,28 @@ export function PullRequestReviewSheet({
     });
   return (
     <SheetContent
-      title={reviewing ? "Submit review" : "Add comment"}
-      subtitle={`#${params.number}${reviewing && result.data?.headSha ? ` · reviewing ${result.data.headSha.slice(0, 7)}` : ` · ${params.repository}`}`}
+      title={reviewing ? t("Submit review") : t("Add comment")}
+      subtitle={
+        reviewing && result.data?.headSha
+          ? t("#{number} · reviewing {sha}", {
+              number: params.number,
+              sha: result.data.headSha.slice(0, 7),
+            })
+          : t("#{number} · {repository}", { number: params.number, repository: params.repository })
+      }
       busy={submission.busy}
       footer={
         <Button
           label={
             submission.busy
-              ? "Submitting…"
+              ? t("Submitting…")
               : reviewing
                 ? verdict?.value === "approve"
-                  ? "Approve"
+                  ? t("Approve")
                   : verdict?.value === "request-changes"
-                    ? "Request changes"
-                    : "Submit review"
-                : "Post comment"
+                    ? t("Request changes")
+                    : t("Submit review")
+                : t("Post comment")
           }
           fullWidth
           tone={Platform.OS === "android" ? "primary" : "contrast"}
@@ -158,7 +166,7 @@ export function PullRequestReviewSheet({
     >
       {reviewing && offered.length > 1 ? (
         <SegmentedControl
-          options={offered.map((option) => ({ value: option.value, label: option.title }))}
+          options={offered.map((option) => ({ value: option.value, label: t(option.title) }))}
           selected={verdict?.value ?? "comment"}
           onSelect={(value) => {
             if (!submission.busy) setRequestedVerdict(value);
@@ -167,17 +175,17 @@ export function PullRequestReviewSheet({
         />
       ) : null}
       <Text className="px-4 text-xs text-foreground-muted">
-        {reviewing ? "Summary" : "Comment"}
+        {reviewing ? t("Summary") : t("Comment")}
       </Text>
       <TextInput
         multiline
-        accessibilityLabel={reviewing ? "Review summary" : "Comment"}
+        accessibilityLabel={reviewing ? t("Review summary") : t("Comment")}
         placeholder={
           reviewing
             ? summaryRequired
-              ? "Summary required to request changes…"
-              : "Summarize your review…"
-            : "Write a comment…"
+              ? t("Summary required to request changes…")
+              : t("Summarize your review…")
+            : t("Write a comment…")
         }
         placeholderTextColorClassName="accent-foreground-muted"
         editable={store.ready && !submission.busy}
@@ -190,8 +198,11 @@ export function PullRequestReviewSheet({
       {reviewing && store.draft.comments.length ? (
         <View className="gap-2">
           <Text className="text-sm font-t3-medium">
-            {store.draft.comments.length} pending line{" "}
-            {store.draft.comments.length === 1 ? "comment" : "comments"}
+            {tn(
+              store.draft.comments.length,
+              "{count} pending line comment",
+              "{count} pending line comments",
+            )}
           </Text>
           {store.draft.comments.map((draft) => (
             <Pressable
@@ -227,8 +238,8 @@ export function PullRequestReviewSheet({
               </Text>
               <Text className="text-2xs text-foreground-muted">
                 {draft.headSha !== result.data?.headSha
-                  ? "Branch changed · Tap to choose a new line"
-                  : "Tap to edit"}
+                  ? t("Branch changed · Tap to choose a new line")
+                  : t("Tap to edit")}
               </Text>
             </Pressable>
           ))}
@@ -236,14 +247,16 @@ export function PullRequestReviewSheet({
       ) : null}
       {reviewing && stale ? (
         <Text className="text-sm text-danger-foreground">
-          The branch changed since you wrote a comment. Choose its current line before submitting.
+          {t(
+            "The branch changed since you wrote a comment. Choose its current line before submitting.",
+          )}
         </Text>
       ) : null}
       {reviewing && !canSubmitComments ? (
         <Text className="text-sm text-danger-foreground">
-          You can no longer submit line comments on this{" "}
-          {sourceControlClients.get(result.data?.provider).changeRequest.singular}. Your drafts are
-          kept here.
+          {t("You can no longer submit line comments on this {term}. Your drafts are kept here.", {
+            term: sourceControlClients.get(result.data?.provider).changeRequest.singular,
+          })}
         </Text>
       ) : null}
       {submission.error || result.error || store.error ? (

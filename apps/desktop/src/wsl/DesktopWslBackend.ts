@@ -52,6 +52,7 @@ const scanForWslPort = Effect.fn("desktop.wslBackend.scanForWslPort")(function* 
     }
   }
   return yield* new NetService.NetError({
+    // oxlint-disable-next-line t3code/no-untranslated-text -- error message for logs
     message: `No loopback port available for WSL backend between ${startPort} and ${MAX_TCP_PORT}.`,
   });
 });

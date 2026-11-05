@@ -10,6 +10,7 @@ import { AppText as Text } from "./ui/AppText";
 import { ListActionRow } from "./ui/ListActionRow";
 import { ListSection } from "./ui/ListSection";
 import { Sheet } from "./ui/Sheet";
+import { t } from "../lib/i18n";
 
 const CONTEXT_CHARS = 80;
 
@@ -44,7 +45,7 @@ export function AssistantCitationSheet(props: {
     props.onClose();
   };
   return (
-    <Sheet title="Quote" onClose={close}>
+    <Sheet title={t("Quote")} onClose={close}>
       <ScrollView
         contentInsetAdjustmentBehavior={Platform.OS === "ios" ? "automatic" : "never"}
         contentContainerStyle={{
@@ -63,10 +64,10 @@ export function AssistantCitationSheet(props: {
           </Text>
         </View>
         {props.onCommentChange ? (
-          <ListSection title="Comment">
+          <ListSection title={t("Comment")}>
             <TextInput
-              accessibilityLabel="Comment on quote"
-              placeholder="Add an optional comment…"
+              accessibilityLabel={t("Comment on quote")}
+              placeholder={t("Add an optional comment…")}
               placeholderTextColorClassName="accent-foreground-muted"
               multiline
               maxLength={ASSISTANT_CITATION_MAX_COMMENT_LENGTH}
@@ -77,7 +78,7 @@ export function AssistantCitationSheet(props: {
             />
           </ListSection>
         ) : citation.comment ? (
-          <ListSection title="Comment">
+          <ListSection title={t("Comment")}>
             <Text selectable textRole="body" className="px-4 py-3 text-foreground">
               {citation.comment}
             </Text>
@@ -86,7 +87,7 @@ export function AssistantCitationSheet(props: {
         <ListSection>
           <ListActionRow
             icon="arrow.up.right"
-            label="Go to message"
+            label={t("Go to message")}
             onPress={() => {
               close();
               requestThreadMessageJump(scopedThreadKey(citation), citation.messageId);
@@ -95,13 +96,13 @@ export function AssistantCitationSheet(props: {
           />
           <ListActionRow
             icon="doc.on.doc"
-            label="Copy quote"
+            label={t("Copy quote")}
             onPress={() => copyTextWithHaptic(citation.text)}
           />
           {props.onRemove ? (
             <ListActionRow
               icon="trash"
-              label="Remove from draft"
+              label={t("Remove from draft")}
               tone="danger"
               onPress={props.onRemove}
             />

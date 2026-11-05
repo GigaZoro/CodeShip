@@ -1,4 +1,5 @@
 import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
+import { t } from "../../lib/i18n";
 
 export interface FloatingStatusAction {
   readonly label: string;
@@ -52,7 +53,7 @@ export function connectionFloatingStatus(input: {
   readonly environmentLabel: string | null;
   readonly onReconnect: () => void;
 }): FloatingWorkingStatus | null {
-  const environmentLabel = input.environmentLabel ?? "Environment";
+  const environmentLabel = input.environmentLabel ?? t("Environment");
   const unavailable = (label: string): FloatingWorkingStatus => ({
     kind: "connection",
     tone: "unavailable",
@@ -68,22 +69,25 @@ export function connectionFloatingStatus(input: {
         tone: "reconnecting",
         label:
           input.connectionError === null
-            ? `Reconnecting to ${environmentLabel}...`
-            : `Failed to connect. Retrying ${environmentLabel}...`,
+            ? t("Reconnecting to {environment}...", { environment: environmentLabel })
+            : t("Failed to connect. Retrying {environment}...", { environment: environmentLabel }),
         onPress: input.onReconnect,
       };
     case "offline":
-      return unavailable("You are offline");
+      return unavailable(t("You are offline"));
     case "unsupported":
-      return unavailable("Client not supported");
+      return unavailable(t("Client not supported"));
     case "error":
       return unavailable(
         input.connectionError
-          ? `Failed to connect to ${environmentLabel}: ${input.connectionError}`
-          : `Failed to connect to ${environmentLabel}`,
+          ? t("Failed to connect to {environment}: {error}", {
+              environment: environmentLabel,
+              error: input.connectionError,
+            })
+          : t("Failed to connect to {environment}", { environment: environmentLabel }),
       );
     case "available":
-      return unavailable(`${environmentLabel} is not connected`);
+      return unavailable(t("{environment} is not connected", { environment: environmentLabel }));
     case "connected":
       return null;
   }

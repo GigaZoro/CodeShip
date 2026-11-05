@@ -11,6 +11,7 @@ import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { findErrorTraceId } from "../errors/errorTrace.ts";
 import * as ManagedRelay from "./managedRelay.ts";
 import { relayProtectedErrorMessage } from "./errorPresentation.ts";
+import { t } from "@t3tools/shared/i18n";
 
 const DEFAULT_STALE_TIME_MS = 15_000;
 const DEFAULT_IDLE_TTL_MS = 5 * 60_000;
@@ -114,7 +115,7 @@ export function createManagedRelaySession(input: ManagedRelaySessionInput): Mana
         try: () => readCachedClerkToken(nowMillis),
         catch: (cause) =>
           new ManagedRelaySessionError({
-            message: "Could not obtain the T3 Connect session token.",
+            message: t("Could not obtain the T3 Connect session token."),
             cause,
           }),
       });
@@ -171,7 +172,7 @@ function readSessionClerkToken(
       (token): token is string => Boolean(token),
       () =>
         new ManagedRelaySessionError({
-          message: "The T3 Connect session token is unavailable.",
+          message: t("The T3 Connect session token is unavailable."),
         }),
     ),
   );
@@ -185,7 +186,9 @@ function requireSessionClerkToken(
   const session = registry.get(managedRelaySessionAtom);
   if (!session || session.accountId !== accountId) {
     return Effect.fail(
-      new ManagedRelaySessionError({ message: `Sign in to T3 Connect before ${action}.` }),
+      new ManagedRelaySessionError({
+        message: t("Sign in to T3 Connect before {action}.", { action }),
+      }),
     );
   }
   return readSessionClerkToken(session);
@@ -235,7 +238,7 @@ function requireClerkToken(
   if (!session || session.accountId !== accountId) {
     return Effect.fail(
       new ManagedRelaySessionError({
-        message: "Sign in to T3 Connect before loading relay data.",
+        message: t("Sign in to T3 Connect before loading relay data."),
       }),
     );
   }
@@ -253,7 +256,7 @@ function describeManagedRelayFailure(cause: Cause.Cause<unknown>): {
         ? relayProtectedErrorMessage(error.relayError)
         : error instanceof Error
           ? error.message
-          : "Could not load T3 Connect data.",
+          : t("Could not load T3 Connect data."),
     traceId: findErrorTraceId(error),
   };
 }

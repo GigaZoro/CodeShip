@@ -17,6 +17,7 @@ import {
   Persistence,
   makeStoredShellSnapshotEncoder,
 } from "@t3tools/client-runtime/platform";
+import { t } from "~/i18n";
 import { TokenStore } from "@t3tools/client-runtime/authorization";
 import {
   ConnectionTransientError,
@@ -79,6 +80,7 @@ const encodeStoredVcsRefs = Schema.encodeEffect(StoredVcsRefsJson);
 function catalogError(operation: string, cause: unknown) {
   return new ConnectionTransientError({
     reason: "remote-unavailable",
+    // oxlint-disable-next-line t3code/no-untranslated-text -- storage diagnostic carrying the raw cause
     detail: `Could not ${operation} the local connection catalog: ${String(cause)}`,
   });
 }
@@ -107,6 +109,7 @@ function persistenceError(
 ) {
   return new Persistence.ConnectionPersistenceError({
     operation,
+    // oxlint-disable-next-line t3code/no-untranslated-text -- storage diagnostic carrying the raw cause
     message: `Could not ${operation.replaceAll("-", " ")}: ${String(cause)}`,
   });
 }
@@ -576,7 +579,7 @@ export function makeBrowserPullRequestRoutingPermissions(
       if (connectionKey === null)
         return yield* new ConnectionBlockedError({
           reason: "configuration",
-          detail: "This environment does not have a saved connection endpoint.",
+          detail: t("This environment does not have a saved connection endpoint."),
         });
       return yield* write(
         entry.target.environmentId,

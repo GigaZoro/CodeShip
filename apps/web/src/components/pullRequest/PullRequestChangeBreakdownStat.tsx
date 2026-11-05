@@ -7,13 +7,14 @@ import { useEnvironmentQuery } from "~/state/query";
 
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { PullRequestDiffStat } from "./pullRequestPresentation";
+import { msg, t } from "~/i18n";
 
 const KIND_LABELS = {
-  code: "Code",
-  tests: "Tests",
-  mocks: "Mocks",
-  generated: "Generated",
-  docs: "Docs",
+  code: msg("Code"),
+  tests: msg("Tests"),
+  mocks: msg("Mocks"),
+  generated: msg("Generated"),
+  docs: msg("Docs"),
 } satisfies Record<keyof NonNullable<PullRequestChangeBreakdown>, string>;
 
 type DiffTotals = { additions: number; deletions: number };
@@ -64,7 +65,7 @@ export function PullRequestChangeBreakdownStat({
           <ChangeBreakdownGrid breakdown={breakdown} total={{ additions, deletions }} />
         </TooltipPopup>
       ) : query.isPending ? (
-        <TooltipPopup side="bottom">Loading breakdown</TooltipPopup>
+        <TooltipPopup side="bottom">{t("Loading breakdown")}</TooltipPopup>
       ) : null}
     </Tooltip>
   );
@@ -108,7 +109,7 @@ export function ChangeBreakdownGrid({
         return additions === 0 && deletions === 0 ? null : (
           <BreakdownRow
             key={kind}
-            label={KIND_LABELS[kind]}
+            label={t(KIND_LABELS[kind])}
             additions={additions}
             deletions={deletions}
           />
@@ -117,7 +118,11 @@ export function ChangeBreakdownGrid({
       {total ? (
         <>
           <div className="col-span-3 border-t border-border" />
-          <BreakdownRow label="Total" additions={total.additions} deletions={total.deletions} />
+          <BreakdownRow
+            label={t("Total")}
+            additions={total.additions}
+            deletions={total.deletions}
+          />
         </>
       ) : null}
     </div>

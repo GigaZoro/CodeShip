@@ -17,6 +17,7 @@ import { useSavedRemoteConnections } from "../../state/use-remote-environment-re
 import { SettingsScreenContent } from "../settings/components/SettingsScreen";
 import { artifactKey, filterArtifacts, type EnvironmentArtifact } from "./artifactList";
 import { useArtifacts } from "./useArtifacts";
+import { t } from "../../lib/i18n";
 
 function ArtifactRow(props: {
   readonly artifact: EnvironmentArtifact;
@@ -32,7 +33,7 @@ function ArtifactRow(props: {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Open ${artifact.title}`}
+      accessibilityLabel={t("Open {title}", { title: artifact.title })}
       onPress={props.onPress}
       className={`flex-row items-center gap-3 bg-grouped-card px-4 py-3 ${props.isLast ? "" : "border-b border-separator"}`}
       style={{
@@ -77,11 +78,11 @@ function ArtifactsError(props: { readonly message: string; readonly onRetry: () 
   return (
     <View className="mb-3 rounded-[20px] border border-danger-border bg-danger p-4">
       <Text className="text-base font-t3-bold text-danger-foreground">
-        Could not load every environment's artifacts
+        {t("Could not load every environment's artifacts")}
       </Text>
       <Text className="mt-1 text-sm text-foreground-muted">{props.message}</Text>
       <View className="mt-3">
-        <Button label="Try again" tone="secondary" onPress={props.onRetry} />
+        <Button label={t("Try again")} tone="secondary" onPress={props.onRetry} />
       </View>
     </View>
   );
@@ -108,23 +109,23 @@ export function ArtifactsScreen() {
   return (
     <View collapsable={false} className="flex-1 bg-sheet">
       <AppBar
-        title="Artifacts"
+        title={t("Artifacts")}
         sidebar={false}
         onBack={() => navigation.goBack()}
         search={{
           value: searchQuery,
           onChangeText: setSearchQuery,
-          placeholder: "Search artifacts",
-          compactPlaceholder: "Search",
+          placeholder: t("Search artifacts"),
+          compactPlaceholder: t("Search"),
           mode: "inline",
         }}
         {...(Platform.OS === "android"
           ? {
               menus: [
                 {
-                  title: "Artifact options",
+                  title: t("Artifact options"),
                   icon: "ellipsis.circle",
-                  items: [{ id: "refresh", title: "Refresh artifacts", onPress: refresh }],
+                  items: [{ id: "refresh", title: t("Refresh artifacts"), onPress: refresh }],
                 },
               ],
             }
@@ -145,16 +146,20 @@ export function ArtifactsScreen() {
             isInitialLoad ? (
               <View className="items-center py-16">
                 <AppActivityIndicator colorClassName="accent-icon" />
-                <Text className="mt-3 text-sm text-foreground-muted">Loading artifacts...</Text>
+                <Text className="mt-3 text-sm text-foreground-muted">
+                  {t("Loading artifacts...")}
+                </Text>
               </View>
             ) : error !== null ? null : (
               <EmptyState
                 detail={
                   isFiltered
-                    ? "Try another search."
-                    : "Ask an agent for a chart, diagram, or mockup. Each page it publishes shows up here."
+                    ? t("Try another search.")
+                    : t(
+                        "Ask an agent for a chart, diagram, or mockup. Each page it publishes shows up here.",
+                      )
                 }
-                title={isFiltered ? "No matching artifacts" : "No artifacts yet"}
+                title={isFiltered ? t("No matching artifacts") : t("No artifacts yet")}
               />
             )
           }

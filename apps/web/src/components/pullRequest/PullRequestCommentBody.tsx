@@ -4,6 +4,7 @@ import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { PullRequestMarkdown } from "./PullRequestMarkdown";
 import { observeResize } from "~/lib/observeResize";
+import { t } from "~/i18n";
 
 export function PullRequestCommentBody({
   className,
@@ -51,7 +52,7 @@ export function PullRequestCommentBody({
             setExpanded(!expanded);
           }}
         >
-          {expanded ? "Show less" : "Show full comment"}
+          {expanded ? t("Show less") : t("Show full comment")}
         </Button>
       ) : null}
     </div>

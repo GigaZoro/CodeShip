@@ -12,6 +12,7 @@ import {
   resolveSubagentRowPresentation,
   resolveSubagentStopTarget,
 } from "./threadAgentsPresentation";
+import { t } from "../../lib/i18n";
 
 export function SubagentStopButton(props: {
   readonly environmentId: EnvironmentId;
@@ -39,7 +40,7 @@ export function SubagentStopButton(props: {
         : interruptTurn({ environmentId: props.environmentId, input: target.input })
     ).finally(() => setStopping(false));
     if (result._tag === "Failure") {
-      Dialog.alert(workflow ? "Could not stop workflow" : "Could not stop agent");
+      Dialog.alert(workflow ? t("Could not stop workflow") : t("Could not stop agent"));
     }
   };
 
@@ -48,13 +49,23 @@ export function SubagentStopButton(props: {
       <IconButton
         icon="stop.fill"
         variant="danger"
-        accessibilityLabel={`${stopping ? "Stopping" : "Stop"} ${workflow ? "workflow" : "agent"} ${label}`}
+        accessibilityLabel={
+          stopping
+            ? workflow
+              ? t("Stopping workflow {label}", { label })
+              : t("Stopping agent {label}", { label })
+            : workflow
+              ? t("Stop workflow {label}", { label })
+              : t("Stop agent {label}", { label })
+        }
         disabled={stopping}
         onPress={() =>
           Dialog.confirm({
-            title: workflow ? "Stop workflow?" : "Stop agent?",
-            message: workflow ? `Every running agent in ${label} stops.` : `Stop ${label}?`,
-            confirmText: "Stop",
+            title: workflow ? t("Stop workflow?") : t("Stop agent?"),
+            message: workflow
+              ? t("Every running agent in {label} stops.", { label })
+              : t("Stop {label}?", { label }),
+            confirmText: t("Stop"),
             destructive: true,
             onConfirm: () => void stop(),
           })

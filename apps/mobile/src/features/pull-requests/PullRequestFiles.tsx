@@ -32,13 +32,14 @@ import {
 import { usePullRequestFileFilter } from "./usePullRequestFileFilter";
 import { usePullRequestFilesViewed } from "./usePullRequestFilesViewed";
 import { pullRequestFileJumpScope, requestPullRequestFileJump } from "./pullRequestFileJump";
+import { t, tn, msg, getFormattingLocale } from "../../lib/i18n";
 
 const BREAKDOWN_LABELS = {
-  code: "Code",
-  tests: "Tests",
-  mocks: "Mocks",
-  generated: "Generated",
-  docs: "Docs",
+  code: msg("Code"),
+  tests: msg("Tests"),
+  mocks: msg("Mocks"),
+  generated: msg("Generated"),
+  docs: msg("Docs"),
 } satisfies Record<keyof NonNullable<PullRequestChangeBreakdown>, string>;
 
 function fileDirectory(path: string) {
@@ -78,15 +79,18 @@ function describeFiles(
   parsed: Extract<ReviewParsedDiff, { readonly kind: "files" }>,
   { filter, viewed }: ChangedFiles,
 ) {
-  const noun = (count: number) => (count === 1 ? "file" : "files");
   return [
-    `${parsed.fileCount} ${filter.hiddenCount ? "visible" : "changed"} ${noun(parsed.fileCount)}`,
+    filter.hiddenCount
+      ? tn(parsed.fileCount, "{count} visible file", "{count} visible files")
+      : tn(parsed.fileCount, "{count} changed file", "{count} changed files"),
     viewed.supported
-      ? `${parsed.files.filter((file) => viewed.isViewed(file.path)).length} viewed`
+      ? t("{count} viewed", {
+          count: parsed.files.filter((file) => viewed.isViewed(file.path)).length,
+        })
       : null,
     filter.hideTestFiles
-      ? `${filter.hiddenCount} test ${noun(filter.hiddenCount)} hidden`
-      : "Test files included",
+      ? tn(filter.hiddenCount, "{count} test file hidden", "{count} test files hidden")
+      : t("Test files included"),
   ]
     .filter(Boolean)
     .join(" · ");
@@ -103,7 +107,19 @@ function FileRow(props: {
   return (
     <RowPressable
       accessibilityRole="button"
-      accessibilityLabel={`View diff for ${file.path}, ${file.additions} additions, ${file.deletions} deletions${props.viewed ? ", viewed" : ""}`}
+      accessibilityLabel={
+        props.viewed
+          ? t("View diff for {path}, {additions}, {deletions}, viewed", {
+              path: file.path,
+              additions: tn(file.additions, "{count} addition", "{count} additions"),
+              deletions: tn(file.deletions, "{count} deletion", "{count} deletions"),
+            })
+          : t("View diff for {path}, {additions}, {deletions}", {
+              path: file.path,
+              additions: tn(file.additions, "{count} addition", "{count} additions"),
+              deletions: tn(file.deletions, "{count} deletion", "{count} deletions"),
+            })
+      }
       onPress={props.onPress}
       className="min-h-14 flex-row items-center gap-3 border-b border-border-subtle py-3 active:opacity-70"
     >
@@ -119,7 +135,7 @@ function FileRow(props: {
         ) : null}
         {file.previousPath ? (
           <Text textRole="caption" className="text-foreground-muted" numberOfLines={1}>
-            Renamed from {file.previousPath}
+            {t("Renamed from {path}", { path: file.previousPath })}
           </Text>
         ) : null}
       </View>
@@ -159,11 +175,11 @@ function FileRowSkeleton(props: { readonly index: number }) {
 function FileFilterMenu({ filter }: { readonly filter: ChangedFiles["filter"] }) {
   return (
     <Menu
-      title="Review files"
+      title={t("Review files")}
       actions={[
         {
           id: "hide-tests",
-          title: "Hide test files",
+          title: t("Hide test files"),
           image: "line.3.horizontal.decrease",
           state: filter.hideTestFiles ? "on" : "off",
         },
@@ -173,7 +189,7 @@ function FileFilterMenu({ filter }: { readonly filter: ChangedFiles["filter"] })
       <View pointerEvents="none">
         <IconButton
           icon="line.3.horizontal.decrease"
-          accessibilityLabel="Filter review files"
+          accessibilityLabel={t("Filter review files")}
           selected={filter.hideTestFiles}
         />
       </View>
@@ -186,16 +202,16 @@ function NoVisibleFiles({ files }: { readonly files: ChangedFiles }) {
   if (parsed.kind === "files") {
     return parsed.files.length === 0 && filter.hiddenCount > 0 ? (
       <EmptyState
-        title={diff.nextCursor ? "No non-test files loaded yet" : "Only test files changed"}
-        detail="Test files are hidden from this review."
-        action={<Button label="Show test files" tone="contrast" onPress={filter.showAll} />}
+        title={diff.nextCursor ? t("No non-test files loaded yet") : t("Only test files changed")}
+        detail={t("Test files are hidden from this review.")}
+        action={<Button label={t("Show test files")} tone="contrast" onPress={filter.showAll} />}
         variant="plain"
       />
     ) : null;
   }
   return !diff.isPending && !diff.error ? (
     <Text textRole="footnote" className="py-6 text-foreground-muted">
-      No text changes available.
+      {t("No text changes available.")}
     </Text>
   ) : null;
 }
@@ -206,7 +222,7 @@ function FilesFooter({ files }: { readonly files: ChangedFiles }) {
     <>
       {diff.nextCursor ? (
         <Button
-          label={diff.error ? "Retry loading files" : "Load more files"}
+          label={diff.error ? t("Retry loading files") : t("Load more files")}
           tone="secondary"
           onPress={diff.error ? diff.refresh : diff.loadMore}
           loading={diff.isPending}
@@ -236,7 +252,7 @@ function ChangeBreakdownLine(props: {
       return additions === 0 && deletions === 0
         ? []
         : [
-            `${BREAKDOWN_LABELS[kind]} +${additions.toLocaleString()} −${deletions.toLocaleString()}`,
+            `${t(BREAKDOWN_LABELS[kind])} +${additions.toLocaleString(getFormattingLocale())} −${deletions.toLocaleString(getFormattingLocale())}`,
           ];
     },
   );
@@ -266,15 +282,15 @@ export function usePullRequestFilesSection(params: PullRequestParams) {
         <PullRequestReadStatus pending={false} error={diff.error} terminology={files.terminology} />
         {loading ? (
           <View
-            accessibilityLabel="Loading changed files"
+            accessibilityLabel={t("Loading changed files")}
             accessibilityState={{ busy: true }}
             className="min-h-17 flex-row items-center gap-2 py-3"
           >
             <View className="min-w-0 flex-1 gap-1">
-              <PullRequestSectionHeading>Changed files</PullRequestSectionHeading>
+              <PullRequestSectionHeading>{t("Changed files")}</PullRequestSectionHeading>
               {pr ? (
                 <Text textRole="caption" className="text-foreground-muted">
-                  {pr.changedFiles} {pr.changedFiles === 1 ? "file" : "files"}
+                  {tn(pr.changedFiles, "{count} file", "{count} files")}
                 </Text>
               ) : (
                 <View className="h-2.5 w-28 rounded bg-subtle-strong" />
@@ -298,7 +314,7 @@ export function usePullRequestFilesSection(params: PullRequestParams) {
         ) : parsed.kind === "files" ? (
           <View className="min-h-17 flex-row items-center gap-2 py-3">
             <View className="min-w-0 flex-1 gap-1">
-              <PullRequestSectionHeading>Changed files</PullRequestSectionHeading>
+              <PullRequestSectionHeading>{t("Changed files")}</PullRequestSectionHeading>
               <Text textRole="caption" className="text-foreground-muted">
                 {describeFiles(parsed, files)}
               </Text>
@@ -373,7 +389,7 @@ function DirectoryRow(props: {
   readonly collapsed: boolean;
   readonly onPress: () => void;
 }) {
-  const label = props.directory || "Repository root";
+  const label = props.directory || t("Repository root");
   return (
     <RowPressable
       accessibilityRole="button"
@@ -414,7 +430,7 @@ export function PullRequestFilesSheet({ route }: StaticScreenProps<PullRequestDi
     <View collapsable={false} className="flex-1 bg-sheet">
       <SheetHeader
         presentation={Platform.OS === "android" ? "inline" : "native"}
-        title="Changed files"
+        title={t("Changed files")}
         subtitle={`#${params.number} · ${params.commit?.slice(0, 7) ?? params.repository}`}
         onClose={() => navigation.goBack()}
         // iOS gets the native menu below; SheetHeader would render this as a custom bar item.
@@ -422,8 +438,8 @@ export function PullRequestFilesSheet({ route }: StaticScreenProps<PullRequestDi
       />
       <Toolbar placement="right">
         <Toolbar.Menu
-          title="Review files"
-          accessibilityLabel="Filter review files"
+          title={t("Review files")}
+          accessibilityLabel={t("Filter review files")}
           icon="line.3.horizontal.decrease"
         >
           <Toolbar.MenuAction
@@ -431,7 +447,7 @@ export function PullRequestFilesSheet({ route }: StaticScreenProps<PullRequestDi
             isOn={filter.hideTestFiles}
             onPress={filter.toggle}
           >
-            <Toolbar.Label>Hide test files</Toolbar.Label>
+            <Toolbar.Label>{t("Hide test files")}</Toolbar.Label>
           </Toolbar.MenuAction>
         </Toolbar.Menu>
       </Toolbar>
@@ -502,7 +518,7 @@ export function PullRequestFilesSheet({ route }: StaticScreenProps<PullRequestDi
             loading ? (
               <View
                 accessible
-                accessibilityLabel="Loading changed files"
+                accessibilityLabel={t("Loading changed files")}
                 accessibilityState={{ busy: true }}
               >
                 {Array.from({ length: loadingRowCount(files) }, (_, index) => (

@@ -7,6 +7,7 @@ import {
   type ComposerImageAttachment,
   type ComposerThreadTarget,
 } from "../../composerDraftStore";
+import { t } from "~/i18n";
 
 export function recoverQueuedMessageEdit(input: {
   readonly editTarget: ComposerThreadTarget;
@@ -40,7 +41,7 @@ export async function prepareQueuedEditAttachments(input: {
 }) {
   const files = input.files.length === 0 ? [] : await input.uploadFiles(input.files);
   if (files.length !== input.files.length)
-    throw new Error("Retry or remove failed uploads before saving.");
+    throw new Error(t("Retry or remove failed uploads before saving."));
   const images = await Promise.all(
     input.images.map(async (image) => ({
       type: "image" as const,

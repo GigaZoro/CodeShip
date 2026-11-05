@@ -1,5 +1,6 @@
 import { readHostedPairingRequest } from "@t3tools/shared/remote";
 import * as Schema from "effect/Schema";
+import { t } from "../../lib/i18n";
 
 const MOBILE_PAIRING_URL_PARAM = "pairingUrl";
 
@@ -23,7 +24,7 @@ export class PairingQrPayloadEmptyError extends Schema.TaggedError<PairingQrPayl
   {},
 ) {
   override get message(): string {
-    return "Scanned QR code did not contain a pairing URL.";
+    return t("Scanned QR code did not contain a pairing URL.");
   }
 }
 

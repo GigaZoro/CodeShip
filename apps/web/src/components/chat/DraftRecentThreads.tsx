@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { useNavigate } from "@tanstack/react-router";
@@ -88,8 +89,8 @@ export function DraftRecentThreads(props: { readonly draftTarget: ComposerThread
     projects.map((project) => [`${project.environmentId}:${project.id}`, project.title] as const),
   );
   return (
-    <section aria-label="Recent threads" className="pt-6">
-      <h2 className="px-2 pb-1 font-medium text-muted-foreground text-xs">Recent threads</h2>
+    <section aria-label={t("Recent threads")} className="pt-6">
+      <h2 className="px-2 pb-1 font-medium text-muted-foreground text-xs">{t("Recent threads")}</h2>
       <ul>
         {recent.map((thread) => (
           <RecentThreadRow

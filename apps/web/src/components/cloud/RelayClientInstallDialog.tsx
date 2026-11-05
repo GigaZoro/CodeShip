@@ -18,17 +18,18 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../ui/dialog";
+import { msg, t, type Message } from "~/i18n";
 const installSteps: ReadonlyArray<{
   readonly stage: RelayClientInstallProgressStage;
-  readonly label: string;
+  readonly label: Message;
 }> = [
-  { stage: "checking", label: "Checking current installation" },
-  { stage: "waiting_for_lock", label: "Waiting for installer" },
-  { stage: "downloading", label: "Downloading relay client" },
-  { stage: "verifying", label: "Verifying download" },
-  { stage: "installing", label: "Installing relay client" },
-  { stage: "validating", label: "Validating executable" },
-  { stage: "activating", label: "Activating installation" },
+  { stage: "checking", label: msg("Checking current installation") },
+  { stage: "waiting_for_lock", label: msg("Waiting for installer") },
+  { stage: "downloading", label: msg("Downloading relay client") },
+  { stage: "verifying", label: msg("Verifying download") },
+  { stage: "installing", label: msg("Installing relay client") },
+  { stage: "validating", label: msg("Validating executable") },
+  { stage: "activating", label: msg("Activating installation") },
 ];
 
 export function RelayClientInstallDialog() {
@@ -65,12 +66,14 @@ export function RelayClientInstallDialog() {
             <DownloadIcon aria-hidden className="size-4.5 text-muted-foreground" />
           </div>
           <DialogTitle>
-            {isInstalling ? "Installing relay client" : "Install relay client?"}
+            {isInstalling ? t("Installing relay client") : t("Install relay client?")}
           </DialogTitle>
           <DialogDescription>
             {isInstalling
-              ? "T3.CodeShip is preparing this environment for secure access through T3 Connect."
-              : "T3.CodeShip needs the relay client to make this environment available through T3 Connect."}
+              ? t("T3.CodeShip is preparing this environment for secure access through T3 Connect.")
+              : t(
+                  "T3.CodeShip needs the relay client to make this environment available through T3 Connect.",
+                )}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel scrollFade={false}>
@@ -78,28 +81,32 @@ export function RelayClientInstallDialog() {
             <div className="space-y-2.5">
               <div className="flex items-center justify-between gap-3 text-sm">
                 <p aria-live="polite" className="font-medium text-foreground">
-                  {activeStep?.label}
+                  {activeStep ? t(activeStep.label) : null}
                 </p>
                 <p className="shrink-0 tabular-nums text-muted-foreground">
-                  {activeStepIndex + 1} of {installSteps.length}
+                  {t("{current} of {total}", {
+                    current: activeStepIndex + 1,
+                    total: installSteps.length,
+                  })}
                 </p>
               </div>
               <progress
-                aria-label="Relay client installation progress"
+                aria-label={t("Relay client installation progress")}
                 className="h-2 w-full appearance-none overflow-hidden rounded-full bg-muted [&::-moz-progress-bar]:rounded-full [&::-moz-progress-bar]:bg-primary [&::-webkit-progress-bar]:rounded-full [&::-webkit-progress-bar]:bg-muted [&::-webkit-progress-value]:rounded-full [&::-webkit-progress-value]:bg-primary"
                 max={installSteps.length}
                 value={activeStepIndex + 1}
               />
               <p className="text-xs leading-relaxed text-muted-foreground">
-                Keep T3.CodeShip open while the relay client is installed.
+                {t("Keep T3.CodeShip open while the relay client is installed.")}
               </p>
             </div>
           ) : (
             <div className="rounded-xl border border-border/70 bg-muted/35 p-3">
-              <p className="text-sm font-medium text-foreground">Managed relay client</p>
+              <p className="text-sm font-medium text-foreground">{t("Managed relay client")}</p>
               <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                T3.CodeShip will download and install version{" "}
-                {view.status === "confirming" ? view.version : ""} locally.
+                {t("T3.CodeShip will download and install version {version} locally.", {
+                  version: view.status === "confirming" ? view.version : "",
+                })}
               </p>
             </div>
           )}
@@ -110,10 +117,10 @@ export function RelayClientInstallDialog() {
               variant="outline"
               onClick={() => respondToRelayClientInstallConfirmation(false)}
             >
-              Cancel
+              {t("Cancel")}
             </Button>
             <Button onClick={() => respondToRelayClientInstallConfirmation(true)}>
-              Download and install
+              {t("Download and install")}
             </Button>
           </DialogFooter>
         ) : null}

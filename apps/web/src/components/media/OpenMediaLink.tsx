@@ -4,6 +4,7 @@ import { resolveExternalWebLinkHost } from "../chat/externalLinkContextMenu";
 import { Button } from "../ui/button";
 import { resolveProtocolRelativeMediaUrl } from "./mediaContent";
 
+import { t } from "~/i18n";
 export function OpenMediaLink(props: {
   readonly originalUrl?: string | undefined;
   readonly src?: string | null | undefined;
@@ -38,7 +39,7 @@ export function OpenMediaLink(props: {
       }
     >
       {isBlob ? <DownloadIcon /> : <ExternalLinkIcon />}
-      {originalUrl ? "Open original" : isBlob ? "Download video" : "Open in browser"}
+      {originalUrl ? t("Open original") : isBlob ? t("Download video") : t("Open in browser")}
     </Button>
   );
 }

@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import { useAtomValue } from "@effect/atom-react";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
@@ -143,8 +144,8 @@ export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
       type: "info",
       title:
         unavailableNotice === "missing"
-          ? "That thread no longer exists"
-          : "That thread isn't available here",
+          ? t("That thread no longer exists")
+          : t("That thread isn't available here"),
     });
   }, [environmentHasAnyThreads, targetThreadKey, unavailableNotice]);
 

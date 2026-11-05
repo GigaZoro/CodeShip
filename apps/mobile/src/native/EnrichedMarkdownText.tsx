@@ -31,6 +31,7 @@ import {
   enrichedSkillLinkRegex,
   enrichedLinkVariantPattern,
 } from "../lib/enrichedLinkPresentation";
+import { t } from "../lib/i18n";
 
 function enrichedStyle(
   style: SelectableMarkdownTextProps["textStyle"],
@@ -222,9 +223,9 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
             const menu = fileContextMenu?.(url) ?? {
               title: url,
               actions: [
-                { id: "enriched-open-link", title: "Open link" },
-                { id: "enriched-copy-link", title: "Copy link" },
-                { id: "enriched-share-link", title: "Share link" },
+                { id: "enriched-open-link", title: t("Open link") },
+                { id: "enriched-copy-link", title: t("Copy link") },
+                { id: "enriched-share-link", title: t("Share link") },
               ],
             };
             return [
@@ -294,8 +295,8 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
             const menu = props.fileContextMenu?.(url) ?? {
               title: url,
               actions: [
-                { id: "enriched-open-link", title: "Open link" },
-                { id: "enriched-copy-link", title: "Copy link" },
+                { id: "enriched-open-link", title: t("Open link") },
+                { id: "enriched-copy-link", title: t("Copy link") },
               ],
             };
             setActiveMenu({ url, menu });
@@ -332,7 +333,7 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
             props.onCiteText
               ? [
                   {
-                    text: "Cite",
+                    text: t("Cite"),
                     icon: "quote.bubble",
                     onPress: ({ text }) => props.onCiteText?.(text),
                   },

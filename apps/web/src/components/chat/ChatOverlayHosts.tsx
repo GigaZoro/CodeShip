@@ -1,3 +1,4 @@
+import { t, tx } from "~/i18n";
 import type {
   DeviceServiceState,
   EnvironmentId,
@@ -154,15 +155,18 @@ export function BranchRestoreConfirmHost(props: {
       <AlertDialogPopup>
         <AlertDialogHeader>
           <AlertDialogTitle>
-            Switch to <code className="font-medium">{props.threadBranch}</code>?
+            {tx("Switch to {branch}?", {
+              branch: <code className="font-medium">{props.threadBranch}</code>,
+            })}
           </AlertDialogTitle>
           <AlertDialogDescription>
-            You have uncommitted changes. They'll carry over to the other branch, or block the
-            switch if they conflict.
+            {t(
+              "You have uncommitted changes. They'll carry over to the other branch, or block the switch if they conflict.",
+            )}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+          <AlertDialogClose render={<Button variant="outline" />}>{t("Cancel")}</AlertDialogClose>
           <Button
             variant="default"
             disabled={!props.canWriteSourceControl}
@@ -171,7 +175,7 @@ export function BranchRestoreConfirmHost(props: {
               props.onConfirm();
             }}
           >
-            Switch branch
+            {t("Switch branch")}
           </Button>
         </AlertDialogFooter>
       </AlertDialogPopup>
@@ -216,20 +220,26 @@ export function RevertConfirmHost(props: {
     >
       <AlertDialogPopup>
         <AlertDialogHeader>
-          <AlertDialogTitle>{retry ? "Retry this response?" : "Edit from here?"}</AlertDialogTitle>
+          <AlertDialogTitle>
+            {retry ? t("Retry this response?") : t("Edit from here?")}
+          </AlertDialogTitle>
           <AlertDialogDescription>
             {retry
-              ? "Rewind chat to before this response and send your message again. “Revert files too” also undoes the edits the response made, so the retry starts from the earlier files."
-              : "Rewind chat to before this message. Your prompt and attachments return to the composer. “Revert files too” also undoes your own edits."}
+              ? t(
+                  "Rewind chat to before this response and send your message again. “Revert files too” also undoes the edits the response made, so the retry starts from the earlier files.",
+                )
+              : t(
+                  "Rewind chat to before this message. Your prompt and attachments return to the composer. “Revert files too” also undoes your own edits.",
+                )}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+          <AlertDialogClose render={<Button variant="outline" />}>{t("Cancel")}</AlertDialogClose>
           <Button variant="destructive-outline" onClick={() => confirm(true)}>
-            Revert files too
+            {t("Revert files too")}
           </Button>
           <Button onClick={() => confirm(false)}>
-            {retry ? "Retry, keep changes" : "Revert and keep changes"}
+            {retry ? t("Retry, keep changes") : t("Revert and keep changes")}
           </Button>
         </AlertDialogFooter>
       </AlertDialogPopup>

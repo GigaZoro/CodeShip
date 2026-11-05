@@ -63,8 +63,9 @@ import {
   type McpServerFormField,
   type McpServerKind,
 } from "./mcpServerForm";
+import { msg, t, tn, type Message } from "~/i18n";
 
-const FAILURE_FALLBACK = "The provider could not finish the change.";
+const FAILURE_FALLBACK = msg("The provider could not finish the change.");
 
 const serverLabel = (server: ProviderMcpServer) => server.displayName ?? server.name;
 
@@ -76,26 +77,42 @@ function openInBrowser(url: string) {
     .catch(() =>
       toastManager.add({
         type: "error",
-        title: "Could not open the sign-in page",
-        description: "Copy the link from this dialog and open it in your browser.",
+        title: t("Could not open the sign-in page"),
+        description: t("Copy the link from this dialog and open it in your browser."),
       }),
     );
 }
 
 const STATUS_LOOKS: Record<
   ProviderMcpServer["status"],
-  { readonly label: string; readonly icon: LucideIcon; readonly className: string }
+  { readonly label: Message; readonly icon: LucideIcon; readonly className: string }
 > = {
-  connected: { label: "Connected", icon: CircleCheckIcon, className: "text-success-foreground" },
-  needsAuth: { label: "Needs sign-in", icon: KeyRoundIcon, className: "text-warning-foreground" },
+  connected: {
+    label: msg("Connected"),
+    icon: CircleCheckIcon,
+    className: "text-success-foreground",
+  },
+  needsAuth: {
+    label: msg("Needs sign-in"),
+    icon: KeyRoundIcon,
+    className: "text-warning-foreground",
+  },
   failed: {
-    label: "Failed to connect",
+    label: msg("Failed to connect"),
     icon: CircleAlertIcon,
     className: "text-destructive-foreground",
   },
-  starting: { label: "Still starting", icon: CircleDashedIcon, className: "text-muted-foreground" },
-  disabled: { label: "Turned off", icon: CircleOffIcon, className: "text-muted-foreground" },
-  notConfigured: { label: "Not set up", icon: CircleMinusIcon, className: "text-muted-foreground" },
+  starting: {
+    label: msg("Still starting"),
+    icon: CircleDashedIcon,
+    className: "text-muted-foreground",
+  },
+  disabled: { label: msg("Turned off"), icon: CircleOffIcon, className: "text-muted-foreground" },
+  notConfigured: {
+    label: msg("Not set up"),
+    icon: CircleMinusIcon,
+    className: "text-muted-foreground",
+  },
 };
 
 function ServerStatus(props: { readonly server: ProviderMcpServer }) {
@@ -105,10 +122,10 @@ function ServerStatus(props: { readonly server: ProviderMcpServer }) {
   return (
     <span className={`inline-flex items-center gap-1 text-xs ${look.className}`}>
       <Icon className="size-3.5" aria-hidden />
-      {look.label}
+      {t(look.label)}
       {server.status === "connected" && server.toolCount !== undefined ? (
         <span className="text-muted-foreground tabular-nums">
-          · {server.toolCount} {server.toolCount === 1 ? "tool" : "tools"}
+          · {tn(server.toolCount, "{count} tool", "{count} tools")}
         </span>
       ) : null}
     </span>
@@ -121,15 +138,18 @@ function originBadge(server: ProviderMcpServer, providerName: string) {
       return null;
     case "plugin":
       return {
-        label: server.plugin ? `Plugin: ${server.plugin}` : "Plugin",
-        hint: "A plugin adds this server. Manage it on the Plugins page.",
+        label: server.plugin ? t("Plugin: {plugin}", { plugin: server.plugin }) : t("Plugin"),
+        hint: t("A plugin adds this server. Manage it on the Plugins page."),
       };
     case "connector":
-      return { label: "claude.ai", hint: "Connect or remove this connector on claude.ai." };
+      return { label: "claude.ai", hint: t("Connect or remove this connector on claude.ai.") };
     case "managed":
-      return { label: "Managed", hint: "Your organization's policy adds this server." };
+      return { label: t("Managed"), hint: t("Your organization's policy adds this server.") };
     case "builtIn":
-      return { label: "Built in", hint: `${providerName} includes this server.` };
+      return {
+        label: t("Built in"),
+        hint: t("{provider} includes this server.", { provider: providerName }),
+      };
   }
 }
 
@@ -237,18 +257,18 @@ function AddServerDialog(props: {
     if (result._tag === "Success") {
       toastManager.add({
         type: "success",
-        title: `Added ${read.name}`,
+        title: t("Added {name}", { name: read.name }),
         description:
           read.server.transport === "http"
-            ? "If it asks you to sign in, choose Sign in on its row."
-            : `New ${providerName} sessions start it.`,
+            ? t("If it asks you to sign in, choose Sign in on its row.")
+            : t("New {provider} sessions start it.", { provider: providerName }),
       });
       setForm(EMPTY_FORM);
       props.onOpenChange(false);
       props.onAdded();
       return;
     }
-    setFailure(failureMessage(result, FAILURE_FALLBACK));
+    setFailure(failureMessage(result, t(FAILURE_FALLBACK)));
   };
 
   const field = (name: McpServerFormField) => ({
@@ -263,31 +283,35 @@ function AddServerDialog(props: {
       <DialogPopup className="sm:max-w-lg">
         <form className="flex min-h-0 flex-col" onSubmit={(event) => void submit(event)}>
           <DialogHeader>
-            <DialogTitle>Add MCP server</DialogTitle>
+            <DialogTitle>{t("Add MCP server")}</DialogTitle>
             <DialogDescription>
-              {props.target.label} gets the server's tools in new sessions.
+              {t("{target} gets the server's tools in new sessions.", {
+                target: props.target.label,
+              })}
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
             <div className="flex flex-col gap-4">
               <div className="flex flex-col gap-2">
-                <Label htmlFor={`${id}-name`}>Name</Label>
+                <Label htmlFor={`${id}-name`}>{t("Name")}</Label>
                 <Input
                   {...field("name")}
                   autoFocus
-                  placeholder="context7"
+                  placeholder={"context7"}
                   value={form.name}
                   onChange={(event) => update("name", event.currentTarget.value)}
                 />
                 <p id={`${id}-name-hint`} className="text-muted-foreground text-xs">
-                  Letters, numbers, hyphens, and underscores. {providerName} names the server's
-                  tools after it.
+                  {t(
+                    "Letters, numbers, hyphens, and underscores. {provider} names the server's tools after it.",
+                    { provider: providerName },
+                  )}
                 </p>
                 <FieldError id={`${id}-name-error`} message={errors.name} />
               </div>
               <div className="flex flex-col gap-2">
                 <span id={`${id}-kind`} className="font-medium text-sm">
-                  Type
+                  {t("Type")}
                 </span>
                 <ToggleGroup
                   aria-labelledby={`${id}-kind`}
@@ -299,44 +323,47 @@ function AddServerDialog(props: {
                   }}
                 >
                   <Toggle value="remote" disabled={adding}>
-                    Remote URL
+                    {t("Remote URL")}
                   </Toggle>
                   <Toggle value="local" disabled={adding}>
-                    Local command
+                    {t("Local command")}
                   </Toggle>
                 </ToggleGroup>
               </div>
               {form.kind === "remote" ? (
                 <>
                   <div className="flex flex-col gap-2">
-                    <Label htmlFor={`${id}-url`}>URL</Label>
+                    <Label htmlFor={`${id}-url`}>{"URL"}</Label>
                     <Input
                       {...field("url")}
                       type="url"
                       inputMode="url"
-                      placeholder="https://example.com/mcp"
+                      placeholder={"https://example.com/mcp"}
                       value={form.url}
                       onChange={(event) => update("url", event.currentTarget.value)}
                     />
                     <p id={`${id}-url-hint`} className="text-muted-foreground text-xs">
-                      The server's MCP endpoint. Servers that sign in with a browser need nothing
-                      else.
+                      {t(
+                        "The server's MCP endpoint. Servers that sign in with a browser need nothing else.",
+                      )}
                     </p>
                     <FieldError id={`${id}-url-error`} message={errors.url} />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <Label htmlFor={`${id}-headers`}>Headers (optional)</Label>
+                    <Label htmlFor={`${id}-headers`}>{t("Headers (optional)")}</Label>
                     <Textarea
                       {...field("headers")}
                       size="sm"
                       spellCheck={false}
-                      placeholder="Authorization: Bearer …"
+                      placeholder={"Authorization: Bearer …"}
                       value={form.headers}
                       onChange={(event) => update("headers", event.currentTarget.value)}
                     />
                     <p id={`${id}-headers-hint`} className="text-muted-foreground text-xs">
-                      One per line, as Name: value, for servers that take an API key. {providerName}{" "}
-                      keeps them in its config file.
+                      {t(
+                        "One per line, as Name: value, for servers that take an API key. {provider} keeps them in its config file.",
+                        { provider: providerName },
+                      )}
                     </p>
                     <FieldError id={`${id}-headers-error`} message={errors.headers} />
                   </div>
@@ -344,31 +371,36 @@ function AddServerDialog(props: {
               ) : (
                 <>
                   <div className="flex flex-col gap-2">
-                    <Label htmlFor={`${id}-command`}>Command</Label>
+                    <Label htmlFor={`${id}-command`}>{t("Command")}</Label>
                     <Input
                       {...field("command")}
                       spellCheck={false}
-                      placeholder="npx -y @upstash/context7-mcp"
+                      placeholder={"npx -y @upstash/context7-mcp"}
                       value={form.command}
                       onChange={(event) => update("command", event.currentTarget.value)}
                     />
                     <p id={`${id}-command-hint`} className="text-muted-foreground text-xs">
-                      The command and its arguments. It runs on the machine {providerName} runs on.
+                      {t(
+                        "The command and its arguments. It runs on the machine {provider} runs on.",
+                        { provider: providerName },
+                      )}
                     </p>
                     <FieldError id={`${id}-command-error`} message={errors.command} />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <Label htmlFor={`${id}-env`}>Environment variables (optional)</Label>
+                    <Label htmlFor={`${id}-env`}>{t("Environment variables (optional)")}</Label>
                     <Textarea
                       {...field("env")}
                       size="sm"
                       spellCheck={false}
-                      placeholder="API_KEY=…"
+                      placeholder={"API_KEY=…"}
                       value={form.env}
                       onChange={(event) => update("env", event.currentTarget.value)}
                     />
                     <p id={`${id}-env-hint`} className="text-muted-foreground text-xs">
-                      One per line, as NAME=value. {providerName} keeps them in its config file.
+                      {t("One per line, as NAME=value. {provider} keeps them in its config file.", {
+                        provider: providerName,
+                      })}
                     </p>
                     <FieldError id={`${id}-env-error`} message={errors.env} />
                   </div>
@@ -383,11 +415,11 @@ function AddServerDialog(props: {
           </DialogPanel>
           <DialogFooter>
             <Button type="button" variant="outline" disabled={adding} onClick={() => close(false)}>
-              Cancel
+              {t("Cancel")}
             </Button>
             <Button type="submit" disabled={adding}>
               {adding ? <Spinner /> : null}
-              Add server
+              {t("Add server")}
             </Button>
           </DialogFooter>
         </form>
@@ -422,7 +454,7 @@ function SignInFlow(props: {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!state || !callbackUrl.trim()) {
-      setCallbackError("Paste the address from the browser's address bar.");
+      setCallbackError(t("Paste the address from the browser's address bar."));
       return;
     }
     setSubmitting(true);
@@ -436,7 +468,7 @@ function SignInFlow(props: {
       },
     });
     setSubmitting(false);
-    if (result._tag !== "Success") setCallbackError(failureMessage(result, FAILURE_FALLBACK));
+    if (result._tag !== "Success") setCallbackError(failureMessage(result, t(FAILURE_FALLBACK)));
   };
 
   if (signIn.error !== null) {
@@ -449,7 +481,7 @@ function SignInFlow(props: {
         </DialogPanel>
         <DialogFooter>
           <Button variant="outline" onClick={props.onClose}>
-            Close
+            {t("Close")}
           </Button>
         </DialogFooter>
       </>
@@ -461,11 +493,13 @@ function SignInFlow(props: {
         <DialogPanel>
           <p className="inline-flex items-center gap-2 text-sm" role="status">
             <CircleCheckIcon className="size-4 text-success-foreground" aria-hidden />
-            Signed in. New {providerName} sessions can use its tools.
+            {t("Signed in. New {provider} sessions can use its tools.", {
+              provider: providerName,
+            })}
           </p>
         </DialogPanel>
         <DialogFooter>
-          <Button onClick={props.onClose}>Done</Button>
+          <Button onClick={props.onClose}>{t("Done")}</Button>
         </DialogFooter>
       </>
     );
@@ -475,7 +509,7 @@ function SignInFlow(props: {
       <DialogPanel>
         <p className="inline-flex items-center gap-2 text-muted-foreground text-sm" role="status">
           <Spinner size="sm" tone="muted" />
-          Starting the sign-in…
+          {t("Starting the sign-in…")}
         </p>
       </DialogPanel>
     );
@@ -488,29 +522,31 @@ function SignInFlow(props: {
           {authorizationUrl ? (
             <div className="flex flex-col gap-2">
               <p className="text-sm">
-                Open the sign-in page and approve access. This dialog finishes on its own once{" "}
-                {providerName} gets the response.
+                {t(
+                  "Open the sign-in page and approve access. This dialog finishes on its own once {provider} gets the response.",
+                  { provider: providerName },
+                )}
               </p>
               <Button
                 type="button"
                 className="self-start"
                 onClick={() => openInBrowser(authorizationUrl)}
               >
-                Open sign-in page
+                {t("Open sign-in page")}
                 <ExternalLinkIcon />
               </Button>
             </div>
           ) : null}
           <p className="inline-flex items-center gap-2 text-muted-foreground text-xs" role="status">
             <Spinner size="sm" tone="muted" />
-            Waiting for approval…
+            {t("Waiting for approval…")}
           </p>
           <div className="flex flex-col gap-2">
-            <Label htmlFor={`${id}-callback`}>Redirect address</Label>
+            <Label htmlFor={`${id}-callback`}>{t("Redirect address")}</Label>
             <Input
               id={`${id}-callback`}
               spellCheck={false}
-              placeholder="http://localhost:…/callback?code=…"
+              placeholder={"http://localhost:…/callback?code=…"}
               value={callbackUrl}
               disabled={submitting}
               aria-invalid={callbackError !== null}
@@ -521,8 +557,9 @@ function SignInFlow(props: {
               }}
             />
             <p id={`${id}-callback-hint`} className="text-muted-foreground text-xs">
-              Signing in on another device, or did the browser show a connection error after you
-              approved? Paste the address from its address bar.
+              {t(
+                "Signing in on another device, or did the browser show a connection error after you approved? Paste the address from its address bar.",
+              )}
             </p>
             {callbackError ? (
               <p role="alert" className="text-destructive-foreground text-xs">
@@ -534,11 +571,11 @@ function SignInFlow(props: {
       </DialogPanel>
       <DialogFooter>
         <Button type="button" variant="outline" disabled={submitting} onClick={props.onClose}>
-          Cancel
+          {t("Cancel")}
         </Button>
         <Button type="submit" variant="outline" disabled={submitting || !callbackUrl.trim()}>
           {submitting ? <Spinner /> : null}
-          Finish sign-in
+          {t("Finish sign-in")}
         </Button>
       </DialogFooter>
     </form>
@@ -555,10 +592,14 @@ function SignInDialog(props: {
       <DialogPopup className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>
-            Sign in to {props.server ? serverLabel(props.server) : "MCP server"}
+            {t("Sign in to {server}", {
+              server: props.server ? serverLabel(props.server) : t("MCP server"),
+            })}
           </DialogTitle>
           <DialogDescription>
-            {props.target.naming.title} keeps the sign-in and uses it in new sessions.
+            {t("{provider} keeps the sign-in and uses it in new sessions.", {
+              provider: props.target.naming.title,
+            })}
           </DialogDescription>
         </DialogHeader>
         {props.server ? (
@@ -623,8 +664,11 @@ function ProviderMcpSection(props: {
     const confirmed = await settlePromise(() =>
       api.dialogs.confirm(
         [
-          `Remove ${serverLabel(server)} from ${providerName}?`,
-          "Its URL or command, and any keys you gave it, are deleted from the config.",
+          t("Remove {server} from {provider}?", {
+            server: serverLabel(server),
+            provider: providerName,
+          }),
+          t("Its URL or command, and any keys you gave it, are deleted from the config."),
         ].join("\n"),
         { variant: "destructive" },
       ),
@@ -634,29 +678,48 @@ function ProviderMcpSection(props: {
       remove({ environmentId, input: { instanceId, name: server.name } }),
     );
     if (outcome._tag !== "Success") {
-      reportFailure(`Could not remove ${serverLabel(server)}`, outcome, FAILURE_FALLBACK);
+      reportFailure(
+        t("Could not remove {server}", { server: serverLabel(server) }),
+        outcome,
+        t(FAILURE_FALLBACK),
+      );
       return;
     }
     servers.refresh();
-    toastManager.add({ type: "success", title: `Removed ${serverLabel(server)}` });
+    toastManager.add({
+      type: "success",
+      title: t("Removed {server}", { server: serverLabel(server) }),
+    });
   };
   const handleSignOut = async (server: ProviderMcpServer) => {
     const outcome = await track(server.name, () =>
       signOut({ environmentId, input: { instanceId, name: server.name } }),
     );
     if (outcome._tag !== "Success") {
-      reportFailure(`Could not sign out of ${serverLabel(server)}`, outcome, FAILURE_FALLBACK);
+      reportFailure(
+        t("Could not sign out of {server}", { server: serverLabel(server) }),
+        outcome,
+        t(FAILURE_FALLBACK),
+      );
       return;
     }
     servers.refresh();
-    toastManager.add({ type: "success", title: `Signed out of ${serverLabel(server)}` });
+    toastManager.add({
+      type: "success",
+      title: t("Signed out of {server}", { server: serverLabel(server) }),
+    });
   };
   const handleRefresh = async () => {
     setRefreshing(true);
     const outcome = await reload({ environmentId, input: { instanceId, refresh: true } });
     setRefreshing(false);
     if (outcome._tag === "Success") servers.refresh();
-    else reportFailure(`Could not check ${providerName}'s MCP servers`, outcome, FAILURE_FALLBACK);
+    else
+      reportFailure(
+        t("Could not check {provider}'s MCP servers", { provider: providerName }),
+        outcome,
+        t(FAILURE_FALLBACK),
+      );
   };
 
   const actions = (server: ProviderMcpServer) => {
@@ -668,14 +731,14 @@ function ProviderMcpSection(props: {
           <Button
             size="compact"
             variant="outline"
-            aria-label={`Connect ${serverLabel(server)} on claude.ai`}
+            aria-label={t("Connect {server} on claude.ai", { server: serverLabel(server) })}
             onClick={() => {
               void readLocalApi()
                 ?.shell.openExternal(CLAUDE_CONNECTORS_URL)
                 .catch(() => undefined);
             }}
           >
-            Connect on claude.ai
+            {t("Connect on claude.ai")}
             <ExternalLinkIcon aria-hidden />
           </Button>
         ) : null}
@@ -684,12 +747,15 @@ function ProviderMcpSection(props: {
             size="compact"
             variant="outline"
             disabled={!canManage}
-            aria-label={`Add ${server.missingVariable} to ${providerName}`}
+            aria-label={t("Add {variable} to {provider}", {
+              variable: server.missingVariable,
+              provider: providerName,
+            })}
             onClick={() =>
               void navigate({ to: "/settings/providers", search: { environmentId, instanceId } })
             }
           >
-            Add variable
+            {t("Add variable")}
           </Button>
         ) : null}
         {server.canSignIn ? (
@@ -697,10 +763,10 @@ function ProviderMcpSection(props: {
             size="compact"
             variant="outline"
             disabled={!canManage || busy}
-            aria-label={`Sign in to ${serverLabel(server)}`}
+            aria-label={t("Sign in to {server}", { server: serverLabel(server) })}
             onClick={() => setSigningIn(server)}
           >
-            Sign in
+            {t("Sign in")}
           </Button>
         ) : null}
         {server.canSignOut ? (
@@ -708,10 +774,10 @@ function ProviderMcpSection(props: {
             size="compact"
             variant="ghost"
             disabled={!canManage || busy}
-            aria-label={`Sign out of ${serverLabel(server)}`}
+            aria-label={t("Sign out of {server}", { server: serverLabel(server) })}
             onClick={() => void handleSignOut(server)}
           >
-            Sign out
+            {t("Sign out")}
           </Button>
         ) : null}
         {server.removable ? (
@@ -721,7 +787,7 @@ function ProviderMcpSection(props: {
                 <Button
                   size="icon-xs"
                   variant="ghost-destructive"
-                  aria-label={`Remove ${serverLabel(server)}`}
+                  aria-label={t("Remove {server}", { server: serverLabel(server) })}
                   disabled={!canManage || busy}
                   onClick={() => void handleRemove(server)}
                 >
@@ -729,7 +795,7 @@ function ProviderMcpSection(props: {
                 </Button>
               }
             />
-            <TooltipPopup>Remove</TooltipPopup>
+            <TooltipPopup>{t("Remove")}</TooltipPopup>
           </Tooltip>
         ) : null}
       </>
@@ -750,13 +816,16 @@ function ProviderMcpSection(props: {
           <span className="shrink-0 text-muted-foreground text-xs tabular-nums">
             {needle === "" || result.servers.length === 0
               ? result.servers.length
-              : `${visibleServers.length} of ${result.servers.length}`}
+              : t("{shown} of {total}", {
+                  shown: visibleServers.length,
+                  total: result.servers.length,
+                })}
           </span>
         ) : null}
         {servers.isPending && result !== null ? (
           <span className="inline-flex shrink-0 items-center gap-1 text-muted-foreground text-xs">
             <Spinner size="sm" tone="muted" />
-            Checking…
+            {t("Checking…")}
           </span>
         ) : null}
         <div className="ml-auto flex shrink-0 items-center gap-2">
@@ -766,7 +835,7 @@ function ProviderMcpSection(props: {
                 <Button
                   size="icon-sm"
                   variant="ghost"
-                  aria-label={`Check ${providerName}'s MCP servers again`}
+                  aria-label={t("Check {provider}'s MCP servers again", { provider: providerName })}
                   disabled={refreshing}
                   onClick={() => void handleRefresh()}
                 >
@@ -774,17 +843,17 @@ function ProviderMcpSection(props: {
                 </Button>
               }
             />
-            <TooltipPopup>Connect to every server again</TooltipPopup>
+            <TooltipPopup>{t("Connect to every server again")}</TooltipPopup>
           </Tooltip>
           <Button
             size="sm"
             variant="outline"
-            aria-label={`Add MCP server to ${providerName}`}
+            aria-label={t("Add MCP server to {provider}", { provider: providerName })}
             disabled={!canManage}
             onClick={() => setAdding(true)}
           >
             <PlusIcon />
-            <span className="max-sm:sr-only">Add server</span>
+            <span className="max-sm:sr-only">{t("Add server")}</span>
           </Button>
         </div>
       </div>
@@ -794,19 +863,25 @@ function ProviderMcpSection(props: {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span>{servers.error}</span>
               <Button size="compact" variant="outline" onClick={() => servers.refresh()}>
-                Try again
+                {t("Try again")}
               </Button>
             </div>
           </AlertDescription>
         </Alert>
       ) : result === null ? (
-        <ProviderListSkeleton label={`Loading ${providerName}'s MCP servers`} />
+        <ProviderListSkeleton
+          label={t("Loading {provider}'s MCP servers", { provider: providerName })}
+        />
       ) : result.servers.length === 0 ? (
         <p className="rounded-lg border border-dashed px-4 py-6 text-center text-muted-foreground text-sm">
-          No MCP servers yet. Add one to give {providerName} new tools.
+          {t("No MCP servers yet. Add one to give {provider} new tools.", {
+            provider: providerName,
+          })}
         </p>
       ) : visibleServers.length === 0 ? (
-        <p className="text-muted-foreground text-sm">No {providerName} servers match.</p>
+        <p className="text-muted-foreground text-sm">
+          {t("No {provider} servers match.", { provider: providerName })}
+        </p>
       ) : (
         <ul className="divide-y rounded-lg border">
           {visibleServers.map((server) => (
@@ -848,16 +923,19 @@ function McpMachineServers(props: {
   if (machine.disconnected) {
     return (
       <p className="rounded-lg border border-dashed px-4 py-6 text-center text-muted-foreground text-sm">
-        {machine.label} is offline. Its MCP servers show up once it reconnects.
+        {t("{machine} is offline. Its MCP servers show up once it reconnects.", {
+          machine: machine.label,
+        })}
       </p>
     );
   }
   return (
     <>
       <p className="text-muted-foreground text-xs">
-        MCP servers give agents tools from other apps and services. New sessions load changes;
-        running ones keep the servers they started with.
-        {canManage ? null : " Changing servers needs permission to manage providers."}
+        {t(
+          "MCP servers give agents tools from other apps and services. New sessions load changes; running ones keep the servers they started with.",
+        )}
+        {canManage ? null : ` ${t("Changing servers needs permission to manage providers.")}`}
       </p>
       {props.machine.targets.map((target) => (
         <ProviderMcpSection
@@ -885,8 +963,8 @@ export function McpServersPanel(props: { readonly controlsSlot: HTMLElement | nu
         </InputGroupAddon>
         <InputGroupInput
           type="search"
-          aria-label="Search MCP servers"
-          placeholder="Search servers"
+          aria-label={t("Search MCP servers")}
+          placeholder={t("Search servers")}
           size="sm"
           value={filter}
           onChange={(event) => setFilter(event.currentTarget.value)}
@@ -916,7 +994,7 @@ export function McpServersPanel(props: { readonly controlsSlot: HTMLElement | nu
       ) : connecting ? (
         <ScrollArea className="min-h-0 flex-1">
           <WorkspacePageContainer width="wide">
-            <ProviderListSkeleton label="Loading MCP servers" />
+            <ProviderListSkeleton label={t("Loading MCP servers")} />
           </WorkspacePageContainer>
         </ScrollArea>
       ) : (
@@ -925,10 +1003,11 @@ export function McpServersPanel(props: { readonly controlsSlot: HTMLElement | nu
             <EmptyMedia variant="icon">
               <ServerIcon />
             </EmptyMedia>
-            <EmptyTitle>No provider manages MCP servers here</EmptyTitle>
+            <EmptyTitle>{t("No provider manages MCP servers here")}</EmptyTitle>
             <EmptyDescription>
-              Claude and Codex keep their own MCP servers. Turn one on in Settings to add servers
-              and sign in to them here.
+              {t(
+                "Claude and Codex keep their own MCP servers. Turn one on in Settings to add servers and sign in to them here.",
+              )}
             </EmptyDescription>
           </EmptyHeader>
         </Empty>

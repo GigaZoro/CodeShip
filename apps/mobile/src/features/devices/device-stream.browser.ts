@@ -4,6 +4,7 @@ import {
 } from "@t3tools/client-runtime/device/stream";
 
 import type { DeviceStreamConfiguration } from "./device-stream-document";
+import { t } from "../../lib/i18n";
 
 declare global {
   interface Window {
@@ -68,7 +69,7 @@ export function start(configuration: DeviceStreamConfiguration) {
   image.style.display = "none";
   const inputStatus = document.createElement("div");
   inputStatus.setAttribute("role", "status");
-  inputStatus.textContent = "Reconnecting device controls...";
+  inputStatus.textContent = t("Reconnecting device controls...");
   Object.assign(inputStatus.style, {
     position: "fixed",
     bottom: "12px",

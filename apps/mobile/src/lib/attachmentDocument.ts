@@ -17,6 +17,7 @@ import { localAttachmentPreviewAtom, localAttachmentPreviewState } from "./local
 import { downloadAndShareAttachment, shareLocalAttachment } from "./attachmentDownload";
 import { refreshAssetUrl, useFreshAssetUrl, useRefreshAssetUrl } from "../state/assets";
 import { attachmentDocumentPresentation } from "./attachmentDocumentPresentation";
+import { t } from "./i18n";
 
 const isLocalUri = (uri: string) => /^(file|content):/.test(uri);
 
@@ -44,7 +45,7 @@ async function readAttachmentText(key: AttachmentTextKey, signal: AbortSignal) {
       key.environmentId === null
         ? null
         : await refreshAssetUrl(key.environmentId, key.resource, signal);
-    if (!refreshed) throw new Error("Reconnect to this environment and try again.");
+    if (!refreshed) throw new Error(t("Reconnect to this environment and try again."));
     target = refreshed;
   }
   const response = await fetch(target, {
@@ -63,7 +64,8 @@ const attachmentTextAtom = Atom.family((key: AttachmentTextKey) =>
   Atom.make(
     Effect.tryPromise({
       try: (signal) => readAttachmentText(key, signal),
-      catch: (cause) => (cause instanceof Error ? cause : new Error("Could not read this file.")),
+      catch: (cause) =>
+        cause instanceof Error ? cause : new Error(t("Could not read this file.")),
     }),
   ).pipe(Atom.withLabel("attachment-text")),
 );
@@ -120,7 +122,7 @@ export function useAttachmentDocument(input: {
   );
   const content = AsyncResult.isSuccess(text) ? text.value : null;
   const contentError = AsyncResult.isFailure(text)
-    ? (Option.getOrNull(AsyncResult.error(text))?.message ?? "Could not read this file.")
+    ? (Option.getOrNull(AsyncResult.error(text))?.message ?? t("Could not read this file."))
     : null;
   const table = content && delimiter ? parseDelimitedPreview(content.text, delimiter) : null;
   const presentation = attachmentDocumentPresentation({
@@ -130,9 +132,10 @@ export function useAttachmentDocument(input: {
     rendered,
   });
   const error = attachment
-    ? localPreview.error && (localPreview.error.message || "The local file is unavailable.")
+    ? localPreview.error && (localPreview.error.message || t("The local file is unavailable."))
     : AsyncResult.isFailure(remote)
-      ? (Option.getOrNull(AsyncResult.error(remote))?.message ?? "The attachment is unavailable.")
+      ? (Option.getOrNull(AsyncResult.error(remote))?.message ??
+        t("The attachment is unavailable."))
       : null;
   const share = async () => {
     if (!uri || sharing) return;
@@ -153,8 +156,8 @@ export function useAttachmentDocument(input: {
     if (AsyncResult.isFailure(result)) {
       const cause = squashAtomCommandFailure(result);
       Dialog.alert(
-        "Could not share file",
-        cause instanceof Error ? cause.message : "Please try again.",
+        t("Could not share file"),
+        cause instanceof Error ? cause.message : t("Please try again."),
       );
     }
   };

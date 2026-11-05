@@ -8,9 +8,10 @@ import {
   waitForComposerDraftsLoaded,
 } from "../../state/use-composer-drafts";
 import { linkedThreadDraftAction } from "./prompt-link-model";
+import { t } from "../../lib/i18n";
 
 export function showPromptLinkNotice(notice: string): void {
-  Dialog.alert("Prompt from a link", notice);
+  Dialog.alert(t("Prompt from a link"), notice);
 }
 
 export async function applyLinkedPromptToThreadDraft(
@@ -21,7 +22,10 @@ export async function applyLinkedPromptToThreadDraft(
   try {
     await waitForComposerDraftsLoaded();
   } catch {
-    Dialog.alert("Could not open link", "Drafts could not be loaded, so the prompt was not added.");
+    Dialog.alert(
+      t("Could not open link"),
+      t("Drafts could not be loaded, so the prompt was not added."),
+    );
     return;
   }
   const action = linkedThreadDraftAction(getComposerDraftSnapshot(draftKey).text, prompt.text);
@@ -30,14 +34,14 @@ export async function applyLinkedPromptToThreadDraft(
     showPromptLinkNotice(notice);
     return;
   }
-  Dialog.alert("Linked prompt ready. Replace draft?", notice, [
-    { text: "Keep mine", style: "cancel" },
-    { text: "Replace", onPress: () => setComposerDraftText(draftKey, prompt.text) },
+  Dialog.alert(t("Linked prompt ready. Replace draft?"), notice, [
+    { text: t("Keep mine"), style: "cancel" },
+    { text: t("Replace"), onPress: () => setComposerDraftText(draftKey, prompt.text) },
   ]);
 }
 
 export async function copyPromptLink(prompt: string): Promise<void> {
   if (!(await tryCopyTextWithHaptic(buildNewThreadLink({ prompt }), { target: "prompt link" }))) {
-    Dialog.alert("Could not copy", "Try again.");
+    Dialog.alert(t("Could not copy"), t("Try again."));
   }
 }

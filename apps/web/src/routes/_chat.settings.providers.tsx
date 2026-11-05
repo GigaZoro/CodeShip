@@ -15,15 +15,16 @@ import { SettingsScopeNotice } from "../components/settings/SettingsScopeNotice"
 import { SourceControlWritingSettingsSection } from "../components/settings/SourceControlWritingSettings";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 
+import { msg, t, type Message } from "~/i18n";
 const MACHINE_SECTION_TARGETS: ReadonlySet<string> = new Set([
   "account-failover",
   "delegated-task-models",
   "final-review",
 ]);
 
-const TAB_LABELS: Record<ProvidersSettingsTab, string> = {
-  providers: "Providers",
-  models: "Models",
+const TAB_LABELS: Record<ProvidersSettingsTab, Message> = {
+  providers: msg("Providers"),
+  models: msg("Models"),
 };
 
 function SettingsProvidersRoute() {
@@ -40,7 +41,7 @@ function SettingsProvidersRoute() {
       : [];
   const tabs = (
     <ToggleGroup
-      aria-label="Providers or models"
+      aria-label={t("Providers or models")}
       className="self-start"
       value={[tab]}
       onValueChange={(next) => {
@@ -58,7 +59,7 @@ function SettingsProvidersRoute() {
     >
       {PROVIDERS_SETTINGS_TABS.map((candidate) => (
         <Toggle key={candidate} value={candidate}>
-          {TAB_LABELS[candidate]}
+          {t(TAB_LABELS[candidate])}
         </Toggle>
       ))}
     </ToggleGroup>
@@ -76,8 +77,10 @@ function SettingsProvidersRoute() {
         {...(MACHINE_SECTION_TARGETS.has(targetId) ? { targetId } : {})}
       >
         {connectedEnvironments.length === 0
-          ? "Connect an environment to set Auto mode, delegated tasks, and final review models."
-          : "Auto mode, delegated tasks, and final review use one machine's providers and accounts. Choose a machine to set them."}
+          ? t("Connect an environment to set Auto mode, delegated tasks, and final review models.")
+          : t(
+              "Auto mode, delegated tasks, and final review use one machine's providers and accounts. Choose a machine to set them.",
+            )}
       </SettingsScopeNotice>
     );
     return (
@@ -103,8 +106,8 @@ function SettingsProvidersRoute() {
         {tabs}
         <p className="text-sm text-muted-foreground">
           {scope.kind === "environment"
-            ? `Reconnect ${scope.label} to set up its providers.`
-            : "Connect an environment to set up its providers."}
+            ? t("Reconnect {label} to set up its providers.", { label: scope.label })
+            : t("Connect an environment to set up its providers.")}
         </p>
       </SettingsPageContainer>
     );

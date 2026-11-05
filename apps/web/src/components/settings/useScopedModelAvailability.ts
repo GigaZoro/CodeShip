@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import type { ProviderInstanceId, UnifiedSettings } from "@t3tools/contracts";
 
 import { mergeEnvironmentSettings } from "../../hooks/useSettings";
@@ -40,7 +41,10 @@ export function useScopedModelDisabledReason(
         entry.driverKind !== sourceEntry?.driverKind ||
         !options?.some((option) => option.slug === model && !option.isUnavailable)
       ) {
-        return `This model is unavailable on ${environment?.label ?? "a selected environment"}. Select that environment to choose its model separately.`;
+        return t(
+          "This model is unavailable on {environment}. Select that environment to choose its model separately.",
+          { environment: environment?.label ?? t("a selected environment") },
+        );
       }
     }
     return null;

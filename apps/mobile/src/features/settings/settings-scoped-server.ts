@@ -1,3 +1,4 @@
+import { t } from "../../lib/i18n";
 import {
   isManagedSettingPath,
   isNullableProjectSettingsOverride,
@@ -33,7 +34,9 @@ export function managedSettingReason(
   const policy = targets
     .map((target) => target.environment.serverConfig.managedPolicy)
     .find((candidate) => paths.some((path) => isManagedSettingPath(candidate, path)));
-  return policy === undefined ? undefined : `Managed by ${policy.organization}.`;
+  return policy === undefined
+    ? undefined
+    : t("Managed by {organization}.", { organization: policy.organization });
 }
 
 export function resolveMobileSettingsTargets(

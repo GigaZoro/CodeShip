@@ -8,12 +8,13 @@ import { IconButton } from "./IconButton";
 import { Toolbar } from "./Toolbar";
 import { useControlTheme } from "./useControlTheme";
 import type { SheetCloseButtonProps, SheetHeaderProps } from "./SheetHeader.types";
+import { t } from "../../lib/i18n";
 
 export function SheetCloseButton(props: SheetCloseButtonProps) {
   return (
     <IconButton
       icon="xmark"
-      accessibilityLabel={props.accessibilityLabel ?? (props.onCancel ? "Cancel" : "Close")}
+      accessibilityLabel={props.accessibilityLabel ?? (props.onCancel ? t("Cancel") : t("Close"))}
       disabled={props.disabled}
       onPress={props.onCancel ?? props.onClose}
     />
@@ -31,7 +32,7 @@ export function SheetHeader(props: SheetHeaderProps) {
 function NativeSheetHeader(props: SheetHeaderProps) {
   const { colors } = useControlTheme();
   const onDismiss = props.onCancel ?? props.onClose;
-  const dismissLabel = props.accessibilityLabel ?? (props.onCancel ? "Cancel" : "Close");
+  const dismissLabel = props.accessibilityLabel ?? (props.onCancel ? t("Cancel") : t("Close"));
   const confirmation = props.confirm;
 
   // Toolbar children are parsed as native items, so keep the actual Button

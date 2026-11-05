@@ -27,6 +27,7 @@ import {
 } from "./composerContextReferences.ts";
 import { assistantCitationLabel, parseAssistantCitationHref } from "./assistantCitations.ts";
 import type { OrchestrationV2ConversationMessage } from "@t3tools/contracts";
+import { t } from "./i18n.ts";
 import { proposedPlanTitle, stripDisplayedPlanMarkdown } from "./proposedPlanText.ts";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
@@ -208,7 +209,7 @@ function markdownThreadFindText(
 /** Plans render `$skill` tokens literally (no skill chips), so they are indexed as written. */
 export function searchablePlanSegments(markdown: string, cwd?: string): readonly string[] {
   return [
-    proposedPlanTitle(markdown) ?? "Proposed plan",
+    proposedPlanTitle(markdown) ?? t("Proposed plan"),
     ...markdownThreadFindText(stripDisplayedPlanMarkdown(markdown), false, cwd, []),
   ];
 }

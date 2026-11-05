@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 
+import { t } from "~/i18n";
 export function ClerkUserProfilePage({
   action,
   children,
@@ -57,7 +58,7 @@ export function ClerkUserProfileRefreshButton({
       onClick={onClick}
     >
       <RefreshIcon aria-hidden="true" size="sm" refreshing={isPending} />
-      Refresh
+      {t("Refresh")}
     </Button>
   );
 }

@@ -1,4 +1,13 @@
-import { createContext, startTransition, use, useMemo, type ReactNode } from "react";
+import {
+  createContext,
+  startTransition,
+  use,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { AppState, Appearance, Platform, useColorScheme } from "react-native";
 
 import { manufacturer } from "expo-device";
@@ -8,6 +17,7 @@ import {
 } from "../../../lib/androidNavigationStyle";
 
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { normalizeLanguagePreference, type LanguagePreference } from "@t3tools/shared/i18n";
 import { Atom, AsyncResult } from "effect/reactivity";
 
 import { ScopedTheme, ScopedVariables, Uniwind } from "uniwind";
@@ -17,6 +27,7 @@ import {
   resolveAppearancePreferences,
   type ResolvedAppearance,
 } from "../../../lib/appearancePreferences";
+import { applyLanguagePreference } from "../../../lib/language";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../../state/preferences";
 import type { Preferences } from "../../../persistence/mobile-preferences";
@@ -60,6 +71,10 @@ interface AppearancePreferencesContextValue {
   >;
   readonly systemColorPalettes: ReturnType<typeof readSystemColorPalettes>;
   readonly isReady: boolean;
+  readonly languagePreference: LanguagePreference;
+  /** Changes each time a new language is applied; keying the UI on it re-renders every screen. */
+  readonly languageVersion: number;
+  readonly setLanguagePreference: (value: LanguagePreference) => void;
   readonly setThemeIdForAppearance: (
     appearance: MobileThemeAppearance,
     value: MobileThemeId,
@@ -185,7 +200,11 @@ export function installAppearanceRuntime(): () => void {
   };
 }
 
-export function AppearancePreferencesProvider(props: { readonly children: ReactNode }) {
+export function AppearancePreferencesProvider(props: {
+  readonly children: ReactNode;
+  /** Runs just before the UI remounts for a new language, while the old screens still exist. */
+  readonly onBeforeLanguageRemount?: () => void;
+}) {
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
   const systemColorScheme = useColorScheme() === "dark" ? "dark" : "light";
@@ -222,7 +241,32 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
     () => resolveAppearance({ baseFontSize, codeFontSize, codeWordBreak, terminalFontSize }),
     [baseFontSize, codeFontSize, codeWordBreak, terminalFontSize],
   );
-  const isReady = AsyncResult.isSuccess(preferencesResult);
+  const preferencesLoaded = AsyncResult.isSuccess(preferencesResult);
+  const languagePreference = normalizeLanguagePreference(storedPreferences?.language);
+  const [languageVersion, setLanguageVersion] = useState(0);
+  const [languageReady, setLanguageReady] = useState(false);
+  const appliedLanguage = useRef<LanguagePreference | null>(null);
+  const languageReadyRef = useRef(false);
+  const { onBeforeLanguageRemount } = props;
+  // Latches: the app UI mounts behind this, so a preferences refresh must not unmount it.
+  const isReady = languageReady;
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- activates the UI language, an external module-level store, once its catalog has loaded
+  useEffect(() => {
+    if (!preferencesLoaded || appliedLanguage.current === languagePreference) return;
+    appliedLanguage.current = languagePreference;
+    void applyLanguagePreference(languagePreference).then((applied) => {
+      if (!applied) return;
+      if (languageReadyRef.current) {
+        onBeforeLanguageRemount?.();
+        setLanguageVersion((version) => version + 1);
+      } else {
+        languageReadyRef.current = true;
+        setLanguageReady(true);
+      }
+    });
+  }, [preferencesLoaded, languagePreference, onBeforeLanguageRemount]);
+
   const updatePreferences = (patch: Partial<Preferences>) => {
     startTransition(() => savePreferences(patch));
   };
@@ -269,6 +313,10 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
     updateThemePreferences({ themeMode: value });
   };
 
+  const setLanguagePreference = (value: LanguagePreference) => {
+    savePreferences({ language: value });
+  };
+
   const setAndroidNavigationStyle = (value: AndroidNavigationStyle) =>
     updatePreferences({ androidNavigationStyle: value });
 
@@ -308,6 +356,9 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
       themeVariablesByAppearance,
       systemColorPalettes,
       isReady,
+      languagePreference,
+      languageVersion,
+      setLanguagePreference,
       setThemeIdForAppearance,
       setThemeIdForBothAppearances,
       setThemeMode,
@@ -331,6 +382,9 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
       themeVariablesByAppearance,
       systemColorPalettes,
       isReady,
+      languagePreference,
+      languageVersion,
+      setLanguagePreference,
       setThemeIdForAppearance,
       setThemeIdForBothAppearances,
       setThemeMode,

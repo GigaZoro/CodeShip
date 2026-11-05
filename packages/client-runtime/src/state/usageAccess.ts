@@ -5,6 +5,7 @@ import {
 } from "@t3tools/contracts";
 
 import type { EnvironmentConnectionPhase } from "../connection/presentation.ts";
+import { t } from "@t3tools/shared/i18n";
 
 export function resolveUsageAccess(input: {
   readonly connectionPhase: EnvironmentConnectionPhase;
@@ -15,7 +16,7 @@ export function resolveUsageAccess(input: {
     return {
       canReadDiagnostics: false,
       isPending: false,
-      error: "Could not check this connection's access to diagnostics and usage.",
+      error: t("Could not check this connection's access to diagnostics and usage."),
     };
   }
   if (input.session === null) {
@@ -28,7 +29,7 @@ export function resolveUsageAccess(input: {
     return {
       canReadDiagnostics: false,
       isPending,
-      error: isPending ? null : "This environment is not connected.",
+      error: isPending ? null : t("This environment is not connected."),
     };
   }
   const canReadDiagnostics = sessionGrantsScope(input.session, AuthDiagnosticsReadScope);
@@ -37,6 +38,6 @@ export function resolveUsageAccess(input: {
     isPending: false,
     error: canReadDiagnostics
       ? null
-      : "This connection does not have access to diagnostics and usage.",
+      : t("This connection does not have access to diagnostics and usage."),
   };
 }

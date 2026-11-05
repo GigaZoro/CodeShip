@@ -1,3 +1,4 @@
+import { t, tn, tx } from "~/i18n";
 import { resolveProviderInstanceDisplayName } from "@t3tools/client-runtime/state/provider-instance-display";
 import type { EnvironmentId, ServerProvider, UsageLimitsReport } from "@t3tools/contracts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
@@ -32,9 +33,9 @@ function AccountSummary({ account }: { readonly account: UsageLimitsReport["acco
         <RedactedSensitiveText
           key={label}
           value={label}
-          ariaLabel="Toggle account label visibility"
-          revealTooltip="Click to reveal account"
-          hideTooltip="Click to hide account"
+          ariaLabel={t("Toggle account label visibility")}
+          revealTooltip={t("Click to reveal account")}
+          hideTooltip={t("Click to hide account")}
           className="max-w-full truncate align-bottom font-sans text-xs leading-normal"
         />
       ) : (
@@ -56,15 +57,15 @@ export function usageLimitsBannerItem(
   const summary = single ? (
     <AccountSummary account={single} />
   ) : (
-    `${report.accounts.length} accounts`
+    tn(report.accounts.length, "{count} account", "{count} accounts")
   );
   return {
     id,
     variant: "info",
     icon: <GaugeIcon />,
-    title: "Usage limits",
+    title: t("Usage limits"),
     description: summary,
-    dismissLabel: "Dismiss usage limits",
+    dismissLabel: t("Dismiss usage limits"),
     onDismiss,
     children: <UsageLimitsBannerBody report={report} environmentId={environmentId} />,
   };
@@ -89,9 +90,9 @@ function LimitedAccountName({
       {`${driver} · `}
       <RedactedSensitiveText
         value={email}
-        ariaLabel="Toggle account email visibility"
-        revealTooltip="Click to reveal account"
-        hideTooltip="Click to hide account"
+        ariaLabel={t("Toggle account email visibility")}
+        revealTooltip={t("Click to reveal account")}
+        hideTooltip={t("Click to hide account")}
         className="max-w-full truncate align-bottom font-sans text-xs leading-normal"
       />
     </>
@@ -121,19 +122,29 @@ export function modelFallbackBannerItem({
     id: "fallback-model",
     variant: "info",
     icon: <GaugeIcon />,
-    title: `Using ${fallbackModelName}`,
+    title: t("Using {model}", { model: fallbackModelName }),
     description: (
       <>
-        <LimitedAccountName account={limitedAccount} hasOtherAccounts={hasOtherAccounts} />
-        {` is out of usage${resetsAt ? ` · resets ${formatUpcomingTimestamp(resetsAt, timestampFormat)}` : ""}`}
+        {resetsAt
+          ? tx("{account} is out of usage · resets {time}", {
+              account: (
+                <LimitedAccountName account={limitedAccount} hasOtherAccounts={hasOtherAccounts} />
+              ),
+              time: formatUpcomingTimestamp(resetsAt, timestampFormat),
+            })
+          : tx("{account} is out of usage", {
+              account: (
+                <LimitedAccountName account={limitedAccount} hasOtherAccounts={hasOtherAccounts} />
+              ),
+            })}
       </>
     ),
     actions: (
       <Button size="xs" variant="ghost" onClick={onUseDefault}>
-        Use {defaultModelName}
+        {t("Use {model}", { model: defaultModelName })}
       </Button>
     ),
-    dismissLabel: "Dismiss fallback model notice",
+    dismissLabel: t("Dismiss fallback model notice"),
     onDismiss,
   };
 }
@@ -180,7 +191,7 @@ function UsageLimitsBannerBody({
                   className="self-start"
                   onClick={() => void ensureLocalApi().shell.openExternal(externalUsage.url)}
                 >
-                  Manage usage
+                  {t("Manage usage")}
                 </Button>
               ) : null}
               {resetCreditInput && account.limits.resetCredits ? (

@@ -55,6 +55,7 @@ import {
   upsertRoute,
   type ReportedEndpoint,
 } from "./routes.ts";
+import { t } from "@t3tools/shared/i18n";
 
 const isSshConnectionProfile = Schema.is(SshConnectionProfile);
 
@@ -553,7 +554,10 @@ export const make = Effect.gen(function* () {
     ) {
       return yield* new ConnectionBlockedError({
         reason: "configuration",
-        detail: `That address claims to be ${saved.target.label}, which is already saved. Add it as a route from that environment's settings instead.`,
+        detail: t(
+          "That address claims to be {label}, which is already saved. Add it as a route from that environment's settings instead.",
+          { label: saved.target.label },
+        ),
       });
     }
   });
@@ -1016,7 +1020,7 @@ export const make = Effect.gen(function* () {
         if (reordered.length !== routes.length || new Set(routeIds).size !== routes.length) {
           return yield* new ConnectionBlockedError({
             reason: "configuration",
-            detail: "The route order must list every saved route once.",
+            detail: t("The route order must list every saved route once."),
           });
         }
         if (reordered.every((route, index) => route === routes[index])) return;

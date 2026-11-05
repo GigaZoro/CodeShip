@@ -24,6 +24,7 @@ import {
 } from "@t3tools/shared/backgroundActivitySettings";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
+import { msg, t, type Message } from "~/i18n";
 
 export function isProjectGroupingEnabled(mode: SidebarProjectGroupingMode): boolean {
   return mode !== "separate";
@@ -95,19 +96,19 @@ function getChangedTypographySettingLabels(settings: TypographySettings): string
   return [
     ...(settings.fontFamilySans !== DEFAULT_UNIFIED_SETTINGS.fontFamilySans ||
     settings.fontSizeInterface !== DEFAULT_UNIFIED_SETTINGS.fontSizeInterface
-      ? ["Interface font"]
+      ? [t("Interface font")]
       : []),
     ...(settings.fontFamilyComposer !== DEFAULT_UNIFIED_SETTINGS.fontFamilyComposer ||
     settings.fontSizePrompt !== DEFAULT_UNIFIED_SETTINGS.fontSizePrompt
-      ? ["Prompt font"]
+      ? [t("Prompt font")]
       : []),
     ...(settings.fontFamilyCode !== DEFAULT_UNIFIED_SETTINGS.fontFamilyCode ||
     settings.fontSizeCode !== DEFAULT_UNIFIED_SETTINGS.fontSizeCode
-      ? ["Code font"]
+      ? [t("Code font")]
       : []),
     ...(settings.fontFamilyTerminal !== DEFAULT_UNIFIED_SETTINGS.fontFamilyTerminal ||
     settings.fontSizeTerminal !== DEFAULT_UNIFIED_SETTINGS.fontSizeTerminal
-      ? ["Terminal font"]
+      ? [t("Terminal font")]
       : []),
   ];
 }
@@ -145,28 +146,28 @@ export function getChangedBrowserSettingLabels(settings: BrowserDefaultSettings)
       DEFAULT_UNIFIED_SETTINGS.browserDefaultViewport,
     )
       ? []
-      : ["Browser viewport"]),
+      : [t("Browser viewport")]),
     ...(settings.browserDefaultZoomFactor !== DEFAULT_UNIFIED_SETTINGS.browserDefaultZoomFactor
-      ? ["Browser zoom"]
+      ? [t("Browser zoom")]
       : []),
     ...(settings.browserDefaultAppearance !== DEFAULT_UNIFIED_SETTINGS.browserDefaultAppearance
-      ? ["Browser appearance"]
+      ? [t("Browser appearance")]
       : []),
     ...(settings.browserRecordingFrameRate !== DEFAULT_UNIFIED_SETTINGS.browserRecordingFrameRate
-      ? ["Recording frame rate"]
+      ? [t("Recording frame rate")]
       : []),
-    ...(settings.browserRecordingShowKeyPresses ? ["Recording key presses"] : []),
-    ...(settings.browserRecordingShowMousePresses ? ["Recording mouse presses"] : []),
+    ...(settings.browserRecordingShowKeyPresses ? [t("Recording key presses")] : []),
+    ...(settings.browserRecordingShowMousePresses ? [t("Recording mouse presses")] : []),
     ...(settings.browserLinkTarget !== DEFAULT_UNIFIED_SETTINGS.browserLinkTarget
-      ? ["Open links in"]
+      ? [t("Open links in")]
       : []),
     ...(settings.browserSearchEngine !== DEFAULT_UNIFIED_SETTINGS.browserSearchEngine ||
     settings.browserCustomSearchUrl !== DEFAULT_UNIFIED_SETTINGS.browserCustomSearchUrl
-      ? ["Search engine"]
+      ? [t("Search engine")]
       : []),
     ...(settings.browserAutoShowFloatingPreview !==
     DEFAULT_UNIFIED_SETTINGS.browserAutoShowFloatingPreview
-      ? ["Floating preview"]
+      ? [t("Floating preview")]
       : []),
   ];
 }
@@ -282,7 +283,7 @@ interface RestorableSettings {
   readonly page: SettingsPath;
   readonly keys: ReadonlyArray<RestorableKey>;
   /** Set for single-row entries, so a project reset can name what it clears. */
-  readonly label?: string;
+  readonly label?: Message;
   readonly changedLabels: (settings: UnifiedSettings) => ReadonlyArray<string>;
   /** Replaces "every key to its default" for entries that restore only part of a key. */
   readonly patch?: (settings: UnifiedSettings) => ScopedSettingsPatch;
@@ -309,11 +310,11 @@ function gitFetchIntervalSeconds(settings: UnifiedSettings): number {
 const GIT_FETCH_INTERVAL_ENTRY: RestorableSettings = {
   page: "/settings/source-control",
   keys: ["backgroundActivity"],
-  label: "Git fetch interval",
+  label: msg("Git fetch interval"),
   partOfAnotherEntry: true,
   changedLabels: (settings) =>
     gitFetchIntervalSeconds(settings) !== gitFetchIntervalSeconds(DEFAULT_UNIFIED_SETTINGS)
-      ? ["Git fetch interval"]
+      ? [t("Git fetch interval")]
       : [],
   patch: (settings) =>
     backgroundActivityOverrideSettings(
@@ -325,7 +326,7 @@ const GIT_FETCH_INTERVAL_ENTRY: RestorableSettings = {
 
 function restorable(
   page: SettingsPath,
-  label: string,
+  label: Message,
   keys: ReadonlyArray<RestorableKey>,
 ): RestorableSettings {
   return {
@@ -334,7 +335,7 @@ function restorable(
     label,
     changedLabels: (settings) =>
       keys.some((key) => !Equal.equals(settings[key], DEFAULT_UNIFIED_SETTINGS[key]))
-        ? [label]
+        ? [t(label)]
         : [],
   };
 }
@@ -370,91 +371,99 @@ const BROWSER_DEFAULT_KEYS = [
 
 /** Every setting a reset restores, by the page that shows it. Theme lives in local storage and is handled apart. */
 const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
-  restorable("/settings/appearance", "Contrast", ["appearanceContrast"]),
-  restorable("/settings/appearance", "Glass opacity", ["glassOpacity"]),
-  restorable("/settings/appearance", "Diff colors", ["diffColorScheme"]),
-  restorable("/settings/appearance", "Chat width", ["chatWidth"]),
-  restorable("/settings/appearance", "Effort display", ["effortDisplay"]),
-  restorable("/settings/appearance", "Render math", ["mathRenderingEnabled"]),
-  restorable("/settings/appearance", "Panel animations", ["panelAnimationDurationMs"]),
-  restorable("/settings/appearance", "Environment identification", [
+  restorable("/settings/appearance", msg("Contrast"), ["appearanceContrast"]),
+  restorable("/settings/appearance", msg("Glass opacity"), ["glassOpacity"]),
+  restorable("/settings/appearance", msg("Diff colors"), ["diffColorScheme"]),
+  restorable("/settings/appearance", msg("Chat width"), ["chatWidth"]),
+  restorable("/settings/appearance", msg("Effort display"), ["effortDisplay"]),
+  restorable("/settings/appearance", msg("Render math"), ["mathRenderingEnabled"]),
+  restorable("/settings/appearance", msg("Panel animations"), ["panelAnimationDurationMs"]),
+  restorable("/settings/appearance", msg("Environment identification"), [
     "environmentIdentificationMode",
   ]),
-  restorable("/settings/appearance", "Word wrap", ["wordWrap"]),
+  restorable("/settings/appearance", msg("Word wrap"), ["wordWrap"]),
   {
     page: "/settings/appearance",
     keys: TYPOGRAPHY_KEYS,
     changedLabels: getChangedTypographySettingLabels,
   },
-  restorable("/settings/general", "Time format", ["timestampFormat"]),
-  restorable("/settings/general", "Thread notifications", ["notificationMode"]),
-  restorable("/settings/general", "In-app notifications", ["inAppNotificationsEnabled"]),
-  restorable("/settings/general", "Project grouping", ["sidebarProjectGroupingMode"]),
-  restorable("/settings/general", "Project order", ["sidebarProjectSortOrder"]),
-  restorable("/settings/general", "Working section", ["sidebarWorkingShelfEnabled"]),
-  restorable("/settings/general", "Unpin confirmation", ["confirmThreadUnpin"]),
-  restorable("/settings/general", "Archive confirmation", ["confirmThreadArchive"]),
-  restorable("/settings/general", "Delete confirmation", ["confirmThreadDelete"]),
-  restorable("/settings/keybindings", "Send shortcut", ["sendShortcut"]),
-  restorable("/settings/keybindings", "Quit shortcut", ["confirmQuit"]),
-  restorable("/settings/chat", "Default diff file state", ["diffFilesCollapsed"]),
-  restorable("/settings/chat", "Diff whitespace changes", ["diffIgnoreWhitespace"]),
-  restorable("/settings/chat", "Diff layout", ["diffLayout"]),
-  restorable("/settings/chat", "Open pull requests and changes panels proactively", [
+  restorable("/settings/general", msg("Time format"), ["timestampFormat"]),
+  restorable("/settings/general", msg("Thread notifications"), ["notificationMode"]),
+  restorable("/settings/general", msg("In-app notifications"), ["inAppNotificationsEnabled"]),
+  restorable("/settings/general", msg("Project grouping"), ["sidebarProjectGroupingMode"]),
+  restorable("/settings/general", msg("Project order"), ["sidebarProjectSortOrder"]),
+  restorable("/settings/general", msg("Working section"), ["sidebarWorkingShelfEnabled"]),
+  restorable("/settings/general", msg("Unpin confirmation"), ["confirmThreadUnpin"]),
+  restorable("/settings/general", msg("Archive confirmation"), ["confirmThreadArchive"]),
+  restorable("/settings/general", msg("Delete confirmation"), ["confirmThreadDelete"]),
+  restorable("/settings/keybindings", msg("Send shortcut"), ["sendShortcut"]),
+  restorable("/settings/keybindings", msg("Quit shortcut"), ["confirmQuit"]),
+  restorable("/settings/chat", msg("Default diff file state"), ["diffFilesCollapsed"]),
+  restorable("/settings/chat", msg("Diff whitespace changes"), ["diffIgnoreWhitespace"]),
+  restorable("/settings/chat", msg("Diff layout"), ["diffLayout"]),
+  restorable("/settings/chat", msg("Open pull requests and changes panels proactively"), [
     "proactivePanelsEnabled",
   ]),
-  restorable("/settings/chat", "Skill availability", ["skillAvailability"]),
-  restorable("/settings/chat", "Show skills in slash menu", ["showSkillsInSlashMenu"]),
-  restorable("/settings/chat", "Rich text composer", ["composerRichTextEnabled"]),
-  restorable("/settings/chat", "Follow-up behavior", ["followUpBehavior"]),
-  restorable("/settings/threads", "Auto-settle inactive threads", ["sidebarAutoSettleAfterDays"]),
-  restorable("/settings/threads", "Keep threads with a PR", ["sidebarAutoSettleKeepPullRequests"]),
-  restorable("/settings/threads", "Open a PR for unmerged work", [
+  restorable("/settings/chat", msg("Skill availability"), ["skillAvailability"]),
+  restorable("/settings/chat", msg("Show skills in slash menu"), ["showSkillsInSlashMenu"]),
+  restorable("/settings/chat", msg("Rich text composer"), ["composerRichTextEnabled"]),
+  restorable("/settings/chat", msg("Follow-up behavior"), ["followUpBehavior"]),
+  restorable("/settings/threads", msg("Auto-settle inactive threads"), [
+    "sidebarAutoSettleAfterDays",
+  ]),
+  restorable("/settings/threads", msg("Keep threads with a PR"), [
+    "sidebarAutoSettleKeepPullRequests",
+  ]),
+  restorable("/settings/threads", msg("Open a PR for unmerged work"), [
     "sidebarAutoSettleOpensPullRequests",
   ]),
-  restorable("/settings/threads", "Auto-settle merged threads", ["sidebarAutoSettleOnMerge"]),
-  restorable("/settings/threads", "Resume after usage limits", ["autoResumeLimitedThreads"]),
-  restorable("/settings/threads", "Snooze until limits reset", ["snoozeLimitedThreads"]),
-  restorable("/settings/threads", "Snooze options", ["snoozePresets"]),
-  restorable("/settings/threads", "Response streaming", ["responseStreamingMode"]),
-  restorable("/settings/threads", "New thread workspace", ["defaultThreadEnvMode"]),
-  restorable("/settings/maintenance", "Provider update checks", ["enableProviderUpdateChecks"]),
-  restorable("/settings/maintenance", "Update providers automatically", ["autoUpdateProviders"]),
-  restorable("/settings/maintenance", "Continue threads after restarts", [
+  restorable("/settings/threads", msg("Auto-settle merged threads"), ["sidebarAutoSettleOnMerge"]),
+  restorable("/settings/threads", msg("Resume after usage limits"), ["autoResumeLimitedThreads"]),
+  restorable("/settings/threads", msg("Snooze until limits reset"), ["snoozeLimitedThreads"]),
+  restorable("/settings/threads", msg("Snooze options"), ["snoozePresets"]),
+  restorable("/settings/threads", msg("Response streaming"), ["responseStreamingMode"]),
+  restorable("/settings/threads", msg("New thread workspace"), ["defaultThreadEnvMode"]),
+  restorable("/settings/maintenance", msg("Provider update checks"), [
+    "enableProviderUpdateChecks",
+  ]),
+  restorable("/settings/maintenance", msg("Update providers automatically"), [
+    "autoUpdateProviders",
+  ]),
+  restorable("/settings/maintenance", msg("Continue threads after restarts"), [
     "continueThreadsAfterServerUpdate",
   ]),
   {
     page: "/settings/maintenance",
     keys: BACKGROUND_ACTIVITY_KEYS,
     changedLabels: (settings) =>
-      hasChangedBackgroundActivitySettings(settings) ? ["Background activity"] : [],
+      hasChangedBackgroundActivitySettings(settings) ? [t("Background activity")] : [],
   },
-  restorable("/settings/source-control", "New worktrees start from remote", [
+  restorable("/settings/source-control", msg("New worktrees start from remote"), [
     "newWorktreesStartFromOrigin",
   ]),
-  restorable("/settings/source-control", "Open pull requests in T3.CodeShip", [
+  restorable("/settings/source-control", msg("Open pull requests in T3.CodeShip"), [
     "pullRequestLinksOpenInApp",
   ]),
   GIT_FETCH_INTERVAL_ENTRY,
-  restorable("/settings/projects", "Add project base directory", ["addProjectBaseDirectory"]),
-  restorable("/settings/projects", "Clone into host folders", ["ghqCloneLayout"]),
-  restorable("/settings/projects", "Import conversations", ["importAgentConversations"]),
-  restorable("/settings/providers", "Default model", ["defaultModelSelection"]),
-  restorable("/settings/providers", "Use last picked model", ["newThreadsUseLastModel"]),
-  restorable("/settings/providers", "Fallback model", ["fallbackModelSelection"]),
-  restorable("/settings/providers", "Scheduled tasks model", ["scheduledTaskModelSelection"]),
-  restorable("/settings/providers", "Text generation model", ["textGenerationModelSelection"]),
-  restorable("/settings/providers", "Thread title instructions", ["threadTitleInstructions"]),
-  restorable("/settings/providers", "Source control writer model", [
+  restorable("/settings/projects", msg("Add project base directory"), ["addProjectBaseDirectory"]),
+  restorable("/settings/projects", msg("Clone into host folders"), ["ghqCloneLayout"]),
+  restorable("/settings/projects", msg("Import conversations"), ["importAgentConversations"]),
+  restorable("/settings/providers", msg("Default model"), ["defaultModelSelection"]),
+  restorable("/settings/providers", msg("Use last picked model"), ["newThreadsUseLastModel"]),
+  restorable("/settings/providers", msg("Fallback model"), ["fallbackModelSelection"]),
+  restorable("/settings/providers", msg("Scheduled tasks model"), ["scheduledTaskModelSelection"]),
+  restorable("/settings/providers", msg("Text generation model"), ["textGenerationModelSelection"]),
+  restorable("/settings/providers", msg("Thread title instructions"), ["threadTitleInstructions"]),
+  restorable("/settings/providers", msg("Source control writer model"), [
     "sourceControlWriterModelSelection",
   ]),
-  restorable("/settings/providers", "Review guide model", ["reviewGuideModelSelection"]),
+  restorable("/settings/providers", msg("Review guide model"), ["reviewGuideModelSelection"]),
   {
     page: "/settings/browser",
     keys: BROWSER_DEFAULT_KEYS,
     changedLabels: getChangedBrowserSettingLabels,
   },
-  restorable("/settings/browser", "Agent browser access", ["enableAgentBrowserAccess"]),
+  restorable("/settings/browser", msg("Agent browser access"), ["enableAgentBrowserAccess"]),
 ];
 
 /**
@@ -521,7 +530,7 @@ export function projectScopedRestorePlan(
     const overridden = projectKeys.filter((key) => overriddenKeys.has(key));
     if (overridden.length === 0) continue;
     clearKeys.push(...overridden);
-    if (entry.label !== undefined) labels.push(entry.label);
+    if (entry.label !== undefined) labels.push(t(entry.label));
   }
   const devicePatch = Object.assign(
     {},

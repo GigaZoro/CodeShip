@@ -23,6 +23,7 @@ import {
   THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS,
   THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS,
 } from "./threadDetailsPanelStyles";
+import { t } from "~/i18n";
 
 export function ThreadAssistantsControl(props: {
   readonly threadRef: ScopedThreadRef;
@@ -34,12 +35,12 @@ export function ThreadAssistantsControl(props: {
   const [menuOpen, setMenuOpen] = useState(false);
   const only = props.assistants.length === 1 ? props.assistants[0] : undefined;
   const PrimaryIcon = only ? BROWSER_ASSISTANTS[only.kind].Icon : SparklesIcon;
-  const primaryLabel = only ? browserAssistantLabel(only) : "Web assistants";
+  const primaryLabel = only ? browserAssistantLabel(only) : t("Web assistants");
 
   return (
     <div
       role="group"
-      aria-label="Web assistants"
+      aria-label={t("Web assistants")}
       className={THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS}
       ref={anchorRef}
     >
@@ -50,7 +51,9 @@ export function ThreadAssistantsControl(props: {
               size="sm"
               variant="ghost"
               part="primary"
-              aria-label={only ? `Open ${primaryLabel}` : "Choose a web assistant"}
+              aria-label={
+                only ? t("Open {name}", { name: primaryLabel }) : t("Choose a web assistant")
+              }
               onClick={() => (only ? void openAssistant(only) : setMenuOpen(true))}
             />
           }
@@ -60,7 +63,7 @@ export function ThreadAssistantsControl(props: {
             {primaryLabel}
           </span>
         </TooltipTrigger>
-        <TooltipPopup side="left">ChatGPT dots and Claude Duets</TooltipPopup>
+        <TooltipPopup side="left">{t("ChatGPT dots and Claude Duets")}</TooltipPopup>
       </Tooltip>
       <span aria-hidden="true" className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS} />
       <Menu open={menuOpen} onOpenChange={setMenuOpen}>
@@ -70,7 +73,7 @@ export function ThreadAssistantsControl(props: {
               size="sm"
               variant="ghost"
               part="secondary"
-              aria-label="Web assistants options"
+              aria-label={t("Web assistants options")}
             />
           }
         >
@@ -92,7 +95,7 @@ export function ThreadAssistantsControl(props: {
           <MenuSeparator />
           <MenuItem onClick={() => void navigate({ to: "/settings/browser" })}>
             <SettingsIcon className="size-4" />
-            <MenuItemLabel>Manage web assistants</MenuItemLabel>
+            <MenuItemLabel>{t("Manage web assistants")}</MenuItemLabel>
           </MenuItem>
         </MenuPopup>
       </Menu>

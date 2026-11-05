@@ -45,6 +45,7 @@ import { createPullRequestRouter } from "./pullRequestRouting.ts";
 import * as PullRequestDiffLoader from "./pullRequestDiffHttp.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
+import { t } from "@t3tools/shared/i18n";
 
 export {
   type PullRequestDiffLoadError,
@@ -312,7 +313,7 @@ export function createPullRequestEnvironmentAtoms<R, E>(
       ) {
         return yield* new PullRequestOperationError({
           operation: "runAction",
-          detail: "This pull request cannot be merged.",
+          detail: t("This pull request cannot be merged."),
         });
       }
       if (detail.capabilities.stackActions) {
@@ -320,7 +321,7 @@ export function createPullRequestEnvironmentAtoms<R, E>(
         if (stack !== null) {
           return yield* new PullRequestOperationError({
             operation: "runAction",
-            detail: "Open this pull request to merge its stack.",
+            detail: t("Open this pull request to merge its stack."),
           });
         }
       }
@@ -329,7 +330,7 @@ export function createPullRequestEnvironmentAtoms<R, E>(
         catch: (cause) =>
           new PullRequestOperationError({
             operation: "runAction",
-            detail: cause instanceof Error ? cause.message : "Could not choose a merge method.",
+            detail: cause instanceof Error ? cause.message : t("Could not choose a merge method."),
           }),
       });
       preparedInput = { ...actionInput, mergeMethod };

@@ -13,6 +13,7 @@ import type {
 import { deriveLocalBranchNameFromRemoteRef } from "@t3tools/shared/git";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
+import { t } from "../../lib/i18n";
 
 const VCS_REF_QUERY_MAX_LENGTH = 256;
 
@@ -31,7 +32,7 @@ export async function checkoutNewTaskBranch<E>(input: {
 }): Promise<AtomCommandResult<VcsRef, E | Error>> {
   if (!input.project) {
     return AsyncResult.failure(
-      Cause.fail(new Error("The selected project is unavailable. Reconnect and try again.")),
+      Cause.fail(new Error(t("The selected project is unavailable. Reconnect and try again."))),
     );
   }
   if (input.workspaceMode === "worktree" || input.branch.current) {
@@ -66,7 +67,9 @@ export async function checkoutNewTaskBranch<E>(input: {
         return AsyncResult.failure(
           Cause.fail(
             new Error(
-              "The server did not report whether this project is at the repository root, so this worktree cannot be reused safely. Update the server or choose another branch.",
+              t(
+                "The server did not report whether this project is at the repository root, so this worktree cannot be reused safely. Update the server or choose another branch.",
+              ),
             ),
           ),
         );
@@ -75,7 +78,9 @@ export async function checkoutNewTaskBranch<E>(input: {
         return AsyncResult.failure(
           Cause.fail(
             new Error(
-              "This project is a repository subdirectory. Choose another branch or add the repository root as a project to reuse this worktree.",
+              t(
+                "This project is a repository subdirectory. Choose another branch or add the repository root as a project to reuse this worktree.",
+              ),
             ),
           ),
         );

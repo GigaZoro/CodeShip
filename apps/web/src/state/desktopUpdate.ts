@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { tn } from "~/i18n";
 import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
@@ -19,7 +20,11 @@ export class DesktopUpdateStateReadError extends Schema.TaggedError<DesktopUpdat
   },
 ) {
   override get message(): string {
-    return `Failed to read the initial desktop update state after ${this.attemptCount} attempts.`;
+    return tn(
+      this.attemptCount,
+      "Failed to read the initial desktop update state after {count} attempt.",
+      "Failed to read the initial desktop update state after {count} attempts.",
+    );
   }
 }
 

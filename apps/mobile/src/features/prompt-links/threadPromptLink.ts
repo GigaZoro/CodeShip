@@ -16,6 +16,7 @@ import {
   promptLinkSearchFromParams,
   stepPendingPromptLink,
 } from "./prompt-link-model";
+import { t } from "../../lib/i18n";
 
 const THREAD_LINK_KEYS = ["prompt"];
 
@@ -57,7 +58,7 @@ export function takeThreadPromptLink(
   if (environmentId === null || threadId === null) return nextState;
   const parsed = parseThreadLinkPrompt(search);
   if (!parsed.ok) {
-    Dialog.alert("Could not open link", parsed.error);
+    Dialog.alert(t("Could not open link"), parsed.error);
     return nextState;
   }
   if (parsed.value !== null) {

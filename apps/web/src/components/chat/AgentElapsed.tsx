@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
 import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
 import { deriveSubagentElapsedMs } from "@t3tools/shared/orchestrationTiming";
@@ -7,22 +8,25 @@ function formatElapsedSeconds(totalSeconds: number): string {
   const seconds = Math.max(0, Math.floor(totalSeconds));
   const minutes = Math.floor(seconds / 60);
   if (minutes === 0) {
-    return `${seconds}s`;
+    return t("{seconds}s", { seconds });
   }
   const hours = Math.floor(minutes / 60);
   if (hours === 0) {
-    return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+    return t("{minutes}m {seconds}s", {
+      minutes,
+      seconds: String(seconds % 60).padStart(2, "0"),
+    });
   }
-  return `${hours}h ${String(minutes % 60).padStart(2, "0")}m`;
+  return t("{hours}h {minutes}m", { hours, minutes: String(minutes % 60).padStart(2, "0") });
 }
 
 function formatCompactElapsedSeconds(totalSeconds: number): string {
   const seconds = Math.max(0, Math.floor(totalSeconds));
-  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 60) return t("{seconds}s", { seconds });
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  if (minutes >= 600) return `${Math.floor(minutes / 60)}h`;
-  return `${Math.floor(minutes / 6) / 10}h`;
+  if (minutes < 60) return t("{minutes}m", { minutes });
+  if (minutes >= 600) return t("{hours}h", { hours: Math.floor(minutes / 60) });
+  return t("{hours}h", { hours: Math.floor(minutes / 6) / 10 });
 }
 
 export function AgentElapsed({

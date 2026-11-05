@@ -10,6 +10,7 @@ import type { FileBackedComposerAttachment } from "./composerImages";
 import { resolveOwnedComposerAttachmentFileUri } from "./composerAttachmentFiles";
 import { shareLocalAttachment, type AttachmentPreviewFile } from "./attachmentDownload";
 import { retainComposerAttachmentFileForPreview } from "./composerAttachmentPreviewRetention";
+import { t } from "./i18n";
 
 export async function loadLocalAttachmentPreview(
   attachment: FileBackedComposerAttachment,
@@ -28,7 +29,7 @@ export async function loadLocalAttachmentPreview(
       attachment.fileUri;
     const file = new File(uri);
     if (!file.exists) {
-      throw new Error("The local attachment file is missing.");
+      throw new Error(t("The local attachment file is missing."));
     }
     let disposed = false;
     return {
@@ -62,7 +63,7 @@ export async function loadLocalAttachmentPreview(
   } catch (cause) {
     release();
     if (signal.aborted) return null;
-    throw new Error("This attachment is no longer available. Attach the file again.", { cause });
+    throw new Error(t("This attachment is no longer available. Attach the file again."), { cause });
   }
 }
 
@@ -92,7 +93,7 @@ const localAttachmentPreviewFamily = Atom.family((key: LocalAttachmentPreviewKey
       Effect.tryPromise({
         try: (signal) => loadLocalAttachmentPreview(key.attachment, signal),
         catch: (cause) =>
-          cause instanceof Error ? cause : new Error("The local file is unavailable."),
+          cause instanceof Error ? cause : new Error(t("The local file is unavailable.")),
       }).pipe(Effect.flatMap((file) => (file === null ? Effect.interrupt : Effect.succeed(file)))),
       (file) => Effect.sync(file.dispose),
     ),

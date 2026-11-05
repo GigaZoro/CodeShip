@@ -66,7 +66,8 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
     const message =
       "message" in result && typeof result.message === "string"
         ? result.message
-        : "SSH authentication cancelled.";
+        : // oxlint-disable-next-line t3code/no-untranslated-text -- preload has no translator; fallback for an error whose text normally comes from the main process
+          "SSH authentication cancelled.";
     throw new Error(message);
   }
   return result as Awaited<ReturnType<DesktopBridge["ensureSshEnvironment"]>>;
@@ -105,6 +106,27 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   getSystemLocale: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_SYSTEM_LOCALE_CHANNEL);
     return typeof result === "string" ? result : null;
+  },
+  getLanguageSettings: () => {
+    const result = ipcRenderer.sendSync(IpcChannels.GET_LANGUAGE_SETTINGS_CHANNEL);
+    if (
+      typeof result === "object" &&
+      result !== null &&
+      typeof (result as { preference?: unknown }).preference === "string" &&
+      Array.isArray((result as { systemLanguages?: unknown }).systemLanguages)
+    ) {
+      const { preference, systemLanguages } = result as {
+        preference: string;
+        systemLanguages: unknown[];
+      };
+      return {
+        preference,
+        systemLanguages: systemLanguages.filter(
+          (language): language is string => typeof language === "string",
+        ),
+      };
+    }
+    return { preference: "system", systemLanguages: [] };
   },
   getLocalEnvironmentBootstraps: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_LOCAL_ENVIRONMENT_BOOTSTRAPS_CHANNEL);

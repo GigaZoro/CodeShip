@@ -4,6 +4,7 @@ import { DEFAULT_SNOOZE_PRESETS, type SnoozePresetSetting } from "@t3tools/contr
 import type { VcsStatusResult, VcsUnmergedWorkResult } from "@t3tools/contracts";
 
 import type { EnvironmentThreadShell, PendingSubagentRequest } from "./models.ts";
+import { getFormattingLocale, msg, t, tn } from "@t3tools/shared/i18n";
 
 interface SettlementRunLike {
   readonly turnId?: unknown;
@@ -197,7 +198,7 @@ export interface SnoozePresetOptions {
 }
 
 function snoozeTimeOfDayLabel(date: Date): string {
-  return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return date.toLocaleTimeString(getFormattingLocale(), { hour: "numeric", minute: "2-digit" });
 }
 
 // Calendar-day advance instead of adding DAY_MS: fixed millisecond offsets
@@ -209,20 +210,25 @@ function addSnoozeDays(base: Date, days: number): Date {
   return next;
 }
 
-function pluralize(count: number, unit: string): string {
-  return `${count} ${unit}${count === 1 ? "" : "s"}`;
+/** "In 3 hours", "In 90 minutes", "In 2 days": the largest unit that divides evenly. */
+function snoozeAfterLabel(minutes: number): string {
+  if (minutes % (24 * 60) === 0)
+    return tn(minutes / (24 * 60), "In {count} day", "In {count} days");
+  if (minutes % 60 === 0) return tn(minutes / 60, "In {count} hour", "In {count} hours");
+  return tn(minutes, "In {count} minute", "In {count} minutes");
 }
 
-/** "3 hours", "90 minutes", "2 days": the largest unit that divides evenly. */
-function formatSnoozeDuration(minutes: number): string {
-  if (minutes % (24 * 60) === 0) return pluralize(minutes / (24 * 60), "day");
-  if (minutes % 60 === 0) return pluralize(minutes / 60, "hour");
-  return pluralize(minutes, "minute");
-}
-
-function capitalize(word: string): string {
-  return word[0]!.toUpperCase() + word.slice(1);
-}
+const DAY_NAMES = {
+  today: msg("Today"),
+  tomorrow: msg("Tomorrow"),
+  sunday: msg("Sunday"),
+  monday: msg("Monday"),
+  tuesday: msg("Tuesday"),
+  wednesday: msg("Wednesday"),
+  thursday: msg("Thursday"),
+  friday: msg("Friday"),
+  saturday: msg("Saturday"),
+} as const;
 
 function snoozePresetDaysAhead(
   setting: Extract<SnoozePresetSetting, { kind: "at" }>,
@@ -235,14 +241,15 @@ function snoozePresetDaysAhead(
 
 /** Labels follow the actual day gap, so a Monday option on a Sunday reads "Tomorrow". */
 function snoozePresetLabel(setting: SnoozePresetSetting, daysAhead: number): string {
-  if (setting.kind === "after") return `In ${formatSnoozeDuration(setting.minutes)}`;
+  if (setting.kind === "after") return snoozeAfterLabel(setting.minutes);
   if (daysAhead === 0) {
     const hour = Number(setting.time.slice(0, 2));
-    return hour < 12 ? "This morning" : hour < 17 ? "This afternoon" : "This evening";
+    return hour < 12 ? t("This morning") : hour < 17 ? t("This afternoon") : t("This evening");
   }
-  if (daysAhead === 1) return "Tomorrow";
-  if (setting.day === "monday") return "Next week";
-  return daysAhead === 7 ? `Next ${capitalize(setting.day)}` : capitalize(setting.day);
+  if (daysAhead === 1) return t("Tomorrow");
+  if (setting.day === "monday") return t("Next week");
+  const dayName = t(DAY_NAMES[setting.day]);
+  return daysAhead === 7 ? t("Next {day}", { day: dayName }) : dayName;
 }
 
 export function snoozePresetId(setting: SnoozePresetSetting): string {
@@ -269,7 +276,7 @@ export function resolveSnoozePreset(
   }
   const label = snoozePresetLabel(setting, daysAhead);
   // Durations and "Next week" don't name the wake day, so a wake on another day shows it.
-  const labelNamesDay = setting.kind === "at" && label !== "Next week";
+  const labelNamesDay = setting.kind === "at" && !(daysAhead > 1 && setting.day === "monday");
   const time = formatTime(wake);
   return {
     id: snoozePresetId(setting),
@@ -277,7 +284,10 @@ export function resolveSnoozePreset(
     whenLabel:
       labelNamesDay || wake.toDateString() === now.toDateString()
         ? time
-        : `${wake.toLocaleDateString(undefined, { weekday: "short" })} ${time}`,
+        : t("{weekday} {time}", {
+            weekday: wake.toLocaleDateString(getFormattingLocale(), { weekday: "short" }),
+            time,
+          }),
     snoozedUntil: wake.toISOString(),
   };
 }
@@ -388,10 +398,6 @@ export function isThreadWokeUnseen(input: {
   return seenAt.every((ms) => ms < wokeAtMs);
 }
 
-function countLabel(count: number, singular: string, plural: string): string {
-  return `${count} ${count === 1 ? singular : plural}`;
-}
-
 /** Servers without vcs.unmergedWork answer from a full status read, which may fetch first. */
 export function unmergedWorkFromStatus(status: VcsStatusResult): VcsUnmergedWorkResult {
   if (!status.isRepo) return { refName: null, changedFileCount: 0, unmergedCommitCount: 0 };
@@ -409,15 +415,18 @@ export function unmergedWorkFromStatus(status: VcsStatusResult): VcsUnmergedWork
 function describeUnmergedWork(work: VcsUnmergedWorkResult): string | null {
   const parts = [
     work.unmergedCommitCount > 0
-      ? countLabel(work.unmergedCommitCount, "unmerged commit", "unmerged commits")
+      ? tn(work.unmergedCommitCount, "{count} unmerged commit", "{count} unmerged commits")
       : null,
     work.changedFileCount > 0
-      ? countLabel(work.changedFileCount, "uncommitted file", "uncommitted files")
+      ? tn(work.changedFileCount, "{count} uncommitted file", "{count} uncommitted files")
       : null,
   ].filter((part) => part !== null);
   if (parts.length === 0) return null;
-  const summary = parts.join(" and ");
-  return work.refName === null ? summary : `${summary} on ${work.refName}`;
+  const summary =
+    parts.length === 2
+      ? t("{first} and {second}", { first: parts[0]!, second: parts[1]! })
+      : parts[0]!;
+  return work.refName === null ? summary : t("{summary} on {ref}", { summary, ref: work.refName });
 }
 
 /**
@@ -437,18 +446,24 @@ export function unmergedWorkSettleConfirmation(
   if (only === undefined) return null;
   if (settlingCount === 1 && flagged.length === 1) {
     return {
-      title: `Settle “${only.title}”?`,
+      title: t("Settle “{title}”?", { title: only.title }),
       message:
         only.summary === null
-          ? "Its worktree could not be checked for changes that are not merged yet."
-          : `Its worktree has changes that are not merged yet: ${only.summary}.`,
+          ? t("Its worktree could not be checked for changes that are not merged yet.")
+          : t("Its worktree has changes that are not merged yet: {summary}.", {
+              summary: only.summary,
+            }),
     };
   }
   return {
-    title: `Settle ${countLabel(settlingCount, "thread", "threads")}?`,
+    title: tn(settlingCount, "Settle {count} thread?", "Settle {count} threads?"),
     message: [
-      "These worktrees may have changes that are not merged yet:",
-      ...flagged.map((thread) => `“${thread.title}”: ${thread.summary ?? "could not be checked"}`),
+      t("These worktrees may have changes that are not merged yet:"),
+      ...flagged.map((thread) =>
+        thread.summary === null
+          ? t("“{title}”: could not be checked", { title: thread.title })
+          : t("“{title}”: {summary}", { title: thread.title, summary: thread.summary }),
+      ),
     ].join("\n"),
   };
 }

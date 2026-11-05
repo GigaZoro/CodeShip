@@ -10,6 +10,7 @@ import { WorkspaceListToolbarRow } from "../workspace/WorkspaceListToolbarRow";
 import { useWorkspaceTabs } from "../workspace/WorkspaceTabsContext";
 import type { PullRequestFilterMenu } from "./PullRequestListFilters";
 import { openSettings } from "../settings/settings-navigation";
+import { t } from "../../lib/i18n";
 
 /** PR search shares the thread list's Android header row. */
 export function PullRequestToolbar(props: {
@@ -64,17 +65,17 @@ export function PullRequestToolbar(props: {
         searchField={
           <SearchField
             inputRef={input}
-            accessibilityLabel="Search pull requests"
-            clearAccessibilityLabel="Clear search"
-            placeholder="Search pull requests"
+            accessibilityLabel={t("Search pull requests")}
+            clearAccessibilityLabel={t("Clear search")}
+            placeholder={t("Search pull requests")}
             value={tab.query}
             onChangeText={(query) => dispatch({ type: "query", tab: "pullRequests", query })}
           />
         }
         onCloseSearch={closeSearch}
         onOpenSearch={openSearch}
-        searchAccessibilityLabel="Search pull requests"
-        titleAccessibilityLabel="T3.CodeShip, Pull requests"
+        searchAccessibilityLabel={t("Search pull requests")}
+        titleAccessibilityLabel={t("T3.CodeShip, Pull requests")}
         onOpenEnvironments={() => openSettings(navigation, "SettingsEnvironments")}
         filter={
           filters ? (
@@ -84,7 +85,7 @@ export function PullRequestToolbar(props: {
             >
               {(open) => (
                 <AndroidHeaderIconButton
-                  accessibilityLabel="Filter pull requests"
+                  accessibilityLabel={t("Filter pull requests")}
                   icon={
                     filters.customized
                       ? "line.3.horizontal.decrease.circle.fill"

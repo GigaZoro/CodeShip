@@ -8,6 +8,7 @@ import { formatModelSlugName, resolveSelectableModel } from "@t3tools/shared/mod
 import { fileBasename } from "@t3tools/shared/path";
 import { resolveModelShortName } from "../providerClients.ts";
 import { isTerminalSubagentStatus } from "./subagentRuntime.ts";
+import { msg, t, tn } from "@t3tools/shared/i18n";
 
 export function subagentGroupSummary(
   members: ReadonlyArray<{ readonly status: OrchestrationV2TurnItemStatus }>,
@@ -16,11 +17,21 @@ export function subagentGroupSummary(
     ({ status }) => status === "pending" || status === "running" || status === "waiting",
   );
   return {
-    label: `${active ? "Kicked off" : "Ran"} ${members.length} ${members.length === 1 ? "subagent" : "subagents"}`,
+    label: active
+      ? tn(members.length, "Kicked off {count} subagent", "Kicked off {count} subagents")
+      : tn(members.length, "Ran {count} subagent", "Ran {count} subagents"),
     active,
     failed: members.some(({ status }) => status === "failed"),
   };
 }
+
+const SUBAGENT_STATUS_COUNTS = {
+  working: msg("{count} working"),
+  done: msg("{count} done"),
+  failed: msg("{count} failed"),
+  stopped: msg("{count} stopped"),
+  idle: msg("{count} idle"),
+} as const;
 
 export function summarizeSubagentStatuses(
   statuses: ReadonlyArray<OrchestrationV2TurnItemStatus>,
@@ -35,7 +46,7 @@ export function summarizeSubagentStatuses(
   }
   return (Object.keys(counts) as Array<keyof typeof counts>)
     .filter((key) => counts[key] > 0)
-    .map((key) => `${counts[key]} ${key}`)
+    .map((key) => t(SUBAGENT_STATUS_COUNTS[key], { count: counts[key] }))
     .join(" · ");
 }
 
@@ -74,7 +85,7 @@ export function resolveSubagentMetadata(input: {
     ? (resolveModelShortName(catalogModel, input.provider?.driver) ?? catalogModel.name)
     : model
       ? formatModelSlugName(model)
-      : "Not reported";
+      : t("Not reported");
   const qualifier = catalogModel?.subProvider?.trim();
   const modelLabel = qualifier
     ? reportedLabel
@@ -93,16 +104,16 @@ export function resolveSubagentMetadata(input: {
     ...(input.parentThread &&
     input.childProject &&
     input.childProject.id !== input.parentThread.projectId
-      ? [{ label: "Project", value: input.childProject.title }]
+      ? [{ kind: "project" as const, label: t("Project"), value: input.childProject.title }]
       : []),
     ...(parentWorkspace && childWorkspace && parentWorkspace !== childWorkspace
       ? [
           {
-            label: input.childThread?.branch
-              ? "Branch"
+            ...(input.childThread?.branch
+              ? { kind: "branch" as const, label: t("Branch") }
               : input.childThread?.worktreePath
-                ? "Worktree"
-                : "Workspace",
+                ? { kind: "worktree" as const, label: t("Worktree") }
+                : { kind: "workspace" as const, label: t("Workspace") }),
             value: input.childThread?.branch ?? fileBasename(childWorkspace),
           },
         ]

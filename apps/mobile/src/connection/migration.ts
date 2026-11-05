@@ -94,6 +94,7 @@ export const migrateLegacyConnectionCatalog = Effect.fn(
     try: () => JSON.parse(raw) as unknown,
     catch: (cause) =>
       new LegacyConnectionMigrationError({
+        // oxlint-disable-next-line t3code/no-untranslated-text -- error detail for logs and error causes, never rendered
         message: `Could not parse the legacy mobile connection catalog: ${String(cause)}`,
       }),
   });
@@ -101,6 +102,7 @@ export const migrateLegacyConnectionCatalog = Effect.fn(
     Effect.mapError(
       (cause) =>
         new LegacyConnectionMigrationError({
+          // oxlint-disable-next-line t3code/no-untranslated-text -- error detail for logs and error causes, never rendered
           message: `Could not decode the legacy mobile connection catalog: ${String(cause)}`,
         }),
     ),

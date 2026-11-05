@@ -179,13 +179,22 @@ export function managedRuntimeModeCeilingMessage(organization: string, ceiling: 
   return `${organization} limits threads to ${RUNTIME_MODE_LABELS[ceiling]}.`;
 }
 
+/** The policy's ceiling when `mode` is above it, or undefined when `mode` is allowed. */
+export function managedRuntimeModeCeilingFor(
+  summary: ManagedPolicySummary | undefined,
+  mode: RuntimeMode,
+): RuntimeMode | undefined {
+  const ceiling = summary?.limits?.maxRuntimeMode;
+  return ceiling !== undefined && isRuntimeModeAbove(mode, ceiling) ? ceiling : undefined;
+}
+
 /** Why `mode` is unavailable on an environment with `summary`, or undefined when it is allowed. */
 export function managedRuntimeModeDenial(
   summary: ManagedPolicySummary | undefined,
   mode: RuntimeMode,
 ): string | undefined {
-  const ceiling = summary?.limits?.maxRuntimeMode;
-  return summary !== undefined && ceiling !== undefined && isRuntimeModeAbove(mode, ceiling)
+  const ceiling = managedRuntimeModeCeilingFor(summary, mode);
+  return summary !== undefined && ceiling !== undefined
     ? managedRuntimeModeCeilingMessage(summary.organization, ceiling)
     : undefined;
 }
@@ -204,25 +213,39 @@ export function clampManagedRuntimeMode(
   return modes.findLast((candidate) => !isRuntimeModeAbove(candidate, ceiling));
 }
 
-const CAPABILITY_LABELS = {
+const MANAGED_CAPABILITIES = [
+  "remoteClients",
+  "connect",
+  "webhookTasks",
+  "browserCookieImport",
+] as const;
+export type ManagedCapability = (typeof MANAGED_CAPABILITIES)[number];
+
+const CAPABILITY_LABELS: Record<ManagedCapability, string> = {
   remoteClients: "connecting from other devices",
   connect: "T3 Connect",
   webhookTasks: "webhook tasks",
   browserCookieImport: "importing browser cookies",
-} as const;
+};
+
+/** Whether the policy of an environment with `summary` turns `capability` off. */
+export function isManagedCapabilityDenied(
+  summary: ManagedPolicySummary | undefined,
+  capability: ManagedCapability,
+): boolean {
+  const limits = summary?.limits;
+  if (limits === undefined) return false;
+  return capability === "remoteClients"
+    ? limits.clients !== undefined && !limits.clients.includes("remote")
+    : limits[capability] === false;
+}
 
 /** Why a capability is unavailable on an environment with `summary`, or undefined when allowed. */
 export function managedCapabilityDenial(
   summary: ManagedPolicySummary | undefined,
-  capability: keyof typeof CAPABILITY_LABELS,
+  capability: ManagedCapability,
 ): string | undefined {
-  const limits = summary?.limits;
-  if (summary === undefined || limits === undefined) return undefined;
-  const denied =
-    capability === "remoteClients"
-      ? limits.clients !== undefined && !limits.clients.includes("remote")
-      : limits[capability] === false;
-  return denied
+  return summary !== undefined && isManagedCapabilityDenied(summary, capability)
     ? managedPolicyDeniedMessage(summary.organization, CAPABILITY_LABELS[capability])
     : undefined;
 }
@@ -234,11 +257,4 @@ export function isManagedDriverAllowed(
 ): boolean {
   const allowed = summary?.limits?.providers?.allowedDrivers;
   return allowed === undefined || allowed.includes(driver);
-}
-
-/** Why updates are unavailable on an environment with `summary`, or undefined when allowed. */
-export function managedUpdatesDenial(summary: ManagedPolicySummary | undefined) {
-  return summary?.limits?.updates?.mode === "off"
-    ? managedUpdatesMessage(summary.organization)
-    : undefined;
 }

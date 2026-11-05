@@ -6,12 +6,13 @@ import { SettingsScopeProvider } from "../components/settings/SettingsScopeConte
 import { validateScheduledTasksSearch } from "../components/settings/scheduledTasksSettings.logic";
 import { SidebarInset } from "../components/ui/sidebar";
 
+import { t } from "~/i18n";
 function ScheduledTasksRoute() {
   const { environmentId, taskId, ...scopeSearch } = Route.useSearch();
   const navigate = Route.useNavigate();
   return (
     <SidebarInset
-      {...workspaceAreaProps("scheduled-tasks", 1, "Scheduled tasks")}
+      {...workspaceAreaProps("scheduled-tasks", 1, t("Scheduled tasks"))}
       role="main"
       className="h-dvh min-h-0 overflow-hidden overscroll-y-none"
     >

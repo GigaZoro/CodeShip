@@ -27,6 +27,7 @@ import {
 } from "./updateEverything.logic";
 import { runningThreadCountAtom } from "./runningThreads";
 
+import { msg, t, tn, tx } from "~/i18n";
 interface UpdateEverythingDialogProps {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
@@ -74,9 +75,9 @@ export function UpdateEverythingDialog({
 }
 
 const APP_LABELS = {
-  "this-app": "This app",
-  server: "Server",
-  "desktop-app": "Desktop app",
+  "this-app": msg("This app"),
+  server: msg("Server"),
+  "desktop-app": msg("Desktop app"),
 } as const;
 
 function UpdateEverythingDialogContent({
@@ -126,24 +127,23 @@ function UpdateEverythingDialogContent({
     ),
   );
   const running = stopped + continuing;
-  const threads = `${running} running ${running === 1 ? "thread" : "threads"}`;
   const restarting = new Set(selectedRestarts.map((machine) => machine.environmentId));
 
   return (
     <>
       <AlertDialogHeader className="shrink-0">
         <AlertDialogTitle>
-          {title ?? `Update ${selected.length} ${selected.length === 1 ? "machine" : "machines"}?`}
+          {title ?? tn(selected.length, "Update {count} machine?", "Update {count} machines?")}
         </AlertDialogTitle>
         <AlertDialogDescription>
-          {version !== null ? (
-            <>
-              T3.CodeShip <span className="font-mono text-xs">{version}</span>
-            </>
-          ) : null}
+          {version !== null
+            ? tx("T3.CodeShip {version}", {
+                version: <span className="font-mono text-xs">{version}</span>,
+              })
+            : null}
           {version !== null && providerCount > 0 ? " · " : null}
           {providerCount > 0
-            ? `${providerCount} provider ${providerCount === 1 ? "update" : "updates"}`
+            ? tn(providerCount, "{count} provider update", "{count} provider updates")
             : null}
         </AlertDialogDescription>
       </AlertDialogHeader>
@@ -165,9 +165,9 @@ function UpdateEverythingDialogContent({
           >
             <div className="col-span-full grid grid-cols-subgrid border-b pb-1.5 text-muted-foreground text-xs">
               {showCheckboxes ? <span /> : null}
-              <span>Machine</span>
-              <span>T3.CodeShip</span>
-              <span>Providers</span>
+              <span>{t("Machine")}</span>
+              <span>{"T3.CodeShip"}</span>
+              <span>{t("Providers")}</span>
               <span />
             </div>
             {updating.map((row) => {
@@ -193,12 +193,14 @@ function UpdateEverythingDialogContent({
                     <MiddleTruncate value={row.label} />
                   </span>
                   <span>
-                    {row.app !== null ? APP_LABELS[row.app] : null}
+                    {row.app !== null ? t(APP_LABELS[row.app]) : null}
                     {row.app === null && row.skipped !== null ? (
-                      <span className="text-muted-foreground">Skipped</span>
+                      <span className="text-muted-foreground">{t("Skipped")}</span>
                     ) : null}
                     {row.app === "this-app" ? (
-                      <span className="block text-muted-foreground text-xs">restarts last</span>
+                      <span className="block text-muted-foreground text-xs">
+                        {t("restarts last")}
+                      </span>
                     ) : null}
                   </span>
                   <span>
@@ -222,7 +224,7 @@ function UpdateEverythingDialogContent({
             <Collapsible>
               <CollapsibleTrigger className="flex items-center gap-1 text-muted-foreground text-xs hover:text-foreground data-panel-open:[&_svg]:rotate-90">
                 <ChevronRightIcon className="size-3.5 transition-transform" aria-hidden />
-                {skipped.length} skipped
+                {t("{count} skipped", { count: skipped.length })}
               </CollapsibleTrigger>
               <CollapsiblePanel>
                 <div className="grid grid-cols-[minmax(0,max-content)_1fr] gap-x-3 gap-y-0.5 pt-1.5 ps-4.5 text-muted-foreground text-xs">
@@ -248,20 +250,36 @@ function UpdateEverythingDialogContent({
         ) : running > 0 ? (
           <p className="self-center text-muted-foreground text-sm max-sm:order-1 max-sm:text-center sm:mr-auto">
             {stopped === 0
-              ? `${threads} will pause and resume after the restart.`
+              ? tn(
+                  running,
+                  "{count} running thread will pause and resume after the restart.",
+                  "{count} running threads will pause and resume after the restart.",
+                )
               : continuing === 0
-                ? `${threads} will be interrupted.`
-                : `${threads} will be interrupted. ${continuing} can resume after the restart.`}
+                ? tn(
+                    running,
+                    "{count} running thread will be interrupted.",
+                    "{count} running threads will be interrupted.",
+                  )
+                : `${tn(
+                    running,
+                    "{count} running thread will be interrupted.",
+                    "{count} running threads will be interrupted.",
+                  )} ${tn(
+                    continuing,
+                    "{count} can resume after the restart.",
+                    "{count} can resume after the restart.",
+                  )}`}
           </p>
         ) : null}
         <AlertDialogClose ref={cancelRef} render={<Button variant="outline" disabled={busy} />}>
-          Cancel
+          {t("Cancel")}
         </AlertDialogClose>
         <Button
           disabled={disabledReason !== null || busy || selected.length === 0}
           onClick={() => onConfirm(selection)}
         >
-          {confirmLabel ?? (running > 0 && stopped === 0 ? "Safe update" : "Update")}
+          {confirmLabel ?? (running > 0 && stopped === 0 ? t("Safe update") : t("Update"))}
         </Button>
       </AlertDialogFooter>
     </>
@@ -270,5 +288,7 @@ function UpdateEverythingDialogContent({
 
 function RunningThreads({ environmentId }: { readonly environmentId: EnvironmentId }) {
   const count = useAtomValue(runningThreadCountAtom(environmentId));
-  return count > 0 ? <span className="whitespace-nowrap text-warning">{count} running</span> : null;
+  return count > 0 ? (
+    <span className="whitespace-nowrap text-warning">{t("{count} running", { count })}</span>
+  ) : null;
 }

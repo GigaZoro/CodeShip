@@ -1,5 +1,6 @@
 import type { PullRequestBodySegment } from "@t3tools/client-runtime/pull-request-markdown";
 import type { MarkdownNode } from "../../lib/markdownDocument";
+import { t } from "../../lib/i18n";
 
 function isWebUrl(url: string): boolean {
   try {
@@ -24,7 +25,7 @@ export function pullRequestDescriptionContent(
       if (node.url && isWebUrl(node.url) && !attachments.has(node.url)) {
         attachments.set(node.url, {
           uri: node.url,
-          caption: node.alt || node.title || "Image",
+          caption: node.alt || node.title || t("Image"),
           kind: "image",
         });
       }
@@ -42,7 +43,7 @@ export function pullRequestDescriptionContent(
       const name = new URL(segment.url).pathname.split("/").pop();
       attachments.set(segment.url, {
         uri: segment.url,
-        caption: segment.media === "video" ? "Video" : name || "Image",
+        caption: segment.media === "video" ? t("Video") : name || t("Image"),
         kind: segment.media,
       });
     }

@@ -1,3 +1,4 @@
+import { t } from "../../lib/i18n";
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -53,12 +54,15 @@ export function OutdatedServerUpdateSection({
     const targetVersion = release?.targetVersion;
     if (busy || !release || !targetVersion) return;
     Dialog.alert(
-      `Update ${label}?`,
-      `Install T3.CodeShip ${targetVersion}. T3.CodeShip restarts on that machine and reconnects. Running threads may be interrupted.`,
+      t("Update {label}?", { label }),
+      t(
+        "Install T3.CodeShip {targetVersion}. T3.CodeShip restarts on that machine and reconnects. Running threads may be interrupted.",
+        { targetVersion },
+      ),
       [
-        { text: "Cancel", style: "cancel" },
+        { text: t("Cancel"), style: "cancel" },
         {
-          text: "Update",
+          text: t("Update"),
           onPress: () => {
             setCheckErrorDismissed(true);
             void update({
@@ -73,23 +77,25 @@ export function OutdatedServerUpdateSection({
   }
 
   return (
-    <SettingsSection title="T3.CodeShip">
+    <SettingsSection title={"T3.CodeShip"}>
       <View className="gap-1 p-4">
         <Text className="text-base text-foreground">
-          {release ? `Version ${release.fromVersion}` : "Update required"}
+          {release
+            ? t("Version {version}", { version: release.fromVersion })
+            : t("Update required")}
         </Text>
         <Text className="text-sm text-foreground-muted">
           {state.status === "running"
             ? state.stage === "resuming"
-              ? "Restarting and reconnecting…"
+              ? t("Restarting and reconnecting…")
               : state.stage === "installing"
-                ? "Installing update…"
-                : "Downloading update…"
+                ? t("Installing update…")
+                : t("Downloading update…")
             : release
               ? release.targetVersion
-                ? `Version ${release.targetVersion} is available.`
-                : "No newer version is available yet."
-              : "This app needs a newer version of T3.CodeShip on this machine."}
+                ? t("Version {version} is available.", { version: release.targetVersion })
+                : t("No newer version is available yet.")
+              : t("This app needs a newer version of T3.CodeShip on this machine.")}
         </Text>
         {error || state.status === "failed" ? (
           <Text selectable accessibilityRole="alert" className="text-sm text-danger-foreground">
@@ -99,7 +105,7 @@ export function OutdatedServerUpdateSection({
       </View>
       <SettingsActionRow
         icon="arrow.clockwise"
-        label="Check for updates"
+        label={t("Check for updates")}
         disabled={busy}
         loading={checking}
         onPress={check}
@@ -107,7 +113,11 @@ export function OutdatedServerUpdateSection({
       {release?.targetVersion ? (
         <SettingsActionRow
           icon="arrow.up.circle"
-          label={state.status === "failed" ? "Retry update" : `Update to ${release.targetVersion}`}
+          label={
+            state.status === "failed"
+              ? t("Retry update")
+              : t("Update to {version}", { version: release.targetVersion })
+          }
           disabled={busy}
           loading={state.status === "running"}
           onPress={requestUpdate}

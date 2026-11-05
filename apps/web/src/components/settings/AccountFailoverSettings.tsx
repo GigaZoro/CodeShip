@@ -22,6 +22,7 @@ import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { t } from "~/i18n";
 import { SettingsModelSelectionControl } from "./DelegatedTaskModelSettings";
 import { searchableSetting } from "./settingsSearch";
 import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
@@ -86,11 +87,13 @@ export function AccountFailoverSettings({
   return (
     <SettingsSection {...searchableSetting("account-failover")}>
       <SettingsRow
-        title="Switch accounts at usage limits"
-        description="When an account hits its usage limit, the thread continues on the first signed-in subscription account of the same provider that still has usage left. API-key and Bedrock accounts are never used. Some providers' terms forbid using extra accounts to get around limits."
+        title={t("Switch accounts at usage limits")}
+        description={t(
+          "When an account hits its usage limit, the thread continues on the first signed-in subscription account of the same provider that still has usage left. API-key and Bedrock accounts are never used. Some providers' terms forbid using extra accounts to get around limits.",
+        )}
         control={
           <Switch
-            aria-label="Switch accounts at usage limits"
+            aria-label={t("Switch accounts at usage limits")}
             checked={switching}
             disabled={readOnly}
             onCheckedChange={(checked) => updateSettings({ failoverLimitedThreads: checked })}
@@ -99,8 +102,16 @@ export function AccountFailoverSettings({
       />
       {supportsAutoMode ? (
         <SettingsRow
-          title="Auto mode"
-          description={`Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's first account${switching ? " with usage left" : ""} and runs its coordinator model, set below. Pick Auto in the model picker to use it.`}
+          title={t("Auto mode")}
+          description={
+            switching
+              ? t(
+                  "Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's first account with usage left and runs its coordinator model, set below. Pick Auto in the model picker to use it.",
+                )
+              : t(
+                  "Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's first account and runs its coordinator model, set below. Pick Auto in the model picker to use it.",
+                )
+          }
           control={
             <Select
               value={autoProvider ?? AUTO_MODE_OFF}
@@ -114,15 +125,15 @@ export function AccountFailoverSettings({
               <SelectTrigger
                 size="sm"
                 className="w-full sm:w-44"
-                aria-label="Auto mode primary provider"
+                aria-label={t("Auto mode primary provider")}
               >
                 <SelectValue>
-                  {autoProvider === null ? "Off" : providerName(autoProvider)}
+                  {autoProvider === null ? t("Off") : providerName(autoProvider)}
                 </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
                 <SelectItem hideIndicator value={AUTO_MODE_OFF}>
-                  Off
+                  {t("Off")}
                 </SelectItem>
                 {autoProviders.map((driver) => (
                   <SelectItem key={driver} hideIndicator value={driver}>
@@ -136,8 +147,8 @@ export function AccountFailoverSettings({
       ) : null}
       {groups.length === 0 ? (
         <SettingsRow
-          title="Account order"
-          description="Add a second account for a provider to choose which one runs first."
+          title={t("Account order")}
+          description={t("Add a second account for a provider to choose which one runs first.")}
         />
       ) : (
         groups.map((accounts) => {
@@ -151,26 +162,36 @@ export function AccountFailoverSettings({
             ) ?? accounts[0]!;
           const storedAutoModel = settings.autoModeModels[driver];
           const runsModel = supportsAutoCoordinator(driver)
-            ? `Auto's coordinator: it does small requests itself, hands routine work to cheaper ${name} models, and checks the result.`
-            : "Auto runs this model.";
+            ? t(
+                "Auto's coordinator: it does small requests itself, hands routine work to cheaper {provider} models, and checks the result.",
+                { provider: name },
+              )
+            : t("Auto runs this model.");
           return (
             <SettingsRow
               key={driver}
-              title={supportsAutoMode ? name : `${name} account order`}
+              title={supportsAutoMode ? name : t("{provider} account order", { provider: name })}
               description={
                 !supportsAutoMode
-                  ? "A limited thread continues on the highest account in this list that still has usage left."
+                  ? t(
+                      "A limited thread continues on the highest account in this list that still has usage left.",
+                    )
                   : accounts.length === 1
-                    ? `${runsModel} Add a second account to switch accounts at usage limits.`
+                    ? t("{runsModel} Add a second account to switch accounts at usage limits.", {
+                        runsModel,
+                      })
                     : switching
-                      ? `${runsModel} Accounts are tried from the top, and a limited thread continues on the highest one with usage left.`
-                      : `${runsModel} New Auto chats start on the top account.`
+                      ? t(
+                          "{runsModel} Accounts are tried from the top, and a limited thread continues on the highest one with usage left.",
+                          { runsModel },
+                        )
+                      : t("{runsModel} New Auto chats start on the top account.", { runsModel })
               }
               resetAction={
                 supportsAutoMode && storedAutoModel !== undefined && !readOnly ? (
                   <SettingResetButton
-                    label={`${name} coordinator model`}
-                    tooltip="Use the default model"
+                    label={t("{provider} coordinator model", { provider: name })}
+                    tooltip={t("Use the default model")}
                     onClick={() => updateSettings({ autoModeModels: { [driver]: null } })}
                   />
                 ) : null
@@ -182,7 +203,7 @@ export function AccountFailoverSettings({
                     settings={settings}
                     providers={[modelAccount]}
                     readOnly={readOnly}
-                    label={`${name} coordinator model`}
+                    label={t("{provider} coordinator model", { provider: name })}
                     selection={
                       autoModel &&
                       createModelSelection(
@@ -191,7 +212,7 @@ export function AccountFailoverSettings({
                         autoModel.options,
                       )
                     }
-                    emptyLabel="Choose a model"
+                    emptyLabel={t("Choose a model")}
                     autoModeModel
                     onChange={(selection) =>
                       updateSettings({
@@ -213,7 +234,7 @@ export function AccountFailoverSettings({
                     const accountName = resolveProviderInstanceDisplayName(account);
                     const detail =
                       account.auth.status === "unauthenticated"
-                        ? "Signed out"
+                        ? t("Signed out")
                         : (account.auth.email ?? account.auth.label);
                     const first = index === 0;
                     const last = index === accounts.length - 1;
@@ -237,7 +258,7 @@ export function AccountFailoverSettings({
                         <Button
                           variant="ghost-muted"
                           size="icon-sm"
-                          aria-label={`Move ${accountName} up`}
+                          aria-label={t("Move {account} up", { account: accountName })}
                           disabled={readOnly}
                           aria-disabled={first || undefined}
                           onClick={() => {
@@ -249,7 +270,7 @@ export function AccountFailoverSettings({
                         <Button
                           variant="ghost-muted"
                           size="icon-sm"
-                          aria-label={`Move ${accountName} down`}
+                          aria-label={t("Move {account} down", { account: accountName })}
                           disabled={readOnly}
                           aria-disabled={last || undefined}
                           onClick={() => {

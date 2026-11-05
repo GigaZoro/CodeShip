@@ -8,6 +8,7 @@ import { threadEnvironment } from "../../state/threads";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import type { Artifact } from "./artifactsState";
 
+import { t } from "~/i18n";
 /** The URL the Artifacts page itself uses to select a page, rooted at the current origin. */
 function useArtifactLink() {
   const router = useRouter();
@@ -39,14 +40,14 @@ export function useArtifactActions(options: {
 
   const copyLink = async (artifact: Artifact) => {
     try {
-      await writeTextToClipboard(artifactLink(artifact), "artifact link");
-      toastManager.add(stackedThreadToast({ type: "success", title: "Link copied" }));
+      await writeTextToClipboard(artifactLink(artifact), t("artifact link"));
+      toastManager.add(stackedThreadToast({ type: "success", title: t("Link copied") }));
     } catch (error) {
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Couldn't copy the link",
-          description: error instanceof Error ? error.message : "An error occurred.",
+          title: t("Couldn't copy the link"),
+          description: error instanceof Error ? error.message : t("An error occurred."),
         }),
       );
     }
@@ -55,8 +56,8 @@ export function useArtifactActions(options: {
   const deleteArtifact = async (artifact: Artifact) => {
     const confirmed = await (readLocalApi()?.dialogs.confirm(
       [
-        `Delete “${artifact.title}”?`,
-        "It leaves the Artifacts list. The thread keeps showing the page in its conversation.",
+        t("Delete “{title}”?", { title: artifact.title }),
+        t("It leaves the Artifacts list. The thread keeps showing the page in its conversation."),
       ].join("\n"),
       { variant: "destructive" },
     ) ?? Promise.resolve(false));
@@ -72,9 +73,9 @@ export function useArtifactActions(options: {
     toastManager.add(
       stackedThreadToast({
         type: "success",
-        title: "Artifact deleted",
+        title: t("Artifact deleted"),
         actionProps: {
-          children: "Undo",
+          children: t("Undo"),
           onClick: () => {
             void setHidden(artifact, false).then((undone) => {
               if (undone._tag === "Success") options.refresh();

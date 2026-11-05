@@ -20,6 +20,7 @@ import { Atom } from "effect/reactivity";
 
 import type { TurnItemSource } from "../chat/timelineRowContext";
 
+import { t } from "~/i18n";
 /** What an expanded guest row says when it cannot read the item. */
 class GuestItemReadError extends Data.TaggedError("GuestItemReadError")<{
   readonly message: string;
@@ -50,7 +51,7 @@ const guestItemDetailAtom = Atom.family((key: string) => {
   return Atom.make(
     Effect.tryPromise({
       try: () => fetchGuestItemDetail(shareId, itemId),
-      catch: () => new GuestItemReadError({ message: "Could not load this item." }),
+      catch: () => new GuestItemReadError({ message: t("Could not load this item.") }),
     }),
   );
 });
@@ -76,7 +77,7 @@ const guestCommandOutputAtom = Atom.family((key: string) => {
           if (source.readyState === EventSource.CLOSED) {
             Queue.failCauseUnsafe(
               queue,
-              Cause.fail(new GuestItemReadError({ message: "Output is no longer available." })),
+              Cause.fail(new GuestItemReadError({ message: t("Output is no longer available.") })),
             );
           }
         });

@@ -12,6 +12,7 @@ import {
   handleGroupByMenuEvent,
 } from "./home-list-filter-menu";
 import type { HomeHeaderProps } from "./HomeHeader.types";
+import { t } from "../../lib/i18n";
 
 export type { HomeHeaderEnvironment } from "./HomeHeader.types";
 
@@ -27,11 +28,11 @@ export function HomeHeader(props: HomeHeaderProps) {
   const menuActions: MenuAction[] = [
     {
       id: "environment",
-      title: "Environment",
+      title: t("Environment"),
       subactions: [
         {
           id: "environment:all",
-          title: "All environments",
+          title: t("All environments"),
           state: checkedMenuState(props.selectedEnvironmentId === null),
         },
         ...props.environments.map((environment) => ({
@@ -46,11 +47,11 @@ export function HomeHeader(props: HomeHeaderProps) {
       : ([
           {
             id: "project",
-            title: "Project",
+            title: t("Project"),
             subactions: [
               {
                 id: "project:all",
-                title: "All projects",
+                title: t("All projects"),
                 state: checkedMenuState(props.selectedProjectKey === null),
               },
               ...props.projects.map((project) => ({

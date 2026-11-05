@@ -374,6 +374,7 @@ export async function openDocument(
   const rendered = [];
   for (const [index, page] of pages.entries()) {
     rendered.push({
+      // oxlint-disable-next-line t3code/no-untranslated-text -- runs in a worker without the language catalog
       title: page.attrs["draw:name"] || `Page ${index + 1}`,
       html: await odfHtml(page, archive),
     });
@@ -401,6 +402,7 @@ export async function openEpub(archive: JSZip): Promise<OfficeWorkerResult> {
     pages.push({
       title:
         text(find(chapter, "title")[0] ?? find(chapter, "h1")[0] ?? chapter).slice(0, 120) ||
+        // oxlint-disable-next-line t3code/no-untranslated-text -- runs in a worker without the language catalog
         `Chapter ${pages.length + 1}`,
       html: await epubHtml(chapter, archive, path),
     });
@@ -490,6 +492,7 @@ export function openRtf(bytes: ArrayBuffer): OfficeWorkerResult {
   let completedLength = 0;
   const finishPage = () => {
     if (pages.length >= 500) throw new Error("Rich text preview limited to 500 pages.");
+    // oxlint-disable-next-line t3code/no-untranslated-text -- runs in a worker without the language catalog
     pages.push({ title: `Page ${pages.length + 1}`, html: `<p>${html}</p>` });
     completedLength += html.length;
     html = "";

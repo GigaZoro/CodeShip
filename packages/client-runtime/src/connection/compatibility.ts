@@ -5,6 +5,7 @@ import {
 } from "@t3tools/contracts";
 
 import { ConnectionBlockedError } from "./model.ts";
+import { t } from "@t3tools/shared/i18n";
 
 export function orchestrationProtocolCompatibilityError(
   descriptor: ExecutionEnvironmentDescriptor,
@@ -17,11 +18,19 @@ export function orchestrationProtocolCompatibilityError(
   return serverProtocolVersion > ORCHESTRATION_PROTOCOL_VERSION
     ? new ConnectionBlockedError({
         reason: "unsupported",
-        detail: `This client is not supported by this server. Update your app or use a compatible release to connect to ${descriptor.label}.`,
+        detail: t(
+          "This client is not supported by this server. Update your app or use a compatible release to connect to {label}.",
+          { label: descriptor.label },
+        ),
       })
     : new ConnectionBlockedError({
         reason: "unsupported",
-        detail: `This client requires a newer server. Update T3.CodeShip on ${descriptor.label} to connect.`,
+        detail: t(
+          "This client requires a newer server. Update T3.CodeShip on {label} to connect.",
+          {
+            label: descriptor.label,
+          },
+        ),
         ...(canSelfUpdate(descriptor) ? { serverUpdateRequired: true } : {}),
       });
 }

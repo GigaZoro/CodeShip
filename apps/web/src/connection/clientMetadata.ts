@@ -77,6 +77,7 @@ export function clientPresentationMetadata(input: {
 }): AuthClientPresentationMetadata {
   if (input.desktopBridge !== undefined) {
     return {
+      // oxlint-disable-next-line t3code/no-untranslated-text -- client label sent to the server
       label: "T3.CodeShip Desktop",
       deviceType: "desktop",
       os: clientOsFromElectronPlatform(input.desktopBridge.getClientPlatform()),
@@ -86,6 +87,7 @@ export function clientPresentationMetadata(input: {
   }
 
   return {
+    // oxlint-disable-next-line t3code/no-untranslated-text -- client label sent to the server
     label: "T3.CodeShip Web",
     deviceType: browserDeviceType(input.identity),
     os: browserClientOs(input.identity),

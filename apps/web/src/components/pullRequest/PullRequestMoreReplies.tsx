@@ -1,4 +1,5 @@
 import type { PullRequestReplyAvailability } from "./pullRequestDetail.logic";
+import { t, tn } from "~/i18n";
 
 export function PullRequestMoreReplies({
   moreReplies,
@@ -10,8 +11,8 @@ export function PullRequestMoreReplies({
     <div className="flex flex-wrap items-baseline gap-2 py-1 text-xs text-muted-foreground">
       <span>
         {moreReplies > 0
-          ? `${moreReplies.toLocaleString()} more ${moreReplies === 1 ? "reply" : "replies"}`
-          : "More replies"}
+          ? tn(moreReplies, "{count} more reply", "{count} more replies")
+          : t("More replies")}
       </span>
       {url ? (
         <a
@@ -20,7 +21,7 @@ export function PullRequestMoreReplies({
           rel="noopener noreferrer"
           className="hover:text-foreground hover:underline"
         >
-          View on host
+          {t("View on host")}
         </a>
       ) : null}
     </div>

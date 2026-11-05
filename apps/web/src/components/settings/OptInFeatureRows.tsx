@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/react";
-import { managedCapabilityDenial } from "@t3tools/contracts";
+import { managedCapabilityDenial } from "@t3tools/shared/managedPolicyMessages";
 
 import { hasCloudPublicConfig } from "~/cloud/publicConfig";
 import { useT3ConnectAuthPrompt } from "../clerk/useT3ConnectAuthPrompt";
@@ -11,6 +11,7 @@ import { searchableSetting } from "./settingsSearch";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 import { useOptionalSettingsScope } from "./SettingsScopeContext";
 import { firstManagedDenial, usePrimaryManagedPolicy } from "~/state/managedPolicy";
+import { t, tx } from "~/i18n";
 
 /** Opt-in features that used to live in Labs, now shown on the page they belong to. */
 export function GuestLinksSetting() {
@@ -24,14 +25,16 @@ export function BoringSidebarMultilineRow() {
   return (
     <SettingsRow
       {...searchableSetting("boring-sidebar-multiline")}
-      description="When the sidebar groups threads into folders, show them on two lines: the title, then the branch, pull request, and agent."
+      description={t(
+        "When the sidebar groups threads into folders, show them on two lines: the title, then the branch, pull request, and agent.",
+      )}
       control={
         <Switch
           checked={settings.boringSidebarMultilineRows}
           onCheckedChange={(checked) =>
             updateSettings({ boringSidebarMultilineRows: Boolean(checked) })
           }
-          aria-label="Two-line folder rows"
+          aria-label={t("Two-line folder rows")}
         />
       }
     />
@@ -47,10 +50,12 @@ function GuestLinksRowWithSignIn() {
   return (
     <SettingsRow
       {...searchableSetting("guest-links")}
-      description="Share a thread with a guest who watches it live in their browser and sends messages you approve. Sign in to T3 Connect to use guest links."
+      description={t(
+        "Share a thread with a guest who watches it live in their browser and sends messages you approve. Sign in to T3 Connect to use guest links.",
+      )}
       control={
         <Button size="sm" variant="outline" onClick={openAuthPrompt}>
-          Sign in
+          {t("Sign in")}
         </Button>
       }
     />
@@ -76,19 +81,15 @@ function GuestLinksRow() {
       settingKeys={["guestSharingEnabled"]}
       // Turning guest links off still works without T3 Connect.
       managed={settings.guestSharingEnabled ? undefined : connectDenial}
-      description={
-        <>
-          Share a thread with a guest who watches it live in their browser and sends messages you
-          approve. Needs T3 Connect: sign in and link this machine under T3 Connect on this page.
-          While it is off, every guest link stops working.
-        </>
-      }
+      description={t(
+        "Share a thread with a guest who watches it live in their browser and sends messages you approve. Needs T3 Connect: sign in and link this machine under T3 Connect on this page. While it is off, every guest link stops working.",
+      )}
       control={
         <ScopedSwitch
           settingKeys={["guestSharingEnabled"]}
           checked={settings.guestSharingEnabled}
           onCheckedChange={(checked) => updateSettings({ guestSharingEnabled: Boolean(checked) })}
-          aria-label="Guest links"
+          aria-label={t("Guest links")}
         />
       }
     />
@@ -103,13 +104,9 @@ export function LinkedEnvironmentsRow() {
       serverScoped
       {...searchableSetting("linked-environments-beta")}
       settingKeys={["linkedEnvironmentsEnabled"]}
-      description={
-        <>
-          Let agents here work on your other machines, and theirs here. Applies to every machine
-          this app is connected to; link them under Linked environments on this page. While it is
-          off, nothing new starts over a link; tasks already running finish.
-        </>
-      }
+      description={t(
+        "Let agents here work on your other machines, and theirs here. Applies to every machine this app is connected to; link them under Linked environments on this page. While it is off, nothing new starts over a link; tasks already running finish.",
+      )}
       control={
         <ScopedSwitch
           settingKeys={["linkedEnvironmentsEnabled"]}
@@ -117,7 +114,7 @@ export function LinkedEnvironmentsRow() {
           onCheckedChange={(checked) =>
             updateSettings({ linkedEnvironmentsEnabled: Boolean(checked) })
           }
-          aria-label="Linked environments"
+          aria-label={t("Linked environments")}
         />
       }
     />
@@ -132,21 +129,21 @@ export function SimlockHostsRow() {
       serverScoped
       {...searchableSetting("simlock-hosts")}
       settingKeys={["simlockDeviceHostsEnabled"]}
-      description={
-        <>
-          Let the Device panel lease simulators and emulators from your own{" "}
-          <a
-            href="https://incubator.callstack.com/simlock/"
-            target="_blank"
-            rel="noreferrer"
-            className="underline underline-offset-2"
-          >
-            Simlock
-          </a>{" "}
-          pool, added under Device sources. An alpha that may change or break. T3.CodeShip never
-          installs Simlock.
-        </>
-      }
+      description={tx(
+        "Let the Device panel lease simulators and emulators from your own {simlock} pool, added under Device sources. An alpha that may change or break. T3.CodeShip never installs Simlock.",
+        {
+          simlock: (
+            <a
+              href="https://incubator.callstack.com/simlock/"
+              target="_blank"
+              rel="noreferrer"
+              className="underline underline-offset-2"
+            >
+              {"Simlock"}
+            </a>
+          ),
+        },
+      )}
       control={
         <ScopedSwitch
           settingKeys={["simlockDeviceHostsEnabled"]}
@@ -154,7 +151,7 @@ export function SimlockHostsRow() {
           onCheckedChange={(checked) =>
             updateSettings({ simlockDeviceHostsEnabled: Boolean(checked) })
           }
-          aria-label="Simlock device hosts"
+          aria-label={t("Simlock device hosts")}
         />
       }
     />

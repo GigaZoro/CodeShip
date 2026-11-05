@@ -6,6 +6,7 @@ import { environmentThreadDetails, threadEnvironment } from "../../state/threads
 import { toastManager } from "../ui/toast";
 import type { AssistantCitationRequest } from "./AssistantCitationSource";
 import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
+import { t } from "~/i18n";
 
 /** Whether the cited response is in the loaded history, after paging toward it. */
 export type CitedHistory =
@@ -36,18 +37,21 @@ type HistoryPageResult = AtomCommandSuccess<
 
 const MAX_CITATION_PAGES = 20;
 
-const COULD_NOT_LOAD = {
-  _tag: "failed",
-  title: "Could not load the cited response",
-  description:
-    "Load earlier turns, then click the citation to try again. Your saved quote is unchanged.",
-} as const;
+const couldNotLoad = () =>
+  ({
+    _tag: "failed",
+    title: t("Could not load the cited response"),
+    description: t(
+      "Load earlier turns, then click the citation to try again. Your saved quote is unchanged.",
+    ),
+  }) as const;
 
-const UNAVAILABLE = {
-  _tag: "failed",
-  title: "The cited response is unavailable",
-  description: "It may have been removed. The selected text is still saved in your citation.",
-} as const;
+const unavailable = () =>
+  ({
+    _tag: "failed",
+    title: t("The cited response is unavailable"),
+    description: t("It may have been removed. The selected text is still saved in your citation."),
+  }) as const;
 
 /**
  * Pages history toward the cited message until it is loaded, the thread runs
@@ -63,23 +67,23 @@ export async function loadCitedHistory(input: {
   for (let attempts = 0; ; attempts += 1) {
     const thread = await input.readThread();
     if (thread === null || input.signal.aborted) return { _tag: "aborted" };
-    if (thread.loadFailed) return COULD_NOT_LOAD;
+    if (thread.loadFailed) return couldNotLoad();
     if (thread.message === "assistant") return { _tag: "found" };
     if (thread.message === "other") {
       return {
         _tag: "failed",
-        title: "The citation does not refer to an assistant response",
-        description: "The selected text is still saved in your citation.",
+        title: t("The citation does not refer to an assistant response"),
+        description: t("The selected text is still saved in your citation."),
       };
     }
-    if (!thread.hasMoreHistory) return UNAVAILABLE;
-    if (attempts >= MAX_CITATION_PAGES) return COULD_NOT_LOAD;
+    if (!thread.hasMoreHistory) return unavailable();
+    if (attempts >= MAX_CITATION_PAGES) return couldNotLoad();
     const result = await input.loadThrough();
     if (input.signal.aborted) return { _tag: "aborted" };
-    if (result._tag === "error") return COULD_NOT_LOAD;
+    if (result._tag === "error") return couldNotLoad();
     // A noop page means the store has nothing older to load (no cursor, or the
     // thread is gone), so re-reading would only spin on the same snapshot.
-    if (result._tag === "noop") return UNAVAILABLE;
+    if (result._tag === "noop") return unavailable();
   }
 }
 
@@ -206,7 +210,7 @@ const citedHistoryAtom = Atom.family(
           );
           return result._tag === "Success"
             ? result.value
-            : { _tag: "error", message: "Could not load history." };
+            : { _tag: "error", message: t("Could not load history.") };
         },
       }).then((outcome) => {
         if (outcome._tag === "aborted") return;

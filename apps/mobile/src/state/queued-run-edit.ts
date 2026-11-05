@@ -25,6 +25,7 @@ import {
   setComposerDraftContext,
   setComposerDraftText,
 } from "./use-composer-drafts";
+import { t } from "../lib/i18n";
 
 export interface QueuedRunEdit {
   readonly runId: RunId;
@@ -101,8 +102,8 @@ function exitQueuedRunEdit(threadKey: string, edit: QueuedRunEdit): void {
   setThreadComposerError(
     threadKey,
     recovery === "kept"
-      ? "That message already started. Your edit is back in the composer."
-      : "That message already started, so the edit was discarded.",
+      ? t("That message already started. Your edit is back in the composer.")
+      : t("That message already started, so the edit was discarded."),
   );
 }
 

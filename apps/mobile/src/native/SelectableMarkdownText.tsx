@@ -9,6 +9,7 @@ import type { SelectableMarkdownTextProps } from "./SelectableMarkdownText.types
 import { MobileEnrichedMarkdownText } from "./EnrichedMarkdownText";
 import { themeColorWithAlpha } from "../lib/mobileTheme";
 import { useUniwindTheme } from "../lib/useUniwindTheme";
+import { t } from "../lib/i18n";
 
 export type {
   MarkdownFileContextMenu,
@@ -50,10 +51,10 @@ export function SelectableMarkdownText(props: SelectableMarkdownTextProps) {
             ? (href) =>
                 parseAssistantCitationHref(href)
                   ? {
-                      title: "Assistant quote",
+                      title: t("Assistant quote"),
                       actions: [
-                        { id: "open-quote", title: "Open quote" },
-                        { id: "copy-quote", title: "Copy quote" },
+                        { id: "open-quote", title: t("Open quote") },
+                        { id: "copy-quote", title: t("Copy quote") },
                       ],
                     }
                   : props.fileContextMenu?.(href)

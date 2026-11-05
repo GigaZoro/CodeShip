@@ -1,15 +1,16 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import { offersSidebarMachineGrouping, type SidebarGrouping } from "@t3tools/contracts/settings";
 import type { MenuAction } from "@react-native-menu/menu";
+import { msg, t } from "../../lib/i18n";
 
-const PROJECT_GROUPING_LABELS = { none: "None", project: "Project" } as const;
+const PROJECT_GROUPING_LABELS = { none: msg("None"), project: msg("Project") } as const;
 
 /** "Group" with nothing on, else what is on, outer folders first: "By machine, project". */
 export function threadListGroupingLabel(grouping: SidebarGrouping): string {
-  const kinds = [grouping.machine ? "machine" : null, grouping.project ? "project" : null].filter(
-    (kind) => kind !== null,
-  );
-  return kinds.length === 0 ? "Group" : `By ${kinds.join(", ")}`;
+  if (grouping.machine && grouping.project) return t("By machine, project");
+  if (grouping.machine) return t("By machine");
+  if (grouping.project) return t("By project");
+  return t("Group");
 }
 
 export const ARCHIVED_THREADS_EVENT = "archived-threads";
@@ -17,7 +18,9 @@ export const ARCHIVED_THREADS_EVENT = "archived-threads";
 /** Opens the archived threads screen from the thread list's native menus. */
 export const archivedThreadsMenuItem = {
   id: ARCHIVED_THREADS_EVENT,
-  title: "Archived",
+  get title() {
+    return t("Archived");
+  },
 } satisfies MenuAction;
 
 export const ARTIFACTS_EVENT = "artifacts";
@@ -25,7 +28,9 @@ export const ARTIFACTS_EVENT = "artifacts";
 /** Opens the artifacts screen from the thread list's native menus. */
 export const artifactsMenuItem = {
   id: ARTIFACTS_EVENT,
-  title: "Artifacts",
+  get title() {
+    return t("Artifacts");
+  },
 } satisfies MenuAction;
 
 const PROJECT_GROUPING_EVENT_PREFIX = "group-by:";
@@ -40,7 +45,7 @@ export interface ThreadListGroupingHandlers {
 export function projectGroupingMenuItems(grouping: SidebarGrouping) {
   return (["none", "project"] as const).map((value) => ({
     id: `${PROJECT_GROUPING_EVENT_PREFIX}${value}`,
-    title: PROJECT_GROUPING_LABELS[value],
+    title: t(PROJECT_GROUPING_LABELS[value]),
     state: grouping.project === (value === "project") ? ("on" as const) : ("off" as const),
   }));
 }
@@ -48,7 +53,7 @@ export function projectGroupingMenuItems(grouping: SidebarGrouping) {
 export function machineGroupingMenuItem(grouping: SidebarGrouping) {
   return {
     id: MACHINE_GROUPING_EVENT,
-    title: "Group by machine",
+    title: t("Group by machine"),
     state: grouping.machine ? ("on" as const) : ("off" as const),
   } satisfies MenuAction;
 }
@@ -59,7 +64,7 @@ export function buildGroupByMenuActions(
   machineCount: number,
 ): MenuAction[] {
   return [
-    { id: "group-by", title: "Group by", subactions: projectGroupingMenuItems(grouping) },
+    { id: "group-by", title: t("Group by"), subactions: projectGroupingMenuItems(grouping) },
     ...(offersSidebarMachineGrouping(machineCount, grouping)
       ? [machineGroupingMenuItem(grouping)]
       : []),
@@ -125,12 +130,12 @@ export function buildHomeListFilterMenu(
 
   items.push({
     type: "submenu",
-    title: "Environment",
+    title: t("Environment"),
     items: [
       {
         type: "action",
-        title: "All environments",
-        subtitle: "Show threads from every environment",
+        title: t("All environments"),
+        subtitle: t("Show threads from every environment"),
         state: props.selectedEnvironmentId === null ? "on" : "off",
         onPress: () => props.onEnvironmentChange(null),
       },
@@ -149,12 +154,12 @@ export function buildHomeListFilterMenu(
   if (props.projects.length > 0) {
     items.push({
       type: "submenu",
-      title: "Project",
+      title: t("Project"),
       items: [
         {
           type: "action",
-          title: "All projects",
-          subtitle: "Show threads from every project",
+          title: t("All projects"),
+          subtitle: t("Show threads from every project"),
           state: props.selectedProjectKey === null ? "on" : "off",
           onPress: () => props.onProjectChange(null),
         },
@@ -170,10 +175,10 @@ export function buildHomeListFilterMenu(
 
   items.push({
     type: "submenu",
-    title: "Group by",
+    title: t("Group by"),
     items: (["none", "project"] as const).map((value) => ({
       type: "action" as const,
-      title: PROJECT_GROUPING_LABELS[value],
+      title: t(PROJECT_GROUPING_LABELS[value]),
       state: props.grouping.project === (value === "project") ? ("on" as const) : ("off" as const),
       onPress: () => props.onProjectGroupingChange(value === "project"),
     })),
@@ -181,17 +186,17 @@ export function buildHomeListFilterMenu(
   if (offersSidebarMachineGrouping(props.environments.length, props.grouping)) {
     items.push({
       type: "action",
-      title: "Group by machine",
+      title: t("Group by machine"),
       state: props.grouping.machine ? "on" : "off",
       onPress: props.onMachineGroupingToggle,
     });
   }
 
-  items.push({ type: "action", title: "Archived", onPress: props.onOpenArchived });
-  items.push({ type: "action", title: "Artifacts", onPress: props.onOpenArtifacts });
+  items.push({ type: "action", title: t("Archived"), onPress: props.onOpenArchived });
+  items.push({ type: "action", title: t("Artifacts"), onPress: props.onOpenArtifacts });
 
   return {
-    title: "Thread list options",
+    title: t("Thread list options"),
     items,
   };
 }

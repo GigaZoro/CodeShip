@@ -2,6 +2,7 @@ import { ManagedRelay } from "@t3tools/client-runtime/relay";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SecureStore from "expo-secure-store";
+import { t } from "../../lib/i18n";
 
 const MANAGED_RELAY_TOKEN_CACHE_KEY = "t3code.cloud.relay-access-tokens";
 const MANAGED_RELAY_TOKEN_CACHE_VERSION = 1;
@@ -44,7 +45,7 @@ export class ManagedRelayTokenStoreError extends Schema.TaggedError<ManagedRelay
 }
 
 function logStoreFailure(error: ManagedRelayTokenStoreError) {
-  return Effect.logWarning("Managed relay token store operation failed.", {
+  return Effect.logWarning(t("Managed relay token store operation failed."), {
     errorTag: error._tag,
     operation: error.operation,
     storageKey: error.storageKey,

@@ -21,6 +21,7 @@ import {
   deviceStreamMessage,
   type DeviceStreamConfiguration,
 } from "./device-stream-document";
+import { t } from "../../lib/i18n";
 
 export interface DeviceStreamRef {
   home: () => void;
@@ -115,7 +116,7 @@ function DeviceStreamDocumentView({
     setStatus("error");
   };
   const bootstrapTimedOut = useEffectEvent(() =>
-    fail("Device viewer could not start. Reconnect to try again."),
+    fail(t("Device viewer could not start. Reconnect to try again.")),
   );
   const resetInput = useEffectEvent(() => void onInputConnected(false));
   // The stream lives exactly as long as this view.
@@ -151,7 +152,7 @@ function DeviceStreamDocumentView({
   const processTerminated = () => {
     if (!active.current || failed.current) return;
     void onInputConnected(false);
-    if (!onRecoverProcess()) fail("Device viewer stopped. Reconnect to try again.");
+    if (!onRecoverProcess()) fail(t("Device viewer stopped. Reconnect to try again."));
   };
   return (
     <View className="flex-1" style={{ backgroundColor: background }}>
@@ -166,8 +167,8 @@ function DeviceStreamDocumentView({
         contentInsetAdjustmentBehavior="never"
         setSupportMultipleWindows={false}
         style={{ flex: 1, backgroundColor: background }}
-        onError={() => fail("Device viewer could not load. Reconnect to try again.")}
-        onHttpError={() => fail("Device viewer could not load. Reconnect to try again.")}
+        onError={() => fail(t("Device viewer could not load. Reconnect to try again."))}
+        onHttpError={() => fail(t("Device viewer could not load. Reconnect to try again."))}
         onContentProcessDidTerminate={processTerminated}
         onRenderProcessGone={processTerminated}
         onShouldStartLoadWithRequest={(request) =>
@@ -181,7 +182,7 @@ function DeviceStreamDocumentView({
           else if (message?.type === "retry") onRetry();
           else if (message?.type === "status") {
             clearBootstrapTimer();
-            if (message.status === "error") fail(message.detail ?? "Device stream failed.");
+            if (message.status === "error") fail(message.detail ?? t("Device stream failed."));
             else {
               setStatus(message.status);
               if (message.status === "streaming") onStreaming();
@@ -199,11 +200,11 @@ function DeviceStreamDocumentView({
             accessibilityLiveRegion="polite"
             className="text-center text-sm text-foreground-muted"
           >
-            {status === "error" ? error : "Connecting to device..."}
+            {status === "error" ? error : t("Connecting to device...")}
           </AppText>
           {status === "error" ? (
             <View className="items-center">
-              <Button label="Reconnect" tone="secondary" onPress={onRetry} />
+              <Button label={t("Reconnect")} tone="secondary" onPress={onRetry} />
             </View>
           ) : null}
         </View>

@@ -2,6 +2,7 @@ import { connectionMayStillAnswer } from "@t3tools/client-runtime/connection";
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
+import { t, tn } from "~/i18n";
 import { useEnvironmentProviderEntries } from "../../hooks/useEnvironmentProviderEntries";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import type { ProviderInstanceEntry } from "../../providerInstances";
@@ -101,7 +102,7 @@ function MachineName(props: { readonly machine: SidebarMachine }) {
       />
       <span className="min-w-0 truncate">{props.machine.label}</span>
       {props.machine.disconnected ? (
-        <span className="shrink-0 text-muted-foreground text-xs">Offline</span>
+        <span className="shrink-0 text-muted-foreground text-xs">{t("Offline")}</span>
       ) : null}
     </span>
   );
@@ -123,7 +124,7 @@ export function MachinePicker(props: {
           if (chosen) props.onSelect(chosen.machine.environmentId);
         }}
       >
-        <SelectTrigger size="sm" aria-label="Machine">
+        <SelectTrigger size="sm" aria-label={t("Machine")}>
           <SelectValue>{() => <MachineName machine={props.machine.machine} />}</SelectValue>
         </SelectTrigger>
         <SelectPopup alignItemWithTrigger={false}>
@@ -147,7 +148,7 @@ export function ProviderTargetToggle(props: {
   if (props.targets.length < 2) return null;
   return (
     <ToggleGroup
-      aria-label="Provider"
+      aria-label={t("Provider")}
       className="max-w-full overflow-x-auto"
       value={[props.target.key]}
       onValueChange={(next) => {
@@ -196,10 +197,13 @@ export function ProviderTargetAccounts(props: { readonly target: ProviderTarget 
           <span className="shrink-0 font-normal text-muted-foreground text-xs underline decoration-dotted underline-offset-2" />
         }
       >
-        {accounts.length} accounts
+        {tn(accounts.length, "{count} account", "{count} accounts")}
       </TooltipTrigger>
       <TooltipPopup>
-        {names.join(", ")} share one {naming.driverLabel} setup, so changes here apply to each.
+        {t("{names} share one {driver} setup, so changes here apply to each.", {
+          names: names.join(", "),
+          driver: naming.driverLabel,
+        })}
       </TooltipPopup>
     </Tooltip>
   );
@@ -216,7 +220,10 @@ export function ProviderName(props: { readonly provider: ProviderInstanceEntry }
     <span className="min-w-0 truncate">
       {naming.driverLabel}
       {naming.account ? (
-        <span className="font-normal text-muted-foreground"> · {naming.account}</span>
+        <span className="font-normal text-muted-foreground">
+          {" · "}
+          {naming.account}
+        </span>
       ) : null}
     </span>
   );

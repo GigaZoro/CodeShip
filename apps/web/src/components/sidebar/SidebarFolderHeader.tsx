@@ -20,6 +20,7 @@ import { ProjectFavicon } from "../ProjectFavicon";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
+import { t } from "~/i18n";
 export interface SidebarMachine {
   readonly environmentId: EnvironmentId;
   readonly label: string;
@@ -86,7 +87,7 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
       onToggle={(siblings) => props.onToggle(folderKey, siblings)}
       onDragStart={(event) => props.onDragStart(folderKey, event)}
       newThread={{
-        label: `New thread in ${group.displayName}`,
+        label: t("New thread in {name}", { name: group.displayName }),
         onClick: () => props.onNewThread(group, member),
       }}
       onContextMenu={(position) => props.onContextMenu(group, member, position)}
@@ -117,7 +118,7 @@ export const SidebarMachineFolderHeader = memo(function SidebarMachineFolderHead
       label={machine.label}
       status={
         machine.disconnected ? (
-          <span className="shrink-0 text-xs text-sidebar-muted-foreground">Offline</span>
+          <span className="shrink-0 text-xs text-sidebar-muted-foreground">{t("Offline")}</span>
         ) : null
       }
       collapsed={props.collapsed}
@@ -128,7 +129,10 @@ export const SidebarMachineFolderHeader = memo(function SidebarMachineFolderHead
       newThread={
         machine.disconnected
           ? null
-          : { label: `New thread on ${machine.label}`, onClick: () => props.onNewThread(machine) }
+          : {
+              label: t("New thread on {name}", { name: machine.label }),
+              onClick: () => props.onNewThread(machine),
+            }
       }
     />
   );
@@ -288,7 +292,7 @@ export const SidebarFolderMoreRow = memo(function SidebarFolderMoreRow(props: {
           props.nested ? "ps-15.5" : "ps-9",
         )}
       >
-        {props.showingAll ? "Show less" : `Show ${props.overflowCount} more`}
+        {props.showingAll ? t("Show less") : t("Show {count} more", { count: props.overflowCount })}
       </button>
     </li>
   );

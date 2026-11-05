@@ -18,6 +18,7 @@ import { useHardwareKeyboardCommand } from "../keyboard/hardwareKeyboardCommands
 import { WorkspaceListToolbarRow } from "../workspace/WorkspaceListToolbarRow";
 import { useWorkspaceConnectionState } from "../../state/workspace";
 import { useToolbarLayout } from "../../components/ui/useToolbarLayout";
+import { t } from "../../lib/i18n";
 
 export function ThreadListToolbar(props: {
   readonly searchQuery: string;
@@ -81,9 +82,9 @@ export function ThreadListToolbar(props: {
   const searchField = (
     <SearchField
       inputRef={searchRef}
-      accessibilityLabel="Search threads"
-      clearAccessibilityLabel="Clear search"
-      placeholder="Search"
+      accessibilityLabel={t("Search threads")}
+      clearAccessibilityLabel={t("Clear search")}
+      placeholder={t("Search")}
       value={props.searchQuery}
       onChangeText={onSearchQueryChange}
     />
@@ -92,7 +93,7 @@ export function ThreadListToolbar(props: {
     <AndroidAnchoredMenu actions={props.filterActions} onPressAction={props.onFilterAction}>
       {(open) => (
         <AndroidHeaderIconButton
-          accessibilityLabel="Filter threads"
+          accessibilityLabel={t("Filter threads")}
           icon={filterIcon}
           onPress={open}
         />
@@ -111,8 +112,8 @@ export function ThreadListToolbar(props: {
         searchField={searchField}
         onCloseSearch={closeSearch}
         onOpenSearch={openSearch}
-        searchAccessibilityLabel="Search threads"
-        titleAccessibilityLabel="T3.CodeShip, Threads"
+        searchAccessibilityLabel={t("Search threads")}
+        titleAccessibilityLabel={t("T3.CodeShip, Threads")}
         onOpenEnvironments={props.onOpenEnvironments}
         filter={filterButton}
       />

@@ -24,8 +24,8 @@ import { environmentServerConfigsAtom, serverEnvironment } from "../../state/ser
 import { environmentThreadDetails } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useThreadGuestShare } from "./ThreadGuestShareBar";
+import { t } from "../../lib/i18n";
 
-const TITLE = "Share with guest";
 const COPY_FEEDBACK_DURATION_MS = 1200;
 
 /**
@@ -99,13 +99,13 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
     const error = squashAtomCommandFailure(result);
     setState({
       status: "failed",
-      message: error instanceof Error ? error.message : "Could not create a guest link.",
+      message: error instanceof Error ? error.message : t("Could not create a guest link."),
     });
   };
 
   const copy = async (url: string) => {
     if (!(await tryCopyTextWithHaptic(url, { target: "guest link" }))) {
-      Dialog.alert("Could not copy", "Try again.");
+      Dialog.alert(t("Could not copy"), t("Try again."));
       return;
     }
     setCopiedAtMs(Date.now());
@@ -115,7 +115,7 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
     // Android ignores `url`; iOS turns a `message` URL into plain text instead of a link preview.
     Share.share(Platform.OS === "ios" ? { url } : { message: url }).catch((cause: unknown) => {
       console.error("Failed to share guest link.", cause);
-      Dialog.alert("Could not share the link", "Copy it instead.");
+      Dialog.alert(t("Could not share the link"), t("Copy it instead."));
     });
   };
 
@@ -136,13 +136,13 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
               </Text>
             </View>
             <Text className="px-1 text-xs text-foreground-muted">
-              Send it to one person. It works once and expires in 24 hours.
+              {t("Send it to one person. It works once and expires in 24 hours.")}
             </Text>
           </View>
           <View className="flex-row gap-3">
             <View className="flex-1">
               <Button
-                label={copied ? "Copied" : "Copy"}
+                label={copied ? t("Copied") : t("Copy")}
                 icon={copied ? "checkmark" : "doc.on.doc"}
                 fullWidth
                 onPress={() => void copy(state.url)}
@@ -150,7 +150,7 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
             </View>
             <View className="flex-1">
               <Button
-                label="Share"
+                label={t("Share")}
                 icon="square.and.arrow.up"
                 tone="primary"
                 fullWidth
@@ -170,26 +170,29 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
               />
             </View>
             <Text className="min-w-0 flex-1 text-sm leading-normal text-foreground-secondary">
-              The guest sees the thread as you do, including command output and the agent&apos;s
-              reasoning. Each message they send waits for you.
+              {t(
+                "The guest sees the thread as you do, including command output and the agent's reasoning. Each message they send waits for you.",
+              )}
             </Text>
           </View>
           <View className="gap-1.5">
             {!threadLoaded ? (
               <Text className="text-sm text-foreground-muted">
                 {threadDeleted
-                  ? "This thread was deleted."
-                  : (threadLoadError ?? "Checking for an active link…")}
+                  ? t("This thread was deleted.")
+                  : (threadLoadError ?? t("Checking for an active link…"))}
               </Text>
             ) : activeShare !== null ? (
               <Text className="text-sm text-foreground">
                 {activeShare.guestName !== null
-                  ? `${activeShare.guestName} is a guest. A new link ends their access.`
-                  : "A guest link is active. A new link ends the current one."}
+                  ? t("{name} is a guest. A new link ends their access.", {
+                      name: activeShare.guestName,
+                    })
+                  : t("A guest link is active. A new link ends the current one.")}
               </Text>
             ) : (
               <Text className="text-sm text-foreground">
-                The link works once and expires in 24 hours.
+                {t("The link works once and expires in 24 hours.")}
               </Text>
             )}
             {state.status === "failed" ? (
@@ -201,12 +204,12 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
           <Button
             label={
               creating
-                ? "Creating link…"
+                ? t("Creating link…")
                 : state.status === "failed"
-                  ? "Try again"
+                  ? t("Try again")
                   : activeShare !== null
-                    ? "Create new link"
-                    : "Create link"
+                    ? t("Create new link")
+                    : t("Create link")
             }
             tone="primary"
             fullWidth
@@ -224,7 +227,7 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
       <View collapsable={false} className="flex-1 bg-sheet">
         <SheetHeader
           presentation="native"
-          title={TITLE}
+          title={t("Share with guest")}
           onClose={close}
           dismissDisabled={creating}
         />
@@ -236,7 +239,7 @@ export function ThreadGuestShareSheet({ route }: StaticScreenProps<GuestShareTar
   return (
     <View collapsable={false} className="flex-1 bg-header">
       <NativeStackScreenOptions options={{ sheetCornerRadius: 28 }} />
-      <AndroidSheetHeader title={TITLE} hideBottomBorder onBack={close} />
+      <AndroidSheetHeader title={t("Share with guest")} hideBottomBorder onBack={close} />
       <ScreenContent>{content}</ScreenContent>
     </View>
   );

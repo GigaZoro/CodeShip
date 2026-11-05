@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import { type EnvironmentId, SourceControlProviderKind } from "@t3tools/contracts";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import * as Schema from "effect/Schema";
@@ -27,12 +28,12 @@ function dismiss() {
 function showStarPrompt() {
   const close = () => toastManager.close(id);
   const id = toastManager.add({
-    title: "Enjoying T3.CodeShip?",
-    description: "Give us a star on GitHub to let us know!",
+    title: t("Enjoying T3.CodeShip?"),
+    description: t("Give us a star on GitHub to let us know!"),
     timeout: 0,
     onClose: dismiss,
     actionProps: {
-      children: "Star on GitHub",
+      children: t("Star on GitHub"),
       onClick: () => {
         close();
         void readLocalApi()
@@ -43,7 +44,7 @@ function showStarPrompt() {
     data: {
       actionLayout: "stacked-end",
       leadingIcon: <StarIcon aria-hidden className="size-4 text-warning-foreground" />,
-      secondaryActionProps: { children: "Dismiss", onClick: close },
+      secondaryActionProps: { children: t("Dismiss"), onClick: close },
       secondaryActionVariant: "ghost",
     },
   });

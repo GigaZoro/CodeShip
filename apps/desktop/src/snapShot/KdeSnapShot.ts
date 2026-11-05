@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- KDE authorizes a dedicated, installed native executable.
+import { t } from "@t3tools/shared/i18n";
 import * as NodeCrypto from "node:crypto";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
@@ -59,7 +60,9 @@ function run(executable: string, args: string[], signal?: AbortSignal): Promise<
         if (executable === "kbuildsycoca6") {
           reject(
             new Error(
-              "KDE couldn't register the capture helper. Make sure KDE's service tools (kbuildsycoca6) are installed, then reinstall the helper.",
+              t(
+                "KDE couldn't register the capture helper. Make sure KDE's service tools (kbuildsycoca6) are installed, then reinstall the helper.",
+              ),
             ),
           );
           return;
@@ -67,14 +70,16 @@ function run(executable: string, args: string[], signal?: AbortSignal): Promise<
         if (stderr.includes("NoAuthorized")) {
           reject(
             new Error(
-              "KDE hasn't granted capture access. Reinstall the capture helper in setup, then try again.",
+              t(
+                "KDE hasn't granted capture access. Reinstall the capture helper in setup, then try again.",
+              ),
             ),
           );
         } else
           reject(
             new Error(
               stderr.trim() ||
-                "The KDE capture helper did not respond. Reopen capture setup and check access.",
+                t("The KDE capture helper did not respond. Reopen capture setup and check access."),
             ),
           );
       },
@@ -90,7 +95,9 @@ async function regularFile(path: string): Promise<Buffer | undefined> {
   if (!stat) return undefined;
   if (!stat.isFile() || stat.isSymbolicLink())
     throw new Error(
-      "Capture helper files must be regular files. Remove the conflicting link before trying again.",
+      t(
+        "Capture helper files must be regular files. Remove the conflicting link before trying again.",
+      ),
     );
   return NodeFSP.readFile(path);
 }
@@ -108,31 +115,33 @@ export class KdeCaptureSetup {
       if (!installed || !entry)
         return {
           status: "not-installed",
-          message:
+          message: t(
             "Install the bundled helper to capture the window you're using without a picker.",
+          ),
         };
       const bundle = await regularFile(this.paths.bundle);
       if (!bundle)
         return {
           status: "error",
-          message:
+          message: t(
             "The capture helper is missing from this build. Update or reinstall T3.CodeShip.",
+          ),
         };
       if (!installed.equals(bundle) || entry.toString() !== kdeCaptureDesktopEntry(executable))
         return {
           status: "update-required",
-          message: "Update the bundled capture helper to continue.",
+          message: t("Update the bundled capture helper to continue."),
         };
       const capabilities = decodeCapabilities(await run(executable, ["check"]));
       return {
         status: "ready",
-        message: "KDE capture access is ready. Next, choose your shortcut.",
+        message: t("KDE capture access is ready. Next, choose your shortcut."),
         feedbackAvailable: capabilities.feedbackAvailable ?? false,
       };
     } catch (error) {
       return {
         status: "error",
-        message: error instanceof Error ? error.message : "Couldn't check KDE capture access.",
+        message: error instanceof Error ? error.message : t("Couldn't check KDE capture access."),
       };
     }
   }
@@ -142,7 +151,7 @@ export class KdeCaptureSetup {
     const entry = await regularFile(desktop);
     if (entry && !entry.toString().split("\n").includes(MARKER))
       throw new Error(
-        "Another desktop entry uses the capture helper's name. Rename it before continuing.",
+        t("Another desktop entry uses the capture helper's name. Rename it before continuing."),
       );
     const directory = NodePath.dirname(executable);
     const existing = await NodeFSP.lstat(directory).catch((error: NodeJS.ErrnoException) => {
@@ -150,7 +159,7 @@ export class KdeCaptureSetup {
       return undefined;
     });
     if (existing && (!existing.isDirectory() || existing.isSymbolicLink()))
-      throw new Error("The capture helper directory is not a regular directory.");
+      throw new Error(t("The capture helper directory is not a regular directory."));
     await regularFile(executable);
     if (action === "remove-kde-helper") {
       if (entry) await NodeFSP.unlink(desktop);
@@ -161,7 +170,7 @@ export class KdeCaptureSetup {
       const bundle = await regularFile(this.paths.bundle);
       if (!bundle)
         throw new Error(
-          "The capture helper is missing from this build. Update or reinstall T3.CodeShip.",
+          t("The capture helper is missing from this build. Update or reinstall T3.CodeShip."),
         );
       await NodeFSP.mkdir(directory, { recursive: true });
       await NodeFSP.mkdir(NodePath.dirname(desktop), { recursive: true });

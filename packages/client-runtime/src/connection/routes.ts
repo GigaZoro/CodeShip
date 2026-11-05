@@ -13,6 +13,7 @@ import {
   type ConnectionRoute,
 } from "./catalog.ts";
 import { BearerConnectionTarget, type ConnectionTarget } from "./model.ts";
+import { t } from "@t3tools/shared/i18n";
 
 export type ConnectionRouteKind =
   | "relay"
@@ -165,7 +166,7 @@ export function connectionRouteLabel(route: ConnectionRoute): string {
     case "relay":
       return "T3 Connect";
     case "loopback":
-      return "This device";
+      return t("This device");
     case "lan":
       return "LAN";
     case "tailnet":
@@ -179,7 +180,7 @@ export function connectionRouteLabel(route: ConnectionRoute): string {
         : "SSH";
     }
     case "public":
-      return routeHostname(route) ?? "Remote link";
+      return routeHostname(route) ?? t("Remote link");
   }
 }
 

@@ -20,6 +20,7 @@ import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useAssetUrlState, useRefreshAssetUrl } from "../../state/assets";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import type { AttachmentFileRouteParams } from "../../lib/attachmentFileRoute";
+import { t } from "../../lib/i18n";
 
 const ROW_BOTTOM_MARGIN = 8;
 const ACTION_ROW_HEIGHT = 32;
@@ -232,7 +233,7 @@ export function ThreadHtmlRender(props: {
         {uri !== null && !failed ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={`Open ${title}`}
+            accessibilityLabel={t("Open {title}", { title })}
             hitSlop={8}
             className="h-7 w-7 items-center justify-center rounded-full border border-border/60 bg-card/80"
             onPress={() => navigation.navigate("ThreadAttachment", attachmentRoute(props))}
@@ -258,7 +259,7 @@ export function ThreadHtmlRender(props: {
         ) : failed || asset._tag === "Failure" ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={`Reload ${title}`}
+            accessibilityLabel={t("Reload {title}", { title })}
             className="flex-1 items-center justify-center"
             onPress={() => {
               retried.current = false;
@@ -266,7 +267,7 @@ export function ThreadHtmlRender(props: {
               if (uri === null) void refresh().then((next) => next !== null && setUri(next));
             }}
           >
-            <Text className="text-sm text-foreground-muted">Page unavailable</Text>
+            <Text className="text-sm text-foreground-muted">{t("Page unavailable")}</Text>
           </Pressable>
         ) : (
           <View className="flex-1 items-center justify-center">
@@ -290,14 +291,14 @@ export function ThreadReplacedHtmlRender(props: {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Open ${title}, replaced by a newer version`}
+      accessibilityLabel={t("Open {title}, replaced by a newer version", { title })}
       hitSlop={{ top: 6, bottom: 6 }}
       style={{ height: ACTION_ROW_HEIGHT, marginBottom: ROW_BOTTOM_MARGIN }}
       className="flex-row items-center gap-2"
       onPress={() => navigation.navigate("ThreadAttachment", attachmentRoute(props))}
     >
       <Text className="min-w-0 flex-1 text-sm text-foreground-muted" numberOfLines={1}>
-        {title} · Replaced by a newer version
+        {t("{title} · Replaced by a newer version", { title })}
       </Text>
       <SymbolView
         name="arrow.up.left.and.arrow.down.right"

@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import {
   type ClientSettings,
   type EnvironmentId,
@@ -29,7 +30,11 @@ export function useEnvironmentLookups() {
         environment.environmentId,
         {
           kind: isLocal ? "local" : "remote",
-          label: isPrimary ? "Local" : isLocal ? `${environment.label} (Local)` : environment.label,
+          label: isPrimary
+            ? t("Local")
+            : isLocal
+              ? t("{environment} (Local)", { environment: environment.label })
+              : environment.label,
           machine: resolveEnvironmentMachineKind(environment.serverConfig),
         },
       ] as const;

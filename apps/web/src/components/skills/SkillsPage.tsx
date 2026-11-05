@@ -78,6 +78,7 @@ import {
   type SkillsView,
 } from "./skillsPage.logic";
 
+import { t, tn } from "~/i18n";
 const COLLAPSED_AGENTS_KEY = "t3code:skills:collapsed-agents";
 const CollapsedAgents = Schema.Array(Schema.String);
 const ALL_STATUSES = "all";
@@ -112,8 +113,8 @@ function useOpenSkillFile(environmentId: EnvironmentId): ((path: string) => void
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Could not open the skill",
-          description: error instanceof Error ? error.message : "The editor did not open.",
+          title: t("Could not open the skill"),
+          description: error instanceof Error ? error.message : t("The editor did not open."),
         }),
       );
     });
@@ -165,9 +166,11 @@ function SkillRow(props: {
     })
       .then((result) => {
         reportFailure(
-          `Could not ${enabled ? "enable" : "disable"} ${name}`,
+          enabled
+            ? t("Could not enable {name}", { name })
+            : t("Could not disable {name}", { name }),
           result,
-          "The skill was not changed.",
+          t("The skill was not changed."),
         );
         if (result._tag === "Success") {
           wantedTimer.current = setTimeout(() => setWanted(null), WANTED_STATE_GRACE_MS);
@@ -189,14 +192,14 @@ function SkillRow(props: {
                 <Button
                   size="icon-xs"
                   variant="ghost-muted"
-                  aria-label={`Open ${name} SKILL.md in editor`}
+                  aria-label={t("Open {name} SKILL.md in editor", { name })}
                   onClick={() => onOpen(skill.path)}
                 />
               }
             >
               <FileCodeIcon aria-hidden />
             </TooltipTrigger>
-            <TooltipPopup>Open in editor</TooltipPopup>
+            <TooltipPopup>{t("Open in editor")}</TooltipPopup>
           </Tooltip>
         </span>
       ) : null}
@@ -204,7 +207,11 @@ function SkillRow(props: {
         <button
           type="button"
           aria-expanded={expanded}
-          aria-label={`${expanded ? "Hide" : "Show"} location of ${name}`}
+          aria-label={
+            expanded
+              ? t("Hide location of {name}", { name })
+              : t("Show location of {name}", { name })
+          }
           className="-ms-1 flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           onClick={() => setExpanded((current) => !current)}
         >
@@ -220,17 +227,19 @@ function SkillRow(props: {
         <SkillSourceBadge kind={source} />
         {enabled ? null : (
           <Badge size="sm" variant="outline">
-            Disabled
+            {t("Disabled")}
           </Badge>
         )}
         {skill.userInvocable === false ? (
           <Badge size="sm" variant="outline">
-            Agent only
+            {t("Agent only")}
           </Badge>
         ) : null}
         {missingOn.length > 0 ? (
           <Badge size="sm" variant="warning">
-            Not on {missingOn.map((machine) => machine.label).join(", ")}
+            {t("Not on {machines}", {
+              machines: missingOn.map((machine) => machine.label).join(", "),
+            })}
           </Badge>
         ) : null}
         {showSwitch ? (
@@ -242,14 +251,18 @@ function SkillRow(props: {
                     size="sm"
                     checked={enabled}
                     disabled={!mayChange || pending}
-                    aria-label={`Enable ${name}`}
+                    aria-label={t("Enable {name}", { name })}
                     onCheckedChange={toggle}
                   />
                 </span>
               }
             />
             <TooltipPopup>
-              {mayChange ? (enabled ? "Disable" : "Enable") : "You can't change skills here"}
+              {mayChange
+                ? enabled
+                  ? t("Disable")
+                  : t("Enable")
+                : t("You can't change skills here")}
             </TooltipPopup>
           </Tooltip>
         ) : null}
@@ -364,7 +377,7 @@ function SkillAgentSections(props: {
 
 function SkillsSkeleton() {
   return (
-    <div role="status" aria-label="Loading skills" className="flex flex-col gap-3">
+    <div role="status" aria-label={t("Loading skills")} className="flex flex-col gap-3">
       <Skeleton className="h-4 w-32" />
       <div className="divide-y rounded-lg border">
         {["first", "second", "third", "fourth"].map((key) => (
@@ -379,10 +392,10 @@ function SkillsSkeleton() {
 }
 
 function columnEmptyText(column: SkillMachineColumn<SidebarMachine, ProviderInstanceEntry>) {
-  if (column.available > 0) return "No skills match.";
+  if (column.available > 0) return t("No skills match.");
   return column.machine.disconnected
-    ? "Offline. Its skills show up once it reconnects."
-    : "No skills on this machine.";
+    ? t("Offline. Its skills show up once it reconnects.")
+    : t("No skills on this machine.");
 }
 
 function SkillMachineColumnView(props: {
@@ -405,12 +418,12 @@ function SkillMachineColumnView(props: {
         />
         <span className="min-w-0 truncate">{column.machine.label}</span>
         {column.machine.disconnected ? (
-          <span className="shrink-0 font-normal text-muted-foreground text-xs">Offline</span>
+          <span className="shrink-0 font-normal text-muted-foreground text-xs">{t("Offline")}</span>
         ) : null}
         <span className="ml-auto shrink-0 font-normal text-muted-foreground text-xs tabular-nums">
           {column.shown === column.available
             ? column.shown
-            : `${column.shown} of ${column.available}`}
+            : t("{shown} of {total}", { shown: column.shown, total: column.available })}
         </span>
       </h2>
       {column.groups.length === 0 ? (
@@ -445,7 +458,7 @@ function SkillFiltersMenu(props: {
     <Menu>
       <MenuTrigger render={<Button size="sm" variant="outline" />}>
         <ListFilterIcon aria-hidden />
-        <span className="max-sm:sr-only">Filters</span>
+        <span className="max-sm:sr-only">{t("Filters")}</span>
         {activeCount > 0 ? (
           <span className="rounded-full bg-muted px-1.5 text-muted-foreground text-xs tabular-nums">
             {activeCount}
@@ -456,7 +469,7 @@ function SkillFiltersMenu(props: {
         {view.agents.length > 1 ? (
           <>
             <MenuGroup>
-              <MenuGroupLabel>Agents</MenuGroupLabel>
+              <MenuGroupLabel>{t("Agents")}</MenuGroupLabel>
               {view.agents.map(({ key, provider }) => (
                 <MenuCheckboxItem
                   key={key}
@@ -484,7 +497,7 @@ function SkillFiltersMenu(props: {
         {view.sources.length > 1 ? (
           <>
             <MenuGroup>
-              <MenuGroupLabel>Source</MenuGroupLabel>
+              <MenuGroupLabel>{t("Source")}</MenuGroupLabel>
               {view.sources.map((source) => {
                 const { Icon, label } = skillSourcePresentation(source);
                 return (
@@ -512,16 +525,16 @@ function SkillFiltersMenu(props: {
             updateSearch({ status: next === "enabled" || next === "disabled" ? next : undefined })
           }
         >
-          <MenuGroupLabel>Status</MenuGroupLabel>
-          <MenuRadioItem value={ALL_STATUSES}>Any</MenuRadioItem>
-          <MenuRadioItem value="enabled">Enabled</MenuRadioItem>
-          <MenuRadioItem value="disabled">Disabled</MenuRadioItem>
+          <MenuGroupLabel>{t("Status")}</MenuGroupLabel>
+          <MenuRadioItem value={ALL_STATUSES}>{t("Any")}</MenuRadioItem>
+          <MenuRadioItem value="enabled">{t("Enabled")}</MenuRadioItem>
+          <MenuRadioItem value="disabled">{t("Disabled")}</MenuRadioItem>
         </MenuRadioGroup>
         {machines.length > 1 ? (
           <>
             <MenuSeparator />
             <MenuGroup>
-              <MenuGroupLabel>Machines</MenuGroupLabel>
+              <MenuGroupLabel>{t("Machines")}</MenuGroupLabel>
               {machines.map((machine) => (
                 <MenuCheckboxItem
                   key={machine.environmentId}
@@ -549,7 +562,7 @@ function SkillFiltersMenu(props: {
               disabled={!view.comparing}
               onCheckedChange={(checked) => updateSearch({ missing: checked ? true : undefined })}
             >
-              Only skills another machine lacks
+              {t("Only skills another machine lacks")}
             </MenuCheckboxItem>
           </>
         ) : null}
@@ -567,7 +580,7 @@ function SkillFiltersMenu(props: {
                 })
               }
             >
-              Clear filters
+              {t("Clear filters")}
             </MenuItem>
           </>
         ) : null}
@@ -641,8 +654,8 @@ export function SkillsPanel(props: { readonly controlsSlot: HTMLElement | null }
           </InputGroupAddon>
           <InputGroupInput
             type="search"
-            aria-label="Search skills"
-            placeholder={`Search ${view.total} skills`}
+            aria-label={t("Search skills")}
+            placeholder={tn(view.total, "Search {count} skill", "Search {count} skills")}
             size="sm"
             value={query}
             onFocus={() => setTypedQuery(search.q ?? "")}
@@ -671,7 +684,7 @@ export function SkillsPanel(props: { readonly controlsSlot: HTMLElement | null }
               <Button
                 size="icon-sm"
                 variant="outline"
-                aria-label={allCollapsed ? "Expand all agents" : "Collapse all agents"}
+                aria-label={allCollapsed ? t("Expand all agents") : t("Collapse all agents")}
                 onClick={() =>
                   setCollapsedAgents(allCollapsed ? [] : view.agents.map((agent) => agent.key))
                 }
@@ -680,7 +693,9 @@ export function SkillsPanel(props: { readonly controlsSlot: HTMLElement | null }
           >
             {allCollapsed ? <ChevronsUpDownIcon aria-hidden /> : <ChevronsDownUpIcon aria-hidden />}
           </TooltipTrigger>
-          <TooltipPopup side="bottom">{allCollapsed ? "Expand all" : "Collapse all"}</TooltipPopup>
+          <TooltipPopup side="bottom">
+            {allCollapsed ? t("Expand all") : t("Collapse all")}
+          </TooltipPopup>
         </Tooltip>
       </>
     ) : null;
@@ -700,10 +715,11 @@ export function SkillsPanel(props: { readonly controlsSlot: HTMLElement | null }
             <EmptyMedia variant="icon">
               <SparklesIcon />
             </EmptyMedia>
-            <EmptyTitle>No skills found</EmptyTitle>
+            <EmptyTitle>{t("No skills found")}</EmptyTitle>
             <EmptyDescription>
-              Skills are folders with a SKILL.md that agents load when a task calls for them.
-              Install one for Claude, Codex, or another agent and it shows up here.
+              {t(
+                "Skills are folders with a SKILL.md that agents load when a task calls for them. Install one for Claude, Codex, or another agent and it shows up here.",
+              )}
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
@@ -714,8 +730,8 @@ export function SkillsPanel(props: { readonly controlsSlot: HTMLElement | null }
               <div role="status" className="flex flex-col items-center gap-3 py-10 text-center">
                 <p className="text-muted-foreground text-sm">
                   {query.trim() === ""
-                    ? "No skills match these filters."
-                    : `No skills match “${query.trim()}”.`}
+                    ? t("No skills match these filters.")
+                    : t("No skills match “{query}”.", { query: query.trim() })}
                 </p>
                 <Button
                   size="sm"
@@ -725,7 +741,7 @@ export function SkillsPanel(props: { readonly controlsSlot: HTMLElement | null }
                     void navigate({ search: {}, replace: true, resetScroll: false });
                   }}
                 >
-                  Clear search and filters
+                  {t("Clear search and filters")}
                 </Button>
               </div>
             ) : multipleMachines ? (

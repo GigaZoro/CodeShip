@@ -1,3 +1,4 @@
+import { t } from "~/i18n";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { splitFilePathPosition } from "@t3tools/shared/fileLinks";
 
@@ -34,14 +35,16 @@ export function markdownFileCopyMenuItems({
   workspaceRelativePath,
 }: Pick<MarkdownFileLinkMeta, "targetPath" | "workspaceRelativePath">) {
   const items = [
-    { id: "copy-full", label: "Copy full path", value: targetPath, title: "Full path" },
+    // oxlint-disable-next-line t3code/no-untranslated-text -- clipboard target name for the failure report, never shown
+    { id: "copy-full", label: t("Copy full path"), value: targetPath, title: "Full path" },
   ];
   if (workspaceRelativePath !== null) {
     const position = targetPath.slice(splitFilePathPosition(targetPath).path.length);
     items.unshift({
       id: "copy-relative",
-      label: "Copy relative path",
+      label: t("Copy relative path"),
       value: `${workspaceRelativePath}${position}`,
+      // oxlint-disable-next-line t3code/no-untranslated-text -- clipboard target name for the failure report, never shown
       title: "Relative path",
     });
   }
