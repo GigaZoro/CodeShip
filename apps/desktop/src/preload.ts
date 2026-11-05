@@ -107,8 +107,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     const result = ipcRenderer.sendSync(IpcChannels.GET_SYSTEM_LOCALE_CHANNEL);
     return typeof result === "string" ? result : null;
   },
-  getLanguageSettings: () => {
-    const result = ipcRenderer.sendSync(IpcChannels.GET_LANGUAGE_SETTINGS_CHANNEL);
+  getLanguageSettings: async () => {
+    const result = await ipcRenderer.invoke(IpcChannels.GET_LANGUAGE_SETTINGS_CHANNEL);
     if (
       typeof result === "object" &&
       result !== null &&

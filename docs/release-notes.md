@@ -1,3 +1,7 @@
+## 2026-11-06 — Desktop language update
+
+- Fixed desktop startup getting stuck while loading language preferences, allowing the English and Ukrainian interface update to ship.
+
 ## 2026-11-05 — Choose your language
 
 - T3.CodeShip is now available in Ukrainian as well as English. Choose it in Settings → General → Language on web and desktop, or Settings → Appearance → Language on mobile.

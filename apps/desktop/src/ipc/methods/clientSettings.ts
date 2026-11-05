@@ -39,8 +39,9 @@ export const setClientSettings = DesktopIpc.makeIpcMethod({
   }),
 });
 
-export const getLanguageSettings = DesktopIpc.makeSyncIpcMethod({
+export const getLanguageSettings = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.GET_LANGUAGE_SETTINGS_CHANNEL,
+  payload: Schema.Void,
   result: Schema.Struct({
     preference: Schema.String,
     systemLanguages: Schema.Array(Schema.String),

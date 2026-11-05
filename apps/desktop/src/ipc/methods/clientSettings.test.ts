@@ -15,7 +15,7 @@ const layerElectronApp = Layer.mock(ElectronApp.ElectronApp, {
 describe("language settings IPC", () => {
   it.effect("reports the saved language with the system languages", () =>
     Effect.gen(function* () {
-      assert.deepEqual(yield* getLanguageSettings.handler(), {
+      assert.deepEqual(yield* getLanguageSettings.handler(undefined), {
         preference: "uk",
         systemLanguages: ["uk-UA", "en-US"],
       });
@@ -23,9 +23,11 @@ describe("language settings IPC", () => {
       Effect.provide(
         Layer.mergeAll(
           layerElectronApp,
-          DesktopClientSettings.layerTest(
-            Option.some({ ...DEFAULT_CLIENT_SETTINGS, language: "uk" }),
-          ),
+          Layer.mock(DesktopClientSettings.DesktopClientSettings, {
+            get: Effect.promise(async () =>
+              Option.some({ ...DEFAULT_CLIENT_SETTINGS, language: "uk" }),
+            ),
+          }),
         ),
       ),
     ),
@@ -33,7 +35,7 @@ describe("language settings IPC", () => {
 
   it.effect("follows the system when no settings are saved", () =>
     Effect.gen(function* () {
-      assert.deepEqual(yield* getLanguageSettings.handler(), {
+      assert.deepEqual(yield* getLanguageSettings.handler(undefined), {
         preference: "system",
         systemLanguages: ["uk-UA", "en-US"],
       });
@@ -42,7 +44,7 @@ describe("language settings IPC", () => {
 
   it.effect("follows the system when the settings cannot be read", () =>
     Effect.gen(function* () {
-      assert.deepEqual(yield* getLanguageSettings.handler(), {
+      assert.deepEqual(yield* getLanguageSettings.handler(undefined), {
         preference: "system",
         systemLanguages: ["uk-UA", "en-US"],
       });

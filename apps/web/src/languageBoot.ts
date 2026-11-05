@@ -15,11 +15,11 @@ function readBrowserLanguagePreference(): unknown {
   }
 }
 
-function readLanguageSettings() {
+async function readLanguageSettings() {
   const bridge = window.desktopBridge;
   if (bridge) {
     // The packaged desktop app pins `navigator.language` to en-US, so the OS answers instead.
-    const { preference, systemLanguages } = bridge.getLanguageSettings();
+    const { preference, systemLanguages } = await bridge.getLanguageSettings();
     return {
       preference: normalizeLanguagePreference(preference),
       systemLanguages,
@@ -36,7 +36,7 @@ function readLanguageSettings() {
 
 /** Runs before the app's modules load, so everything renders in the chosen language. */
 export async function startLanguage(): Promise<void> {
-  const { preference, systemLanguages, systemLocale } = readLanguageSettings();
+  const { preference, systemLanguages, systemLocale } = await readLanguageSettings();
   const { activation, error } = await loadLanguage(preference, {
     languages: systemLanguages,
     locale: systemLocale,
