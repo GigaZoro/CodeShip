@@ -110,6 +110,21 @@ up to twice while its commit is still the head of `main`.
   by Apple Team ID, so builds without one save the T3 account sign-in unencrypted, in a file only
   the user can read.
 
+### Release notes for every shipment
+
+Before shipping any change to `main`, prepend an entry to
+[`docs/release-notes.md`](../release-notes.md) in the same commit or delivery. Use
+`## YYYY-MM-DD — Short title`, followed by concise bullets describing what changed
+for users. Include fixes, maintenance, and documentation-only shipments; use a new
+title when shipping several times on one day. Preserve previous entries unchanged.
+
+The web and desktop header's Release notes dialog bundles this history with the
+client, so an older install never presents newer changes as already installed.
+`vp run check:changed` compares notes against the branch base, and fork release
+preflight rejects a push without new notes before building installers. The GitHub
+release uses the same notes, adding all entries since the previous published release
+when several pushes were combined. Rebuilding the same source uses its latest entry.
+
 ## Pull request macOS previews
 
 Labeling a PR `preview:mac` publishes a signed, notarized Apple Silicon DMG with T3 Connect enabled

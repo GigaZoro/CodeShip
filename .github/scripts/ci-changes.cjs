@@ -20,6 +20,8 @@ const RUNS_EVERYTHING = [
 
 // Includes cross-package reads absent from package.json dependencies.
 const EXTRA_OWNERS = [
+  // The client bundles the release history into its header dialog.
+  [/^docs\/release-notes\.md$/, ["@t3tools/web"]],
   // Vite configs and tsconfigs of these apps import scripts/lib directly.
   [/^scripts\/lib\//, ["@t3tools/desktop", "@t3tools/mobile", "@t3tools/web", "t3"]],
   // scripts/build-desktop-artifact.ts reads the GNOME extension manifest.

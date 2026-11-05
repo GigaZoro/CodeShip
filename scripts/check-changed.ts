@@ -465,6 +465,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const compilerFiles = compilerApps.reduce((count, app) => count + app.names.length, 0);
 
   const steps: Array<Step<never>> = [
+    command("release notes", ["exec", "node", ".github/scripts/release-notes.cjs", "check", base]),
     ...(runPatchCheck ? [{ name: "unused patches", run: checkPatches }] : []),
     ...(present.length > 0
       ? [command("format", ["fmt", "--check", "--no-error-on-unmatched-pattern", ...present])]

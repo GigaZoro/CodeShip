@@ -149,6 +149,7 @@ For mobile verification, a missing or outdated native client is an install step,
 
 ## Pull requests
 
+- Every shipment to `main` must prepend a dated entry to `docs/release-notes.md` in the same change, including fixes, maintenance, and documentation-only work. Write concise user-facing changes; preserve older entries. `vp run check:changed` and fork release preflight enforce this. See [Release notes](docs/operations/release.md#release-notes-for-every-shipment).
 - Never make a PR unless the developer explicitly asks you to do so.
 - If `origin` is git.cafe, follow [GitCafe mirror](docs/operations/development.md#gitcafe-mirror-optional): push to `origin`, open and track PRs with `cafe` and their git.cafe URLs, and keep `gh` for merging.
 - Conventional commit titles, plain language: `fix(web): new threads no longer spike CPU`.

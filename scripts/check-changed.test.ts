@@ -46,6 +46,7 @@ describe("check:changed", () => {
       "apps/server/src/cloud/ConnectReachability.test.ts",
     ]);
     assert.deepStrictEqual(decide(["docs/user/install.md"], packages, false).affected, []);
+    assert.isTrue(decide(["docs/release-notes.md"], packages, false).outputs.test_web);
   });
 
   it.effect(
