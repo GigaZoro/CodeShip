@@ -122,7 +122,7 @@ it.effect.each([
   {
     name: "it predates lastRun",
     input: { answer: () => Effect.succeed({ tasks: [{ scheduledTaskId: TASK }] }) },
-    reason: "It runs an older version of CodeShip.",
+    reason: "It runs an older version of T3.CodeShip.",
   },
 ])("a peer is unchecked when $name", ({ input, reason }) =>
   check(input).pipe(
