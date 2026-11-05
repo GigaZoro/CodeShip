@@ -197,7 +197,7 @@ function FirstRunRecovery({
         <p className="mt-2 text-sm text-muted-foreground">
           {settingsReadFailed
             ? "Your saved settings could not be loaded."
-            : "CodeShip could not confirm this workspace."}
+            : "T3.CodeShip could not confirm this workspace."}
         </p>
         <Button
           className="mt-5"

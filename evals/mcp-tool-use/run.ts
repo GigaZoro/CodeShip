@@ -11,6 +11,7 @@ import * as NodeVM from "node:vm";
 import * as NodeZlib from "node:zlib";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { formatSharedSkillPrompt, SharedSkillInstructions } from "@t3tools/shared/providerSkills";
 import {
   ComposerContextRecord,
   DeviceOperationError,
@@ -283,6 +284,7 @@ export const McpToolUseCase = Schema.Struct({
     autoMode: Schema.optional(Schema.Boolean),
   }),
   prompt: Schema.String,
+  promptSkills: Schema.optional(Schema.Array(SharedSkillInstructions)),
   /** Records for the context chips `prompt` links, projected as T3 sends them. */
   promptContext: Schema.optional(Schema.Struct({ records: Schema.Array(ComposerContextRecord) })),
   expect: McpToolUseExpect,
@@ -925,10 +927,11 @@ export const buildMessages = (sample: Sample) => {
     }
     if (turn.text) push(turn.role, text(turn.text));
   }
+  const expandedPrompt = formatSharedSkillPrompt(testCase.prompt, testCase.promptSkills ?? []);
   const userText =
     testCase.promptContext === undefined
-      ? testCase.prompt
-      : projectComposerContextForProvider({ text: testCase.prompt, ...testCase.promptContext });
+      ? expandedPrompt
+      : projectComposerContextForProvider({ text: expandedPrompt, ...testCase.promptContext });
   const sideChat = testCase.setup.sideChat;
   const driver = base.codex ? "codex" : "claudeAgent";
   const autoBrief = testCase.setup.autoMode

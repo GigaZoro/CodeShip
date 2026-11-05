@@ -41,8 +41,8 @@ export const ManagedProviderLimits = Schema.Struct({
 export type ManagedProviderLimits = typeof ManagedProviderLimits.Type;
 
 /**
- * How CodeShip updates itself. `auto` is the default: it checks, and installs only when a user
- * asks. `off` never checks, for machines that get CodeShip through MDM.
+ * How T3.CodeShip updates itself. `auto` is the default: it checks, and installs only when a user
+ * asks. `off` never checks, for machines that get T3.CodeShip through MDM.
  */
 export const ManagedUpdatesMode = Schema.Literals(["auto", "off"]);
 export type ManagedUpdatesMode = typeof ManagedUpdatesMode.Type;
@@ -143,7 +143,7 @@ export type ManagedPolicySummary = typeof ManagedPolicySummary.Type;
 
 /** The message every surface shows when the policy stops an update. */
 export function managedUpdatesMessage(organization: string): string {
-  return `${organization} manages CodeShip updates.`;
+  return `${organization} manages T3.CodeShip updates.`;
 }
 
 /** The message when the policy allows only stable releases. */

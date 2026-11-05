@@ -1,5 +1,7 @@
 import {
+  DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
@@ -10,10 +12,12 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   createProviderWorkspaceSnapshotRefreshAtomFamily,
+  createSkillInventoriesRefreshAtomFamily,
+  resolveSkillInventoryInstanceIds,
+  resolveSkillProvidersForProject,
   getProviderSkillsForSlashMenu,
   hasCompleteProviderWorkspaceSnapshot,
   isProviderWorkspaceSnapshotScanning,
-  resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
 } from "./providerSkills.ts";
 
@@ -38,6 +42,72 @@ const provider = {
     },
   ],
 } satisfies ServerProvider;
+
+describe("skill inventory selection", () => {
+  it("shares only installed providers enabled for this project, and follows provider switches", () => {
+    const claude = { ...provider, instanceId: ProviderInstanceId.make("claude") };
+    const disabled = {
+      ...provider,
+      instanceId: ProviderInstanceId.make("disabled"),
+      enabled: false,
+    };
+    const missing = {
+      ...provider,
+      instanceId: ProviderInstanceId.make("missing"),
+      installed: false,
+    };
+    const restricted = { ...provider, instanceId: ProviderInstanceId.make("restricted") };
+    const projectId = ProjectId.make("project");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [claude.instanceId]: {
+          driver: ProviderDriverKind.make("claudeCode"),
+          enabled: true,
+          config: {},
+        },
+        [restricted.instanceId]: { driver: provider.driver, enabled: true, config: {} },
+      },
+      projectSettingsOverrides: {
+        [projectId]: { providerInstances: { [restricted.instanceId]: { enabled: false } } },
+      },
+    };
+    const providers = resolveSkillProvidersForProject(
+      [provider, claude, disabled, missing, restricted],
+      settings,
+      projectId,
+    );
+    expect(providers).toEqual([provider, claude]);
+    expect(
+      resolveSkillInventoryInstanceIds({
+        providers,
+        instanceId: provider.instanceId,
+        availability: "shared",
+      }),
+    ).toEqual([provider.instanceId, claude.instanceId]);
+    expect(
+      resolveSkillInventoryInstanceIds({
+        providers,
+        instanceId: provider.instanceId,
+        availability: "provider",
+      }),
+    ).toEqual([provider.instanceId]);
+    expect(
+      resolveSkillInventoryInstanceIds({
+        providers,
+        instanceId: claude.instanceId,
+        availability: "provider",
+      }),
+    ).toEqual([claude.instanceId]);
+    expect(
+      resolveSkillInventoryInstanceIds({
+        providers,
+        instanceId: disabled.instanceId,
+        availability: "provider",
+      }),
+    ).toEqual([]);
+  });
+});
 
 describe("getProviderSkillsForSlashMenu", () => {
   it("keeps the skill alias when the provider also exposes it as a slash command", () => {
@@ -97,20 +167,16 @@ describe("getProviderSkillsForSlashMenu", () => {
 
 describe("workspace provider snapshots", () => {
   it("uses the cwd snapshot after a provider session has populated it", () => {
-    expect(resolveProviderSkillsForCwd(provider, "/workspace/project-a")).toEqual([
-      { name: "project", path: "/workspace/project-a/SKILL.md", enabled: true },
-    ]);
     expect(resolveProviderSlashCommandsForCwd(provider, "/workspace/project-a")).toEqual([
       { name: "project" },
     ]);
   });
 
   it("keeps the machine snapshot before this cwd has a provider snapshot", () => {
-    expect(resolveProviderSkillsForCwd(provider, "/workspace/project-b")).toEqual(provider.skills);
     expect(resolveProviderSlashCommandsForCwd(provider, null)).toEqual(provider.slashCommands);
   });
 
-  it("uses partial workspace skills and commands while keeping discovery retryable", () => {
+  it("uses partial workspace commands while keeping discovery retryable", () => {
     const partial = {
       ...provider,
       workspaceSnapshots: provider.workspaceSnapshots.map((snapshot) => ({
@@ -119,9 +185,6 @@ describe("workspace provider snapshots", () => {
         slashCommandsPending: true,
       })),
     } satisfies ServerProvider;
-    expect(resolveProviderSkillsForCwd(partial, "/workspace/project-a")).toEqual(
-      provider.workspaceSnapshots[0]?.skills,
-    );
     expect(resolveProviderSlashCommandsForCwd(partial, "/workspace/project-a")).toEqual([
       { name: "compact" },
     ]);
@@ -182,6 +245,68 @@ describe("provider workspace snapshot refresh atom", () => {
     const unmount = registry.mount(atom);
     return { registry, atom, family, providersAtom, responses, run, unmount };
   }
+
+  it("shares cached scans across inventory sets and bounds each provider's retries", async () => {
+    vi.useFakeTimers({ now: Date.parse("2026-01-01T00:00:00.000Z") });
+    const second = {
+      ...provider,
+      instanceId: ProviderInstanceId.make("claude"),
+      workspaceSnapshots: [],
+    };
+    const providersAtom = Atom.make<readonly ServerProvider[] | null>([...noSnapshot, second]);
+    const run = vi.fn(
+      async (
+        _registry: AtomRegistry.AtomRegistry,
+        _input: {
+          environmentId: EnvironmentId;
+          input: { instanceId: ProviderInstanceId; cwd: string };
+        },
+      ) =>
+        AsyncResult.failure<{ providers: readonly ServerProvider[] }, string>(
+          Cause.fail("offline"),
+        ),
+    );
+    const family = createSkillInventoriesRefreshAtomFamily({
+      providers: () => providersAtom,
+      refreshProviders: { label: "refresh", run },
+    });
+    const registry = AtomRegistry.make();
+    const shared = family({
+      environmentId,
+      instanceIds: [provider.instanceId, second.instanceId],
+      cwd,
+    });
+    const unmount = registry.mount(shared);
+    expect(run.mock.calls.map((call) => call[1])).toEqual([
+      { environmentId, input: { instanceId: provider.instanceId, cwd } },
+      { environmentId, input: { instanceId: second.instanceId, cwd } },
+    ]);
+    expect(registry.get(shared)).toBe(true);
+    const unmountSelected = registry.mount(
+      family({ environmentId, instanceIds: [second.instanceId], cwd }),
+    );
+    const unmountDuplicate = registry.mount(
+      family({ environmentId, instanceIds: [provider.instanceId, second.instanceId], cwd }),
+    );
+    expect(run).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(0);
+    registry.refresh(shared);
+    expect(run).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(10_000);
+    registry.refresh(shared);
+    expect(run).toHaveBeenCalledTimes(4);
+    await vi.advanceTimersByTimeAsync(10_000);
+    registry.refresh(shared);
+    expect(run).toHaveBeenCalledTimes(6);
+    await vi.advanceTimersByTimeAsync(10_000);
+    registry.refresh(shared);
+    expect(run).toHaveBeenCalledTimes(6);
+    expect(registry.get(shared)).toBe(false);
+    unmountSelected();
+    unmountDuplicate();
+    unmount();
+    registry.dispose();
+  });
 
   it("scans a missing snapshot once and skips a repeat inside the TTL", async () => {
     vi.useFakeTimers({ now: Date.parse("2026-01-01T00:00:00.000Z") });

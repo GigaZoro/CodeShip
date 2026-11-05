@@ -76,7 +76,7 @@ export const readCodexConnection = Effect.fn("evals.readCodexConnection")(
     return yield* Effect.gen(function* () {
       const client = yield* CodexClient.CodexAppServerClient;
       yield* client.request("initialize", {
-        clientInfo: { name: "codeship-evals", title: "CodeShip evals", version: "1" },
+        clientInfo: { name: "codeship-evals", title: "T3.CodeShip evals", version: "1" },
         capabilities: { experimentalApi: true, optOutNotificationMethods: null },
       });
       yield* client.notify("initialized", undefined);

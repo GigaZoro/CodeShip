@@ -1354,11 +1354,13 @@ export function createServerEnvironmentAtoms<R, E>(
           JSON.stringify([environmentId, input.instanceId, input.skillPath]),
       },
     }),
-    // Listing starts the provider and connects to every server; the server keeps a short copy.
+    // Listing starts the provider and connects to every server, so a return visit shows the last
+    // list at once and checks again behind it instead of waiting with an empty page.
     providerMcpServers: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:provider:mcp",
       tag: WS_METHODS.providerMcpList,
       staleTimeMs: 30_000,
+      idleTtlMs: 30 * 60_000,
     }),
     refreshProviderMcpServers: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:provider:mcp:refresh",

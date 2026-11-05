@@ -49,7 +49,7 @@ and other phone-only settings ignore the filter.
 Choose a provider and model for new threads in **Settings → Providers & models → Models → New threads** on web or desktop,
 or **Settings → Threads → Default model** on mobile. A machine with no saved choice uses the
 default saved on another connected machine, with its effort level, when it has that provider;
-otherwise CodeShip automatically uses an available provider. Reset the web or desktop model
+otherwise T3.CodeShip automatically uses an available provider. Reset the web or desktop model
 setting, or select **Automatic** on mobile, to restore that behavior. A saved choice stays selected
 if its provider becomes unavailable; set up that provider again or choose another model.
 
@@ -70,6 +70,8 @@ When the default model's provider is out of usage, new threads start on the **Fa
 instead, at the default model's effort level when the fallback model offers it. A default model
 picked on one account switches even while another account of that provider has usage left; choose
 [Auto](./thread-sidebar.md#inspect-agent-work) as the default to move to that account instead.
+Auto can be the fallback model too: new threads then start on Auto's provider and model, on
+whichever of its accounts has usage left.
 
 ## Pin and archive projects
 
@@ -143,7 +145,7 @@ task's badge warn about a missing, expired, or turned-off link. A machine that
 can't reach one runs the task anyway, so you may get an extra run but never a
 missed one.
 
-Copies sync while CodeShip on web, desktop, or mobile is connected to both
+Copies sync while T3.CodeShip on web, desktop, or mobile is connected to both
 machines. A machine that links to another also fetches newer copies from it
 every few minutes, even with no app open. Editing, pausing, or deleting a
 shared task on one machine does the same on the others; pinning and **Run now**
@@ -296,7 +298,7 @@ working. Current logs, message attachments, and browser profiles are kept.
 
 Select the project and open Project to choose an icon, emoji, monogram, or image. The choice applies to
 every checkout in the project group and appears on connected clients. Choose **Automatic** to let
-CodeShip detect an icon again.
+T3.CodeShip detect an icon again.
 
 Choose **Monogram** in the icon picker to set one or two letters or numbers and a color.
 
@@ -310,21 +312,21 @@ In Source control, enable **Automatically pull** to keep the default-branch chec
 with its configured upstream. Choose an environment to set the default or a project to override it.
 On mobile, use **Settings → Source control** to change selected environment defaults or project overrides.
 
-CodeShip only pulls when it can fast-forward and the checkout has no changed files, untracked files,
+T3.CodeShip only pulls when it can fast-forward and the checkout has no changed files, untracked files,
 or local commits. It skips checkouts on another branch or without an upstream. If a checkout has
 local work, resolve it yourself before automatic pulls can resume.
 
 ## Import Claude Code and Codex conversations
 
 In **Settings → Projects**, enable **Import conversations** to bring Claude Code and Codex conversations from that
-computer into CodeShip. Choose an environment to set the default or a project to override it. The
+computer into T3.CodeShip. Choose an environment to set the default or a project to override it. The
 project's settings page has the same switch. On mobile, use **Settings → Threads**.
 
-While it is on, CodeShip imports a project's whole history, then picks up new conversations when the
-server starts, when you add the project, and every few minutes. Conversations from while CodeShip was
+While it is on, T3.CodeShip imports a project's whole history, then picks up new conversations when the
+server starts, when you add the project, and every few minutes. Conversations from while T3.CodeShip was
 closed appear the next time it starts. Only conversations started in a project's own folder are
-imported, so add a project to manage its conversations in CodeShip. Codex app chats that have no
+imported, so add a project to manage its conversations in T3.CodeShip. Codex app chats that have no
 project go to **No project** on that computer. Imported threads start settled.
-Conversations CodeShip already owns, and imported threads you deleted, are not imported again.
+Conversations T3.CodeShip already owns, and imported threads you deleted, are not imported again.
 Imports follow the limits described in [Import your projects](welcome-wizard.md#import-your-projects),
 except that there is no 30-day window and no per-run file cap.

@@ -40,14 +40,14 @@ it.layer(NodeServices.layer)((it) =>
           return yield* describeRunningServer(statePath, current);
         });
 
-      assert.include(yield* describeRunningServer(statePath, installed), "No CodeShip server");
+      assert.include(yield* describeRunningServer(statePath, installed), "No T3.CodeShip server");
       assert.include(yield* running(installed), "loaded this policy.");
       assert.include(
         yield* running(yield* loaded("Other Corp")),
         "loaded Other Corp's policy from /etc/t3code/policy.json",
       );
-      assert.include(yield* running(null), "loaded no policy. Restart CodeShip");
-      assert.include(yield* running(installed, null), "Restart CodeShip to apply");
+      assert.include(yield* running(null), "loaded no policy. Restart T3.CodeShip");
+      assert.include(yield* running(installed, null), "Restart T3.CodeShip to apply");
       assert.include(yield* running(null, null), "runs without a policy, as installed");
       assert.include(yield* running(undefined), "does not report which policy it loaded");
     }),

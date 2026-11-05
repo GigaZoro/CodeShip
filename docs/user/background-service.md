@@ -1,12 +1,12 @@
-# Running CodeShip in the background
+# Running T3.CodeShip in the background
 
-On Linux and macOS, CodeShip can run as a service for your user so you do not need
+On Linux and macOS, T3.CodeShip can run as a service for your user so you do not need
 to keep a terminal open.
 
 ## Manage the service
 
-Install the `t3` CLI first ([Install CodeShip](./install.md#command-line)), then
-run these commands on the machine that will host CodeShip:
+Install the `t3` CLI first ([Install T3.CodeShip](./install.md#command-line)), then
+run these commands on the machine that will host T3.CodeShip:
 
 | Task                                  | Command                |
 | ------------------------------------- | ---------------------- |
@@ -29,7 +29,7 @@ the old version until you run `t3 service restart`. Pass `--yes` from a
 script. A server you started by hand is left running; stop and start it again
 to pick up the new version. Wait for any remote update already in progress
 before updating; to match a remote client's version, follow
-[Updating CodeShip](./updating.md).
+[Updating T3.CodeShip](./updating.md).
 
 Pass an exact version (`t3 update 0.0.42`) to pin one, `--channel nightly` to
 switch trains, or `--allow-downgrade` to move backwards. `preview` is a
@@ -83,7 +83,7 @@ If the file contains credentials, restrict access to that file with `chmod 600`
 
 ## Platform support
 
-Linux needs systemd user services. Setup enables lingering so CodeShip starts at
+Linux needs systemd user services. Setup enables lingering so T3.CodeShip starts at
 boot and keeps running after logout. If this needs administrator permission,
 setup prints a recovery command before changing the service.
 
@@ -100,10 +100,10 @@ does not configure automatic startup at Windows sign-in.
 
 ### Host-managed agent memory on Linux
 
-By default, CodeShip applies automatic memory limits to the systemd user slice
+By default, T3.CodeShip applies automatic memory limits to the systemd user slice
 `app-t3code-agents.slice`. If you manage that slice's memory budget yourself, set
 `T3CODE_AGENT_SLICE_MEMORY_POLICY=host-managed` in the server's environment (or
-its `service.env`) and restart the server. CodeShip then leaves `MemoryHigh` and
+its `service.env`) and restart the server. T3.CodeShip then leaves `MemoryHigh` and
 `MemoryMax` untouched while keeping per-thread scopes, cleanup and OOM reporting.
 Unset the variable or set it to `automatic` to restore automatic limits on restart.
 
@@ -155,7 +155,7 @@ ssh -t your-server 'sudo loginctl enable-linger "$(id -un)"'
 ```
 
 Then retry service setup as your normal user. Run only the `loginctl` command
-with sudo; running CodeShip as root creates a separate installation and Connect
+with sudo; running T3.CodeShip as root creates a separate installation and Connect
 identity. Without administrator access, run `t3 serve` in a terminal and keep
 that session open.
 
@@ -163,7 +163,7 @@ that session open.
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | `linger-unavailable`                    | Run `loginctl show-user "$(id -un)" --property=Linger` and check that systemd-logind is available.                             |
 | `user-manager-unavailable`              | Run `systemctl --user status` in a login session for the service user; check your distribution's systemd user-session support. |
-| `service-disabled` or `service-stopped` | Read the log and `systemctl --user status t3code.service`, then use the repair command printed by CodeShip.                    |
+| `service-disabled` or `service-stopped` | Read the log and `systemctl --user status t3code.service`, then use the repair command printed by T3.CodeShip.                 |
 | `restart-pending`                       | A newer version is installed but the service still runs the previous one. Run `t3 service restart`.                            |
 
 On macOS, check **System Settings → General → Login Items** if the service no
@@ -177,7 +177,7 @@ For failures after signing in to T3 Connect, see
 
 ## Reclaim database space
 
-CodeShip removes superseded internal history on its own while it runs; your
+T3.CodeShip removes superseded internal history on its own while it runs; your
 conversations are kept. Databases created before this shrank automatically
 still hold the freed space on disk until a one-time offline repair returns it
 and turns on automatic shrinking. Settings > Maintenance (web and desktop) or

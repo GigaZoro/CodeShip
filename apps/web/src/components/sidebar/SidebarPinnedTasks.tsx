@@ -22,6 +22,7 @@ import type {
 } from "@t3tools/contracts";
 import { AuthOrchestrationOperateScope, ThreadId } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
+import * as Schema from "effect/Schema";
 import {
   CalendarClockIcon,
   CircleAlertIcon,
@@ -38,7 +39,10 @@ import {
 } from "react";
 
 import { useNowSecond } from "../../hooks/useNowSecond";
+import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { useSetScheduledTaskPinned } from "../../hooks/useSetScheduledTaskPinned";
+import { attachSidebarTree } from "../../lib/sidebarTree";
+import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import { readLocalApi } from "../../localApi";
 import { cn } from "../../lib/utils";
 import { useQuietThreadShell } from "../../state/entities";
@@ -52,6 +56,7 @@ import {
   resolveWorkingStartedAt,
 } from "../Sidebar.logic";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+import { CollapsibleSectionHeader } from "../ui/collapsible-section-header";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { WorkingDuration } from "./SidebarThreadRow";
 
@@ -240,6 +245,7 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
         role="treeitem"
         tabIndex={-1}
         data-sidebar-row={`task:${environmentId}:${task.id}`}
+        data-sidebar-parent="shelf:scheduled"
         aria-label={accessibility.label}
         aria-current={accessibility.current}
         data-testid="sidebar-pinned-task-row"
@@ -306,7 +312,6 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
   );
 });
 
-/** Pinned scheduled tasks above the thread list, with each one's run and countdown. */
 export const SidebarPinnedTasksBlock = memo(function SidebarPinnedTasksBlock(props: {
   /** JSON array of environment ids, so the prop stays equal across renders. */
   environmentIdsKey: string;
@@ -314,27 +319,68 @@ export const SidebarPinnedTasksBlock = memo(function SidebarPinnedTasksBlock(pro
   projectDisplayNameByKey: ReadonlyMap<string, string>;
   routeThreadKey: string | null;
   onNavigateToThread: (threadRef: ScopedThreadRef) => void;
+  inPanel: boolean;
 }) {
+  const [expanded, setExpanded] = useLocalStorage(
+    "t3code:sidebar:scheduled-expanded",
+    true,
+    Schema.Boolean,
+  );
   const entries = useAtomValue(pinnedTasksAtom(props.environmentIdsKey)).filter(
     ({ environmentId, task }) =>
       props.scopedProjectKeys === null ||
       props.scopedProjectKeys.has(`${environmentId}:${task.projectId}`),
   );
   if (entries.length === 0) return null;
+  const content = (
+    <>
+      <li className="mx-0.5 h-8 shrink-0 list-none">
+        <CollapsibleSectionHeader
+          role="treeitem"
+          tabIndex={-1}
+          data-sidebar-row="shelf:scheduled"
+          expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+          accessory={<span className="font-normal tabular-nums">{entries.length}</span>}
+        >
+          Scheduled
+        </CollapsibleSectionHeader>
+      </li>
+      {expanded &&
+        entries.map(({ environmentId, task }) => (
+          <SidebarPinnedTaskRow
+            key={`${environmentId}:${task.id}`}
+            environmentId={environmentId}
+            task={task}
+            projectDisplayName={
+              props.projectDisplayNameByKey.get(`${environmentId}:${task.projectId}`) ?? null
+            }
+            routeThreadKey={props.routeThreadKey}
+            onNavigateToThread={props.onNavigateToThread}
+          />
+        ))}
+    </>
+  );
+  if (props.inPanel) {
+    return (
+      <section
+        {...workspaceAreaProps("scheduled", 6, "Scheduled")}
+        className="flex max-h-[40dvh] min-h-0 flex-col rounded-xl border border-sidebar-border bg-sidebar p-1.5 text-sidebar-foreground shadow-sm"
+      >
+        <ul
+          ref={attachSidebarTree}
+          role="tree"
+          aria-label="Scheduled tasks"
+          className="flex min-h-0 flex-col gap-px overflow-y-auto overscroll-contain"
+        >
+          {content}
+        </ul>
+      </section>
+    );
+  }
   return (
     <>
-      {entries.map(({ environmentId, task }) => (
-        <SidebarPinnedTaskRow
-          key={`${environmentId}:${task.id}`}
-          environmentId={environmentId}
-          task={task}
-          projectDisplayName={
-            props.projectDisplayNameByKey.get(`${environmentId}:${task.projectId}`) ?? null
-          }
-          routeThreadKey={props.routeThreadKey}
-          onNavigateToThread={props.onNavigateToThread}
-        />
-      ))}
+      {content}
       <li
         aria-hidden
         data-testid="sidebar-pinned-tasks-divider"

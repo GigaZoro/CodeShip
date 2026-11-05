@@ -239,7 +239,7 @@ export function WelcomeWizard({
         initialFocus={() => document.getElementById("onboarding-pairing-url") ?? true}
       >
         <WizardHeader
-          title="Set up CodeShip"
+          title="Set up T3.CodeShip"
           identity={
             <CodeShipBrand className="gap-2.5 text-2xl text-foreground" markClassName="size-8" />
           }
@@ -439,9 +439,9 @@ function ConnectionStep({
       ) : null}
       <div className="mt-6 flex flex-col-reverse gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
         <p className="min-w-0 text-xs leading-relaxed text-muted-foreground">
-          {telemetryOff ?? "CodeShip collects anonymous usage data to help us improve it."} To read
-          more about how your data is used{telemetryOff === undefined ? " and how to opt out" : ""},
-          see our{" "}
+          {telemetryOff ?? "T3.CodeShip collects anonymous usage data to help us improve it."} To
+          read more about how your data is used
+          {telemetryOff === undefined ? " and how to opt out" : ""}, see our{" "}
           <a
             className="underline underline-offset-2 hover:text-foreground"
             href={PRIVACY_POLICY_URL}
@@ -538,7 +538,7 @@ function ConnectAccountOption({
             </p>
             <CommandBlock command="npx t3 connect" className="mt-3" />
             <p className="mt-3 text-xs text-muted-foreground">
-              Keep CodeShip running. Select the computers you want to set up above.
+              Keep T3.CodeShip running. Select the computers you want to set up above.
             </p>
           </div>
         </CollapsiblePanel>
@@ -644,7 +644,7 @@ function PairingForm({
           </div>
           <CollapsiblePanel>
             <p className="pt-3 text-sm text-muted-foreground">
-              On the computer with your code, start CodeShip or run{" "}
+              On the computer with your code, start T3.CodeShip or run{" "}
               <code className="font-mono">npx t3 serve</code>, then run:
             </p>
             <CommandBlock command="npx t3 pair" className="mt-2" />

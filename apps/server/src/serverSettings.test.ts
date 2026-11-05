@@ -134,55 +134,69 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       assert.deepEqual(settings.providerModelPreferences?.[provider]?.modelOrder, ["luna", "sol"]);
     }).pipe(Effect.provide(layerServerSettings())),
   );
-  it.effect("persists and broadcasts model preferences to other connected clients", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const service = yield* ServerSettingsModule.ServerSettingsService;
-        const config = yield* ServerConfig.ServerConfig;
-        const fs = yield* FileSystem.FileSystem;
-        const provider = ProviderInstanceId.make("codex_work");
-        const patch = {
-          favorites: [{ provider, model: "sol" }],
-          providerModelPreferences: {
-            [provider]: { hiddenModels: ["astra"], modelOrder: ["sol"] },
-          },
-        };
-        const changes = yield* service.subscribeChanges;
-        yield* service.updateSettings(patch);
-        const received = Option.getOrThrow(yield* Stream.runHead(changes));
-        assert.deepEqual(received.favorites, patch.favorites);
-        assert.deepEqual(received.providerModelPreferences, patch.providerModelPreferences);
-        const saved = yield* decodeServerSettingsJson(
-          yield* fs.readFileString(config.settingsPath),
-        );
-        assert.deepEqual(saved.favorites, patch.favorites);
-        assert.deepEqual(saved.providerModelPreferences, patch.providerModelPreferences);
-        const hidden = yield* service.updateSettings({
-          setModelsHidden: [{ provider, model: "sol", hidden: true }],
-        });
-        assert.deepEqual(hidden.providerModelPreferences?.[provider], {
-          hiddenModels: ["astra", "sol"],
-          modelOrder: ["sol"],
-        });
-        const shown = yield* service.updateSettings({
-          setModelsHidden: [{ provider, model: "astra", hidden: false }],
-        });
-        assert.deepEqual(shown.providerModelPreferences?.[provider], {
-          hiddenModels: ["sol"],
-          modelOrder: ["sol"],
-        });
-        assert.deepEqual(
-          (yield* decodeServerSettingsJson(yield* fs.readFileString(config.settingsPath)))
-            .providerModelPreferences,
-          shown.providerModelPreferences,
-        );
-        yield* service.updateSettings({ favorites: [], providerModelPreferences: {} });
+  it.effect(
+    "persists and broadcasts model preferences and skill availability to other connected clients",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* ServerSettingsModule.ServerSettingsService;
+          const config = yield* ServerConfig.ServerConfig;
+          const fs = yield* FileSystem.FileSystem;
+          const provider = ProviderInstanceId.make("codex_work");
+          const projectId = ProjectId.make("shared-skills-project");
+          assert.equal((yield* service.getSettings).skillAvailability, "provider");
+          const patch = {
+            skillAvailability: "shared" as const,
+            projectSettingsOverrides: { [projectId]: { skillAvailability: "provider" as const } },
+            favorites: [{ provider, model: "sol" }],
+            providerModelPreferences: {
+              [provider]: { hiddenModels: ["astra"], modelOrder: ["sol"] },
+            },
+          };
+          const changes = yield* service.subscribeChanges;
+          yield* service.updateSettings(patch);
+          const received = Option.getOrThrow(yield* Stream.runHead(changes));
+          assert.equal(received.skillAvailability, "shared");
+          assert.deepEqual(received.projectSettingsOverrides[projectId], {
+            skillAvailability: "provider",
+          });
+          assert.deepEqual(received.favorites, patch.favorites);
+          assert.deepEqual(received.providerModelPreferences, patch.providerModelPreferences);
+          const saved = yield* decodeServerSettingsJson(
+            yield* fs.readFileString(config.settingsPath),
+          );
+          assert.equal(saved.skillAvailability, "shared");
+          assert.deepEqual(saved.projectSettingsOverrides[projectId], {
+            skillAvailability: "provider",
+          });
+          assert.deepEqual(saved.favorites, patch.favorites);
+          assert.deepEqual(saved.providerModelPreferences, patch.providerModelPreferences);
+          const hidden = yield* service.updateSettings({
+            setModelsHidden: [{ provider, model: "sol", hidden: true }],
+          });
+          assert.deepEqual(hidden.providerModelPreferences?.[provider], {
+            hiddenModels: ["astra", "sol"],
+            modelOrder: ["sol"],
+          });
+          const shown = yield* service.updateSettings({
+            setModelsHidden: [{ provider, model: "astra", hidden: false }],
+          });
+          assert.deepEqual(shown.providerModelPreferences?.[provider], {
+            hiddenModels: ["sol"],
+            modelOrder: ["sol"],
+          });
+          assert.deepEqual(
+            (yield* decodeServerSettingsJson(yield* fs.readFileString(config.settingsPath)))
+              .providerModelPreferences,
+            shown.providerModelPreferences,
+          );
+          yield* service.updateSettings({ favorites: [], providerModelPreferences: {} });
 
-        const migrated = yield* service.updateSettings({ migrateModelPreferences: patch });
-        assert.deepEqual(migrated.favorites, []);
-        assert.deepEqual(migrated.providerModelPreferences, {});
-      }),
-    ).pipe(Effect.provide(layerServerSettings())),
+          const migrated = yield* service.updateSettings({ migrateModelPreferences: patch });
+          assert.deepEqual(migrated.favorites, []);
+          assert.deepEqual(migrated.providerModelPreferences, {});
+        }),
+      ).pipe(Effect.provide(layerServerSettings())),
   );
   it.effect("migrates saved token delivery to paragraph buffering without resetting settings", () =>
     Effect.gen(function* () {

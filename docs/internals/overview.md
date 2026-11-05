@@ -1,6 +1,6 @@
 # Architecture
 
-CodeShip keeps execution in the environment that owns the workspace. Web, desktop, and mobile
+T3.CodeShip keeps execution in the environment that owns the workspace. Web, desktop, and mobile
 clients control it over authenticated RPC. A remote client must never substitute its own filesystem,
 provider credentials, or machine state for the environment's. The desktop app bundles a server,
 but its renderer follows the same boundary.

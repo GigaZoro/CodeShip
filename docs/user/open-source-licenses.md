@@ -1,13 +1,13 @@
 # Open source licenses
 
-CodeShip includes third-party software and adapted assets. To read their license and attribution
+T3.CodeShip includes third-party software and adapted assets. To read their license and attribution
 notices:
 
 - On web and desktop, open **Settings → Maintenance & about**, find **Open source licenses** under **Legal**,
   and select **View licenses**.
 - On mobile, open **Settings → Maintenance & about → Open source licenses**.
 
-The page lists the version when available, license identifier, and the parts of CodeShip that include
-or use the item. This also covers optional device tools that CodeShip installs on demand instead of
+The page lists the version when available, license identifier, and the parts of T3.CodeShip that include
+or use the item. This also covers optional device tools that T3.CodeShip installs on demand instead of
 bundling. Select a row to read the complete notice text. Use the search field to find a package,
 version, license, or app component.

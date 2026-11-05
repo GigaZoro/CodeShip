@@ -2751,8 +2751,8 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
 
 export function resolveDesktopProductName(version: string): string {
   return resolveDesktopUpdateChannel(version) === "nightly"
-    ? "CodeShip (Nightly)"
-    : (desktopPackageJson.productName ?? "CodeShip");
+    ? "T3.CodeShip (Nightly)"
+    : (desktopPackageJson.productName ?? "T3.CodeShip");
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -2832,13 +2832,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         // macOS 26 offers Messages/Mail codes in every text field unless opted out.
         NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac: true,
         NSLocalNetworkUsageDescription:
-          "CodeShip connects to devices on your local network for remote environments and commands run by terminals and coding agents.",
+          "T3.CodeShip connects to devices on your local network for remote environments and commands run by terminals and coding agents.",
         NSScreenCaptureUsageDescription:
-          "CodeShip captures the active window when you use the window capture shortcut.",
+          "T3.CodeShip captures the active window when you use the window capture shortcut.",
         NSCameraUsageDescription:
-          "CodeShip lets commands run by terminals and coding agents use the camera.",
+          "T3.CodeShip lets commands run by terminals and coding agents use the camera.",
         NSMicrophoneUsageDescription:
-          "CodeShip lets commands run by terminals and coding agents use the microphone.",
+          "T3.CodeShip lets commands run by terminals and coding agents use the microphone.",
         // macOS lists an app under Default web browser only when it opens web
         // pages as documents as well as http and https links (see protocols).
         CFBundleDocumentTypes: [
@@ -2852,7 +2852,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       },
       protocols: [
         {
-          name: "CodeShip",
+          name: "T3.CodeShip",
           schemes: ["t3code", "t3code-dev"],
         },
         {
@@ -2914,7 +2914,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       maintainer: "T3 Tools <hello@t3.codes>",
       protocols: [
         {
-          name: "CodeShip",
+          name: "T3.CodeShip",
           schemes: ["t3code", "t3code-dev"],
         },
       ],
@@ -3879,7 +3879,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     private: true,
     packageManager: rootPackageJson.packageManager,
     description:
-      "CodeShip is an open-source desktop app for coding agents. Work with your existing agent subscriptions, review code changes, and run commands in your projects. Connect from desktop, web, or mobile to continue working remotely.",
+      "T3.CodeShip is an open-source desktop app for coding agents. Work with your existing agent subscriptions, review code changes, and run commands in your projects. Connect from desktop, web, or mobile to continue working remotely.",
     license: "MIT",
     homepage: "https://t3.codes",
     author: "T3 Tools",
@@ -4197,7 +4197,7 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
     Flag.optional,
   ),
 }).pipe(
-  Command.withDescription("Build a desktop artifact for CodeShip."),
+  Command.withDescription("Build a desktop artifact for T3.CodeShip."),
   Command.withHandler((input) => Effect.flatMap(resolveBuildOptions(input), buildDesktopArtifact)),
 );
 

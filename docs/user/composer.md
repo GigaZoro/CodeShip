@@ -47,7 +47,7 @@ before an upload finishes requires you to attach that file again.
 You can drag or paste images into the web or desktop composer. HEIC and HEIF
 photos are converted to JPEG there and when selected from the mobile photo
 library; photos over the image limit are also resized to fit. On mobile, you can
-also send files to CodeShip through another app's system share sheet.
+also send files to T3.CodeShip through another app's system share sheet.
 On Android, you can also drag images from another app into the message input
 in split screen.
 
@@ -111,7 +111,7 @@ instance:
 
 ## Model defaults
 
-CodeShip remembers your provider, model, and model options for new threads. A
+T3.CodeShip remembers your provider, model, and model options for new threads. A
 project's configured model takes precedence; resetting that project setting
 returns to the remembered selection. [Auto](./thread-sidebar.md#inspect-agent-work)
 runs the provider and model you choose in **Settings → Providers & models** and picks the
@@ -204,7 +204,7 @@ for example, put **Other Bluetooth** above your AirPods so a new headset is pref
 while the AirPods microphone stays low. By default, CarPlay comes after the built-in
 microphone. Swipe a device left to forget it.
 
-Transcription runs on your device. CodeShip deletes the temporary audio after
+Transcription runs on your device. T3.CodeShip deletes the temporary audio after
 transcription or cancellation; only the message text is sent when you submit.
 
 ## Queued messages
@@ -236,12 +236,18 @@ composer when it is empty, and is discarded otherwise.
 
 ## Commands and skills
 
-Type `/` for commands or `$` to add a skill from the selected environment and
-provider. On mobile, both are also available before starting a thread on
-**New task**.
+Type `/` for commands or `$` to add a skill from the selected environment. On
+mobile, both are also available before starting a thread on **New task**.
+
+**Settings → Chat & diffs → Skill availability** (or **Settings → Chat** on
+mobile) defaults to **By provider**. Choose **Shared across models** to use skills
+from other enabled, installed providers on the same environment. This can also be
+set for a project. The selected provider wins when names overlap; disabled and
+agent-only skills are not offered. Skills that require tools the selected model
+cannot use may not work.
 
 Put skills you want in every provider in `~/.agents/skills` on the environment's
-machine. Codex, Cursor, and fx read that folder themselves, and CodeShip adds it
+machine. Codex, Cursor, and fx read that folder themselves, and T3.CodeShip adds it
 to Claude. Keep skills for one provider in its own folder, such as
 `~/.claude/skills` or `~/.codex/skills`. Keep each skill in only one of these
 folders, because Codex lists both copies of a duplicate. All accounts of a
@@ -249,7 +255,7 @@ provider use the same folders, unless you gave an account its own config
 directory.
 
 The slash menu also includes skills unless you turn off **Settings → Chat & diffs →
-Show skills in slash menu**, under Advanced. Only skills enabled for the provider are listed.
+Show skills in slash menu**, under Advanced. This follows the same skill availability setting.
 
 On web and desktop, the **Skills** tab of **Extensions** in the sidebar rail lists every provider's skills
 on each connected machine, with what each one does and where its `SKILL.md`
@@ -266,7 +272,7 @@ After you add or change skills, plugins, or MCP servers, use **Restart agent
 session** in the command palette on web and desktop. The conversation continues,
 and your next message starts the agent again with the new setup.
 
-Provider commands must start the message to run. CodeShip commands such as
+Provider commands must start the message to run. T3.CodeShip commands such as
 `/model`, and skill mentions, work on any line.
 
 Choose **Retry** under the last assistant reply to rewind and send your last message again.
@@ -340,7 +346,7 @@ exist only as chips: deleting a file's last chip removes the file from the messa
 Copy text that holds chips and paste it into another draft, in the same thread or another one,
 and the chips come along with what they point to. Images and files are fetched again from the
 environment they came from; while that happens the chip shows a dashed outline, and if it cannot
-complete CodeShip tells you and leaves the chip for you to remove or replace. A chip whose
+complete T3.CodeShip tells you and leaves the chip for you to remove or replace. A chip whose
 context is no longer available shows the same dashed outline; hover it for what to do.
 
 Copying a message with the copy button, or copying text out of it, gives other apps readable
@@ -392,7 +398,7 @@ styles, or images from neighboring files.
 
 On web and desktop, HTML and PDF files open as rendered pages. Switch an HTML
 file to source view to read its markup; a link to a specific line opens source
-automatically. HTML previews cannot access your CodeShip session.
+automatically. HTML previews cannot access your T3.CodeShip session.
 
 The file viewer recognizes images, HTML, and PDF files by their filename extension,
 including filenames or folders containing `#` or `?`.

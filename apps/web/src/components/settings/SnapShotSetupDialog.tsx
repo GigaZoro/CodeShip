@@ -30,7 +30,7 @@ const GNOME_ACCESS_COPY = {
   "not-installed": {
     title: "Install the extension",
     description:
-      "The CodeShip GNOME extension lets you capture other windows and bring them into your draft. Sign out once after installing.",
+      "The T3.CodeShip GNOME extension lets you capture other windows and bring them into your draft. Sign out once after installing.",
   },
   "restart-required": {
     title: "Extension installed",
@@ -46,7 +46,7 @@ const GNOME_ACCESS_COPY = {
   },
   disabled: {
     title: "Enable the extension",
-    description: "Enable CodeShip SnapShots to start capturing windows.",
+    description: "Enable T3.CodeShip SnapShots to start capturing windows.",
   },
   enabled: {
     title: "Capture is ready",
@@ -58,7 +58,7 @@ const GNOME_ACCESS_COPY = {
   },
   error: {
     title: "Couldn't set up the extension",
-    description: "Check CodeShip SnapShots in GNOME Extensions, then try again.",
+    description: "Check T3.CodeShip SnapShots in GNOME Extensions, then try again.",
   },
 };
 
@@ -171,7 +171,7 @@ export function SnapShotSetupDialog({
                       ? "Update the capture helper"
                       : "Allow snapshots",
                   description:
-                    "CodeShip's capture helper lets you capture other apps and return to your draft. It's included with CodeShip.",
+                    "T3.CodeShip's capture helper lets you capture other apps and return to your draft. It's included with T3.CodeShip.",
                 }
           : backend === "niri"
             ? {
@@ -352,7 +352,7 @@ export function SnapShotSetupDialog({
                     </p>
                   ))}
                   {step === "access" && (backend === "gnome" || helperBackend) ? (
-                    <p>Included with CodeShip. No download needed.</p>
+                    <p>Included with T3.CodeShip. No download needed.</p>
                   ) : null}
                   {step === "access" && backend === "gnome" && extension?.status === "enabled" ? (
                     <Button

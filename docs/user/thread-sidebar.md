@@ -16,7 +16,7 @@ project picker opens. Turn off **Settings → General → Use last project** to
 choose a project every time. When you pick a project that is on more than one
 machine, the thread starts on a connected one if any is connected.
 
-When you change a new thread's project, CodeShip stays in the current environment
+When you change a new thread's project, T3.CodeShip stays in the current environment
 if that project exists there. Otherwise it selects an environment that has it.
 
 ### Start without a project
@@ -66,10 +66,13 @@ usual place.
 
 ## Pin scheduled tasks
 
-Pin a scheduled task to watch it from the thread list. On web and desktop, choose
+Pin a scheduled task to watch its runs and next scheduled start. On web and desktop, choose
 **Pin to sidebar** from the task's menu on the **Scheduled tasks** page, or use the pin
 button in a thread's **Automations** card. On mobile, choose **Pin to thread list** from the
 task's menu. Pins are saved on the environment, so every device connected to it shows them.
+
+On web and desktop, pinned tasks appear in the collapsible **Scheduled** section above
+**Needs you** on the right. In narrower windows and on mobile, they stay in the thread list.
 
 Tasks are not pinned automatically by default. Turn on **Automatically pin scheduled tasks** in
 **Settings → General** to pin new tasks when they are created. Changing this setting leaves
@@ -142,7 +145,7 @@ position, so using **Un-settle** returns it to the top. Pinning and snoozing pre
 position until you move it again. Thread activity does not change the order. The settled shelf
 continues to use settlement time.
 
-If dragging is unavailable for one environment, update the CodeShip server running in that
+If dragging is unavailable for one environment, update the T3.CodeShip server running in that
 environment. Pinned and active reordering require server support. Threads from older servers keep
 their default order until the server is updated.
 
@@ -154,7 +157,7 @@ To change how titles are written, add **Thread title instructions** in **Setting
 Models → Writing**, such as a length limit or an identifier to put first. They apply to new and
 regenerated titles. Select a project to give it its own instructions.
 
-Agents connected through CodeShip can use the same server-owned metadata workflow to
+Agents connected through T3.CodeShip can use the same server-owned metadata workflow to
 rename a thread, regenerate its title, or link and unlink a pull request. These changes
 appear on web, desktop, and mobile without requiring the originating browser to remain
 open.
@@ -265,7 +268,7 @@ work does not slip out of view. Commits count as merged once they reach the
 default branch or the branch's pull request merges.
 
 Automatic settlement keeps that work in view too. Before such a thread settles on
-its own, CodeShip commits its changes and opens a pull request, then settles it.
+its own, T3.CodeShip commits its changes and opens a pull request, then settles it.
 With **Keep threads with a PR** on, the thread stays active with its new pull
 request. Turn off **Open a PR for unmerged work** in **Settings → Threads** to keep
 these threads active instead. A thread also stays active when its pull request
@@ -427,7 +430,7 @@ thread's terminals or its Claude agent started, with their ports. Not every one
 serves a web page. A server the agent started stays listed after the agent's
 turn ends.
 Select a server to open it in the browser panel. **Stop** ends the server's job
-and keeps the agent, the terminal, and CodeShip running. Stop needs terminal
+and keeps the agent, the terminal, and T3.CodeShip running. Stop needs terminal
 access to the environment and is not available on Windows.
 
 In the desktop app, the card can also open a ChatGPT dot or Claude Duet in the

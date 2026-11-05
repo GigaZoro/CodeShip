@@ -87,7 +87,7 @@ it("does not expose arbitrary cause messages and preserves explicit messages", (
   }
 });
 
-it("preserves CodeShip's own actionable errors wrapped by turn startup", () => {
+it("preserves T3.CodeShip's own actionable errors wrapped by turn startup", () => {
   for (const error of [
     new ContextHandoffBudgetError(),
     new ContextHandoffBackgroundWorkError(),
@@ -99,7 +99,7 @@ it("preserves CodeShip's own actionable errors wrapped by turn startup", () => {
     new ProviderSetupError({
       instanceId: ProviderInstanceId.make("codex"),
       operation: "runtime",
-      detail: "Codex 0.144.3 does not work with this CodeShip release.",
+      detail: "Codex 0.144.3 does not work with this T3.CodeShip release.",
     }),
   ]) {
     const cause = new ProviderAdapter.ProviderAdapterTurnStartError({

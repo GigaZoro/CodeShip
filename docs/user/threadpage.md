@@ -1,7 +1,7 @@
 # ThreadPage notes
 
 [ThreadPage](https://thread.page) is a separate note-taking app that keeps one thread of notes per
-project, task or question. CodeShip opens it from **ThreadPage** in the sidebar rail or from
+project, task or question. T3.CodeShip opens it from **ThreadPage** in the sidebar rail or from
 **Open ThreadPage** in the command palette.
 
 The desktop app shows ThreadPage in place. In a web browser it opens in a new tab, because
@@ -12,7 +12,7 @@ ThreadPage.
 ## Where your notes live
 
 Without a ThreadPage account, notes stay in the browser you write them in. In the desktop app that
-is CodeShip's own ThreadPage storage on that machine, which is separate from your regular browser,
+is T3.CodeShip's own ThreadPage storage on that machine, which is separate from your regular browser,
 your other machines, and the in-app browser of your threads. Clearing a thread browser profile does
 not remove them.
 

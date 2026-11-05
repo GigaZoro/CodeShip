@@ -3,6 +3,7 @@ import type {
   EnvironmentId,
   ProjectId,
   ServerProvider,
+  ServerSettings,
   ThreadId,
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
@@ -41,14 +42,15 @@ import {
   scoreQueryMatch,
 } from "@t3tools/shared/searchRanking";
 import {
-  createProviderWorkspaceSnapshotRefreshAtomFamily,
+  createSkillInventoriesRefreshAtomFamily,
+  resolveSkillInventoryInstanceIds,
   dedupeProviderSkillsByName,
   getProviderSkillsForSlashMenu,
   getProviderSlashCommandsForSlashMenu,
   isProviderSkillUserInvocable,
-  resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
 } from "@t3tools/client-runtime/providerSkills";
+import { resolveAvailableProviderSkills } from "@t3tools/shared/providerSkills";
 import { useAtomRefresh } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
 import { useEffect, useState } from "react";
@@ -63,7 +65,7 @@ import {
 import type { ComposerCommandItem } from "./ComposerCommandPopover";
 import { matchesSlashSkillQuery } from "./composerSlashSkillSearch";
 
-const providerWorkspaceSnapshotRefresh = createProviderWorkspaceSnapshotRefreshAtomFamily({
+const providerWorkspaceSnapshotRefresh = createSkillInventoriesRefreshAtomFamily({
   providers: serverEnvironment.providersValueAtom,
   refreshProviders: serverEnvironment.refreshProviders,
 });
@@ -179,6 +181,8 @@ export function useComposerCommandMenu({
   pullRequestRepository = null,
   threadPullRequests,
   selectedProviderStatus,
+  skillProviders,
+  skillAvailability,
   hasThread,
   hasCompactableConversation,
   offersUsageLimits = false,
@@ -199,6 +203,8 @@ export function useComposerCommandMenu({
   readonly pullRequestRepository?: string | null;
   readonly threadPullRequests?: ReadonlyArray<ThreadPullRequestLink>;
   readonly selectedProviderStatus: ServerProvider | null;
+  readonly skillProviders: readonly ServerProvider[];
+  readonly skillAvailability: ServerSettings["skillAvailability"];
   readonly hasThread: boolean;
   readonly hasCompactableConversation: boolean;
   readonly offersUsageLimits?: boolean;
@@ -222,15 +228,18 @@ export function useComposerCommandMenu({
   const setSelection = (next: ComposerEditorSelection) =>
     setLocalSelection({ ownerKey, start: next.start, end: next.end });
 
-  const skills = selectedProviderStatus
-    ? resolveProviderSkillsForCwd(selectedProviderStatus, projectCwd)
-    : [];
-  const selectedProviderInstanceId = selectedProviderStatus?.instanceId;
+  const inventory = {
+    providers: skillProviders,
+    instanceId: selectedProviderStatus?.instanceId,
+    availability: skillAvailability,
+  };
+  const skills = resolveAvailableProviderSkills({ ...inventory, cwd: projectCwd });
+  const instanceIds = resolveSkillInventoryInstanceIds(inventory);
   const refreshWorkspaceSnapshot = useAtomRefresh(
-    environmentId && projectCwd && selectedProviderInstanceId
+    environmentId && projectCwd && instanceIds.length > 0
       ? providerWorkspaceSnapshotRefresh({
           environmentId,
-          instanceId: selectedProviderInstanceId,
+          instanceIds,
           cwd: projectCwd,
         })
       : idleWorkspaceSnapshotRefreshAtom,

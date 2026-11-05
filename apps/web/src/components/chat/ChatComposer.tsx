@@ -244,9 +244,11 @@ import {
   type ComposerDispatchMode,
 } from "@t3tools/client-runtime/state/composer-dispatch";
 import {
-  resolveProviderSkillsForCwd,
+  resolveSkillProvidersForProject,
   resolveProviderSlashCommandsForCwd,
 } from "@t3tools/client-runtime/providerSkills";
+import { resolveAvailableProviderSkills } from "@t3tools/shared/providerSkills";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useSoftwareKeyboardOpen } from "../../hooks/useSoftwareKeyboardOpen";
 import { useStableCallback } from "../../hooks/useStableCallback";
@@ -487,7 +489,6 @@ export interface ChatComposerProps {
   onFileOpen: (attachment: ChatFileAttachment) => void;
 }
 
-const NO_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const NO_PROVIDER_SLASH_COMMANDS: ServerProvider["slashCommands"] = [];
 
 export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps) {
@@ -942,9 +943,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         (multipleModelSelections === null ? providerSendBlockReason : null)));
   const isSendDisabled = sendDisabledReason !== null;
   const selectedProviderStatus = selectedProviderEntry?.snapshot ?? null;
-  const selectedProviderSkills = selectedProviderStatus
-    ? resolveProviderSkillsForCwd(selectedProviderStatus, gitCwd)
-    : NO_PROVIDER_SKILLS;
+  const skillAvailability = resolveProjectSettings(settings, activeProjectId).settings
+    .skillAvailability;
+  const skillProviders = resolveSkillProvidersForProject(
+    providerStatuses,
+    settings,
+    activeProjectId,
+  );
+  const selectedProviderSkills = resolveAvailableProviderSkills({
+    providers: skillProviders,
+    instanceId: selectedProviderStatus?.instanceId,
+    cwd: gitCwd,
+    availability: skillAvailability,
+  });
   const selectedProviderSlashCommands = selectedProviderStatus
     ? resolveProviderSlashCommandsForCwd(selectedProviderStatus, gitCwd)
     : NO_PROVIDER_SLASH_COMMANDS;
@@ -953,6 +964,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       environmentId,
       gitCwd,
       instanceId: selectedProviderEntry?.instanceId,
+      providers: skillProviders,
+      availability: skillAvailability,
     });
 
   const selectedPromptEffort = composerProviderState.promptEffort;

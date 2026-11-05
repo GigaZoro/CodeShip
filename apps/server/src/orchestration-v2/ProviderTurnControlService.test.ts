@@ -1,3 +1,6 @@
+import * as ServerSettings from "../serverSettings.ts";
+import * as ProjectService from "../project/ProjectService.ts";
+import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import {
   type ModelSelection,
@@ -294,6 +297,9 @@ it.effect(
         }),
       );
       const layerControl = ProviderTurnControlService.layer.pipe(
+        Layer.provide(ProviderSkillsTestkit.layer),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
         Layer.provide(Layer.merge(layerProjection, layerSessionManager)),
       );
 

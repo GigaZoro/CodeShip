@@ -1088,6 +1088,7 @@ export const WorktreeCleanup = Schema.NullOr(
 export type WorktreeCleanup = typeof WorktreeCleanup.Type;
 
 export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
+  "skillAvailability",
   "worktreeCleanup",
   "defaultModelSelection",
   "defaultRuntimeMode",
@@ -1127,6 +1128,7 @@ export type ProjectProviderInstanceOverride = typeof ProjectProviderInstanceOver
 /** Absent keys inherit; null is a value for nullable settings.
  * providerInstances overrides fields per instance; other keys replace the whole setting. */
 export const ProjectSettingsOverrides = Schema.Struct({
+  skillAvailability: Schema.optionalKey(Schema.Literals(["provider", "shared"])),
   worktreeCleanup: Schema.optionalKey(WorktreeCleanup),
   defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
@@ -1268,6 +1270,9 @@ export const ServerSettings = Schema.Struct({
   responseStreamingMode: ResponseStreamingMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("paragraph" as const)),
   ),
+  skillAvailability: Schema.Literals(["provider", "shared"]).pipe(
+    Schema.withDecodingDefault(Effect.succeed("provider")),
+  ),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   autoUpdateProviders: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   continueThreadsAfterServerUpdate: Schema.Boolean.pipe(
@@ -1336,8 +1341,6 @@ export const ServerSettings = Schema.Struct({
   autoResumeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Off by default: providers may treat switching accounts to dodge limits as a terms violation. */
   failoverLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  /** Off, added Claude and Codex accounts keep their own MCP sign-ins. */
-  shareMcpSignIns: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   /** Failover tries a driver's accounts in this order; unlisted accounts follow in settings order. */
   providerInstanceFailoverOrder: Schema.Array(ProviderInstanceId).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
@@ -1677,6 +1680,7 @@ const ModelSelectionPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  skillAvailability: Schema.optionalKey(Schema.Literals(["provider", "shared"])),
   setModelFavorites: Schema.optionalKey(
     Schema.Array(Schema.Struct({ ...ModelFavorite.fields, favorite: Schema.Boolean })),
   ),
@@ -1779,7 +1783,6 @@ export const ServerSettingsPatch = Schema.Struct({
   autoResumeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   snoozeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   failoverLimitedThreads: Schema.optionalKey(Schema.Boolean),
-  shareMcpSignIns: Schema.optionalKey(Schema.Boolean),
   providerInstanceFailoverOrder: Schema.optionalKey(Schema.Array(ProviderInstanceId)),
   autoModeProvider: Schema.optionalKey(Schema.NullOr(ProviderDriverKind)),
   /** Per provider; null clears it back to the provider's default model. */

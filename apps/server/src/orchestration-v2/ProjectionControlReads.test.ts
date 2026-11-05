@@ -1,3 +1,6 @@
+import * as ServerSettings from "../serverSettings.ts";
+import * as ProjectService from "../project/ProjectService.ts";
+import * as ProviderSkills from "../provider/ProviderSkills.ts";
 import { assert, it } from "@effect/vitest";
 import {
   EventId,
@@ -332,6 +335,34 @@ it.effect.each(storageCases)(
           "Failure",
         );
         assert.lengthOf(calls, 3);
+        for (const text of ["$review", "$missing"]) {
+          yield* store.apply({
+            id: EventId.make(`control:skill:${text}`),
+            type: "message.updated",
+            threadId,
+            occurredAt: now,
+            payload: { ...context.message!, text },
+          });
+          const result = yield* Effect.result(
+            control.steer({
+              threadId,
+              providerThreadId,
+              providerTurnId,
+              providerSessionId,
+              messageId,
+            }),
+          );
+          if (text === "$missing") {
+            assert.equal(result._tag, "Failure");
+            if (result._tag === "Failure") {
+              assert.isTrue(result.failure.requiresNewTurn);
+              assert.instanceOf(result.failure.cause, ProviderSkills.ProviderSkillInvocationError);
+            }
+          } else {
+            assert.equal(result._tag, "Success");
+          }
+        }
+        assert.deepEqual(calls, ["interrupt", "Use the smaller fix.", "reply", "Loaded $review"]);
         const turn = context.providerTurn!;
         yield* store.apply({
           id: EventId.make("control:turn-completed"),
@@ -341,11 +372,41 @@ it.effect.each(storageCases)(
           payload: { ...turn, status: "completed", completedAt: now },
         });
         yield* control.interrupt({ threadId, providerThreadId, providerTurnId, providerSessionId });
-        assert.deepEqual(calls, ["interrupt", "Use the smaller fix.", "reply", "interrupt"]);
+        assert.deepEqual(calls, [
+          "interrupt",
+          "Use the smaller fix.",
+          "reply",
+          "Loaded $review",
+          "interrupt",
+        ]);
       }).pipe(
         Effect.provide(
           Layer.merge(ProviderTurnControlService.layer, RuntimeRequestService.layer).pipe(
             Layer.provide(layerSessions),
+            Layer.provide(
+              Layer.mock(ProviderSkills.ProviderSkills)({
+                expandSkillMentions: (input) => {
+                  assert.equal(input.cwd, "/workspace");
+                  assert.equal(input.settings.skillAvailability, "shared");
+                  return input.text === "$missing"
+                    ? Effect.fail(
+                        new ProviderSkills.ProviderSkillInvocationError({
+                          skillName: "missing",
+                          reason: "unavailable",
+                        }),
+                      )
+                    : Effect.succeed(`Loaded ${input.text}`);
+                },
+              }),
+            ),
+            Layer.provide(
+              ServerSettings.layerTest({
+                projectSettingsOverrides: {
+                  [ProjectId.make("project:control-reads")]: { skillAvailability: "shared" },
+                },
+              }),
+            ),
+            Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
           ),
         ),
       );

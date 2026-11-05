@@ -1,8 +1,8 @@
 # MCP tool use
 
-Replays small fake threads on Claude and Codex models and checks how they use T3's MCP tools: delegation, PR linking, previews, scheduling, and more. Each case reproduces a real mistake an agent made in CodeShip.
+Replays small fake threads on Claude and Codex models and checks how they use T3's MCP tools: delegation, PR linking, previews, scheduling, and more. Each case reproduces a real mistake an agent made in T3.CodeShip.
 
-The model sees what it sees in CodeShip. A trimmed capture of a real harness turn supplies the harness prompt and native tools. T3's instructions, tool descriptions, and schemas come from this checkout. A cheap model plays the shell, so nothing runs on your machine.
+The model sees what it sees in T3.CodeShip. A trimmed capture of a real harness turn supplies the harness prompt and native tools. T3's instructions, tool descriptions, and schemas come from this checkout. A cheap model plays the shell, so nothing runs on your machine.
 
 ## Run
 
@@ -17,7 +17,7 @@ pnpm mcp-tool-use --model claude-opus-5-5 --out runs/opus
 - Both the agent and shell simulator use the selected provider. OpenAI defaults to Luna for both; Anthropic defaults to Sonnet and Haiku. `--model` and `--shell-model` select models within that provider.
 - Existing CLIProxyAPI setups can opt in with `--provider openai --proxy`; this uses the `vibeproxy` entry in `~/.codex/config.toml`. The proxy must serve the selected OpenAI agent and simulator models.
 - Codex credentials are refreshed by its app-server and held in memory. Model-produced tool calls still run only against the simulated machine.
-- Flags: `--case <ids>`, `--cases <file.ndjson>`, `--samples <n>` (default 2, and a 3rd when the first 2 disagree), `--concurrency <n>` (samples in flight, default 8), `--max-steps <n>`, `--effort <level>`, `--dry-run` (prints request bodies, no model calls), and `--context` (prints the size of CodeShip's text and schemas, no key needed). Offline runs default to OpenAI; use `--provider anthropic` to inspect Claude cases.
+- Flags: `--case <ids>`, `--cases <file.ndjson>`, `--samples <n>` (default 2, and a 3rd when the first 2 disagree), `--concurrency <n>` (samples in flight, default 8), `--max-steps <n>`, `--effort <level>`, `--dry-run` (prints request bodies, no model calls), and `--context` (prints the size of T3.CodeShip's text and schemas, no key needed). Offline runs default to OpenAI; use `--provider anthropic` to inspect Claude cases.
 - `--baseline <results.jsonl> --stop-on-regression` stops as soon as a case that passed every baseline sample fails. Use it to test one copy change against a baseline run.
 - Cost: the existing non-device suite costs about $9 on Sonnet and $17 on Opus. The 16 device cases at 3 samples each cost about $5.70–5.90 on Opus and $2.90–3.40 on Sonnet (main's text–#25661), including the Haiku shell simulator; dry runs cost $0. Results record token costs for Anthropic agent and shell simulator models. OpenAI usage follows your API key or Codex subscription; the report records its tokens without estimating a price.
 - An Anthropic or proxy rate limit or overload (429, 529 or another 5xx) is retried with backoff for up to about 4 minutes. A sample that still fails gets an `error` in `results.jsonl`, is left out of every pass rate, and is listed in the summary; the tokens it spent still count toward the cost.
@@ -123,7 +123,7 @@ This API replay measures routing and recovery decisions. Screenshots return prod
 
 `templates/` holds one trimmed capture per harness. Refresh them when a harness changes its prompt or native tools:
 
-1. Capture one CodeShip turn through CLIProxyAPI, with T3's MCP server connected.
+1. Capture one T3.CodeShip turn through CLIProxyAPI, with T3's MCP server connected.
 2. From `evals/`, run `pnpm mcp-tool-use:trim-capture <claude|codex> <capture.json> mcp-tool-use/templates/<claude|codex>.json.gz`. It keeps only what `run.ts` reads, and removes user instructions, the user's own skills and agents, account ids, and home paths.
 3. Read the output for user data before you commit it: `zcat <file> | less`.
 4. Run the full eval on the old and new templates, and compare.

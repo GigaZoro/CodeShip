@@ -22,7 +22,7 @@ export function ExtensionsPage() {
   const search = useSearch({ from: "/_chat/extensions" });
   const navigate = useNavigate({ from: "/extensions" });
   const tab = search.tab ?? "skills";
-  // The Skills tab puts its search and filters here, on the header's right.
+  // Each tab puts its machine picker, search, and filters here, on the header's right.
   const [controlsSlot, setControlsSlot] = useState<HTMLElement | null>(null);
 
   return (
@@ -64,9 +64,9 @@ export function ExtensionsPage() {
         {tab === "skills" ? (
           <SkillsPanel controlsSlot={controlsSlot} />
         ) : tab === "plugins" ? (
-          <PluginsPanel />
+          <PluginsPanel controlsSlot={controlsSlot} />
         ) : (
-          <McpServersPanel />
+          <McpServersPanel controlsSlot={controlsSlot} />
         )}
       </div>
     </SidebarInset>

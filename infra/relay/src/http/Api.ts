@@ -102,7 +102,7 @@ const appendRelayCredentialResponseHeaders = HttpEffect.appendPreResponseHandler
     ),
 );
 
-// CodeShip hosts never retry sooner than Retry-After, so during a Cloudflare
+// T3.CodeShip hosts never retry sooner than Retry-After, so during a Cloudflare
 // rate limit they wait out the pause instead of retrying into it.
 const appendCloudflareRetryAfter = (error: unknown) => {
   const retryAfterMillis = ManagedEndpointProvider.cloudflareRetryAfterMillis(error);

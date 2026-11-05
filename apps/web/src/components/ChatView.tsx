@@ -234,7 +234,8 @@ import {
 } from "../state/server";
 import { useInheritedDefaultModelSelection } from "../state/inheritedDefaultModel";
 import { threadEnvironment } from "../state/threads";
-import { resolveProviderSkillsForCwd } from "@t3tools/client-runtime/providerSkills";
+import { resolveSkillProvidersForProject } from "@t3tools/client-runtime/providerSkills";
+import { resolveAvailableProviderSkills } from "@t3tools/shared/providerSkills";
 import { vcsEnvironment } from "../state/vcs";
 import {
   type EnvironmentPresentation,
@@ -377,7 +378,6 @@ const EMPTY_USAGE_LIMIT_SOURCES: UsageLimitSourceSnapshots = [];
 import type { CodexArtifactTemplate } from "@t3tools/shared/codexArtifactTemplates";
 
 const EMPTY_FEEDBACK_SUBMISSIONS: ReadonlyArray<CodexFeedbackSubmission> = [];
-const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_TURN_ITEMS: ThreadStructure["turnItems"] = [];
 const EMPTY_AUTO_UPDATE_ENVIRONMENTS: ReadonlyArray<EnvironmentPresentation> = [];
 const EMPTY_COMPOSER_BANNER_ITEMS: ReadonlyArray<ComposerBannerStackItem> = [];
@@ -2562,10 +2562,12 @@ export default function ChatView(props: ChatViewProps) {
         ? [
             modelFallbackBannerItem({
               fallbackModelName:
-                providerStatuses
-                  .find((provider) => provider.instanceId === fallbackSelection.instanceId)
-                  ?.models.find((model) => model.slug === fallbackSelection.model)?.name ??
-                fallbackSelection.model,
+                fallbackSelection.autoAccount === true
+                  ? "Auto"
+                  : (providerStatuses
+                      .find((provider) => provider.instanceId === fallbackSelection.instanceId)
+                      ?.models.find((model) => model.slug === fallbackSelection.model)?.name ??
+                    fallbackSelection.model),
               limitedAccount: fallback.provider,
               hasOtherAccounts: providerStatuses.some(
                 (provider) =>
@@ -2662,9 +2664,16 @@ export default function ChatView(props: ChatViewProps) {
     isDesktop: isElectron,
   });
   const getShortcutContextStable = useStableCallback(getShortcutContext);
-  const timelineSkills = activeProviderStatus
-    ? resolveProviderSkillsForCwd(activeProviderStatus, gitCwd)
-    : EMPTY_PROVIDER_SKILLS;
+  const timelineSkills = resolveAvailableProviderSkills({
+    providers: resolveSkillProvidersForProject(
+      providerStatuses,
+      settings,
+      activeThread?.projectId ?? null,
+    ),
+    instanceId: activeProviderStatus?.instanceId,
+    cwd: gitCwd,
+    availability: activeProjectSettings.settings.skillAvailability,
+  });
   const threadFindEnabled = isServerThread && serverConfig?.threadFind === true;
   const isThreadFindActive = useThreadFindOpen(activeThreadRef, threadFindEnabled);
   const openThreadFindStable = useStableCallback((threadRef: ScopedThreadRef) => {
@@ -2703,7 +2712,7 @@ export default function ChatView(props: ChatViewProps) {
         : serverConfig === null
           ? "Side chats are not ready yet. Try again in a moment."
           : serverConfig.environment.capabilities.sideChats !== true
-            ? "Update this environment's CodeShip server to use side chats."
+            ? "Update this environment's T3.CodeShip server to use side chats."
             : sideChatsOffered && !isServerThread
               ? "Side chats start after the first message."
               : sideChat.available &&

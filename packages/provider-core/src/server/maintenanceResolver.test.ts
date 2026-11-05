@@ -358,7 +358,7 @@ it.layer(
       updateCommand: null,
       canUpdate: false,
       message:
-        "Version 2.1.117 is out. CodeShip runs /Applications/Tool.app/Contents/Resources/bin/package-tool; update it with the app or tool that installed it.",
+        "Version 2.1.117 is out. T3.CodeShip runs /Applications/Tool.app/Contents/Resources/bin/package-tool; update it with the app or tool that installed it.",
     });
   });
 
@@ -591,6 +591,33 @@ it.layer(
   const machineWinGetPackage =
     "C:\\Program Files\\WinGet\\Packages\\Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe\\claude.exe";
   const nativeClaude = "C:\\Users\\me\\.local\\bin\\claude.exe";
+
+  it.effect("asks a native updater's own channel instead of the npm registry", () =>
+    Effect.gen(function* () {
+      const capabilities = yield* resolveInstall({
+        definition: {
+          ...claudeUpdate,
+          nativeUpdate: {
+            ...claudeUpdate.nativeUpdate,
+            lookupLatestVersion: () => Effect.succeed("2.1.311"),
+          },
+        },
+        resolved: nativeClaude,
+        real: nativeClaude,
+      });
+
+      expect(capabilities.latestVersion).toBeNull();
+      expect(
+        yield* resolveLatestProviderVersion(capabilities).pipe(
+          Effect.provide(ProviderLatestVersions.layer),
+          Effect.provideService(
+            HttpClient.HttpClient,
+            HttpClient.make(() => Effect.die("the npm registry must not be queried")),
+          ),
+        ),
+      ).toBe("2.1.311");
+    }),
+  );
 
   it.effect.each([
     { name: "a user-scope link", resolved: userWinGetLink, real: userWinGetPackage },

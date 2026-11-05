@@ -1,3 +1,4 @@
+import * as ProviderSkillsTestkit from "../../provider/ProviderSkills.testkit.ts";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -413,6 +414,7 @@ export function layerWithRegistry<Error>(
     ),
   );
   const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
+    Layer.provide(ProviderSkillsTestkit.layer),
     Layer.provide(
       Layer.mergeAll(
         layerContextHandoffServiceProvided,
@@ -431,6 +433,8 @@ export function layerWithRegistry<Error>(
     ),
   );
   const layerProviderTurnControlServiceProvided = ProviderTurnControlService.layer.pipe(
+    Layer.provide(ProviderSkillsTestkit.layer),
+    Layer.provide(layerServerSettings),
     Layer.provide(Layer.merge(layerStores, layerProviderSessionManagerProvided)),
   );
   const layerRuntimeRequestServiceProvided = RuntimeRequestService.layer.pipe(

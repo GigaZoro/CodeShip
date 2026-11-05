@@ -24,7 +24,12 @@ it.layer(NodeServices.layer)("materializeClaudeAccountHome", (it) => {
       yield* fs.writeFileString(path.join(sharedHome, "skills", "review", "SKILL.md"), "---\n---");
       yield* fs.writeFileString(path.join(sharedHome, "CLAUDE.md"), "Shared rules");
       yield* fs.writeFileString(path.join(sharedHome, "settings.json"), "{}");
-      for (const name of [".credentials.json", ".claude.json", "remote-settings.json"]) {
+      for (const name of [
+        ".credentials.json",
+        ".claude.json",
+        "remote-settings.json",
+        "mcp-needs-auth-cache.json",
+      ]) {
         yield* fs.writeFileString(path.join(sharedHome, name), "shared login");
       }
       yield* fs.makeDirectory(path.join(sharedHome, "backups"));
@@ -35,6 +40,10 @@ it.layer(NodeServices.layer)("materializeClaudeAccountHome", (it) => {
       yield* fs.symlink(path.join(root, "elsewhere"), path.join(accountHome, "CLAUDE.md"));
       const releasedLock = path.join(accountHome, ".storage-write.lock");
       yield* fs.symlink(path.join(sharedHome, "released.lock"), releasedLock);
+      yield* fs.symlink(
+        path.join(sharedHome, "mcp-needs-auth-cache.json"),
+        path.join(accountHome, "mcp-needs-auth-cache.json"),
+      );
 
       for (let run = 0; run < 2; run++) {
         yield* materializeClaudeAccountHome({ sharedHome, accountHome });
@@ -61,6 +70,7 @@ it.layer(NodeServices.layer)("materializeClaudeAccountHome", (it) => {
         ".claude.json",
         ".claude.json.lock",
         ".storage-write.lock",
+        "mcp-needs-auth-cache.json",
         "remote-settings.json",
         "backups",
       ]) {

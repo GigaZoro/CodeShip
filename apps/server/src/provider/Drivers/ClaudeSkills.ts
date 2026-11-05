@@ -518,17 +518,18 @@ const decodeSettingsEnv = Schema.decodeUnknownEffect(
   fromLenientJson(Schema.Struct({ env: Schema.optional(SettingsEnv) })),
 );
 
-/** The `env` values CodeShip reads from Claude's user and managed settings; later files win. */
-export const readClaudeSettingsEnv = Effect.fn("readClaudeSettingsEnv")(function* (
+/** Claude's user and managed settings files that `decode` accepts, lowest precedence first. */
+const readClaudeUserSettingsFiles = Effect.fn("readClaudeUserSettingsFiles")(function* <A>(
+  decode: (contents: string) => Effect.Effect<A, Schema.SchemaError>,
   config: Pick<ClaudeSettings, "homePath">,
   cwd: string | undefined,
   environment: NodeJS.ProcessEnv,
-): Effect.fn.Return<typeof SettingsEnv.Type, never, FileSystem.FileSystem | Path.Path> {
+) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const platform = yield* HostProcess.Platform;
   const configDirPath = yield* resolveClaudeConfigDirPath(config, environment, cwd);
-  const settingsEnv: typeof SettingsEnv.Type = {};
+  const files: Array<A> = [];
   for (const settingsPath of claudeSettingsPaths(
     path,
     configDirPath,
@@ -536,14 +537,41 @@ export const readClaudeSettingsEnv = Effect.fn("readClaudeSettingsEnv")(function
     platform,
     environment,
   )) {
-    const contents = yield* fileSystem
-      .readFileString(settingsPath)
-      .pipe(Effect.orElseSucceed(() => undefined));
-    if (contents === undefined) continue;
-    const parsed = yield* decodeSettingsEnv(contents).pipe(Effect.orElseSucceed(() => undefined));
-    Object.assign(settingsEnv, parsed?.env);
+    const contents = yield* fileSystem.readFileString(settingsPath).pipe(Effect.option);
+    if (Option.isNone(contents)) continue;
+    const parsed = yield* decode(contents.value).pipe(Effect.option);
+    if (Option.isSome(parsed)) files.push(parsed.value);
   }
+  return files;
+});
+
+/** The `env` values T3.CodeShip reads from Claude's user and managed settings; later files win. */
+export const readClaudeSettingsEnv = Effect.fn("readClaudeSettingsEnv")(function* (
+  config: Pick<ClaudeSettings, "homePath">,
+  cwd: string | undefined,
+  environment: NodeJS.ProcessEnv,
+): Effect.fn.Return<typeof SettingsEnv.Type, never, FileSystem.FileSystem | Path.Path> {
+  const files = yield* readClaudeUserSettingsFiles(decodeSettingsEnv, config, cwd, environment);
+  const settingsEnv: typeof SettingsEnv.Type = {};
+  for (const file of files) Object.assign(settingsEnv, file.env);
   return settingsEnv;
+});
+
+const decodeSettingsAutoUpdatesChannel = Schema.decodeUnknownEffect(
+  fromLenientJson(Schema.Struct({ autoUpdatesChannel: Schema.optional(Schema.String) })),
+);
+
+/** The release channel `claude update` follows, from the user and managed settings; later files win. */
+export const readClaudeAutoUpdatesChannel = Effect.fn("readClaudeAutoUpdatesChannel")(function* (
+  environment: NodeJS.ProcessEnv,
+): Effect.fn.Return<string | undefined, never, FileSystem.FileSystem | Path.Path> {
+  const files = yield* readClaudeUserSettingsFiles(
+    decodeSettingsAutoUpdatesChannel,
+    { homePath: "" },
+    undefined,
+    environment,
+  );
+  return files.findLast((file) => file.autoUpdatesChannel !== undefined)?.autoUpdatesChannel;
 });
 
 // Claude's --add-dir is repeatable and variadic; parseCliArgs keeps only one value.

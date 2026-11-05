@@ -3,6 +3,9 @@ import {
   isProviderWorkspaceSnapshotCurrent,
   PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS,
   type ProviderInstanceId,
+  type ProjectId,
+  resolveProjectProviderInstanceEnabled,
+  type ServerSettings,
   type ServerProvider,
   type ServerProviderSkill,
   type ServerProviderSlashCommand,
@@ -13,6 +16,34 @@ import { deadlineStore } from "./clock.ts";
 import { type AtomCommand, runAtomCommand } from "./state/runtime.ts";
 
 export type ProviderSkillSourceKind = "app" | "repo" | "project" | "personal" | "system" | "other";
+
+export function resolveSkillProvidersForProject(
+  providers: readonly ServerProvider[],
+  settings: Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides">,
+  projectId: ProjectId | null,
+): readonly ServerProvider[] {
+  return providers.filter(
+    (provider) =>
+      provider.enabled &&
+      provider.installed &&
+      resolveProjectProviderInstanceEnabled(settings, projectId, provider.instanceId),
+  );
+}
+
+export function resolveSkillInventoryInstanceIds(input: {
+  readonly providers: readonly ServerProvider[];
+  readonly instanceId: ProviderInstanceId | null | undefined;
+  readonly availability: ServerSettings["skillAvailability"];
+}): readonly ProviderInstanceId[] {
+  return input.providers
+    .filter(
+      (provider) =>
+        provider.enabled &&
+        provider.installed &&
+        (input.availability === "shared" || provider.instanceId === input.instanceId),
+    )
+    .map((provider) => provider.instanceId);
+}
 
 function normalizePathSeparators(pathValue: string): string {
   return pathValue.replaceAll("\\", "/");
@@ -116,13 +147,6 @@ function hasCurrentProviderWorkspaceSnapshot(
     !snapshot.slashCommandsPending &&
     isProviderWorkspaceSnapshotCurrent(snapshot, nowMs),
   );
-}
-
-export function resolveProviderSkillsForCwd(
-  provider: ServerProvider,
-  cwd: string | null | undefined,
-): ServerProvider["skills"] {
-  return resolveProviderWorkspaceSnapshot(provider, cwd)?.skills ?? provider.skills;
 }
 
 export function resolveProviderSlashCommandsForCwd(
@@ -297,6 +321,9 @@ export function createProviderWorkspaceSnapshotRefreshAtomFamily(input: {
         get(statusAtom);
         // `once`: unrelated provider updates must not trigger a check.
         const provider = findProvider(get.once(input.providers(environmentId)));
+        if (!provider?.enabled || !provider.installed) {
+          return initialProviderWorkspaceSnapshotRefreshState;
+        }
         // @effect-diagnostics-next-line globalDate:off
         const now = Date.now();
         const previous = get.self<ProviderWorkspaceSnapshotRefreshState>();
@@ -355,4 +382,26 @@ export function createProviderWorkspaceSnapshotRefreshAtomFamily(input: {
     target: ProviderWorkspaceSnapshotRefreshTarget,
   ): Atom.Atom<ProviderWorkspaceSnapshotRefreshState> =>
     family({ environmentId: target.environmentId, instanceId: target.instanceId, cwd: target.cwd });
+}
+
+/** Shares each provider's cache and retry budget across composers and availability modes. */
+export function createSkillInventoriesRefreshAtomFamily(
+  input: Parameters<typeof createProviderWorkspaceSnapshotRefreshAtomFamily>[0],
+) {
+  const refreshProvider = createProviderWorkspaceSnapshotRefreshAtomFamily(input);
+  return Atom.family(
+    (target: {
+      readonly environmentId: EnvironmentId;
+      readonly instanceIds: readonly ProviderInstanceId[];
+      readonly cwd: string;
+    }) => {
+      const atoms = target.instanceIds.map((instanceId) =>
+        refreshProvider({ environmentId: target.environmentId, instanceId, cwd: target.cwd }),
+      );
+      return Atom.readable(
+        (get) => atoms.map((atom) => get(atom)).some(isProviderWorkspaceSnapshotScanning),
+        (refresh) => atoms.forEach(refresh),
+      ).pipe(Atom.withLabel(`skill-inventories-refresh:${target.environmentId}:${target.cwd}`));
+    },
+  );
 }

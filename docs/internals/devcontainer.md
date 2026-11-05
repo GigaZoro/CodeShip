@@ -1,6 +1,6 @@
 # Dev container
 
-> For maintainers. Using CodeShip? See [docs/user](../user/).
+> For maintainers. Using T3.CodeShip? See [docs/user](../user/).
 
 `.devcontainer/` gives you a ready-to-code Linux environment matching CI: Ubuntu 24.04, Node 26, pnpm, Rust stable, the global `vp` CLI, and the GitHub CLI. Open the repo in VS Code and "Reopen in Container", or create a GitHub Codespace. Dependency install (`vp i`), the Electron exec-bit repair, and the Vite dep-cache warmup all run automatically before you attach.
 
@@ -11,7 +11,7 @@
 
 ## Agents and plugins
 
-`.devcontainer/install-agents.sh` installs the Claude Code and Codex CLIs, plus the frontend-design Claude plugin and the Dale Codex plugin, so CodeShip in a codespace can run both providers and its Plugins page works. Sign in once per container with `claude` (then `/login`) and `codex login --device-auth`. Plugins synced from your claude.ai account appear after sign-in. The script is idempotent; a failure during creation only warns, so rerun it if the container was created offline.
+`.devcontainer/install-agents.sh` installs the Claude Code and Codex CLIs, plus the frontend-design Claude plugin and the Dale Codex plugin, so T3.CodeShip in a codespace can run both providers and its Plugins page works. Sign in once per container with `claude` (then `/login`) and `codex login --device-auth`. Plugins synced from your claude.ai account appear after sign-in. The script is idempotent; a failure during creation only warns, so rerun it if the container was created offline.
 
 Dale's repository is a plugin rather than a marketplace, so the script wraps it in a local `dale-local` marketplace under `~/.local/share/dale-marketplace`, matching the plugin id a Mac install uses.
 

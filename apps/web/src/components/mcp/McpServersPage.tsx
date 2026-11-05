@@ -18,6 +18,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useId, useState, type FormEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 import { readLocalApi } from "../../localApi";
 import { useEnvironmentQuery } from "../../state/query";
@@ -25,10 +26,13 @@ import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { failureMessage, reportFailure } from "../extensions/commandFailure";
 import {
+  MachinePicker,
   ProviderListSkeleton,
-  ProviderTargetToggle,
+  ProviderTargetAccounts,
+  ProviderTargetIcon,
   useProviderTargets,
   type ProviderTarget,
+  type ProviderTargetMachine,
 } from "../extensions/ProviderTargets";
 import { Alert, AlertDescription } from "../ui/alert";
 import { Badge } from "../ui/badge";
@@ -565,15 +569,23 @@ function SignInDialog(props: {
   );
 }
 
-function ProviderMcpPanel(props: { readonly target: ProviderTarget }) {
-  const { target } = props;
+const matchesFilter = (server: ProviderMcpServer, needle: string) =>
+  needle === "" ||
+  [server.name, server.displayName, server.target].some((field) =>
+    field?.toLowerCase().includes(needle),
+  );
+
+/** One provider's servers. Every provider on the machine loads at once, so none waits on a switch. */
+function ProviderMcpSection(props: {
+  readonly target: ProviderTarget;
+  readonly needle: string;
+  readonly canManage: boolean;
+}) {
+  const { target, needle, canManage } = props;
   const { environmentId } = target;
   const instanceId = target.provider.instanceId;
   const providerName = target.naming.title;
-  const [filter, setFilter] = useState("");
-  const canManage = useAtomValue(
-    serverEnvironment.addProviderMcpServer.permissionAtom(environmentId),
-  );
+  const headingId = useId();
   const servers = useEnvironmentQuery(
     serverEnvironment.providerMcpServers({ environmentId, input: { instanceId } }),
   );
@@ -644,7 +656,7 @@ function ProviderMcpPanel(props: { readonly target: ProviderTarget }) {
     const outcome = await reload({ environmentId, input: { instanceId, refresh: true } });
     setRefreshing(false);
     if (outcome._tag === "Success") servers.refresh();
-    else reportFailure("Could not check the MCP servers", outcome, FAILURE_FALLBACK);
+    else reportFailure(`Could not check ${providerName}'s MCP servers`, outcome, FAILURE_FALLBACK);
   };
 
   const actions = (server: ProviderMcpServer) => {
@@ -725,55 +737,57 @@ function ProviderMcpPanel(props: { readonly target: ProviderTarget }) {
   };
 
   const result = servers.data;
-  const needle = filter.trim().toLowerCase();
-  const visibleServers =
-    result === null || needle === ""
-      ? (result?.servers ?? [])
-      : result.servers.filter((server) =>
-          [server.name, server.displayName, server.target].some((field) =>
-            field?.toLowerCase().includes(needle),
-          ),
-        );
-  const searchLabel = `Search ${providerName} MCP servers`;
+  const visibleServers = result?.servers.filter((server) => matchesFilter(server, needle)) ?? [];
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-2">
-        <div className="flex items-start justify-between gap-3">
-          <p className="text-muted-foreground text-xs">
-            MCP servers give {providerName} tools from other apps and services. New sessions load
-            changes; running ones keep the servers they started with.
-            {canManage ? null : " Changing servers needs permission to manage providers."}
-          </p>
-          <div className="flex shrink-0 items-center gap-2">
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    size="icon"
-                    variant="outline"
-                    aria-label="Check MCP servers again"
-                    disabled={refreshing}
-                    onClick={() => void handleRefresh()}
-                  >
-                    {refreshing ? <Spinner /> : <RefreshCwIcon />}
-                  </Button>
-                }
-              />
-              <TooltipPopup>Connect to every server again</TooltipPopup>
-            </Tooltip>
-            <Button
-              variant="outline"
-              aria-label="Add MCP server"
-              disabled={!canManage}
-              onClick={() => setAdding(true)}
-            >
-              <PlusIcon />
-              <span className="hidden sm:inline">Add server</span>
-            </Button>
-          </div>
+    <section aria-labelledby={headingId} className="flex min-w-0 flex-col gap-2">
+      <div className="flex min-h-8 min-w-0 items-center gap-2">
+        <h2 id={headingId} className="flex min-w-0 items-center gap-2 font-medium text-sm">
+          <ProviderTargetIcon target={target} />
+          <span className="truncate">{providerName}</span>
+        </h2>
+        <ProviderTargetAccounts target={target} />
+        {result ? (
+          <span className="shrink-0 text-muted-foreground text-xs tabular-nums">
+            {needle === "" || result.servers.length === 0
+              ? result.servers.length
+              : `${visibleServers.length} of ${result.servers.length}`}
+          </span>
+        ) : null}
+        {servers.isPending && result !== null ? (
+          <span className="inline-flex shrink-0 items-center gap-1 text-muted-foreground text-xs">
+            <Spinner size="sm" tone="muted" />
+            Checking…
+          </span>
+        ) : null}
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label={`Check ${providerName}'s MCP servers again`}
+                  disabled={refreshing}
+                  onClick={() => void handleRefresh()}
+                >
+                  {refreshing ? <Spinner /> : <RefreshCwIcon />}
+                </Button>
+              }
+            />
+            <TooltipPopup>Connect to every server again</TooltipPopup>
+          </Tooltip>
+          <Button
+            size="sm"
+            variant="outline"
+            aria-label={`Add MCP server to ${providerName}`}
+            disabled={!canManage}
+            onClick={() => setAdding(true)}
+          >
+            <PlusIcon />
+            <span className="max-sm:sr-only">Add server</span>
+          </Button>
         </div>
       </div>
-
       {result === null && servers.error !== null ? (
         <Alert variant="error">
           <AlertDescription>
@@ -786,52 +800,24 @@ function ProviderMcpPanel(props: { readonly target: ProviderTarget }) {
           </AlertDescription>
         </Alert>
       ) : result === null ? (
-        <ProviderListSkeleton label="Loading MCP servers" />
+        <ProviderListSkeleton label={`Loading ${providerName}'s MCP servers`} />
       ) : result.servers.length === 0 ? (
-        <p className="text-muted-foreground text-sm">
-          {providerName} has no MCP servers yet. Add one to give it new tools.
+        <p className="rounded-lg border border-dashed px-4 py-6 text-center text-muted-foreground text-sm">
+          No MCP servers yet. Add one to give {providerName} new tools.
         </p>
+      ) : visibleServers.length === 0 ? (
+        <p className="text-muted-foreground text-sm">No {providerName} servers match.</p>
       ) : (
-        <section aria-labelledby={`mcp-servers-${target.key}`} className="flex flex-col gap-2">
-          <InputGroup>
-            <InputGroupAddon>
-              <SearchIcon aria-hidden />
-            </InputGroupAddon>
-            <InputGroupInput
-              type="search"
-              aria-label={searchLabel}
-              placeholder={searchLabel}
-              value={filter}
-              onChange={(event) => setFilter(event.currentTarget.value)}
+        <ul className="divide-y rounded-lg border">
+          {visibleServers.map((server) => (
+            <ServerRow
+              key={server.name}
+              server={server}
+              providerName={providerName}
+              actions={actions(server)}
             />
-          </InputGroup>
-          <h2
-            id={`mcp-servers-${target.key}`}
-            className="flex items-center gap-2 font-medium text-sm"
-          >
-            Servers
-            <span className="text-muted-foreground text-xs tabular-nums">
-              {needle === ""
-                ? result.servers.length
-                : `${visibleServers.length} of ${result.servers.length}`}
-            </span>
-            {servers.isPending ? <Spinner size="sm" tone="muted" /> : null}
-          </h2>
-          {visibleServers.length === 0 ? (
-            <p className="text-muted-foreground text-sm">No MCP servers match “{filter.trim()}”.</p>
-          ) : (
-            <ul className="divide-y rounded-lg border">
-              {visibleServers.map((server) => (
-                <ServerRow
-                  key={server.name}
-                  server={server}
-                  providerName={providerName}
-                  actions={actions(server)}
-                />
-              ))}
-            </ul>
-          )}
-        </section>
+          ))}
+        </ul>
       )}
       <AddServerDialog
         target={target}
@@ -847,43 +833,106 @@ function ProviderMcpPanel(props: { readonly target: ProviderTarget }) {
           servers.refresh();
         }}
       />
-    </div>
+    </section>
   );
 }
 
-export function McpServersPanel() {
-  const { targets, target, setSelectedKey, connecting } = useProviderTargets("supportsMcpServers");
-  if (connecting) {
+function McpMachineServers(props: {
+  readonly machine: ProviderTargetMachine;
+  readonly needle: string;
+}) {
+  const { machine } = props.machine;
+  const canManage = useAtomValue(
+    serverEnvironment.addProviderMcpServer.permissionAtom(machine.environmentId),
+  );
+  if (machine.disconnected) {
     return (
-      <ScrollArea className="min-h-0 flex-1">
-        <WorkspacePageContainer width="wide">
-          <ProviderListSkeleton label="Loading MCP servers" />
-        </WorkspacePageContainer>
-      </ScrollArea>
-    );
-  }
-  if (target === null) {
-    return (
-      <Empty>
-        <EmptyHeader>
-          <EmptyMedia variant="icon">
-            <ServerIcon />
-          </EmptyMedia>
-          <EmptyTitle>No provider manages MCP servers here</EmptyTitle>
-          <EmptyDescription>
-            Claude and Codex keep their own MCP servers. Turn one on in Settings to add servers and
-            sign in to them here.
-          </EmptyDescription>
-        </EmptyHeader>
-      </Empty>
+      <p className="rounded-lg border border-dashed px-4 py-6 text-center text-muted-foreground text-sm">
+        {machine.label} is offline. Its MCP servers show up once it reconnects.
+      </p>
     );
   }
   return (
-    <ScrollArea className="min-h-0 flex-1">
-      <WorkspacePageContainer width="wide">
-        <ProviderTargetToggle targets={targets} target={target} onSelect={setSelectedKey} />
-        <ProviderMcpPanel key={target.key} target={target} />
-      </WorkspacePageContainer>
-    </ScrollArea>
+    <>
+      <p className="text-muted-foreground text-xs">
+        MCP servers give agents tools from other apps and services. New sessions load changes;
+        running ones keep the servers they started with.
+        {canManage ? null : " Changing servers needs permission to manage providers."}
+      </p>
+      {props.machine.targets.map((target) => (
+        <ProviderMcpSection
+          key={target.key}
+          target={target}
+          needle={props.needle}
+          canManage={canManage}
+        />
+      ))}
+    </>
+  );
+}
+
+/** The MCP servers tab; its machine picker and search render in `controlsSlot`, the header's right. */
+export function McpServersPanel(props: { readonly controlsSlot: HTMLElement | null }) {
+  const { machines, machine, selectMachine, connecting } = useProviderTargets("supportsMcpServers");
+  const [filter, setFilter] = useState("");
+  const needle = filter.trim().toLowerCase();
+  const controls: ReactNode = machine ? (
+    <>
+      <MachinePicker machines={machines} machine={machine} onSelect={selectMachine} />
+      <InputGroup className="w-40 sm:w-56">
+        <InputGroupAddon>
+          <SearchIcon aria-hidden className="size-3" />
+        </InputGroupAddon>
+        <InputGroupInput
+          type="search"
+          aria-label="Search MCP servers"
+          placeholder="Search servers"
+          size="sm"
+          value={filter}
+          onChange={(event) => setFilter(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Escape" || filter.length === 0) return;
+            event.preventDefault();
+            setFilter("");
+          }}
+        />
+      </InputGroup>
+    </>
+  ) : null;
+
+  return (
+    <>
+      {controls && props.controlsSlot ? createPortal(controls, props.controlsSlot) : null}
+      {machine ? (
+        <ScrollArea className="min-h-0 flex-1">
+          <WorkspacePageContainer width="wide">
+            <McpMachineServers
+              key={machine.machine.environmentId}
+              machine={machine}
+              needle={needle}
+            />
+          </WorkspacePageContainer>
+        </ScrollArea>
+      ) : connecting ? (
+        <ScrollArea className="min-h-0 flex-1">
+          <WorkspacePageContainer width="wide">
+            <ProviderListSkeleton label="Loading MCP servers" />
+          </WorkspacePageContainer>
+        </ScrollArea>
+      ) : (
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <ServerIcon />
+            </EmptyMedia>
+            <EmptyTitle>No provider manages MCP servers here</EmptyTitle>
+            <EmptyDescription>
+              Claude and Codex keep their own MCP servers. Turn one on in Settings to add servers
+              and sign in to them here.
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      )}
+    </>
   );
 }

@@ -59,7 +59,7 @@ vi.mock("electron", async () => {
   }
   return {
     app: {
-      getPath: () => "/Applications/CodeShip (Nightly).app/Contents/MacOS/CodeShip",
+      getPath: () => "/Applications/T3.CodeShip (Nightly).app/Contents/MacOS/T3.CodeShip",
     },
     nativeImage: { createFromPath: mocks.createFromPath },
     BrowserWindow: class extends MockWindow {},

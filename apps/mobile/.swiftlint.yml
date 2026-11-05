@@ -1,5 +1,5 @@
 included:
-  - ios/CodeShip
+  - ios/T3CodeShip
   - modules/t3-composer-editor/ios
   - modules/t3-highlights/ios
   - modules/t3-native-controls/ios

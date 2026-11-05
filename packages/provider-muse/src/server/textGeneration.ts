@@ -112,7 +112,7 @@ async function generateMuseText(
       await host.connection.command("userInput/cancel", {
         sessionId,
         userInputId: request.userInputId,
-        reason: "CodeShip text generation cannot request user input.",
+        reason: "T3.CodeShip text generation cannot request user input.",
       });
     }
   };
@@ -156,7 +156,7 @@ async function generateMuseText(
   });
   host.connection.onProtocolError(rejectCompletion);
   host.connection.onServerRequest(async () => {
-    const error = new Error("CodeShip text generation cannot approve interactive requests.");
+    const error = new Error("T3.CodeShip text generation cannot approve interactive requests.");
     rejectCompletion(error);
     throw error;
   });
@@ -267,7 +267,7 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
           new TextGenerationError({
             operation,
             detail:
-              "Muse Code text generation failed. Check Muse login and availability on this CodeShip server host.",
+              "Muse Code text generation failed. Check Muse login and availability on this T3.CodeShip server host.",
             cause,
           }),
       ),

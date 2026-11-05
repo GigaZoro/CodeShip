@@ -85,7 +85,7 @@ export async function handleDesktopAppActivationRequest(
       return failure(
         request.requestId,
         "project-create-failed",
-        errorMessage(error, "CodeShip could not add the project."),
+        errorMessage(error, "T3.CodeShip could not add the project."),
       );
     }
   }
@@ -99,7 +99,7 @@ export async function handleDesktopAppActivationRequest(
       return failure(
         request.requestId,
         "thread-open-failed",
-        "CodeShip could not open a new thread for the project.",
+        "T3.CodeShip could not open a new thread for the project.",
       );
     }
     return {
@@ -113,7 +113,7 @@ export async function handleDesktopAppActivationRequest(
     return failure(
       request.requestId,
       "thread-open-failed",
-      errorMessage(error, "CodeShip could not open a new thread for the project."),
+      errorMessage(error, "T3.CodeShip could not open a new thread for the project."),
     );
   }
 }

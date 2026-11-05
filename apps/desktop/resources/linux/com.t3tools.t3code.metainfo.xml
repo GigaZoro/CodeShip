@@ -3,14 +3,14 @@
   <id>com.t3tools.t3code</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
-  <name>CodeShip</name>
+  <name>T3.CodeShip</name>
   <summary>Desktop GUI for coding agents</summary>
   <developer id="com.t3tools">
     <name>T3 Tools Inc.</name>
   </developer>
   <description>
     <p>
-      CodeShip is an open-source desktop app for coding agents. Work with your
+      T3.CodeShip is an open-source desktop app for coding agents. Work with your
       existing agent subscriptions, review code changes, and run commands in
       your projects.
     </p>

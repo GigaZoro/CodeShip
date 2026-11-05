@@ -24,7 +24,7 @@ rm -f "$installer"
 test -x "$VP_BIN_DIR/vp"
 sudo ln -sf "$VP_BIN_DIR/vp" /usr/local/bin/vp
 
-# Agents are optional for working on CodeShip itself, so a fetch failure here
+# Agents are optional for working on T3.CodeShip itself, so a fetch failure here
 # warns instead of failing container creation.
 bash .devcontainer/install-agents.sh ||
   echo "warning: agent setup failed; rerun: bash .devcontainer/install-agents.sh" >&2
@@ -32,7 +32,7 @@ bash .devcontainer/install-agents.sh ||
 # First-run terminal notice, rendered by the devcontainers base image.
 sudo mkdir -p /usr/local/etc/vscode-dev-containers
 sudo tee /usr/local/etc/vscode-dev-containers/first-run-notice.txt >/dev/null <<'EOF'
-CodeShip devcontainer
+T3.CodeShip devcontainer
 
   vp run dev            start server + web, then open the pairing URL it
                         prints (the bare forwarded port will not authenticate)

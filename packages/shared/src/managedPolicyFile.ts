@@ -21,7 +21,7 @@ export class ManagedPolicyFileError extends Schema.TaggedError<ManagedPolicyFile
   },
 ) {
   override get message(): string {
-    return `CodeShip cannot use the managed policy at ${this.path}: ${this.reason}. It will not start until an administrator fixes this.`;
+    return `T3.CodeShip cannot use the managed policy at ${this.path}: ${this.reason}. It will not start until an administrator fixes this.`;
   }
 }
 
@@ -294,7 +294,7 @@ const readPlatformPolicy = Effect.fnUntraced(function* (platform: NodeJS.Platfor
                 cause.code === ERROR_UNSUPPORTED_TYPE
                   ? "its Policy value is not a string (REG_SZ)"
                   : cause.code === undefined
-                    ? "this CodeShip install cannot load its registry reader; reinstall CodeShip"
+                    ? "this T3.CodeShip install cannot load its registry reader; reinstall T3.CodeShip"
                     : `the registry cannot be read (${cause.message})`,
               cause,
             }),

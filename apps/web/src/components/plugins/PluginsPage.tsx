@@ -6,6 +6,7 @@ import {
 import { useAtomValue } from "@effect/atom-react";
 import { BlocksIcon, PlusIcon, RefreshCwIcon, SearchIcon, Trash2Icon } from "lucide-react";
 import { useId, useState, type FormEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 import { useDeadlinePassed } from "../../hooks/useDeadline";
 import { readLocalApi } from "../../localApi";
@@ -15,6 +16,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { uniquePluginsById } from "./pluginsPage.logic";
 import { failureMessage, reportFailure } from "../extensions/commandFailure";
 import {
+  MachinePicker,
   ProviderListSkeleton,
   ProviderTargetToggle,
   useProviderTargets,
@@ -538,18 +540,20 @@ function ProviderPluginsPanel(props: { readonly target: ProviderTarget }) {
   );
 }
 
-export function PluginsPanel() {
-  const { targets, target, setSelectedKey, connecting } = useProviderTargets("supportsPlugins");
-  if (connecting) {
-    return (
-      <ScrollArea className="min-h-0 flex-1">
-        <WorkspacePageContainer width="wide">
-          <ProviderListSkeleton label="Loading plugins" />
-        </WorkspacePageContainer>
-      </ScrollArea>
-    );
-  }
-  if (target === null) {
+/** The Plugins tab; its machine picker renders in `controlsSlot`, the page header's right side. */
+export function PluginsPanel(props: { readonly controlsSlot: HTMLElement | null }) {
+  const { machines, machine, target, selectMachine, selectTarget, connecting } =
+    useProviderTargets("supportsPlugins");
+  if (machine === null || target === null) {
+    if (connecting) {
+      return (
+        <ScrollArea className="min-h-0 flex-1">
+          <WorkspacePageContainer width="wide">
+            <ProviderListSkeleton label="Loading plugins" />
+          </WorkspacePageContainer>
+        </ScrollArea>
+      );
+    }
     return (
       <Empty>
         <EmptyHeader>
@@ -566,11 +570,31 @@ export function PluginsPanel() {
     );
   }
   return (
-    <ScrollArea className="min-h-0 flex-1">
-      <WorkspacePageContainer width="wide">
-        <ProviderTargetToggle targets={targets} target={target} onSelect={setSelectedKey} />
-        <ProviderPluginsPanel key={target.key} target={target} />
-      </WorkspacePageContainer>
-    </ScrollArea>
+    <>
+      {props.controlsSlot
+        ? createPortal(
+            <MachinePicker machines={machines} machine={machine} onSelect={selectMachine} />,
+            props.controlsSlot,
+          )
+        : null}
+      <ScrollArea className="min-h-0 flex-1">
+        <WorkspacePageContainer width="wide">
+          {machine.machine.disconnected ? (
+            <p className="rounded-lg border border-dashed px-4 py-6 text-center text-muted-foreground text-sm">
+              {machine.machine.label} is offline. Its plugins show up once it reconnects.
+            </p>
+          ) : (
+            <>
+              <ProviderTargetToggle
+                targets={machine.targets}
+                target={target}
+                onSelect={selectTarget}
+              />
+              <ProviderPluginsPanel key={target.key} target={target} />
+            </>
+          )}
+        </WorkspacePageContainer>
+      </ScrollArea>
+    </>
   );
 }

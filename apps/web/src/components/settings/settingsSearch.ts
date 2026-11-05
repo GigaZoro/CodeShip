@@ -588,6 +588,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["proactive automatically open diff pull request pr right panel agent completion"],
   },
   {
+    id: "skill-availability",
+    title: "Skill availability",
+    to: "/settings/chat",
+    scope: "project-defaults",
+    searchTerms: ["skills shared across models by provider dollar $ slash /"],
+  },
+  {
     id: "skills-in-slash-menu",
     title: "Show skills in slash menu",
     to: "/settings/chat",
@@ -847,7 +854,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Auto mode and accounts",
     to: "/settings/providers",
     searchTerms: [
-      "auto mode auto model coordinator cheaper model subagent primary provider default model effort switch accounts failover usage limit quota rate limit multiple accounts order priority second account continue mcp server sign in share oauth",
+      "auto mode auto model coordinator cheaper model subagent primary provider default model effort switch accounts failover usage limit quota rate limit multiple accounts order priority second account continue",
     ],
     providerSettingsOnly: true,
   },
@@ -1006,7 +1013,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "pull-request-links-open-in-app",
-    title: "Open pull requests in CodeShip",
+    title: "Open pull requests in T3.CodeShip",
     to: "/settings/source-control",
     searchTerms: [
       `pr commit links ${SOURCE_CONTROL_HOST_LABELS} browser external click default pull request view panel`,

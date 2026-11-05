@@ -14,7 +14,7 @@ import * as AgentSessionImporter from "./AgentSessionImporter.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 import * as ProjectService from "./ProjectService.ts";
 
-// Picks up conversations started outside CodeShip; startup covers the time the server was off.
+// Picks up conversations started outside T3.CodeShip; startup covers the time the server was off.
 const SYNC_INTERVAL = "10 minutes";
 
 function syncPolicy(settings: ServerSettings): string {

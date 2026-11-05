@@ -1,27 +1,24 @@
 # Claude
 
-CodeShip uses Claude Code's login and configuration. Start with the default provider
+T3.CodeShip uses Claude Code's login and configuration. Start with the default provider
 for one account; [provider setup](./install.md#providers) covers installation and
 shared provider settings.
 
 ## Separate accounts or configurations
 
 Each Claude provider is one account. To add another, add a Claude instance in
-**Settings > Providers & models** and choose **Sign in**. CodeShip runs `claude auth login`
+**Settings > Providers & models** and choose **Sign in**. T3.CodeShip runs `claude auth login`
 in a terminal on the environment's machine; sign in with the other account in your
 browser. Each provider then shows its account's email and plan.
 
 The first Claude provider uses the Claude CLI's own login. Every other Claude
-provider keeps its login in a folder CodeShip creates for it, and that folder links
+provider keeps its login in a folder T3.CodeShip creates for it, and that folder links
 to everything else in `~/.claude`: CLAUDE.md, skills, settings, plugins, and past
 sessions, so threads can move between accounts. Claude saves MCP servers with the
-login, so before Claude starts, CodeShip copies the servers in `~/.claude.json`, such
-as ones added with `claude mcp add --scope user`, into each account. The accounts
-also share MCP sign-ins, so signing in to a server on one signs in all of them; turn
-off **Share MCP sign-ins** in **Settings > Providers & models** to keep each account's own. On
-Windows, an account that keeps its login in the Windows Credential Manager signs in on
-its own. **Sign out** signs that account out; sign the first provider out with
-`claude auth logout` in a terminal.
+login, so before Claude starts, T3.CodeShip copies the servers in `~/.claude.json`, such
+as ones added with `claude mcp add --scope user`, into each account. Each account
+signs in to those servers on its own. **Sign out** signs that account out; sign the
+first provider out with `claude auth logout` in a terminal.
 
 A provider signed in to the same account as another provider is unavailable until
 you sign it in to a different account. A Claude provider signed in with a
@@ -36,7 +33,7 @@ provider in instead. When the first provider's token comes from the machine, cho
 
 To keep an account's settings and local conversation state separate too, give the
 instance its own **CLAUDE_CONFIG_DIR path** and sign that directory in on the
-environment's machine. CodeShip then leaves that directory as it is:
+environment's machine. T3.CodeShip then leaves that directory as it is:
 
 ```bash
 CLAUDE_CONFIG_DIR=~/.claude_personal claude auth login
@@ -52,7 +49,7 @@ For presets that differ only in API keys or endpoints, use the instance's
 
 Claude Code's verbose mode can stay enabled when you use Claude for text generation, including
 thread titles, branch names, commit messages, and pull request descriptions. On a remote connection,
-CodeShip uses the Claude configuration on the connected server.
+T3.CodeShip uses the Claude configuration on the connected server.
 
 ## Compact long conversations
 
@@ -80,7 +77,7 @@ over 200,000 tokens. Each Claude provider's settings can override it:
 - **When you return** shows the **Compact** chip described above. This is the default.
 - **Before the cache expires (beta)** tries to compact an idle thread shortly before its
   prompt cache expires, while the history is still cached.
-  The compaction appears in the thread as a `/compact` turn sent by CodeShip.
+  The compaction appears in the thread as a `/compact` turn sent by T3.CodeShip.
   If the window is missed, such as when you enable this mode after the cache has
   expired or the server restarts before compaction runs, it falls back to
   **When you return**. Switch the chip to **Keep** to keep the full history for that message.
@@ -134,11 +131,11 @@ If that Claude config directory has a cached Anthropic login, run `/logout` in a
 Claude Code session using that directory before starting the router setup. Cached
 login credentials can conflict with the router token.
 
-Select the model you want in CodeShip. For an OpenRouter model outside the built-in
+Select the model you want in T3.CodeShip. For an OpenRouter model outside the built-in
 list, open that Claude instance in **Settings > Providers & models** and add its full model
 ID with **Add custom model**. Then select it in the chat model picker.
 `ANTHROPIC_DEFAULT_*_MODEL` variables map Claude Code aliases such as `sonnet`; they
-do not replace the explicit model ID selected in CodeShip. Custom models may have
+do not replace the explicit model ID selected in T3.CodeShip. Custom models may have
 fewer effort, thinking, or context controls than built-in models.
 
 Verify the model used in OpenRouter's activity dashboard. For current compatibility

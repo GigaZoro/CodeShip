@@ -1,3 +1,4 @@
+import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import { limitFailoverCommand, limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -106,7 +107,8 @@ import * as ThreadLaunchService from "./ThreadLaunchService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
-const layerPlatformTest = Layer.merge(
+const layerPlatformTest = Layer.mergeAll(
+  ProviderSkillsTestkit.layer,
   NodeServices.layer,
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
     resolveLink: () => Effect.die("unused title link"),
@@ -4427,7 +4429,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           notification: {
             source: { kind: "system" as const },
             outcome: "updated" as const,
-            summary: "CodeShip restarted and resumed this turn",
+            summary: "T3.CodeShip restarted and resumed this turn",
             detail: "Continue where you left off.",
           },
           attachments: [],
@@ -4448,7 +4450,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           continuationItems.flatMap((item) =>
             item.type === "notification" ? [[item.summary, item.detail]] : [],
           ),
-          ["CodeShip restarted and resumed this turn", "Continue where you left off."],
+          ["T3.CodeShip restarted and resumed this turn", "Continue where you left off."],
         );
         yield* orchestrator.dispatch({
           ...command,

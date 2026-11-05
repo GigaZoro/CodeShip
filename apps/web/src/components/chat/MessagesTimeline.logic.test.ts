@@ -37,7 +37,7 @@ import {
 
 describe("threadReadLabelPrefix", () => {
   it("keeps thread links available for current and stored legacy read labels", () => {
-    for (const brand of ["CodeShip", "T3"]) {
+    for (const brand of ["T3.CodeShip", "T3"]) {
       expect(threadReadLabelPrefix(`Read a ${brand} thread`)).toBe("Read thread");
       expect(threadReadLabelPrefix(`Reading a ${brand} thread`)).toBe("Reading thread");
     }
@@ -158,7 +158,7 @@ describe("deriveMessagesTimelineRows", () => {
       toolSource: { key: "mcp:node_repl", name: "node repl", kind: "integration" as const },
       input: {
         title: "Restrict the breakpoint to Git actions",
-        code: "await sky.type_text({app:'CodeShip (Nightly)',text:'debug(ga.run)'});",
+        code: "await sky.type_text({app:'T3.CodeShip (Nightly)',text:'debug(ga.run)'});",
       },
     };
     const entries = deriveTimelineEntriesFromVisibleTurnItems({

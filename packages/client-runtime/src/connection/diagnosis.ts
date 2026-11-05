@@ -85,7 +85,7 @@ function headline(host: string, located: Located, failure: ConnectionAttemptErro
     case "offline":
       return "This device is offline";
     case "outdated":
-      return `${host} runs an older CodeShip`;
+      return `${host} runs an older T3.CodeShip`;
     case "clock_skew":
       return "This device's clock is off";
     case "not_linked":
@@ -100,9 +100,9 @@ function headline(host: string, located: Located, failure: ConnectionAttemptErro
     case "tunnel_down":
       return `${host}'s tunnel is offline`;
     case "origin_unreachable":
-      return `Tunnel works, but CodeShip on ${host} did not answer`;
+      return `Tunnel works, but T3.CodeShip on ${host} did not answer`;
     case "invalid_response":
-      return `CodeShip on ${host} sent an unexpected answer`;
+      return `T3.CodeShip on ${host} sent an unexpected answer`;
     case "dns":
       return `${host}'s tunnel address did not resolve`;
     case "tls":
@@ -131,8 +131,8 @@ function headline(host: string, located: Located, failure: ConnectionAttemptErro
         : `T3 Connect could not reach ${host}'s tunnel`;
     case "server":
       return failure?.reason === "authentication" || failure?.reason === "permission"
-        ? `CodeShip on ${host} did not accept this device`
-        : `CodeShip on ${host} did not answer`;
+        ? `T3.CodeShip on ${host} did not accept this device`
+        : `T3.CodeShip on ${host} did not answer`;
   }
 }
 
@@ -140,9 +140,9 @@ function steps(host: string, located: Located, failure: ConnectionAttemptError |
   const checkHost = `On ${host}, check Settings > Sharing & access or run \`t3 connect status\`.`;
   switch (located.cause) {
     case "offline":
-      return ["Connect this device to the internet. CodeShip reconnects on its own."];
+      return ["Connect this device to the internet. T3.CodeShip reconnects on its own."];
     case "outdated":
-      return [`Update CodeShip on ${host}.`];
+      return [`Update T3.CodeShip on ${host}.`];
     case "clock_skew":
       return [`Turn on automatic date and time on this device and on ${host}, then retry.`];
     case "not_linked":
@@ -151,10 +151,10 @@ function steps(host: string, located: Located, failure: ConnectionAttemptError |
         `On ${host}, open Settings > Sharing & access and turn T3 Connect on.`,
       ];
     case "tunnel_pending":
-      return ["Wait a minute. CodeShip retries on its own.", checkHost];
+      return ["Wait a minute. T3.CodeShip retries on its own.", checkHost];
     case "relay_error":
       return [
-        "Wait a few minutes. CodeShip retries on its own.",
+        "Wait a few minutes. T3.CodeShip retries on its own.",
         "If it keeps failing, copy the diagnostics and report it.",
       ];
     case "tunnel_not_enabled":
@@ -162,13 +162,13 @@ function steps(host: string, located: Located, failure: ConnectionAttemptError |
     case "released":
     case "tunnel_down":
       return [
-        `Make sure ${host} is awake and CodeShip is running on it.`,
+        `Make sure ${host} is awake and T3.CodeShip is running on it.`,
         checkHost,
         `A VPN or Tailscale exit node on ${host} can block the tunnel (port 7844). Turn it off or allow the tunnel.`,
       ];
     case "origin_unreachable":
     case "invalid_response":
-      return [`Open or restart CodeShip on ${host}.`, checkHost];
+      return [`Open or restart T3.CodeShip on ${host}.`, checkHost];
     // The relay saw these on its way to the host, so the fix is on the host.
     case "dns":
     case "tls":
@@ -182,7 +182,7 @@ function steps(host: string, located: Located, failure: ConnectionAttemptError |
   switch (located.hop) {
     case "device":
       return [
-        "Restart CodeShip on this device.",
+        "Restart T3.CodeShip on this device.",
         `If it keeps failing, remove ${host} from this device and add it again.`,
       ];
     case "relay":
@@ -203,7 +203,7 @@ function steps(host: string, located: Located, failure: ConnectionAttemptError |
         : [`Make sure ${host} is awake and online.`, checkHost];
     case "server":
       return [
-        `Make sure CodeShip is running on ${host}.`,
+        `Make sure T3.CodeShip is running on ${host}.`,
         "Retry. If it keeps failing, copy the diagnostics.",
       ];
   }
@@ -275,7 +275,7 @@ function hopLabel(hop: ConnectionHop, host: string): string {
     case "tunnel":
       return `${host} tunnel`;
     case "server":
-      return `CodeShip on ${host}`;
+      return `T3.CodeShip on ${host}`;
   }
 }
 
@@ -338,7 +338,7 @@ const HOP_MARK = { ok: "ok", failed: "FAILED", unchecked: "not checked" } as con
 /** One plain-text block for bug reports. */
 export function connectionDiagnosisText(hostLabel: string, diagnosis: ConnectionDiagnosis): string {
   return [
-    `CodeShip connection to ${hostLabel}: ${diagnosis.headline}`,
+    `T3.CodeShip connection to ${hostLabel}: ${diagnosis.headline}`,
     "",
     ...diagnosis.hops.map((hop) => `${hop.label}: ${HOP_MARK[hop.result]}`),
     "",

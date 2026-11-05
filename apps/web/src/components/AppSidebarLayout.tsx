@@ -412,7 +412,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const routePanelAnimationsActive = panelAnimationsActive && !panelAnimationsSuppressed;
   const isMacosDesktop = isElectron && isMacPlatform(navigator.platform);
   const [sidebarWidth, setSidebarWidth] = useState(readInitialThreadSidebarWidth);
-  const [needsYouPanelTarget, setNeedsYouPanelTarget] = useState<HTMLDivElement | null>(null);
+  const [activityPanelTarget, setActivityPanelTarget] = useState<HTMLDivElement | null>(null);
   // A clamped drag may not change width, so viewport changes need a separate subscription.
   const viewportWidth = useSyncExternalStore(subscribeToViewportWidth, readViewportWidth);
   const [brandWidth, setBrandWidth] = useState(0);
@@ -482,7 +482,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
             >
               <ThreadSidebar
                 routeReveal={sidebarRouteReveal}
-                needsYouPanelTarget={viewportWidth >= 1280 ? needsYouPanelTarget : null}
+                activityPanelTarget={viewportWidth >= 1280 ? activityPanelTarget : null}
               />
             </div>
           </div>
@@ -490,8 +490,8 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
         </Sidebar>
         {children}
         <div
-          ref={setNeedsYouPanelTarget}
-          className="hidden min-h-0 w-80 shrink-0 flex-col justify-end p-3 has-[>section]:flex"
+          ref={setActivityPanelTarget}
+          className="hidden min-h-0 w-80 shrink-0 flex-col justify-end gap-3 p-3 has-[>section]:flex"
         />
         <BackgroundThreadAnnouncer />
         <SidebarControl />

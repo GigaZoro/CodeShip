@@ -75,7 +75,7 @@ const CODEX_CONFIG_PROBE_TIMEOUT_MS = 3_000;
 const CODEX_CATALOG_REFRESH_POLL = "100 millis" as const;
 // OpenAI tailors the Codex model catalog to known originators; an unknown one gets the plain-CLI list.
 export const CODEX_ORIGINATOR = "T3 Code";
-const CODEX_CLIENT_TITLE = "CodeShip";
+const CODEX_CLIENT_TITLE = "T3.CodeShip";
 // Handshake plus account/models/skills requests can exceed the shared 10s probe budget.
 const CODEX_AUTH_PROBE_TIMEOUT_MS = 20_000;
 const CODEX_DISCOVERY_MARGIN_MS = 250;
@@ -745,7 +745,7 @@ const makePendingCodexProvider = Effect.fn("CodexProvider.makePendingCodexProvid
         version: null,
         status: "warning",
         auth: { status: "unknown" },
-        message: "Codex is disabled in CodeShip settings.",
+        message: "Codex is disabled in T3.CodeShip settings.",
       },
     });
   }
@@ -841,7 +841,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         version: null,
         status: "warning",
         auth: { status: "unknown" },
-        message: "Codex is disabled in CodeShip settings.",
+        message: "Codex is disabled in T3.CodeShip settings.",
       },
     });
   }

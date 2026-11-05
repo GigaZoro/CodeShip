@@ -91,7 +91,7 @@ export function matchesProjectsOverviewFilter(
   return filter === "all" || state === filter;
 }
 
-/** Folds case and accents so "codeship" finds "CodeShip". */
+/** Folds case and accents so "codeship" finds "T3.CodeShip". */
 export function matchesProjectSearch(name: string, query: string): boolean {
   const fold = (value: string) =>
     value.normalize("NFKD").replace(/\p{M}/gu, "").toLocaleLowerCase();

@@ -32,10 +32,12 @@ const KNOWN_SHARED_DIRECTORIES = [
   "thread-writer-locks",
 ] as const;
 
-// auth.lock guards the shadow home's private auth.json.
+// auth.lock guards the shadow home's private auth.json. .credentials.json holds the account's MCP
+// sign-ins: copies of a rotating refresh token in two homes sign each other out.
 const PRIVATE_ENTRY_NAMES = new Set([
   "auth.json",
   "auth.lock",
+  ".credentials.json",
   "models_cache.json",
   "cloud-config-bundle-cache.json",
 ]);
@@ -93,7 +95,6 @@ export class CodexShadowHomeFileSystemError extends Schema.TaggedError<CodexShad
       "makeDirectory",
       "readDirectory",
       "remove",
-      "rename",
       "symlink",
       "stat",
     ]),
@@ -235,14 +236,68 @@ const removePrivateSymlink = Effect.fn("CodexHomeLayout.removePrivateSymlink")(f
   }
 });
 
-// SQLite deletes and recreates its -wal and -shm files, so a hard link would split a database from its log.
+// On Windows SQLite stays private per account: it keeps -wal and -shm beside a symlink rather than
+// the database, and deletes and recreates them, which splits a hard link from its log.
 const SQLITE_FILE = /\.(?:sqlite|db)(?:-wal|-shm|-journal)?$/i;
+const SQLITE_SIDECAR_SUFFIXES = ["-wal", "-shm", "-journal"] as const;
+const SQLITE_SIDECAR = /-(?:wal|shm|journal)$/i;
+
+// Older setups linked SQLite files on Windows. A linked database's own -wal and -shm hold writes
+// other processes never saw, so they go with it. Codex holds open files locked; a later setup retries.
+const unlinkSqliteOnWindows = Effect.fn("CodexHomeLayout.unlinkSqliteOnWindows")(function* (input: {
+  readonly fileSystem: FileSystem.FileSystem;
+  readonly sharedHomePath: string;
+  readonly effectiveHomePath: string;
+}): Effect.fn.Return<void, CodexShadowHomeError, Path.Path> {
+  const path = yield* Path.Path;
+  const names = yield* input.fileSystem.readDirectory(input.effectiveHomePath).pipe(
+    Effect.catchTags({
+      PlatformError: (cause) =>
+        new CodexShadowHomeFileSystemError({
+          sharedHomePath: input.sharedHomePath,
+          effectiveHomePath: input.effectiveHomePath,
+          operation: "readDirectory",
+          path: input.effectiveHomePath,
+          cause,
+        }),
+    }),
+  );
+  const linked = new Set<string>();
+  for (const entryName of names.filter((name) => SQLITE_FILE.test(name))) {
+    const linkPath = path.join(input.effectiveHomePath, entryName);
+    const state = yield* readLinkState({ ...input, entryName, linkPath });
+    if (state._tag === "Symlink") linked.add(entryName);
+  }
+  const databases = new Set([...linked].map((name) => name.replace(SQLITE_SIDECAR, "")));
+  yield* Effect.forEach(
+    databases,
+    (database) => {
+      const sidecars = SQLITE_SIDECAR_SUFFIXES.map((suffix) => `${database}${suffix}`);
+      const stale = linked.has(database)
+        ? [...sidecars, database]
+        : sidecars.filter((name) => linked.has(name));
+      return Effect.forEach(
+        stale,
+        (name) =>
+          input.fileSystem.remove(path.join(input.effectiveHomePath, name), { force: true }),
+        { discard: true },
+      ).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("A linked Codex database is in use; a later setup unlinks it.", {
+            path: path.join(input.effectiveHomePath, database),
+            error,
+          }),
+        ),
+      );
+    },
+    { discard: true },
+  );
+});
 
 // Windows symlinks need Developer Mode or elevation; hard links do not. Codex may replace a shared
 // file, so re-link whenever the account's copy is no longer the same file.
 const shareFileOnWindows = (target: string, link: string) =>
   Effect.tryPromise(async () => {
-    if (SQLITE_FILE.test(link)) return;
     const [shared, current] = await Promise.all([
       NodeFSP.stat(target, { bigint: true }),
       NodeFSP.lstat(link, { bigint: true }).catch((error: NodeJS.ErrnoException) => {
@@ -277,6 +332,7 @@ const ensureSymlink = Effect.fn("CodexHomeLayout.ensureSymlink")(function* (inpu
   });
 
   if (windows) {
+    if (SQLITE_FILE.test(input.entryName)) return;
     const targetType = yield* input.fileSystem.stat(target).pipe(
       Effect.map((info) => info.type),
       Effect.catchTags({
@@ -431,15 +487,8 @@ const ensureShadowAuthIsPrivate = Effect.fn("CodexHomeLayout.ensureShadowAuthIsP
   },
 );
 
-// Codex's file store for MCP sign-ins, used off a keychain or when an account keeps its own.
-const MCP_SIGN_IN_FILE = ".credentials.json";
-
 export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome")(function* (
   layout: CodexHomeLayout,
-  options: {
-    /** Off, the account keeps its own MCP sign-ins instead of linking the shared home's. */
-    readonly shareMcpSignIns?: boolean | undefined;
-  } = {},
 ) {
   if (layout.mode !== "authOverlay") return;
   const effectiveHomePath = layout.effectiveHomePath;
@@ -491,46 +540,15 @@ export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome"
         }),
     }),
   );
-  const shareMcpSignIns = options.shareMcpSignIns ?? true;
-  const privateEntryNames: ReadonlySet<string> = shareMcpSignIns
-    ? PRIVATE_ENTRY_NAMES
-    : new Set([...PRIVATE_ENTRY_NAMES, MCP_SIGN_IN_FILE]);
   const entries = new Set<string>(KNOWN_SHARED_DIRECTORIES);
   for (const entryName of sharedEntryNames) {
-    if (!privateEntryNames.has(entryName) && !SHADOW_LOCAL_ENTRY_NAMES.has(entryName)) {
+    if (!PRIVATE_ENTRY_NAMES.has(entryName) && !SHADOW_LOCAL_ENTRY_NAMES.has(entryName)) {
       entries.add(entryName);
     }
   }
 
-  // Sign-ins this account kept while sharing was off give way to the shared ones.
-  if (entries.has(MCP_SIGN_IN_FILE)) {
-    const ownSignIns = path.join(effectiveHomePath, MCP_SIGN_IN_FILE);
-    const state = yield* readLinkState({
-      fileSystem,
-      sharedHomePath: layout.sharedHomePath,
-      effectiveHomePath,
-      entryName: MCP_SIGN_IN_FILE,
-      linkPath: ownSignIns,
-    });
-    if (state._tag === "NotSymlink") {
-      yield* fileSystem.rename(ownSignIns, `${ownSignIns}.unshared`).pipe(
-        Effect.catchTags({
-          PlatformError: (cause) =>
-            new CodexShadowHomeFileSystemError({
-              sharedHomePath: layout.sharedHomePath,
-              effectiveHomePath,
-              operation: "rename",
-              path: ownSignIns,
-              entryName: MCP_SIGN_IN_FILE,
-              cause,
-            }),
-        }),
-      );
-    }
-  }
-
   yield* Effect.forEach(
-    privateEntryNames,
+    PRIVATE_ENTRY_NAMES,
     (entryName) =>
       entryName === "auth.json"
         ? Effect.void
@@ -543,10 +561,18 @@ export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome"
     { discard: true },
   );
 
+  if (yield* HostProcess.isWindows) {
+    yield* unlinkSqliteOnWindows({
+      fileSystem,
+      sharedHomePath: layout.sharedHomePath,
+      effectiveHomePath,
+    });
+  }
+
   yield* Effect.forEach(
     entries,
     (entryName) => {
-      if (privateEntryNames.has(entryName)) {
+      if (PRIVATE_ENTRY_NAMES.has(entryName)) {
         return Effect.void;
       }
       return ensureSymlink({

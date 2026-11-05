@@ -56,7 +56,8 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
     return {
       headline: "Disabled",
       detail:
-        provider.message ?? "This provider is installed but disabled for new sessions in CodeShip.",
+        provider.message ??
+        "This provider is installed but disabled for new sessions in T3.CodeShip.",
     };
   }
   if (!provider.installed) {

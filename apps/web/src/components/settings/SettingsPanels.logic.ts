@@ -403,6 +403,7 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   restorable("/settings/chat", "Open pull requests and changes panels proactively", [
     "proactivePanelsEnabled",
   ]),
+  restorable("/settings/chat", "Skill availability", ["skillAvailability"]),
   restorable("/settings/chat", "Show skills in slash menu", ["showSkillsInSlashMenu"]),
   restorable("/settings/chat", "Rich text composer", ["composerRichTextEnabled"]),
   restorable("/settings/chat", "Follow-up behavior", ["followUpBehavior"]),
@@ -431,7 +432,7 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   restorable("/settings/source-control", "New worktrees start from remote", [
     "newWorktreesStartFromOrigin",
   ]),
-  restorable("/settings/source-control", "Open pull requests in CodeShip", [
+  restorable("/settings/source-control", "Open pull requests in T3.CodeShip", [
     "pullRequestLinksOpenInApp",
   ]),
   GIT_FETCH_INTERVAL_ENTRY,

@@ -139,8 +139,8 @@ export class VisualStudioHelperError extends Schema.TaggedError<VisualStudioHelp
     return this.stage === "timeout"
       ? "Visual Studio did not answer in time. It may be showing a dialog; ask the user to check it."
       : this.stage === "output"
-        ? "CodeShip could not read the Visual Studio helper's answer."
-        : "CodeShip could not run its Visual Studio helper (powershell.exe).";
+        ? "T3.CodeShip could not read the Visual Studio helper's answer."
+        : "T3.CodeShip could not run its Visual Studio helper (powershell.exe).";
   }
 }
 

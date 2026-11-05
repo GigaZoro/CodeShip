@@ -105,6 +105,57 @@ describe("new thread model fallback", () => {
       fallback,
     ],
     [
+      "auto fallback with another account left",
+      {
+        fallbackSelection: { ...fallback, autoAccount: true },
+        providers: [
+          limited,
+          { ...available, usageLimits: limited.usageLimits },
+          provider({ instanceId: ProviderInstanceId.make("claude_2"), driver: available.driver }),
+        ],
+      },
+      { ...fallback, autoAccount: true },
+    ],
+    [
+      "auto fallback on Auto mode's model, without the default's effort",
+      {
+        defaultSelection: { ...selection, options: [{ id: "reasoningEffort", value: "xhigh" }] },
+        fallbackSelection: { ...fallback, autoAccount: true },
+        providers: [
+          limited,
+          {
+            ...available,
+            models: [
+              {
+                slug: "claude-opus-5-5",
+                name: "Opus",
+                isCustom: false,
+                capabilities: {
+                  optionDescriptors: [
+                    {
+                      id: "effort",
+                      label: "Effort",
+                      type: "select",
+                      options: [{ id: "xhigh", label: "Extra high" }],
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+        settings: {
+          ...DEFAULT_SERVER_SETTINGS,
+          providerInstances: {
+            [fallback.instanceId]: { driver: available.driver, enabled: true, config: {} },
+          },
+          autoModeProvider: available.driver,
+          autoModeModels: { [available.driver]: { model: "claude-opus-5-5" } },
+        },
+      },
+      { instanceId: fallback.instanceId, model: "claude-opus-5-5", autoAccount: true },
+    ],
+    [
       "environment disabled",
       {
         settings: {

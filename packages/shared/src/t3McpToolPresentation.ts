@@ -163,12 +163,12 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "schedule-delete",
   ),
   request_secret: tool(["Ask for", "Asking for", "Asked for", "a secret"], "secret-request"),
-  create_threads: tool(["Create", "Creating", "Created", "CodeShip threads"], "thread-create"),
-  t3_thread_start: tool(["Start", "Starting", "Started", "a CodeShip thread"], "thread-create"),
-  t3_thread_list: tool(["List", "Listing", "Listed", "CodeShip threads"], "thread-list"),
-  t3_thread_read: tool(["Read", "Reading", "Read", "a CodeShip thread"], "thread-read"),
-  t3_thread_send: tool(["Send", "Sending", "Sent", "to a CodeShip thread"], "thread-send"),
-  t3_thread_wait: tool(["Wait", "Waiting", "Waited", "for a CodeShip thread"], "thread-wait"),
+  create_threads: tool(["Create", "Creating", "Created", "T3.CodeShip threads"], "thread-create"),
+  t3_thread_start: tool(["Start", "Starting", "Started", "a T3.CodeShip thread"], "thread-create"),
+  t3_thread_list: tool(["List", "Listing", "Listed", "T3.CodeShip threads"], "thread-list"),
+  t3_thread_read: tool(["Read", "Reading", "Read", "a T3.CodeShip thread"], "thread-read"),
+  t3_thread_send: tool(["Send", "Sending", "Sent", "to a T3.CodeShip thread"], "thread-send"),
+  t3_thread_wait: tool(["Wait", "Waiting", "Waited", "for a T3.CodeShip thread"], "thread-wait"),
   t3_workflow_stop: tool(
     ["Stop", "Stopping", "Requested a stop for", "a workflow"],
     "workflow-stop",
@@ -178,7 +178,7 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "background-wait",
   ),
   t3_thread_interrupt: tool(
-    ["Interrupt", "Interrupting", "Requested an interrupt of", "a CodeShip thread"],
+    ["Interrupt", "Interrupting", "Requested an interrupt of", "a T3.CodeShip thread"],
     "thread-interrupt",
   ),
   t3_worktree_handoff: tool(
@@ -348,7 +348,7 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   t3_thread_transfers: tool(["Read", "Reading", "Read", "thread transfers"], "thread-transfers"),
   t3_thread_organize: tool(["Organize", "Organizing", "Organized", "a thread"], "thread-organize"),
   t3_thread_update: tool(
-    ["Update", "Updating", "Updated", "CodeShip thread metadata"],
+    ["Update", "Updating", "Updated", "T3.CodeShip thread metadata"],
     "thread-update",
   ),
   t3_worktree_list: tool(["List", "Listing", "Listed", "workspace branches"], "worktree-list"),
@@ -421,9 +421,8 @@ function resolveT3McpToolName(value: string): string | null {
     return namespaceMatch.groups.tool ?? null;
   }
 
-  const prefixed = /^(?:mcp[-_]{1,2})?(?:t3[-_ ]?code|codeship)(?:__|[-_.:/ ])(?<tool>.+)$/i.exec(
-    label,
-  );
+  const prefixed =
+    /^(?:mcp[-_]{1,2})?(?:t3[-_ ]?code|(?:t3\.)?codeship)(?:__|[-_.:/ ])(?<tool>.+)$/i.exec(label);
   const candidate = prefixed?.groups?.tool ?? label;
   if (Object.hasOwn(T3_MCP_TOOLS, candidate)) return candidate;
   // OpenCode 2 thread prefixes can contain underscores; choose the longest known tool-name suffix.

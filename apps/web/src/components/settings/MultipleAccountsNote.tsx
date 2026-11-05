@@ -34,7 +34,7 @@ export function MultipleAccountsNote({
       <InfoIcon aria-hidden />
       <AlertDescription>
         <p>
-          We do not recommend managing multiple {providerName} accounts in CodeShip.{" "}
+          We do not recommend managing multiple {providerName} accounts in T3.CodeShip.{" "}
           <a
             href={MULTIPLE_ACCOUNTS_FAQ_URL}
             target="_blank"

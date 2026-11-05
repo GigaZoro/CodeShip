@@ -1,4 +1,4 @@
-# CodeShip Mobile
+# T3.CodeShip Mobile
 
 > [!NOTE]
 > To install the released app from the App Store or Google Play, see [Mobile app](../../docs/user/install.md#mobile-app). This guide covers building it from source.
@@ -10,9 +10,9 @@
 
 This app has three variants:
 
-- `development`: Expo dev client, installable side-by-side as `CodeShip Dev`
-- `preview`: persistent internal preview build, installable side-by-side as `CodeShip Preview`
-- `production`: store/release build as `CodeShip`
+- `development`: Expo dev client, installable side-by-side as `T3.CodeShip Dev`
+- `preview`: persistent internal preview build, installable side-by-side as `T3.CodeShip Preview`
+- `production`: store/release build as `T3.CodeShip`
 
 Run commands from `apps/mobile`.
 

@@ -124,7 +124,7 @@ const make = Effect.gen(function* () {
               if (task.lastRun === undefined) {
                 return {
                   environmentId,
-                  reason: "It runs an older version of CodeShip.",
+                  reason: "It runs an older version of T3.CodeShip.",
                   has: false,
                 };
               }

@@ -4,9 +4,11 @@ import { captureDestinationFrame, findCaptureDestination } from "./feedbackGeome
 const window = (pid, title) => ({ get_pid: () => pid, get_title: () => title });
 
 it("activates only a window of the process authenticated by D-Bus", () => {
-  const target = window(42, "CodeShip");
-  expect(findCaptureDestination([window(99, "CodeShip"), target], 42, "CodeShip")).toBe(target);
-  expect(findCaptureDestination([window(99, "CodeShip")], 42, "CodeShip")).toBeUndefined();
+  const target = window(42, "T3.CodeShip");
+  expect(findCaptureDestination([window(99, "T3.CodeShip"), target], 42, "T3.CodeShip")).toBe(
+    target,
+  );
+  expect(findCaptureDestination([window(99, "T3.CodeShip")], 42, "T3.CodeShip")).toBeUndefined();
   expect(findCaptureDestination([target], 42, "Title before navigation")).toBe(target);
 });
 

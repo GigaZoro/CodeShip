@@ -106,7 +106,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
     );
 
     it.effect.skipIf(!symlinksSupported)(
-      "keeps MCP sign-ins in the shadow home only while sharing them is off",
+      "keeps MCP sign-ins in the shadow home and unlinks the shared ones",
       () =>
         Effect.gen(function* () {
           const fileSystem = yield* FileSystem.FileSystem;
@@ -116,21 +116,16 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
           const sharedSignIns = path.join(sharedHome, ".credentials.json");
           const ownSignIns = path.join(shadowHome, ".credentials.json");
           yield* writeTextFile(sharedSignIns, "shared sign-ins");
+          yield* fileSystem.symlink(sharedSignIns, ownSignIns);
           const layout = yield* resolveCodexHomeLayout(
             decodeCodexSettings({ homePath: sharedHome, shadowHomePath: shadowHome }),
           );
 
           yield* materializeCodexShadowHome(layout);
-          expect(yield* fileSystem.readLink(ownSignIns)).toBe(sharedSignIns);
-          yield* materializeCodexShadowHome(layout, { shareMcpSignIns: false });
           expect(yield* fileSystem.exists(ownSignIns)).toBe(false);
           yield* writeTextFile(ownSignIns, "own sign-ins");
-          yield* materializeCodexShadowHome(layout, { shareMcpSignIns: false });
-          expect(yield* fileSystem.readFileString(ownSignIns)).toBe("own sign-ins");
-
           yield* materializeCodexShadowHome(layout);
-          expect(yield* fileSystem.readLink(ownSignIns)).toBe(sharedSignIns);
-          expect(yield* fileSystem.readFileString(`${ownSignIns}.unshared`)).toBe("own sign-ins");
+          expect(yield* fileSystem.readFileString(ownSignIns)).toBe("own sign-ins");
           expect(yield* fileSystem.readFileString(sharedSignIns)).toBe("shared sign-ins");
         }),
     );
@@ -495,6 +490,48 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
         );
         expect(yield* fileSystem.exists(path.join(shadowHome, "state_5.sqlite-wal"))).toBe(false);
       }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "gives a Windows account its own SQLite files in place of links from older setups",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shadowHome = yield* makeTempDir("t3code-codex-shadow-");
+          const shared = (name: string) => path.join(sharedHome, name);
+          const shadow = (name: string) => path.join(shadowHome, name);
+          for (const name of ["goals_1.sqlite", "goals_1.sqlite-wal", "state_5.sqlite-wal"]) {
+            yield* writeTextFile(shared(name), "shared");
+          }
+          // Windows SQLite wrote this log beside the link, apart from the shared database's log.
+          yield* fileSystem.symlink(shared("goals_1.sqlite"), shadow("goals_1.sqlite"));
+          yield* writeTextFile(shadow("goals_1.sqlite-wal"), "split");
+          yield* writeTextFile(shadow("goals_1.sqlite-shm"), "split");
+          yield* writeTextFile(shadow("state_5.sqlite"), "account");
+          yield* fileSystem.symlink(shared("state_5.sqlite-wal"), shadow("state_5.sqlite-wal"));
+          // A folder resists removal as Windows does for a log Codex holds open.
+          yield* writeTextFile(shared("memories_1.sqlite"), "shared");
+          yield* fileSystem.symlink(shared("memories_1.sqlite"), shadow("memories_1.sqlite"));
+          yield* writeTextFile(path.join(shadow("memories_1.sqlite-wal"), "open"), "split");
+          const layout = yield* resolveCodexHomeLayout(
+            decodeCodexSettings({ homePath: sharedHome, shadowHomePath: shadowHome }),
+          );
+
+          yield* materializeCodexShadowHome(layout).pipe(
+            Effect.provideService(HostProcess.Platform, "win32"),
+          );
+
+          const shadowEntries = yield* fileSystem.readDirectory(shadowHome);
+          expect(shadowEntries.filter((name) => name.includes(".sqlite")).toSorted()).toEqual([
+            "memories_1.sqlite",
+            "memories_1.sqlite-wal",
+            "state_5.sqlite",
+          ]);
+          expect(yield* fileSystem.readFileString(shadow("state_5.sqlite"))).toBe("account");
+          expect(yield* fileSystem.readFileString(shared("goals_1.sqlite-wal"))).toBe("shared");
+        }),
     );
   });
 });

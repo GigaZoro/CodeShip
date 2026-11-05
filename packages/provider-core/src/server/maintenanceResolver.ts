@@ -88,6 +88,10 @@ export interface PackageManagedProviderMaintenanceDefinition {
     readonly isCommandPath?: (commandPath: string) => boolean;
     /** The updater cannot detect installs outside `isCommandPath`, so leave those manual-only. */
     readonly requiresCommandPath?: boolean;
+    /** The version the native updater installs when it follows its own release channel instead of npm's latest tag. */
+    readonly lookupLatestVersion?: (
+      context: ProviderMaintenanceResolutionContext,
+    ) => Effect.Effect<string | null>;
     readonly env?:
       | NodeJS.ProcessEnv
       | ((context: ProviderMaintenanceResolutionContext) => NodeJS.ProcessEnv);
@@ -530,6 +534,12 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
         ...(nativeEnv
           ? { env: typeof nativeEnv === "function" ? nativeEnv(context) : nativeEnv }
           : {}),
+        ...(nativeUpdate.lookupLatestVersion
+          ? {
+              latestVersion: null,
+              lookupLatestVersion: nativeUpdate.lookupLatestVersion(context),
+            }
+          : {}),
       })
     : manual;
   // A native-looking launcher can still delegate to a mise-owned install.
@@ -896,7 +906,7 @@ export const makeCachedProviderMaintenanceResolution = Effect.fn(
 
 function manualUpdateMessage(latestVersion: string, installPath: string | undefined): string {
   return installPath
-    ? `Version ${latestVersion} is out. CodeShip runs ${installPath}; update it with the app or tool that installed it.`
+    ? `Version ${latestVersion} is out. T3.CodeShip runs ${installPath}; update it with the app or tool that installed it.`
     : `Version ${latestVersion} is out. Update it with the app or tool that installed it.`;
 }
 

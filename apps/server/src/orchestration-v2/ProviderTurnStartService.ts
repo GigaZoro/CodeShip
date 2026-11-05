@@ -1,4 +1,5 @@
 import { modelSelectionsEqual } from "@t3tools/shared/model";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   CommandId,
@@ -32,6 +33,7 @@ import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as ProviderSkills from "../provider/ProviderSkills.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
 import * as EventSink from "./EventSink.ts";
@@ -141,6 +143,7 @@ export const layer: Layer.Layer<
   | Path.Path
   | ServerConfig.ServerConfig
   | ServerSettings.ServerSettingsService
+  | ProviderSkills.ProviderSkills
   | GitWorkflowService.GitWorkflowService
   | ProjectService.ProjectService
   | ProviderAuthService.ProviderAuthService
@@ -160,6 +163,8 @@ export const layer: Layer.Layer<
     const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
     const projects = yield* ProjectService.ProjectService;
     const providerAuth = yield* ProviderAuthService.ProviderAuthService;
+    const providerSkills = yield* ProviderSkills.ProviderSkills;
+    const serverSettings = yield* ServerSettings.ServerSettingsService;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
@@ -863,8 +868,31 @@ export const layer: Layer.Layer<
       });
       let effectiveHandoffs = handoffs;
       let resumeFellBack = false;
+      const expandedText = yield* Effect.result(
+        message.createdBy === "user"
+          ? providerSkills.expandSkillMentions({
+              text: message.text,
+              instanceId: run.providerInstanceId,
+              cwd: resolvedRuntimePolicy.cwd,
+              settings: resolveProjectSettings(
+                yield* serverSettings.getSettings,
+                projection.thread.projectId,
+              ).settings,
+            })
+          : Effect.succeed(message.text),
+      );
+      if (expandedText._tag === "Failure") {
+        if (input.willRetry === true) return yield* expandedText.failure;
+        yield* settleStartFailure({
+          signal: "shared-skill-load-failure",
+          title: "Shared skill could not be loaded",
+          error: expandedText.failure,
+          message: expandedText.failure.message,
+        });
+        return;
+      }
       const userText = projectComposerContextForProvider({
-        text: message.text,
+        text: expandedText.success,
         records: message.context?.records ?? [],
       });
       // Codex and Claude parse /goal from the prompt, so it goes verbatim and history waits a turn.

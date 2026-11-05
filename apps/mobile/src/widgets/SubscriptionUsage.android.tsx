@@ -43,14 +43,14 @@ export function SubscriptionUsage(props: SubscriptionUsageProps, environment: Wi
   const providers = props.providers ?? [
     {
       name: "Codex",
-      detail: "Open CodeShip to connect",
+      detail: "Open T3.CodeShip to connect",
       windows: [],
       expiresAt: 0,
       totalWindows: 0,
     },
     {
       name: "Claude",
-      detail: "Open CodeShip to connect",
+      detail: "Open T3.CodeShip to connect",
       windows: [],
       expiresAt: 0,
       totalWindows: 0,
@@ -83,7 +83,7 @@ export function SubscriptionUsage(props: SubscriptionUsageProps, environment: Wi
               </Text>
               {shown.length === 0 ? (
                 <Text color={muted} maxLines={1} style={{ fontSize: 11 }}>
-                  {stale ? "Open CodeShip to refresh" : provider.detail}
+                  {stale ? "Open T3.CodeShip to refresh" : provider.detail}
                 </Text>
               ) : null}
               {shown.map((window) => {
@@ -113,7 +113,7 @@ export function SubscriptionUsage(props: SubscriptionUsageProps, environment: Wi
               })}
               {hidden > 0 ? (
                 <Text color={muted} maxLines={1} style={{ fontSize: 10 }}>
-                  {`${hidden} more in CodeShip`}
+                  {`${hidden} more in T3.CodeShip`}
                 </Text>
               ) : null}
             </Column>
@@ -127,7 +127,7 @@ export function SubscriptionUsage(props: SubscriptionUsageProps, environment: Wi
         >
           {props.checkedAt
             ? `As of ${new Date(props.checkedAt).toLocaleString(undefined, { hour: "numeric", minute: "2-digit", month: "short", day: "numeric" })}`
-            : "Tap to connect in CodeShip"}
+            : "Tap to connect in T3.CodeShip"}
         </Text>
       </Column>
     </Button>

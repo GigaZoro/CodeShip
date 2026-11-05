@@ -130,7 +130,6 @@ it.effect("ProviderMcp hands a pasted callback only to the open sign-in it belon
     const harness = yield* makeHarness;
     yield* Effect.gen(function* () {
       const service = yield* ProviderMcp.ProviderMcp;
-      yield* service.list({ instanceId: siblingInstanceId });
       const states = yield* Queue.unbounded<ProviderMcpSignInState>();
       const signIn = yield* service.signIn({ instanceId, name: "minions" }).pipe(
         Stream.runForEach((state) => Queue.offer(states, state)),
@@ -162,9 +161,6 @@ it.effect("ProviderMcp hands a pasted callback only to the open sign-in it belon
       const succeeded = yield* Queue.take(states);
       assert.deepEqual(succeeded, { flowId: waiting.flowId, phase: "succeeded" });
       yield* Fiber.join(signIn);
-      // Claude accounts on one home share sign-ins, so the sign-in reaches each of their lists.
-      yield* service.list({ instanceId: siblingInstanceId });
-      assert.equal(yield* Ref.get(harness.listReads), 2);
 
       const closed = yield* service
         .completeSignIn({

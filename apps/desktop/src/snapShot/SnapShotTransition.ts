@@ -114,7 +114,7 @@ function createWindow(
     resizable: false,
     show: false,
     skipTaskbar: true,
-    title: "CodeShip Snapshot Animation",
+    title: "T3.CodeShip Snapshot Animation",
     transparent: true,
     webPreferences: {
       backgroundThrottling: false,

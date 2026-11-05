@@ -19,7 +19,7 @@ export class DatabaseMissingError extends Schema.TaggedError<DatabaseMissingErro
   { path: Schema.String },
 ) {
   override get message() {
-    return "No existing CodeShip database was found in this data directory.";
+    return "No existing T3.CodeShip database was found in this data directory.";
   }
 }
 
@@ -28,7 +28,7 @@ export class DatabaseInUseError extends Schema.TaggedError<DatabaseInUseError>()
   { path: Schema.String, cause: Schema.Defect() },
 ) {
   override get message() {
-    return "Stop the CodeShip server and desktop app, including any version before 0.1.0, before repairing the database.";
+    return "Stop the T3.CodeShip server and desktop app, including any version before 0.1.0, before repairing the database.";
   }
 }
 
@@ -37,7 +37,7 @@ export class DatabaseProjectionsInvalidError extends Schema.TaggedError<Database
   { path: Schema.String },
 ) {
   override get message() {
-    return "Database projections need repair before compaction. Start CodeShip once so it rebuilds them, then run doctor again. If this CLI is older than the one that wrote the database, update CodeShip first.";
+    return "Database projections need repair before compaction. Start T3.CodeShip once so it rebuilds them, then run doctor again. If this CLI is older than the one that wrote the database, update T3.CodeShip first.";
   }
 }
 

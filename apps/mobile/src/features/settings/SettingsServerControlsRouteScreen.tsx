@@ -440,7 +440,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                     <SettingsSwitchRow
                       icon="bubble.left.and.bubble.right"
                       label="Import conversations"
-                      subtitle="Bring past and new conversations into CodeShip, including ones from while it was closed."
+                      subtitle="Bring past and new conversations into T3.CodeShip, including ones from while it was closed."
                       value={uniform("importAgentConversations")}
                       disabled={disabledFor("importAgentConversations")}
                       onValueChange={(value) => write({ importAgentConversations: value })}

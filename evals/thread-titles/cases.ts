@@ -91,10 +91,10 @@ export const threadTitleEvaluationCases = [
   {
     id: "research",
     source: "Maintainer title generation request",
-    request: "How can we improve title generation in CodeShip?",
+    request: "How can we improve title generation in T3.CodeShip?",
     previousTitle: "Research title gen improvements",
     messages: [
-      { role: "user", text: "How can we improve title gen further in CodeShip?" },
+      { role: "user", text: "How can we improve title gen further in T3.CodeShip?" },
       {
         role: "assistant",
         text: "Prioritize user messages, refine vague titles once, and resolve PR subjects.",

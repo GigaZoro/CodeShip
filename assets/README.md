@@ -1,4 +1,4 @@
-# CodeShip brand icons
+# T3.CodeShip brand icons
 
 [`prod/logo.svg`](prod/logo.svg) is the source for the generated application icons.
 Production uses teal, development uses blue, and nightly uses violet. The exporter

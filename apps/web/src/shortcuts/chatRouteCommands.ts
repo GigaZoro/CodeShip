@@ -148,7 +148,7 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
             stackedThreadToast({
               type: "info",
               title: "Preview is desktop-only",
-              description: "Open CodeShip in the desktop app to use the in-app preview.",
+              description: "Open T3.CodeShip in the desktop app to use the in-app preview.",
             }),
           );
           return;

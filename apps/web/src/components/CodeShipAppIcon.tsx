@@ -1,4 +1,4 @@
-// The production icon, as GitHub shows the CodeShip app, whatever this build's channel.
+// The production icon, as GitHub shows the T3.CodeShip app, whatever this build's channel.
 import appIconUrl from "../../../../assets/prod/t3-black-web-apple-touch-180.png";
 
 export function CodeShipAppIcon(props: { readonly className?: string }) {

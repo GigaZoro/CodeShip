@@ -3,7 +3,7 @@ import { supportsAutoCoordinator } from "@t3tools/shared/serverSettings";
 
 // Codex truncates entries over 4,000 bytes; keep each section self-contained and below that limit.
 export const T3_CODE_ORCHESTRATION_SECTIONS: ReadonlyArray<string> = [
-  `## CodeShip orchestration
+  `## T3.CodeShip orchestration
 
 Ordinary coding tasks need no T3 tools.
 
@@ -53,7 +53,7 @@ export function autoCoordinatorInstructions(input: {
     .map((model) => `${model.name} (\`${model.slug}\`${model.slug === input.model ? ", you" : ""})`)
     .join(", ");
   return `<t3_auto_mode>
-You coordinate this request in CodeShip Auto mode, as ${own}. Spend your own model on judgment and cheaper models on routine work.
+You coordinate this request in T3.CodeShip Auto mode, as ${own}. Spend your own model on judgment and cheaper models on routine work.
 - Size the request first. Do a tiny one yourself: a question, an explanation, a one-line edit.
 - Otherwise run the work as a native subagent (${tool}) and set its model to the cheapest one that can do it well, even where the tool prefers your own: a small model for searches, mechanical edits and test runs, a mid-size model for ordinary features and fixes. Keep your own model for design, subtle bugs, and work a cheaper model got wrong. Brief the subagent with the goal, the files, the constraints, and how to check the result.
 - Check every result before you reply: read the diff, run the relevant checks, and compare it with the request. Fix small problems yourself; send bigger ones back with your findings, or take the work over.${models === "" ? "" : `\n- Models on this account: ${models}.`}
@@ -62,14 +62,14 @@ You coordinate this request in CodeShip Auto mode, as ${own}. Spend your own mod
 
 export const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `
 
-## CodeShip browser
+## T3.CodeShip browser
 
 When browser work was asked, \`preview_*\` is the browser you share with the user: \`preview_status\` first, then \`preview_open\` if no tab can be automated. Prefer snapshot locators over coordinates. Switch browsers only if the tools are absent or \`preview_open\` says unsupported, the user asks, or two preview calls fail on one step. Then quote the error and switch.
 `;
 
 const T3_CODE_DEVICE_TOOLS = ["device_list", "device_open", "device_screenshot", "device_close"];
 
-const deviceToolInstructions = (loadTools: string) => `## CodeShip devices
+const deviceToolInstructions = (loadTools: string) => `## T3.CodeShip devices
 
 When a task needs an iOS Simulator or Android Emulator, on this machine or on an SSH device host such as a remote Mac, use the device tools so the user can watch it in the Device panel.${loadTools}
 1. Call \`device_list\` unless you already have the device's \`hostId\` and \`id\`.
@@ -90,13 +90,13 @@ export const T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH = deviceToolInstr
 // its tools, so they need the terminal transport other harnesses never use.
 const T3_CODE_ACP_MCP_FALLBACK_INSTRUCTIONS = `ACP fallback: if the T3 tools are absent and \`T3_ACP_MCP_NODE\` is present, call them through the terminal: \`ELECTRON_RUN_AS_NODE=1 "$T3_ACP_MCP_NODE" \${T3_ACP_MCP_ENTRYPOINT:+"$T3_ACP_MCP_ENTRYPOINT"} acp-mcp-call orchestrator_capabilities '{}'\` (\`T3_ACP_MCP_ENTRYPOINT\` is unset for a standalone executable). Delegate with \`acp-mcp-call delegate_task '{"task":"...","target":{"providerInstanceId":"...","model":"..."},"mode":"async","clientRequestId":"..."}'\`.`;
 
-const T3_CODE_ACP_DEFAULT_MODE_INSTRUCTIONS = `## CodeShip interaction mode: Default
+const T3_CODE_ACP_DEFAULT_MODE_INSTRUCTIONS = `## T3.CodeShip interaction mode: Default
 
-Prefer making reasonable assumptions and carrying out the user's request. Ask a concise question only when a missing user decision would materially change the result. Treat this mode as active until CodeShip supplies a different interaction-mode instruction.`;
+Prefer making reasonable assumptions and carrying out the user's request. Ask a concise question only when a missing user decision would materially change the result. Treat this mode as active until T3.CodeShip supplies a different interaction-mode instruction.`;
 
-const T3_CODE_ACP_PLAN_MODE_INSTRUCTIONS = `## CodeShip interaction mode: Plan
+const T3_CODE_ACP_PLAN_MODE_INSTRUCTIONS = `## T3.CodeShip interaction mode: Plan
 
-Investigate with read-only actions and do not edit files or otherwise execute the implementation. Resolve discoverable facts before asking questions. When the requirements are decision complete, return a concrete implementation plan and do not start implementing it. Treat this mode as active until CodeShip supplies a different interaction-mode instruction.`;
+Investigate with read-only actions and do not edit files or otherwise execute the implementation. Resolve discoverable facts before asking questions. When the requirements are decision complete, return a concrete implementation plan and do not start implementing it. Treat this mode as active until T3.CodeShip supplies a different interaction-mode instruction.`;
 
 export interface T3AcpInstructionState {
   readonly interactionMode: ProviderInteractionMode;

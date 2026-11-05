@@ -44,7 +44,7 @@ describe("host-bound agent commands", () => {
         const temp = yield* fs.makeTempDirectoryScoped({ prefix: "t3-device-target-" });
         const dir = path.join(temp, "quotes '\" $HOME `literal`");
         yield* fs.makeDirectory(dir);
-        const desktopApp = path.join(dir, "CodeShip");
+        const desktopApp = path.join(dir, "T3.CodeShip");
         // Dropping Node mode after checking it forces each hop to set it independently.
         yield* fs.writeFileString(
           desktopApp,
@@ -240,7 +240,7 @@ exec '${process.execPath.replaceAll("'", "'\"'\"'")}' "$@"
       ]) {
         yield* Effect.promise(() =>
           expect(launch(managed)).rejects.toThrow(
-            `CodeShip manages this command's connection to the device, so \`${managed.find((arg) => ["connect", "disconnect", "auth", "daemon"].includes(arg))}\` is not available through it.`,
+            `T3.CodeShip manages this command's connection to the device, so \`${managed.find((arg) => ["connect", "disconnect", "auth", "daemon"].includes(arg))}\` is not available through it.`,
           ),
         );
       }
@@ -310,7 +310,7 @@ exec '${process.execPath.replaceAll("'", "'\"'\"'")}' "$@"
         expect(launch(["screenshot", "/tmp/shot.png"])).rejects.toMatchObject({
           code: 1,
           stdout: "",
-          stderr: `CodeShip's device connection at 127.0.0.1:${port} is not reachable from this shell (connect ECONNREFUSED). Call device_open again to reconnect; if that succeeds and this repeats, this shell runs in a network sandbox, so run the command with network access, outside the sandbox.\n`,
+          stderr: `T3.CodeShip's device connection at 127.0.0.1:${port} is not reachable from this shell (connect ECONNREFUSED). Call device_open again to reconnect; if that succeeds and this repeats, this shell runs in a network sandbox, so run the command with network access, outside the sandbox.\n`,
         }),
       );
       // An explicit --daemon-base-url wins over the config, as it does in agent-device.

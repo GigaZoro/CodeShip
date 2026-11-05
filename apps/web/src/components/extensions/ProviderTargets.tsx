@@ -1,76 +1,148 @@
 import { connectionMayStillAnswer } from "@t3tools/client-runtime/connection";
 import type { EnvironmentId } from "@t3tools/contracts";
-import { useState } from "react";
+import * as Schema from "effect/Schema";
 
 import { useEnvironmentProviderEntries } from "../../hooks/useEnvironmentProviderEntries";
+import { useLocalStorage } from "../../hooks/useLocalStorage";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import { useEnvironments } from "../../state/environments";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
-import { settingsScopeEnvironmentLabel } from "../settings/settingsScopeAxis";
+import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
+import type { SidebarMachine } from "../sidebar/SidebarFolderHeader";
+import { useSidebarMachines } from "../sidebar/useSidebarMachines";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Skeleton } from "../ui/skeleton";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
-import { providerNamingByInstance, type ProviderNaming } from "./providerNaming";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { providerNamingByInstance } from "./providerNaming";
+import {
+  buildProviderMachines,
+  pickProviderMachine,
+  pickProviderTarget,
+  type ProviderCapability,
+  type ProviderMachine,
+  type ProviderTarget,
+} from "./providerTargets.logic";
 
-export interface ProviderTarget {
-  readonly key: string;
-  readonly environmentId: EnvironmentId;
-  readonly provider: ProviderInstanceEntry;
-  readonly naming: ProviderNaming;
-  /** Set only when more than one machine is connected. */
-  readonly machine: string | null;
-  /** The provider, account, and machine in one line, for prose and dialogs. */
-  readonly label: string;
-}
+export type { ProviderTarget } from "./providerTargets.logic";
 
-/** The provider instances that support one capability, across every machine, and the chosen one. */
-export function useProviderTargets(capability: "supportsPlugins" | "supportsMcpServers") {
+export type ProviderTargetMachine = ProviderMachine<SidebarMachine>;
+
+const REMEMBERED_TARGET_KEY = "t3code:extensions:provider-target";
+const RememberedTarget = Schema.Struct({
+  machine: Schema.NullOr(Schema.String),
+  instanceId: Schema.NullOr(Schema.String),
+  driverKind: Schema.NullOr(Schema.String),
+});
+const NOTHING_REMEMBERED = { machine: null, instanceId: null, driverKind: null };
+
+/**
+ * The machines with a provider that supports `capability`, the chosen machine, and the chosen
+ * provider on it. Plugins and MCP servers share the remembered choice, so switching tabs or
+ * leaving the page keeps it.
+ */
+export function useProviderTargets(capability: ProviderCapability) {
   const { environments, isReady } = useEnvironments();
+  const sidebarMachines = useSidebarMachines();
   const providerEntries = useEnvironmentProviderEntries();
-  const naming = providerNamingByInstance(providerEntries.flatMap(({ entries }) => entries));
-  const multipleEnvironments = providerEntries.length > 1;
-  const targets = providerEntries.flatMap(({ environmentId, entries }): ProviderTarget[] => {
-    const environment = environments.find((candidate) => candidate.environmentId === environmentId);
-    const machine =
-      multipleEnvironments && environment
-        ? settingsScopeEnvironmentLabel(environment, environments)
-        : null;
-    return entries
-      .filter((entry) => entry.enabled && entry.installed && entry.snapshot[capability] === true)
-      .map((provider) => {
-        const providerNaming = naming.get(provider.instanceId) ?? {
-          driverLabel: provider.displayName,
-          account: null,
-          title: provider.displayName,
-        };
-        return {
-          key: `${environmentId}:${provider.instanceId}`,
-          environmentId,
-          provider,
-          naming: providerNaming,
-          machine,
-          label: machine ? `${providerNaming.title} · ${machine}` : providerNaming.title,
-        };
-      });
+  const [remembered, setRemembered] = useLocalStorage(
+    REMEMBERED_TARGET_KEY,
+    NOTHING_REMEMBERED,
+    RememberedTarget,
+  );
+  const machines = buildProviderMachines({
+    machines: sidebarMachines,
+    entriesByEnvironment: new Map(
+      providerEntries.map(({ environmentId, entries }) => [environmentId, entries]),
+    ),
+    capability,
   });
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const target = targets.find((candidate) => candidate.key === selectedKey) ?? targets[0] ?? null;
+  const machine = pickProviderMachine(machines, remembered.machine);
+  const target = machine
+    ? pickProviderTarget(
+        machine.targets,
+        remembered.instanceId !== null && remembered.driverKind !== null
+          ? { instanceId: remembered.instanceId, driverKind: remembered.driverKind }
+          : null,
+      )
+    : null;
   // Providers arrive with each machine's config; until one answers, none is not "no provider".
   const connecting =
-    target === null &&
+    machine === null &&
     (!isReady ||
       environments.some(
         (environment) =>
           environment.serverConfig === null &&
           connectionMayStillAnswer(environment.connection.phase),
       ));
-  return { targets, target, setSelectedKey, connecting };
+  return {
+    machines,
+    machine,
+    target,
+    connecting,
+    selectMachine: (environmentId: EnvironmentId) =>
+      setRemembered((current) => ({ ...current, machine: environmentId })),
+    selectTarget: (chosen: ProviderTarget) =>
+      setRemembered({
+        machine: chosen.environmentId,
+        instanceId: chosen.provider.instanceId,
+        driverKind: chosen.provider.driverKind,
+      }),
+  };
 }
 
-/** Picks which provider instance to manage; renders nothing when there is only one. */
+function MachineName(props: { readonly machine: SidebarMachine }) {
+  return (
+    <span className="flex min-w-0 items-center gap-2">
+      <EnvironmentMachineIcon
+        aria-hidden
+        kind={props.machine.machineKind}
+        className="size-3.5 shrink-0 text-muted-foreground"
+      />
+      <span className="min-w-0 truncate">{props.machine.label}</span>
+      {props.machine.disconnected ? (
+        <span className="shrink-0 text-muted-foreground text-xs">Offline</span>
+      ) : null}
+    </span>
+  );
+}
+
+/** Picks the machine whose providers the page manages; renders nothing with only one. */
+export function MachinePicker(props: {
+  readonly machines: ReadonlyArray<ProviderTargetMachine>;
+  readonly machine: ProviderTargetMachine;
+  readonly onSelect: (environmentId: EnvironmentId) => void;
+}) {
+  if (props.machines.length < 2) return null;
+  return (
+    <div className="w-36 sm:w-48">
+      <Select
+        value={props.machine.machine.environmentId}
+        onValueChange={(next) => {
+          const chosen = props.machines.find(({ machine }) => machine.environmentId === next);
+          if (chosen) props.onSelect(chosen.machine.environmentId);
+        }}
+      >
+        <SelectTrigger size="sm" aria-label="Machine">
+          <SelectValue>{() => <MachineName machine={props.machine.machine} />}</SelectValue>
+        </SelectTrigger>
+        <SelectPopup alignItemWithTrigger={false}>
+          {props.machines.map(({ machine }) => (
+            <SelectItem key={machine.environmentId} value={machine.environmentId}>
+              <MachineName machine={machine} />
+            </SelectItem>
+          ))}
+        </SelectPopup>
+      </Select>
+    </div>
+  );
+}
+
+/** Picks which provider on the machine to manage; renders nothing when there is only one. */
 export function ProviderTargetToggle(props: {
   readonly targets: ReadonlyArray<ProviderTarget>;
   readonly target: ProviderTarget;
-  readonly onSelect: (key: string) => void;
+  readonly onSelect: (target: ProviderTarget) => void;
 }) {
   if (props.targets.length < 2) return null;
   return (
@@ -80,30 +152,56 @@ export function ProviderTargetToggle(props: {
       value={[props.target.key]}
       onValueChange={(next) => {
         // Pressing the chosen provider again reports no value; the choice stays.
-        if (next[0] !== undefined) props.onSelect(next[0]);
+        const chosen = props.targets.find((candidate) => candidate.key === next[0]);
+        if (chosen) props.onSelect(chosen);
       }}
     >
-      {props.targets.map((candidate) => {
-        const secondary = [candidate.naming.account, candidate.machine]
-          .filter((part) => part !== null)
-          .join(" · ");
-        return (
-          <Toggle key={candidate.key} value={candidate.key}>
-            <ProviderInstanceIcon
-              driverKind={candidate.provider.driverKind}
-              displayName={candidate.provider.displayName}
-              accentColor={candidate.provider.accentColor}
-              acpRegistryIconUrl={candidate.provider.acpRegistryIconUrl}
-              size="compact"
-            />
-            <span className="truncate">{candidate.naming.driverLabel}</span>
-            {secondary ? (
-              <span className="truncate font-normal text-muted-foreground">{secondary}</span>
-            ) : null}
-          </Toggle>
-        );
-      })}
+      {props.targets.map((candidate) => (
+        <Toggle key={candidate.key} value={candidate.key}>
+          <ProviderTargetIcon target={candidate} />
+          <span className="truncate">{candidate.naming.driverLabel}</span>
+          {candidate.naming.account ? (
+            <span className="truncate font-normal text-muted-foreground">
+              {candidate.naming.account}
+            </span>
+          ) : null}
+        </Toggle>
+      ))}
     </ToggleGroup>
+  );
+}
+
+export function ProviderTargetIcon(props: { readonly target: ProviderTarget }) {
+  const { provider } = props.target;
+  return (
+    <ProviderInstanceIcon
+      driverKind={provider.driverKind}
+      displayName={provider.displayName}
+      accentColor={provider.accentColor}
+      acpRegistryIconUrl={provider.acpRegistryIconUrl}
+      size="compact"
+    />
+  );
+}
+
+/** "2 accounts", explaining that the accounts share one setup; nothing for a single account. */
+export function ProviderTargetAccounts(props: { readonly target: ProviderTarget }) {
+  const { accounts, naming } = props.target;
+  if (accounts.length < 2) return null;
+  const names = accounts.map((account) => account.displayName);
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span className="shrink-0 font-normal text-muted-foreground text-xs underline decoration-dotted underline-offset-2" />
+        }
+      >
+        {accounts.length} accounts
+      </TooltipTrigger>
+      <TooltipPopup>
+        {names.join(", ")} share one {naming.driverLabel} setup, so changes here apply to each.
+      </TooltipPopup>
+    </Tooltip>
   );
 }
 

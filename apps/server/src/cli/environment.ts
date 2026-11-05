@@ -104,7 +104,7 @@ const environmentLinkCommand = Command.make("link", {
   ),
 }).pipe(
   Command.withDescription(
-    "Link another CodeShip environment, so agents here can work there. It shows up there under Settings → Connections, where it can be revoked.",
+    "Link another T3.CodeShip environment, so agents here can work there. It shows up there under Settings → Connections, where it can be revoked.",
   ),
   Command.withHandler((flags) =>
     runWithPeerLinks(flags, (links) =>
@@ -162,7 +162,7 @@ const environmentUnlinkCommand = Command.make("unlink", {
 );
 
 export const environmentCommand = Command.make("environment").pipe(
-  Command.withDescription("Link other CodeShip environments, so agents here can work there."),
+  Command.withDescription("Link other T3.CodeShip environments, so agents here can work there."),
   Command.withSubcommands([
     environmentLinkCommand,
     environmentListCommand,

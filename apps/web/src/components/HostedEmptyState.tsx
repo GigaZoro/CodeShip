@@ -45,7 +45,7 @@ export function HostedEmptyState() {
                 ? "Turn it back on, or connect a different computer."
                 : cloudEnabled
                   ? "Your agents run on your computer."
-                  : "Your agents run on your computer. Start CodeShip there first."}
+                  : "Your agents run on your computer. Start T3.CodeShip there first."}
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>

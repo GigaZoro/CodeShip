@@ -18,6 +18,8 @@ import {
 
 import * as DateTime from "effect/DateTime";
 
+import { resolveAutoModelSelection } from "./serverSettings.ts";
+
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
@@ -97,22 +99,36 @@ export function resolveNewThreadModelSelection(input: {
         input.projectId ?? null,
         entry.instanceId,
       ));
+  const anyAccountUsable = (driver: ServerProvider["driver"], model: string) =>
+    input.providers.some((entry) => entry.driver === driver && usable(entry, model));
+  const fallbackSelection = input.settings
+    ? resolveAutoModelSelection({
+        selection: input.fallbackSelection,
+        settings: input.settings,
+        accounts: input.providers,
+        started: false,
+      })
+    : input.fallbackSelection;
+  const autoFallback = fallbackSelection.autoAccount === true;
   const fallback = input.providers.find(
-    (entry) => entry.instanceId === input.fallbackSelection?.instanceId,
+    (entry) => entry.instanceId === fallbackSelection.instanceId,
   );
   if (
     !provider ||
     !window ||
+    !fallback ||
     // The server starts an auto-account thread on another account of the same provider.
-    (selection.autoAccount === true &&
-      input.providers.some(
-        (entry) => entry.driver === provider.driver && usable(entry, selection.model),
-      )) ||
-    !usable(fallback, input.fallbackSelection.model)
+    (selection.autoAccount === true && anyAccountUsable(provider.driver, selection.model)) ||
+    !(autoFallback
+      ? anyAccountUsable(fallback.driver, fallbackSelection.model)
+      : usable(fallback, fallbackSelection.model))
   )
     return unchanged;
   return {
-    selection: withEffortOf(input.fallbackSelection, selection, fallback),
+    // Auto runs the model and effort set for Auto mode.
+    selection: autoFallback
+      ? fallbackSelection
+      : withEffortOf(fallbackSelection, selection, fallback),
     fallback: { provider, resetsAt: window.resetsAt ?? null },
   };
 }
@@ -148,7 +164,7 @@ export const CHATGPT_WORKSPACE_USAGE_LIMIT_CODE =
   "subscription_sharing_workplace_individual_usage_limit_exceeded";
 /** OpenAI's partner guidelines fix this wording; the user sends it to their admin themselves. */
 export const CHATGPT_WORKSPACE_ADMIN_REQUEST =
-  "I've reached the limit for using my ChatGPT plan in CodeShip. Could you increase our workspace's usage limits so I can continue?\n\nGo to admin.openai.com → Workspace → Usage limits. Thank you!";
+  "I've reached the limit for using my ChatGPT plan in T3.CodeShip. Could you increase our workspace's usage limits so I can continue?\n\nGo to admin.openai.com → Workspace → Usage limits. Thank you!";
 
 export function usesChatGptSharing(provider: ServerProvider | null | undefined): boolean {
   return provider?.auth.status === "authenticated" && provider.auth.subscriptionSharing === true;
