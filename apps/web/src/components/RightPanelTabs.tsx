@@ -53,6 +53,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactElement,
   type ReactNode,
+  useContext,
   useEffect,
   useEffectEvent,
   useRef,
@@ -97,6 +98,7 @@ import { useEnvironmentQuery } from "~/state/query";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 
 import { PreviewPanelShell, type PreviewPanelMode } from "./preview/PreviewPanelShell";
+import { InlineRightPanelRefContext } from "./sidebar/needsYouColumn";
 import { FaviconImage } from "./preview/PreviewFaviconIcon";
 import { previewBridge } from "./preview/previewBridge";
 import { PierreEntryIcon } from "./chat/PierreEntryIcon";
@@ -1011,6 +1013,7 @@ function RightPanelTab(
 export function RightPanelTabs(props: RightPanelTabsProps) {
   const focusedSurface = props.surfaces.find((surface) => surface.id === props.activeSurfaceId);
   const ownsDesktopTitleBar = isElectron && props.mode === "inline";
+  const inlineRightPanelRef = useContext(InlineRightPanelRefContext);
   const browserProfiles = useBrowserDefaults().profiles;
   const { resolvedTheme } = useTheme();
   const tabListRef = useRef<HTMLDivElement>(null);
@@ -1317,6 +1320,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
           ownsDesktopTitleBar && "wco:pr-(--workspace-native-controls-inset)",
           props.mode === "inline" && props.maximized && COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
         )}
+        ref={props.mode === "inline" && props.open !== false ? inlineRightPanelRef : undefined}
         data-right-panel-tabbar
       >
         <ScrollArea

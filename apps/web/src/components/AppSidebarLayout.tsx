@@ -43,6 +43,11 @@ import ThreadSidebar from "./Sidebar";
 import { SidebarBrandWidthProbe, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { SidebarNavRail } from "./sidebar/SidebarNavRail";
 import { isSidebarSectionPage, readMainAppHref, useSidebarPanel } from "./sidebar/mainAppLocation";
+import {
+  InlineRightPanelRefContext,
+  NEEDS_YOU_COLUMN_MIN_WIDTH,
+  useNeedsYouColumnVisible,
+} from "./sidebar/needsYouColumn";
 import { SettingsSidebarNav } from "./settings/SettingsSidebarNav";
 import type { SidebarRouteReveal } from "./sidebar/routeReveal";
 import { useSidebarStageBackdropVariant } from "./SidebarStageBackdrop";
@@ -412,7 +417,14 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const routePanelAnimationsActive = panelAnimationsActive && !panelAnimationsSuppressed;
   const isMacosDesktop = isElectron && isMacPlatform(navigator.platform);
   const [sidebarWidth, setSidebarWidth] = useState(readInitialThreadSidebarWidth);
-  const [activityPanelTarget, setActivityPanelTarget] = useState<HTMLDivElement | null>(null);
+  const [needsYouPanelTarget, setNeedsYouPanelTarget] = useState<HTMLDivElement | null>(null);
+  const [needsYouColumnVisible] = useNeedsYouColumnVisible();
+  const [openInlineRightPanels, setOpenInlineRightPanels] = useState(0);
+  const [inlineRightPanelRef] = useState(() => (element: HTMLElement | null) => {
+    if (element === null) return;
+    setOpenInlineRightPanels((count) => count + 1);
+    return () => setOpenInlineRightPanels((count) => count - 1);
+  });
   // A clamped drag may not change width, so viewport changes need a separate subscription.
   const viewportWidth = useSyncExternalStore(subscribeToViewportWidth, readViewportWidth);
   const [brandWidth, setBrandWidth] = useState(0);
@@ -482,16 +494,24 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
             >
               <ThreadSidebar
                 routeReveal={sidebarRouteReveal}
-                activityPanelTarget={viewportWidth >= 1280 ? activityPanelTarget : null}
+                needsYouPanelTarget={
+                  viewportWidth >= NEEDS_YOU_COLUMN_MIN_WIDTH &&
+                  needsYouColumnVisible &&
+                  openInlineRightPanels === 0
+                    ? needsYouPanelTarget
+                    : null
+                }
               />
             </div>
           </div>
           {railOnly ? null : <SidebarRail onDoubleClick={resetSidebarWidth} />}
         </Sidebar>
-        {children}
+        <InlineRightPanelRefContext value={inlineRightPanelRef}>
+          {children}
+        </InlineRightPanelRefContext>
         <div
-          ref={setActivityPanelTarget}
-          className="hidden min-h-0 w-80 shrink-0 flex-col justify-end gap-3 p-3 has-[>section]:flex"
+          ref={setNeedsYouPanelTarget}
+          className="hidden min-h-0 w-80 shrink-0 flex-col justify-end p-3 has-[>section]:flex"
         />
         <BackgroundThreadAnnouncer />
         <SidebarControl />

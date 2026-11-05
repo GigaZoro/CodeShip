@@ -58,8 +58,11 @@ and worktree while you stay in the new thread composer. This requires a Git proj
 ## See what needs you
 
 Threads waiting on you sit together under **Needs you** in a box at the bottom right on web
-and desktop. In narrow windows and on mobile, they appear at the top of the thread list,
-below scheduled task rows: an approval, an answer to a question, a subagent's request, or a guest's message.
+and desktop: an approval, an answer to a question, a subagent's request, or a guest's message.
+Use the **Needs you** button at the top of a thread to hide or show that box, or the button in
+the box's header to move it into the thread list. While it is hidden,
+while the right panel is open, in narrow windows, and on mobile, they appear at the top of the
+thread list, below scheduled task rows.
 It lists them from every machine and project, even when the list is filtered to one, the thread's
 folder is closed, or the thread is pinned or settled. Once you answer, the thread returns to its
 usual place.
@@ -72,8 +75,8 @@ Each scheduled task has a place in the app:
   that starts a new thread each run, its latest one). That thread still appears under
   **Needs you** when it needs an approval or answer.
 - **Regular chat** lists the task's run threads like any other chat. This is the default.
-- **Pinned** adds a row for the task in the collapsible **Scheduled** section, so you can watch
-  its runs and next scheduled start.
+- **Pinned** adds a row for the task in the collapsible **Scheduled** section at the top of the
+  thread list, so you can watch its runs and next scheduled start.
 
 To change the order of pinned tasks on web and desktop, drag one, or right-click it and choose
 **Move up** or **Move down**. Every device shows the same order, and a newly pinned task goes

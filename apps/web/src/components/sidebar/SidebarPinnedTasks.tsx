@@ -72,8 +72,6 @@ import {
   supportsScheduledTaskPlacement,
   useSetScheduledTaskPlacement,
 } from "../../hooks/useSetScheduledTaskPlacement";
-import { attachSidebarTree } from "../../lib/sidebarTree";
-import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import { readLocalApi } from "../../localApi";
 import { cn } from "../../lib/utils";
 import { useQuietThreadShell } from "../../state/entities";
@@ -455,6 +453,7 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
   );
 });
 
+/** Pinned scheduled tasks above the thread list, with each one's run and countdown. */
 export const SidebarPinnedTasksBlock = memo(function SidebarPinnedTasksBlock(props: {
   /** JSON array of environment ids, so the prop stays equal across renders. */
   environmentIdsKey: string;
@@ -464,7 +463,6 @@ export const SidebarPinnedTasksBlock = memo(function SidebarPinnedTasksBlock(pro
   environmentMachineById: ReadonlyMap<EnvironmentId, EnvironmentMachineKind>;
   routeThreadKey: string | null;
   onNavigateToThread: (threadRef: ScopedThreadRef) => void;
-  inPanel: boolean;
 }) {
   const [expanded, setExpanded] = useLocalStorage(
     "t3code:sidebar:scheduled-expanded",
@@ -549,7 +547,7 @@ export const SidebarPinnedTasksBlock = memo(function SidebarPinnedTasksBlock(pro
     moveTo(String(active.id), visibleKeys.indexOf(String(over.id)));
   };
   const showMachine = (JSON.parse(props.environmentIdsKey) as ReadonlyArray<string>).length > 1;
-  const content = (
+  return (
     <>
       <li className="mx-0.5 h-8 shrink-0 list-none">
         <CollapsibleSectionHeader
@@ -594,28 +592,6 @@ export const SidebarPinnedTasksBlock = memo(function SidebarPinnedTasksBlock(pro
           </SortableContext>
         </DndContext>
       )}
-    </>
-  );
-  if (props.inPanel) {
-    return (
-      <section
-        {...workspaceAreaProps("scheduled", 6, "Scheduled")}
-        className="flex max-h-[40dvh] min-h-0 flex-col rounded-xl border border-sidebar-border bg-sidebar p-1.5 text-sidebar-foreground shadow-sm"
-      >
-        <ul
-          ref={attachSidebarTree}
-          role="tree"
-          aria-label="Scheduled tasks"
-          className="flex min-h-0 flex-col gap-px overflow-y-auto overscroll-contain"
-        >
-          {content}
-        </ul>
-      </section>
-    );
-  }
-  return (
-    <>
-      {content}
       <li
         aria-hidden
         data-testid="sidebar-pinned-tasks-divider"

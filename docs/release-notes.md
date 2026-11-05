@@ -1,3 +1,10 @@
+## 2026-11-05 — Needs you steps aside for the panel
+
+- Pinned scheduled tasks always appear in the Scheduled section at the top of the thread list.
+- Show or hide the Needs you box on the right with the new Needs you button at the top of a thread, or move it into the thread list from the box itself.
+- Opening the right panel moves Needs you into the thread list, so the panel reaches the edge of the window.
+- Long thread titles now stop before the buttons at the top of the window.
+
 ## 2026-11-05 — Choose where scheduled tasks show
 
 - Each scheduled task has a Show in choice: None, Regular chat or Pinned. Change it from the task's menu, its row, or the thread's Automations card.

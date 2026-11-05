@@ -1,12 +1,14 @@
-import { PanelBottomIcon, PanelRightIcon, SquareMenuIcon } from "lucide-react";
+import { BellDotIcon, PanelBottomIcon, PanelRightIcon, SquareMenuIcon } from "lucide-react";
 import { Maximize2, Minimize2 } from "lucide";
 import { MorphIcon } from "~/components/MorphIcon";
 import { memo, type ReactNode } from "react";
 
+import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "~/lib/utils";
 
 import type { ThreadPanelPresentation } from "../../rightPanelLayout";
 import { ReleaseNotesButton } from "../ReleaseNotesButton";
+import { NEEDS_YOU_COLUMN_MIN_WIDTH, useNeedsYouColumnVisible } from "../sidebar/needsYouColumn";
 import { PopoverCreateHandle, PopoverTrigger } from "../ui/popover";
 import { Toggle } from "../ui/toggle";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -59,6 +61,8 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
   onToggleThreadPanel,
   onToggleRightPanel,
 }: PanelLayoutControlsProps) {
+  const [needsYouColumnVisible, setNeedsYouColumnVisible] = useNeedsYouColumnVisible();
+  const needsYouColumnFits = useMediaQuery({ min: NEEDS_YOU_COLUMN_MIN_WIDTH });
   const threadPanelToggle = (
     <Toggle
       className="relative shrink-0 [-webkit-app-region:no-drag]"
@@ -93,6 +97,28 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
       className="flex h-full shrink-0 items-center gap-1 [-webkit-app-region:no-drag]"
       data-panel-layout-controls
     >
+      {needsYouColumnFits && !rightPanelOpen ? (
+        <Tooltip>
+          <TooltipTrigger render={<span className="flex shrink-0" />}>
+            <Toggle
+              className="shrink-0 [-webkit-app-region:no-drag]"
+              pressed={needsYouColumnVisible}
+              onPressedChange={(pressed) => setNeedsYouColumnVisible(pressed)}
+              aria-label="Toggle Needs you column"
+              variant="ghost"
+              size="sm"
+            >
+              <BellDotIcon className="size-4" />
+              <ToggleLabel>Needs you</ToggleLabel>
+            </Toggle>
+          </TooltipTrigger>
+          <TooltipPopup side="bottom">
+            {needsYouColumnVisible
+              ? "Move Needs you to the thread list"
+              : "Show Needs you on the right"}
+          </TooltipPopup>
+        </Tooltip>
+      ) : null}
       {showThreadPanelControl ? (
         <>
           {threadPanelControl}

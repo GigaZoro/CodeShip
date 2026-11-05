@@ -109,7 +109,7 @@ export function SidebarDragBoundary(props: {
 }
 
 /** Heads the threads waiting on the user. It never collapses, so none of them can hide. */
-export function SidebarNeedsYouHeader(props: { count: number }) {
+export function SidebarNeedsYouHeader(props: { count: number; action?: ReactNode }) {
   return (
     <li
       role="none"
@@ -119,6 +119,7 @@ export function SidebarNeedsYouHeader(props: { count: number }) {
       <BellDotIcon aria-hidden className="size-3.5 shrink-0" />
       <span className="min-w-0 flex-1 truncate">Needs you</span>
       <span className="shrink-0 font-normal tabular-nums">{props.count}</span>
+      {props.action}
     </li>
   );
 }

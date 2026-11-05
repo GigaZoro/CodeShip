@@ -42,7 +42,7 @@ import {
   WorkspaceBreadcrumbText,
 } from "../WorkspaceBreadcrumb";
 import { observeResize } from "~/lib/observeResize";
-import { cn } from "~/lib/utils";
+import { reserveTitlebarControlsSpace } from "~/lib/titlebarControlsSpace";
 import { textDirection } from "~/textDirection";
 import { useClientSettings } from "../../hooks/useSettings";
 import { useProjects } from "../../state/entities";
@@ -58,7 +58,6 @@ interface ChatHeaderProps {
   activeProject: EnvironmentProject | null;
   parentThreadLink: { threadId: ThreadId; title: string } | null;
   onOpenThread: (threadId: ThreadId) => void;
-  rightPanelOpen: boolean;
   onNewThreadInProject: () => void;
   onOpenProjectSettings?: (() => void) | undefined;
   onFindInThread?: ((threadRef: ScopedThreadRef) => void) | undefined;
@@ -85,7 +84,6 @@ export const ChatHeader = memo(function ChatHeader({
   activeProject,
   parentThreadLink,
   onOpenThread,
-  rightPanelOpen,
   onNewThreadInProject,
   onOpenProjectSettings,
   onFindInThread,
@@ -113,6 +111,10 @@ export const ChatHeader = memo(function ChatHeader({
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const interfaceFont = useClientSettings((settings) => settings.fontFamilySans);
   const breadcrumbContainerRef = useRef<HTMLDivElement>(null);
+  const [attachBreadcrumbContainer] = useState(() => (element: HTMLDivElement | null) => {
+    breadcrumbContainerRef.current = element;
+    return element === null ? undefined : reserveTitlebarControlsSpace(element);
+  });
   const [collapseParentTitle, setCollapseParentTitle] = useState(false);
   const activeThreadRef = scopeThreadRef(activeThreadEnvironmentId, activeThreadId);
   const canOperateThread = useEnvironmentScope(
@@ -306,11 +308,8 @@ export const ChatHeader = memo(function ChatHeader({
   };
   return (
     <div
-      ref={breadcrumbContainerRef}
-      className={cn(
-        "flex min-w-0 flex-1 items-center gap-2 sm:gap-3",
-        rightPanelOpen ? "pr-20 xl:pr-56" : "pr-36 xl:pr-96",
-      )}
+      ref={attachBreadcrumbContainer}
+      className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3"
       onContextMenu={handleHeaderContextMenu}
     >
       <WorkspaceBreadcrumb

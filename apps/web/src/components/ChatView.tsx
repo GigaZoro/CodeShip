@@ -3415,7 +3415,6 @@ export default function ChatView(props: ChatViewProps) {
               activeProject={activeProject ?? null}
               parentThreadLink={headerParentThreadLink}
               onOpenThread={onOpenRelatedThreadStable}
-              rightPanelOpen={inlineRightPanelOwnsTitleBar}
               onNewThreadInProject={handleNewThreadInActiveProjectStable}
               {...(activeDraftLogicalProjectKey
                 ? { onOpenProjectSettings: handleOpenDraftProjectSettingsStable }
