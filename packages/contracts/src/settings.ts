@@ -1088,6 +1088,7 @@ export const WorktreeCleanup = Schema.NullOr(
 export type WorktreeCleanup = typeof WorktreeCleanup.Type;
 
 export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
+  "skillAvailability",
   "worktreeCleanup",
   "defaultModelSelection",
   "defaultRuntimeMode",
@@ -1127,6 +1128,7 @@ export type ProjectProviderInstanceOverride = typeof ProjectProviderInstanceOver
 /** Absent keys inherit; null is a value for nullable settings.
  * providerInstances overrides fields per instance; other keys replace the whole setting. */
 export const ProjectSettingsOverrides = Schema.Struct({
+  skillAvailability: Schema.optionalKey(Schema.Literals(["provider", "shared"])),
   worktreeCleanup: Schema.optionalKey(WorktreeCleanup),
   defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
@@ -1267,6 +1269,9 @@ export const ServerSettings = Schema.Struct({
   ),
   responseStreamingMode: ResponseStreamingMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("paragraph" as const)),
+  ),
+  skillAvailability: Schema.Literals(["provider", "shared"]).pipe(
+    Schema.withDecodingDefault(Effect.succeed("provider")),
   ),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   autoUpdateProviders: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -1675,6 +1680,7 @@ const ModelSelectionPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  skillAvailability: Schema.optionalKey(Schema.Literals(["provider", "shared"])),
   setModelFavorites: Schema.optionalKey(
     Schema.Array(Schema.Struct({ ...ModelFavorite.fields, favorite: Schema.Boolean })),
   ),

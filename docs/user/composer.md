@@ -236,9 +236,15 @@ composer when it is empty, and is discarded otherwise.
 
 ## Commands and skills
 
-Type `/` for commands or `$` to add a skill from the selected environment and
-provider. On mobile, both are also available before starting a thread on
-**New task**.
+Type `/` for commands or `$` to add a skill from the selected environment. On
+mobile, both are also available before starting a thread on **New task**.
+
+**Settings → Chat & diffs → Skill availability** (or **Settings → Chat** on
+mobile) defaults to **By provider**. Choose **Shared across models** to use skills
+from other enabled, installed providers on the same environment. This can also be
+set for a project. The selected provider wins when names overlap; disabled and
+agent-only skills are not offered. Skills that require tools the selected model
+cannot use may not work.
 
 Put skills you want in every provider in `~/.agents/skills` on the environment's
 machine. Codex, Cursor, and fx read that folder themselves, and CodeShip adds it
@@ -249,7 +255,7 @@ provider use the same folders, unless you gave an account its own config
 directory.
 
 The slash menu also includes skills unless you turn off **Settings → Chat & diffs →
-Show skills in slash menu**, under Advanced. Only skills enabled for the provider are listed.
+Show skills in slash menu**, under Advanced. This follows the same skill availability setting.
 
 On web and desktop, the **Skills** tab of **Extensions** in the sidebar rail lists every provider's skills
 on each connected machine, with what each one does and where its `SKILL.md`

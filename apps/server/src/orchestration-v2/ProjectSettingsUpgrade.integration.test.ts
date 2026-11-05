@@ -1,3 +1,4 @@
+import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { assert, it } from "@effect/vitest";
@@ -134,7 +135,10 @@ const layerRuntime = (dbPath: string) => {
     ),
   );
   return Layer.mergeAll(
-    RuntimeLayer.layer.pipe(Layer.provide(RuntimeLayer.layerProjectService)),
+    RuntimeLayer.layer.pipe(
+      Layer.provide(ProviderSkillsTestkit.layer),
+      Layer.provide(RuntimeLayer.layerProjectService),
+    ),
     RuntimeLayer.layerProjectService,
   ).pipe(
     Layer.provide(

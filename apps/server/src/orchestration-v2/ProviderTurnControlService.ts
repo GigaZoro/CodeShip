@@ -1,4 +1,6 @@
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import {
   MessageId,
   type NodeId,
@@ -19,6 +21,9 @@ import * as Schema from "effect/Schema";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import * as ProviderSkills from "../provider/ProviderSkills.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 
 const yieldToRuntime = Effect.yieldNow.pipe(
   Effect.andThen(
@@ -87,12 +92,19 @@ export class ProviderTurnControlServiceV2 extends Context.Service<
 export const layer: Layer.Layer<
   ProviderTurnControlServiceV2,
   never,
-  ProjectionStore.ProjectionStoreV2 | ProviderSessionManager.ProviderSessionManagerV2
+  | ProjectionStore.ProjectionStoreV2
+  | ProviderSessionManager.ProviderSessionManagerV2
+  | ProviderSkills.ProviderSkills
+  | ServerSettings.ServerSettingsService
+  | ProjectService.ProjectService
 > = Layer.effect(
   ProviderTurnControlServiceV2,
   Effect.gen(function* () {
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const skills = yield* ProviderSkills.ProviderSkills;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const projects = yield* ProjectService.ProjectService;
 
     const load = Effect.fn("ProviderTurnControlService.load")(function* (input: {
       readonly threadId: ThreadId;
@@ -367,6 +379,42 @@ export const layer: Layer.Layer<
               cause: "The persisted steering message or target run is missing.",
             });
           }
+          let text = message.text;
+          if (message.createdBy === "user" && text.search(SKILL_MENTION_PATTERN) !== -1) {
+            const thread = yield* projections.getThread(input.threadId);
+            const effective = resolveProjectSettings(
+              yield* settings.getSettings,
+              thread.projectId,
+            ).settings;
+            if (effective.skillAvailability === "shared") {
+              const project =
+                thread.worktreePath === null
+                  ? yield* projects.getById(thread.projectId)
+                  : Option.none();
+              text = yield* skills
+                .expandSkillMentions({
+                  text,
+                  instanceId: loaded.providerThread.providerInstanceId,
+                  cwd:
+                    thread.worktreePath ??
+                    (Option.isSome(project) ? project.value.workspaceRoot : null),
+                  settings: effective,
+                })
+                .pipe(
+                  // A separate run can report the load failure without failing the active turn.
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderTurnControlError({
+                        threadId: input.threadId,
+                        operation: "steer",
+                        providerTurnId: input.providerTurnId,
+                        requiresNewTurn: true,
+                        cause,
+                      }),
+                  ),
+                );
+            }
+          }
           yield* loaded.session.value
             .steerTurn({
               threadId: input.threadId,
@@ -376,7 +424,7 @@ export const layer: Layer.Layer<
               message: {
                 messageId: message.id,
                 text: projectComposerContextForProvider({
-                  text: message.text,
+                  text,
                   records: message.context?.records ?? [],
                 }),
                 attachments: message.attachments,

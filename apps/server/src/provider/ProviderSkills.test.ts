@@ -4,6 +4,7 @@ import {
   PROVIDER_SKILL_MAX_BYTES,
   PROVIDER_SKILL_MAX_FILES,
   ProviderInstanceId,
+  ProviderDriverKind,
   type ProviderSkillFile,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -53,6 +54,7 @@ const makeHarness = Effect.fn("test.makeHarness")(function* (options?: {
     [bareId]: { instanceId: bareId, continuationIdentity } as unknown as ProviderInstance,
   };
   const reported: Array<{ path: string; name?: string; enabled?: boolean }> = [];
+  const peerSkills: ServerProvider["skills"][number][] = [];
   // Skills whose reported state ignores the toggle, like one pinned by a project settings file.
   const pinned = new Set<string>();
   const refresh = { fails: false };
@@ -82,13 +84,27 @@ const makeHarness = Effect.fn("test.makeHarness")(function* (options?: {
         getProviders: Effect.sync(
           () =>
             [
-              { instanceId: sourceId, skills: reported, workspaceSnapshots: [] },
+              {
+                instanceId: sourceId,
+                enabled: true,
+                installed: true,
+                skills: reported,
+                workspaceSnapshots: [],
+              },
+              {
+                instanceId: targetId,
+                enabled: true,
+                installed: true,
+                skills: peerSkills,
+                workspaceSnapshots: [],
+              },
             ] as unknown as ReadonlyArray<ServerProvider>,
         ),
         refreshInstance: (id) =>
           refresh.fails
             ? Effect.die("probe failed")
             : Queue.offer(refreshed, id).pipe(Effect.as<ReadonlyArray<ServerProvider>>([])),
+        refreshWorkspaceSnapshot: () => Effect.succeed([]),
       }),
     ),
     Layer.provide(NodeServices.layer),
@@ -127,6 +143,7 @@ const makeHarness = Effect.fn("test.makeHarness")(function* (options?: {
     targetSkills,
     refreshed,
     reported,
+    peerSkills,
     toggled,
     pinned,
     refresh,
@@ -136,6 +153,95 @@ const makeHarness = Effect.fn("test.makeHarness")(function* (options?: {
 });
 
 it.layer(NodeServices.layer)("ProviderSkills", (it) => {
+  it.effect(
+    "expands shared user skills with resources while preserving native and disabled invocations",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        const skillPath = yield* h.writeSkill("review", {
+          "SKILL.md": "Read references/checklist.md. Ask $native to check the result.",
+          "references/checklist.md": "Check the boundary.",
+        });
+        h.reported[0] = { path: skillPath, name: "review", enabled: true };
+        h.peerSkills.push({ name: "native", path: "/native/SKILL.md", enabled: true });
+        yield* Effect.gen(function* () {
+          const service = yield* ProviderSkills.ProviderSkills;
+          const input = {
+            text: "$review and €review with $native, $unknown and $500",
+            instanceId: targetId,
+            cwd: "/workspace",
+            settings: { skillAvailability: "shared" as const, providerInstances: {} },
+          };
+          const expanded = yield* service.expandSkillMentions(input);
+          assert.isTrue(
+            expanded.startsWith(
+              "[Skill: review] and [Skill: review] with $native, $unknown and $500",
+            ),
+          );
+          const payload = JSON.parse(expanded.slice(expanded.lastIndexOf("\n") + 1));
+          assert.deepEqual(payload, [
+            {
+              name: "review",
+              path: skillPath,
+              baseDirectory: h.path.dirname(skillPath),
+              instructions: "Read references/checklist.md. Ask $native to check the result.",
+            },
+          ]);
+          assert.isFalse(expanded.includes("Ask $native"));
+          assert.equal(
+            yield* service.expandSkillMentions({
+              ...input,
+              settings: { ...input.settings, skillAvailability: "provider" },
+            }),
+            input.text,
+          );
+          h.peerSkills.push({ name: "review", path: "/disabled/SKILL.md", enabled: false });
+          assert.equal(yield* service.expandSkillMentions(input), input.text);
+          h.peerSkills.pop();
+          assert.equal(
+            yield* service.expandSkillMentions({
+              ...input,
+              settings: {
+                ...input.settings,
+                providerInstances: {
+                  [sourceId]: {
+                    driver: ProviderDriverKind.make("claudeAgent"),
+                    enabled: false,
+                    config: {},
+                  },
+                },
+              },
+            }),
+            input.text,
+          );
+          h.reported[0]!.enabled = false;
+          assert.equal(yield* service.expandSkillMentions(input), input.text);
+        }).pipe(Effect.provide(h.layer));
+      }),
+  );
+
+  it.effect("refuses missing or oversized shared instructions before dispatch", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      const skillPath = yield* h.writeSkill("large", { "SKILL.md": "x".repeat(256 * 1024 + 1) });
+      h.reported[0] = { path: skillPath, name: "large", enabled: true };
+      yield* Effect.gen(function* () {
+        const service = yield* ProviderSkills.ProviderSkills;
+        const input = {
+          text: "$large",
+          instanceId: targetId,
+          cwd: null,
+          settings: { skillAvailability: "shared" as const, providerInstances: {} },
+        };
+        assert.equal((yield* Effect.flip(service.expandSkillMentions(input))).reason, "tooLarge");
+        yield* h.fs.remove(skillPath);
+        assert.equal(
+          (yield* Effect.flip(service.expandSkillMentions(input))).reason,
+          "unavailable",
+        );
+      }).pipe(Effect.provide(h.layer));
+    }),
+  );
   it.effect("copies a skill between instances byte for byte and skips symlinks", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness();

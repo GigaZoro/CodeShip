@@ -495,6 +495,10 @@
       "types": "./src/fileLinks.ts",
       "import": "./src/fileLinks.ts"
     },
+    "./providerSkills": {
+      "types": "./src/providerSkills.ts",
+      "import": "./src/providerSkills.ts"
+    },
     "./inlineSkills": {
       "types": "./src/inlineSkills.ts",
       "import": "./src/inlineSkills.ts"

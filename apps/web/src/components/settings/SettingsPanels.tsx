@@ -1012,6 +1012,42 @@ export function ChatSettingsPanel() {
             />
           }
         />
+        <SettingsRow
+          {...searchableSetting("skill-availability")}
+          serverScoped
+          settingKeys={["skillAvailability"]}
+          description="Share skills from enabled providers on this environment. Skills requiring tools the selected model cannot use may not work."
+          resetAction={
+            settings.skillAvailability !== DEFAULT_UNIFIED_SETTINGS.skillAvailability ? (
+              <SettingResetButton
+                label="skill availability"
+                onClick={() =>
+                  updateSettings({ skillAvailability: DEFAULT_UNIFIED_SETTINGS.skillAvailability })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.skillAvailability}
+              onValueChange={(value) => {
+                if (value === "provider" || value === "shared") {
+                  updateSettings({ skillAvailability: value });
+                }
+              }}
+            >
+              <SelectTrigger size="sm" className="w-full sm:w-48" aria-label="Skill availability">
+                <SelectValue>
+                  {settings.skillAvailability === "shared" ? "Shared across models" : "By provider"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem value="provider">By provider</SelectItem>
+                <SelectItem value="shared">Shared across models</SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
         <AdvancedSettings targetIds={[searchableSetting("skills-in-slash-menu").id]}>
           <SettingsRow
             {...searchableSetting("skills-in-slash-menu")}

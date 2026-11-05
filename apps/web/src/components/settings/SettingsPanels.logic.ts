@@ -403,6 +403,7 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   restorable("/settings/chat", "Open pull requests and changes panels proactively", [
     "proactivePanelsEnabled",
   ]),
+  restorable("/settings/chat", "Skill availability", ["skillAvailability"]),
   restorable("/settings/chat", "Show skills in slash menu", ["showSkillsInSlashMenu"]),
   restorable("/settings/chat", "Rich text composer", ["composerRichTextEnabled"]),
   restorable("/settings/chat", "Follow-up behavior", ["followUpBehavior"]),

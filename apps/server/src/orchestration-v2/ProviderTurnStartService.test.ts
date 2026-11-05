@@ -1,3 +1,5 @@
+import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
+import * as ProviderSkills from "../provider/ProviderSkills.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
@@ -66,11 +68,19 @@ const normalize = (target: string) => {
   }
   return `/${parts.join("/")}`;
 };
-const layerWorktreeLocation = (worktreesDir = managedWorktreesDir) =>
+const layerWorktreeLocation = (
+  worktreesDir = managedWorktreesDir,
+  skillFailure?: ProviderSkills.ProviderSkillInvocationError,
+) =>
   Layer.mergeAll(
     Path.layer,
     Layer.mock(ServerConfig.ServerConfig)({ worktreesDir } as ServerConfig.ServerConfig["Service"]),
     ServerSettings.layerTest(),
+    skillFailure === undefined
+      ? ProviderSkillsTestkit.layer
+      : Layer.mock(ProviderSkills.ProviderSkills)({
+          expandSkillMentions: () => Effect.fail(skillFailure),
+        }),
   );
 
 function startWithMissingWorktree(
@@ -278,6 +288,7 @@ function makeLocalCommandHarness(input: {
   readonly createdBy?: "agent" | "system";
   readonly logoutFailure?: string;
   readonly openFailure?: unknown;
+  readonly skillFailure?: ProviderSkills.ProviderSkillInvocationError;
   readonly ensureThreadFailure?: unknown;
   readonly historyReadFailureAfterFallback?: unknown;
   readonly interruptOpen?: boolean;
@@ -919,7 +930,7 @@ function makeLocalCommandHarness(input: {
             }),
         }),
         IdAllocator.layer,
-        layerWorktreeLocation(input.worktreesDir),
+        layerWorktreeLocation(input.worktreesDir, input.skillFailure),
         input.fileSystem === undefined
           ? FileSystem.layerNoop({ exists: () => Effect.succeed(true) })
           : Layer.succeed(FileSystem.FileSystem, input.fileSystem),
@@ -1607,6 +1618,28 @@ effectIt.effect("starts another provider in the same checkout while a turn is pe
     yield* Deferred.succeed(releaseTurn, undefined);
     yield* Fiber.join(pending);
   }),
+);
+
+effectIt.effect.each(["unavailable", "tooLarge"] as const)(
+  "settles a shared skill %s failure before starting the model",
+  (reason) =>
+    Effect.gen(function* () {
+      const skillFailure = new ProviderSkills.ProviderSkillInvocationError({
+        skillName: "review",
+        reason,
+      });
+      const harness = makeLocalCommandHarness({ text: "$review", nativeTurn: true, skillFailure });
+      yield* harness.start;
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      expect(harness.projection().turnItems).toMatchObject([
+        {
+          type: "error",
+          title: "Shared skill could not be loaded",
+          failure: { message: skillFailure.message },
+        },
+      ]);
+    }),
 );
 
 effectIt.effect("terminalizes a starting run when its provider session cannot open", () =>

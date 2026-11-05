@@ -3,6 +3,8 @@ import {
   PROVIDER_SKILL_MAX_FILES,
   ProviderSkillError,
   type ProviderInstanceId,
+  type ServerSettings,
+  providerInstanceConfigEnabledFlag,
   type ProviderSkillErrorReason,
   type ProviderSkillExportInput,
   type ProviderSkillExportResult,
@@ -17,7 +19,15 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import {
+  formatSharedSkillPrompt,
+  resolveAvailableProviderSkills,
+} from "@t3tools/shared/providerSkills";
+import { matchInlineSkills } from "@t3tools/shared/inlineSkills";
+import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "./ProviderRegistry.ts";
@@ -33,6 +43,22 @@ const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
 const STAGING_DIRECTORY = ".codeship-staging";
 const FILE_MODE = 0o644;
 const EXECUTABLE_MODE = 0o755;
+const MAX_INVOKED_SKILL_BYTES = 256 * 1024;
+
+export class ProviderSkillInvocationError extends Schema.TaggedError<ProviderSkillInvocationError>()(
+  "ProviderSkillInvocationError",
+  {
+    skillName: Schema.String,
+    reason: Schema.Literals(["unavailable", "tooLarge"]),
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return this.reason === "tooLarge"
+      ? `The shared skill '${this.skillName}' exceeds the 256 KB instruction limit.`
+      : `The shared skill '${this.skillName}' has no readable local instruction file. Use its original provider or install a local copy.`;
+  }
+}
 
 const hasControlCharacter = (value: string) => {
   for (const character of value) {
@@ -51,6 +77,12 @@ const isSafeRelativePath = (value: string) =>
 export class ProviderSkills extends Context.Service<
   ProviderSkills,
   {
+    readonly expandSkillMentions: (input: {
+      readonly text: string;
+      readonly instanceId: ProviderInstanceId;
+      readonly cwd: string | null;
+      readonly settings: Pick<ServerSettings, "skillAvailability" | "providerInstances">;
+    }) => Effect.Effect<string, ProviderSkillInvocationError>;
     readonly exportSkill: (
       input: ProviderSkillExportInput,
     ) => Effect.Effect<ProviderSkillExportResult, ProviderSkillError>;
@@ -481,7 +513,109 @@ const make = Effect.gen(function* () {
     }
   });
 
-  return ProviderSkills.of({ exportSkill, installSkill, setSkillEnabled });
+  const expandSkillMentions = Effect.fn("ProviderSkills.expandSkillMentions")(function* (input: {
+    readonly text: string;
+    readonly instanceId: ProviderInstanceId;
+    readonly cwd: string | null;
+    readonly settings: Pick<ServerSettings, "skillAvailability" | "providerInstances">;
+  }) {
+    if (
+      input.settings.skillAvailability !== "shared" ||
+      input.text.search(SKILL_MENTION_PATTERN) === -1
+    ) {
+      return input.text;
+    }
+    const inScope = (provider: { readonly instanceId: ProviderInstanceId }) => {
+      const config = input.settings.providerInstances[provider.instanceId];
+      return config === undefined || providerInstanceConfigEnabledFlag(config) !== false;
+    };
+    const initial = (yield* providers.getProviders).filter(inScope);
+    if (input.cwd !== null) {
+      yield* Effect.forEach(
+        initial.filter((provider) => provider.enabled && provider.installed),
+        (provider) =>
+          providers.refreshWorkspaceSnapshot({ instanceId: provider.instanceId, cwd: input.cwd! }),
+        { concurrency: 4, discard: true },
+      );
+    }
+    const snapshots = (yield* providers.getProviders).filter(inScope);
+    const nativeNames = new Set(
+      resolveAvailableProviderSkills({
+        ...input,
+        providers: snapshots,
+        availability: "provider",
+      }).map((skill) => skill.name.trim().toLowerCase()),
+    );
+    const foreign = resolveAvailableProviderSkills({
+      ...input,
+      providers: snapshots,
+      availability: "shared",
+    }).filter(
+      (skill) =>
+        skill.enabled &&
+        skill.userInvocable !== false &&
+        !nativeNames.has(skill.name.trim().toLowerCase()),
+    );
+    const mentions = [...matchInlineSkills(input.text, foreign)];
+    if (mentions.length === 0) return input.text;
+    const unique = [...new Map(mentions.map(({ skill }) => [skill.name, skill])).values()];
+    let totalBytes = 0;
+    const instructions = yield* Effect.forEach(unique, (skill) =>
+      Effect.gen(function* () {
+        if (!path.isAbsolute(skill.path)) {
+          return yield* new ProviderSkillInvocationError({
+            skillName: skill.name,
+            reason: "unavailable",
+          });
+        }
+        const info = yield* fileSystem.stat(skill.path);
+        if (info.type !== "File") {
+          return yield* new ProviderSkillInvocationError({
+            skillName: skill.name,
+            reason: "unavailable",
+          });
+        }
+        const remaining = MAX_INVOKED_SKILL_BYTES - totalBytes;
+        if (Number(info.size) > remaining) {
+          return yield* new ProviderSkillInvocationError({
+            skillName: skill.name,
+            reason: "tooLarge",
+          });
+        }
+        const chunks = yield* Stream.runCollect(
+          fileSystem.stream(skill.path, { bytesToRead: remaining + 1 }),
+        );
+        const contents = Buffer.concat(chunks);
+        totalBytes += contents.length;
+        if (totalBytes > MAX_INVOKED_SKILL_BYTES) {
+          return yield* new ProviderSkillInvocationError({
+            skillName: skill.name,
+            reason: "tooLarge",
+          });
+        }
+        return {
+          name: skill.name,
+          path: skill.path,
+          baseDirectory: path.dirname(skill.path),
+          instructions: contents.toString("utf8"),
+        };
+      }).pipe(
+        Effect.catchTags({
+          PlatformError: (cause) =>
+            Effect.fail(
+              new ProviderSkillInvocationError({
+                skillName: skill.name,
+                reason: "unavailable",
+                cause,
+              }),
+            ),
+        }),
+      ),
+    );
+    return formatSharedSkillPrompt(input.text, instructions);
+  });
+
+  return ProviderSkills.of({ exportSkill, installSkill, setSkillEnabled, expandSkillMentions });
 });
 
 export const layer = Layer.effect(ProviderSkills, make);

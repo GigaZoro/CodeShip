@@ -232,9 +232,11 @@ describe("settings search targets", () => {
     expect(isSettingsSearchScopeAvailable(fallback.scope, "environment")).toBe(true);
     expect(isSettingsSearchScopeAvailable(fallback.scope, "all")).toBe(true);
     expect(isSettingsSearchScopeAvailable(fallback.scope, "project")).toBe(false);
-    const streaming = getSettingsSearchTargetScope("response-streaming")!;
-    expect(streaming.scope).toBe("project-defaults");
-    expect(isSettingsSearchScopeAvailable(streaming.scope, "project")).toBe(true);
+    for (const id of ["response-streaming", "skill-availability"]) {
+      const setting = getSettingsSearchTargetScope(id)!;
+      expect(setting.scope).toBe("project-defaults");
+      expect(isSettingsSearchScopeAvailable(setting.scope, "project")).toBe(true);
+    }
     for (const id of [
       "pull-request-links-open-in-app",
       "sidebar-grouping",

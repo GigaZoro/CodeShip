@@ -71,11 +71,13 @@ describe("mobile project settings scope", () => {
     const firstSettings: ServerSettings = {
       ...DEFAULT_SERVER_SETTINGS,
       responseStreamingMode: "paragraph",
+      skillAvailability: "provider",
       projectSettingsOverrides: { [firstProject]: { defaultAutoPull: true } },
     };
     const secondSettings: ServerSettings = {
       ...DEFAULT_SERVER_SETTINGS,
       responseStreamingMode: "turn",
+      skillAvailability: "shared",
       projectSettingsOverrides: {},
     };
     const targets = resolveMobileSettingsTargets(
@@ -86,21 +88,31 @@ describe("mobile project settings scope", () => {
       ],
     );
 
+    expect(uniformMobileSetting(targets, "skillAvailability")).toBeNull();
     const writes = planMobileScopedSettingsPatch(targets, true, {
       responseStreamingMode: "turn",
+      skillAvailability: "shared",
     });
     expect(writes).toEqual([
       {
         environmentId: firstId,
         patch: {
           projectSettingsOverrides: {
-            [firstProject]: { defaultAutoPull: true, responseStreamingMode: "turn" },
+            [firstProject]: {
+              defaultAutoPull: true,
+              responseStreamingMode: "turn",
+              skillAvailability: "shared",
+            },
           },
         },
       },
       {
         environmentId: secondId,
-        patch: { projectSettingsOverrides: { [secondProject]: { responseStreamingMode: "turn" } } },
+        patch: {
+          projectSettingsOverrides: {
+            [secondProject]: { responseStreamingMode: "turn", skillAvailability: "shared" },
+          },
+        },
       },
     ]);
     expect(firstSettings.responseStreamingMode).toBe("paragraph");
@@ -170,7 +182,10 @@ describe("managed settings across environments", () => {
       ...environment(secondId, DEFAULT_SERVER_SETTINGS),
       serverConfig: {
         ...environment(secondId, DEFAULT_SERVER_SETTINGS).serverConfig,
-        managedPolicy: { organization: "Example Corp", lockedSettings: ["storageCleanup"] },
+        managedPolicy: {
+          organization: "Example Corp",
+          lockedSettings: ["storageCleanup", "skillAvailability"],
+        },
       },
     } as SettingsTarget;
     const targets = resolveMobileSettingsTargets(
@@ -184,6 +199,7 @@ describe("managed settings across environments", () => {
     expect(managedSettingReason(targets, "defaultAutoPull", "storageCleanup")).toBe(
       "Managed by Example Corp.",
     );
+    expect(managedSettingReason(targets, "skillAvailability")).toBe("Managed by Example Corp.");
     expect(managedSettingReason(targets, "defaultAutoPull")).toBeUndefined();
     expect(managedSettingReason(targets.slice(0, 1), "storageCleanup")).toBeUndefined();
   });

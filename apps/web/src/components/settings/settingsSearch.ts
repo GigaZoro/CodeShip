@@ -588,6 +588,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["proactive automatically open diff pull request pr right panel agent completion"],
   },
   {
+    id: "skill-availability",
+    title: "Skill availability",
+    to: "/settings/chat",
+    scope: "project-defaults",
+    searchTerms: ["skills shared across models by provider dollar $ slash /"],
+  },
+  {
     id: "skills-in-slash-menu",
     title: "Show skills in slash menu",
     to: "/settings/chat",

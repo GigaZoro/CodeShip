@@ -234,7 +234,8 @@ import {
 } from "../state/server";
 import { useInheritedDefaultModelSelection } from "../state/inheritedDefaultModel";
 import { threadEnvironment } from "../state/threads";
-import { resolveProviderSkillsForCwd } from "@t3tools/client-runtime/providerSkills";
+import { resolveSkillProvidersForProject } from "@t3tools/client-runtime/providerSkills";
+import { resolveAvailableProviderSkills } from "@t3tools/shared/providerSkills";
 import { vcsEnvironment } from "../state/vcs";
 import {
   type EnvironmentPresentation,
@@ -377,7 +378,6 @@ const EMPTY_USAGE_LIMIT_SOURCES: UsageLimitSourceSnapshots = [];
 import type { CodexArtifactTemplate } from "@t3tools/shared/codexArtifactTemplates";
 
 const EMPTY_FEEDBACK_SUBMISSIONS: ReadonlyArray<CodexFeedbackSubmission> = [];
-const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_TURN_ITEMS: ThreadStructure["turnItems"] = [];
 const EMPTY_AUTO_UPDATE_ENVIRONMENTS: ReadonlyArray<EnvironmentPresentation> = [];
 const EMPTY_COMPOSER_BANNER_ITEMS: ReadonlyArray<ComposerBannerStackItem> = [];
@@ -2664,9 +2664,16 @@ export default function ChatView(props: ChatViewProps) {
     isDesktop: isElectron,
   });
   const getShortcutContextStable = useStableCallback(getShortcutContext);
-  const timelineSkills = activeProviderStatus
-    ? resolveProviderSkillsForCwd(activeProviderStatus, gitCwd)
-    : EMPTY_PROVIDER_SKILLS;
+  const timelineSkills = resolveAvailableProviderSkills({
+    providers: resolveSkillProvidersForProject(
+      providerStatuses,
+      settings,
+      activeThread?.projectId ?? null,
+    ),
+    instanceId: activeProviderStatus?.instanceId,
+    cwd: gitCwd,
+    availability: activeProjectSettings.settings.skillAvailability,
+  });
   const threadFindEnabled = isServerThread && serverConfig?.threadFind === true;
   const isThreadFindActive = useThreadFindOpen(activeThreadRef, threadFindEnabled);
   const openThreadFindStable = useStableCallback((threadRef: ScopedThreadRef) => {

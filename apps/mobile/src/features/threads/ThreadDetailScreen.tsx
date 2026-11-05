@@ -34,7 +34,9 @@ import {
   type EnvironmentThreadStatus,
 } from "@t3tools/client-runtime/state/threads";
 import { useKeyboardChatComposerInset, useKeyboardScrollToEnd } from "@legendapp/list/keyboard";
-import { resolveProviderSkillsForCwd } from "@t3tools/client-runtime/providerSkills";
+import { resolveSkillProvidersForProject } from "@t3tools/client-runtime/providerSkills";
+import { resolveAvailableProviderSkills } from "@t3tools/shared/providerSkills";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import { HeaderHeightContext } from "@react-navigation/elements";
 import { NativeLayoutObserver } from "../../native/NativeLayoutObserver";
@@ -1212,14 +1214,21 @@ function ThreadDetailBody(
   );
   const selectedInstanceId = props.selectedThread.modelSelection.instanceId;
   useAtomMount(threadStreamHaptics(props.selectedThreadDetailRef));
-  const selectedProviderSkills = (() => {
-    const provider = props.serverConfig?.providers.find(
-      (candidate) => candidate.instanceId === selectedInstanceId,
-    );
-    return provider
-      ? resolveProviderSkillsForCwd(provider, props.threadCwd ?? props.projectWorkspaceRoot)
-      : [];
-  })();
+  const selectedProviderSkills = props.serverConfig
+    ? resolveAvailableProviderSkills({
+        providers: resolveSkillProvidersForProject(
+          props.serverConfig.providers,
+          props.serverConfig.settings,
+          props.selectedThread.projectId,
+        ),
+        instanceId: selectedInstanceId,
+        cwd: props.threadCwd ?? props.projectWorkspaceRoot,
+        availability: resolveProjectSettings(
+          props.serverConfig.settings,
+          props.selectedThread.projectId,
+        ).settings.skillAvailability,
+      })
+    : [];
 
   const currentPendingApprovals = () =>
     props.selectedThreadDetailRef === null

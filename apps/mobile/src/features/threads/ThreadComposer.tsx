@@ -1,3 +1,5 @@
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { resolveSkillProvidersForProject } from "@t3tools/client-runtime/providerSkills";
 import { useSidebarWorkspaceTabs } from "../workspace/useSystemWorkspaceTabBar";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
@@ -549,6 +551,17 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     pullRequestRepository: project?.repositoryIdentity?.displayName ?? null,
     threadPullRequests: props.selectedThread.pullRequests,
     selectedProviderStatus,
+    skillProviders: props.serverConfig
+      ? resolveSkillProvidersForProject(
+          props.serverConfig.providers,
+          props.serverConfig.settings,
+          props.selectedThread.projectId,
+        )
+      : [],
+    skillAvailability: props.serverConfig
+      ? resolveProjectSettings(props.serverConfig.settings, props.selectedThread.projectId).settings
+          .skillAvailability
+      : "provider",
     hasThread: !props.isDraft,
     hasCompactableConversation: props.hasCompactableConversation,
     onChangeDraftMessage: props.onChangeDraftMessage,

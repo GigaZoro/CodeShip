@@ -97,13 +97,18 @@ describe("page reset", () => {
     ...DEFAULT_UNIFIED_SETTINGS,
     sendShortcut: "mod-enter",
     diffLayout: "split",
+    skillAvailability: "shared",
   } as const;
 
   it("lists and restores only the settings its page shows", () => {
     expect(changedRestorableSettingLabels(changed, "/settings/keybindings")).toEqual([
       "Send shortcut",
     ]);
-    expect(changedRestorableSettingLabels(changed, "/settings/chat")).toEqual(["Diff layout"]);
+    expect(changedRestorableSettingLabels(changed, "/settings/chat")).toEqual([
+      "Diff layout",
+      "Skill availability",
+    ]);
+    expect(restorableSettingsPatch(changed, "/settings/chat").skillAvailability).toBe("provider");
     expect(
       Object.keys(
         restorableSettingsPatch(DEFAULT_UNIFIED_SETTINGS, "/settings/keybindings"),
@@ -125,6 +130,15 @@ describe("page reset", () => {
     expect(plan.clearKeys).toEqual(["sidebarAutoSettleAfterDays"]);
     expect(plan.labels).toEqual(["Auto-settle inactive threads"]);
     expect(plan.devicePatch).toEqual({});
+
+    const chat = projectScopedRestorePlan(
+      changed,
+      "/settings/chat",
+      new Set(["skillAvailability"]),
+    );
+    expect(chat.clearKeys).toEqual(["skillAvailability"]);
+    expect(chat.labels).toContain("Skill availability");
+    expect(chat.devicePatch).not.toHaveProperty("skillAvailability");
 
     const keybindings = projectScopedRestorePlan(changed, "/settings/keybindings", new Set());
     expect(keybindings.clearKeys).toEqual([]);
