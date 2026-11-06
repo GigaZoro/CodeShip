@@ -21,7 +21,7 @@ import {
 import { constVoid } from "effect/Function";
 import type { CDPSession, ConsoleMessage, Frame, Locator, Page } from "playwright-core";
 import * as NodeCrypto from "node:crypto";
-import { BrowserControlInterrupted } from "./SessionControl.ts";
+import { BrowserControlInterrupted, tabClosed } from "./SessionControl.ts";
 
 const MAX_EVALUATION_BYTES = 64_000;
 const MAX_VISIBLE_TEXT_LENGTH = 20_000;
@@ -51,6 +51,9 @@ export const toOperationError = (
       cause.reason,
     );
   if (cause instanceof ServerBrowserOperationError) return cause;
+  // The page, its context or the whole browser went away; preview_open starts a fresh one.
+  if (cause instanceof Error && cause.name === "TargetClosedError")
+    return toOperationError(tabClosed());
   const message = cause instanceof Error ? cause.message : String(cause);
   const firstLine = message.split("\n")[0] ?? message;
   if (cause instanceof Error && cause.name === "TimeoutError") {
@@ -853,7 +856,6 @@ export const evaluate = async (
 
 export const waitFor = async (page: Page, input: PreviewAutomationWaitForInput) => {
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const deadline = Date.now() + timeoutMs;
   const locator = targetLocator(page, input);
   const { text, urlIncludes } = input;
   const checks: Array<() => Promise<boolean>> = [];
@@ -868,16 +870,30 @@ export const waitFor = async (page: Page, input: PreviewAutomationWaitForInput) 
     );
   }
   if (urlIncludes !== undefined) checks.push(async () => page.url().includes(urlIncludes));
-  for (;;) {
-    const results = await Promise.all(checks.map((check) => check()));
-    if (results.every(Boolean)) return;
-    if (Date.now() >= deadline) {
-      throw new ServerBrowserOperationError(
-        "PreviewAutomationTimeoutError",
-        `Waited ${timeoutMs}ms without every condition holding.`,
-      );
+  // A check stuck on a busy page must not hold the tab's queue past the deadline.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new ServerBrowserOperationError(
+            "PreviewAutomationTimeoutError",
+            `Waited ${timeoutMs}ms without every condition holding.`,
+          ),
+        ),
+      timeoutMs,
+    );
+  });
+  try {
+    for (;;) {
+      const results = await Promise.race([Promise.all(checks.map((check) => check())), expired]);
+      if (results.every(Boolean)) return;
+      // Checks read a closed page as "not yet"; a lost tab must not wait out the timeout.
+      if (page.isClosed()) throw tabClosed();
+      await Promise.race([new Promise((resolve) => setTimeout(resolve, WAIT_POLL_MS)), expired]);
     }
-    await new Promise((resolve) => setTimeout(resolve, WAIT_POLL_MS));
+  } finally {
+    clearTimeout(timer);
   }
 };
 

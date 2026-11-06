@@ -29,6 +29,7 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -42,6 +43,8 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 
 const HOST_RESPONSE_GRACE_MS = 1_000;
+/** Covers the server browser's re-registration after its request stream ends. */
+export const HOST_REGISTRATION_WAIT_MS = 5_000;
 
 export interface PreviewAutomationInvokeInput {
   readonly scope: McpInvocationContext.McpThreadInvocationScope;
@@ -123,6 +126,8 @@ interface BrokerState {
   readonly pending: ReadonlyMap<string, PendingRequest>;
   readonly requestSequence: number;
   readonly focusSequence: number;
+  /** Completed by the next host registration; calls without a host wait on it. */
+  readonly hostRegistered: Deferred.Deferred<void>;
 }
 
 const removeConnectionFromState = (
@@ -354,21 +359,15 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     pending: new Map(),
     requestSequence: 0,
     focusSequence: 0,
+    hostRegistered: yield* Deferred.make<void>(),
   });
 
   const closeConnection = Effect.fn("PreviewAutomationBroker.closeConnection")(function* (
     queue: ClientConnection["queue"],
     disconnected: ReadonlyArray<PendingRequest>,
-    completeStream = false,
   ) {
-    if (completeStream) {
-      // Close the evicted generation's RPC stream so a responsive desktop can re-register.
-      yield* Queue.clear(queue);
-      yield* Queue.end(queue);
-    } else {
-      // Replaced registrations must not reconnect and displace their successor.
-      yield* Queue.shutdown(queue);
-    }
+    // Replaced registrations must not reconnect and displace their successor.
+    yield* Queue.shutdown(queue);
     yield* Effect.forEach(
       disconnected,
       ({ deferred, context }) =>
@@ -380,14 +379,13 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   const disconnect = Effect.fn("PreviewAutomationBroker.disconnect")(function* (
     clientId: string,
     queue: ClientConnection["queue"],
-    completeStream = false,
   ) {
     yield* SynchronizedRef.modifyEffect(state, (current) => {
       if (current.clients.get(clientId)?.queue !== queue) {
         return Effect.succeed([undefined, current] as const);
       }
       const removed = removeConnectionFromState(current, clientId, queue);
-      return closeConnection(queue, removed.disconnected, completeStream).pipe(
+      return closeConnection(queue, removed.disconnected).pipe(
         Effect.as([undefined, removed.state] as const),
       );
     });
@@ -400,6 +398,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     const clientId = host.clientId;
     const queue = yield* Queue.unbounded<PreviewAutomationStreamEvent, Cause.Done>();
     const connectionId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+    const nextRegistration = yield* Deferred.make<void>();
     yield* Queue.offer(queue, { type: "connected", connectionId });
     const connection: ClientConnection = {
       clientId,
@@ -426,13 +425,15 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           previousConnection,
           disconnected: removed.disconnected,
           registeredConnection,
+          waiting: removed.state.hostRegistered,
         },
-        { ...removed.state, clients, focusSequence },
+        { ...removed.state, clients, focusSequence, hostRegistered: nextRegistration },
       ] as const;
     });
     if (registration.previousConnection) {
       yield* closeConnection(registration.previousConnection.queue, registration.disconnected);
     }
+    yield* Deferred.succeed(registration.waiting, undefined);
     return registration.registeredConnection;
   });
 
@@ -505,7 +506,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     input: Parameters<PreviewAutomationBroker["Service"]["invoke"]>[0],
   ): Effect.fn.Return<A, PreviewAutomationError> {
     const deferred = yield* Deferred.make<unknown, PreviewAutomationError>();
-    const route = yield* SynchronizedRef.modify(state, (current) => {
+    const assignRoute = SynchronizedRef.modify(state, (current) => {
       const assignments = new Map(
         Array.from(current.assignments).filter(([, assignment]) => {
           const connection = current.clients.get(assignment.clientId);
@@ -593,6 +594,22 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         { ...current, assignments, pending, requestSequence: current.requestSequence + 1 },
       ] as const;
     });
+    const waitUntil =
+      (yield* Clock.currentTimeMillis) +
+      Math.min(HOST_REGISTRATION_WAIT_MS, input.timeoutMs ?? HOST_REGISTRATION_WAIT_MS);
+    // Read the signal before routing so a host that registers in between still wakes this call.
+    let registration = (yield* SynchronizedRef.get(state)).hostRegistered;
+    let route = yield* assignRoute;
+    while (!route) {
+      const remainingMs = waitUntil - (yield* Clock.currentTimeMillis);
+      if (remainingMs <= 0) break;
+      const registered = yield* Deferred.await(registration).pipe(
+        Effect.timeoutOption(remainingMs),
+      );
+      if (Option.isNone(registered)) break;
+      registration = (yield* SynchronizedRef.get(state)).hostRegistered;
+      route = yield* assignRoute;
+    }
     if (!route) {
       return yield* new PreviewAutomationNoAvailableHostError({
         operation: input.operation,
@@ -642,21 +659,13 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         }
         return yield* new PreviewAutomationRequestQueueClosedError(requestContext);
       }
-      // The browser timer starts on delivery; allow its timeout response before evicting the host.
+      // The browser timer starts on delivery; allow its own timeout response to arrive first.
+      // A slow request never evicts the host: other threads' requests share it.
       const responseTimeoutMs =
         input.updateCurrentTab === false ? timeoutMs : timeoutMs + HOST_RESPONSE_GRACE_MS;
       const result = yield* Deferred.await(deferred).pipe(Effect.timeoutOption(responseTimeoutMs));
-      return yield* Option.match(result, {
-        // The enclosing operation owns the span for this inline handler.
-        onNone: Effect.fnUntraced(function* () {
-          // Never replay possibly applied actions; slow metadata reads must not evict the host.
-          if (input.updateCurrentTab !== false) {
-            yield* disconnect(connection.clientId, connection.queue, true);
-          }
-          return yield* new PreviewAutomationTimeoutError(requestContext);
-        }),
-        onSome: (value) => Effect.succeed(value as A),
-      });
+      if (Option.isNone(result)) return yield* new PreviewAutomationTimeoutError(requestContext);
+      return result.value as A;
     });
     const result = yield* awaitResponse().pipe(Effect.ensuring(removePending));
     if (input.updateCurrentTab === false) return result;

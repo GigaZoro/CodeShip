@@ -1,3 +1,9 @@
+## 2026-11-06 — Steadier agent browser sessions
+
+- One slow browser step in a chat no longer cuts off the agent browser for every other chat on the machine.
+- A browser call made while the agent browser reconnects now waits for it instead of failing.
+- Waiting for a page condition stops on time even when the page is busy, and stops at once if the tab or browser closed.
+
 ## 2026-11-06 — Second Codex accounts start reliably
 
 - Fixed a second Codex account failing to start a session when its folder held its own `secrets` folder or SQLite log files. Each account keeps its own Codex secrets, and a file that would block sharing is renamed with a `.t3-backup-` suffix instead of stopping the launch.

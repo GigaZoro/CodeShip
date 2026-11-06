@@ -5,6 +5,7 @@ import {
   PreviewAutomationClientDisconnectedError,
   PreviewAutomationMalformedResponseError,
   PreviewAutomationNoAvailableHostError,
+  PreviewAutomationTimeoutError,
   PreviewTabId,
   ProviderInstanceId,
   ThreadId,
@@ -18,6 +19,7 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import { PreviewBrowserRootError } from "../preview/PreviewBrowserHost.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
@@ -46,6 +48,17 @@ const makeHost = (overrides: Partial<PreviewAutomationHost> = {}): PreviewAutoma
 type RoutedRequest = PreviewAutomationRequest & {
   readonly connectionId: PreviewAutomationStreamEvent["connectionId"];
 };
+
+const failsWithoutHost = (
+  broker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
+  request: PreviewAutomationBroker.PreviewAutomationInvokeInput,
+) =>
+  Effect.gen(function* () {
+    const failure = yield* broker.invoke<void>(request).pipe(Effect.flip, Effect.forkScoped);
+    yield* Effect.yieldNow;
+    yield* TestClock.adjust(PreviewAutomationBroker.HOST_REGISTRATION_WAIT_MS);
+    return yield* Fiber.join(failure);
+  });
 
 const requestsFrom = (
   events: Stream.Stream<PreviewAutomationStreamEvent>,
@@ -366,20 +379,20 @@ it.effect("distinguishes malformed remote failures", () =>
 );
 
 it.effect("does not create host state from focus updates without a live stream", () =>
-  Effect.gen(function* () {
-    const broker = yield* makeBroker;
-    yield* broker.focusHost({
-      clientId: "client-1",
-      environmentId: scope.environmentId,
-      connectionId: "connection-missing",
-      focused: true,
-    });
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      yield* broker.focusHost({
+        clientId: "client-1",
+        environmentId: scope.environmentId,
+        connectionId: "connection-missing",
+        focused: true,
+      });
 
-    const error = yield* broker
-      .invoke<void>({ scope, operation: "status", input: {} })
-      .pipe(Effect.flip);
-    expect(error).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
-  }),
+      const error = yield* failsWithoutHost(broker, { scope, operation: "status", input: {} });
+      expect(error).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
+    }),
+  ),
 );
 
 it.effect("removes host availability when the authoritative request stream disconnects", () =>
@@ -387,18 +400,18 @@ it.effect("removes host availability when the authoritative request stream disco
     Effect.gen(function* () {
       const broker = yield* makeBroker;
       const requests = requestsFrom(yield* broker.connect(makeHost()));
-      const beforeAcquisition = yield* broker
-        .invoke<void>({ scope, operation: "status", input: {} })
-        .pipe(Effect.flip);
+      const beforeAcquisition = yield* failsWithoutHost(broker, {
+        scope,
+        operation: "status",
+        input: {},
+      });
       expect(beforeAcquisition).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
 
       const consumer = yield* Stream.runDrain(requests).pipe(Effect.forkScoped);
       yield* Effect.yieldNow;
       yield* Fiber.interrupt(consumer);
 
-      const error = yield* broker
-        .invoke<void>({ scope, operation: "status", input: {} })
-        .pipe(Effect.flip);
+      const error = yield* failsWithoutHost(broker, { scope, operation: "status", input: {} });
       expect(error).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
     }),
   ),
@@ -737,9 +750,11 @@ it.effect("does not move a live legacy assignment to another runtime for resize"
       ).pipe(Effect.forkScoped);
       yield* Effect.yieldNow;
 
-      const error = yield* broker
-        .invoke<void>({ scope, operation: "resize", input: { mode: "fill" } })
-        .pipe(Effect.flip);
+      const error = yield* failsWithoutHost(broker, {
+        scope,
+        operation: "resize",
+        input: { mode: "fill" },
+      });
       expect(error).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
       expect(yield* broker.invoke<string>({ scope, operation: "status", input: {} })).toBe(
         "legacy",
@@ -1042,6 +1057,90 @@ it.effect("keeps each thread's current tab when threads share a provider session
         ["thread-2", "tab-thread-2"],
       ]);
       expect(routed[0]!.agentSessionId).not.toBe(routed[1]!.agentSessionId);
+    }),
+  ),
+);
+
+it.effect("keeps the shared host serving other threads after one request times out", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const clientId = SERVER_BROWSER_AUTOMATION_CLIENT_ID;
+      const otherThread = {
+        ...scope,
+        thread: { ...scope.thread, threadId: ThreadId.make("thread-2") },
+      };
+      const otherDelivered = yield* Deferred.make<RoutedRequest>();
+      const requests = requestsFrom(
+        yield* broker.connect(makeHost({ clientId }), { preferred: true }),
+      );
+      yield* Stream.runForEach(requests, (request) => {
+        if (request.threadId === otherThread.thread.threadId)
+          return Deferred.succeed(otherDelivered, request);
+        // A page that never satisfies the wait leaves the host silent for this request.
+        if (request.operation === "waitFor") return Effect.void;
+        return broker.respond({
+          clientId,
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "same host",
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const stuck = yield* broker
+        .invoke<void>({ scope, operation: "waitFor", input: {}, timeoutMs: 60_000 })
+        .pipe(Effect.flip, Effect.forkScoped);
+      const other = yield* broker
+        .invoke<string>({
+          scope: otherThread,
+          operation: "snapshot",
+          input: {},
+          timeoutMs: 120_000,
+        })
+        .pipe(Effect.forkScoped);
+      const delivered = yield* Deferred.await(otherDelivered);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust("61 seconds");
+      expect(yield* Fiber.join(stuck)).toBeInstanceOf(PreviewAutomationTimeoutError);
+
+      yield* broker.respond({
+        clientId,
+        connectionId: delivered.connectionId,
+        requestId: delivered.requestId,
+        ok: true,
+        result: "other thread",
+      });
+      expect(yield* Fiber.join(other)).toBe("other thread");
+      expect(yield* broker.invoke<string>({ scope, operation: "status", input: {} })).toBe(
+        "same host",
+      );
+    }),
+  ),
+);
+
+it.effect("waits for a reconnecting host instead of failing the next call", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const pending = yield* broker
+        .invoke<string>({ scope, operation: "status", input: {} })
+        .pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const requests = requestsFrom(yield* broker.connect(makeHost()));
+      yield* Stream.runForEach(requests, (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "reconnected",
+        }),
+      ).pipe(Effect.forkScoped);
+
+      expect(yield* Fiber.join(pending)).toBe("reconnected");
     }),
   ),
 );

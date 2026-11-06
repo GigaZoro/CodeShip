@@ -11,6 +11,9 @@ export class BrowserControlInterrupted extends Error {
   }
 }
 
+export const tabClosed = () =>
+  new BrowserControlInterrupted("This browser tab is closed.", "closed");
+
 const settle = (work: Promise<unknown>) =>
   work.then(
     () => undefined,
@@ -69,7 +72,7 @@ export class SessionControl {
   }
 
   private assertOpen() {
-    if (this.closed) throw new BrowserControlInterrupted("This browser tab is closed.", "closed");
+    if (this.closed) throw tabClosed();
   }
 
   private changeOwner(owner: string | null) {

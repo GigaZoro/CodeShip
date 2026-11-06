@@ -5,7 +5,16 @@ import {
   type CDPSession,
   type Page,
 } from "playwright-core";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vite-plus/test";
 
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 
@@ -391,6 +400,70 @@ describe("server browser drag", () => {
     } finally {
       process.off("unhandledRejection", onUnhandled);
     }
+  });
+});
+
+describe("server browser waitFor", () => {
+  const outcomeOf = (promise: Promise<unknown>) => {
+    const outcome: { error?: unknown } = {};
+    void promise.catch((error: unknown) => {
+      outcome.error = error;
+    });
+    return outcome;
+  };
+  const textPage = (evaluate: () => Promise<unknown>, isClosed: () => boolean = () => false) =>
+    ({ evaluate, isClosed, url: () => "http://localhost:3000/" }) as unknown as Page;
+
+  it("fails as soon as its tab closes instead of waiting out the timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      let closed = false;
+      const page = textPage(
+        async () => {
+          if (closed)
+            throw new Error("page.evaluate: Target page, context or browser has been closed");
+          return false;
+        },
+        () => closed,
+      );
+      const outcome = outcomeOf(
+        ServerBrowserPage.waitFor(page, { text: "Ready", timeoutMs: 60_000 }),
+      );
+      await vi.advanceTimersByTimeAsync(200);
+      closed = true;
+      await vi.advanceTimersByTimeAsync(200);
+
+      expect(outcome.error).toMatchObject({ reason: "closed" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("times out at its deadline while a busy page holds a check", async () => {
+    vi.useFakeTimers();
+    try {
+      const page = textPage(() => new Promise(() => {}));
+      const outcome = outcomeOf(
+        ServerBrowserPage.waitFor(page, { text: "Ready", timeoutMs: 1_000 }),
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(outcome.error).toMatchObject({ tag: "PreviewAutomationTimeoutError" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports a closed tab, not a failed operation, when the browser goes away", () => {
+    const closed = Object.assign(
+      new Error("page.click: Target page, context or browser has been closed"),
+      { name: "TargetClosedError" },
+    );
+
+    expect(ServerBrowserPage.toOperationError(closed)).toMatchObject({
+      tag: "PreviewAutomationControlInterruptedError",
+      detail: "closed",
+    });
   });
 });
 
