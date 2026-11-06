@@ -233,6 +233,9 @@ const HTTP_ROUTER_CONFIG = {
 
 // Skip Effect's default 20 s grace; WebSocket scope finalizers already close connections gracefully.
 const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
+// Node's 5 s default closes idle sockets just as agents send their next MCP call, which the
+// agent then sees as ECONNRESET. Most calls follow a pause of seconds, rarely of a minute.
+const HTTP_KEEP_ALIVE_TIMEOUT_MS = 65_000;
 const layerResourceAttribution = ResourceAttribution.layer;
 const layerApplicationObservability = EventLoopMonitor.layer.pipe(
   Layer.provideMerge(Observability.layer),
@@ -365,6 +368,7 @@ export const layerHttpServer = Layer.unwrap(
           const server = rejectRequestsUntilServing(
             guardHttpResponseWriteErrors(NodeHttp.createServer()),
           );
+          server.keepAliveTimeout = HTTP_KEEP_ALIVE_TIMEOUT_MS;
           if (config.privateNetworkOnly) {
             server.on("connection", (socket) => {
               if (!acceptsPrivateNetworkConnection(socket)) {

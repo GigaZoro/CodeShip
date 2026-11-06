@@ -3,6 +3,7 @@
 - One slow browser step in a chat no longer cuts off the agent browser for every other chat on the machine.
 - A browser call made while the agent browser reconnects now waits for it instead of failing.
 - Waiting for a page condition stops on time even when the page is busy, and stops at once if the tab or browser closed.
+- Agents no longer see occasional connection resets when they call T3.CodeShip tools after a short pause.
 
 ## 2026-11-06 — Second Codex accounts start reliably
 
