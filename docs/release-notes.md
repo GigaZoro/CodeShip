@@ -1,3 +1,7 @@
+## 2026-11-06 — MCP sign-ins on Windows
+
+- On Windows, an added Claude account no longer hides an MCP server from your other accounts after its own sign-in fails. Signing one account in to a server such as ThreadPage now shows the server as connected on that account.
+
 ## 2026-11-06 — Scheduled task run history and catch-up
 
 - Each scheduled task has a Run history in its menu on the Scheduled tasks page and in the sidebar. It lists every time the task fired, including runs that failed before a thread started and times that were missed or skipped, with the reason.

@@ -44,6 +44,11 @@ it.layer(NodeServices.layer)("materializeClaudeAccountHome", (it) => {
         path.join(sharedHome, "mcp-needs-auth-cache.json"),
         path.join(accountHome, "mcp-needs-auth-cache.json"),
       );
+      // Windows links files with a hard link when a symlink needs elevation.
+      yield* fs.link(
+        path.join(sharedHome, "remote-settings.json"),
+        path.join(accountHome, "remote-settings.json"),
+      );
 
       for (let run = 0; run < 2; run++) {
         yield* materializeClaudeAccountHome({ sharedHome, accountHome });
@@ -76,6 +81,10 @@ it.layer(NodeServices.layer)("materializeClaudeAccountHome", (it) => {
       ]) {
         assert.isFalse(yield* fs.exists(path.join(accountHome, name)), name);
       }
+      assert.strictEqual(
+        yield* fs.readFileString(path.join(sharedHome, "remote-settings.json")),
+        "shared login",
+      );
       assert.isTrue(Option.isNone(yield* fs.readLink(releasedLock).pipe(Effect.option)));
     }),
   );

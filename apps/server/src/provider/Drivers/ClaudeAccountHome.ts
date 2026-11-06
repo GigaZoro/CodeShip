@@ -56,6 +56,26 @@ export const linkPath = (
     }
   });
 
+/** Windows links shared files with hard links, which `readLink` does not see. */
+const isHardLinkTo = Effect.fn("ClaudeAccountHome.isHardLinkTo")(function* (
+  file: string,
+  target: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const [fileInfo, targetInfo] = yield* Effect.all([
+    fileSystem.stat(file).pipe(Effect.option),
+    fileSystem.stat(target).pipe(Effect.option),
+  ]);
+  if (Option.isNone(fileInfo) || Option.isNone(targetInfo)) return false;
+  const { dev, ino, nlink } = fileInfo.value;
+  return (
+    Option.getOrElse(nlink, () => 1n) > 1n &&
+    dev === targetInfo.value.dev &&
+    Option.isSome(ino) &&
+    Equal.equals(ino, targetInfo.value.ino)
+  );
+});
+
 /** Links everything in the shared Claude folder into the account's folder, except its login. */
 export const materializeClaudeAccountHome = Effect.fn("materializeClaudeAccountHome")(
   function* (input: {
@@ -110,7 +130,9 @@ export const materializeClaudeAccountHome = Effect.fn("materializeClaudeAccountH
           Effect.as(true),
           Effect.orElseSucceed(() => false),
         );
-        if (isLink) yield* fileSystem.remove(entryPath);
+        if (isLink || (yield* isHardLinkTo(entryPath, path.join(input.sharedHome, entry)))) {
+          yield* fileSystem.remove(entryPath);
+        }
       }
     }).pipe(
       Effect.catch((error) =>
