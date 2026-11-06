@@ -1,3 +1,7 @@
+## 2026-11-06 — Second Codex accounts start reliably
+
+- Fixed a second Codex account failing to start a session when its folder held its own `secrets` folder or SQLite log files. Each account keeps its own Codex secrets, and a file that would block sharing is renamed with a `.t3-backup-` suffix instead of stopping the launch.
+
 ## 2026-11-06 — Agents see usage limits before they delegate
 
 - Agents now see which accounts hit a usage limit, and when each resets, before they start work on another thread.
