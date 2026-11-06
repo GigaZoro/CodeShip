@@ -391,7 +391,9 @@ has usage left. An account that hit a limit is skipped until it resets. If none
 is free, the thread waits as above. Each provider is one account: a provider
 signed in to an account another provider already uses is unavailable until you
 sign it in to a different account. Some providers' terms forbid using extra
-accounts to get around limits.
+accounts to get around limits. With this on, a scheduled task whose account has hit
+its limit starts its new thread on the first other account with usage left, and
+its **Run history** says which account it used.
 
 **Auto** picks the model and the account for you. Set it up in **Settings →
 Providers** on web or desktop: pick a primary provider under **Auto mode**, and

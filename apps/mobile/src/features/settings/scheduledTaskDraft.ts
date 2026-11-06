@@ -201,6 +201,8 @@ export type ScheduledTaskDraft = {
   readonly modelSelectionIsExplicit: boolean;
   /** Runs the scheduled tasks default model instead of `modelSelection`. */
   readonly followsDefaultModel: boolean;
+  /** Null follows the schedule's default until the user picks. */
+  readonly catchUpMissedRun: boolean | null;
   /** Kept on every machine and synced. The editor lists no machines, so stored exclusions stay as they are. */
   readonly shared: boolean;
   readonly sharedExcludedEnvironmentIds: ReadonlyArray<EnvironmentId>;
@@ -226,6 +228,7 @@ function draftSignature(draft: ScheduledTaskDraft): string {
       .sort((a, b) => a.id.localeCompare(b.id))
       .map((option) => [option.id, option.value]),
     draft.followsDefaultModel,
+    draft.catchUpMissedRun,
     draft.shared,
     draft.sharedRunOn,
     draft.schedule.mode,
@@ -266,6 +269,7 @@ export function createDraft(
     modelSelection,
     modelSelectionIsExplicit: false,
     followsDefaultModel: true,
+    catchUpMissedRun: null,
     shared: false,
     sharedExcludedEnvironmentIds: [],
     sharedRunOn: "every",
@@ -288,6 +292,7 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     modelSelection: task.modelSelection,
     modelSelectionIsExplicit: true,
     followsDefaultModel: task.followsDefaultModel === true,
+    catchUpMissedRun: task.catchUpMissedRun ?? null,
     shared: task.shared != null,
     sharedExcludedEnvironmentIds: task.shared?.excludedEnvironmentIds ?? [],
     sharedRunOn: task.shared?.runOn ?? "every",

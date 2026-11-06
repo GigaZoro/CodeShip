@@ -244,6 +244,7 @@ it.effect(
             }),
           limitedAccounts: Effect.succeed(new Map()),
           launchLimit: () => Effect.succeed(null),
+          failoverLaunch: (input) => Effect.succeed(input.selection),
         }),
       },
     )(dispatched);

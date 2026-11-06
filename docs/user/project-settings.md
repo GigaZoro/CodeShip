@@ -117,6 +117,13 @@ environment is offline then, the task runs when it is back.
 Deleting a thread also deletes tasks that post into that thread. Tasks that start
 a new thread on each run survive deletion of their previous threads.
 
+A fixed-time task whose time passed while its machine was off or asleep runs
+once when the machine is back, if that is nearer the missed time than the next
+run. **Catch up a missed run** in the task's editor turns this off or on; it
+starts on for daily tasks. On web or desktop, **Run history** in a task's menu
+lists each time it fired on that machine: runs that started a thread, runs that
+failed before one existed, and missed or skipped times, with the reason.
+
 You can edit, pause, resume, run immediately, change where it shows, or delete a
 task from the list. See [Choose where scheduled tasks show](thread-sidebar.md#choose-where-scheduled-tasks-show).
 Webhook tasks only run when their URL is called, so they can't be run

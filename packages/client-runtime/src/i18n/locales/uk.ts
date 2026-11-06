@@ -1219,6 +1219,7 @@ const catalog: MessageCatalog = {
   "{machine} is offline. Its MCP servers show up once it reconnects.":
     "{machine} не в мережі. Її MCP-сервери з’являться після повторного підключення.",
   "{machine} pull request routing": "Маршрутизація пул-реквестів для {machine}",
+  "{machine} ran it.": "Його виконав {machine}.",
   "{machine} server": "Сервер {machine}",
   "{machines} read and act": "{machines}: читати й діяти",
   "{machines} read PRs": "{machines}: читати PR",
@@ -2103,6 +2104,7 @@ const catalog: MessageCatalog = {
   "Another copy is in progress.": "Інше копіювання вже виконується.",
   "Another desktop entry uses the capture helper's name. Rename it before continuing.":
     "Інший запис робочого стола використовує ім’я помічника захоплення. Перейменуйте його, перш ніж продовжити.",
+  "Another machine ran it.": "Його виконав інший комп’ютер.",
   "Another t3 at {path} runs first in a new terminal. Remove it to use T3.CodeShip's.":
     "Інший t3 у {path} запускається першим у новому терміналі. Видаліть його, щоб використовувати t3 з T3.CodeShip.",
   "Another t3 at {path} runs first in a new terminal. Remove it, or run the launcher directly at {launcher}.":
@@ -2681,7 +2683,9 @@ const catalog: MessageCatalog = {
   "Capturing the window timed out.": "Час захоплення вікна вичерпано.",
   CarPlay: "CarPlay",
   Catalog: "Каталог",
+  "Catch up a missed run": "Надолужувати пропущений запуск",
   Category: "Категорія",
+  "Caught up": "Надолужено",
   Cause: "Причина",
   Caution: "Обережно",
   "Cell {number}": "Комірка {number}",
@@ -4879,6 +4883,8 @@ const catalog: MessageCatalog = {
     "Сервер кожного вибраного середовища орендує пристрої у вашого шлюзу Simlock зі своїм токеном агента та звільняє їх, коли вони закриваються.",
   "Each task you can see on this screen moves. You can change any task again from its menu.":
     "Кожне завдання, яке ви бачите на цьому екрані, буде переміщено. Будь-яке завдання можна змінити знову з його меню.",
+  "Each time this task fired here, including runs that failed or were skipped.":
+    "Кожне спрацювання цього завдання тут, зокрема невдалі та пропущені запуски.",
   "Earlier output not shown": "Попередній вивід не показано",
   "Earlier steps are not shown.": "Попередні кроки не показано.",
   "Earlier work": "Попередня робота",
@@ -5528,6 +5534,7 @@ const catalog: MessageCatalog = {
   "font smoothing": "згладжування шрифту",
   "Font smoothing": "Згладжування шрифту",
   "For {mode} mode": "Для режиму {mode}",
+  "for {time}": "на {time}",
   "For example, t3 or t3/ produces t3/add-search. Leave empty for no prefix.":
     "Наприклад, t3 або t3/ дає t3/add-search. Залиште порожнім, щоб без префікса.",
   "For machines on your local network or tailnet. The machine keeps its own provider credentials.":
@@ -5852,6 +5859,8 @@ const catalog: MessageCatalog = {
     "Якщо T3.CodeShip не відкриється після перезапуску, відкрийте його знову.",
   "If the final localhost page does not load, paste its full URL here.":
     "Якщо кінцева сторінка localhost не завантажується, вставте сюди її повний URL.",
+  "If the machine was off or asleep at the time, run once when it is back, unless the next run comes sooner.":
+    "Якщо в той час комп’ютер був вимкнений або в режимі сну, запустити один раз, коли він знову працює, якщо наступний запуск не ближче.",
   "Ignore token": "Ігнорувати токен",
   Image: "Зображення",
   "Image attachment, {name}, {size}": "Зображення у вкладенні, {name}, {size}",
@@ -6543,6 +6552,7 @@ const catalog: MessageCatalog = {
   "Loading pull requests…": "Завантаження пул-реквестів…",
   "Loading recent logs...": "Завантаження останніх журналів...",
   "Loading refs...": "Завантаження посилань...",
+  "Loading runs…": "Завантаження запусків…",
   "Loading scheduled tasks on": "Завантаження запланованих завдань на",
   "Loading scheduled tasks…": "Завантаження запланованих завдань…",
   "Loading sign-in terminal…": "Завантаження термінала входу…",
@@ -7272,6 +7282,7 @@ const catalog: MessageCatalog = {
   "No reviewers available": "Немає доступних рецензентів",
   "No reviews": "Без рев’ю",
   "No run was started for this request.": "Для цього запиту запуск не розпочато.",
+  "No runs yet.": "Запусків ще немає.",
   "No saved remote environments": "Немає збережених віддалених середовищ",
   "No scheduled tasks": "Немає запланованих завдань",
   "No scheduled tasks found": "Запланованих завдань не знайдено",
@@ -7472,6 +7483,7 @@ const catalog: MessageCatalog = {
   "on pace": "у темпі",
   "On pace": "У межах темпу",
   "On pace with the window": "Відповідає темпу вікна",
+  "On schedule": "За розкладом",
   "on settle": "після завершення",
   "on the {channel} channel": "на каналі {channel}",
   "On the computer with your code, start T3.CodeShip or run {command}, then run:":
@@ -9343,6 +9355,8 @@ const catalog: MessageCatalog = {
   "Run every": "Запускати кожні",
   "Run every request": "Виконувати кожен запит",
   "Run failed": "Запуск не вдався",
+  "Run history": "Історія запусків",
+  "Run history · {name}": "Історія запусків · {name}",
   "Run in": "Запускати в",
   "Run in terminal": "Запустити в терміналі",
   "Run in the thread's worktree when the thread settles":
@@ -10399,6 +10413,7 @@ const catalog: MessageCatalog = {
   "Start worktree from remote": "Почати worktree з віддаленої",
   "start writing": "розпочати написання",
   "Start, update, and stop tasks.": "Запуск, оновлення й зупинка завдань.",
+  started: "запущено",
   Started: "Запущено",
   "Started {count} threads in background": {
     one: "Запущено {count} чат у фоні",
@@ -10411,6 +10426,8 @@ const catalog: MessageCatalog = {
   "Started by an agent on {origin} through a linked environment.":
     "Запущено агентом на {origin} через пов’язане середовище.",
   "Started in background": "Запущено у фоні",
+  "Started on {to} because {from} was out of usage.":
+    "Запущено в {to}, бо в {from} вичерпано ліміт використання.",
   "Started this thread; each run starts a new one": "Запустило цей чат; кожен запуск створює новий",
   "Started writing": "Розпочато написання",
   Starting: "Запуск",
@@ -11818,6 +11835,10 @@ const catalog: MessageCatalog = {
     "Цей комп’ютер не може починати чати без проєкту.",
   "This machine is on your T3 Connect account. Use it as a fallback route.":
     "Цей комп’ютер є у вашому обліковому записі T3 Connect. Використайте його як резервний маршрут.",
+  "This machine was off or asleep at that time, and catching up is off.":
+    "Цей комп’ютер у той час був вимкнений або в режимі сну, а надолуження вимкнено.",
+  "This machine was off or asleep at that time, and the next run comes sooner.":
+    "Цей комп’ютер у той час був вимкнений або в режимі сну, а наступний запуск ближче.",
   "This machine's agent can't read \"{title}\". Remove it, or switch back to {owner} to send.":
     "Агент цього комп’ютера не може прочитати «{title}». Видаліть його або поверніться до {owner}, щоб надіслати.",
   "This may take a moment.": "Це може тривати хвилину.",
@@ -13082,6 +13103,7 @@ const catalog: MessageCatalog = {
   "Web assistants options": "Параметри вебасистентів",
   "Web search": "Пошук в інтернеті",
   webhook: "webhook",
+  Webhook: "Вебгук",
   "Webhook path": "Шлях вебхука",
   "webhook tasks": "завдання вебхуків",
   "webhook URL": "URL вебгука",

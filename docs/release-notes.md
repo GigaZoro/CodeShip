@@ -1,3 +1,10 @@
+## 2026-11-06 — Scheduled task run history and catch-up
+
+- Each scheduled task has a Run history in its menu on the Scheduled tasks page and in the sidebar. It lists every time the task fired, including runs that failed before a thread started and times that were missed or skipped, with the reason.
+- A daily task whose time passed while the computer was off or asleep now runs once when it is back, unless the next run comes sooner. Turn this off or on per task with Catch up a missed run, on web, desktop and mobile.
+- With Switch accounts at usage limits on, a scheduled task whose account is out of usage starts on another account of the same provider.
+- A one-machine shared task that another machine already ran now keeps its usual local time for its next run.
+
 ## 2026-11-06 — Steadier agent browser sessions
 
 - One slow browser step in a chat no longer cuts off the agent browser for every other chat on the machine.

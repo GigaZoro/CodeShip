@@ -9,6 +9,7 @@ import {
   ChevronUpIcon,
   Clock3Icon,
   CopyIcon,
+  HistoryIcon,
   InboxIcon,
   MoreHorizontalIcon,
   PencilIcon,
@@ -40,6 +41,7 @@ import {
   type WebhookFilterDraft,
 } from "@t3tools/client-runtime/scheduled-task-webhook";
 import {
+  defaultCatchUpMissedRun,
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
   MAX_WEBHOOK_FILTERS,
   MIN_SCHEDULED_TASK_INTERVAL_MS,
@@ -144,6 +146,7 @@ import {
 } from "./scheduledTasksSettings.logic";
 import { Label } from "../ui/label";
 import { ScheduledTaskPlacementRadioGroup } from "./ScheduledTaskPlacementRadioGroup";
+import { ScheduledTaskRunsDialog } from "./ScheduledTaskRunsDialog";
 import {
   Menu,
   MenuTrigger,
@@ -236,6 +239,7 @@ const EMPTY_DRAFT: DraftState = {
   interactionMode: "default",
   baseModelSelection: null,
   followsDefaultModel: true,
+  catchUpMissedRun: null,
   shared: false,
   sharedExcludedEnvironmentIds: [],
   sharedRunOn: "every",
@@ -1122,8 +1126,12 @@ function ScheduledTaskRow({
   );
   const [busy, setBusy] = useState(false);
   const [deliveriesOpen, setDeliveriesOpen] = useState(false);
+  const [runsOpen, setRunsOpen] = useState(false);
   const [errorExpanded, setErrorExpanded] = useState(false);
   const isWebhook = task.schedule.type === "webhook";
+  const offersRunHistory =
+    useEnvironment(environmentId)?.serverConfig?.environment.capabilities
+      .scheduledTaskRunHistory === true;
   const toggle = useAtomCommand(serverEnvironment.setScheduledTaskEnabled, {
     label: "scheduled task enabled",
   });
@@ -1301,6 +1309,12 @@ function ScheduledTaskRow({
                   {t("Run now")}
                 </MenuItem>
               )}
+              {offersRunHistory ? (
+                <MenuItem onClick={() => setRunsOpen(true)}>
+                  <HistoryIcon />
+                  {t("Run history")}
+                </MenuItem>
+              ) : null}
               {supportsScheduledTaskPlacement(task) ? (
                 <MenuSub>
                   <MenuSubTrigger>
@@ -1322,6 +1336,13 @@ function ScheduledTaskRow({
               </MenuItem>
             </MenuPopup>
           </Menu>
+          {runsOpen ? (
+            <ScheduledTaskRunsDialog
+              environmentId={environmentId}
+              task={task}
+              onClose={() => setRunsOpen(false)}
+            />
+          ) : null}
           {deliveriesOpen ? (
             <WebhookDeliveriesDialog
               environmentId={environmentId}
@@ -1826,6 +1847,15 @@ function ScheduledTaskEditorForm({
     environment?.serverConfig?.environment.capabilities.scheduledTaskDefaultModel === true &&
     (sharing || !draft.threadId);
   const followsDefaultModel = offersDefaultModel && draft.followsDefaultModel;
+  const offersCatchUp =
+    environment?.serverConfig?.environment.capabilities.scheduledTaskRunHistory === true;
+  const catchUpMissedRun =
+    draft.catchUpMissedRun ??
+    defaultCatchUpMissedRun({
+      type: "fixed_time",
+      timeOfDay: draft.timeOfDay || "09:00",
+      weekdays: [...draft.weekdays],
+    });
   const ownSelection =
     draftSelection &&
     instanceEntries.some((entry) => entry.instanceId === draftSelection.instanceId && entry.enabled)
@@ -1966,6 +1996,10 @@ function ScheduledTaskEditorForm({
       workspaceStrategy,
       modelSelection: selection,
       ...(offersDefaultModel ? { followsDefaultModel } : {}),
+      // Untouched on a new task, the server applies the schedule's default.
+      ...(offersCatchUp && draft.scheduleMode === "fixed" && draft.catchUpMissedRun !== null
+        ? { catchUpMissedRun: draft.catchUpMissedRun }
+        : {}),
       // Tasks have no mode picker; a mode above the administrator's ceiling would fail every run.
       runtimeMode:
         clampManagedRuntimeMode(environment?.serverConfig?.managedPolicy, draft.runtimeMode) ??
@@ -2704,6 +2738,30 @@ function ScheduledTaskEditorForm({
                     name: environment?.label ?? t("the machine that runs it"),
                   })}
                 </p>
+                {offersCatchUp ? (
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="min-w-0 space-y-1">
+                      <Label htmlFor="scheduled-task-catch-up">{t("Catch up a missed run")}</Label>
+                      <p
+                        id="scheduled-task-catch-up-description"
+                        className="text-xs text-muted-foreground"
+                      >
+                        {t(
+                          "If the machine was off or asleep at the time, run once when it is back, unless the next run comes sooner.",
+                        )}
+                      </p>
+                    </div>
+                    <Switch
+                      id="scheduled-task-catch-up"
+                      aria-describedby="scheduled-task-catch-up-description"
+                      checked={catchUpMissedRun}
+                      disabled={saving || !connected}
+                      onCheckedChange={(checked) =>
+                        setDraft((current) => ({ ...current, catchUpMissedRun: checked }))
+                      }
+                    />
+                  </div>
+                ) : null}
               </div>
             ) : (
               <div className="flex items-center gap-2">

@@ -251,6 +251,7 @@ export const make = Effect.gen(function* () {
       providerSkillCopy: true,
       scheduledTaskDefaultModel: true,
       sharedScheduledTasks: true,
+      scheduledTaskRunHistory: true,
       delegatedTaskModels: true,
       finalReview: true,
       providerWorkspaceSnapshotsOnDemand: true,

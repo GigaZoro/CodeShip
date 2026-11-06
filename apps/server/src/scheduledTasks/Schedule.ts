@@ -94,3 +94,32 @@ export function isMissedFixedTimeRun(
   if (schedule.type !== "fixed_time") return false;
   return DateTime.toEpochMillis(now) - DateTime.toEpochMillis(dueAt) > MISSED_FIXED_TIME_GRACE_MS;
 }
+
+/**
+ * The latest fixed-time occurrence at or before `now`, and whether to catch it up: only when
+ * `now` is nearer to it than to the next one, so a late start never runs a task twice in a row.
+ */
+export function latestMissedFixedTimeRun(
+  schedule: ScheduledTaskSchedule,
+  now: DateTime.DateTime,
+): { readonly at: DateTime.DateTime; readonly catchUp: boolean } | null {
+  if (schedule.type !== "fixed_time") return null;
+  const nowMs = DateTime.toEpochMillis(now);
+  let latest: DateTime.DateTime | null = null;
+  // A fixed-time schedule fires at least weekly and at most daily, so this finds the latest one.
+  let cursor = DateTime.subtract(now, { days: 8 });
+  for (let step = 0; step < 10; step += 1) {
+    const next = nextScheduledRunAt(schedule, cursor);
+    if (next === null || DateTime.toEpochMillis(next) > nowMs) break;
+    latest = next;
+    cursor = next;
+  }
+  if (latest === null) return null;
+  const following = nextScheduledRunAt(schedule, now);
+  return {
+    at: latest,
+    catchUp:
+      following === null ||
+      nowMs - DateTime.toEpochMillis(latest) < DateTime.toEpochMillis(following) - nowMs,
+  };
+}

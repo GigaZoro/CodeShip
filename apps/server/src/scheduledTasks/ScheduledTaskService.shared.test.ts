@@ -453,6 +453,7 @@ const runScenario = <A, E>(
     readonly tick: (atMs: number) => Effect.Effect<void>;
     readonly settled: Effect.Effect<void>;
   }) => Effect.Effect<A, E>,
+  schedule: Record<string, unknown> = { type: "interval", everyMs: HOUR_MS },
 ) =>
   Effect.gen(function* () {
     const launches = yield* Queue.unbounded<unknown>();
@@ -471,12 +472,7 @@ const runScenario = <A, E>(
     return yield* withService(
       (service, sql) =>
         Effect.gen(function* () {
-          yield* service.upsert(
-            upsertInput({
-              shared: oneMachineShared(machineOrder),
-              schedule: { type: "interval", everyMs: HOUR_MS },
-            }),
-          );
+          yield* service.upsert(upsertInput({ shared: oneMachineShared(machineOrder), schedule }));
           const changes = yield* Queue.unbounded<void>();
           yield* Effect.forkScoped(
             service.subscribeList().pipe(
@@ -584,6 +580,56 @@ it.effect("the first machine asks first when it is late", () =>
       expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(NOW + HOUR_MS));
     }),
   ),
+);
+
+// A daily time two hours before NOW, so a machine coming back at NOW has missed it.
+const MISSED = NOW - 2 * HOUR_MS;
+const missedLocal = DateTime.toParts(
+  DateTime.makeZonedUnsafe(MISSED, { timeZone: DateTime.zoneMakeLocal() }),
+);
+
+it.effect(
+  "a later machine catching up a missed daily run waits its turn from now, then skips one an earlier machine ran",
+  () =>
+    runScenario(
+      [OTHER, HERE_ENVIRONMENT_ID],
+      { ranOn: OTHER as never, unchecked: [] },
+      (scenario) =>
+        Effect.gen(function* () {
+          // This machine was asleep at the time; the earlier machine was on.
+          yield* scenario.sql`UPDATE scheduled_tasks SET next_run_at = ${iso(MISSED)}`;
+          yield* scenario.tick(NOW);
+          yield* scenario.settled;
+          const deferredTo = Date.parse((yield* nextRunAtOf(scenario.sql))!);
+          expect(deferredTo).toBeGreaterThanOrEqual(NOW + 5 * MINUTE_MS);
+          expect(yield* Ref.get(scenario.peerCalls)).toEqual([]);
+
+          yield* scenario.tick(deferredTo + 1_000);
+          yield* scenario.settled;
+          // It asks about the missed time, not the hour it came back at.
+          expect(yield* Ref.get(scenario.peerCalls)).toEqual([
+            { peers: [OTHER], since: iso(MISSED - 12 * HOUR_MS) },
+          ]);
+          expect(yield* Queue.size(scenario.launches)).toBe(0);
+          expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(MISSED + 24 * HOUR_MS));
+          const runs = (yield* scenario.service.listRuns({
+            id: "scheduled-task:shared" as ScheduledTaskId,
+          })).runs;
+          expect(runs).toMatchObject([
+            {
+              trigger: "catch_up",
+              outcome: "skipped",
+              skipReason: "ran_elsewhere",
+              ranOn: OTHER,
+              scheduledFor: iso(MISSED),
+            },
+          ]);
+        }),
+      {
+        type: "fixed_time",
+        timeOfDay: `${missedLocal.hour}:${String(missedLocal.minute).padStart(2, "0")}`,
+      },
+    ),
 );
 
 const copyOf = (id: string, overrides: Record<string, unknown> = {}) => {

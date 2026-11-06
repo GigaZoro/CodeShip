@@ -12,6 +12,7 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ModelSelection } from "./modelSelection.ts";
+import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
@@ -221,6 +222,61 @@ export type ScheduledTaskUpsertSchedule = typeof ScheduledTaskUpsertSchedule.Typ
 export const ScheduledTaskRunStatus = Schema.Literals(["never", "running", "succeeded", "failed"]);
 export type ScheduledTaskRunStatus = typeof ScheduledTaskRunStatus.Type;
 
+/** A daily fixed-time task catches up a run it missed while the app was off, unless set otherwise. */
+export function defaultCatchUpMissedRun(schedule: ScheduledTaskSchedule): boolean {
+  if (schedule.type !== "fixed_time") return false;
+  const weekdays = new Set(schedule.weekdays ?? []);
+  return weekdays.size === 0 || weekdays.size === 7;
+}
+
+export const ScheduledTaskRunTrigger = Schema.Literals([
+  "scheduled",
+  "catch_up",
+  "manual",
+  "webhook",
+]);
+export type ScheduledTaskRunTrigger = typeof ScheduledTaskRunTrigger.Type;
+
+export const ScheduledTaskRunOutcome = Schema.Literals([
+  "running",
+  "succeeded",
+  "failed",
+  "skipped",
+]);
+export type ScheduledTaskRunOutcome = typeof ScheduledTaskRunOutcome.Type;
+
+/**
+ * `missed`: the app was off or asleep at the time and catching up is off.
+ * `next_run_sooner`: it was missed, and the next run is nearer than the missed one.
+ * `ran_elsewhere`: a one-machine task another machine ran.
+ */
+export const ScheduledTaskRunSkipReason = Schema.Literals([
+  "missed",
+  "next_run_sooner",
+  "ran_elsewhere",
+]);
+export type ScheduledTaskRunSkipReason = typeof ScheduledTaskRunSkipReason.Type;
+
+/** One time a task fired, including fires that failed before a thread existed or were skipped. */
+export const ScheduledTaskRunRecord = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  // Any string, so a value added later doesn't break a client's whole list.
+  trigger: Schema.Union([ScheduledTaskRunTrigger, Schema.String]),
+  /** The scheduled time this run served; null for runs started by hand or by a webhook. */
+  scheduledFor: Schema.NullOr(IsoDateTime),
+  startedAt: IsoDateTime,
+  completedAt: Schema.NullOr(IsoDateTime),
+  outcome: Schema.Union([ScheduledTaskRunOutcome, Schema.String]),
+  threadId: Schema.NullOr(ThreadId),
+  error: Schema.NullOr(Schema.String),
+  skipReason: Schema.NullOr(Schema.Union([ScheduledTaskRunSkipReason, Schema.String])),
+  /** The machine that ran a one-machine occurrence this one skipped. */
+  ranOn: Schema.NullOr(EnvironmentId),
+  /** Set when the run started on another account because the task's own was out of usage. */
+  failover: Schema.NullOr(Schema.Struct({ from: ProviderInstanceId, to: ProviderInstanceId })),
+});
+export type ScheduledTaskRunRecord = typeof ScheduledTaskRunRecord.Type;
+
 export const ScheduledTaskWebhookEndpoint = Schema.Struct({
   path: TrimmedNonEmptyString,
   url: Schema.NullOr(TrimmedNonEmptyString),
@@ -349,6 +405,11 @@ export const ScheduledTask = Schema.Struct({
   lastOneMachineDecision: Schema.optional(Schema.NullOr(ScheduledTaskOneMachineDecision)),
   /** A shared task's own model is not set up on this machine, so it runs the scheduled tasks default model here. */
   modelUnavailableHere: Schema.optional(Schema.Boolean),
+  /**
+   * A fixed-time run missed while the app was off runs once when the app is back, if that is
+   * nearer the missed time than the next run. Absent from servers without catch-up.
+   */
+  catchUpMissedRun: Schema.optional(Schema.Boolean),
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
 
@@ -391,6 +452,10 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   followsDefaultModel: Schema.optional(Schema.Boolean).annotate({
     description: "Run the scheduled tasks default model. Omitted keeps the stored choice.",
   }),
+  catchUpMissedRun: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Run a fixed-time run missed while the app was off once it is back. Omitted keeps the stored choice, or for a new task the default: on for daily tasks.",
+  }),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
@@ -423,6 +488,8 @@ export const ScheduledTaskSharedCopy = Schema.Struct({
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
   modelSelection: ModelSelection,
   followsDefaultModel: Schema.Boolean,
+  /** Absent from machines without catch-up; the receiving machine keeps its own choice. */
+  catchUpMissedRun: Schema.optional(Schema.Boolean),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdBy: OrchestrationV2Actor,
@@ -507,6 +574,17 @@ export const ScheduledTaskRunNowInput = Schema.Struct({
   id: ScheduledTaskId,
 });
 export type ScheduledTaskRunNowInput = typeof ScheduledTaskRunNowInput.Type;
+
+export const ScheduledTaskListRunsInput = Schema.Struct({
+  id: ScheduledTaskId,
+});
+export type ScheduledTaskListRunsInput = typeof ScheduledTaskListRunsInput.Type;
+
+/** Newest first; the server keeps the most recent runs of each task. */
+export const ScheduledTaskListRunsResult = Schema.Struct({
+  runs: Schema.Array(ScheduledTaskRunRecord),
+});
+export type ScheduledTaskListRunsResult = typeof ScheduledTaskListRunsResult.Type;
 
 export const ScheduledTaskRotateWebhookTokenInput = Schema.Struct({
   id: ScheduledTaskId,

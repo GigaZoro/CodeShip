@@ -112,6 +112,8 @@ export interface DraftState {
   readonly baseModelSelection: ModelSelection | null;
   /** Runs the scheduled tasks default model instead of the one picked here. */
   readonly followsDefaultModel: boolean;
+  /** Null follows the schedule's default until the user picks. */
+  readonly catchUpMissedRun: boolean | null;
   /** Kept on every machine and synced. Exclusions of machines not connected right now stay stored. */
   readonly shared: boolean;
   readonly sharedExcludedEnvironmentIds: ReadonlyArray<EnvironmentId>;
@@ -311,6 +313,7 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     interactionMode: task.interactionMode,
     baseModelSelection: task.modelSelection,
     followsDefaultModel: task.followsDefaultModel === true,
+    catchUpMissedRun: task.catchUpMissedRun ?? null,
     shared: task.shared != null,
     sharedExcludedEnvironmentIds: task.shared?.excludedEnvironmentIds ?? [],
     sharedRunOn: task.shared?.runOn ?? "every",

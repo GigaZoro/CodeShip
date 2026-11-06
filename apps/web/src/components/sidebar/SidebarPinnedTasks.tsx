@@ -75,9 +75,11 @@ import {
 import { readLocalApi } from "../../localApi";
 import { cn } from "../../lib/utils";
 import { useQuietThreadShell } from "../../state/entities";
+import { useEnvironment } from "../../state/environments";
 import { serverEnvironment } from "../../state/server";
 import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { ScheduledTaskRunsDialog } from "../settings/ScheduledTaskRunsDialog";
 import { scheduleLabel } from "../settings/ScheduledTasksSettings";
 import {
   resolveSidebarRowAccessibility,
@@ -149,6 +151,7 @@ type PinnedTaskMenuId =
   | "open-run"
   | "edit"
   | "run-now"
+  | "run-history"
   | "move-up"
   | "move-down"
   | "show-in"
@@ -215,6 +218,10 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
   const runNow = useAtomCommand(serverEnvironment.runScheduledTaskNow, {
     label: "sidebar scheduled task run now",
   });
+  const offersRunHistory =
+    useEnvironment(environmentId)?.serverConfig?.environment.capabilities
+      .scheduledTaskRunHistory === true;
+  const [runsOpen, setRunsOpen] = useState(false);
   const runThreadId = pinnedTaskRunThreadId(task);
   const runThreadRef =
     runThreadId === null ? null : scopeThreadRef(environmentId, ThreadId.make(runThreadId));
@@ -266,6 +273,9 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
               disabled: !canOperate || status === "starting",
             },
           ]),
+      ...(offersRunHistory
+        ? [{ id: "run-history" as const, label: t("Run history"), icon: "history" }]
+        : []),
       ...(canReorder
         ? [
             {
@@ -308,6 +318,9 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
         return;
       case "edit":
         openSettings();
+        return;
+      case "run-history":
+        setRunsOpen(true);
         return;
       case "run-now": {
         if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
@@ -360,7 +373,7 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
   };
 
   const StatusIcon = display?.icon;
-  return (
+  const row = (
     <li
       ref={setNodeRef}
       style={{ transform: CSS.Translate.toString(transform), transition }}
@@ -457,6 +470,18 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
         {status === "idle" || status === "failed" ? <IntervalWaitBar task={task} /> : null}
       </div>
     </li>
+  );
+  if (!runsOpen) return row;
+  return (
+    <>
+      {row}
+      {/* Outside the row: React bubbles a portal's events to its parents, which drag and open runs. */}
+      <ScheduledTaskRunsDialog
+        environmentId={environmentId}
+        task={task}
+        onClose={() => setRunsOpen(false)}
+      />
+    </>
   );
 });
 

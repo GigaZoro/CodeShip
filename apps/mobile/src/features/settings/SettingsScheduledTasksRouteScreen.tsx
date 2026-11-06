@@ -4,6 +4,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   AuthOrchestrationOperateScope,
   clampManagedRuntimeMode,
+  defaultCatchUpMissedRun,
   resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
 import { managedCapabilityDenial } from "@t3tools/shared/managedPolicyMessages";
@@ -735,6 +736,14 @@ function TaskForm({
     config?.environment.capabilities.scheduledTaskDefaultModel === true &&
     (sharing || !draft.task?.threadId);
   const followsDefaultModel = offersDefaultModel && draft.followsDefaultModel;
+  const offersCatchUp = config?.environment.capabilities.scheduledTaskRunHistory === true;
+  const catchUpMissedRun =
+    draft.catchUpMissedRun ??
+    defaultCatchUpMissedRun({
+      type: "fixed_time",
+      timeOfDay: draft.schedule.timeOfDay,
+      weekdays: draft.schedule.weekdays,
+    });
   const taskModel = followsDefaultModel
     ? (scheduledTaskDefaultModel(
         config,
@@ -865,6 +874,10 @@ function TaskForm({
       projectId: draft.projectId,
       modelSelection: taskModel,
       ...(offersDefaultModel ? { followsDefaultModel } : {}),
+      // Untouched on a new task, the server applies the schedule's default.
+      ...(offersCatchUp && draft.schedule.mode === "fixed_time" && draft.catchUpMissedRun !== null
+        ? { catchUpMissedRun: draft.catchUpMissedRun }
+        : {}),
       schedule,
       enabled: draft.enabled,
       threadId: sharing ? null : (draft.task?.threadId ?? null),
@@ -1434,6 +1447,26 @@ function TaskForm({
               ) : null}
             </>
           )}
+          {offersCatchUp && draft.schedule.mode === "fixed_time" ? (
+            <View className="min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3">
+              <View className="min-w-0 flex-1">
+                <Text textRole="body" className="text-foreground">
+                  {t("Catch up a missed run")}
+                </Text>
+                <Text className="text-sm text-foreground-muted">
+                  {t(
+                    "If the machine was off or asleep at the time, run once when it is back, unless the next run comes sooner.",
+                  )}
+                </Text>
+              </View>
+              <ThemedSwitch
+                accessibilityLabel={t("Catch up a missed run")}
+                value={catchUpMissedRun}
+                disabled={saving || environmentUnavailable}
+                onValueChange={(value) => setDraft({ ...draft, catchUpMissedRun: value })}
+              />
+            </View>
+          ) : null}
           <View className="min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3">
             <Text textRole="body" className="min-w-0 flex-1 text-foreground">
               {t("Enabled")}

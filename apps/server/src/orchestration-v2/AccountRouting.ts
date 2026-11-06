@@ -130,6 +130,40 @@ export function routeAutoAccount(
   return modelPicksEqual(routed, input.selection) ? input.selection : routed;
 }
 
+/**
+ * A new thread whose named account is out of usage starts on the first other account of its
+ * provider with room. Only while account switching is on, like a thread that hits its limit;
+ * Auto picks are routed when their message is sent.
+ */
+export function failoverLimitedLaunch(
+  input: AccountRoutingContext & {
+    readonly selection: ModelSelection;
+    readonly projectId: ProjectId;
+  },
+): ModelSelection {
+  if (!input.settings.failoverLimitedThreads || input.selection.autoAccount === true) {
+    return input.selection;
+  }
+  const current = input.providers.find(
+    (provider) => provider.instanceId === input.selection.instanceId,
+  );
+  if (
+    current === undefined ||
+    (!input.limitedInstanceIds.has(current.instanceId) &&
+      exhaustedUsageWindow(current, input.nowMs, input.selection.model) === undefined)
+  ) {
+    return input.selection;
+  }
+  const target = accountsWithRoom({
+    ...input,
+    driver: current.driver,
+    model: input.selection.model,
+  }).find((account) => account.instanceId !== current.instanceId);
+  return target === undefined
+    ? input.selection
+    : { ...input.selection, instanceId: target.instanceId, model: target.model };
+}
+
 export interface LaunchLimit {
   readonly instanceId: ProviderInstanceId;
   /** The account's latest reported reset, as an ISO time. */
@@ -153,6 +187,11 @@ export class AccountRouting extends Context.Service<
       readonly selection: ModelSelection;
       readonly projectId: ProjectId;
     }) => Effect.Effect<LaunchLimit | null>;
+    /** The account a new thread starts on when its named one is out of usage. */
+    readonly failoverLaunch: (input: {
+      readonly selection: ModelSelection;
+      readonly projectId: ProjectId;
+    }) => Effect.Effect<ModelSelection>;
   }
 >()("t3/orchestration-v2/AccountRouting") {}
 
@@ -203,6 +242,31 @@ export const layer = Layer.effect(
               Effect.logWarning("orchestration-v2.account-routing.launch-limit-failed", {
                 cause,
               }).pipe(Effect.as(null)),
+            ),
+          ),
+      ),
+      failoverLaunch: Effect.fn("AccountRouting.failoverLaunch")(
+        function* (input) {
+          const settings = yield* serverSettings.getSettings;
+          if (!settings.failoverLimitedThreads || input.selection.autoAccount === true) {
+            return input.selection;
+          }
+          const now = yield* DateTime.now;
+          return failoverLimitedLaunch({
+            ...input,
+            settings,
+            providers: yield* providerRegistry.getProviders,
+            limitedInstanceIds: yield* projections.getUsageLimitedProviderInstanceIds(now),
+            nowMs: DateTime.toEpochMillis(now),
+          });
+        },
+        // Without routing the launch still runs on its own account.
+        (effect, input) =>
+          effect.pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("orchestration-v2.account-routing.launch-failed", { cause }).pipe(
+                Effect.as(input.selection),
+              ),
             ),
           ),
       ),

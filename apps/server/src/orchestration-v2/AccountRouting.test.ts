@@ -8,7 +8,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 
-import { routeAutoAccount } from "./AccountRouting.ts";
+import { failoverLimitedLaunch, routeAutoAccount } from "./AccountRouting.ts";
 
 const nowMs = Date.parse("2026-11-03T12:00:00.000Z");
 const projectId = ProjectId.make("project:routing");
@@ -192,5 +192,66 @@ describe("routeAutoAccount", () => {
       route({ selection: pinned, currentInstanceId: null, limited: [third] }),
       pinned,
     );
+  });
+});
+
+describe("failoverLimitedLaunch", () => {
+  const pinned: ModelSelection = { instanceId: third, model: "claude-opus-5-5" };
+  const launch = (input: {
+    readonly selection?: ModelSelection;
+    readonly limited: ReadonlyArray<ProviderInstanceId>;
+    readonly switching?: boolean;
+    readonly ownWindowFull?: boolean;
+  }) =>
+    failoverLimitedLaunch({
+      selection: input.selection ?? pinned,
+      projectId,
+      providers: [
+        provider(
+          third,
+          input.ownWindowFull === true
+            ? {
+                usageLimits: {
+                  checkedAt: "2026-11-03T11:59:00.000Z",
+                  windows: [
+                    {
+                      id: "seven_day",
+                      kind: "weekly",
+                      label: "Weekly",
+                      usedPercent: 100,
+                      resetsAt: "2026-11-05T00:00:00.000Z",
+                    },
+                  ],
+                },
+              }
+            : {},
+        ),
+        provider(second),
+        provider(primary),
+      ],
+      settings: {
+        ...settings([primary, second, third]),
+        failoverLimitedThreads: input.switching ?? true,
+      },
+      limitedInstanceIds: new Set(input.limited),
+      nowMs,
+    }).instanceId;
+
+  it.each([
+    ["moves off a limited account to the highest with room", [third], primary],
+    ["skips other limited accounts", [third, primary], second],
+    ["stays on its account while it has room", [primary], third],
+    ["stays put when every account is limited", [primary, second, third], third],
+  ] as const)("%s", (_, limited, expected) => {
+    assert.equal(launch({ limited }), expected);
+  });
+
+  it("treats a used-up usage window as a limit", () => {
+    assert.equal(launch({ limited: [], ownWindowFull: true }), primary);
+  });
+
+  it("leaves the account alone while account switching is off, and leaves Auto to its routing", () => {
+    assert.equal(launch({ limited: [third], switching: false }), third);
+    assert.equal(launch({ selection: auto, limited: [third] }), third);
   });
 });
