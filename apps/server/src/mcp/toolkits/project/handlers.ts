@@ -12,9 +12,9 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { OrchestratorRuntimeModeAboveCeilingError } from "../../../orchestration-v2/Orchestrator.ts";
+import * as AccountRouting from "../../../orchestration-v2/AccountRouting.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
-import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
@@ -28,6 +28,7 @@ import { withAutoAccount } from "@t3tools/shared/model";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { resolveRuntimeMode } from "../../delegatedTaskModes.ts";
+import { withResolvedAttachments } from "../attachment/references.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as OrchestrationMcp from "../../OrchestratorMcpService.ts";
@@ -100,12 +101,6 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             : yield* launchCommandId(scope.requestNamespace, input.clientRequestId);
         const threadId = ThreadId.make(commandId);
         const messageId = MessageId.make(commandId);
-        const attachments = input.attachments ?? [];
-        if (attachments.some((attachment) => !Claims.attachmentIsPendingUpload(attachment)))
-          return yield* new OrchestratorMcpFailure({
-            code: "invalid_request",
-            message: "A new thread accepts only pending attachment uploads.",
-          });
         if (
           input.scratch === true &&
           (input.projectId !== undefined || input.workspaceStrategy !== undefined)
@@ -237,6 +232,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             message:
               "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
           });
+        if (!replaying)
+          yield* OrchestrationMcp.requireAccountWithRoom(
+            { selection: modelSelection, projectId },
+            yield* Effect.serviceOption(AccountRouting.AccountRouting),
+          );
         let startedRuntimeMode =
           projectDefaults !== undefined && input.runtimeMode === undefined
             ? yield* resolveRuntimeMode(runtimeMode, projectDefaults.defaultRuntimeMode).pipe(
@@ -252,56 +252,63 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             )?.supportedRuntimeModes,
           });
         }
-        const result = yield* ThreadMessageIntake.launchThread({
-          commandId,
-          threadId,
-          projectId,
-          title: input.title,
-          modelSelection,
-          runtimeMode: startedRuntimeMode,
-          interactionMode,
-          workspaceStrategy: input.workspaceStrategy ?? { type: "root" },
-          ...(input.message === undefined && attachments.length === 0
-            ? {}
-            : {
-                initialMessage: {
-                  messageId,
-                  ...(caller === undefined ? {} : { senderThreadId: caller.id }),
-                  text: input.message ?? "",
-                  attachments,
-                },
+        // A new thread owns no attachments yet, even on a replay: a replay claims again and
+        // keeps the copies its first launch accepted.
+        const requested = input.attachments ?? [];
+        const result = yield* withResolvedAttachments(
+          { requested, owned: [], context },
+          (attachments) =>
+            ThreadMessageIntake.launchThread({
+              commandId,
+              threadId,
+              projectId,
+              title: input.title,
+              modelSelection,
+              runtimeMode: startedRuntimeMode,
+              interactionMode,
+              workspaceStrategy: input.workspaceStrategy ?? { type: "root" },
+              ...(input.message === undefined && attachments.length === 0
+                ? {}
+                : {
+                    initialMessage: {
+                      messageId,
+                      ...(caller === undefined ? {} : { senderThreadId: caller.id }),
+                      text: input.message ?? "",
+                      attachments,
+                    },
+                  }),
+              createdBy: "agent",
+              creationSource: "mcp",
+              ...(linkOrigin === undefined ? {} : { linkOrigin }),
+              // Only the link's own session may claim a parent there, not an agent in a thread it started.
+              // thread.create also drops it without linkOrigin.
+              ...(input.delegatedFrom === undefined || caller !== undefined
+                ? {}
+                : { delegatedFrom: input.delegatedFrom }),
+            }).pipe(
+              Effect.mapError((error) => {
+                if (error._tag === "AttachmentClaimError") {
+                  return new OrchestratorMcpFailure({
+                    code: "orchestration_error",
+                    message: error.message,
+                  });
+                }
+                if (error._tag === "ThreadManagementProviderInstanceDisabledError") {
+                  return new OrchestratorMcpFailure({
+                    code: "invalid_request",
+                    message: error.message,
+                  });
+                }
+                // The administrator's ceiling refuses the mode; say so rather than "unavailable".
+                if (error._tag === "ThreadLaunchError" && isAboveCeilingError(error.cause)) {
+                  return new OrchestratorMcpFailure({
+                    code: "invalid_request",
+                    message: error.cause.message,
+                  });
+                }
+                return unavailable();
               }),
-          createdBy: "agent",
-          creationSource: "mcp",
-          ...(linkOrigin === undefined ? {} : { linkOrigin }),
-          // Only the link's own session may claim a parent there, not an agent in a thread it started.
-          // thread.create also drops it without linkOrigin.
-          ...(input.delegatedFrom === undefined || caller !== undefined
-            ? {}
-            : { delegatedFrom: input.delegatedFrom }),
-        }).pipe(
-          Effect.mapError((error) => {
-            if (error._tag === "AttachmentClaimError") {
-              return new OrchestratorMcpFailure({
-                code: "orchestration_error",
-                message: error.message,
-              });
-            }
-            if (error._tag === "ThreadManagementProviderInstanceDisabledError") {
-              return new OrchestratorMcpFailure({
-                code: "invalid_request",
-                message: error.message,
-              });
-            }
-            // The administrator's ceiling refuses the mode; say so rather than "unavailable".
-            if (error._tag === "ThreadLaunchError" && isAboveCeilingError(error.cause)) {
-              return new OrchestratorMcpFailure({
-                code: "invalid_request",
-                message: error.cause.message,
-              });
-            }
-            return unavailable();
-          }),
+            ),
         );
         const thread = result.projection.thread;
         const run = result.projection.runs.find((run) => run.userMessageId === messageId);

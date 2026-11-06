@@ -19,10 +19,12 @@ import {
   TurnItemId,
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ThreadShell,
+  type ChatAttachment,
 } from "@t3tools/contracts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -38,6 +40,7 @@ import {
 
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../../config.ts";
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
@@ -56,7 +59,7 @@ import * as McpToolAccessTestkit from "../McpToolAccess.testkit.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import { dispatchFailure } from "../threadAccess.ts";
 import * as EnvironmentHandlers from "./environment/handlers.ts";
-import * as AttachmentHandlers from "./attachment/handlers.ts";
+import * as AttachmentReferences from "./attachment/references.ts";
 import * as PeerForwarding from "../../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
@@ -441,7 +444,7 @@ it("keeps MCP preference output allowlisted and Unicode-bounded", () => {
   });
 });
 
-it.effect("resolves reused attachment references from stored metadata", () =>
+it.effect("resolves attachment references from stored metadata", () =>
   Effect.gen(function* () {
     const stored = ChatImageAttachment.make({
       type: "image",
@@ -457,6 +460,7 @@ it.effect("resolves reused attachment references from stored metadata", () =>
         accessibility: { format: "flat-text", text: "Stored context", truncated: false },
       },
     });
+    const visible = ChatImageAttachment.make({ ...stored, id: "caller-image" });
     const forged = yield* decodeMcpAttachmentInput({
       type: "image",
       id: stored.id,
@@ -464,15 +468,114 @@ it.effect("resolves reused attachment references from stored metadata", () =>
       mimeType: "image/jpeg",
       sizeBytes: 99,
     });
-    const result = yield* AttachmentHandlers.resolveAttachmentReferences([forged], [stored]);
-    expect(result).toEqual([stored]);
-    const failure = yield* AttachmentHandlers.resolveAttachmentReferences(
-      [{ ...forged, id: "other-image" }],
+    const reference = yield* decodeMcpAttachmentInput({ id: visible.id });
+    const result = yield* AttachmentReferences.resolveAttachmentReferences(
+      [forged, reference],
       [stored],
-    ).pipe(Effect.flip);
-    expect(failure.code).toBe("invalid_request");
+      [visible],
+    );
+    expect(result).toEqual([
+      { attachment: stored, forward: false },
+      { attachment: visible, forward: true },
+    ]);
+    for (const [requested, message] of [
+      [[{ ...forged, id: "other-image" }], "be on a message in your thread"],
+      [[{ id: "pending-00000000-0000-4000-8000-000000000000" }], "pending upload with its type"],
+      [[reference, reference], "Duplicate attachment ids"],
+    ] as const) {
+      const failure = yield* AttachmentReferences.resolveAttachmentReferences(
+        requested,
+        [stored],
+        [visible],
+      ).pipe(Effect.flip);
+      expect(failure).toMatchObject({ code: "invalid_request" });
+      expect(failure.message).toContain(message);
+    }
   }),
 );
+
+it.effect("sending attachments copies one from the caller's thread into the target thread", () => {
+  const target = ThreadId.make("thread-target");
+  const owned = ChatImageAttachment.make({
+    type: "image",
+    id: "thread-target-00000000-0000-4000-8000-000000000001",
+    name: "owned.png",
+    mimeType: "image/png",
+    sizeBytes: 5,
+  });
+  const callers = ChatImageAttachment.make({
+    ...owned,
+    id: "mcp-core-thread-00000000-0000-4000-8000-000000000002",
+    name: "screenshot.png",
+    sizeBytes: 3,
+  });
+  const sent: Array<ReadonlyArray<ChatAttachment>> = [];
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+    const pathOf = (attachment: ChatAttachment) =>
+      resolveAttachmentPath({ attachmentsDir, attachment }) ?? "";
+    yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
+    yield* fileSystem.writeFileString(pathOf(owned), "owned");
+    yield* fileSystem.writeFileString(pathOf(callers), "png");
+    const server = yield* McpServer.McpServer;
+
+    const result = yield* server
+      .callTool({
+        name: "t3_thread_send_attachments",
+        arguments: { threadId: target, attachments: [{ id: callers.id }, { id: owned.id }] },
+      })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+
+    expect(result.isError).toBe(false);
+    const [copy, reused] = sent[0] ?? [];
+    expect(copy?.id).toMatch(/^thread-target-/);
+    expect(copy?.name).toBe("screenshot.png");
+    expect(reused).toEqual(owned);
+    expect(yield* fileSystem.readFileString(pathOf(copy!))).toBe("png");
+    expect((yield* fileSystem.readDirectory(attachmentsDir)).toSorted()).toEqual(
+      [owned, callers, copy!]
+        .map((attachment) => pathOf(attachment).slice(attachmentsDir.length + 1))
+        .toSorted(),
+    );
+  }).pipe(
+    Effect.provide(
+      McpHttpServer.layerAttachmentToolkit.pipe(
+        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(NodeCrypto.layer),
+        Layer.provide(Layer.mock(ServerSecretStore.ServerSecretStore)({})),
+        Layer.provide(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: (id) => Effect.succeed(McpToolAccessTestkit.liveThreadShell(id)),
+            getThreadRecords: (id) =>
+              Effect.succeed({
+                messages: [{ attachments: id === threadId ? [callers] : [] }],
+              } as never),
+            getProjectThreadRecords: () =>
+              Effect.succeed({
+                thread: { ...McpToolAccessTestkit.liveThreadShell(target), archivedAt: null },
+                messages: [{ attachments: [owned] }],
+              } as never),
+            sendToThread: (input) =>
+              Effect.sync(() => {
+                sent.push(input.attachments);
+                return {
+                  message: { attachments: input.attachments },
+                  run: { id: RunId.make("run:sent"), status: "queued" },
+                } as never;
+              }),
+          }),
+        ),
+        Layer.provideMerge(DocumentText.layer),
+        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-forward-" })),
+        Layer.provideMerge(NodeServices.layer),
+      ),
+    ),
+  );
+});
 
 const clientScope = (
   access: McpInvocationContext.McpClientCaller["access"],

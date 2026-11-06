@@ -9,6 +9,8 @@ import * as Schema from "effect/Schema";
 import { isSvgAttachment } from "@t3tools/shared/image";
 
 import {
+  attachmentFileExtension,
+  createPendingAttachmentId,
   parseThreadSegmentFromAttachmentId,
   PENDING_ATTACHMENT_THREAD_SEGMENT,
   planAttachmentClaim,
@@ -37,7 +39,7 @@ export interface ClaimedAttachments {
   readonly claimedPaths: ReadonlyArray<string>;
 }
 
-export function attachmentIsPendingUpload(attachment: ChatAttachment): boolean {
+export function attachmentIsPendingUpload(attachment: Pick<ChatAttachment, "id">): boolean {
   return parseThreadSegmentFromAttachmentId(attachment.id) === PENDING_ATTACHMENT_THREAD_SEGMENT;
 }
 
@@ -62,6 +64,60 @@ export const releaseClaimedAttachments = Effect.fn("AttachmentClaims.releaseClai
     ).pipe(Effect.uninterruptible);
   },
 );
+
+/**
+ * Attachments belong to one thread and go when it is deleted, so a forward copies the stored file
+ * into a fresh pending upload, which the send then claims like any other. Release `stagedPaths`
+ * once the send settles.
+ */
+export const stageAttachmentCopies = Effect.fn("AttachmentClaims.stageAttachmentCopies")(function* (
+  attachments: ReadonlyArray<{ readonly attachment: ChatAttachment; readonly forward: boolean }>,
+) {
+  const serverConfig = yield* ServerConfig.ServerConfig;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const stagedPaths: string[] = [];
+  const staged = yield* Effect.forEach(
+    attachments,
+    ({ attachment, forward }) =>
+      Effect.gen(function* () {
+        if (!forward) return attachment;
+        const pending: ChatAttachment = {
+          ...attachment,
+          id: ChatAttachmentId.make(
+            createPendingAttachmentId(
+              attachment.type === "file" ? attachmentFileExtension(attachment.name) : undefined,
+            ),
+          ),
+        };
+        const attachmentsDir = serverConfig.attachmentsDir;
+        const source = resolveAttachmentPath({ attachmentsDir, attachment });
+        const target = resolveAttachmentPath({ attachmentsDir, attachment: pending });
+        if (source === null || target === null) {
+          return yield* new AttachmentClaimError({
+            message: `Attachment '${attachment.name}' cannot be forwarded: invalid attachment id.`,
+          });
+        }
+        yield* fileSystem.copyFile(source, target).pipe(
+          Effect.mapError(
+            (cause) =>
+              new AttachmentClaimError({
+                message: `Attachment '${attachment.name}' cannot be forwarded: attachment not found.`,
+                cause,
+              }),
+          ),
+          Effect.andThen(Effect.sync(() => stagedPaths.push(target))),
+          Effect.uninterruptible,
+        );
+        // The extracted text saves the claim a second extraction; without it the claim extracts.
+        if (yield* fileSystem.exists(`${source}.txt`).pipe(Effect.orElseSucceed(() => false))) {
+          yield* fileSystem.copyFile(`${source}.txt`, `${target}.txt`).pipe(Effect.ignore);
+        }
+        return pending;
+      }),
+    { concurrency: 1 },
+  ).pipe(Effect.onError(() => releaseClaimedAttachments(stagedPaths)));
+  return { attachments: staged, stagedPaths };
+});
 
 /** Copies preserve the pending retry source after failed bootstrap; the pending sweep reclaims it. */
 export const claimPendingAttachments = Effect.fn("AttachmentClaims.claimPendingAttachments")(

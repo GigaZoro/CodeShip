@@ -202,11 +202,19 @@ Returns:
 - the inherited provider instance and model;
 - the parent runtime and interaction modes;
 - registered provider instances and advertised models;
-- whether each provider can run a child task; and
+- whether each provider can run a child task;
+- `limitedUntil` for each account a usage limit stopped: the latest reset it
+  reported; and
 - feature flags for polling, cancellation, and batch thread creation.
 
 Unavailable providers include model-visible constraints such as missing V2
 adapter support, disabled state, missing executable, or missing authentication.
+
+`delegate_task`, `create_threads`, and `t3_thread_launch` refuse a new thread
+whose first turn would start on such an account, Auto routing included, before
+anything is created. A retry of an accepted launch still replays. Only a
+provider's usage-limit failure marks an account; a usage window at 100% does
+not, because extra usage can still run there.
 
 The model list is short on purpose: catalogs such as OpenCode can hold hundreds
 of models, and every call lands in the agent's context. Each provider lists

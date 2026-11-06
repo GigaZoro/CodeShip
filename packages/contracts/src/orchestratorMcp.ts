@@ -608,6 +608,12 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
   canRunChildTask: Schema.Boolean,
   canRunCrossProviderChildTask: Schema.Boolean,
   constraints: Schema.Array(Schema.String),
+  limitedUntil: Schema.optional(
+    Schema.String.annotate({
+      description:
+        "Usage-limited until this time. New threads on this account fail until then; pick another.",
+    }),
+  ),
 });
 export type OrchestratorMcpProviderCapability = typeof OrchestratorMcpProviderCapability.Type;
 

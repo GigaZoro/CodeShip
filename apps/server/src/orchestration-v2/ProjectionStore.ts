@@ -528,6 +528,10 @@ export interface ProjectionStoreV2Shape {
   readonly getUsageLimitedProviderInstanceIds: (
     now: DateTime.Utc,
   ) => Effect.Effect<ReadonlySet<ProviderInstanceId>, ProjectionStoreV2Error>;
+  /** The same accounts, each with its latest reported reset as an ISO time. */
+  readonly getUsageLimitedProviderInstances: (
+    now: DateTime.Utc,
+  ) => Effect.Effect<ReadonlyMap<ProviderInstanceId, string>, ProjectionStoreV2Error>;
   /** Epoch ms of the next armed reset or snooze end after `now`, when a waiting thread becomes a candidate. */
   readonly getLimitRecoveryWakeAt: (
     now: DateTime.Utc,
@@ -3994,15 +3998,19 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
 
-    const getUsageLimitedProviderInstanceIds = Effect.fn(
-      "ProjectionStore.getUsageLimitedProviderInstanceIds",
+    const getUsageLimitedProviderInstances = Effect.fn(
+      "ProjectionStore.getUsageLimitedProviderInstances",
     )(
       function* (now: DateTime.Utc) {
         // Every failure counts, so an account that refused one thread is skipped for all of them.
         // A run on that account started after the refusal and completed lifts it early,
         // as when the account's sign-in changed.
-        const rows = yield* sql<{ readonly provider_instance_id: string }>`
-          SELECT DISTINCT r.provider_instance_id
+        const rows = yield* sql<{
+          readonly provider_instance_id: string;
+          readonly reset_at: string;
+        }>`
+          SELECT r.provider_instance_id,
+            json_extract(failure.payload_json, '$.failure.resetAt') AS reset_at
           FROM orchestration_v2_projection_turn_items failure
           INNER JOIN orchestration_v2_projection_runs r ON r.run_id = failure.run_id
           WHERE failure.type = 'error' AND failure.status = 'failed'
@@ -4017,10 +4025,23 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   > julianday(json_extract(failure.payload_json, '$.updatedAt'))
             )
         `;
-        return new Set(rows.map((row) => ProviderInstanceId.make(row.provider_instance_id)));
+        const limited = new Map<ProviderInstanceId, string>();
+        for (const row of rows) {
+          const instanceId = ProviderInstanceId.make(row.provider_instance_id);
+          const latest = limited.get(instanceId);
+          if (latest === undefined || Date.parse(row.reset_at) > Date.parse(latest)) {
+            limited.set(instanceId, row.reset_at);
+          }
+        }
+        return limited;
       },
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
+
+    const getUsageLimitedProviderInstanceIds = (now: DateTime.Utc) =>
+      getUsageLimitedProviderInstances(now).pipe(
+        Effect.map((limited): ReadonlySet<ProviderInstanceId> => new Set(limited.keys())),
+      );
 
     const getLimitRecoveryWakeAt = Effect.fn("ProjectionStore.getLimitRecoveryWakeAt")(
       function* (now: DateTime.Utc) {
@@ -7199,6 +7220,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getProviderControlContext: readOnReader(getProviderControlContext),
       getLimitRecoveryCandidates: readOnReader(getLimitRecoveryCandidates),
       getUsageLimitedProviderInstanceIds: readOnReader(getUsageLimitedProviderInstanceIds),
+      getUsageLimitedProviderInstances: readOnReader(getUsageLimitedProviderInstances),
       getLimitRecoveryWakeAt: readOnReader(getLimitRecoveryWakeAt),
       getRecoveryThreadIds: readOnReader(getRecoveryThreadIds),
       getUnreadableThreadIds: readOnReader(getUnreadableThreadIds),

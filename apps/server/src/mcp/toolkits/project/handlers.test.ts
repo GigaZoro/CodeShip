@@ -10,6 +10,8 @@ import {
   type ModelSelection,
   type RuntimeMode,
   type OrchestrationV2ThreadShell,
+  type ChatAttachment,
+  ChatAttachmentId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -25,6 +27,8 @@ import * as Stream from "effect/Stream";
 
 import * as DocumentText from "../../../provider/DocumentText.ts";
 import { OrchestratorRuntimeModeAboveCeilingError } from "../../../orchestration-v2/Orchestrator.ts";
+import * as AccountRouting from "../../../orchestration-v2/AccountRouting.ts";
+import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ServerConfig from "../../../config.ts";
@@ -37,6 +41,8 @@ import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../../../vcs/VcsProcess.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import * as McpToolAccessTestkit from "../../McpToolAccess.testkit.ts";
+import { resolveAttachmentPath, toSafeThreadAttachmentSegment } from "../../../attachmentStore.ts";
 import * as ProjectHandlers from "./handlers.ts";
 import { ProjectToolkit } from "./tools.ts";
 
@@ -78,7 +84,16 @@ const clientLaunchHarness = (input: {
   /** The orchestrator refuses the new thread's mode, as under a managed ceiling. */
   readonly refusedByCeiling?: true;
   readonly autoModeProvider?: ProviderDriverKind;
+  /** Accounts a usage limit stopped, with their resets. */
+  readonly limited?: ReadonlyMap<ProviderInstanceId, string>;
+  readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
+  /** A thread calls instead of a client: the first shell, whose parents follow it. */
+  readonly callerThreads?: ReadonlyArray<{
+    readonly shell: OrchestrationV2ThreadShell;
+    readonly attachments: ReadonlyArray<ChatAttachment>;
+  }>;
 }) => {
+  const callerThread = input.callerThreads?.[0]?.shell;
   const projectId = ProjectId.make("project:client-target");
   const modelSelection = {
     instanceId: ProviderInstanceId.make("claudeAgent"),
@@ -100,6 +115,7 @@ const clientLaunchHarness = (input: {
       ...(input.defaultRuntimeMode === undefined
         ? {}
         : { defaultRuntimeMode: input.defaultRuntimeMode }),
+      ...input.settings,
       ...(input.overrideModel === undefined
         ? {}
         : {
@@ -113,19 +129,31 @@ const clientLaunchHarness = (input: {
     Layer.succeed(McpInvocationContext.McpInvocationContext, {
       environmentId: EnvironmentId.make("environment"),
       requestNamespace: "client:session-1",
-      thread: undefined,
-      client: {
-        sessionId: "session-1",
-        label: "Claude Code",
-        access: input.runtimeModeCeiling,
-        webOrigin: input.webOrigin,
-      },
+      thread:
+        callerThread === undefined
+          ? undefined
+          : {
+              threadId: callerThread.id,
+              providerSessionId: "session-1",
+              providerInstanceId: callerThread.modelSelection.instanceId,
+            },
+      client:
+        callerThread === undefined
+          ? {
+              sessionId: "session-1",
+              label: "Claude Code",
+              access: input.runtimeModeCeiling,
+              webOrigin: input.webOrigin,
+            }
+          : undefined,
       issuedAt: 0,
       capabilities: new Set(["orchestration" as const]),
     }),
     Layer.mock(ThreadManagement.ThreadManagementService)({
       // A thread exists once a launch started it.
       getThreadShell: (threadId) => {
+        const caller = input.callerThreads?.find(({ shell }) => shell.id === threadId);
+        if (caller !== undefined) return Effect.succeed(caller.shell);
         const launch = input.launched.find((candidate) => candidate.threadId === threadId);
         return Effect.succeed(
           launch === undefined
@@ -138,6 +166,15 @@ const clientLaunchHarness = (input: {
               } as unknown as OrchestrationV2ThreadShell),
         );
       },
+      getThreadRecords: (threadId) =>
+        Effect.succeed({
+          messages: [
+            {
+              attachments:
+                input.callerThreads?.find(({ shell }) => shell.id === threadId)?.attachments ?? [],
+            },
+          ],
+        } as never),
     }),
     Layer.mock(ThreadLaunch.ThreadLaunchService)({
       checkWorktreeBase: input.checkWorktreeBase ?? (() => Effect.void),
@@ -170,6 +207,10 @@ const clientLaunchHarness = (input: {
               modelSelection: launch.modelSelection,
             },
             runs: [],
+            messages:
+              launch.initialMessage === undefined
+                ? []
+                : [{ attachments: launch.initialMessage.attachments }],
           },
           resumed: false,
         } as unknown as ThreadLaunch.ThreadLaunchResult);
@@ -198,6 +239,9 @@ const clientLaunchHarness = (input: {
       ),
     }),
     Layer.mock(PeerForwarding.PeerForwarding)({}),
+    Layer.mock(ProjectionStore.ProjectionStoreV2)({
+      getUsageLimitedProviderInstances: () => Effect.succeed(input.limited ?? new Map()),
+    }),
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
     DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer)),
   ).pipe(
@@ -210,7 +254,12 @@ const clientLaunchHarness = (input: {
     ),
     Layer.provideMerge(NodeServices.layer),
   );
-  return { projectId, modelSelection, projectDefaults, dependencies: layerDependencies };
+  return {
+    projectId,
+    modelSelection,
+    projectDefaults,
+    dependencies: AccountRouting.layer.pipe(Layer.provideMerge(layerDependencies)),
+  };
 };
 
 it.effect(
@@ -524,6 +573,193 @@ it.effect("a launch retried with the same clientRequestId replays the first one"
     expect(ids[3]).not.toEqual(ids[4]);
   }),
 );
+
+it.effect("a launch onto a usage-limited account fails before any thread exists", () =>
+  Effect.gen(function* () {
+    const claude = ProviderInstanceId.make("claudeAgent");
+    const providers = [
+      advertisedProvider("claudeAgent", ["claude-opus", "claude-sonnet"]),
+      {
+        ...advertisedProvider("claude_second", ["claude-opus", "claude-sonnet"]),
+        driver: ProviderDriverKind.make("claudeAgent"),
+      },
+    ];
+    const resetAt = "2026-11-04T06:33:00.000Z";
+    const launch = Effect.fn("test.launch")(function* (params: {
+      readonly auto?: true;
+      readonly failover?: boolean;
+    }) {
+      const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const { projectId, dependencies } = clientLaunchHarness({
+        runtimeModeCeiling: "full-access",
+        launched,
+        providers,
+        limited: new Map([[claude, resetAt]]),
+        autoModeProvider: ProviderDriverKind.make("claudeAgent"),
+        settings: {
+          providerInstances: {
+            [ProviderInstanceId.make("claude_second")]: {
+              driver: ProviderDriverKind.make("claudeAgent"),
+            },
+          },
+          failoverLimitedThreads: params.failover ?? false,
+        },
+      });
+      return yield* Effect.gen(function* () {
+        const toolkit = yield* ProjectToolkit.pipe(
+          Effect.provide(McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer)),
+        );
+        const result = yield* toolkit
+          .handle("t3_thread_launch", {
+            title: "Fix",
+            projectId,
+            message: "Fix the bug",
+            ...(params.auto
+              ? { auto: true }
+              : { modelSelection: { instanceId: claude, model: "claude-opus" } }),
+          })
+          .pipe(Stream.unwrap, Stream.runCollect);
+        return { result: result.at(-1)?.result, launched };
+      }).pipe(Effect.provide(dependencies));
+    });
+
+    const named = yield* launch({});
+    expect(named.result).toMatchObject({ code: "provider_unavailable" });
+    expect((named.result as { message: string }).message).toContain(resetAt);
+    expect(named.launched).toEqual([]);
+
+    // Auto with account switching on starts on the account with room.
+    expect((yield* launch({ auto: true, failover: true })).launched).toHaveLength(1);
+
+    // Without switching, Auto would stay on the limited account, so it is refused too.
+    const pinned = yield* launch({ auto: true, failover: false });
+    expect(pinned.result).toMatchObject({ code: "provider_unavailable" });
+    expect(pinned.launched).toEqual([]);
+  }),
+);
+
+const forwardingCaller = () => {
+  const parent = McpToolAccessTestkit.liveThreadShell(ThreadId.make("thread-parent"));
+  const child = {
+    ...McpToolAccessTestkit.liveThreadShell(ThreadId.make("thread-child")),
+    lineage: {
+      rootThreadId: parent.id,
+      parentThreadId: parent.id,
+      relationshipToParent: "subagent" as const,
+    },
+  };
+  const screenshot: ChatAttachment = {
+    type: "image",
+    id: ChatAttachmentId.make("thread-parent-00000000-0000-4000-8000-000000000001"),
+    name: "screenshot.png",
+    mimeType: "image/png",
+    sizeBytes: 3,
+  };
+  const spec: ChatAttachment = {
+    type: "file",
+    id: ChatAttachmentId.make("thread-child-00000000-0000-4000-8000-000000000002-pdf"),
+    name: "spec.pdf",
+    mimeType: "application/pdf",
+    sizeBytes: 4,
+  };
+  return {
+    screenshot,
+    spec,
+    callerThreads: [
+      { shell: child, attachments: [spec] },
+      { shell: parent, attachments: [screenshot] },
+    ],
+  };
+};
+
+it.effect(
+  "a launch copies attachments from the caller's thread and the thread that delegated it",
+  () => {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { screenshot, spec, callerThreads } = forwardingCaller();
+    const { projectId, dependencies } = clientLaunchHarness({
+      runtimeModeCeiling: "full-access",
+      launched,
+      callerThreads,
+    });
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+      const pathOf = (attachment: ChatAttachment) =>
+        resolveAttachmentPath({ attachmentsDir, attachment }) ?? "";
+      yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
+      yield* fileSystem.writeFileString(pathOf(screenshot), "png");
+      yield* fileSystem.writeFileString(pathOf(spec), "%PDF");
+      yield* fileSystem.writeFileString(`${pathOf(spec)}.txt`, "spec text");
+      const upload: ChatAttachment = {
+        type: "image",
+        id: ChatAttachmentId.make("pending-00000000-0000-4000-8000-000000000003"),
+        name: "upload.png",
+        mimeType: "image/png",
+        sizeBytes: 6,
+      };
+      yield* fileSystem.writeFileString(pathOf(upload), "upload");
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer)),
+      );
+
+      yield* toolkit
+        .handle("t3_thread_launch", {
+          title: "Fix",
+          projectId,
+          message: "Fix the bug in the screenshot",
+          attachments: [{ id: screenshot.id }, spec, upload],
+        })
+        .pipe(Stream.unwrap, Stream.runCollect);
+
+      const [launch] = launched;
+      const sent = launch?.initialMessage?.attachments ?? [];
+      const segment = toSafeThreadAttachmentSegment(launch?.threadId ?? "");
+      expect(sent.map(({ name }) => name)).toEqual(["screenshot.png", "spec.pdf", "upload.png"]);
+      expect(sent.every(({ id }) => id.startsWith(`${segment}-`))).toBe(true);
+      expect(
+        yield* Effect.forEach(sent, (sent) => fileSystem.readFileString(pathOf(sent))),
+      ).toEqual(["png", "%PDF", "upload"]);
+      expect(yield* fileSystem.readFileString(`${pathOf(sent[1]!)}.txt`)).toBe("spec text");
+      // The sources stay with their threads; the staged copies are gone.
+      expect((yield* fileSystem.readDirectory(attachmentsDir)).toSorted()).toEqual(
+        [
+          ...[screenshot, spec, upload].map((attachment) => pathOf(attachment)),
+          `${pathOf(spec)}.txt`,
+          ...sent.map((attachment) => pathOf(attachment)),
+          `${pathOf(sent[1]!)}.txt`,
+        ]
+          .map((path) => path.slice(attachmentsDir.length + 1))
+          .toSorted(),
+      );
+    }).pipe(Effect.provide(dependencies));
+  },
+);
+
+it.effect("a launch refuses an attachment from a thread the caller cannot see", () => {
+  const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+  const { projectId, dependencies } = clientLaunchHarness({
+    runtimeModeCeiling: "full-access",
+    launched,
+    callerThreads: forwardingCaller().callerThreads,
+  });
+  return Effect.gen(function* () {
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer)),
+    );
+    const result = yield* toolkit
+      .handle("t3_thread_launch", {
+        title: "Fix",
+        projectId,
+        attachments: [
+          { id: ChatAttachmentId.make("thread-other-00000000-0000-4000-8000-000000000004") },
+        ],
+      })
+      .pipe(Stream.unwrap, Stream.runCollect);
+    expect(result.at(-1)?.result).toMatchObject({ code: "invalid_request" });
+    expect(launched).toEqual([]);
+  }).pipe(Effect.provide(dependencies));
+});
 
 it.effect("a launch key of any length or content gives a short id and never a defect", () =>
   Effect.gen(function* () {

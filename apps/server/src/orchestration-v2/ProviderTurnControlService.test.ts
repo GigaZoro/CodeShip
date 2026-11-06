@@ -215,6 +215,8 @@ it.effect(
           getLimitRecoveryCandidates: () => Effect.die("unused getLimitRecoveryCandidates"),
           getUsageLimitedProviderInstanceIds: () =>
             Effect.die("unused getUsageLimitedProviderInstanceIds"),
+          getUsageLimitedProviderInstances: () =>
+            Effect.die("unused getUsageLimitedProviderInstances"),
           getLimitRecoveryWakeAt: () => Effect.die("unused getLimitRecoveryWakeAt"),
           getOpenRemoteDelegatedTasks: Effect.die("unused getOpenRemoteDelegatedTasks"),
           getShellSnapshot: () => Effect.die("unused getShellSnapshot"),

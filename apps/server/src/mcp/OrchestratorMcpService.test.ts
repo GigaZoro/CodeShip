@@ -63,6 +63,7 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as ServerSettings from "../serverSettings.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
+import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import { idleThreadProjection, liveThreadShell } from "./McpToolAccess.testkit.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
@@ -1358,6 +1359,11 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+          Layer.mock(AccountRouting.AccountRouting)({
+            limitedAccounts: Effect.succeed(
+              new Map([[codexInstanceId, "2026-11-04T06:33:00.000Z"]]),
+            ),
+          }),
         );
 
         yield* Effect.gen(function* () {
@@ -1365,6 +1371,14 @@ describe("OrchestratorMcpService provider resolution", () => {
           const capabilities = yield* service.capabilities(scope);
           const byId = new Map(
             capabilities.providers.map((provider) => [provider.providerInstanceId, provider]),
+          );
+          assert.deepEqual(
+            capabilities.providers.flatMap((provider) =>
+              provider.limitedUntil === undefined
+                ? []
+                : [[provider.providerInstanceId, provider.limitedUntil]],
+            ),
+            [[codexInstanceId, "2026-11-04T06:33:00.000Z"]],
           );
           for (const provider of providers) {
             assert.deepEqual(
@@ -1799,13 +1813,14 @@ describe("OrchestratorMcpService provider resolution", () => {
   );
 
   it.effect(
-    "retrying an accepted driver-only delegation replays even after the project disables every candidate",
+    "retrying an accepted driver-only delegation replays after every candidate is disabled or limited",
     () =>
       Effect.gen(function* () {
         const altInstanceId = ProviderInstanceId.make("codex-alt");
         const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
         const accepted = yield* Ref.make(false);
         const everyCandidateDisabled = yield* Ref.make(false);
+        const limit = yield* Ref.make<AccountRouting.LaunchLimit | null>(null);
         const task = {
           id: taskId,
           threadId: parentThreadId,
@@ -1885,6 +1900,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+          Layer.mock(AccountRouting.AccountRouting)({ launchLimit: () => Ref.get(limit) }),
           ServerSettings.layerTest(),
         );
 
@@ -1899,6 +1915,10 @@ describe("OrchestratorMcpService provider resolution", () => {
           assert.equal(first.status, "running");
 
           yield* Ref.set(everyCandidateDisabled, true);
+          yield* Ref.set(limit, {
+            instanceId: codexInstanceId,
+            limitedUntil: "2026-11-04T06:33:00.000Z",
+          });
 
           const retry = yield* service.delegateTask(scope, {
             task: "Summarize the diff.",
@@ -1914,6 +1934,21 @@ describe("OrchestratorMcpService provider resolution", () => {
             modelSelection: { instanceId: string; model: string };
           };
           assert.equal(retryCommand.modelSelection.instanceId, codexInstanceId);
+
+          // New work onto the limited account fails before a thread exists.
+          yield* Ref.set(everyCandidateDisabled, false);
+          yield* Ref.set(accepted, false);
+          const limited = yield* service
+            .delegateTask(scope, {
+              task: "Summarize the diff.",
+              target: { driverKind: ProviderDriverKind.make("codex") },
+              mode: "async",
+              clientRequestId: "delegate-driver-retry-after-disable-2",
+            })
+            .pipe(Effect.flip);
+          assert.equal(limited.code, "provider_unavailable");
+          assert.include(limited.message, "2026-11-04T06:33:00.000Z");
+          assert.equal((yield* Ref.get(dispatched)).length, 2);
         }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
       }),
   );
@@ -1940,6 +1975,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                 Effect.die("These tests exercise committed commands before provider execution."),
             })),
           );
+          const limit = yield* Ref.make<AccountRouting.LaunchLimit | null>(null);
           const layerDatabase = SqlitePersistence.layerMemory;
           const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
             { name: "mcp-create-retry", runtimePolicyOverride: { cwd } },
@@ -1981,6 +2017,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                 Layer.mock(SecretRequests.SecretRequests)({}),
                 Layer.mock(RemoteDelegation.RemoteDelegation)({}),
                 Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+                Layer.mock(AccountRouting.AccountRouting)({ launchLimit: () => Ref.get(limit) }),
               ),
             ),
           );
@@ -2026,6 +2063,19 @@ describe("OrchestratorMcpService provider resolution", () => {
             assert.equal(child.providerInstanceId, selection.instanceId);
             assert.equal(child.model, selection.model);
             assert.deepEqual(yield* service.createThreads(scope, request), first);
+
+            // A usage limit refuses new threads but not the replay of an accepted one.
+            yield* Ref.set(limit, {
+              instanceId: selection.instanceId,
+              limitedUntil: "2026-11-04T06:33:00.000Z",
+            });
+            assert.deepEqual(yield* service.createThreads(scope, request), first);
+            const limited = yield* service
+              .createThreads(scope, { ...request, clientRequestId: "limited" })
+              .pipe(Effect.flip);
+            assert.equal(limited.code, "provider_unavailable");
+            assert.match(limited.message, /^Thread 1: .*2026-11-04T06:33:00.000Z/);
+            yield* Ref.set(limit, null);
 
             // The creation receipt exists, but this prompt has not been accepted yet.
             const withPrompt = {

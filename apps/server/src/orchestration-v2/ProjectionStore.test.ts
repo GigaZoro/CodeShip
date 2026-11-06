@@ -5040,6 +5040,10 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         [...(yield* store.getUsageLimitedProviderInstanceIds(now))],
         [providerInstanceId],
       );
+      assert.deepEqual(
+        [...(yield* store.getUsageLimitedProviderInstances(now))],
+        [[providerInstanceId, limitItem.failure.resetAt]],
+      );
       const sql = yield* SqlClient.SqlClient;
       yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${aheadRunId}`;
       yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${queuedRunId}`;

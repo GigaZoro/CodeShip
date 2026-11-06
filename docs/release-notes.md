@@ -1,3 +1,12 @@
+## 2026-11-06 — Agents see usage limits before they delegate
+
+- Agents now see which accounts hit a usage limit, and when each resets, before they start work on another thread.
+- When an agent starts a thread on a limited account, it fails right away with the reset time instead of creating a thread that stops on the limit. Auto starts on an account with usage left when Switch accounts at usage limits is on.
+
+## 2026-11-06 — Agents hand off attachments
+
+- When an agent starts a new thread or messages another one, it can pass along the screenshots and files already in its conversation, including ones from the thread that delegated to it. The new thread gets its own copy.
+
 ## 2026-11-06 — Desktop language update
 
 - Fixed desktop startup getting stuck while loading language preferences, allowing the English and Ukrainian interface update to ship.

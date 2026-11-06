@@ -1,6 +1,5 @@
 import {
   ATTACHMENT_UPLOAD_URL_TTL_MS,
-  type ChatAttachment,
   MessageId,
   OrchestratorMcpFailure,
 } from "@t3tools/contracts";
@@ -8,31 +7,11 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as Upload from "../../../assets/AttachmentUpload.ts";
-import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { newCommandId, readThread, unavailable } from "../../threadAccess.ts";
+import { withResolvedAttachments } from "./references.ts";
 import { AttachmentToolkit } from "./tools.ts";
-
-export function resolveAttachmentReferences(
-  requested: ReadonlyArray<ChatAttachment>,
-  stored: ReadonlyArray<ChatAttachment>,
-) {
-  const owned = new Map(stored.map((attachment) => [attachment.id, attachment]));
-  return Effect.forEach(requested, (attachment) => {
-    const canonical = Claims.attachmentIsPendingUpload(attachment)
-      ? attachment
-      : owned.get(attachment.id);
-    return canonical === undefined
-      ? Effect.fail(
-          new OrchestratorMcpFailure({
-            code: "invalid_request",
-            message: "Attachments must be pending uploads or already belong to the target thread.",
-          }),
-        )
-      : Effect.succeed(canonical);
-  });
-}
 
 /** The 24-hour sweep starts at upload completion, possibly one upload-URL lifetime after issue. */
 const UPLOAD_OWNER_TTL_MS = 24 * 60 * 60 * 1000 + ATTACHMENT_UPLOAD_URL_TTL_MS;
@@ -82,38 +61,43 @@ export const layer = McpToolAccess.toLayer(
         (input) => [input.threadId],
         (input) =>
           Effect.gen(function* () {
-            const { caller, projection } = yield* readThread(input.threadId, ["messages"]);
+            const context = yield* readThread(input.threadId, ["messages"]);
+            const { caller, projection } = context;
             if (projection.thread.archivedAt !== null)
               return yield* new OrchestratorMcpFailure({
                 code: "invalid_request",
                 message: "Unarchive the target thread before sending attachments.",
               });
-            const attachments = yield* resolveAttachmentReferences(
-              input.attachments,
-              projection.messages.flatMap((message) => message.attachments),
-            );
             const commandId = yield* newCommandId();
             const messageId = MessageId.make(commandId);
-            const result = yield* ThreadMessageIntake.sendToThread({
-              projectId: projection.thread.projectId,
-              threadId: projection.thread.id,
-              commandId,
-              messageId,
-              ...(caller === undefined ? {} : { senderThreadId: caller.id }),
-              text: input.message ?? "",
-              attachments,
-              mode: "auto",
-              createdBy: "agent",
-              creationSource: "mcp",
-            }).pipe(
-              Effect.mapError((error) =>
-                error._tag === "AttachmentClaimError"
-                  ? new OrchestratorMcpFailure({
-                      code: "orchestration_error",
-                      message: error.message,
-                    })
-                  : unavailable(),
-              ),
+            const result = yield* withResolvedAttachments(
+              {
+                requested: input.attachments,
+                owned: projection.messages.flatMap((message) => message.attachments),
+                context,
+              },
+              (attachments) =>
+                ThreadMessageIntake.sendToThread({
+                  projectId: projection.thread.projectId,
+                  threadId: projection.thread.id,
+                  commandId,
+                  messageId,
+                  ...(caller === undefined ? {} : { senderThreadId: caller.id }),
+                  text: input.message ?? "",
+                  attachments,
+                  mode: "auto",
+                  createdBy: "agent",
+                  creationSource: "mcp",
+                }).pipe(
+                  Effect.mapError((error) =>
+                    error._tag === "AttachmentClaimError"
+                      ? new OrchestratorMcpFailure({
+                          code: "orchestration_error",
+                          message: error.message,
+                        })
+                      : unavailable(),
+                  ),
+                ),
             );
             return {
               threadId: projection.thread.id,

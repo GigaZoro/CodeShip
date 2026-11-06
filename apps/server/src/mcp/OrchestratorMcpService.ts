@@ -39,6 +39,7 @@ import {
   type OrchestratorMcpUpdateScheduledTaskInput,
   type OrchestratorMcpListScheduledTasksInput,
   type ProjectId,
+  type ProviderInstanceId,
   type OrchestratorMcpThreadDetail,
   type OrchestratorMcpThreadPullRequest,
   type OrchestratorMcpThreadInterruptInput,
@@ -93,6 +94,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
   subagentResultForRun,
@@ -397,6 +399,27 @@ export const requireAutoModePick = (
       )
     : Effect.succeed(pick);
 };
+
+/**
+ * Refuses a new thread before anything is created when its first turn would run on an account a
+ * usage limit stopped. Without account routing (as in tests) nothing is refused.
+ */
+export const requireAccountWithRoom = Effect.fn("OrchestratorMcpService.requireAccountWithRoom")(
+  function* (
+    input: { readonly selection: ModelSelection; readonly projectId: ProjectId },
+    routing: Option.Option<AccountRouting.AccountRouting["Service"]>,
+  ) {
+    if (Option.isNone(routing)) return;
+    const limit = yield* routing.value.launchLimit(input);
+    if (limit === null) return;
+    return yield* failure(
+      "provider_unavailable",
+      input.selection.autoAccount === true
+        ? `Auto would start on account ${limit.instanceId}, usage-limited until ${limit.limitedUntil}: no other account has room, or account switching is off in Settings. The thread was not created. Retry after the reset, or name another provider's model.`
+        : `Account ${limit.instanceId} is usage-limited until ${limit.limitedUntil}, so the thread was not created. Pick an account without limitedUntil in orchestrator_capabilities, or retry after the reset.`,
+    );
+  },
+);
 
 function providerConstraints(
   provider: ServerProvider | undefined,
@@ -1059,6 +1082,8 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+  // Optional so test runtimes without provider state refuse no launch on a usage limit.
+  const accountRouting = yield* Effect.serviceOption(AccountRouting.AccountRouting);
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
   const projects = yield* ProjectService.ProjectService;
@@ -2459,6 +2484,9 @@ const make = Effect.gen(function* () {
       const providers = yield* loadProviders;
       const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
       const settings = yield* readSettings;
+      const limitedAccounts = Option.isNone(accountRouting)
+        ? new Map<ProviderInstanceId, string>()
+        : yield* accountRouting.value.limitedAccounts;
       const inherited = parent?.thread.modelSelection;
       const searchTerms = input.search?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
       return {
@@ -2480,6 +2508,7 @@ const make = Effect.gen(function* () {
             provider,
             orchestrationCapableInstanceIds.has(provider.instanceId),
           );
+          const limitedUntil = limitedAccounts.get(provider.instanceId);
           const { listed, omitted } = listCapabilityModels({
             provider,
             preferences: settings.providerModelPreferences?.[provider.instanceId],
@@ -2514,6 +2543,7 @@ const make = Effect.gen(function* () {
             canRunChildTask: constraints.length === 0,
             canRunCrossProviderChildTask: constraints.length === 0,
             constraints: [...constraints],
+            ...(limitedUntil === undefined ? {} : { limitedUntil }),
           };
         }),
         features: {
@@ -2599,6 +2629,11 @@ const make = Effect.gen(function* () {
                 }).pipe(Effect.andThen(resolveDelegateTarget(parent))),
               ),
             );
+      if (!isRetryOfAcceptedDelegation)
+        yield* requireAccountWithRoom(
+          { selection: target.modelSelection, projectId: parent.thread.projectId },
+          accountRouting,
+        );
       const runtimeMode = yield* resolveRuntimeMode(
         parent.thread.runtimeMode,
         input.runtimeMode,
@@ -3045,6 +3080,15 @@ const make = Effect.gen(function* () {
                 request.interactionMode,
               );
               yield* assertTargetEnabledForProject(parent, commandId, target);
+              if (!isRetryOfAcceptedCreation)
+                yield* requireAccountWithRoom(
+                  { selection: target.modelSelection, projectId: parent.thread.projectId },
+                  accountRouting,
+                ).pipe(
+                  Effect.mapError((error) =>
+                    failure(error.code, `Thread ${index + 1}: ${error.message}`),
+                  ),
+                );
               const title = threadTitle({
                 parentTitle: parent.thread.title,
                 prompt: request.prompt,

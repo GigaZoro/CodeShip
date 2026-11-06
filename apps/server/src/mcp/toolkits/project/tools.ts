@@ -154,7 +154,11 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
         description: "First prompt. Omit it and `attachments` for idle.",
       }),
     ),
-    attachments: Schema.optional(Schema.Array(McpAttachmentInput).check(Schema.isMaxLength(8))),
+    attachments: Schema.optional(
+      Schema.Array(McpAttachmentInput).check(Schema.isMaxLength(8)).annotate({
+        description: "Pending uploads, or `{ id }` to forward one already in your thread.",
+      }),
+    ),
     clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
     /** Set by a linked environment launching its agent's delegated task here; ignored otherwise. */
     delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),

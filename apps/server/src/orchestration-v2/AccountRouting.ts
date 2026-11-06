@@ -130,6 +130,12 @@ export function routeAutoAccount(
   return modelPicksEqual(routed, input.selection) ? input.selection : routed;
 }
 
+export interface LaunchLimit {
+  readonly instanceId: ProviderInstanceId;
+  /** The account's latest reported reset, as an ISO time. */
+  readonly limitedUntil: string;
+}
+
 export class AccountRouting extends Context.Service<
   AccountRouting,
   {
@@ -140,6 +146,13 @@ export class AccountRouting extends Context.Service<
       readonly currentInstanceId: ProviderInstanceId | null;
       readonly started: boolean;
     }) => Effect.Effect<ModelSelection>;
+    /** Accounts a usage limit stopped, each with its latest reported reset. */
+    readonly limitedAccounts: Effect.Effect<ReadonlyMap<ProviderInstanceId, string>>;
+    /** The usage-limited account a new thread on `selection` would start on, or null if it has room. */
+    readonly launchLimit: (input: {
+      readonly selection: ModelSelection;
+      readonly projectId: ProjectId;
+    }) => Effect.Effect<LaunchLimit | null>;
   }
 >()("t3/orchestration-v2/AccountRouting") {}
 
@@ -149,7 +162,50 @@ export const layer = Layer.effect(
     const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
+    // Limits only steer and warn; a failed read leaves every account usable.
+    const readLimits = (now: DateTime.Utc) =>
+      projections.getUsageLimitedProviderInstances(now).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("orchestration-v2.account-routing.limits-unavailable", {
+            cause,
+          }).pipe(Effect.as(new Map<ProviderInstanceId, string>())),
+        ),
+      );
     return {
+      limitedAccounts: DateTime.now.pipe(Effect.flatMap(readLimits)),
+      launchLimit: Effect.fn("AccountRouting.launchLimit")(
+        function* (input) {
+          const now = yield* DateTime.now;
+          const limited = yield* readLimits(now);
+          if (limited.size === 0) return null;
+          // A new thread's first turn routes like this, so Auto is judged where it would start.
+          const selection =
+            input.selection.autoAccount === true
+              ? routeAutoAccount({
+                  selection: input.selection,
+                  projectId: input.projectId,
+                  currentInstanceId: null,
+                  started: false,
+                  settings: yield* serverSettings.getSettings,
+                  providers: yield* providerRegistry.getProviders,
+                  limitedInstanceIds: new Set(limited.keys()),
+                  nowMs: DateTime.toEpochMillis(now),
+                })
+              : input.selection;
+          const limitedUntil = limited.get(selection.instanceId);
+          return limitedUntil === undefined
+            ? null
+            : { instanceId: selection.instanceId, limitedUntil };
+        },
+        (effect) =>
+          effect.pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("orchestration-v2.account-routing.launch-limit-failed", {
+                cause,
+              }).pipe(Effect.as(null)),
+            ),
+          ),
+      ),
       route: Effect.fn("AccountRouting.route")(
         function* (input) {
           if (input.selection.autoAccount !== true) return input.selection;
