@@ -1,3 +1,7 @@
+## 2026-11-08 — A ship skill for T3.CodeShip contributors
+
+- Agents working in a T3.CodeShip checkout get a `ship` skill: `/ship` or "ship it" commits the work, adds the release note, runs the pre-push checks, lands it on `main` without a PR, then deletes the branch and its worktree. Nothing changes in the app.
+
 ## 2026-11-08 — Updates come from a public releases repository
 
 - Desktop apps, `t3 update` and a server's update button now get new versions from the public [GigaZoro/codeship-releases](https://github.com/GigaZoro/codeship-releases) repository. Your app moves there with this update; nothing to do.
