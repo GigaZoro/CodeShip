@@ -2926,31 +2926,56 @@ describe("OrchestratorMcpService provider resolution", () => {
         }),
     );
 
-    it.effect("refuses to bind a shared task to a thread", () =>
-      Effect.gen(function* () {
-        const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
-        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
-          Effect.provide(service(masterRepository, saved)),
-        );
-        const created = yield* mcp
-          .scheduleTask(client, {
-            projectId,
-            prompt: "Check the build",
-            schedule,
-            shared: true,
-            bindToCurrentThread: true,
-          })
-          .pipe(Effect.flip);
-        const updated = yield* mcp
-          .updateScheduledTask(client, {
-            scheduledTaskId: existing.id,
-            shared: true,
-            bindToCurrentThread: true,
-          })
-          .pipe(Effect.flip);
-        assert.deepEqual([created.code, updated.code], ["invalid_request", "invalid_request"]);
-        assert.deepEqual(yield* Ref.get(saved), []);
-      }),
+    it.effect(
+      "refuses to bind a shared task to a thread, or run one machine of an unshared task",
+      () =>
+        Effect.gen(function* () {
+          const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
+          const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+            Effect.provide(service(masterRepository, saved)),
+          );
+          const created = yield* mcp
+            .scheduleTask(client, {
+              projectId,
+              prompt: "Check the build",
+              schedule,
+              shared: true,
+              bindToCurrentThread: true,
+            })
+            .pipe(Effect.flip);
+          const updated = yield* mcp
+            .updateScheduledTask(client, {
+              scheduledTaskId: existing.id,
+              shared: true,
+              bindToCurrentThread: true,
+            })
+            .pipe(Effect.flip);
+          assert.deepEqual([created.code, updated.code], ["invalid_request", "invalid_request"]);
+
+          const oneMachineErrors = [
+            yield* mcp
+              .scheduleTask(client, {
+                projectId,
+                prompt: "Check the build",
+                schedule,
+                oneMachine: true,
+              })
+              .pipe(Effect.flip),
+            yield* mcp
+              .updateScheduledTask(client, { scheduledTaskId: existing.id, oneMachine: true })
+              .pipe(Effect.flip),
+          ];
+          for (const error of oneMachineErrors) {
+            assert.deepEqual(
+              { code: error.code, message: error.message },
+              {
+                code: "invalid_request",
+                message: "oneMachine needs a shared task: pass shared: true as well.",
+              },
+            );
+          }
+          assert.deepEqual(yield* Ref.get(saved), []);
+        }),
     );
 
     it.effect("follows the default branch when a task is unbound from its thread", () =>

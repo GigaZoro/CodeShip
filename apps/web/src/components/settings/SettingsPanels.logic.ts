@@ -18,6 +18,7 @@ import type {
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import {
   getBackgroundActivityBaseProfile,
+  getBackgroundActivityPresetSettings,
   normalizeBackgroundActivitySettings,
   normalizeServerBackgroundActivitySettings,
   resolveServerBackgroundActivitySettings,
@@ -300,29 +301,40 @@ function entryPatch(entry: RestorableSettings, settings: UnifiedSettings): Scope
   );
 }
 
-function gitFetchIntervalSeconds(settings: UnifiedSettings): number {
-  return durationToSeconds(
-    resolveServerBackgroundActivitySettings(settings).automaticGitFetchInterval,
+type BackgroundIntervalKey = "automaticGitFetchInterval" | "providerHealthRefreshInterval";
+
+/** Whether the interval differs from its profile's preset, which is what clearing its override restores. */
+export function isBackgroundIntervalOverridden(
+  settings: ServerSettings,
+  key: BackgroundIntervalKey,
+): boolean {
+  const resolved = resolveServerBackgroundActivitySettings(settings);
+  return (
+    durationToSeconds(resolved[key]) !==
+    durationToSeconds(getBackgroundActivityPresetSettings(resolved.profile)[key])
   );
 }
 
-/** Only the git fetch interval's override clears; the rest of the background policy stays. */
-const GIT_FETCH_INTERVAL_ENTRY: RestorableSettings = {
-  page: "/settings/source-control",
-  keys: ["backgroundActivity"],
-  label: msg("Git fetch interval"),
-  partOfAnotherEntry: true,
-  changedLabels: (settings) =>
-    gitFetchIntervalSeconds(settings) !== gitFetchIntervalSeconds(DEFAULT_UNIFIED_SETTINGS)
-      ? [t("Git fetch interval")]
-      : [],
-  patch: (settings) =>
-    backgroundActivityOverrideSettings(
-      settings.backgroundActivity,
-      resolveServerBackgroundActivitySettings(settings),
-      { automaticGitFetchInterval: undefined },
-    ),
-};
+/** Only this interval's override clears; the rest of the background policy stays. */
+function backgroundIntervalEntry(
+  page: SettingsPath,
+  label: Message,
+  key: BackgroundIntervalKey,
+): RestorableSettings {
+  return {
+    page,
+    keys: ["backgroundActivity"],
+    label,
+    partOfAnotherEntry: true,
+    changedLabels: (settings) => (isBackgroundIntervalOverridden(settings, key) ? [t(label)] : []),
+    patch: (settings) =>
+      backgroundActivityOverrideSettings(
+        settings.backgroundActivity,
+        resolveServerBackgroundActivitySettings(settings),
+        { [key]: undefined },
+      ),
+  };
+}
 
 function restorable(
   page: SettingsPath,
@@ -448,7 +460,11 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   restorable("/settings/source-control", msg("Open pull requests in T3.CodeShip"), [
     "pullRequestLinksOpenInApp",
   ]),
-  GIT_FETCH_INTERVAL_ENTRY,
+  backgroundIntervalEntry(
+    "/settings/source-control",
+    msg("Git fetch interval"),
+    "automaticGitFetchInterval",
+  ),
   restorable("/settings/projects", msg("Add project base directory"), ["addProjectBaseDirectory"]),
   restorable("/settings/projects", msg("Clone into host folders"), ["ghqCloneLayout"]),
   restorable("/settings/projects", msg("Import conversations"), ["importAgentConversations"]),
@@ -462,6 +478,11 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
     "sourceControlWriterModelSelection",
   ]),
   restorable("/settings/providers", msg("Review guide model"), ["reviewGuideModelSelection"]),
+  backgroundIntervalEntry(
+    "/settings/providers",
+    msg("Health check interval"),
+    "providerHealthRefreshInterval",
+  ),
   {
     page: "/settings/browser",
     keys: BROWSER_DEFAULT_KEYS,

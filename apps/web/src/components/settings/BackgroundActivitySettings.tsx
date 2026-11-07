@@ -30,6 +30,7 @@ import {
   backgroundActivityOverrideSettings,
   backgroundActivitySharedPolicySettings,
   durationToSeconds,
+  isBackgroundIntervalOverridden,
   PROVIDER_HEALTH_INTERVAL_STEP_SECONDS,
   resolveBackgroundActivityProfileOption,
 } from "./SettingsPanels.logic";
@@ -450,9 +451,6 @@ export function GitFetchIntervalRow() {
   const canWriteSettings = useScopedSettingsWriteAllowed();
   const resolvedBackgroundActivity = resolveServerBackgroundActivitySettings(settings);
   const seconds = durationToSeconds(resolvedBackgroundActivity.automaticGitFetchInterval);
-  const defaultSeconds = durationToSeconds(
-    resolveServerBackgroundActivitySettings(DEFAULT_UNIFIED_SETTINGS).automaticGitFetchInterval,
-  );
   const setInterval = (
     automaticGitFetchInterval: Duration.Duration | undefined,
     options?: Parameters<typeof updateSettings>[1],
@@ -472,7 +470,8 @@ export function GitFetchIntervalRow() {
         "Refresh remote branch status in the background. Set to 0 to turn it off. The Background activity policy in Maintenance still decides when fetches may run.",
       )}
       resetAction={
-        seconds !== defaultSeconds && canWriteSettings ? (
+        isBackgroundIntervalOverridden(settings, "automaticGitFetchInterval") &&
+        canWriteSettings ? (
           <SettingResetButton
             label={t("git fetch interval")}
             onClick={() => setInterval(undefined)}

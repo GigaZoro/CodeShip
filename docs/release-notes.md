@@ -1,3 +1,8 @@
+## 2026-11-08 — Reset covers the provider health check interval
+
+- **Reset page** on **Settings → Providers** now restores the **Health check interval** too. It resets only that interval and keeps the rest of your Background activity policy.
+- On **Settings → Source control**, the **Git fetch interval** reset and **Reset page** no longer offer to reset the interval when it already matches your Background activity profile, such as Battery saver. Before, the reset changed nothing and stayed on offer.
+
 ## 2026-11-08 — Thread shortcuts stay out of confirmation dialogs
 
 - The archive and snooze shortcuts (⌥⌘E and ⌥⌘Z by default) no longer act on the thread behind a confirmation dialog, such as **Edit from here?**. Before, pressing them there archived the thread or opened the snooze list while the dialog was still open. On web and desktop.

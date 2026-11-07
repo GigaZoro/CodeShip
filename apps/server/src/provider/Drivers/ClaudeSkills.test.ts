@@ -618,7 +618,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, isolatedHome))("discoverClaudeSkills
     }),
   );
 
-  it.effect("reads autoUpdatesChannel from the settings under CLAUDE_CONFIG_DIR", () =>
+  it.effect("reads autoUpdatesChannel from the user settings, with managed settings winning", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -629,9 +629,31 @@ it.layer(Layer.mergeAll(NodeServices.layer, isolatedHome))("discoverClaudeSkills
       );
       const emptyDir = path.join(tempDir, "empty");
       yield* fs.makeDirectory(emptyDir);
+      const programData = path.join(tempDir, "program-data");
+      const noManaged = path.join(tempDir, "no-managed");
+      yield* fs.makeDirectory(path.join(programData, "ClaudeCode"), { recursive: true });
+      yield* fs.writeFileString(
+        path.join(programData, "ClaudeCode", "managed-settings.json"),
+        JSON.stringify({ autoUpdatesChannel: "latest" }),
+      );
+      // Windows is the one platform whose managed settings path a test can redirect.
+      const channel = (environment: NodeJS.ProcessEnv) =>
+        readClaudeAutoUpdatesChannel(environment).pipe(
+          Effect.provideService(HostProcess.Platform, "win32"),
+        );
 
-      assert.equal(yield* readClaudeAutoUpdatesChannel({ CLAUDE_CONFIG_DIR: tempDir }), "stable");
-      assert.equal(yield* readClaudeAutoUpdatesChannel({ CLAUDE_CONFIG_DIR: emptyDir }), undefined);
+      assert.equal(
+        yield* channel({ CLAUDE_CONFIG_DIR: tempDir, PROGRAMDATA: noManaged }),
+        "stable",
+      );
+      assert.equal(
+        yield* channel({ CLAUDE_CONFIG_DIR: emptyDir, PROGRAMDATA: noManaged }),
+        undefined,
+      );
+      assert.equal(
+        yield* channel({ CLAUDE_CONFIG_DIR: tempDir, PROGRAMDATA: programData }),
+        "latest",
+      );
     }),
   );
 

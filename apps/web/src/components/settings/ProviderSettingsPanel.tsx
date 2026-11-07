@@ -29,10 +29,7 @@ import {
   resolveProviderInstanceEnabled,
 } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t3tools/contracts/settings";
-import {
-  getBackgroundActivityPresetSettings,
-  resolveServerBackgroundActivitySettings,
-} from "@t3tools/shared/backgroundActivitySettings";
+import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import * as Arr from "effect/Array";
 import * as Duration from "effect/Duration";
 import * as Result from "effect/Result";
@@ -102,6 +99,7 @@ import {
   backgroundActivityOverrideSettings,
   buildProviderInstanceUpdatePatch,
   durationToSeconds,
+  isBackgroundIntervalOverridden,
   PROVIDER_HEALTH_INTERVAL_STEP_SECONDS,
 } from "./SettingsPanels.logic";
 import {
@@ -511,13 +509,9 @@ export function EnvironmentProviderSettings({
       ),
   );
   const resolvedBackgroundActivity = resolveServerBackgroundActivitySettings(settings);
-  const providerHealthPreset = getBackgroundActivityPresetSettings(
-    resolvedBackgroundActivity.profile,
-  ).providerHealthRefreshInterval;
   const providerHealthRefreshIntervalSeconds = durationToSeconds(
     resolvedBackgroundActivity.providerHealthRefreshInterval,
   );
-  const defaultProviderHealthRefreshIntervalSeconds = durationToSeconds(providerHealthPreset);
 
   const refreshProviders = () => {
     if (refreshingRef.current || !readEnvironmentScope(environmentId, AuthOrchestrationReadScope))
@@ -1030,8 +1024,7 @@ export function EnvironmentProviderSettings({
               "Refresh provider status, versions, and models in the background. Set to 0 to disable.",
             )}
             resetAction={
-              providerHealthRefreshIntervalSeconds !==
-              defaultProviderHealthRefreshIntervalSeconds ? (
+              isBackgroundIntervalOverridden(settings, "providerHealthRefreshInterval") ? (
                 <span
                   inert={!canWriteSettings}
                   className={!canWriteSettings ? "opacity-50" : undefined}

@@ -157,7 +157,20 @@ describe("page reset", () => {
     ]);
   });
 
-  it("resets only the git fetch interval override on the source control page", () => {
+  it.each([
+    {
+      page: "/settings/source-control",
+      label: "Git fetch interval",
+      key: "automaticGitFetchInterval",
+      other: "providerHealthRefreshInterval",
+    },
+    {
+      page: "/settings/providers",
+      label: "Health check interval",
+      key: "providerHealthRefreshInterval",
+      other: "automaticGitFetchInterval",
+    },
+  ] as const)("resets only the $key override on $page", ({ page, label, key, other }) => {
     const custom = {
       ...DEFAULT_UNIFIED_SETTINGS,
       backgroundActivity: {
@@ -165,17 +178,26 @@ describe("page reset", () => {
         profile: "custom",
         baseProfile: "balanced",
         overrides: {
-          automaticGitFetchInterval: Duration.seconds(42),
+          [key]: Duration.seconds(42),
+          [other]: Duration.seconds(91),
           pauseWhenOnBattery: true,
         },
       },
-    } as const;
-    const { labels, patch } = onOneMachine(custom, "/settings/source-control");
-    expect(labels).toEqual(["Git fetch interval"]);
-    expect(onOneMachine(DEFAULT_UNIFIED_SETTINGS, "/settings/source-control").labels).toEqual([]);
-    expect(Object.keys(patch)).toContain("backgroundActivity");
-    expect(patch.backgroundActivity?.overrides?.pauseWhenOnBattery).toBe(true);
-    expect(patch.backgroundActivity?.overrides?.automaticGitFetchInterval).toBeUndefined();
+    } as typeof DEFAULT_UNIFIED_SETTINGS;
+    const { labels, patch } = onOneMachine(custom, page);
+    expect(labels).toEqual([label]);
+    const overrides = patch.backgroundActivity?.overrides;
+    expect(overrides?.[key]).toBeUndefined();
+    expect(overrides?.[other]).toEqual(Duration.seconds(91));
+    expect(overrides?.pauseWhenOnBattery).toBe(true);
+
+    expect(onOneMachine(DEFAULT_UNIFIED_SETTINGS, page).labels).toEqual([]);
+    // A profile's own preset is what the reset restores, so it is not a change.
+    const batterySaver = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      backgroundActivity: { schemaVersion: 1, profile: "battery-saver", overrides: {} },
+    } as typeof DEFAULT_UNIFIED_SETTINGS;
+    expect(onOneMachine(batterySaver, page).labels).toEqual([]);
   });
 
   it("lists a setting changed on any machine and restores each machine from its own values", () => {
