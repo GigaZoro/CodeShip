@@ -98,13 +98,13 @@ Each scheduled task has a place in the app:
 - **None** keeps the task out of the thread list, along with the thread it runs in (for a task
   that starts a new thread each run, its latest one). That thread still appears under
   **Needs you** when it needs an approval or answer.
-- **Regular chat** lists the task's run threads like any other chat. This is the default.
-- **Pinned** adds a row for the task in the collapsible **Scheduled** section at the top of the
-  thread list, so you can watch its runs and next scheduled start.
+- **Regular chat** lists the task's run threads like any other chat.
+- **Scheduled section** adds a row for the task in the collapsible **Scheduled** section at the
+  top of the thread list, so you can watch its runs and next scheduled start. This is the default.
 
-To change the order of pinned tasks on web and desktop, drag one, or right-click it and choose
-**Move up** or **Move down**. Every device shows the same order, and a newly pinned task goes
-to the bottom.
+To change the order of tasks in the Scheduled section on web and desktop, drag one, or right-click
+it and choose **Move up** or **Move down**. Every device shows the same order, and a task newly
+added there goes to the bottom.
 
 Change a task's choice with **Show in** in its menu on the **Scheduled tasks** page, in the
 **Automations** card of its thread, in the right-click menu of its row, or in its menu on mobile.
@@ -119,7 +119,7 @@ there and refresh every few minutes. To change them, add the machine under
 **Settings → Machines & access**.
 
 **Show new scheduled tasks in** in **Settings → General** sets the place for tasks created from
-then on. Regular chat is the default. Changing it leaves existing tasks where they are, and
+then on. Scheduled section is the default. Changing it leaves existing tasks where they are, and
 editing or running a task does not move it.
 
 A task with a row shows whether its latest run is still working or needs your input, and counts

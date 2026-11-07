@@ -1345,7 +1345,7 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS)),
   ),
   scheduledTaskDefaultPlacement: ScheduledTaskPlacement.pipe(
-    Schema.withDecodingDefault(Effect.succeed("chat" as const)),
+    Schema.withDecodingDefault(Effect.succeed("pinned" as const)),
   ),
   compactIdleThreads: LegacyCompactIdleThreads.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),

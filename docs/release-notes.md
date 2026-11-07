@@ -1,3 +1,8 @@
+## 2026-11-07 — New scheduled tasks show in the Scheduled section
+
+- The scheduled task place that adds a row to the **Scheduled** section of the thread list is now called **Scheduled section** instead of **Pinned**, in **Show in**, **Show all in** and **Settings → General → Show new scheduled tasks in**. It was easy to mistake for the pinned threads section. On web, desktop and mobile.
+- New scheduled tasks go to the Scheduled section by default instead of showing as regular chats. Tasks you already have stay where they are. To keep new ones as regular chats, choose **Regular chat** in **Settings → General → Show new scheduled tasks in**.
+
 ## 2026-11-07 — Needs you keeps to what only you can act on
 
 - Needs you lists a failed or usage-limited run only in a thread you started. Runs that failed in threads an agent started, scheduled task runs included, are left to agents to recover: they still show Failed in the thread list, but no longer wait in Needs you or count in its badges. On web, desktop and mobile.

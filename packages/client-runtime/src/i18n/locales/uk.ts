@@ -9755,6 +9755,7 @@ const catalog: MessageCatalog = {
   "Schedule type": "Тип розкладу",
   Scheduled: "Заплановано",
   "Scheduled run": "Запланований запуск",
+  "Scheduled section": "Розділ «Заплановано»",
   "scheduled task": "заплановане завдання",
   "Scheduled task": "Заплановане завдання",
   "Scheduled task is incomplete": "Заплановане завдання неповне",

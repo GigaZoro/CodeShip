@@ -137,7 +137,7 @@ export function intervalWaitProgress(
 const SCHEDULED_TASK_PLACEMENTS = [
   { value: "none", label: msg("None") },
   { value: "chat", label: msg("Regular chat") },
-  { value: "pinned", label: msg("Pinned") },
+  { value: "pinned", label: msg("Scheduled section") },
 ] as const satisfies ReadonlyArray<{
   readonly value: ScheduledTaskPlacement;
   readonly label: Message;

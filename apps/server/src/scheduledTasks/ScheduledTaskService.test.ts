@@ -558,8 +558,9 @@ it.effect("a placement and the last run's thread survive edits and leave with th
       yield* sql`DELETE FROM scheduled_task_sidebar WHERE task_id = 'task:legacy'`;
 
       const { task } = yield* upsert("Check CI");
-      assert.equal(task.placement, "chat");
-      assert.isNull(task.pinnedAt);
+      assert.equal(task.placement, "pinned");
+      assert.isNotNull(task.pinnedAt);
+      yield* service.setPlacement({ ids: [task.id], placement: "chat" });
       const listed = () =>
         service.list().pipe(Effect.map(({ tasks }) => tasks.find(({ id }) => id === task.id)));
 
