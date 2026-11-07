@@ -2,7 +2,7 @@ import { t } from "~/i18n";
 import type { CommandOutputView } from "@t3tools/client-runtime/state/command-output";
 import type { EnvironmentId, ThreadId, TurnItemId } from "@t3tools/contracts";
 import { TERMINAL_PALETTES, terminalOutputSpans } from "@t3tools/shared/terminalOutput";
-import { useLayoutEffect, useRef } from "react";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
 
 import { useTheme } from "../../hooks/useTheme";
 import { useServerConfigs } from "../../state/entities";
@@ -29,6 +29,8 @@ export function CommandOutputPanel(props: {
   readonly threadId: ThreadId;
   readonly itemId: TurnItemId;
   readonly source?: TurnItemSource["commandOutput"] | undefined;
+  /** Rendered under the output with its text, or null while there is none. */
+  readonly renderActions?: ((output: string | null) => ReactNode) | undefined;
 }) {
   const input = { threadId: props.threadId, itemId: props.itemId };
   const { data, error } = useEnvironmentQuery<CommandOutputView, unknown>(
@@ -47,17 +49,23 @@ export function CommandOutputPanel(props: {
     if (element && followRef.current) element.scrollTop = element.scrollHeight;
   });
 
+  const actions = props.renderActions?.(text.length > 0 ? text : null);
+
   if (text.length === 0) {
-    if (error)
-      return (
-        <div className="text-destructive-foreground">
-          {t("Couldn't load output: {error}", { error })}
-        </div>
-      );
-    if (data === null)
-      return <div className="text-muted-foreground italic">{t("Loading output…")}</div>;
-    return data.running ? null : (
+    const status = error ? (
+      <div className="text-destructive-foreground">
+        {t("Couldn't load output: {error}", { error })}
+      </div>
+    ) : data === null ? (
+      <div className="text-muted-foreground italic">{t("Loading output…")}</div>
+    ) : data.running ? null : (
       <div className="text-muted-foreground italic">{t("No output.")}</div>
+    );
+    return (
+      <>
+        {status}
+        {actions}
+      </>
     );
   }
   // Parse after all hooks to preserve the text/theme compiler cache.
@@ -88,6 +96,7 @@ export function CommandOutputPanel(props: {
           ),
         )}
       </div>
+      {actions}
     </div>
   );
 }

@@ -67,17 +67,23 @@ export function publishTimelineOutline(
   });
 }
 
+export type TimelinePromptStep = "previous" | "next";
+
 const revealByThreadKey = new Map<string, (promptId: string) => void>();
+const stepByThreadKey = new Map<string, (direction: TimelinePromptStep) => boolean>();
 
 /** Attaches the timeline showing a thread, which scrolls to a prompt; returns the detach. */
 export function attachTimelineOutline(
   threadKey: string,
   reveal: (promptId: string) => void,
+  step: (direction: TimelinePromptStep) => boolean,
 ): () => void {
   revealByThreadKey.set(threadKey, reveal);
+  stepByThreadKey.set(threadKey, step);
   return () => {
     if (revealByThreadKey.get(threadKey) !== reveal) return;
     revealByThreadKey.delete(threadKey);
+    stepByThreadKey.delete(threadKey);
     const { [threadKey]: _detached, ...rest } = useTimelineOutlineStore.getState().byThreadKey;
     useTimelineOutlineStore.setState({ byThreadKey: rest });
   };
@@ -85,4 +91,9 @@ export function attachTimelineOutline(
 
 export function revealTimelinePrompt(threadKey: string, promptId: string): void {
   revealByThreadKey.get(threadKey)?.(promptId);
+}
+
+/** Scrolls the thread's timeline to the prompt before or after the one in view; false when none. */
+export function stepTimelinePrompt(threadKey: string, direction: TimelinePromptStep): boolean {
+  return stepByThreadKey.get(threadKey)?.(direction) ?? false;
 }

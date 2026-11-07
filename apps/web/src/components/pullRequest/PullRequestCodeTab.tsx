@@ -32,15 +32,7 @@ import {
 import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown } from "lucide";
 import { useAtomRefresh } from "@effect/atom-react";
 import * as Schema from "effect/Schema";
-import {
-  createContext,
-  use,
-  useEffect,
-  useEffectEvent,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 
 import { observeIntersection } from "~/lib/observeIntersection";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
@@ -81,6 +73,8 @@ import { DiffPanelLoadingState } from "../DiffPanelShell";
 import { useDiffWorkerPool } from "../DiffWorkerPoolProvider";
 import { DiffCommentAnnotation } from "../diffs/DiffCommentAnnotation";
 import { DiffFileTree } from "../diffs/DiffFileTree";
+import { DiffFileViewedContext, DiffFileViewedToggle } from "../diffs/DiffFileViewedToggle";
+import { getFileViewedRange } from "../diffs/diffFileViewed.logic";
 import { FileExplorerPane } from "../files/FileExplorerPane";
 import { useCodeViewFileReveal } from "../diffs/useCodeViewFileReveal";
 import { useHideTestFiles } from "../diffs/useHideTestFiles";
@@ -88,7 +82,6 @@ import { diffFileTreeEntries, orderDiffFilesLikeTree } from "../diffs/diffFileTr
 import { StyledDiffCodeView } from "../diffs/StyledDiffCodeView";
 import { Button } from "../ui/button";
 import { MorphIcon } from "~/components/MorphIcon";
-import { Checkbox } from "../ui/checkbox";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import {
   DropdownMenu,
@@ -110,7 +103,6 @@ import {
   toViewerSide,
 } from "./PullRequestReviewAnnotation";
 import {
-  getFileViewedRange,
   isFileDiffCollapsed,
   isLineInFileDiff,
   toggleFileDiffFoldForViewed,
@@ -175,65 +167,6 @@ function parseSlice(slice: DiffSlice, cacheKey: string, ignoreWhitespace: boolea
   });
   parses.set(cacheKey, parsed);
   return parsed;
-}
-
-interface FileViewedToggleState {
-  readonly enabled: boolean;
-  readonly isViewed: (path: string) => boolean;
-  readonly isStale: (path: string) => boolean;
-  readonly setFileViewed: (fileKey: string, viewed: boolean, extendRange: boolean) => void;
-}
-
-// Context updates viewed toggles without invalidating memoized header portals.
-const FileViewedToggleContext = createContext<FileViewedToggleState | null>(null);
-
-function FileViewedToggle({
-  fileKey,
-  path,
-  stat,
-}: {
-  readonly fileKey: string;
-  readonly path: string;
-  readonly stat: ReactNode;
-}) {
-  const viewedFiles = use(FileViewedToggleContext);
-  if (viewedFiles === null || !viewedFiles.enabled) return stat;
-  const viewed = viewedFiles.isViewed(path);
-  const stale = viewedFiles.isStale(path);
-  return (
-    <span className="flex items-center gap-3">
-      {stat}
-      <label
-        data-viewed-toggle=""
-        className="flex w-18 shrink-0 cursor-pointer select-none items-center gap-1.5 text-2xs text-muted-foreground"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <Checkbox
-          aria-label={stale ? t("Changed") : t("Viewed")}
-          checked={viewed}
-          onCheckedChange={(next, details) =>
-            viewedFiles.setFileViewed(
-              fileKey,
-              next === true,
-              "shiftKey" in details.event && details.event.shiftKey === true,
-            )
-          }
-        />
-        {stale ? (
-          <Tooltip>
-            <TooltipTrigger render={<span className="text-warning-foreground" />}>
-              {t("Changed")}
-            </TooltipTrigger>
-            <TooltipPopup side="bottom">
-              {t("This file has been pushed to since you marked it viewed.")}
-            </TooltipPopup>
-          </Tooltip>
-        ) : (
-          <span className="@max-xs:hidden">{t("Viewed")}</span>
-        )}
-      </label>
-    </span>
-  );
 }
 
 interface MutableAnnotationGroup {
@@ -734,12 +667,14 @@ function PullRequestCodeTab({
       ),
     );
   };
-  const fileViewedToggle = {
-    enabled: filesViewedEnabled,
-    isViewed: isFileViewed,
-    isStale: isFileViewedStale,
-    setFileViewed,
-  };
+  const fileViewedToggle = filesViewedEnabled
+    ? {
+        isViewed: isFileViewed,
+        isStale: isFileViewedStale,
+        staleDescription: t("This file has been pushed to since you marked it viewed."),
+        setFileViewed,
+      }
+    : null;
 
   const revealFile = (path: string) => {
     const item = items.find((candidate) => resolveFileDiffPath(candidate.fileDiff) === path);
@@ -863,7 +798,7 @@ function PullRequestCodeTab({
       if (withheld) ({ additions, deletions } = withheld);
     }
     return (
-      <FileViewedToggle
+      <DiffFileViewedToggle
         fileKey={item.id}
         path={path}
         stat={
@@ -1511,7 +1446,7 @@ function PullRequestCodeTab({
           }}
         >
           {/* The viewer must own its scroll element to position virtual rows within it. */}
-          <FileViewedToggleContext value={fileViewedToggle}>
+          <DiffFileViewedContext value={fileViewedToggle}>
             <StyledDiffCodeView<ReviewAnnotationGroup>
               className="@container h-full overflow-auto [scrollbar-gutter:stable]"
               containerRef={scrollerRef}
@@ -1532,7 +1467,7 @@ function PullRequestCodeTab({
               }
               unsafeCSSExtra={REPLACE_FILE_COUNTS_CSS}
             />
-          </FileViewedToggleContext>
+          </DiffFileViewedContext>
         </div>
         {fileTreeOpen ? (
           <FileExplorerPane

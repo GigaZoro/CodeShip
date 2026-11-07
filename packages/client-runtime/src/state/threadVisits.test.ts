@@ -4,7 +4,12 @@ import { expect, it, vi } from "vite-plus/test";
 
 import type { VisitThreadInput } from "../operations/commands.ts";
 import { claimThreadOpen } from "./threadSearch.ts";
-import { createThreadVisitTracker, VISIT_DISPATCH_THROTTLE_MS } from "./threadVisits.ts";
+import {
+  createThreadVisitTracker,
+  firstUnseenThreadRowIndex,
+  unseenThreadWindow,
+  VISIT_DISPATCH_THROTTLE_MS,
+} from "./threadVisits.ts";
 
 const environmentId = EnvironmentId.make("env-visits");
 
@@ -171,4 +176,28 @@ it("advances the watermark to a wake without waiting for the throttle", () => {
   vi.advanceTimersByTime(1_000);
   t.update({ updatedAt: at(16) });
   expect(t.visits).toHaveLength(2);
+});
+
+it("marks the rows a reader had not seen when the thread opened", () => {
+  const rowTime = (row: { readonly at: string | null }) =>
+    row.at === null ? Number.NaN : Date.parse(row.at);
+  // Rows 4 and 5 arrived before the open, the last one while the thread was open.
+  const rows = [
+    { at: at(1) },
+    { at: at(2) },
+    { at: null },
+    { at: at(4) },
+    { at: at(5) },
+    { at: at(6) },
+  ];
+  const window = unseenThreadWindow({ lastVisitedAt: at(3), updatedAt: at(5) });
+
+  expect(firstUnseenThreadRowIndex(rows, window, rowTime)).toBe(3);
+  // Nothing new at open: what arrives during the visit is not unseen.
+  const caughtUp = unseenThreadWindow({ lastVisitedAt: at(5), updatedAt: at(5) });
+  expect(firstUnseenThreadRowIndex(rows, caughtUp, rowTime)).toBe(-1);
+  // Everything new: no divider above the first row.
+  const allNew = unseenThreadWindow({ lastVisitedAt: at(0), updatedAt: at(5) });
+  expect(firstUnseenThreadRowIndex(rows, allNew, rowTime)).toBe(-1);
+  expect(unseenThreadWindow({ lastVisitedAt: null, updatedAt: at(5) })).toBeNull();
 });

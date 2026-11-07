@@ -9,8 +9,8 @@ import {
 } from "@t3tools/client-runtime/work-log/item-detail";
 import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
 import { isJavaScriptReplTool } from "@t3tools/shared/toolActivity";
-import { ExternalLinkIcon } from "lucide-react";
-import { memo, type ReactNode, Suspense, use } from "react";
+import { CopyIcon, ExternalLinkIcon, MessageSquarePlusIcon, PlayIcon } from "lucide-react";
+import { memo, type ReactNode, Suspense, use, useState } from "react";
 
 import { useRenderedAppearance } from "../../hooks/useTheme";
 import { cn } from "../../lib/utils";
@@ -27,6 +27,9 @@ import { resolveExternalWebLinkHref } from "./externalLinkContextMenu";
 import type { ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ShellCommandBlock } from "./ShellCommandBlock";
 import type { TurnItemSource } from "./timelineRowContext";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { formatReviewCommentFence } from "../../reviewCommentContext";
+import { toastManager } from "../ui/toast";
 import { t } from "~/i18n";
 
 interface V2ItemInspectorProps {
@@ -37,6 +40,10 @@ interface V2ItemInspectorProps {
   readonly onOpenToolDiff?: ((target: ToolCallDiffTarget) => void) | undefined;
   readonly onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
   readonly source?: TurnItemSource | undefined;
+  /** Absent where the thread has no terminal to run in. */
+  readonly onRunShellCommand?: ((command: string) => void) | undefined;
+  /** Absent where there is no composer to add to. */
+  readonly onAddToComposer?: ((text: string) => void) | undefined;
 }
 
 function SyntaxTokens({
@@ -195,6 +202,74 @@ export function FetchedToolOutput(props: {
   );
 }
 
+// A control or invisible format character (bidi override, zero-width, newline) can make the
+// shown command differ from what the terminal would run.
+const SINGLE_VISIBLE_LINE = /^[^\p{Cc}\p{Cf}]+$/u;
+
+type ToolCallCopyTarget = "command" | "output";
+
+function ToolCallActions(props: {
+  readonly command?: string | undefined;
+  readonly output: string | null;
+  readonly onRunShellCommand?: ((command: string) => void) | undefined;
+  readonly onAddToComposer?: ((text: string) => void) | undefined;
+}) {
+  const [copiedTarget, setCopiedTarget] = useState<ToolCallCopyTarget | null>(null);
+  const { copyToClipboard, isCopied } = useCopyToClipboard<ToolCallCopyTarget>({
+    timeout: 1200,
+    onCopy: setCopiedTarget,
+    onError: () => toastManager.add({ type: "error", title: t("Could not copy to the clipboard") }),
+  });
+  const command = props.command?.trim() ?? "";
+  const output = props.output?.trimEnd() ?? "";
+  const { onRunShellCommand, onAddToComposer } = props;
+  if (!command && !output) return null;
+  const copiedLabel = (target: ToolCallCopyTarget, label: string) =>
+    isCopied && copiedTarget === target ? t("Copied") : label;
+  return (
+    <div
+      role="toolbar"
+      aria-label={t("Tool call actions")}
+      className="-ms-1.5 flex flex-wrap items-center gap-0.5 font-sans"
+    >
+      {command ? (
+        <Button size="xs" variant="ghost-muted" onClick={() => copyToClipboard(command, "command")}>
+          <CopyIcon aria-hidden />
+          {copiedLabel("command", t("Copy command"))}
+        </Button>
+      ) : null}
+      {output ? (
+        <Button size="xs" variant="ghost-muted" onClick={() => copyToClipboard(output, "output")}>
+          <CopyIcon aria-hidden />
+          {copiedLabel("output", t("Copy output"))}
+        </Button>
+      ) : null}
+      {command && onRunShellCommand && SINGLE_VISIBLE_LINE.test(command) ? (
+        <Button size="xs" variant="ghost-muted" onClick={() => onRunShellCommand(command)}>
+          <PlayIcon aria-hidden />
+          {t("Run in terminal")}
+        </Button>
+      ) : null}
+      {output && onAddToComposer ? (
+        <Button
+          size="xs"
+          variant="ghost-muted"
+          onClick={() =>
+            onAddToComposer(
+              command
+                ? formatReviewCommentFence("console", `$ ${command}\n${output}`)
+                : formatReviewCommentFence("", output),
+            )
+          }
+        >
+          <MessageSquarePlusIcon aria-hidden />
+          {t("Add output to message")}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 function ToolCallBody(
   props: ToolOutputState & {
     readonly command?: string;
@@ -203,6 +278,8 @@ function ToolCallBody(
     readonly exitCode?: number | undefined;
     /** Replaces fetched output. */
     readonly outputSlot?: ReactNode;
+    /** Shown under fetched output; a streamed `outputSlot` shows its own. */
+    readonly actions?: ReactNode;
   },
 ) {
   const call = toolCallLines({ command: props.command, args: props.args });
@@ -230,6 +307,7 @@ function ToolCallBody(
           {t("exit {code}", { code: props.exitCode })}
         </div>
       ) : null}
+      {props.outputSlot === undefined ? props.actions : null}
     </div>
   );
 }
@@ -248,6 +326,10 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
   );
   const item = fetched.item;
   const outputState = fetched.output;
+  const actionCallbacks = {
+    onRunShellCommand: props.onRunShellCommand,
+    onAddToComposer: props.onAddToComposer,
+  };
   return (
     <div className="space-y-2 text-xs" data-v2-item-inspector={item.type}>
       {item.type === "reasoning" && item.text ? (
@@ -270,6 +352,13 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
           exitCode={item.exitCode}
           {...outputState}
           onImageExpand={props.onImageExpand}
+          actions={
+            <ToolCallActions
+              command={item.input}
+              output={outputState.output}
+              {...actionCallbacks}
+            />
+          }
           outputSlot={
             streamsOutput ? (
               <CommandOutputPanel
@@ -277,6 +366,9 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
                 threadId={props.projectedItem.sourceThreadId}
                 itemId={props.projectedItem.sourceItemId}
                 source={props.source?.commandOutput}
+                renderActions={(output) => (
+                  <ToolCallActions command={item.input} output={output} {...actionCallbacks} />
+                )}
               />
             ) : undefined
           }
@@ -389,6 +481,7 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
           args={item.input}
           {...outputState}
           onImageExpand={props.onImageExpand}
+          actions={<ToolCallActions output={outputState.output} {...actionCallbacks} />}
         />
       ) : null}
 

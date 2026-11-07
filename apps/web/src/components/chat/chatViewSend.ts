@@ -18,7 +18,12 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { readLocalApi } from "../../localApi";
 import { getUploadedAttachments } from "../../lib/attachmentUploadQueue";
-import { findRevertCheckpoint } from "../../session-logic";
+import {
+  findRevertCheckpoint,
+  waitForRevertedMessage,
+} from "@t3tools/client-runtime/state/thread-rewind";
+import { appAtomRegistry } from "../../rpc/atomRegistry";
+import { environmentThreadDetails } from "../../state/threads";
 import { type ChatMessage } from "../../types";
 import { randomUUID } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -40,7 +45,6 @@ import {
   type ComposerSendSnapshot,
   readFileAsDataUrl,
   prepareRevertedMessageAttachments,
-  waitForRevertedMessage,
 } from "../ChatView.logic";
 import { readPreparedConnection } from "../../state/session";
 import { recallableComposerPrompt } from "./composerPromptHistory";
@@ -207,20 +211,26 @@ export async function rewindToMessage(input: {
       );
     }
     const commandId = CommandId.make(randomUUID());
-    await waitForRevertedMessage(input.routeThreadRef, input.turnCount, commandId, async () => {
-      const result = await input.revertThreadCheckpoint({
-        environmentId,
-        input: {
-          commandId,
-          threadId: input.threadId,
-          turnCount: input.turnCount,
-          restoreFiles: input.restoreFiles,
-          ...(input.checkpoint === undefined
-            ? {}
-            : { checkpointId: input.checkpoint.id, scopeId: input.checkpoint.scopeId }),
-        },
-      });
-      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+    await waitForRevertedMessage({
+      registry: appAtomRegistry,
+      threadAtom: environmentThreadDetails.stateAtom(input.routeThreadRef),
+      turnCount: input.turnCount,
+      requestId: commandId,
+      revert: async () => {
+        const result = await input.revertThreadCheckpoint({
+          environmentId,
+          input: {
+            commandId,
+            threadId: input.threadId,
+            turnCount: input.turnCount,
+            restoreFiles: input.restoreFiles,
+            ...(input.checkpoint === undefined
+              ? {}
+              : { checkpointId: input.checkpoint.id, scopeId: input.checkpoint.scopeId }),
+          },
+        });
+        if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      },
     });
     const currentPrompt = store.getComposerDraft(draftTarget)?.prompt ?? "";
     const restoredPrompt = recallableComposerPrompt(message.text);

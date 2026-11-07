@@ -5,6 +5,10 @@ import type { RunId, ScopedThreadRef, ThreadId, TurnItemId } from "@t3tools/cont
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
+import {
+  setDiffFilesViewed,
+  type DiffFileViewedMarks,
+} from "./components/diffs/diffFileViewed.logic";
 import { resolveStorage } from "./lib/storage";
 
 export interface ToolCallDiffTarget {
@@ -182,16 +186,26 @@ export const useDiffPanelStore = create<DiffPanelStoreState>()(
 
 interface DiffPanelSessionStoreState {
   collapsedFileKeysByScopeKey: Record<string, ReadonlySet<string>>;
+  viewedFilesByScopeKey: Record<string, DiffFileViewedMarks>;
   updateCollapsedFileKeys: (
     scopeKey: string,
     defaults: ReadonlySet<string>,
     update: (current: ReadonlySet<string>) => ReadonlySet<string>,
   ) => void;
+  setFilesViewed: (
+    scopeKey: string,
+    files: ReadonlyArray<{ readonly path: string; readonly version: number }>,
+    viewed: boolean,
+  ) => void;
 }
 
-// Session-only so folds survive right-panel switches without changing reload defaults.
+const NO_VIEWED_FILES: DiffFileViewedMarks = new Map();
+
+// Session-only so folds and viewed marks survive right-panel switches without changing reload
+// defaults.
 export const useDiffPanelSessionStore = create<DiffPanelSessionStoreState>()((set) => ({
   collapsedFileKeysByScopeKey: {},
+  viewedFilesByScopeKey: {},
   updateCollapsedFileKeys: (scopeKey, defaults, update) =>
     set((state) => {
       const current = state.collapsedFileKeysByScopeKey[scopeKey] ?? defaults;
@@ -201,6 +215,17 @@ export const useDiffPanelSessionStore = create<DiffPanelSessionStoreState>()((se
         collapsedFileKeysByScopeKey: { ...state.collapsedFileKeysByScopeKey, [scopeKey]: next },
       };
     }),
+  setFilesViewed: (scopeKey, files, viewed) =>
+    set((state) => ({
+      viewedFilesByScopeKey: {
+        ...state.viewedFilesByScopeKey,
+        [scopeKey]: setDiffFilesViewed(
+          state.viewedFilesByScopeKey[scopeKey] ?? NO_VIEWED_FILES,
+          files,
+          viewed,
+        ),
+      },
+    })),
 }));
 
 export function selectThreadDiffPanelSelection(

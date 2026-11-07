@@ -159,6 +159,7 @@ import {
 } from "./threadMessageJump";
 import {
   clearThreadComposerError,
+  setThreadComposerError,
   threadComposerErrorsAtom,
 } from "../../state/thread-composer-error";
 import {
@@ -173,11 +174,12 @@ import { orchestrationEnvironment } from "../../state/orchestration";
 import { useDelayedStatus } from "../../lib/useDelayedStatus";
 import type { PendingUserInputDraftAnswer } from "@t3tools/client-runtime/state/pending-user-input";
 import type { RunStopPresentation } from "@t3tools/client-runtime/state/thread-execution";
-import type {
-  PendingApproval,
-  PendingUserInput,
-  ThreadFeedEntry,
-  ThreadFeedLatestRun,
+import {
+  threadFeedRunIsUnsettled,
+  type PendingApproval,
+  type PendingUserInput,
+  type ThreadFeedEntry,
+  type ThreadFeedLatestRun,
 } from "../../lib/threadActivity";
 import { PendingApprovalCard } from "./PendingApprovalCard";
 import { ComposerErrorNotice } from "./ComposerErrorNotice";
@@ -204,6 +206,8 @@ import {
 } from "./ThreadComposer";
 import { ComposerPopoverHost } from "./ComposerPopoverHost";
 import { ThreadFeed, type ThreadFeedHandle, type ThreadFeedHistoryControls } from "./ThreadFeed";
+import { useThreadRewind } from "./useThreadRewind";
+import { unseenThreadWindow } from "@t3tools/client-runtime/state/thread-visits";
 import { useThreadTurnSubagents } from "./ThreadAgentsSheet";
 import { ComposerQueuedEditBanner } from "./ComposerQueuedEdit";
 import { useThreadQueuedCount } from "./ThreadQueueControl";
@@ -1355,6 +1359,44 @@ function ThreadDetailBody(
     }
   };
 
+  const conversationProvider = props.serverConfig?.providers.find(
+    (provider) =>
+      provider.instanceId ===
+      (props.selectedThread.runtime?.providerInstanceId ??
+        props.selectedThread.modelSelection.instanceId),
+  );
+  // The body remounts per thread, so this is what arrived after the server's visit watermark as
+  // the thread opened, before this visit moves it.
+  const [unseenWindow] = useState(() => unseenThreadWindow(props.selectedThread));
+  const rewind = useThreadRewind({
+    environmentId: props.environmentId,
+    threadId: props.selectedThread.id,
+    detailRef: props.selectedThreadDetailRef,
+    // A native subagent has no composer to take the rewound message.
+    canOperateThread: props.canOperateThread && !props.draftMode && !isProviderSubagent,
+    supportsConversationRollback:
+      conversationProvider !== undefined &&
+      conversationProvider.supportsConversationRollback !== false,
+    hasMoreHistory: props.historyControls?.hasMoreHistory ?? false,
+    unsettledRunId: threadFeedRunIsUnsettled(props.activityRun) ? props.activityRun.runId : null,
+    working: props.activeThreadBusy || props.dispatchingMessageId !== null,
+    connected: props.connectionStateLabel === "connected",
+    environmentLabel: props.environmentLabel,
+    onRestored: (retry) => {
+      const scope = threadScope.current.signal;
+      if (scope.aborted) return;
+      if (!retry) {
+        composerEditorRef.current?.focus();
+        return;
+      }
+      void handleSendMessage().then((messageId) => {
+        if (messageId === null && !scope.aborted) {
+          setThreadComposerError(selectedThreadKey, t("Message restored. Press send to retry."));
+        }
+      });
+    },
+  });
+
   const collapseComposer = () => {
     composerEditorRef.current?.blur();
   };
@@ -1515,6 +1557,9 @@ function ThreadDetailBody(
               skills={selectedProviderSkills}
               onUseArtifactTemplate={handleUseArtifactTemplate}
               onCiteAssistantText={canCiteAssistantText ? handleCiteAssistantText : undefined}
+              rewindTargets={rewind.targets}
+              rewindActions={rewind.actions}
+              unseenWindow={unseenWindow}
             />
           </RenderErrorBoundary>
         </View>

@@ -2590,3 +2590,11 @@ export function sameRowsInput(
   }
   return Object.keys(left).length === Object.keys(right).length;
 }
+
+/** When a row's content arrived, for the "new since your last visit" divider; NaN for live indicators. */
+export function timelineRowContentTime(row: MessagesTimelineRow): number {
+  if (row.kind === "working" || row.kind === "thinking" || row.kind === "worktree-setup") {
+    return Number.NaN;
+  }
+  return row.createdAt === null ? Number.NaN : Date.parse(row.createdAt);
+}

@@ -118,8 +118,9 @@ Join modifiers and a key with `+`, such as `mod+shift+d` or `ctrl+l`.
 ## When conditions
 
 Available context keys are `terminalFocus`, `terminalOpen`, `previewFocus`,
-`previewOpen`, `modelPickerOpen`, `usagePageOpen`, `composerFocus`, `draftThreadRoute`,
+`previewOpen`, `modelPickerOpen`, `usagePageOpen`, `diffFocus`, `composerFocus`, `draftThreadRoute`,
 `turnRunning`, `editableFocus`, `isWeb`, and `isDesktop`.
+`diffFocus` is true while the keyboard is in the Diff panel.
 `draftThreadRoute` is true on a draft thread, including a restored draft, until it is first sent.
 `editableFocus` is true while a text field, the composer, or another editor has
 the keyboard. `isWeb` is true in a browser tab. `isDesktop` is true in the
@@ -169,6 +170,12 @@ field gets its own undo back. Terminals always keep their native shortcut.
 
 `navigation.back` (`mod+[` by default) and `navigation.forward` (`mod+]`) move
 through the pages you have visited, like a browser's back and forward buttons.
+
+`chat.previousPrompt` (`mod+alt+arrowup` by default) and `chat.nextPrompt`
+(`mod+alt+arrowdown`) scroll the thread to the prompt you sent before or after the one in view.
+
+In the Diff panel, `[` (`diff.previousFile`) and `]` (`diff.nextFile`) move to the previous or
+next file. Click into the diff first so the panel has the keyboard.
 
 `chat.new` may ask you to choose a project when there is more than one.
 `chat.newLocal` skips that chooser. Both use your

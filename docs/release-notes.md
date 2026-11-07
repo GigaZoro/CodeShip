@@ -1,3 +1,14 @@
+## 2026-11-07 — Timeline and diff review
+
+- Expanded tool calls have Copy command, Copy output, Run in terminal and Add output to message buttons.
+- Coming back to a thread shows a "New since your last visit" line where the work you have not seen begins. It follows the server's visit mark, so it works on every device, on web, desktop and mobile.
+- Older turns load as you scroll toward the top of a long thread, without clicking Load earlier turns.
+- Press Cmd+Option+Up and Cmd+Option+Down (Ctrl+Alt on Windows and Linux) to jump between your own prompts. They are also in the command palette.
+- The Diff panel's Turn menu shows each turn's prompt and time instead of only "Turn N".
+- Mark files as viewed in the Diff panel, the same way as in pull requests. A file that changes after you mark it shows as Changed. Press [ and ] to move between files.
+- On mobile, Retry under the last reply and Edit from here under your messages rewind the conversation like they do on web.
+- Threads with a Retry button no longer redraw every message when you open a fold or a new event arrives.
+
 ## 2026-11-06 — Interface fixes
 
 - Snoozed threads no longer notify you when a run finishes. A question, an approval or a failure still wakes them as before.

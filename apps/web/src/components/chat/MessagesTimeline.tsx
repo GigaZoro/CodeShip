@@ -21,6 +21,10 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
+import {
+  firstUnseenThreadRowIndex,
+  type UnseenThreadWindow,
+} from "@t3tools/client-runtime/state/thread-visits";
 import { resolveWorkGroupScrollAnchor } from "@t3tools/client-runtime/work-log/scroll-anchor";
 import type { WorkflowOpening } from "@t3tools/client-runtime/state/subagentRuntime";
 import { observeResize } from "~/lib/observeResize";
@@ -85,10 +89,11 @@ import {
   resolveTimelineMinimapVisibleRange,
   resolveTimelineMinimapHitStripWidth,
   timelineTurnFoldRunIdsByEntryId,
+  timelineRowContentTime,
   type MessagesTimelineRow,
   type TimelineLatestRun,
 } from "./MessagesTimeline.logic";
-import { deriveRetryTarget } from "./timelineRetry";
+import { deriveRetryTarget, type RetryTarget } from "./timelineRetry";
 import { type ThreadFindMatch } from "./threadFind";
 import { useThreadFindNavigation } from "./useThreadFindNavigation";
 import { TooltipScrollDismissArea } from "../ui/tooltip";
@@ -102,7 +107,11 @@ import { TimelineSystemDivider } from "./TimelineSystemDivider";
 
 import { forwardWheelToTimeline } from "./timelineMinimapWheel";
 import { TimelineMinimap } from "./TimelineMinimap";
-import { attachTimelineOutline, publishTimelineOutline } from "./timelineOutlineStore";
+import {
+  attachTimelineOutline,
+  publishTimelineOutline,
+  type TimelinePromptStep,
+} from "./timelineOutlineStore";
 import {
   type TimelineRowSharedState,
   type TimelineRowActivityState,
@@ -206,6 +215,8 @@ const TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH = {
 } as const satisfies MaintainScrollAtEndOptions;
 
 const CITED_HISTORY_LOADING: CitedHistory = { _tag: "loading" };
+// How far below the viewport's top a revealed prompt lands.
+const PROMPT_SCROLL_OFFSET = 24;
 
 export interface MessagesTimelineHistoryControls {
   readonly hasMoreHistory: boolean;
@@ -284,6 +295,7 @@ interface MessagesTimelineProps {
   onUseArtifactTemplate?: (template: CodexArtifactTemplate) => void;
   onSendAppMessage?: (text: string) => Promise<void>;
   onRunShellCommand?: (command: string) => void;
+  onAddToComposer?: (text: string) => void;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onFileOpen?: (attachment: ChatFileAttachment) => void;
@@ -312,6 +324,8 @@ interface MessagesTimelineProps {
   emptyPlaceholderInset: number;
   topFadeEnabled?: boolean;
   historyControls?: MessagesTimelineHistoryControls | undefined;
+  /** What the reader had not seen when the thread opened; a divider marks where it starts. */
+  unseenWindow?: UnseenThreadWindow | null;
   findExpanded?: boolean;
   findQuery?: string;
   activeFindMatch?: ThreadFindMatch | null;
@@ -383,6 +397,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   onUseArtifactTemplate = NOOP_USE_ARTIFACT_TEMPLATE,
   onSendAppMessage,
   onRunShellCommand,
+  onAddToComposer,
   isRevertingCheckpoint,
   onImageExpand,
   onFileOpen = NOOP_OPEN_ATTACHMENT,
@@ -406,6 +421,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   emptyPlaceholderInset,
   topFadeEnabled = false,
   historyControls,
+  unseenWindow = null,
 }: MessagesTimelineProps) {
   const listIdentityKey = displayThreadKey ?? routeThreadKey;
   // Snapshot restore positions on identity changes; ongoing scroll writes must not move them.
@@ -696,6 +712,11 @@ const ConversationTimeline = memo(function ConversationTimeline({
     worktreeSetup,
   });
   const rows = useStableRows(rawRows, listIdentityKey);
+  const firstUnseenRowId =
+    rows[firstUnseenThreadRowIndex(rows, unseenWindow, timelineRowContentTime)]?.id ?? null;
+  const [retryTarget, setRetryTarget] = useState<RetryTarget | null>(null);
+  const nextRetryTarget = deriveRetryTarget(rows, retryTarget);
+  if (nextRetryTarget !== retryTarget) setRetryTarget(nextRetryTarget);
   const matchedApprovalRequestIds = new Set<string>();
   for (const row of pendingApprovalRequestIds.size > 0 ? rows : []) {
     const entries =
@@ -850,6 +871,22 @@ const ConversationTimeline = memo(function ConversationTimeline({
     shouldRestorePosition: shouldRestoreVisibleContentPosition,
   };
 
+  // Cached row positions exclude the header and pending scroll adjustments, so the viewport's
+  // top is read against a laid-out row.
+  const readRowSpaceScroll = (state: ReturnType<LegendListRef["getState"]>) => {
+    const firstBufferedIndex = state.startBuffered;
+    const firstBufferedRow: HTMLElement | undefined =
+      firstBufferedIndex == null ? undefined : state.elementAtIndex(firstBufferedIndex);
+    const firstBufferedTop =
+      firstBufferedIndex == null ? undefined : state.positionAtIndex(firstBufferedIndex);
+    const viewport: HTMLElement | undefined = listRef.current?.getScrollableNode();
+    return firstBufferedRow && viewport && firstBufferedTop !== undefined
+      ? firstBufferedTop +
+          viewport.getBoundingClientRect().top -
+          firstBufferedRow.getBoundingClientRect().top
+      : state.scroll;
+  };
+
   const refreshMinimap = useStableCallback(() => {
     const state = listRef.current?.getState?.();
     if (restoringThreadPosition || state?.data !== rows) return;
@@ -857,19 +894,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       return;
     }
 
-    const firstBufferedIndex = state.startBuffered;
-    const firstBufferedRow: HTMLElement | undefined =
-      firstBufferedIndex == null ? undefined : state.elementAtIndex(firstBufferedIndex);
-    const firstBufferedTop =
-      firstBufferedIndex == null ? undefined : state.positionAtIndex(firstBufferedIndex);
-    const viewport: HTMLElement | undefined = listRef.current?.getScrollableNode();
-    // Cached row positions exclude the header and pending scroll adjustments.
-    const scroll =
-      firstBufferedRow && viewport && firstBufferedTop !== undefined
-        ? firstBufferedTop +
-          viewport.getBoundingClientRect().top -
-          firstBufferedRow.getBoundingClientRect().top
-        : state.scroll;
+    const scroll = readRowSpaceScroll(state);
     const visibleRange = resolveTimelineMinimapVisibleRange({ ...state, scroll });
     for (const item of minimapItems) {
       const strip = minimapStripMap.get(item.id);
@@ -957,6 +982,28 @@ const ConversationTimeline = memo(function ConversationTimeline({
     scheduleMinimapRefresh();
   };
 
+  // Only scrolls ask: a thread whose older turns are folded can fit on screen, and opening it
+  // must not pull every page of its history.
+  const autoLoadHistory =
+    historyControls?.hasMoreHistory === true &&
+    !historyControls.loading &&
+    historyControls.error === null &&
+    !restoringThreadPosition &&
+    !findActive &&
+    !citationPositioning
+      ? historyControls
+      : null;
+  const earlierHistoryRequestedForRef = useRef<ReadonlyArray<MessagesTimelineRow> | null>(null);
+  const handleListScroll = () => {
+    handleScroll();
+    const element = listRef.current?.getScrollableNode();
+    if (!autoLoadHistory || !element || earlierHistoryRequestedForRef.current === rows) return;
+    // A viewport ahead, so older turns are usually in place before the reader gets there.
+    if (element.scrollTop > element.clientHeight) return;
+    earlierHistoryRequestedForRef.current = rows;
+    autoLoadHistory.onLoadEarlier();
+  };
+
   const handleItemSizeChanged = () => {
     if (disclosurePinsEndRef.current) {
       queueMicrotask(pinDisclosureToEnd);
@@ -1039,8 +1086,9 @@ const ConversationTimeline = memo(function ConversationTimeline({
     runs,
     activeThreadEnvironmentId,
     onRevertToTurnCount,
-    retryTarget: deriveRetryTarget(rows),
+    retryTarget: nextRetryTarget,
     onRunShellCommand,
+    onAddToComposer,
     findActive,
     onImageExpand,
     onFileOpen,
@@ -1192,17 +1240,31 @@ const ConversationTimeline = memo(function ConversationTimeline({
     void listRef.current?.scrollToIndex({
       index: rowIndex,
       animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-      viewOffset: 24,
+      viewOffset: PROMPT_SCROLL_OFFSET,
     });
   };
   const revealOutlinePrompt = useStableCallback((promptId: string) => {
     const item = minimapItems.find((candidate) => candidate.id === promptId);
     if (item) scrollToTimelineRow(item.rowIndex);
   });
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers this timeline's scrolling with the outline registry the details card uses
+  // Measured from where a jump lands a prompt, so repeated presses walk prompt by prompt.
+  const stepPrompt = useStableCallback((direction: TimelinePromptStep) => {
+    const state = listRef.current?.getState();
+    if (restoringThreadPosition || !state || state.data !== rows) return false;
+    const landing = readRowSpaceScroll(state) + PROMPT_SCROLL_OFFSET;
+    const top = (item: (typeof minimapItems)[number]) => state.positionAtIndex(item.rowIndex);
+    const target =
+      direction === "previous"
+        ? minimapItems.findLast((item) => top(item) < landing - 2)
+        : minimapItems.find((item) => top(item) > landing + 2);
+    if (!target) return false;
+    scrollToTimelineRow(target.rowIndex);
+    return true;
+  });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers this timeline's scrolling with the outline registry the details card and prompt shortcuts use
   useLayoutEffect(
-    () => attachTimelineOutline(listIdentityKey, revealOutlinePrompt),
-    [listIdentityKey, revealOutlinePrompt],
+    () => attachTimelineOutline(listIdentityKey, revealOutlinePrompt, stepPrompt),
+    [listIdentityKey, revealOutlinePrompt, stepPrompt],
   );
   // The index still points into the previous thread until the restore settles.
   const outlineCurrentId =
@@ -1277,6 +1339,11 @@ const ConversationTimeline = memo(function ConversationTimeline({
           className="chat-content-lane overflow-x-clip"
           data-timeline-root="true"
         >
+          {item.id === firstUnseenRowId ? (
+            <div role="separator" aria-label={t("New since your last visit")}>
+              <TimelineSystemDivider label={t("New since your last visit")} tone="accent" />
+            </div>
+          ) : null}
           <AudioPreviewUnmountContext value={onAudioUnmount}>
             <TimelineRowContent row={item} />
           </AudioPreviewUnmountContext>
@@ -1284,7 +1351,12 @@ const ConversationTimeline = memo(function ConversationTimeline({
       </div>
     </TimelineRowCtx>
   );
-  const listExtraData = { identity: listIdentityKey, rowCount: rows.length, sharedState };
+  const listExtraData = {
+    identity: listIdentityKey,
+    rowCount: rows.length,
+    sharedState,
+    firstUnseenRowId,
+  };
   const timelineListFooter = (
     <TimelineListFooter
       composerInset={anchoredEndSpace ? 0 : contentInsetEndAdjustment}
@@ -1390,7 +1462,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
                   : maintainVisibleContentPosition
               }
               maintainScrollAtEndThreshold={1}
-              onScroll={handleScroll}
+              onScroll={handleListScroll}
               onItemSizeChanged={handleItemSizeChanged}
               // Keyboard scrolling only moves the focused element; F6 and clicks land here.
               tabIndex={-1}

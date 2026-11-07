@@ -67,7 +67,9 @@ import {
   CalendarClockIcon,
   ChartNoAxesColumnIcon,
   CheckIcon,
+  ChevronDownIcon,
   ChevronRightIcon,
+  ChevronUpIcon,
   CornerLeftUpIcon,
   FileSearchIcon,
   FolderGit2Icon,
@@ -94,6 +96,7 @@ import {
   UserPlusIcon,
 } from "lucide-react";
 import { openThreadFind } from "./chat/threadFindStore";
+import { stepTimelinePrompt } from "./chat/timelineOutlineStore";
 import {
   useDeferredValue,
   useEffect,
@@ -1411,6 +1414,33 @@ function OpenCommandPaletteDialog(props: {
       icon: <BugIcon className={ITEM_ICON_CLASS} />,
       run: () => startTriage(triageEnvironmentId),
     });
+  }
+
+  if (activeThreadKey !== null) {
+    actionItems.push(
+      {
+        kind: "action",
+        value: "action:previous-prompt",
+        title: t("Jump to previous prompt"),
+        searchTerms: ["previous", "prompt", "message", "jump", "scroll", "up"],
+        icon: <ChevronUpIcon className={ITEM_ICON_CLASS} />,
+        shortcutCommand: "chat.previousPrompt",
+        run: async () => {
+          stepTimelinePrompt(activeThreadKey, "previous");
+        },
+      },
+      {
+        kind: "action",
+        value: "action:next-prompt",
+        title: t("Jump to next prompt"),
+        searchTerms: ["next", "prompt", "message", "jump", "scroll", "down"],
+        icon: <ChevronDownIcon className={ITEM_ICON_CLASS} />,
+        shortcutCommand: "chat.nextPrompt",
+        run: async () => {
+          stepTimelinePrompt(activeThreadKey, "next");
+        },
+      },
+    );
   }
 
   if (activeThreadKey !== null && supportsThreadFind) {

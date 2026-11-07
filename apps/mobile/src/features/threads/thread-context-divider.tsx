@@ -10,11 +10,16 @@ export function ThreadContextDivider(props: {
   iconColor: ColorValue;
   active?: boolean;
   failed?: boolean;
+  /** Marks a place in the thread rather than describing it, like where unseen work begins. */
+  accent?: boolean;
   children?: ReactNode;
 }) {
+  const lineClassName = props.accent
+    ? "h-px min-w-2 flex-1 bg-primary/30"
+    : "h-px min-w-2 flex-1 bg-separator";
   return (
     <View className="mb-3 flex-row items-center gap-3 px-1 py-1">
-      <View className="h-px min-w-2 flex-1 bg-separator" />
+      <View className={lineClassName} />
       <View className="shrink flex-row flex-wrap items-center justify-center gap-1.5">
         {props.icon ? (
           <SymbolView name={props.icon} size={12} tintColor={props.iconColor} type="monochrome" />
@@ -34,7 +39,9 @@ export function ThreadContextDivider(props: {
             className={
               props.failed
                 ? "font-t3-medium text-xs text-danger-foreground"
-                : "font-t3-medium text-xs text-foreground-muted"
+                : props.accent
+                  ? "font-t3-medium text-xs text-primary"
+                  : "font-t3-medium text-xs text-foreground-muted"
             }
           >
             {props.label}
@@ -42,7 +49,7 @@ export function ThreadContextDivider(props: {
         )}
         {props.children}
       </View>
-      <View className="h-px min-w-2 flex-1 bg-separator" />
+      <View className={lineClassName} />
     </View>
   );
 }

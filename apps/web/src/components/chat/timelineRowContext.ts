@@ -71,6 +71,8 @@ export interface TimelineRowSharedState {
   onSendAppMessage: ((text: string) => Promise<void>) | undefined;
   onAppFullscreenChange: (rowId: string, fullscreen: boolean) => void;
   onRunShellCommand: ((command: string) => void) | undefined;
+  /** Adds text to the composer as a paste would; absent where the reader cannot send. */
+  onAddToComposer: ((text: string) => void) | undefined;
   findActive: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   displayThreadKey?: string;

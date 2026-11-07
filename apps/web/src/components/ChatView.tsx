@@ -8,11 +8,14 @@ import { ScrollToEndButton, WorkspaceFileDropOverlay } from "./chat/TimelineOver
 import { usePasteToFocusComposer } from "./chat/usePasteToFocusComposer";
 import { announcedRun, isDetailBehindShell } from "./chat/threadActivityAnnouncement";
 import {
-  deriveAvailableRevertTurnCounts,
   deriveThreadPendingBackgroundTasks,
   deriveWorkspaceMutationId,
   presentThreadShellFromProjection,
 } from "./ChatView.logic";
+import {
+  deriveAvailableRevertTurnCounts,
+  findRevertCheckpoint,
+} from "@t3tools/client-runtime/state/thread-rewind";
 import { usePullRequestDraftThread } from "./chat/usePullRequestDraftThread";
 import { useComposerSelection } from "./chat/useComposerSelection";
 import { useProjectCloneBanner } from "./chat/useProjectCloneBanner";
@@ -32,6 +35,11 @@ import { useComposerResume } from "./chat/useComposerResume";
 import { useImplementPlanInNewThread } from "./chat/useProposedPlanSend";
 import { ThreadFind, ThreadFindCanvas } from "./chat/ThreadFindProvider";
 import { closeThreadFind, openThreadFind, useThreadFindOpen } from "./chat/threadFindStore";
+import { stepTimelinePrompt } from "./chat/timelineOutlineStore";
+import {
+  unseenThreadWindow,
+  type UnseenThreadWindow,
+} from "@t3tools/client-runtime/state/thread-visits";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
 import { resolveDraftHeroState } from "./ChatView.logic";
@@ -136,7 +144,6 @@ import {
   deriveActiveWorkStartedAt,
   deriveCanInterruptRunningThread,
   findLatestProposedPlan,
-  findRevertCheckpoint,
   hasActionableProposedPlan,
   isLatestRunSettled,
 } from "../session-logic";
@@ -1550,6 +1557,17 @@ export default function ChatView(props: ChatViewProps) {
   const timelineEmpty = timelineEntries.length === 0 && !hasStreamedTimelineRows;
   const displayedTimelineKey = activeThreadKey ?? routeThreadKey;
   const displayedThreadRef = parseScopedThreadKey(displayedTimelineKey);
+  // What arrived after the server's visit watermark, as the thread opened; the visit tracker
+  // moves the watermark once the server hears this visit.
+  const [openingVisit, setOpeningVisit] = useState<{
+    readonly threadKey: string;
+    readonly window: UnseenThreadWindow | null;
+  } | null>(null);
+  if (serverThread !== null && openingVisit?.threadKey !== displayedTimelineKey) {
+    setOpeningVisit({ threadKey: displayedTimelineKey, window: unseenThreadWindow(serverThread) });
+  }
+  const unseenWindow =
+    openingVisit?.threadKey === displayedTimelineKey ? openingVisit.window : null;
   const {
     worktreeSetup,
     isPreparingWorktree,
@@ -1866,6 +1884,15 @@ export default function ChatView(props: ChatViewProps) {
     }
   };
   const sendAppMessageStable = useStableCallback(sendAppMessage);
+  // Long text folds into an attachment the way a paste does; shorter text goes in as typed, on
+  // its own lines so a code block stays one.
+  const addToComposerStable = useStableCallback((text: string) => {
+    const composer = composerRef.current;
+    if (!composer || composer.pasteTextAtEnd(text)) return;
+    const draft = composer.readSnapshot().value;
+    composer.insertTextAtEnd(draft === "" || draft.endsWith("\n") ? text : `\n\n${text}`);
+    composer.focusAtEnd();
+  });
   const queuedRunsControlRef = useRef<QueuedRunsControlHandle>(null);
 
   const {
@@ -2758,6 +2785,8 @@ export default function ChatView(props: ChatViewProps) {
           return false;
         openThreadFind(activeThreadKey);
       },
+      "chat.previousPrompt": () => stepTimelinePrompt(displayedTimelineKey, "previous"),
+      "chat.nextPrompt": () => stepTimelinePrompt(displayedTimelineKey, "next"),
       "composer.cycleHost": ({ event }) => {
         if (!canChangeEnvironment) return false;
         if (event.repeat) return;
@@ -3491,6 +3520,7 @@ export default function ChatView(props: ChatViewProps) {
                 {...(activeProject
                   ? { onRunShellCommand: parentPanel?.runShellCommand ?? runShellCommandStable }
                   : {})}
+                {...(canOperateThread ? { onAddToComposer: addToComposerStable } : {})}
                 isWorking={isWorking}
                 runlessWorkActive={runlessWorkStartedAt !== null}
                 isCompacting={isCompacting}
@@ -3570,6 +3600,7 @@ export default function ChatView(props: ChatViewProps) {
                 {...(threadHistoryControls === undefined
                   ? {}
                   : { historyControls: threadHistoryControls })}
+                unseenWindow={unseenWindow}
               />
 
               {showScrollToBottom && !isThreadFindActive && (

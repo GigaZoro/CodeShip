@@ -142,3 +142,37 @@ export function createThreadVisitTracker(options: ThreadVisitTrackerOptions) {
   });
   return (ref: ScopedThreadRef | null) => (ref === null ? IDLE_TRACKER : family(threadKey(ref)));
 }
+
+/** What a reader had not seen when they opened a thread: what arrived after their last visit. */
+export interface UnseenThreadWindow {
+  readonly since: number;
+  readonly through: number;
+}
+
+/**
+ * Taken from the thread's shell as it opens, before this visit moves the watermark. It ends at the
+ * thread's last update then, so replies that arrive while it is open, the reader's own included,
+ * never count, and rows that load after the open still do. Both times are the server's.
+ */
+export function unseenThreadWindow(shell: {
+  readonly lastVisitedAt?: string | null | undefined;
+  readonly updatedAt: string;
+}): UnseenThreadWindow | null {
+  const since = shell.lastVisitedAt ? Date.parse(shell.lastVisitedAt) : Number.NaN;
+  const through = Date.parse(shell.updatedAt);
+  return since < through ? { since, through } : null;
+}
+
+/** The row a "new" divider sits above; -1 when nothing was unseen or the first row already is. */
+export function firstUnseenThreadRowIndex<Row>(
+  rows: ReadonlyArray<Row>,
+  window: UnseenThreadWindow | null,
+  rowTime: (row: Row) => number,
+): number {
+  if (window === null) return -1;
+  const index = rows.findIndex((row) => {
+    const time = rowTime(row);
+    return time > window.since && time <= window.through;
+  });
+  return index > 0 ? index : -1;
+}

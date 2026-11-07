@@ -7,7 +7,6 @@ import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
   type MessageId,
-  type OrchestrationV2Checkpoint,
   type ScopedThreadRef,
   type ThreadId,
   type RunId,
@@ -19,7 +18,10 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { readLocalApi } from "../../localApi";
-import { findRevertCheckpoint } from "../../session-logic";
+import {
+  findRevertCheckpoint,
+  turnsAfterChangedFiles,
+} from "@t3tools/client-runtime/state/thread-rewind";
 import { type ChatMessage } from "../../types";
 import { newThreadId } from "~/lib/utils";
 import { buildThreadRouteParams } from "../../threadRoutes";
@@ -36,18 +38,6 @@ import { rewindToMessage } from "./chatViewSend";
 import { makeThreadErrorSetter } from "../ChatView.logic";
 import { markRetryRewind, takeRetryRewind } from "./timelineRetry";
 import { t } from "~/i18n";
-/** Whether any turn that a rewind to `turnCount` would undo changed files. */
-function turnsAfterChangedFiles(
-  checkpoints: ReadonlyArray<OrchestrationV2Checkpoint>,
-  turnCount: number,
-): boolean {
-  return checkpoints.some(
-    (checkpoint) =>
-      checkpoint.appRunOrdinal !== null &&
-      checkpoint.appRunOrdinal > turnCount &&
-      (checkpoint.files.length > 0 || (checkpoint.filesTotal?.count ?? 0) > 0),
-  );
-}
 
 interface TimelineRewindInput {
   readonly environmentId: EnvironmentId;

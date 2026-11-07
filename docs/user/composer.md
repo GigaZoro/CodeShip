@@ -155,8 +155,8 @@ into a normal draft.
 
 ## Edit an earlier prompt
 
-On web and desktop, choose **Edit from here** beneath a sent message to rewind
-the conversation to before that message. Choose **Revert and keep changes** to
+Choose **Edit from here** beneath a sent message to rewind
+the conversation to before that message. On mobile it is the pencil button under the message. Choose **Revert and keep changes** to
 leave workspace files as they are, or **Revert files too** to put the workspace back
 to its checkpoint from before that message. That also undoes edits you made yourself.
 File restore is only offered for threads running in a worktree, and it is
@@ -275,7 +275,8 @@ and your next message starts the agent again with the new setup.
 Provider commands must start the message to run. T3.CodeShip commands such as
 `/model`, and skill mentions, work on any line.
 
-Choose **Retry** under the last assistant reply to rewind and send your last message again.
+Choose **Retry** under the last assistant reply to rewind and send your last message again,
+on web, desktop and mobile. A retry whose turn changed no files skips the question about files.
 
 Send `/compact` in an existing conversation to reduce context usage when the
 provider supports it, even before the context meter appears.
