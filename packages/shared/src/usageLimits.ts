@@ -250,9 +250,28 @@ export interface ExternalUsageLink {
   readonly accounts: readonly ExternalUsageAccount[];
 }
 
+/** Accounts some environment or hub reads limits for, even where another sign-in of theirs cannot. */
+function loginsWithLimits(presentations: LimitPresentations): ReadonlySet<string> {
+  const logins = new Set<string>();
+  for (const presentation of presentations.values()) {
+    const reports = [
+      ...providersWithLimits(presentation.serverConfig?.providers ?? []).map(nativeReport),
+      ...(presentation.serverConfig?.usageLimitSources ?? []).flatMap((source) => source.accounts),
+    ];
+    for (const report of reports) {
+      const login = accountKey(report.driver, report.email);
+      if (login && report.usageLimits && limitsNotice(report.usageLimits) === null) {
+        logins.add(login);
+      }
+    }
+  }
+  return logins;
+}
+
 export function collectExternalUsageLinks(
   presentations: LimitPresentations,
 ): readonly ExternalUsageLink[] {
+  const readable = loginsWithLimits(presentations);
   const links = new Map<
     string,
     {
@@ -265,6 +284,9 @@ export function collectExternalUsageLinks(
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
       const external = provider.usageLimits?.externalUsage;
       if (!external || provider.auth.status !== "authenticated") continue;
+      const login = accountKey(provider.driver, provider.auth.email);
+      // The account's limits already show in its bar.
+      if (login && readable.has(login)) continue;
       const linkKey = `${provider.driver}:${external.url}`;
       const entry = links.get(linkKey) ?? {
         link: {
@@ -275,7 +297,6 @@ export function collectExternalUsageLinks(
         accounts: new Map(),
       };
       links.set(linkKey, entry);
-      const login = accountKey(provider.driver, provider.auth.email);
       const key = login
         ? `${login}${provider.auth.workspaceId ? `:${provider.auth.workspaceId}` : ""}`
         : `${environmentId}:${provider.instanceId}`;
@@ -449,7 +470,8 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         driver: provider.driver,
         displayName: provider.displayName?.trim() || null,
         email: provider.auth.email,
-        plan: provider.auth.label,
+        // A ChatGPT-shared login's label names the connection, not the plan.
+        plan: usesChatGptSharing(provider) ? undefined : provider.auth.label,
         accentColor: provider.accentColor,
         environments: [{ environmentId, label }],
         sourceLabel: null,

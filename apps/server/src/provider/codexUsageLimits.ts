@@ -155,7 +155,10 @@ export function codexRateLimitsToUpdate(
 export function codexRateLimitsFailureMessage(error: CodexErrors.CodexAppServerError): string {
   switch (error._tag) {
     case "CodexAppServerRequestError":
-      return `Codex could not read usage (JSON-RPC ${error.code}).`;
+      // ChatGPT rejects a signed-out or revoked login; the raw text stays out of the snapshot.
+      return /\b401 Unauthorized\b/.test(error.errorMessage)
+        ? "Codex's own login on this machine is signed out, so it can't read usage. Sign in to Codex again."
+        : `Codex could not read usage (JSON-RPC ${error.code}).`;
     case "CodexAppServerSpawnError":
       return "Codex could not be started to read usage.";
     case "CodexAppServerProcessExitedError":

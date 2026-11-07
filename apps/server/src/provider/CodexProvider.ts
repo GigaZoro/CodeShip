@@ -122,7 +122,7 @@ const decodeCodexIdTokenClaims = Schema.decodeUnknownOption(
  * Its id_token is only an identity hint, so callers must match it against the
  * account the backend reports.
  */
-const readCodexStoredChatGptLogin = Effect.fn("readCodexStoredChatGptLogin")(function* (
+export const readCodexStoredChatGptLogin = Effect.fn("readCodexStoredChatGptLogin")(function* (
   codexHome: string,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -216,6 +216,14 @@ export function codexPlanLabel(planType: string | null | undefined): string | un
 function codexAccountEmail(account: CodexSchema.V2GetAccountResponse["account"]) {
   if (!account || account.type !== "chatgpt") return undefined;
   return account.email;
+}
+
+export function sameCodexAccountEmail(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean {
+  const normalizedLeft = left?.trim().toLowerCase();
+  return Boolean(normalizedLeft) && normalizedLeft === right?.trim().toLowerCase();
 }
 
 export function codexDefaultReasoningEffortOverride(model: string): "medium" | undefined {
@@ -578,7 +586,6 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   readonly launchArgs?: string;
   readonly cwd: string;
   readonly environment?: NodeJS.ProcessEnv;
-  readonly skipNativeUsage?: boolean;
 }) {
   const spawnedAtMs = DateTime.toEpochMillis(yield* DateTime.now);
   const { client, initialize } = yield* withCodexAppServerClient(input);
@@ -620,30 +627,27 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       ),
       // Usage is an enrichment: a failure or a slow answer degrades to "no
       // usage this probe" rather than costing the account and models.
-      input.skipNativeUsage
-        ? // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
-          Effect.succeed(undefined)
-        : withCodexDiscoveryDeadline(
-            client.request("account/rateLimits/read", null),
-            deadlineMs,
-            RATE_LIMITS_PROBE_TIMEOUT_MS,
-          ).pipe(
-            Effect.map((response): CodexRateLimitsProbe =>
-              response
-                ? {
-                    snapshot: response.rateLimits,
-                    rateLimitsByLimitId: response.rateLimitsByLimitId,
-                    resetCredits: response.rateLimitResetCredits,
-                    accountId: response.accountId,
-                  }
-                : { failure: "Codex did not answer the usage request." },
-            ),
-            Effect.catch((error) =>
-              Effect.logDebug("Codex rate-limit read failed.", { cause: error }).pipe(
-                Effect.as<CodexRateLimitsProbe>({ failure: codexRateLimitsFailureMessage(error) }),
-              ),
-            ),
+      withCodexDiscoveryDeadline(
+        client.request("account/rateLimits/read", null),
+        deadlineMs,
+        RATE_LIMITS_PROBE_TIMEOUT_MS,
+      ).pipe(
+        Effect.map((response): CodexRateLimitsProbe =>
+          response
+            ? {
+                snapshot: response.rateLimits,
+                rateLimitsByLimitId: response.rateLimitsByLimitId,
+                resetCredits: response.rateLimitResetCredits,
+                accountId: response.accountId,
+              }
+            : { failure: "Codex did not answer the usage request." },
+        ),
+        Effect.catch((error) =>
+          Effect.logDebug("Codex rate-limit read failed.", { cause: error }).pipe(
+            Effect.as<CodexRateLimitsProbe>({ failure: codexRateLimitsFailureMessage(error) }),
           ),
+        ),
+      ),
     ],
     { concurrency: "unbounded" },
   );
@@ -812,7 +816,6 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     readonly launchArgs?: string;
     readonly cwd: string;
     readonly environment?: NodeJS.ProcessEnv;
-    readonly skipNativeUsage?: boolean;
   }) => Effect.Effect<
     CodexAppServerProviderSnapshot,
     CodexErrors.CodexAppServerError,
@@ -852,7 +855,6 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     launchArgs: resolveCodexLaunchArgs(codexSettings.launchArgs, resolvedEnvironment),
     cwd: process.cwd(),
     environment: resolvedEnvironment,
-    ...(managedAuth ? { skipNativeUsage: true } : {}),
   }).pipe(
     // Process teardown can outlast the work budget without discarding a completed snapshot.
     Effect.timeoutOption(Duration.millis(CODEX_AUTH_PROBE_TIMEOUT_MS)),
@@ -910,9 +912,10 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   }
 
   const snapshot = probeResult.success.value;
+  const login = accountProbeStatus(snapshot);
   const accountStatus = managedAuth
     ? { status: "ready" as const, auth: managedAuth, message: undefined }
-    : accountProbeStatus(snapshot);
+    : login;
   const usageLimits =
     snapshot.account.account?.type === "apiKey"
       ? makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" })
@@ -929,6 +932,14 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
             resetCredits: snapshot.rateLimits.resetCredits,
             checkedAt,
           });
+  // A ChatGPT sharing token cannot read Codex limits; the home's own Codex login can. Its limits
+  // are this account's only when the backend confirms that login is this account. A failed read
+  // attributes nothing, so the saved login's identity hint is enough to report why it failed.
+  const reportsUsageLimits =
+    managedAuth === undefined ||
+    sameCodexAccountEmail(login.auth.email, managedAuth.email) ||
+    ((snapshot.rateLimits === undefined || "failure" in snapshot.rateLimits) &&
+      sameCodexAccountEmail(snapshot.storedLogin?.email, managedAuth.email));
 
   return buildServerProvider({
     presentation: CODEX_PRESENTATION,
@@ -963,7 +974,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         : snapshot.models === undefined
           ? { message: "Codex did not return its model catalog in time." }
           : {}),
-      ...(managedAuth ? {} : { usageLimits }),
+      ...(reportsUsageLimits ? { usageLimits } : {}),
     },
   });
 });

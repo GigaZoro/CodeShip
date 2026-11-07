@@ -2865,6 +2865,8 @@ const catalog: MessageCatalog = {
   "ChatGPT account to connect": "Обліковий запис ChatGPT для підключення",
   "ChatGPT dots and Claude Duets": "ChatGPT dots і Claude Duets",
   "ChatGPT shared usage": "Спільне використання ChatGPT",
+  "ChatGPT shares an account's limits only with that account's Codex CLI login. Add the login as a Codex provider on a connected machine to see its limits here, or open ChatGPT signed in as the account.":
+    "ChatGPT передає ліміти облікового запису лише входу цього облікового запису в Codex CLI. Додайте такий вхід як провайдера Codex на підключеній машині, щоб бачити тут його ліміти, або відкрийте ChatGPT, увійшовши в цей обліковий запис.",
   "ChatGPT sharing is on": "Спільне використання ChatGPT увімкнено",
   "ChatGPT sign-in could not finish. Try again.":
     "Не вдалося завершити вхід у ChatGPT. Спробуйте ще раз.",
@@ -11751,8 +11753,6 @@ const catalog: MessageCatalog = {
     "Для {environment} не було cookie для імпорту.",
   "There's no capture shortcut to remove.": "Немає комбінації клавіш захоплення для видалення.",
   Thermal: "Тепловий стан",
-  "These accounts use your ChatGPT plan, and ChatGPT doesn't share their limits with apps. Open ChatGPT signed in as the account to see them.":
-    "Ці облікові записи використовують ваш план ChatGPT, а ChatGPT не передає їхні ліміти застосункам. Щоб їх побачити, відкрийте ChatGPT, увійшовши в потрібний обліковий запис.",
   "These cells could not be drawn.": "Не вдалося відобразити ці комірки.",
   "These cells could not be drawn. Try scrolling to another area.":
     "Не вдалося відобразити ці комірки. Спробуйте прокрутити до іншої ділянки.",

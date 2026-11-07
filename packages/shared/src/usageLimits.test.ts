@@ -1673,6 +1673,39 @@ describe("external usage settings", () => {
     expect(collectLimitAccounts(presentations)).toEqual([]);
     expect(collectLimitNotices(presentations)).toEqual([]);
   });
+
+  it("leaves out a login whose limits another environment reads", () => {
+    const managed = provider({
+      auth: { status: "authenticated", email: "work@example.com" },
+      usageLimits: {
+        checkedAt: "2026-09-03T11:00:00.000Z",
+        windows: [],
+        unavailable: { reason: "unsupported" },
+        externalUsage: { label: "ChatGPT usage", url: "https://chatgpt.com/#settings/Usage" },
+      },
+    });
+    const other = {
+      ...managed,
+      auth: { status: "authenticated" as const, email: "a@example.com" },
+    };
+    const cli = provider({
+      auth: { status: "authenticated", email: "Work@example.com" },
+      usageLimits: { checkedAt: "2026-09-03T11:00:00.000Z", windows: [window] },
+    });
+    const presentations = new Map([
+      [
+        EnvironmentId.make("a"),
+        { entry: { target: { label: "A" } }, serverConfig: { providers: [managed, other] } },
+      ],
+      [
+        EnvironmentId.make("b"),
+        { entry: { target: { label: "B" } }, serverConfig: { providers: [cli] } },
+      ],
+    ]);
+    expect(
+      collectExternalUsageLinks(presentations).flatMap((link) => link.accounts.map((a) => a.key)),
+    ).toEqual(["codex:a@example.com"]);
+  });
 });
 
 describe("ChatGPT sharing presentation", () => {

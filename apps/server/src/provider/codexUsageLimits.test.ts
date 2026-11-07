@@ -198,15 +198,22 @@ describe("codexRateLimitsToUpdate", () => {
 
 describe("codexRateLimitsFailureMessage", () => {
   it("keeps the JSON-RPC code and nothing else from a request failure", () => {
-    expect(
+    const message = (errorMessage: string) =>
       codexRateLimitsFailureMessage(
-        new CodexErrors.CodexAppServerRequestError({
-          code: -32603,
-          errorMessage:
-            "failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: 401 Unauthorized",
-        }),
+        new CodexErrors.CodexAppServerRequestError({ code: -32603, errorMessage }),
+      );
+    expect(
+      message(
+        "failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: 500 Internal Server Error",
       ),
     ).toBe("Codex could not read usage (JSON-RPC -32603).");
+    expect(
+      message(
+        'failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: 401 Unauthorized; body={"code": "token_revoked"}',
+      ),
+    ).toBe(
+      "Codex's own login on this machine is signed out, so it can't read usage. Sign in to Codex again.",
+    );
   });
 });
 

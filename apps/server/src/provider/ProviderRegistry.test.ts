@@ -483,6 +483,52 @@ it.layer(
       }),
     );
 
+    it.effect("reads a ChatGPT-shared account's limits only through its own Codex login", () =>
+      Effect.gen(function* () {
+        // A sharing launch reports no account; the saved login names it once the backend agrees.
+        const statusFor = (
+          email: string,
+          rateLimits: CodexAppServerProviderSnapshot["rateLimits"] = {
+            accountId: "workspace-1",
+            snapshot: { primary: { usedPercent: 78, windowDurationMins: 10080 } },
+            resetCredits: null,
+          },
+        ) =>
+          checkCodexProviderStatus(
+            defaultCodexSettings,
+            () =>
+              Effect.succeed(
+                makeCodexProbeSnapshot({
+                  account: { account: null, requiresOpenaiAuth: false },
+                  storedLogin: { email: "test@example.com", accountId: "workspace-1" },
+                  rateLimits,
+                }),
+              ),
+            undefined,
+            { status: "authenticated", subscriptionSharing: true, label: "ChatGPT", email },
+          );
+
+        const same = yield* statusFor("Test@Example.com");
+        assert.strictEqual(same.auth.email, "Test@Example.com");
+        assert.deepStrictEqual(
+          same.usageLimits?.windows.map((window) => [window.kind, window.usedPercent]),
+          [["weekly", 78]],
+        );
+        assert.strictEqual((yield* statusFor("other@example.com")).usageLimits, undefined);
+        const unconfirmed = yield* statusFor("test@example.com", {
+          accountId: "workspace-2",
+          snapshot: { primary: { usedPercent: 10 } },
+          resetCredits: null,
+        });
+        assert.strictEqual(unconfirmed.usageLimits, undefined);
+        const signedOut = yield* statusFor("test@example.com", { failure: "Signed out." });
+        assert.deepStrictEqual(signedOut.usageLimits?.unavailable, {
+          reason: "probeFailed",
+          message: "Signed out.",
+        });
+      }),
+    );
+
     it.effect("returns unauthenticated when app-server requires OpenAI auth", () =>
       Effect.gen(function* () {
         const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>

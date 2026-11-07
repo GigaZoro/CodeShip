@@ -150,10 +150,14 @@ with no running reset time becomes usable when the week resets. A missing or sta
 time has no refill estimate; refresh Limits for a new reading. Claude's model-specific weekly
 allowances keep their reported values.
 
-Codex accounts you [connect with ChatGPT](./providers-codex.md#connect-with-chatgpt) have no bar,
-because ChatGPT tracks their limits and doesn't share them. **Limits kept by ChatGPT** under Codex
-lists each of them once, with every environment it is signed in on; choose **Open ChatGPT usage**,
-then sign in with the account you connected.
+Codex accounts you [connect with ChatGPT](./providers-codex.md#connect-with-chatgpt) spend the
+same limits as the account's Codex CLI login, but ChatGPT shares those limits only with the CLI
+login. Such an account gets a bar, with its reset credits, once a connected machine has a
+[Codex CLI login](./providers-codex.md#use-an-existing-codex-login) for it: added as its own Codex
+provider, or, for the first account you connected on that machine, run as `codex login` in
+`~/.codex`. **Limits kept by ChatGPT** under Codex lists the other accounts once each, with every
+environment they are signed in on; choose **Open ChatGPT usage**, then sign in with the account
+you connected.
 
 Opening Limits checks the selected connected environments automatically. Each client waits at
 least five minutes between automatic checks of an environment, including after a failed check.

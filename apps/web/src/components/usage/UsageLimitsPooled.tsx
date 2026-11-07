@@ -740,7 +740,7 @@ function ExternalUsageAccounts({ link }: { readonly link: ExternalUsageLink }) {
           <p className="max-w-2xl text-xs text-muted-foreground">
             {chatGpt
               ? t(
-                  "These accounts use your ChatGPT plan, and ChatGPT doesn't share their limits with apps. Open ChatGPT signed in as the account to see them.",
+                  "ChatGPT shares an account's limits only with that account's Codex CLI login. Add the login as a Codex provider on a connected machine to see its limits here, or open ChatGPT signed in as the account.",
                 )
               : link.message}
           </p>

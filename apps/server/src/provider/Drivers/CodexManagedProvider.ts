@@ -20,9 +20,13 @@ import {
   checkCodexProviderStatus,
   makePendingCodexProvider,
   probeCodexSkillsForCwd,
+  readCodexStoredChatGptLogin,
   runCodexCli,
+  sameCodexAccountEmail,
   withCodexAppServerClient,
 } from "../CodexProvider.ts";
+import { makeCodexConsumeResetCredit } from "../codexResetCredit.ts";
+import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import { makeCodexMcpManagement } from "../CodexMcp.ts";
 import { makeCodexPluginManagement } from "../CodexPlugins.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
@@ -46,6 +50,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const host = yield* ProviderHost.ProviderHost;
+  const resetCreditCoordinator = yield* ResetCreditCoordinator.ResetCreditCoordinator;
   const runtime = yield* makeCodexManagedRuntime({
     instanceId,
     enabled,
@@ -111,7 +116,8 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
         message: "Sign in with ChatGPT to use Codex.",
         auth: { status: "unauthenticated" as const },
       };
-    const usageLimits = {
+    // Shown when this home has no Codex login of its own for the account to read limits with.
+    const chatGptUsageLimits = {
       checkedAt: base.checkedAt,
       windows: [],
       unavailable: {
@@ -161,7 +167,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
           ...draft,
           auth: managedAuth,
           version: draft.version ?? executable.value.version,
-          usageLimits,
+          usageLimits: draft.usageLimits ?? chatGptUsageLimits,
           models: draft.models.map((model) => ({
             ...model,
             ...(model.capabilities
@@ -207,7 +213,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
                 : {}),
             },
             ...(Option.isSome(current) && current.value.scopes.includes("chatgpt.tokens.use.direct")
-              ? { usageLimits }
+              ? { usageLimits: chatGptUsageLimits }
               : {}),
             message: "Could not check Codex right now. Retry, or reconnect in provider settings.",
           })),
@@ -258,6 +264,31 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     Effect.map(({ client }) => client),
     Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
   );
+  // Limits come from the home's own Codex login, so its credits are spent through it, but only
+  // while it is still signed in as this account. A sharing launch reports no account, so the
+  // saved login names it.
+  const accountHome = runtime.homeLayout.effectiveHomePath ?? runtime.homeLayout.sharedHomePath;
+  const consumeResetCredit = makeCodexConsumeResetCredit({
+    instanceId,
+    accountHome,
+    coordinator: resetCreditCoordinator,
+    openClient: openAppServerClient,
+    checkAccount: Effect.gen(function* () {
+      const saved = yield* runtime.auth.read.pipe(Effect.orElseSucceed(() => Option.none()));
+      const login = yield* readCodexStoredChatGptLogin(accountHome);
+      if (Option.isNone(saved) || !sameCodexAccountEmail(login?.email, saved.value.email))
+        return yield* new ProviderDriverError({
+          driver: DRIVER,
+          instanceId,
+          detail:
+            "This machine's Codex login is no longer this account, so its reset credits can't be used here.",
+        });
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    ),
+    snapshot,
+  });
   const plugins = yield* makeCodexPluginManagement({ instanceId, openClient: openAppServerClient });
   const mcp = yield* makeCodexMcpManagement({
     instanceId,
@@ -332,6 +363,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     accentColor,
     enabled,
     snapshot,
+    consumeResetCredit,
     orchestrationAdapter,
     textGeneration,
     auth: runtime.auth.controller,
