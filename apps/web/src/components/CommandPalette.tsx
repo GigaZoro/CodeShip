@@ -90,6 +90,7 @@ import {
   SparklesIcon,
   MonitorIcon,
   NotebookPenIcon,
+  HandIcon,
   PinIcon,
   PinOffIcon,
   SquarePenIcon,
@@ -1912,6 +1913,25 @@ function OpenCommandPaletteDialog(props: {
     icon: <NotebookPenIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
       await navigate({ to: "/thread-page" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:manual-steps",
+    searchTerms: [
+      "manual steps",
+      "hands-on",
+      "pending",
+      "todo",
+      "to do",
+      "machine inbox",
+      "waiting",
+    ],
+    title: t("Manual steps"),
+    icon: <HandIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/manual-steps" });
     },
   });
 

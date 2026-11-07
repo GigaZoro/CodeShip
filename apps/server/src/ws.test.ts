@@ -104,6 +104,7 @@ import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts"
 import * as ThreadSearch from "./orchestration-v2/ThreadSearch.ts";
 import * as HtmlRenderLibrary from "./htmlRender/HtmlRenderLibrary.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
+import * as ThreadPageManualSteps from "./threadPage/ThreadPageManualSteps.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
@@ -667,6 +668,7 @@ it.effect.each(["pending", "cached"] as const)(
           streamChanges: Stream.never,
         }),
         Layer.mock(UsageLimitSources.UsageLimitSources)({ streamChanges: Stream.make([]) }),
+        Layer.mock(ThreadPageManualSteps.ThreadPageManualSteps)({}),
         Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({
           resolveTargets: () =>
             Deferred.succeed(remoteDiscoveryStarted, undefined).pipe(
@@ -867,6 +869,7 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
         current: Effect.succeed([]),
         streamChanges: Stream.make([]),
       }),
+      Layer.mock(ThreadPageManualSteps.ThreadPageManualSteps)({}),
       Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({
         resolveTargets: () => Effect.succeed([]),
       }),

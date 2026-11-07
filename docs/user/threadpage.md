@@ -26,3 +26,19 @@ runs them. For example, `claude mcp add --transport http --scope user threadpage
 https://thread.page/mcp` for Claude Code, or `codex mcp add threadpage --url https://thread.page/mcp`
 for Codex. See ThreadPage's [assistant guide](https://thread.page/help/connections/agents) for
 access levels and its suggested work-log conventions.
+
+## Manual steps
+
+**Manual steps** lists the steps only you can do, from every machine: what agents put on each
+machine's pending list in ThreadPage. Each list is a folder under a folder named **Machine inbox**
+(such as `Work/Agent Maintenance/Machine inbox/<machine>`), and each step is a thread there with
+the status **Waiting** whose description starts with `Hands-on:` or, for a money decision,
+`Needs you:`. Money decisions come first. Open a step to read its newest note, which says what to
+do; reply there when you are done.
+
+To fill the list, create a token in ThreadPage under **Settings → Connections → Connect an
+automation → Script or API**, with **Read only** access to the Machine inbox folder or all threads.
+Save it in **Settings → Threads → ThreadPage** on one machine. The token stays on that machine and
+is never sent to apps, and every app connected to it shows the list: under Needs you in a chat's
+details column, in the thread list on narrow windows and on mobile, and on the **Manual steps**
+page in the sidebar rail and the command palette. The list never sends notifications.

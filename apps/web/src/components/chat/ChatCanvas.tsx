@@ -135,7 +135,7 @@ export function ChatCanvas({
         {hostsNeedsYou && model.preferredDetailsCard ? (
           <div
             ref={needsYouSlotRef}
-            className="absolute right-3 bottom-3 z-20 flex max-h-[40%] w-(--thread-details-panel-width) flex-col"
+            className="absolute right-3 bottom-3 z-20 flex max-h-[40%] w-(--thread-details-panel-width) flex-col gap-2"
             data-needs-you-slot
           />
         ) : null}

@@ -89,6 +89,7 @@ import {
   ThreadListPinnedTasks,
   useScheduledTaskHiddenThreadKeys,
 } from "../threads/ThreadListPinnedTasks";
+import { ThreadListManualSteps } from "../threads/ThreadListManualSteps";
 import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
 import {
   buildHomeProjectScopes,
@@ -846,6 +847,9 @@ export function HomeScreen(props: HomeScreenProps) {
           selectedThreadKey={selectedThreadKey}
           onSelectThread={selectThread}
         />
+      )}
+      {hasSearchQuery ? null : (
+        <ThreadListManualSteps pane={primaryColumn ? "sidebar" : "screen"} />
       )}
     </>
   );

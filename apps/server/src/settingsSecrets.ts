@@ -5,6 +5,7 @@ import {
   EasDeviceHostConfig,
   type ServerSettings,
   SimlockDeviceHostConfig,
+  ThreadPageSettings,
   UsageLimitSourceConfig,
   isSecretReference,
   secretSettingsFields,
@@ -36,6 +37,7 @@ const providerSecretFields = new Map([
 const usageLimitSecretFields = secretSettingsFields(UsageLimitSourceConfig);
 const easDeviceHostSecretFields = secretSettingsFields(EasDeviceHostConfig);
 const simlockDeviceHostSecretFields = secretSettingsFields(SimlockDeviceHostConfig);
+const threadPageSecretFields = secretSettingsFields(ThreadPageSettings);
 const encode = (value: string) => Buffer.from(value, "utf8").toString("base64url");
 
 export interface SettingsSecret {
@@ -173,6 +175,13 @@ export function mapSettingsSecrets(
       ) as SimlockDeviceHostConfig,
   );
 
+  const threadPage = mapFields(
+    settings.threadPage,
+    threadPageSecretFields,
+    (field, serverHost) =>
+      `threadpage-${encode(field)}` + (serverHost === null ? "" : `-${encode(serverHost)}`),
+  ) as ThreadPageSettings;
+
   return {
     ...settings,
     providerInstances,
@@ -180,5 +189,6 @@ export function mapSettingsSecrets(
     usageLimitSources,
     easDeviceHosts,
     simlockDeviceHosts,
+    threadPage,
   };
 }

@@ -5,6 +5,7 @@ import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
 import { type EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
 import { SidebarNeedsYouPanel } from "./sidebar/SidebarNeedsYouPanel";
+import { ManualStepsBox, ManualStepsSidebarSection } from "./manualSteps/ManualSteps";
 import { NeedsYouBoxRow } from "./sidebar/NeedsYouBoxRow";
 import {
   dropThreadContext,
@@ -90,6 +91,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import { type AnyRouter, useRouter } from "@tanstack/react-router";
 
 import {
@@ -4424,7 +4426,10 @@ export default function Sidebar({
                           />,
                         );
                       }
-                      if (needsYouPanelTarget !== null && needsYouThreads.length > 0) {
+                      if (needsYouPanelTarget === null) {
+                        items.push(<ManualStepsSidebarSection key="manual-steps" />);
+                      }
+                      if (needsYouPanelTarget !== null) {
                         const renderBoxRow = (
                           thread: EnvironmentThreadShell,
                           placement: "box" | "later",
@@ -4455,15 +4460,25 @@ export default function Sidebar({
                             />
                           );
                         };
+                        // One portal, so Manual steps always sits under Needs you.
                         items.push(
-                          <SidebarNeedsYouPanel
-                            key="needs-you-panel"
-                            target={needsYouPanelTarget}
-                            rows={needsYouNowThreads.map((thread) => renderBoxRow(thread, "box"))}
-                            laterRows={needsYouLaterThreads.map((thread) =>
-                              renderBoxRow(thread, "later"),
-                            )}
-                          />,
+                          createPortal(
+                            <>
+                              {needsYouThreads.length > 0 ? (
+                                <SidebarNeedsYouPanel
+                                  rows={needsYouNowThreads.map((thread) =>
+                                    renderBoxRow(thread, "box"),
+                                  )}
+                                  laterRows={needsYouLaterThreads.map((thread) =>
+                                    renderBoxRow(thread, "later"),
+                                  )}
+                                />
+                              ) : null}
+                              <ManualStepsBox />
+                            </>,
+                            needsYouPanelTarget,
+                            "details-column-foot",
+                          ),
                         );
                       }
                       for (const item of sidebarListItems) {

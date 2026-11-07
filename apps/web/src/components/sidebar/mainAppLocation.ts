@@ -17,6 +17,7 @@ export function isSidebarSectionPage(pathname: string) {
     pathname === "/archived" ||
     pathname === "/scheduled-tasks" ||
     pathname === "/thread-page" ||
+    pathname === "/manual-steps" ||
     pathname === "/usage" ||
     isSettingsPage(pathname)
   );

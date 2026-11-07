@@ -462,6 +462,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["usage quota rate limit reset recover continue"],
   },
   {
+    id: "threadpage-token",
+    title: msg("ThreadPage token"),
+    to: "/settings/threads",
+    scope: "environment",
+    searchTerms: ["threadpage thread.page manual steps hands-on machine inbox pending token api"],
+  },
+  {
     id: "working-shelf",
     title: msg("Working section"),
     to: "/settings/general",

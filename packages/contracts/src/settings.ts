@@ -938,6 +938,13 @@ export const UsageLimitSourceConfig = Schema.Struct({
 });
 export type UsageLimitSourceConfig = typeof UsageLimitSourceConfig.Type;
 
+/** ThreadPage, which agents keep each machine's pending list in. */
+export const ThreadPageSettings = Schema.Struct({
+  /** A ThreadPage Integration API token that can read the Machine inbox folders. */
+  apiToken: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed("")), secretSetting),
+});
+export type ThreadPageSettings = typeof ThreadPageSettings.Type;
+
 export const SecretProviderKind = SecretProviderSlug.pipe(Schema.brand("SecretProviderKind"));
 export type SecretProviderKind = typeof SecretProviderKind.Type;
 
@@ -1341,6 +1348,7 @@ export const ServerSettings = Schema.Struct({
   simlockDeviceHosts: SimlockDeviceHostConfigs.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   /** Alpha: Simlock device hosts. Off, the server ignores `simlockDeviceHosts`. */
   simlockDeviceHostsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  threadPage: ThreadPageSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   sidebarAutoSettleAfterDays: Schema.NullOr(SidebarAutoSettleAfterDays).pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS)),
   ),
@@ -1791,6 +1799,8 @@ export const ServerSettingsPatch = Schema.Struct({
   easDeviceHosts: Schema.optionalKey(EasDeviceHostConfigs),
   simlockDeviceHosts: Schema.optionalKey(SimlockDeviceHostConfigs),
   simlockDeviceHostsEnabled: Schema.optionalKey(Schema.Boolean),
+  /** A redaction marker keeps the saved token; an empty token removes it. */
+  threadPage: Schema.optionalKey(Schema.Struct({ apiToken: Schema.optionalKey(TrimmedString) })),
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
   compactIdleThreads: Schema.optionalKey(LegacyCompactIdleThreads),
   scheduledTaskDefaultPlacement: Schema.optionalKey(ScheduledTaskPlacement),

@@ -197,7 +197,7 @@ const legacyBaseActions = (): MenuAction[] => [
   { id: "delete", title: t("Delete"), image: "trash", attributes: { destructive: true } },
 ];
 
-function ThreadListV2Section(props: {
+export function ThreadListV2Section(props: {
   readonly label: string;
   readonly pane?: "screen" | "sidebar";
   readonly tone?: "default" | "snoozed" | "attention";

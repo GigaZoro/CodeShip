@@ -21,70 +21,72 @@ message passes only when every word in it is listed here.
 
 ## Terms
 
-| English                                  | Ukrainian                                     |
-| ---------------------------------------- | --------------------------------------------- |
-| thread (an agent conversation)           | чат (pl. чати)                                |
-| new thread                               | новий чат                                     |
-| side chat                                | бічний чат                                    |
-| project                                  | проєкт                                        |
-| environment                              | середовище                                    |
-| machine (a computer running T3.CodeShip) | комп’ютер; "this machine" = цей комп’ютер     |
-| provider                                 | провайдер                                     |
-| agent / subagent                         | агент / субагент                              |
-| model                                    | модель                                        |
-| turn                                     | хід                                           |
-| effort                                   | зусилля                                       |
-| branch                                   | гілка                                         |
-| commit (n / v)                           | коміт / закомітити                            |
-| pull request                             | пул-реквест                                   |
-| merge                                    | злити, злиття                                 |
-| checkout (a working copy)                | робоча копія                                  |
-| source control                           | керування версіями                            |
-| diff, changes                            | зміни                                         |
-| review (code review)                     | рев’ю                                         |
-| checkpoint                               | контрольна точка                              |
-| stash                                    | відкладені                                    |
-| snooze / unsnooze, wake                  | відкласти / повернути                         |
-| settle, settled (mark a thread done)     | завершити, завершені                          |
-| archive                                  | архівувати, архів                             |
-| pin / unpin                              | закріпити / відкріпити                        |
-| scheduled task                           | заплановане завдання                          |
-| tray / notification area (Windows)       | трей / область сповіщень                      |
-| skill                                    | навичка                                       |
-| usage / usage limits                     | використання / ліміти використання            |
-| token                                    | токен                                         |
-| composer (message input)                 | поле повідомлення                             |
-| prompt                                   | запит                                         |
-| follow-up                                | наступне повідомлення                         |
-| steer                                    | скерувати                                     |
-| queue / queued                           | черга / у черзі                               |
-| plan / plan mode                         | план / режим планування                       |
-| terminal                                 | термінал                                      |
-| settings                                 | налаштування                                  |
-| appearance                               | вигляд                                        |
-| keybindings                              | комбінації клавіш                             |
-| pairing / pairing code                   | сполучення / код сполучення                   |
-| tunnel / relay                           | тунель / ретранслятор                         |
-| connections                              | підключення                                   |
-| workspace                                | робочий простір                               |
-| sign in / sign out                       | увійти / вийти                                |
-| account                                  | обліковий запис                               |
-| credentials                              | облікові дані                                 |
-| permission                               | дозвіл                                        |
-| full access                              | повний доступ                                 |
-| approve / approval                       | схвалити / схвалення                          |
-| deny                                     | відхилити                                     |
-| preview                                  | попередній перегляд                           |
-| artifact                                 | артефакт                                      |
-| attachment                               | вкладення                                     |
-| photo library                            | фототека                                      |
-| reaction                                 | реакція                                       |
-| redirect URL                             | URL перенаправлення                           |
-| run (n)                                  | запуск                                        |
-| loading…                                 | завантаження…                                 |
-| retry                                    | повторити                                     |
-| copied                                   | скопійовано                                   |
-| Mixed (settings differ)                  | Різні                                         |
-| System default                           | Як у системі                                  |
-| just now / ago                           | щойно / тому                                  |
-| {count}s, {count}m, {count}h, {count}d   | {count} с, {count} хв, {count} год, {count} д |
+| English                                   | Ukrainian                                     |
+| ----------------------------------------- | --------------------------------------------- |
+| thread (an agent conversation)            | чат (pl. чати)                                |
+| new thread                                | новий чат                                     |
+| thread (a ThreadPage thread of notes)     | тред (pl. треди)                              |
+| Manual steps (steps only the user can do) | Ручні кроки                                   |
+| side chat                                 | бічний чат                                    |
+| project                                   | проєкт                                        |
+| environment                               | середовище                                    |
+| machine (a computer running T3.CodeShip)  | комп’ютер; "this machine" = цей комп’ютер     |
+| provider                                  | провайдер                                     |
+| agent / subagent                          | агент / субагент                              |
+| model                                     | модель                                        |
+| turn                                      | хід                                           |
+| effort                                    | зусилля                                       |
+| branch                                    | гілка                                         |
+| commit (n / v)                            | коміт / закомітити                            |
+| pull request                              | пул-реквест                                   |
+| merge                                     | злити, злиття                                 |
+| checkout (a working copy)                 | робоча копія                                  |
+| source control                            | керування версіями                            |
+| diff, changes                             | зміни                                         |
+| review (code review)                      | рев’ю                                         |
+| checkpoint                                | контрольна точка                              |
+| stash                                     | відкладені                                    |
+| snooze / unsnooze, wake                   | відкласти / повернути                         |
+| settle, settled (mark a thread done)      | завершити, завершені                          |
+| archive                                   | архівувати, архів                             |
+| pin / unpin                               | закріпити / відкріпити                        |
+| scheduled task                            | заплановане завдання                          |
+| tray / notification area (Windows)        | трей / область сповіщень                      |
+| skill                                     | навичка                                       |
+| usage / usage limits                      | використання / ліміти використання            |
+| token                                     | токен                                         |
+| composer (message input)                  | поле повідомлення                             |
+| prompt                                    | запит                                         |
+| follow-up                                 | наступне повідомлення                         |
+| steer                                     | скерувати                                     |
+| queue / queued                            | черга / у черзі                               |
+| plan / plan mode                          | план / режим планування                       |
+| terminal                                  | термінал                                      |
+| settings                                  | налаштування                                  |
+| appearance                                | вигляд                                        |
+| keybindings                               | комбінації клавіш                             |
+| pairing / pairing code                    | сполучення / код сполучення                   |
+| tunnel / relay                            | тунель / ретранслятор                         |
+| connections                               | підключення                                   |
+| workspace                                 | робочий простір                               |
+| sign in / sign out                        | увійти / вийти                                |
+| account                                   | обліковий запис                               |
+| credentials                               | облікові дані                                 |
+| permission                                | дозвіл                                        |
+| full access                               | повний доступ                                 |
+| approve / approval                        | схвалити / схвалення                          |
+| deny                                      | відхилити                                     |
+| preview                                   | попередній перегляд                           |
+| artifact                                  | артефакт                                      |
+| attachment                                | вкладення                                     |
+| photo library                             | фототека                                      |
+| reaction                                  | реакція                                       |
+| redirect URL                              | URL перенаправлення                           |
+| run (n)                                   | запуск                                        |
+| loading…                                  | завантаження…                                 |
+| retry                                     | повторити                                     |
+| copied                                    | скопійовано                                   |
+| Mixed (settings differ)                   | Різні                                         |
+| System default                            | Як у системі                                  |
+| just now / ago                            | щойно / тому                                  |
+| {count}s, {count}m, {count}h, {count}d    | {count} с, {count} хв, {count} год, {count} д |

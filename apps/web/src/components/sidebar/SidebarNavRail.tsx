@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   CalendarClockIcon,
   ChartNoAxesColumnIcon,
+  HandIcon,
   LayoutGridIcon,
   PuzzleIcon,
   MessagesSquareIcon,
@@ -45,6 +46,7 @@ type SidebarNavDestination =
   | "extensions"
   | "scheduled-tasks"
   | "thread-page"
+  | "manual-steps"
   | "usage"
   | "settings";
 
@@ -56,6 +58,7 @@ function resolveActiveDestination(pathname: string): SidebarNavDestination | nul
   if (pathname === "/usage") return "usage";
   if (pathname === "/scheduled-tasks") return "scheduled-tasks";
   if (pathname === "/thread-page") return "thread-page";
+  if (pathname === "/manual-steps") return "manual-steps";
   if (isSettingsPage(pathname)) return "settings";
   // Section pages without a rail item (Archived) highlight nothing.
   return isSidebarSectionPage(pathname) ? null : "threads";
@@ -236,6 +239,12 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
           label={t("Artifacts")}
           isActive={active === "artifacts"}
           onClick={go(() => navigate({ to: "/artifacts" }))}
+        />
+        <SidebarNavRailItem
+          icon={<HandIcon />}
+          label={t("Manual steps")}
+          isActive={active === "manual-steps"}
+          onClick={go(() => navigate({ to: "/manual-steps" }))}
         />
         {/* The browser cannot embed thread.page, so the page is desktop only. */}
         {isElectron ? (

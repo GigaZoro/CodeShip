@@ -1293,6 +1293,8 @@ const catalog: MessageCatalog = {
   "{machine}: turned off": "{machine}: вимкнено",
   "{machines} read and act": "{machines}: читати й діяти",
   "{machines} read PRs": "{machines}: читати PR",
+  "{manualSteps} lists the steps only you can do, which agents keep in ThreadPage's Machine inbox folder. This server reads them with a ThreadPage token and never shows it to apps. In ThreadPage, open Settings, Connections, then Connect an automation, Script or API: choose Read only, and Work or All threads.":
+    "{manualSteps} показує кроки, які можете зробити лише ви: агенти ведуть їх у папці Machine inbox у ThreadPage. Цей сервер читає їх за токеном ThreadPage і ніколи не показує його застосункам. У ThreadPage відкрийте Settings, Connections, потім Connect an automation, Script or API: виберіть Read only і Work або All threads.",
   "{mark}  {label} · Failed": "{mark}  {label} · Помилка",
   "{mark}  {label} · Not checked": "{mark}  {label} · Не перевірено",
   "{message} Choose another model.": "{message} Виберіть іншу модель.",
@@ -1767,6 +1769,7 @@ const catalog: MessageCatalog = {
   "A theme collection cannot be empty.": "Колекція тем не може бути порожньою.",
   'A theme named "{name}" is already installed.': "Тема з назвою «{name}» уже встановлена.",
   "a thread": "чат",
+  "A token is saved.": "Токен збережено.",
   "A token saved here is used before {envVar} and the {cli} login, so {host} works without the {cliLabel}. Give it {access}.":
     "Збережений тут токен використовується раніше за {envVar} і вхід {cli}, тож {host} працює без {cliLabel}. Надайте йому {access}.",
   "A tradeoff to weigh": "Компроміс, який варто зважити",
@@ -3396,6 +3399,7 @@ const catalog: MessageCatalog = {
   "Collapse user input": "Згорнути запит введення",
   Collapsed: "Згорнуто",
   "Collapses the folder.": "Згортає папку.",
+  "Collapses the manual steps.": "Згортає ручні кроки.",
   "Collapses the settled threads.": "Згортає завершені чати.",
   "Collapses the snoozed threads.": "Згортає відкладені чати.",
   "Collapses the workflow": "Згортає робочий процес",
@@ -3608,6 +3612,9 @@ const catalog: MessageCatalog = {
   "Connect this device to the internet. T3.CodeShip reconnects on its own.":
     "Підключіть цей пристрій до інтернету. T3.CodeShip перепідключиться сам.",
   "Connect this environment to manage it.": "Підключіть це середовище, щоб керувати ним.",
+  "Connect ThreadPage": "Підключити ThreadPage",
+  "Connect ThreadPage to see the steps only you can do, from every machine.":
+    "Підключіть ThreadPage, щоб бачити кроки, які можете зробити лише ви, з усіх комп’ютерів.",
   "Connect to {name}": "Підключитися до {name}",
   "Connect to a server to check releases.": "Підключіться до сервера, щоб перевірити випуски.",
   "Connect to a T3.CodeShip server to browse its pull requests.":
@@ -4130,9 +4137,12 @@ const catalog: MessageCatalog = {
   "Could not pull": "Не вдалося виконати pull",
   "Could not put {name} on": "Не вдалося додати мітку {name}",
   "Could not queue task": "Не вдалося поставити завдання в чергу",
+  "Could not reach the machine that reads ThreadPage.":
+    "Не вдалося з’єднатися з комп’ютером, який читає ThreadPage.",
   "Could not reach the server.": "Не вдалося зв’язатися із сервером.",
   "Could not reach this environment. Try again.":
     "Не вдалося зв’язатися з цим середовищем. Повторіть спробу.",
+  "Could not reach ThreadPage.": "Не вдалося з’єднатися з ThreadPage.",
   "Could not read '{name}'.": "Не вдалося прочитати «{name}».",
   "Could not read {machines} to compare.": "Не вдалося прочитати дані для порівняння: {machines}.",
   "Could not read {skill}": "Не вдалося прочитати {skill}",
@@ -5336,6 +5346,7 @@ const catalog: MessageCatalog = {
   "Expanded image preview": "Розгорнутий попередній перегляд зображення",
   "Expanded video preview": "Розгорнутий попередній перегляд відео",
   "Expands the folder.": "Розгортає папку.",
+  "Expands the manual steps.": "Розгортає ручні кроки.",
   "Expands the settled threads.": "Розгортає завершені чати.",
   "Expands the snoozed threads.": "Розгортає відкладені чати.",
   "Expands the working threads.": "Розгортає чати в роботі.",
@@ -6878,6 +6889,9 @@ const catalog: MessageCatalog = {
     "Лише ручне захоплення. Щоразу ви обиратимете вікно",
   "Manual only": "Лише вручну",
   "Manual setup": "Налаштування вручну",
+  "Manual steps": "Ручні кроки",
+  "Manual steps ({count})": "Ручні кроки ({count})",
+  "Manual steps breadcrumb": "Навігація ручних кроків",
   "Manual update required": "Потрібне ручне оновлення",
   "Map {model} to model": "Зіставити {model} з моделлю",
   "Map to": "Зіставити з",
@@ -7055,6 +7069,8 @@ const catalog: MessageCatalog = {
     "Скорочення з парою модифікаторів недоступні в цьому сеансі Wayland. Виберіть інше скорочення або скористайтеся командою «Зробити знімок» у палітрі команд.",
   Mon: "Пн",
   Monday: "Понеділок",
+  Money: "Гроші",
+  "Money decision": "Рішення про гроші",
   monitor: "монітор",
   Monitor: "Монітор",
   "Monitor overhead": "Накладні витрати монітора",
@@ -7319,6 +7335,8 @@ const catalog: MessageCatalog = {
   "No connected environment can add a project": "Жодне підключене середовище не може додати проєкт",
   "No connected environment offers threads without a project.":
     "Жодне підключене середовище не пропонує чати без проєкту.",
+  "No connected machine can read ThreadPage. Update T3.CodeShip on one of them.":
+    "Жоден підключений комп’ютер не може читати ThreadPage. Оновіть T3.CodeShip на одному з них.",
   "No conversation yet": "Розмови ще немає",
   "no cookies": "без cookie",
   "No cookies found": "Cookie не знайдено",
@@ -7545,6 +7563,7 @@ const catalog: MessageCatalog = {
   "No threads yet": "Чатів ще немає",
   "No token saved; the server uses {envVar} or the {cli} login.":
     "Токен не збережено; сервер використовує {envVar} або вхід {cli}.",
+  "No token saved.": "Токен не збережено.",
   "No transcript yet.": "Запису ще немає.",
   "No video received from the device. Reconnect to try again.":
     "Від пристрою не надійшло відео. Перепідключіться й спробуйте ще раз.",
@@ -7619,6 +7638,7 @@ const catalog: MessageCatalog = {
     "За останні 7 днів ніщо не зупиняло застосунок під час запуску.",
   "Nothing matches “{query}”": "Нічого не знайдено за запитом «{query}»",
   "Nothing needs you right now.": "Зараз нічого не потребує вашої уваги.",
+  "Nothing needs your hands right now": "Зараз нічого не потребує ваших рук",
   "Nothing running in the background.": "У фоновому режимі нічого не виконується.",
   "Nothing stashed yet.": "Поки нічого не відкладено.",
   "Nothing to preview.": "Немає що переглядати.",
@@ -7963,6 +7983,7 @@ const catalog: MessageCatalog = {
     "Відкривати цей URL у вбудованому попередньому перегляді під час запуску дії.",
   "Open thread": "Відкрити чат",
   "Open ThreadPage": "Відкрити ThreadPage",
+  "Open ThreadPage connections": "Відкрити підключення ThreadPage",
   "Open unresolved discussion in {path}": "Відкрити невирішене обговорення в {path}",
   "Open usage": "Відкрити використання",
   "Open VSX returned an unreadable response.": "Open VSX повернув нечитабельну відповідь.",
@@ -8024,6 +8045,7 @@ const catalog: MessageCatalog = {
     "Відкриває розміщений застосунок, встановлення не потрібне",
   "Opens the project picker": "Відкриває вибір проєкту",
   "Opens the project website": "Відкриває сайт проєкту",
+  "Opens the step's ThreadPage thread.": "Відкриває тред цього кроку в ThreadPage.",
   "Opens the task editor.": "Відкриває редактор завдання.",
   "Opens the task's last run.": "Відкриває останній запуск завдання.",
   "Opens the thread": "Відкриває чат",
@@ -8786,6 +8808,7 @@ const catalog: MessageCatalog = {
   "Reading its settings…": "Читання налаштувань…",
   "Reading the change...": "Читання змін...",
   "Reading…": "Читання…",
+  "Reads ThreadPage again.": "Знову читає ThreadPage.",
   ready: "готово",
   Ready: "Готово",
   "Ready for review": "Готово до рев’ю",
@@ -8922,6 +8945,7 @@ const catalog: MessageCatalog = {
   "Refresh failed. Retry": "Не вдалося оновити. Повторити",
   "Refresh files": "Оновити файли",
   "Refresh limits": "Оновити ліміти",
+  "Refresh manual steps": "Оновити ручні кроки",
   "Refresh plugins": "Оновити плагіни",
   "Refresh process diagnostics": "Оновити діагностику процесів",
   "Refresh provider availability, versions, and auth state. Model catalog updates follow Provider update checks.":
@@ -9721,6 +9745,7 @@ const catalog: MessageCatalog = {
   "Save shortcut": "Зберегти комбінацію клавіш",
   "Save task": "Зберегти завдання",
   "Save the task to get its webhook URL.": "Збережіть завдання, щоб отримати його URL вебхука.",
+  "save the ThreadPage token": "зберегти токен ThreadPage",
   "Save thread settings": "Зберегти налаштування чату",
   "Save to workspace": "Зберегти в робочий простір",
   "Save video": "Зберегти відео",
@@ -10731,6 +10756,8 @@ const catalog: MessageCatalog = {
   "Steered the active turn": "Скерувало активний хід",
   "Step 1 of 2: open device": "Крок 1 з 2: відкриття пристрою",
   "Step 2 of 2: connect video": "Крок 2 з 2: підключення відео",
+  "Steps only you can do, from every machine's pending list in ThreadPage. Open one to see its newest note; replying there tells that machine to check it again.":
+    "Кроки, які можете зробити лише ви, зі списків очікування всіх комп’ютерів у ThreadPage. Відкрийте крок, щоб побачити його найновішу нотатку; відповідь там скаже тому комп’ютеру перевірити його знову.",
   "Still bringing attached context into this message.":
     "Прикріплений контекст ще додається до повідомлення.",
   "Still compressing a pasted image.": "Вставлене зображення ще стискається.",
@@ -11662,6 +11689,12 @@ const catalog: MessageCatalog = {
     "Чат змінився. Виберіть повідомлення, щоб перемотати ще раз.",
   "The thread no longer exists on its machine.": "Цього чату більше немає на його комп’ютері.",
   "The thread title could not be regenerated.": "Не вдалося перегенерувати назву чату.",
+  "The ThreadPage connection is paused. Resume it in ThreadPage Settings, Connections.":
+    "Підключення ThreadPage призупинено. Відновіть його в ThreadPage: Settings, Connections.",
+  "The ThreadPage token cannot read threads. Give its connection Read access.":
+    "Токен ThreadPage не може читати треди. Надайте його підключенню доступ Read.",
+  "The ThreadPage token sees no Machine inbox folder.":
+    "Токен ThreadPage не бачить папки Machine inbox.",
   "The title could not be saved": "Не вдалося зберегти назву",
   "The unsent message could not be restored.": "Не вдалося відновити ненадіслане повідомлення.",
   "The update download failed. Try Download update again.":
@@ -12396,9 +12429,15 @@ const catalog: MessageCatalog = {
   "Thread, {title}": "Чат, {title}",
   "thread.page does not let other sites embed it, so in a browser it opens in a new tab. The T3.CodeShip desktop app shows it right here.":
     "thread.page не дозволяє іншим сайтам вбудовувати його, тому в браузері він відкривається в новій вкладці. Настільний застосунок T3.CodeShip показує його прямо тут.",
+  ThreadPage: "ThreadPage",
   "ThreadPage didn't load": "ThreadPage не завантажився",
+  "ThreadPage is busy. Try again in a minute.": "ThreadPage зайнятий. Спробуйте ще раз за хвилину.",
   "ThreadPage opens in its own tab": "ThreadPage відкривається в окремій вкладці",
+  "ThreadPage refused the token. Save a new one in Settings.":
+    "ThreadPage відхилив токен. Збережіть новий у налаштуваннях.",
   "ThreadPage stopped": "ThreadPage зупинився",
+  "ThreadPage token": "Токен ThreadPage",
+  "ThreadPage token on {machine}": "Токен ThreadPage на {machine}",
   Threads: "Чати",
   "threads {times}": "чати {times}",
   "Threads needing you": "Чати, що потребують вас",

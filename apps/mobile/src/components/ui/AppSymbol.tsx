@@ -36,6 +36,8 @@ import IconChevronLeft from "@tabler/icons-react-native/IconChevronLeft";
 import IconChevronRight from "@tabler/icons-react-native/IconChevronRight";
 import IconChevronUp from "@tabler/icons-react-native/IconChevronUp";
 import IconCircle from "@tabler/icons-react-native/IconCircle";
+import IconCurrencyDollar from "@tabler/icons-react-native/IconCurrencyDollar";
+import IconHandStop from "@tabler/icons-react-native/IconHandStop";
 import IconCircleFilled from "@tabler/icons-react-native/IconCircleFilled";
 import IconCircleCheck from "@tabler/icons-react-native/IconCircleCheck";
 import IconCircleDashed from "@tabler/icons-react-native/IconCircleDashed";
@@ -233,6 +235,8 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   paintbrush: IconPalette,
   pencil: IconPencil,
   "person.crop.circle": IconUserCircle,
+  "dollarsign.circle": IconCurrencyDollar,
+  "hand.raised": IconHandStop,
   "person.2": IconUsers,
   "person.fill.checkmark": IconUserCheck,
   "person.fill.xmark": IconUserX,

@@ -1,3 +1,9 @@
+## 2026-11-08 — Manual steps: every step only you can do, from all machines
+
+- A new **Manual steps** list shows every step only you can do, from the pending lists agents keep for each machine in ThreadPage (**Work → Agent Maintenance → Machine inbox**): sign-ins, installs that need your password, and money decisions, which come first and are marked **Money**. Steps are grouped by machine and say how long ago they were last updated. Clicking one opens its ThreadPage thread, whose newest note says what to do.
+- It sits under Needs you in a chat's details column, in the thread list on narrow windows and on mobile, and on its own page from the sidebar rail or **Manual steps** in the command palette. It refreshes when it opens, every 5 minutes, and from its refresh button. It never sends a notification or adds to the Needs you badge.
+- To fill it, save a ThreadPage token in **Settings → Threads → ThreadPage** on one machine; every app connected to that machine then shows the list. The token stays on that machine's server and is never sent to apps.
+
 ## 2026-11-08 — Project order on every device
 
 - A project order you set by moving folders on web or desktop is now saved on your machines instead of in one browser, so every device whose **Project order** is **Manual** shows the same order. An order saved only in a browser before this update isn't carried over; move a folder once to save it again.

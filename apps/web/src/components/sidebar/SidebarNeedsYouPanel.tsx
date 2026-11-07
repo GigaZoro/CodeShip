@@ -1,6 +1,5 @@
 import { ChevronRightIcon } from "lucide-react";
 import { useState, type KeyboardEvent, type ReactNode } from "react";
-import { createPortal } from "react-dom";
 
 import { attachSidebarTree } from "../../lib/sidebarTree";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
@@ -11,7 +10,6 @@ import { SidebarNeedsYouHeader } from "./SidebarListMarkers";
 
 /** The box under the chat: what needs the user, then what they put off, collapsed. */
 export function SidebarNeedsYouPanel(props: {
-  target: HTMLElement;
   rows: readonly ReactNode[];
   laterRows: readonly ReactNode[];
 }) {
@@ -22,7 +20,7 @@ export function SidebarNeedsYouPanel(props: {
     event.preventDefault();
     toggleLater();
   };
-  return createPortal(
+  return (
     <section
       {...workspaceAreaProps("needs-you", 6, t("Needs you"))}
       className="flex min-h-0 flex-col rounded-2xl border border-warning/40 bg-sidebar p-1.5 text-sidebar-foreground shadow-sm"
@@ -66,7 +64,6 @@ export function SidebarNeedsYouPanel(props: {
           </>
         ) : null}
       </ul>
-    </section>,
-    props.target,
+    </section>
   );
 }

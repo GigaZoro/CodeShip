@@ -137,6 +137,8 @@ export interface Preferences {
   readonly threadListSettledShelfExpanded?: boolean;
   readonly threadListSnoozedShelfExpanded?: boolean;
   readonly threadListWorkingShelfExpanded?: boolean;
+  /** Absent means open: the list of steps only the user can do starts shown. */
+  readonly threadListManualStepsExpanded?: boolean;
   /** Device-local counterparts of the web `sidebarGroupByProject` and `sidebarGroupByMachine`. */
   readonly threadListGroupByProject?: boolean;
   readonly threadListGroupByMachine?: boolean;
@@ -226,6 +228,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     threadListSettledShelfExpanded?: boolean;
     threadListSnoozedShelfExpanded?: boolean;
     threadListWorkingShelfExpanded?: boolean;
+    threadListManualStepsExpanded?: boolean;
     threadListGroupByProject?: boolean;
     threadListGroupByMachine?: boolean;
     threadListFolderExpanded?: Readonly<Record<string, boolean>>;
@@ -389,6 +392,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (typeof parsed.threadListWorkingShelfExpanded === "boolean") {
     preferences.threadListWorkingShelfExpanded = parsed.threadListWorkingShelfExpanded;
+  }
+  if (typeof parsed.threadListManualStepsExpanded === "boolean") {
+    preferences.threadListManualStepsExpanded = parsed.threadListManualStepsExpanded;
   }
   // `threadListGroupBy` held one grouping before project and machine folders could nest.
   const legacyGroupBy = "threadListGroupBy" in parsed ? parsed.threadListGroupBy : undefined;

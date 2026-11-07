@@ -633,6 +633,7 @@ export default defineConfig({
           "apps/mobile/src/features/threads/ThreadSettingsSheet.tsx",
           "apps/mobile/src/features/threads/thread-list-v2-items.tsx",
           "apps/mobile/src/features/threads/ThreadListPinnedTasks.tsx",
+          "apps/mobile/src/features/threads/ThreadListManualSteps.tsx",
           "apps/mobile/src/lib/useMobileNavigationTheme.ts",
           "apps/mobile/src/native/T3ComposerEditor.ios.tsx",
           "apps/mobile/src/native/T3ComposerEditor.native.tsx",
