@@ -224,6 +224,7 @@ export function useThreadListActions(): {
     thread: EnvironmentThreadShell,
     enabled: boolean,
   ) => Promise<boolean>;
+  readonly setThreadLater: (thread: EnvironmentThreadShell, later: boolean) => Promise<boolean>;
   readonly moveThread: (
     thread: EnvironmentThreadShell,
     direction: ThreadMoveDestination,
@@ -239,6 +240,7 @@ export function useThreadListActions(): {
   const setAutoSettleMutation = useAtomCommand(threadEnvironment.setAutoSettle, {
     reportFailure: false,
   });
+  const setLaterMutation = useAtomCommand(threadEnvironment.setLater, { reportFailure: false });
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -576,6 +578,24 @@ export function useThreadListActions(): {
     }
     return true;
   };
+  const setThreadLater = async (thread: EnvironmentThreadShell, later: boolean) => {
+    selectionHaptic();
+    const result = await setLaterMutation({
+      environmentId: thread.environmentId,
+      input: { threadId: thread.id, later },
+    });
+    if (result._tag === "Failure") {
+      const error = Cause.squash(result.cause);
+      Dialog.alert(
+        t("Could not update Needs you"),
+        error instanceof Error && error.message.trim().length > 0
+          ? error.message
+          : t("The thread could not be moved."),
+      );
+      return false;
+    }
+    return true;
+  };
   const regenerateThreadTitle = async (thread: EnvironmentThreadShell) => {
     if (!checkThreadOperationPermission(thread, t("Could not regenerate title"))) return false;
     const key = scopedThreadKey(thread.environmentId, thread.id);
@@ -805,6 +825,7 @@ export function useThreadListActions(): {
     pinThread,
     unpinThread,
     setThreadAutoSettle,
+    setThreadLater,
     moveThread,
     renameThread,
     regenerateThreadTitle,

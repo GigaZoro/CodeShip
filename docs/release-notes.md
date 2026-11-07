@@ -1,3 +1,10 @@
+## 2026-11-07 — Answer from the Needs you box
+
+- The **Needs you** box at the bottom of the chat always shows what waits on you, in compact rows that say what each thread asks. The header button and the option to move the box into the thread list are gone.
+- Approve or decline an approval, or settle a failed run, without leaving the thread you're in. On mobile, Needs you rows offer allow and decline for an approval right in the thread list.
+- **Later** puts a thread off until it asks something new, from the box, the thread's menu, or a long-press on mobile, with **Undo** right after. It is saved with the thread, so every device agrees: put-off threads sit under **Later** below the ones that need you now, stop counting in the Threads icon, dock and app-icon badges, and **Next thread that needs you** skips them. The thread you have open is marked **This thread**.
+- The Needs you count on the Threads icon is amber, like the rest of Needs you, instead of red.
+
 ## 2026-11-07 — Agents more often hand you a runnable command
 
 - When an agent stops because you need to run something, such as signing in, it now ends its reply with the command in a code block more often, so **Run in terminal** can run it.

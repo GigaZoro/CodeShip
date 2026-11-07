@@ -32,6 +32,8 @@ import {
   readEnvironmentServerConfigLoaded,
   readEnvironmentFinalReviewDefault,
   readEnvironmentSupportsAutoSettleOptOut,
+  readEnvironmentSupportsThreadLater,
+  readThreadNeedsYou,
   readThreadShell,
   useProjects,
 } from "../state/entities";
@@ -84,6 +86,7 @@ export function useThreadActionMenu(input: {
     pinThread,
     confirmAndUnpinThread,
     setThreadAutoSettle,
+    setThreadLater,
     setThreadFinalReview,
     archiveThread,
     deleteThread,
@@ -132,6 +135,7 @@ export function useThreadActionMenu(input: {
         autoSettleOptOut: readEnvironmentSupportsAutoSettleOptOut(threadRef.environmentId),
         finalReview: finalReviewDefault !== null,
         snooze: configLoaded,
+        later: readEnvironmentSupportsThreadLater(threadRef.environmentId),
         pinning: configLoaded,
         titleRegeneration: configLoaded,
       };
@@ -148,6 +152,7 @@ export function useThreadActionMenu(input: {
         finalReviewEnabled: thread.finalReview ?? finalReviewDefault === true,
         isSnoozed: supports.snooze && effectiveSnoozed(thread, { now: now.toISOString() }),
         canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
+        needsYou: readThreadNeedsYou(threadRef),
         isRegeneratingTitle,
         isRunning: !threadRuntimeCanArchive(thread.runtime),
         supports,
@@ -235,6 +240,12 @@ export function useThreadActionMenu(input: {
           return;
         case "unsnooze":
           await reportFailure(t("Failed to wake thread"), () => unsnoozeThread(threadRef));
+          return;
+        case "later":
+        case "later:back":
+          await reportFailure(t("Failed to update Needs you"), () =>
+            setThreadLater(threadRef, action === "later"),
+          );
           return;
         case "pin":
           await reportFailure(t("Failed to pin thread"), () => pinThread(threadRef));

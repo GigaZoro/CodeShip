@@ -199,6 +199,7 @@ function ThreadNavigationSidebarPane(
     pinThread,
     unpinThread,
     setThreadAutoSettle,
+    setThreadLater,
     moveThread,
     renameThread,
     regenerateThreadTitle,
@@ -367,6 +368,7 @@ function ThreadNavigationSidebarPane(
     snoozePresetsByEnvironmentId,
     pinningEnvironmentIds,
     autoSettleOptOutEnvironmentIds,
+    laterEnvironmentIds,
     pinReorderEnvironmentIds,
     activeReorderEnvironmentIds,
     titleRegenerationEnvironmentIds,
@@ -730,6 +732,12 @@ function ThreadNavigationSidebarPane(
             onPinThread={pinThread}
             onUnpinThread={unpinThread}
             onSetThreadAutoSettle={setThreadAutoSettle}
+            onSetThreadLater={setThreadLater}
+            needsYouLater={
+              item.item.needsYou === true && laterEnvironmentIds.has(thread.environmentId)
+                ? item.item.later === true
+                : undefined
+            }
             onMoveThread={moveThread}
             onSwipeableClose={handleSwipeableClose}
             onSwipeableWillOpen={handleSwipeableWillOpen}
@@ -754,7 +762,7 @@ function ThreadNavigationSidebarPane(
           />
         );
       case "v2-needs-you":
-        return <ThreadListV2NeedsYouHeader count={item.count} pane="sidebar" />;
+        return <ThreadListV2NeedsYouHeader count={item.count} later={item.later} pane="sidebar" />;
       case "v2-working-shelf":
         return (
           <ThreadListV2WorkingShelfHeader

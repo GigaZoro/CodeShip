@@ -339,6 +339,20 @@ describe("Needs you", () => {
     expect(result.threads.map((entry) => entry.id)).toEqual(["oldest", "recent"]);
     expect(result.nextChangeAt).toBe(Date.parse("2026-06-01T12:30:00.000Z"));
   });
+  it("keeps a thread put off for later only until it starts a new wait", () => {
+    const putOff = {
+      ...failed("put-off", "2026-06-01T09:00:00.000Z"),
+      laterAt: "2026-06-01T09:30:00.000Z",
+    };
+    // Put off before this failure, so the failure is a new wait.
+    const failedAgain = {
+      ...failed("failed-again", "2026-06-01T10:00:00.000Z"),
+      laterAt: "2026-06-01T09:30:00.000Z",
+    };
+    const result = collectNeedsYouThreads([failedAgain, putOff], { now });
+    expect(result.threads.map((entry) => entry.id)).toEqual(["failed-again"]);
+    expect(result.later.map((entry) => entry.id)).toEqual(["put-off"]);
+  });
 });
 
 describe("nextNeedsYouThread", () => {

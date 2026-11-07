@@ -21,6 +21,8 @@ export type ThreadActionMenuId =
   | "snooze"
   | `snooze:${string}`
   | "unsnooze"
+  | "later"
+  | "later:back"
   | "rename"
   | "regenerate-title"
   | "mark-unread"
@@ -88,6 +90,8 @@ export interface ThreadActionMenuState {
   readonly finalReviewEnabled: boolean;
   readonly isSnoozed: boolean;
   readonly canSnoozeNow: boolean;
+  /** Whether the thread waits on the user now, was put off with "Decide later", or neither. */
+  readonly needsYou?: "now" | "later" | null;
   readonly isRegeneratingTitle: boolean;
   /** Archive rejects attached providers, so disable it while running. */
   readonly isRunning: boolean;
@@ -96,6 +100,7 @@ export interface ThreadActionMenuState {
     readonly autoSettleOptOut: boolean;
     readonly finalReview: boolean;
     readonly snooze: boolean;
+    readonly later?: boolean;
     readonly pinning: boolean;
     readonly titleRegeneration: boolean;
   };
@@ -173,6 +178,13 @@ export function buildThreadActionMenuItems(
                   },
                 ],
               },
+        ]
+      : []),
+    ...(state.supports.later && state.needsYou
+      ? [
+          state.needsYou === "later"
+            ? { id: "later:back" as const, label: t("Move back to Needs you"), icon: "history" }
+            : { id: "later" as const, label: t("Decide later"), icon: "clock" },
         ]
       : []),
     { id: "rename", label: t("Rename thread"), icon: "pencil", separatorBefore: true },

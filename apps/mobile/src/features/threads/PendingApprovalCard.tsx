@@ -47,7 +47,7 @@ const COLLAPSED_DETAIL_LINES = 6;
 // Long single-line commands wrap, so length counts as well as line breaks.
 const COLLAPSED_DETAIL_CHARACTERS = 360;
 
-const defaultApprovalOptions = (): ReadonlyArray<ProviderApprovalOption> => [
+export const defaultApprovalOptions = (): ReadonlyArray<ProviderApprovalOption> => [
   { decision: "accept", label: t("Allow once") },
   { decision: "acceptForSession", label: t("Allow session") },
   { decision: "decline", label: t("Decline") },

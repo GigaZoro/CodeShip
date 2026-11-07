@@ -551,6 +551,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.snooze":
     case "thread.unsnooze":
     case "thread.auto-settle.set":
+    case "thread.later.set":
     case "thread.pin":
     case "thread.unpin":
     case "thread.pin.reorder":
@@ -3039,6 +3040,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           | "thread.snooze"
           | "thread.unsnooze"
           | "thread.auto-settle.set"
+          | "thread.later.set"
           | "thread.pin"
           | "thread.unpin"
           | "thread.pin.reorder"
@@ -3202,6 +3204,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         command.type === "thread.snooze" ||
         command.type === "thread.unsnooze" ||
         command.type === "thread.auto-settle.set" ||
+        command.type === "thread.later.set" ||
         command.type === "thread.pin" ||
         command.type === "thread.unpin" ||
         command.type === "thread.pin.reorder" ||
@@ -3550,6 +3553,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             autoSettleDisabledAt: command.enabled ? null : (thread.autoSettleDisabledAt ?? now),
             updatedAt: unchanged ? thread.updatedAt : now,
           };
+        }
+        case "thread.later.set": {
+          // Like a reorder, putting a wait off is not thread activity, so updatedAt stays.
+          if (!command.later) return { ...thread, laterAt: null };
+          return { ...thread, laterAt: now };
         }
         case "thread.pin": {
           const alreadyPinned = thread.pinnedAt != null;
@@ -3979,6 +3987,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return "thread.unsnoozed" as const;
         case "thread.auto-settle.set":
           return "thread.auto-settle-set" as const;
+        case "thread.later.set":
+          return "thread.later-set" as const;
         case "thread.pin":
           return "thread.pinned" as const;
         case "thread.unpin":
@@ -13132,6 +13142,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.snooze":
       case "thread.unsnooze":
       case "thread.auto-settle.set":
+      case "thread.later.set":
       case "thread.pin":
       case "thread.unpin":
       case "thread.pin.reorder":

@@ -45,7 +45,7 @@ import { SidebarBrandWidthProbe, SidebarChromeHeader } from "./sidebar/SidebarCh
 import { SidebarNavRail } from "./sidebar/SidebarNavRail";
 import { CollapsedSidebarUndoToast } from "./sidebar/SidebarThreadUndoNotice";
 import { isSidebarSectionPage, readMainAppHref, useSidebarPanel } from "./sidebar/mainAppLocation";
-import { NeedsYouSlotContext, useNeedsYouColumnVisible } from "./sidebar/needsYouColumn";
+import { NeedsYouSlotContext } from "./sidebar/needsYouColumn";
 import { SettingsSidebarNav } from "./settings/SettingsSidebarNav";
 import type { SidebarRouteReveal } from "./sidebar/routeReveal";
 import { useSidebarStageBackdropVariant } from "./SidebarStageBackdrop";
@@ -422,7 +422,6 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const isMacosDesktop = isElectron && isMacPlatform(navigator.platform);
   const [sidebarWidth, setSidebarWidth] = useState(readInitialThreadSidebarWidth);
   const [needsYouSlot, setNeedsYouSlot] = useState<HTMLElement | null>(null);
-  const [needsYouColumnVisible] = useNeedsYouColumnVisible();
   const [registerNeedsYouSlot] = useState(() => (element: HTMLElement | null) => {
     if (element === null) return;
     setNeedsYouSlot(element);
@@ -495,10 +494,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
             <div
               className={cn("flex min-w-0 flex-1 flex-col", sidebarPanel !== "threads" && "hidden")}
             >
-              <ThreadSidebar
-                routeReveal={sidebarRouteReveal}
-                needsYouPanelTarget={needsYouColumnVisible ? needsYouSlot : null}
-              />
+              <ThreadSidebar routeReveal={sidebarRouteReveal} needsYouPanelTarget={needsYouSlot} />
             </div>
           </div>
           {railOnly ? null : <SidebarRail onDoubleClick={resetSidebarWidth} />}

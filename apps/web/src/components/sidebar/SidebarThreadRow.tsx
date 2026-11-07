@@ -156,7 +156,7 @@ function RelativeTimeLabel(props: { timestamp: string | null }) {
 }
 
 /** How long a Needs you thread has waited on the user, on the shared minute tick. */
-function WaitingSinceLabel(props: { since: number }) {
+export function WaitingSinceLabel(props: { since: number }) {
   const nowMinute = useNowMinute();
   return formatRelativeElapsed(Math.max(0, Date.parse(`${nowMinute}:00.000Z`) - props.since)).value;
 }

@@ -224,6 +224,7 @@ export function useThreadListV2(input: {
         pendingTasks,
         folderHeaders: layout.folderHeaders,
         needsYouCount: layout.needsYouCount,
+        needsYouLaterCount: layout.needsYouLaterCount,
         workingCount: layout.workingCount,
         workingShelfExpanded: input.workingShelfExpanded,
         workingShelfHeaderIndex: layout.workingShelfHeaderIndex,

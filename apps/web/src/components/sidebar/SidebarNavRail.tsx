@@ -166,7 +166,7 @@ function SidebarNavRailThreadsItem(props: { isActive: boolean; onClick: () => vo
         count > 0 ? (
           // Beside the button, which clips its children.
           <span aria-hidden className="pointer-events-none absolute -top-1 -right-1">
-            <Badge variant="destructive" size="sm">
+            <Badge variant="attention" size="sm">
               {count > 99 ? "99+" : count}
             </Badge>
           </span>

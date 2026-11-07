@@ -84,7 +84,7 @@ export const createChatCanvasStore = () =>
 export type ChatCanvasStore = ReturnType<typeof createChatCanvasStore>;
 
 /** The right-hand column the details card and Needs you share; null when the canvas is too narrow. */
-export function resolveDetailsColumn(measurements: ChatCanvasMeasurements) {
+function resolveDetailsColumn(measurements: ChatCanvasMeasurements) {
   return resolveThreadDetailsCardLayout({
     container: { width: measurements.width, height: measurements.height },
     lane: { padding: measurements.padding, minChatWidth: measurements.minChatWidth },

@@ -60,10 +60,18 @@ and worktree while you stay in the new thread composer. This requires a Git proj
 Threads waiting on you sit together under **Needs you** on web and desktop, in a box at the
 bottom of the thread's **Details** column: an approval, an answer to a question, a subagent's
 request, a guest's message, or a run that failed or hit a usage limit. The longest wait comes
-first, and each row shows how long it has waited. Use the **Needs you** button at the top of a
-thread to hide or show that box, or the button in the box's header to move it into the thread
-list. While it is hidden, when the chat is too narrow for the Details column, on pages other than
-a thread, and on mobile, they appear at the top of the thread list, below scheduled task rows.
+first, and each row shows how long it has waited and what the thread asks. Approve or decline an
+approval, or settle a failed run, right in the box; select a row to open its thread. When the
+chat is too narrow for the Details column, on pages other than a thread, and on mobile, they
+appear at the top of the thread list, below scheduled task rows. On mobile, an approval's row
+offers allow and decline right in the list.
+
+To put one off, choose **Later** on its row in the box, or **Decide later** in the thread's menu
+(on mobile, long-press the row). It moves under **Later**, below the threads that need you now,
+until it asks something new; **Move back to Needs you**, or the back arrow in the box, returns it.
+Threads you put off leave the Needs you counts on the Threads icon, the dock and the app icon, and
+**Next thread that needs you** skips them. Later is saved with the thread, so it is the same on
+every device.
 It lists them from every machine and project, even when the list is filtered to one, the thread's
 folder is closed, or the thread is pinned or settled. Once you answer, the thread returns to its
 usual place. A failed run leaves when you retry it, settle it, or snooze it; a usage-limited run

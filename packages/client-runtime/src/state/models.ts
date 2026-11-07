@@ -180,6 +180,8 @@ export interface EnvironmentThreadShell {
   readonly limitRecovery?: import("@t3tools/contracts").OrchestrationV2LimitRecovery | null;
   readonly pinnedAt: string | null;
   readonly autoSettleDisabledAt?: string | null;
+  /** When the user put off what the thread waits on; a wait that starts afterwards needs them. */
+  readonly laterAt?: string | null;
   /** Absent follows the environment's `finalReviewByDefault`. */
   readonly finalReview?: boolean;
   readonly pinOrderKey: string | null;
@@ -333,6 +335,7 @@ export function presentThreadShell(
     limitRecovery: thread.limitRecovery ?? null,
     pinnedAt: nullableIso(thread.pinnedAt ?? null),
     autoSettleDisabledAt: nullableIso(thread.autoSettleDisabledAt ?? null),
+    laterAt: nullableIso(thread.laterAt ?? null),
     ...(thread.finalReview === undefined ? {} : { finalReview: thread.finalReview }),
     pinOrderKey: thread.pinOrderKey ?? null,
     activeOrderKey: thread.activeOrderKey ?? null,

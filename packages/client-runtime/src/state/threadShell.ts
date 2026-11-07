@@ -788,7 +788,11 @@ export function createEnvironmentThreadShellAtoms(input: {
       get.addFinalizer(deadlineStore(next.nextChangeAt).subscribe(() => get.refreshSelf()));
     }
     // Same shells in the same order give the same reasons.
-    if (previousNeedsYou !== null && arrayElementsEqual(previousNeedsYou.threads, next.threads)) {
+    if (
+      previousNeedsYou !== null &&
+      arrayElementsEqual(previousNeedsYou.threads, next.threads) &&
+      arrayElementsEqual(previousNeedsYou.later, next.later)
+    ) {
       return previousNeedsYou;
     }
     previousNeedsYou = next;

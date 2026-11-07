@@ -365,6 +365,13 @@ export function readEnvironmentSupportsAutoSettleOptOut(environmentId: Environme
   );
 }
 
+export function readEnvironmentSupportsThreadLater(environmentId: EnvironmentId): boolean {
+  return (
+    appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
+      .threadLater === true
+  );
+}
+
 /** Null where the server cannot run Final review; otherwise its default for threads without a choice. */
 export function readEnvironmentFinalReviewDefault(environmentId: EnvironmentId): boolean | null {
   const config = appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId);
@@ -384,6 +391,15 @@ export function readEnvironmentThreadRefs(
   environmentId: EnvironmentId,
 ): ReadonlyArray<ScopedThreadRef> {
   return appAtomRegistry.get(environmentThreadShells.environmentThreadRefsAtom(environmentId));
+}
+
+/** Whether the thread waits on the user now, was put off with "Decide later", or neither. */
+export function readThreadNeedsYou(ref: ScopedThreadRef): "now" | "later" | null {
+  const needsYou = appAtomRegistry.get(environmentThreadShells.needsYouThreadsAtom);
+  const matches = (thread: EnvironmentThreadShell) =>
+    thread.environmentId === ref.environmentId && thread.id === ref.threadId;
+  if (needsYou.threads.some(matches)) return "now";
+  return needsYou.later.some(matches) ? "later" : null;
 }
 
 export function readThreadShells(): ReadonlyArray<EnvironmentThreadShell> {

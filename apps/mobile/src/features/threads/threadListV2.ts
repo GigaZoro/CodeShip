@@ -280,6 +280,8 @@ export interface ThreadListV2Item {
   readonly needsYou?: boolean;
   /** When a Needs you thread started waiting on the user, in epoch ms. */
   readonly waitingSince?: number;
+  /** A Needs you thread the user put off with "Decide later". */
+  readonly later?: boolean;
 }
 
 interface ThreadListV2FolderBase {
@@ -327,6 +329,8 @@ export interface ThreadListV2Layout {
   /** The first `needsYouCount` items are the threads waiting on the user. */
   readonly items: ThreadListV2Item[];
   readonly needsYouCount: number;
+  /** The last of those, put off with "Decide later". */
+  readonly needsYouLaterCount: number;
   readonly folderHeaders: ReadonlyArray<ThreadListV2FolderHeader>;
   readonly hiddenSettledCount: number;
   /** The settled rows the shelf may list, before its visible limit. */
@@ -369,8 +373,10 @@ export interface ThreadListV2PendingListItem {
 
 export interface ThreadListV2NeedsYouHeaderListItem {
   readonly type: "v2-needs-you";
-  readonly key: "v2-needs-you";
+  readonly key: "v2-needs-you" | "v2-needs-you-later";
   readonly count: number;
+  /** Heads the threads put off with "Decide later". */
+  readonly later: boolean;
 }
 
 export interface ThreadListV2WorkingShelfListItem {
@@ -470,7 +476,11 @@ export function threadListV2ListItemsAreEqual(
         threadListV2FoldersAreEqual(previous.folder, item.folder)
       );
     case "v2-needs-you":
-      return previous.type === "v2-needs-you" && previous.count === item.count;
+      return (
+        previous.type === "v2-needs-you" &&
+        previous.count === item.count &&
+        previous.later === item.later
+      );
     case "v2-working-shelf":
       return (
         previous.type === "v2-working-shelf" &&
@@ -541,6 +551,7 @@ export function buildThreadListV2ListItems(input: {
   readonly pendingTasks: ReadonlyArray<PendingNewTask>;
   readonly folderHeaders?: ReadonlyArray<ThreadListV2FolderHeader>;
   readonly needsYouCount?: number;
+  readonly needsYouLaterCount?: number;
   readonly workingCount?: number;
   readonly workingShelfExpanded?: boolean;
   readonly workingShelfHeaderIndex?: number | null;
@@ -606,14 +617,28 @@ export function buildThreadListV2ListItems(input: {
   const workingEnd = snoozedShelfHeaderIndex ?? snoozedEnd;
   const activeEnd = workingShelfHeaderIndex ?? workingEnd;
   const needsYouCount = input.needsYouCount ?? 0;
-  const result: ThreadListV2ListItem[] =
-    needsYouCount === 0
-      ? [...pendingItems]
-      : [
-          { type: "v2-needs-you", key: "v2-needs-you", count: needsYouCount },
-          ...threadItems.slice(0, needsYouCount),
-          ...pendingItems,
-        ];
+  const laterCount = input.needsYouLaterCount ?? 0;
+  const nowCount = needsYouCount - laterCount;
+  const result: ThreadListV2ListItem[] = [
+    ...(nowCount > 0
+      ? [
+          { type: "v2-needs-you", key: "v2-needs-you", count: nowCount, later: false } as const,
+          ...threadItems.slice(0, nowCount),
+        ]
+      : []),
+    ...(laterCount > 0
+      ? [
+          {
+            type: "v2-needs-you",
+            key: "v2-needs-you-later",
+            count: laterCount,
+            later: true,
+          } as const,
+          ...threadItems.slice(nowCount, needsYouCount),
+        ]
+      : []),
+    ...pendingItems,
+  ];
   const folderHeaders = input.folderHeaders ?? [];
   let folderHeaderIndex = 0;
   let folderKind: ThreadListV2Folder["kind"] | null = null;
@@ -764,7 +789,8 @@ export function buildThreadListV2Items(input: {
     (thread) => thread.archivedAt === null && isListedThreadLineage(thread.lineage),
   );
   const awaiting = collectNeedsYouThreads(listableThreads, { now });
-  const awaitingThreads = new Set(awaiting.threads);
+  // Put-off threads still wait on the user, so they stay in Needs you, after the others.
+  const awaitingThreads = new Set([...awaiting.threads, ...awaiting.later]);
   const listedThreads = listableThreads.filter(
     (thread) =>
       (input.hiddenTaskThreadKeys?.has(`${thread.environmentId}:${thread.id}`) !== true ||
@@ -786,7 +812,8 @@ export function buildThreadListV2Items(input: {
   const matchingThreads = rankedMatches === null ? null : new Set(rankedMatches);
   // Past the machine and project filters: a thread waiting on the user must not hide in a
   // folder, shelf, or filter. A search ranks every match in one list instead.
-  const needsYou = rankedMatches === null ? awaiting.threads : [];
+  const needsYou = rankedMatches === null ? [...awaitingThreads] : [];
+  const putOff = new Set(awaiting.later);
   const needsYouThreads = new Set(needsYou);
   // Threads listed only because their messages match; only their rows show
   // the message and open at it.
@@ -856,6 +883,7 @@ export function buildThreadListV2Items(input: {
         isLast: index === results.length - 1,
       })),
       needsYouCount: 0,
+      needsYouLaterCount: 0,
       hiddenSettledCount: 0,
       listedSettledThreads: [],
       workingCount: 0,
@@ -930,6 +958,7 @@ export function buildThreadListV2Items(input: {
     isLast: false,
     needsYou: true,
     waitingSince: awaiting.sinceOf(thread),
+    later: putOff.has(thread),
   }));
   for (const thread of applyPendingThreadOrder(
     sortPinnedThreadsByOrderKey(pinned),
@@ -1057,6 +1086,7 @@ export function buildThreadListV2Items(input: {
   return {
     items,
     needsYouCount: needsYou.length,
+    needsYouLaterCount: needsYou.filter((thread) => putOff.has(thread)).length,
     folderHeaders,
     hiddenSettledCount: Math.max(0, settledTotal - pagedSettled.length),
     listedSettledThreads: listedSettled,

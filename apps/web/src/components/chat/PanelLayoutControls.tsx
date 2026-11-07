@@ -1,16 +1,13 @@
-import { useAtomValue } from "@effect/atom-react";
 import { t } from "~/i18n";
-import { BellDotIcon, PanelBottomIcon, PanelRightIcon, SquareMenuIcon } from "lucide-react";
+import { PanelBottomIcon, PanelRightIcon, SquareMenuIcon } from "lucide-react";
 import { Maximize2, Minimize2 } from "lucide";
 import { MorphIcon } from "~/components/MorphIcon";
 import { memo, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
-import { environmentThreadShells } from "~/state/threads";
 
 import type { ThreadPanelPresentation } from "../../rightPanelLayout";
 import { ReleaseNotesButton } from "../ReleaseNotesButton";
-import { useNeedsYouColumnVisible } from "../sidebar/needsYouColumn";
 import { PopoverCreateHandle, PopoverTrigger } from "../ui/popover";
 import { Toggle } from "../ui/toggle";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -21,35 +18,6 @@ function ToggleLabel({ children }: { children: ReactNode }) {
     <span aria-hidden className="hidden xl:inline">
       {children}
     </span>
-  );
-}
-
-/** Shown only while something needs the user; the column holds nothing otherwise. */
-function NeedsYouColumnToggle() {
-  const waiting = useAtomValue(environmentThreadShells.needsYouThreadsAtom).threads.length > 0;
-  const [needsYouColumnVisible, setNeedsYouColumnVisible] = useNeedsYouColumnVisible();
-  if (!waiting) return null;
-  return (
-    <Tooltip>
-      <TooltipTrigger render={<span className="flex shrink-0" />}>
-        <Toggle
-          className="shrink-0 [-webkit-app-region:no-drag]"
-          pressed={needsYouColumnVisible}
-          onPressedChange={(pressed) => setNeedsYouColumnVisible(pressed)}
-          aria-label={t("Toggle Needs you column")}
-          variant="ghost"
-          size="sm"
-        >
-          <BellDotIcon className="size-4" />
-          <ToggleLabel>{t("Needs you")}</ToggleLabel>
-        </Toggle>
-      </TooltipTrigger>
-      <TooltipPopup side="bottom">
-        {needsYouColumnVisible
-          ? t("Move Needs you to the thread list")
-          : t("Show Needs you on the right")}
-      </TooltipPopup>
-    </Tooltip>
   );
 }
 
@@ -64,8 +32,6 @@ export interface PanelLayoutControlsProps {
   threadPanelPresentation: ThreadPanelPresentation;
   threadPanelPopoverHandle?: ReturnType<typeof PopoverCreateHandle>;
   threadPanelShortcutLabel: string | null;
-  /** The chat has room for the details column that holds Needs you. */
-  needsYouColumnAvailable?: boolean;
   rightPanelAvailable: boolean;
   rightPanelOpen: boolean;
   rightPanelShortcutLabel: string | null;
@@ -86,7 +52,6 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
   threadPanelPresentation,
   threadPanelPopoverHandle,
   threadPanelShortcutLabel,
-  needsYouColumnAvailable = false,
   rightPanelAvailable,
   rightPanelOpen,
   rightPanelShortcutLabel,
@@ -130,7 +95,6 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
       className="flex h-full shrink-0 items-center gap-1 [-webkit-app-region:no-drag]"
       data-panel-layout-controls
     >
-      {needsYouColumnAvailable ? <NeedsYouColumnToggle /> : null}
       {showThreadPanelControl ? (
         <>
           {threadPanelControl}

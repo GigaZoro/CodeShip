@@ -1,11 +1,4 @@
-import * as Schema from "effect/Schema";
 import { createContext } from "react";
-
-import { useLocalStorage } from "../../hooks/useLocalStorage";
-
-export function useNeedsYouColumnVisible() {
-  return useLocalStorage("t3code:needs-you-column-visible", true, Schema.Boolean);
-}
 
 /**
  * Ref callback for the chat's details column slot. Without a registered slot, as in narrow chats,

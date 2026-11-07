@@ -137,6 +137,7 @@ interface HomeScreenProps {
     thread: EnvironmentThreadShell,
     enabled: boolean,
   ) => Promise<boolean>;
+  readonly onSetThreadLater: (thread: EnvironmentThreadShell, later: boolean) => Promise<boolean>;
   readonly onMoveThread: (
     thread: EnvironmentThreadShell,
     direction: ThreadMoveDestination,
@@ -424,6 +425,7 @@ export function HomeScreen(props: HomeScreenProps) {
   const handleMoveThread = props.onMoveThread;
   const handleUnpinThread = props.onUnpinThread;
   const handleSetThreadAutoSettle = props.onSetThreadAutoSettle;
+  const handleSetThreadLater = props.onSetThreadLater;
   const handleRegenerateThreadTitle = props.onRegenerateThreadTitle;
   const handleRenameThread = props.onRenameThread;
   const handleDeleteThread = props.onDeleteThread;
@@ -490,6 +492,7 @@ export function HomeScreen(props: HomeScreenProps) {
     snoozePresetsByEnvironmentId,
     pinningEnvironmentIds,
     autoSettleOptOutEnvironmentIds,
+    laterEnvironmentIds,
     pinReorderEnvironmentIds,
     activeReorderEnvironmentIds,
     titleRegenerationEnvironmentIds,
@@ -606,6 +609,7 @@ export function HomeScreen(props: HomeScreenProps) {
       return (
         <ThreadListV2NeedsYouHeader
           count={item.count}
+          later={item.later}
           pane={primaryColumn ? "sidebar" : "screen"}
         />
       );
@@ -712,6 +716,12 @@ export function HomeScreen(props: HomeScreenProps) {
         onPinThread={handlePinThread}
         onUnpinThread={handleUnpinThread}
         onSetThreadAutoSettle={handleSetThreadAutoSettle}
+        onSetThreadLater={handleSetThreadLater}
+        needsYouLater={
+          item.item.needsYou === true && laterEnvironmentIds.has(thread.environmentId)
+            ? item.item.later === true
+            : undefined
+        }
         onMoveThread={handleMoveThread}
         onSwipeableClose={handleSwipeableClose}
         onSwipeableWillOpen={handleSwipeableWillOpen}

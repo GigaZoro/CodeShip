@@ -23,7 +23,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-status";
 
 import { t } from "~/i18n";
-const THREAD_ROW_STATUS_ICONS = {
+export const THREAD_ROW_STATUS_ICONS = {
   working: CircleDashedIcon,
   waiting: CircleDotDashedIcon,
   input: MessageCircleQuestionIcon,

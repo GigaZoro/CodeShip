@@ -2610,6 +2610,27 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         DateTime.toEpochMillis(untaggedShell.updatedAt),
       );
 
+      yield* orchestrator.dispatch({
+        type: "thread.later.set",
+        commandId: CommandId.make("runtime-layer-lifecycle-later"),
+        threadId,
+        later: true,
+      });
+      const laterShell = shellOf(yield* orchestrator.getShellSnapshot());
+      assert.isNotNull(laterShell.laterAt ?? null);
+      // Putting a wait off is not activity either; a wait that starts afterwards outranks it.
+      assert.equal(
+        DateTime.toEpochMillis(laterShell.updatedAt),
+        DateTime.toEpochMillis(untaggedShell.updatedAt),
+      );
+      yield* orchestrator.dispatch({
+        type: "thread.later.set",
+        commandId: CommandId.make("runtime-layer-lifecycle-later-back"),
+        threadId,
+        later: false,
+      });
+      assert.isNull(shellOf(yield* orchestrator.getShellSnapshot()).laterAt ?? null);
+
       const artifactId = `${toSafeThreadAttachmentSegment(threadId)}-00000000-0000-4000-8000-000000000001-html`;
       for (const [step, hidden, expected] of [
         ["hide", true, [artifactId]],

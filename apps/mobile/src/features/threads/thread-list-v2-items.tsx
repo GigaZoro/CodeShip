@@ -53,6 +53,7 @@ import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { copyThreadReference } from "../../lib/copyThreadReference";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { useEnvironmentScope } from "../../state/session";
+import { NeedsYouRowApproval } from "./NeedsYouRowApproval";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import {
   pendingDraftBranchNeedsRefs,
@@ -294,9 +295,13 @@ const ThreadListV2SectionDivider = memo(function ThreadListV2SectionDivider(prop
 /** Heads the threads waiting on the user. It never collapses, so none of them can hide. */
 export const ThreadListV2NeedsYouHeader = memo(function ThreadListV2NeedsYouHeader(props: {
   readonly count: number;
+  /** Heads the threads put off with "Decide later". */
+  readonly later?: boolean;
   readonly pane?: "screen" | "sidebar";
 }) {
-  return (
+  return props.later ? (
+    <ThreadListV2Section label={t("Later ({count})", { count: props.count })} pane={props.pane} />
+  ) : (
     <ThreadListV2Section
       label={t("Needs you ({count})", { count: props.count })}
       pane={props.pane}
@@ -863,6 +868,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly onPinThread: (thread: EnvironmentThreadShell) => void;
   readonly onUnpinThread: (thread: EnvironmentThreadShell) => void;
   readonly onSetThreadAutoSettle: (thread: EnvironmentThreadShell, enabled: boolean) => void;
+  readonly onSetThreadLater: (thread: EnvironmentThreadShell, later: boolean) => void;
+  /** Set on Needs you rows whose server stores "Decide later": whether this one is put off. */
+  readonly needsYouLater?: boolean | undefined;
   readonly settlementSupported: boolean;
   readonly snoozeSupported: boolean;
   readonly snoozePresets: ReadonlyArray<SnoozePresetSetting> | undefined;
@@ -1023,6 +1031,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     (enabled: boolean) => onSetThreadAutoSettle(thread, enabled),
     [onSetThreadAutoSettle, thread],
   );
+  const { onSetThreadLater } = props;
+  const handleSetLater = useCallback(
+    (later: boolean) => onSetThreadLater(thread, later),
+    [onSetThreadLater, thread],
+  );
   const handleMoveUp = useCallback(() => onMoveThread?.(thread, "up"), [onMoveThread, thread]);
   const handleMoveDown = useCallback(() => onMoveThread?.(thread, "down"), [onMoveThread, thread]);
   const handleArchive = useCallback(() => onArchiveThread(thread), [onArchiveThread, thread]);
@@ -1120,6 +1133,21 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         : [],
     [props.autoSettleOptOutSupported, thread.autoSettleDisabledAt],
   );
+  const laterMenuItems = useMemo<MenuAction[]>(
+    () =>
+      props.needsYouLater === undefined
+        ? []
+        : [
+            props.needsYouLater
+              ? {
+                  id: "later:back",
+                  title: t("Move back to Needs you"),
+                  image: "arrow.uturn.backward",
+                }
+              : { id: "later", title: t("Decide later"), image: "clock" },
+          ],
+    [props.needsYouLater],
+  );
   const canTurnIntoProject = canTurnThreadIntoProject(thread);
   const titleMenuItems = useMemo<MenuAction[]>(
     () => [
@@ -1150,24 +1178,32 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         image: "clock",
         subactions: snoozePresetActions,
       },
+      ...laterMenuItems,
       ...arrangementMenuItems,
       ...titleMenuItems,
       ...autoSettleMenuItems,
       legacyBaseActions()[0]!,
       { id: "delete", title: t("Delete"), image: "trash", attributes: { destructive: true } },
     ],
-    [arrangementMenuItems, autoSettleMenuItems, snoozePresetActions, titleMenuItems],
+    [
+      arrangementMenuItems,
+      autoSettleMenuItems,
+      laterMenuItems,
+      snoozePresetActions,
+      titleMenuItems,
+    ],
   );
   const cardMenuActions = useMemo<MenuAction[]>(
     () => [
       cardBaseActions()[0]!,
+      ...laterMenuItems,
       ...arrangementMenuItems,
       ...titleMenuItems,
       ...autoSettleMenuItems,
       legacyBaseActions()[0]!,
       ...cardBaseActions().slice(1),
     ],
-    [arrangementMenuItems, autoSettleMenuItems, titleMenuItems],
+    [arrangementMenuItems, autoSettleMenuItems, laterMenuItems, titleMenuItems],
   );
   const slimMenuActions = useMemo<MenuAction[]>(
     () => [
@@ -1211,6 +1247,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       if (nativeEvent.event === "unpin") handleUnpin();
       if (nativeEvent.event === "auto-settle:enabled") handleSetAutoSettle(true);
       if (nativeEvent.event === "auto-settle:disabled") handleSetAutoSettle(false);
+      if (nativeEvent.event === "later") handleSetLater(true);
+      if (nativeEvent.event === "later:back") handleSetLater(false);
       if (nativeEvent.event === "arrange") appAtomRegistry.set(threadArrangementOpenAtom, true);
       if (nativeEvent.event === "move-up") handleMoveUp();
       if (nativeEvent.event === "move-down") handleMoveDown();
@@ -1270,6 +1308,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       handleSettle,
       handleSnooze,
       handleSetAutoSettle,
+      handleSetLater,
       handleUnpin,
       handleUnsettle,
       handleUnsnooze,
@@ -1789,6 +1828,14 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           </Menu>
         )}
       </ThreadSwipeable>
+      {/* Outside the row's press and swipe area, so each answer is its own button. */}
+      {props.waitingSince !== undefined && thread.hasPendingApprovals && !selected ? (
+        <NeedsYouRowApproval
+          threadRef={{ environmentId: thread.environmentId, threadId: thread.id }}
+          title={thread.title}
+          sidebarPane={sidebarPane}
+        />
+      ) : null}
     </View>
   );
 });

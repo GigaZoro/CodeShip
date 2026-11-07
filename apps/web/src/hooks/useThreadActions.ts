@@ -315,6 +315,9 @@ export function useThreadActions() {
   const setThreadAutoSettleMutation = useOrchestrationCommand(threadEnvironment.setAutoSettle, {
     reportFailure: false,
   });
+  const setThreadLaterMutation = useOrchestrationCommand(threadEnvironment.setLater, {
+    reportFailure: false,
+  });
   const updateThreadMetadataMutation = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -712,6 +715,12 @@ export function useThreadActions() {
     });
   };
 
+  const setThreadLater = (target: ScopedThreadRef, later: boolean) =>
+    setThreadLaterMutation({
+      environmentId: target.environmentId,
+      input: { threadId: target.threadId, later },
+    });
+
   const setThreadFinalReview = (target: ScopedThreadRef, enabled: boolean) =>
     updateThreadMetadataMutation({
       environmentId: target.environmentId,
@@ -1059,6 +1068,7 @@ export function useThreadActions() {
     reorderActiveThread,
     markThreadUnread,
     setThreadAutoSettle,
+    setThreadLater,
     setThreadFinalReview,
     turnThreadIntoProject: (target: ScopedThreadRef) =>
       createProjectFromThread({

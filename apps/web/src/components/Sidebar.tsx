@@ -5,6 +5,7 @@ import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
 import { type EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
 import { SidebarNeedsYouPanel } from "./sidebar/SidebarNeedsYouPanel";
+import { NeedsYouBoxRow } from "./sidebar/NeedsYouBoxRow";
 import {
   dropThreadContext,
   endThreadContextDrag,
@@ -154,6 +155,7 @@ import {
 } from "../state/environments";
 import {
   readEnvironmentFinalReviewDefault,
+  readThreadNeedsYou,
   readThreadShell,
   useAllEnvironmentProjectSnapshotsReady,
   useDelegatedUnderParent,
@@ -307,6 +309,7 @@ import { Toggle, ToggleGroup } from "./ui/toggle-group";
 import {
   SidebarDragBoundary,
   SidebarNeedsYouHeader,
+  SidebarNeedsYouLaterHeader,
   SidebarSectionHeader,
   SidebarSectionPlaceholder,
 } from "./sidebar/SidebarListMarkers";
@@ -929,7 +932,9 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent),
     { now: preciseNow },
   );
-  const needsYouKeys = new Set(needsYou.threads.map(threadShellKey));
+  // Put-off threads still wait on the user, so they stay out of the other sections too.
+  const needsYouThreads = [...needsYou.threads, ...needsYou.later];
+  const needsYouKeys = new Set(needsYouThreads.map(threadShellKey));
   const visible = filterSidebarV2VisibleThreads(
     threads,
     scopedProjectKeys,
@@ -1002,7 +1007,9 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
       ? sortInboxThreadsByReturn(active, inboxObservation.returnedAt)
       : sortThreadsForSidebar(active);
   return {
-    needsYouThreads: needsYou.threads,
+    needsYouThreads,
+    needsYouNowThreads: needsYou.threads,
+    needsYouLaterThreads: needsYou.later,
     needsYouSinceOf: needsYou.sinceOf,
     pinnedThreads:
       optimisticDrop?.section !== "pinned" || optimisticDrop.order === null
@@ -1235,6 +1242,7 @@ export default function Sidebar({
   needsYouPanelTarget,
 }: {
   routeReveal: SidebarRouteReveal;
+  /** The box under the chat that lists what needs the user; null keeps it all in the thread list. */
   needsYouPanelTarget: HTMLElement | null;
 }) {
   const {
@@ -1268,6 +1276,7 @@ export default function Sidebar({
     unpinThread,
     confirmAndUnpinThread,
     setThreadAutoSettle,
+    setThreadLater,
     setThreadFinalReview,
     turnThreadIntoProject,
     reorderPinnedThread,
@@ -1652,6 +1661,8 @@ export default function Sidebar({
   const {
     workingShelfEnabled,
     needsYouThreads,
+    needsYouNowThreads,
+    needsYouLaterThreads,
     needsYouSinceOf,
     pinnedThreads,
     draggableThreadKeys,
@@ -2329,6 +2340,39 @@ export default function Sidebar({
         );
       }
     })();
+  };
+  const attemptSetLater = async (threadRef: ScopedThreadRef, later: boolean) => {
+    const result = await setThreadLater(threadRef, later);
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      const error = squashAtomCommandFailure(result);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: t("Failed to update Needs you"),
+          description: error instanceof Error ? error.message : t("An error occurred."),
+        }),
+      );
+    }
+    return result._tag === "Success";
+  };
+  const putBackNeedsYou = (threadRef: ScopedThreadRef) => {
+    void attemptSetLater(threadRef, false);
+  };
+  const decideLater = (threadRef: ScopedThreadRef) => {
+    void attemptSetLater(threadRef, true).then((done) => {
+      if (!done) return;
+      const toastId = toastManager.add({
+        type: "info",
+        title: t("Moved to Later"),
+        actionProps: {
+          children: t("Undo"),
+          onClick: () => {
+            toastManager.close(toastId);
+            putBackNeedsYou(threadRef);
+          },
+        },
+      });
+    });
   };
   const attemptUnsnooze = (threadRef: ScopedThreadRef) => {
     void (async () => {
@@ -3356,6 +3400,7 @@ export default function Sidebar({
               finalReviewEnabled: thread.finalReview ?? finalReviewDefault === true,
               isSnoozed,
               canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
+              needsYou: readThreadNeedsYou(threadRef),
               isRegeneratingTitle,
               isRunning: !threadRuntimeCanArchive(thread.runtime),
               canShareWithGuest: appAtomRegistry.get(
@@ -3367,6 +3412,9 @@ export default function Sidebar({
                 autoSettleOptOut: supportsAutoSettleOptOut,
                 finalReview: finalReviewDefault !== null,
                 snooze: configLoaded,
+                later:
+                  serverConfigs.get(thread.environmentId)?.environment.capabilities.threadLater ===
+                  true,
                 pinning: configLoaded,
                 titleRegeneration: configLoaded,
               },
@@ -3436,6 +3484,12 @@ export default function Sidebar({
             return;
           case "unsnooze":
             attemptUnsnooze(threadRef);
+            return;
+          case "later":
+            decideLater(threadRef);
+            return;
+          case "later:back":
+            putBackNeedsYou(threadRef);
             return;
           case "pin":
             attemptPin(threadRef);
@@ -3623,7 +3677,7 @@ export default function Sidebar({
         return true;
       };
       if (command === "thread.nextNeedsYou") {
-        const next = nextNeedsYouThread(needsYouThreads, routeThreadRef);
+        const next = nextNeedsYouThread(needsYouNowThreads, routeThreadRef);
         navigateToThreadKey(next === null ? null : threadShellKey(next));
         return;
       }
@@ -3647,7 +3701,7 @@ export default function Sidebar({
   }, [
     keybindings,
     navigateToThread,
-    needsYouThreads,
+    needsYouNowThreads,
     orderedThreadKeys,
     routeRowThreadKey,
     routeThreadRef,
@@ -4300,34 +4354,78 @@ export default function Sidebar({
                           onNavigateToThread={navigateToThread}
                         />,
                       ];
-                      if (needsYouThreads.length > 0) {
-                        const needsYouRows = needsYouThreads.map((thread) =>
-                          renderThreadRow(thread, "needs-you"),
+                      if (needsYouPanelTarget === null && needsYouThreads.length > 0) {
+                        items.push(
+                          ...(needsYouNowThreads.length > 0
+                            ? [
+                                <SidebarNeedsYouHeader
+                                  key="needs-you-header"
+                                  count={needsYouNowThreads.length}
+                                />,
+                                ...needsYouNowThreads.map((thread) =>
+                                  renderThreadRow(thread, "needs-you"),
+                                ),
+                              ]
+                            : []),
+                          ...(needsYouLaterThreads.length > 0
+                            ? [
+                                <SidebarNeedsYouLaterHeader
+                                  key="needs-you-later-header"
+                                  count={needsYouLaterThreads.length}
+                                />,
+                                ...needsYouLaterThreads.map((thread) =>
+                                  renderThreadRow(thread, "needs-you"),
+                                ),
+                              ]
+                            : []),
+                          <li
+                            key="needs-you-divider"
+                            aria-hidden
+                            className="mx-2.5 my-1.5 h-px list-none bg-sidebar-border/60"
+                          />,
                         );
-                        if (needsYouPanelTarget === null) {
-                          items.push(
-                            <SidebarNeedsYouHeader
-                              key="needs-you-header"
-                              count={needsYouThreads.length}
-                            />,
-                            ...needsYouRows,
-                            <li
-                              key="needs-you-divider"
-                              aria-hidden
-                              className="mx-2.5 my-1.5 h-px list-none bg-sidebar-border/60"
-                            />,
+                      }
+                      if (needsYouPanelTarget !== null && needsYouThreads.length > 0) {
+                        const renderBoxRow = (
+                          thread: EnvironmentThreadShell,
+                          placement: "box" | "later",
+                        ) => {
+                          const threadKey = threadShellKey(thread);
+                          const projectKey = `${thread.environmentId}:${thread.projectId}` as const;
+                          return (
+                            <NeedsYouBoxRow
+                              key={threadKey}
+                              thread={thread}
+                              since={needsYouSinceOf(thread)}
+                              placement={placement}
+                              isOpen={routeThreadKey === threadKey}
+                              project={projectByKey.get(projectKey) ?? null}
+                              projectDisplayName={projectDisplayNameByKey.get(projectKey) ?? null}
+                              jumpLabel={
+                                showJumpHints ? (jumpLabelByKey.get(threadKey) ?? null) : null
+                              }
+                              settlementSupported={serverConfigs.has(thread.environmentId)}
+                              laterSupported={
+                                serverConfigs.get(thread.environmentId)?.environment.capabilities
+                                  .threadLater === true
+                              }
+                              onOpen={navigateToThread}
+                              onDecideLater={decideLater}
+                              onPutBack={putBackNeedsYou}
+                              onSettle={attemptSettle}
+                            />
                           );
-                        } else {
-                          items.push(
-                            <SidebarNeedsYouPanel
-                              key="needs-you-panel"
-                              count={needsYouThreads.length}
-                              target={needsYouPanelTarget}
-                            >
-                              {needsYouRows}
-                            </SidebarNeedsYouPanel>,
-                          );
-                        }
+                        };
+                        items.push(
+                          <SidebarNeedsYouPanel
+                            key="needs-you-panel"
+                            target={needsYouPanelTarget}
+                            rows={needsYouNowThreads.map((thread) => renderBoxRow(thread, "box"))}
+                            laterRows={needsYouLaterThreads.map((thread) =>
+                              renderBoxRow(thread, "later"),
+                            )}
+                          />,
+                        );
                       }
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {

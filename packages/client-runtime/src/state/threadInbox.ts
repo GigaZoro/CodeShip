@@ -74,7 +74,7 @@ function failureFromStatus(
 
 export type NeedsYouInput = FailureInput &
   ThreadSnoozeShell &
-  Pick<EnvironmentThreadShell, "settledOverride" | "updatedAt"> &
+  Pick<EnvironmentThreadShell, "settledOverride" | "updatedAt" | "laterAt"> &
   Partial<Pick<EnvironmentThreadShell, "limitRecovery">>;
 
 /**
@@ -115,8 +115,10 @@ function threadNeedsYouSince(thread: NeedsYouInput, reason: NeedsYouReason): num
 }
 
 export interface NeedsYouThreads<T> {
-  /** Longest wait first. */
+  /** What needs the user now, longest wait first. Badges count these. */
   readonly threads: readonly T[];
+  /** Put off with "Decide later" before their wait began; they still wait, longest first. */
+  readonly later: readonly T[];
   /** When the thread started waiting on the user, in epoch milliseconds. */
   readonly sinceOf: (thread: T) => number;
   /** When a failed thread's snooze ends and it rejoins, so a caller can recompute then. */
@@ -151,8 +153,11 @@ export function collectNeedsYouThreads<
       left.id.localeCompare(right.id) ||
       left.environmentId.localeCompare(right.environmentId),
   );
+  const putOff = (thread: T) =>
+    thread.laterAt != null && sinceByThread.get(thread)! <= Date.parse(thread.laterAt);
   return {
-    threads: sorted,
+    threads: sorted.filter((thread) => !putOff(thread)),
+    later: sorted.filter(putOff),
     sinceOf: (thread) => sinceByThread.get(thread) ?? 0,
     nextChangeAt,
   };
