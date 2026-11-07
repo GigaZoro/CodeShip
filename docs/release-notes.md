@@ -1,3 +1,7 @@
+## 2026-11-07 — Needs you button only when something waits
+
+- The **Needs you** button in the chat header shows only while a thread needs you.
+
 ## 2026-11-07 — One "Needs you" everywhere
 
 - Needs you also lists runs that failed or hit a usage limit, the same ones that notify you. Retrying, settling or snoozing such a thread takes it off the list, and you can settle it right from the list.
