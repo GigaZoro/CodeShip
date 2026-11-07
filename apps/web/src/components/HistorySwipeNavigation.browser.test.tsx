@@ -27,13 +27,16 @@ describe("HistorySwipeNavigation", () => {
     ["swiping back at a shadow-root scroller's left edge navigates", "shadow", 0, -130, true],
     ["swiping back over a panel without overflow navigates", "none", 0, -130, true],
     ["a swipe that started in a closed dialog keeps the thread", "closed-dialog", 0, -130, false],
+    ["a swipe inside an alert dialog keeps the thread", "alert-dialog", 0, -130, false],
   ] as const)("%s", async (_name, scroller, scrollLeft, deltaX, navigates) => {
     navigateHistory.mockReset();
     await using screen = await render(<HistorySwipeNavigation />);
     const panel = screen.container.appendChild(document.createElement("div"));
+    if (scroller === "alert-dialog") panel.setAttribute("role", "alertdialog");
     const root = scroller.startsWith("shadow") ? panel.attachShadow({ mode: "open" }) : panel;
     const viewport = root.appendChild(document.createElement("div"));
-    const noOverflow = scroller === "none" || scroller === "closed-dialog";
+    const noOverflow =
+      scroller === "none" || scroller === "closed-dialog" || scroller === "alert-dialog";
     viewport.style.cssText = `width: 200px; overflow-x: ${noOverflow ? "visible" : "auto"}`;
     const content = viewport.appendChild(document.createElement("div"));
     content.style.cssText = `height: 20px; width: ${noOverflow ? 100 : 1000}px`;

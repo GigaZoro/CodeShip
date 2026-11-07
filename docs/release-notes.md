@@ -1,3 +1,8 @@
+## 2026-11-08 — Thread shortcuts stay out of confirmation dialogs
+
+- The archive and snooze shortcuts (⌥⌘E and ⌥⌘Z by default) no longer act on the thread behind a confirmation dialog, such as **Edit from here?**. Before, pressing them there archived the thread or opened the snooze list while the dialog was still open. On web and desktop.
+- A two-finger swipe inside a confirmation dialog no longer goes back or forward a page on desktop.
+
 ## 2026-11-08 — A ship skill for T3.CodeShip contributors
 
 - Agents working in a T3.CodeShip checkout get a `ship` skill: `/ship` or "ship it" commits the work, adds the release note, runs the pre-push checks, lands it on `main` without a PR, then deletes the branch and its worktree. Nothing changes in the app.

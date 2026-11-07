@@ -1,6 +1,7 @@
 import { ArrowLeftIcon, ArrowRightIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { MODAL_DIALOG_SELECTOR } from "../lib/modalDialog";
 import { cn } from "../lib/utils";
 import { canNavigateHistory, navigateHistory, type HistoryDirection } from "../navigationHistory";
 
@@ -57,7 +58,7 @@ function lockSwipeAxis(
 ): Exclude<SwipeGesture, { kind: "pending" }> {
   const { path, sumX, sumY } = pending;
   if (Math.abs(sumX) <= Math.abs(sumY)) return { kind: "ignored" };
-  if (path.some((node) => node instanceof Element && node.matches('[role="dialog"]'))) {
+  if (path.some((node) => node instanceof Element && node.matches(MODAL_DIALOG_SELECTOR))) {
     return { kind: "ignored" };
   }
   if (canScrollHorizontally(path, sumX)) return { kind: "ignored" };

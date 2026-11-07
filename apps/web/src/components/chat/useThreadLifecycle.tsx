@@ -50,6 +50,7 @@ import { useUiStateStore } from "../../uiStateStore";
 import { useClientSettings } from "../../hooks/useSettings";
 import { openCommandPalette } from "../../commandPaletteBus";
 import { archiveThreadWithConfirm } from "../../lib/archiveThreadWithConfirm";
+import { isInsideModalDialog } from "../../lib/modalDialog";
 import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
 import { type ChatMessage } from "../../types";
 import { AlarmClockIcon, CheckCircle2Icon } from "lucide-react";
@@ -135,14 +136,6 @@ interface ThreadLifecycleInput {
     runtimeMode: RuntimeMode;
     interactionMode: ProviderInteractionMode;
   }) => Promise<AtomCommandResult<void, unknown>>;
-}
-
-const MODAL_SELECTOR = '[role="dialog"], [aria-modal="true"]';
-
-/** A dialog's own inputs keep their keys; destructive thread shortcuts must not fire through them. */
-function isInsideModalDialog(target: EventTarget | null): boolean {
-  if (target instanceof Element && target.closest(MODAL_SELECTOR)) return true;
-  return document.activeElement?.closest(MODAL_SELECTOR) != null;
 }
 
 /**
