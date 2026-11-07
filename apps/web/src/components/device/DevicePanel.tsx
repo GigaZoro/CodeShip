@@ -392,7 +392,7 @@ function DeviceNotice(props: {
         "flex items-start gap-2 border-b px-3 py-2 text-xs",
         props.tone === "warning"
           ? "bg-warning-surface text-warning-foreground"
-          : "bg-destructive/5 text-destructive",
+          : "bg-destructive/5 text-destructive-foreground",
       )}
     >
       <CircleAlert className="mt-1 size-3.5 shrink-0" />

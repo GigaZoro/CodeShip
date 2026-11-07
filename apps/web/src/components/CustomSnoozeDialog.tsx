@@ -224,7 +224,7 @@ function CustomSnoozeDialog() {
               </div>
             </div>
             {error && (
-              <p role="alert" className="text-destructive">
+              <p role="alert" className="text-destructive-foreground">
                 {error}
               </p>
             )}

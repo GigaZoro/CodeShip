@@ -475,7 +475,7 @@ export function AddEnvironmentDialog({
         </div>
       ) : null}
       {renderRemoteFields()}
-      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      {error ? <p className="text-xs text-destructive-foreground">{error}</p> : null}
       <Button
         variant="outline"
         className="w-full"

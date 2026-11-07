@@ -79,7 +79,7 @@ export function AssistantCitationCommentEditor({
         }}
       />
       {commentTooLong ? (
-        <p role="status" className="pt-1 text-xs text-destructive">
+        <p role="status" className="pt-1 text-xs text-destructive-foreground">
           {t("Comments can contain up to {max} characters.", {
             max: ASSISTANT_CITATION_MAX_COMMENT_LENGTH.toLocaleString(getFormattingLocale()),
           })}

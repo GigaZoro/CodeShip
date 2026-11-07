@@ -128,7 +128,7 @@ function PendingLinkRequest(props: {
         ) : null}
       </div>
       {error !== null ? (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className="text-xs text-destructive-foreground">
           {error}
         </p>
       ) : null}
@@ -441,7 +441,7 @@ function LinkRequestDialog(props: {
               </p>
             ) : null}
             {error !== null ? (
-              <p role="alert" className="text-xs text-destructive">
+              <p role="alert" className="text-xs text-destructive-foreground">
                 {error}
               </p>
             ) : null}

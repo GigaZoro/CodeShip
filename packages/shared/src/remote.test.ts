@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildPairingAppLink,
+  pairingCredentialFromInput,
   readPairingAppLink,
   RemoteBackendUrlMissingError,
   RemotePairingTokenMissingError,
@@ -10,6 +11,15 @@ import {
 } from "./remote.ts";
 
 describe("remote", () => {
+  it.each([
+    ["https://remote.example.com/pair#token=pairing-token", "pairing-token"],
+    ["  https://remote.example.com/pair?token=pairing-token\n", "pairing-token"],
+    ["https://remote.example.com/pair", "https://remote.example.com/pair"],
+    ["  pairing-token ", "pairing-token"],
+  ])("reads the pairing credential from %j", (input, expected) => {
+    expect(pairingCredentialFromInput(input)).toBe(expected);
+  });
+
   it("derives backend urls and token from a pairing url", () => {
     expect(
       resolveRemotePairingTarget({

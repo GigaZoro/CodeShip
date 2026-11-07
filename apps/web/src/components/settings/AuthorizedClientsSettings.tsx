@@ -770,7 +770,9 @@ export const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHead
                 )}
               </div>
               {selectedScopes.length === 0 ? (
-                <p className="text-xs text-destructive">{t("Select at least one permission.")}</p>
+                <p className="text-xs text-destructive-foreground">
+                  {t("Select at least one permission.")}
+                </p>
               ) : selectedScopes.includes(AuthAccessWriteScope) ? (
                 <p className="text-xs text-warning">
                   {t("This client can create or revoke access for other devices.")}

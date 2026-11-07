@@ -130,7 +130,7 @@ function resolvePullRequestConflict(input: {
     label: input.baseBranch
       ? t("Conflicts with {baseBranch}", { baseBranch: input.baseBranch })
       : t("Has conflicts"),
-    toneClassName: "text-destructive",
+    toneClassName: "text-destructive-foreground",
     Icon: PullRequestGlyph.conflicting,
   };
 }
@@ -205,8 +205,16 @@ const CHECK_STATUS_PRESENTATION = {
     Icon: CircleCheckIcon,
     toneClassName: "text-emerald-600 dark:text-emerald-300/90",
   },
-  failure: { label: msg("Failed"), Icon: CircleXIcon, toneClassName: "text-destructive" },
-  cancelled: { label: msg("Cancelled"), Icon: CircleXIcon, toneClassName: "text-destructive" },
+  failure: {
+    label: msg("Failed"),
+    Icon: CircleXIcon,
+    toneClassName: "text-destructive-foreground",
+  },
+  cancelled: {
+    label: msg("Cancelled"),
+    Icon: CircleXIcon,
+    toneClassName: "text-destructive-foreground",
+  },
   skipped: {
     label: msg("Skipped"),
     Icon: CircleSlashIcon,
@@ -257,7 +265,7 @@ const CHECKS_STATE_PRESENTATION = {
   failing: {
     label: msg("Some checks were not successful"),
     Icon: CircleXIcon,
-    toneClassName: "text-destructive",
+    toneClassName: "text-destructive-foreground",
   },
   pending: {
     label: msg("Some checks haven't completed yet"),
@@ -298,7 +306,7 @@ const REVIEW_OUTCOME_PRESENTATION = {
   "changes-requested": {
     label: msg("Changes requested"),
     Icon: CircleXIcon,
-    toneClassName: "text-destructive",
+    toneClassName: "text-destructive-foreground",
     ringClassName: "ring-2 ring-destructive",
     staleRingClassName: "ring-2 ring-[color-mix(in_srgb,var(--destructive)_35%,var(--background))]",
     fillClassName: "fill-destructive",

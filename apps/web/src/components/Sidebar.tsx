@@ -103,7 +103,7 @@ import {
   threadJumpIndexFromCommand,
   threadTraversalDirectionFromCommand,
 } from "../keybindings";
-import { useShortcutModifierState } from "../shortcutModifierState";
+import { useShortcutModifierSelection } from "../shortcutModifierState";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { isModelPickerOpen } from "../modelPickerVisibility";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
@@ -229,6 +229,7 @@ import {
   sortThreadsForSidebar,
   sortWorkingThreadsBySend,
   useSnoozeWakeClock,
+  resolveNextThreadAfterPark,
   useThreadJumpHintsVisible,
   type SidebarListItem,
   type SidebarSection,
@@ -1411,7 +1412,6 @@ export default function Sidebar({
   const projectSortOrder = useClientSettings((settings) => settings.sidebarProjectSortOrder);
   const snoozingThreadKeysRef = useRef(new Set<string>());
   const removeFromSelection = useThreadSelectionStore((s) => s.removeFromSelection);
-  const shortcutModifiers = useShortcutModifierState();
   const terminalFocused = useTerminalFocus();
   const openAddProjectCommandPalette = () => openCommandPalette({ open: "add-project" });
   const routeThreadRef = resolveActiveThreadRouteRef(routeTarget, routeDraftThread);
@@ -2228,16 +2228,17 @@ export default function Sidebar({
   ): (() => void) | null => {
     if (readRouteThreadKey(router) !== threadKey) return null;
     const shell = threadByKeyRef.current.get(threadKey);
-    const orderedKeys = orderedThreadKeysRef.current;
     const settledKeys = settledThreadKeysRef.current;
     const snoozedKeys = snoozedThreadKeysRef.current;
-    const currentIndex = orderedKeys.indexOf(threadKey);
-    const nextCardKey =
-      currentIndex === -1
-        ? null
-        : ([...orderedKeys.slice(currentIndex + 1), ...orderedKeys.slice(0, currentIndex)].find(
-            (key) => !settledKeys.has(key) && !snoozedKeys.has(key) && !coParkingKeys?.has(key),
-          ) ?? null);
+    const nextCardKey = resolveNextThreadAfterPark({
+      orderedKeys: orderedThreadKeysRef.current,
+      currentKey: threadKey,
+      isParked: (key) => settledKeys.has(key) || snoozedKeys.has(key) || !!coParkingKeys?.has(key),
+      isWorking: (key) => {
+        const thread = threadByKeyRef.current.get(key);
+        return thread !== undefined && isThreadWorking(thread);
+      },
+    });
     const nextThread = nextCardKey ? threadByKeyRef.current.get(nextCardKey) : null;
     return nextThread
       ? () => navigateToThread(scopeThreadRef(nextThread.environmentId, nextThread.id))
@@ -2958,6 +2959,10 @@ export default function Sidebar({
       const pinnedSelectedThreads = selectedThreads.filter(
         (thread) => serverConfigs.has(thread.environmentId) && thread.pinnedAt != null,
       );
+      // Running threads cannot be archived, so the rest go and those stay selected.
+      const archivableThreads = selectedThreads.filter((thread) =>
+        threadRuntimeCanArchive(thread.runtime),
+      );
       const unpinMenuItem = buildBulkUnpinContextMenuItem({
         pinnedCount: pinnedSelectedThreads.length,
       });
@@ -3017,6 +3022,11 @@ export default function Sidebar({
               : []),
             { id: "mark-unread", label: t("Mark unread ({count})", { count }) },
             {
+              id: "archive",
+              label: t("Archive ({count})", { count: archivableThreads.length }),
+              disabled: archivableThreads.length === 0 || !canOperateThreads(archivableThreads),
+            },
+            {
               id: "delete",
               label: t("Delete ({count})", { count }),
               destructive: true,
@@ -3032,14 +3042,16 @@ export default function Sidebar({
           ? pinnedSelectedThreads
           : clicked.value === "regenerate-title"
             ? regeneratableTitleThreads
-            : clicked.value === "settle"
-              ? settlingThreads.flatMap((thread) => {
-                  const current = threadByKeyRef.current.get(
-                    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-                  );
-                  return current && current.settledOverride !== "settled" ? [current] : [];
-                })
-              : selectedThreads;
+            : clicked.value === "archive"
+              ? archivableThreads
+              : clicked.value === "settle"
+                ? settlingThreads.flatMap((thread) => {
+                    const current = threadByKeyRef.current.get(
+                      scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+                    );
+                    return current && current.settledOverride !== "settled" ? [current] : [];
+                  })
+                : selectedThreads;
       if (clicked.value === "settle" && actionTargets.length === 0) return;
       if (clicked.value !== "mark-unread" && !checkThreadOperations(actionTargets)) return;
       if (clicked.value?.startsWith("snooze:")) {
@@ -3134,6 +3146,40 @@ export default function Sidebar({
           if (thread) markThreadUnread(scopeThreadRef(thread.environmentId, thread.id));
         }
         clearSelection();
+        return;
+      }
+      if (clicked.value === "archive") {
+        if (confirmThreadArchive) {
+          const confirmed = await settlePromise(() =>
+            api.dialogs.confirm(
+              tn(archivableThreads.length, "Archive {count} thread?", "Archive {count} threads?"),
+            ),
+          );
+          if (confirmed._tag === "Failure" || !confirmed.value) return;
+        }
+        const results = await Promise.all(
+          archivableThreads.map((thread) =>
+            archiveThread(scopeThreadRef(thread.environmentId, thread.id)),
+          ),
+        );
+        const failure = results
+          .filter((result) => result._tag === "Failure")
+          .find((result) => !isAtomCommandInterrupted(result));
+        if (failure !== undefined) {
+          const error = squashAtomCommandFailure(failure);
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: t("Failed to archive threads"),
+              description: error instanceof Error ? error.message : t("An error occurred."),
+            }),
+          );
+        }
+        removeFromSelection(
+          archivableThreads.map((thread) =>
+            scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+          ),
+        );
         return;
       }
       if (clicked.value !== "delete") return;
@@ -3591,10 +3637,8 @@ export default function Sidebar({
     threadByKey,
   ]);
 
-  const shouldShowJumpHintsNow = shouldShowThreadJumpHintsForModifiers(
-    shortcutModifiers,
-    keybindings,
-    {
+  const shouldShowJumpHintsNow = useShortcutModifierSelection((shortcutModifiers) =>
+    shouldShowThreadJumpHintsForModifiers(shortcutModifiers, keybindings, {
       platform: navigator.platform,
       context: {
         terminalFocus: terminalFocused,
@@ -3603,7 +3647,7 @@ export default function Sidebar({
         isWeb: !isElectron,
         isDesktop: isElectron,
       },
-    },
+    }),
   );
   const showJumpHints = useThreadJumpHintsVisible(shouldShowJumpHintsNow);
 

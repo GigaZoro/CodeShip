@@ -43,6 +43,7 @@ import { HistorySwipeNavigation } from "./HistorySwipeNavigation";
 import ThreadSidebar from "./Sidebar";
 import { SidebarBrandWidthProbe, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { SidebarNavRail } from "./sidebar/SidebarNavRail";
+import { CollapsedSidebarUndoToast } from "./sidebar/SidebarThreadUndoNotice";
 import { isSidebarSectionPage, readMainAppHref, useSidebarPanel } from "./sidebar/mainAppLocation";
 import {
   InlineRightPanelRefContext,
@@ -307,6 +308,9 @@ function registerAppShellCommands(router: AnyRouter, shellElement: Element): () 
       if (!/^\/settings(\/|$)/.test(router.state.location.pathname))
         void router.navigate({ to: "/settings" });
     }),
+    registerMenuAction("open-keybindings", () => {
+      void router.navigate({ to: "/settings/keybindings" });
+    }),
   ];
   return () => {
     for (const dispose of disposers) dispose();
@@ -518,6 +522,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
           className="hidden min-h-0 w-80 shrink-0 flex-col justify-end p-3 has-[>section]:flex"
         />
         <BackgroundThreadAnnouncer />
+        <CollapsedSidebarUndoToast />
         <SidebarControl />
         {isElectron ? <HistorySwipeNavigation /> : null}
       </SidebarProvider>

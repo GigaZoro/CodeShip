@@ -173,7 +173,7 @@ export function SecretSourceInput({
           aria-invalid={rejectedReference !== null}
         />
         {rejectedReference !== null ? (
-          <p className="text-2xs text-destructive">
+          <p className="text-2xs text-destructive-foreground">
             {definition?.invalidReferenceMessage ?? t("Enter a valid secret reference.")}
           </p>
         ) : null}

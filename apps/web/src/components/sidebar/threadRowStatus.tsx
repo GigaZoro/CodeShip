@@ -59,7 +59,7 @@ export function resolveThreadRowStatus(input: {
       return { label: t("Approval"), icon: "approval", className: "text-warning-foreground" };
     case "input":
       return {
-        label: t("Input"),
+        label: t("Question"),
         icon: "input",
         className: "text-indigo-600 dark:text-indigo-300",
       };

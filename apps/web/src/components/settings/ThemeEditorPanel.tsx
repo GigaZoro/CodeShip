@@ -105,7 +105,7 @@ const THEME_EDITOR_ROLE_GROUPS: ReadonlyArray<{
         role: "border",
         roles: ["border", "toolbarBorder", "sidebarBorder"],
       },
-      { id: "input", label: msg("Input"), role: "input", roles: ["input"] },
+      { id: "input", label: msg("Input field"), role: "input", roles: ["input"] },
     ],
   },
   {
@@ -1219,7 +1219,7 @@ export function ThemeEditorPanel({
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto py-3 pl-3 pr-1.5">
             {renderNameField()}
             {error ? (
-              <p aria-live="polite" className="text-sm text-destructive">
+              <p aria-live="polite" className="text-sm text-destructive-foreground">
                 {error}
               </p>
             ) : null}

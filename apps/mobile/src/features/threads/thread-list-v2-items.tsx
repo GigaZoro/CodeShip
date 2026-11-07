@@ -99,7 +99,7 @@ const STATUS_LABEL_BY_STATUS: Partial<Record<ThreadListV2Status, StatusLabel>> =
     iconTintClassName: "accent-warning-foreground",
   },
   input: {
-    label: msg("Input"),
+    label: msg("Question"),
     icon: "questionmark.bubble",
     className: "text-adaptive-indigo-600-300",
     iconTintClassName: "accent-adaptive-indigo-600-300",

@@ -167,7 +167,7 @@ function ToolOutput(props: ToolOutputState) {
   ) : props.pending ? (
     <div className="text-muted-foreground italic">{t("Loading output…")}</div>
   ) : props.error ? (
-    <div className="text-destructive">
+    <div className="text-destructive-foreground">
       {t("Couldn't load output: {error}", { error: props.error })}
     </div>
   ) : props.empty && images.length === 0 ? (
@@ -226,7 +226,9 @@ function ToolCallBody(
       {call.argsText ? <StructuredValue value={call.argsText} highlightJson /> : null}
       {props.outputSlot ?? <ToolOutput {...props} />}
       {props.exitCode !== undefined && props.exitCode !== 0 ? (
-        <div className="text-destructive">{t("exit {code}", { code: props.exitCode })}</div>
+        <div className="text-destructive-foreground">
+          {t("exit {code}", { code: props.exitCode })}
+        </div>
       ) : null}
     </div>
   );

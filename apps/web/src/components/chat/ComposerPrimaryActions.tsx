@@ -6,7 +6,7 @@ import { MorphIcon } from "~/components/MorphIcon";
 import { useEnvironmentIdentificationMode } from "~/hooks/useSettings";
 import { formatContextWindowTokens } from "~/lib/contextWindow";
 import { cn, isMacPlatform } from "~/lib/utils";
-import { useShortcutModifierState } from "../../shortcutModifierState";
+import { useShortcutModifierSelection } from "../../shortcutModifierState";
 import { StageBackdropButtonArt, useSidebarStageBackdropVariant } from "../SidebarStageBackdrop";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
@@ -118,14 +118,16 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     ? { onPointerDown: preventPointerFocus }
     : undefined;
   const environmentIdentificationMode = useEnvironmentIdentificationMode();
-  const shortcutModifiers = useShortcutModifierState();
+  const alternateModifier = useShortcutModifierSelection(
+    (modifiers) => modifiers.metaKey || modifiers.ctrlKey,
+  );
   const isQueuing =
     !isEditingQueuedMessage &&
     resolveComposerDispatchMode({
       running: isRunning,
       activeTurnDefault: followUpBehavior,
       canSteer,
-      alternateModifier: shortcutModifiers.metaKey || shortcutModifiers.ctrlKey,
+      alternateModifier,
     }) === "queue";
   const alternateAction = alternateComposerDispatchAction(followUpBehavior);
   const isSendDisabled = !canOperateThread || sendDisabledReason !== null;

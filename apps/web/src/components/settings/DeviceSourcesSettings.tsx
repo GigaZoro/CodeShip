@@ -798,7 +798,7 @@ function DeviceSourceRow(props: { row: SourceRow }) {
             role="status"
             className={cn(
               "mt-1 flex flex-wrap items-center gap-1.5 text-xs",
-              environment.status.tone === "error" ? "text-destructive" : "text-warning",
+              environment.status.tone === "error" ? "text-destructive-foreground" : "text-warning",
             )}
           >
             <span className="min-w-0 break-words">

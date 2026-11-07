@@ -310,7 +310,7 @@ export function EasDeviceHostEditor(props: {
                 : ` ${t("Saving restarts this host, which stops its running sessions.")}`}
             </p>
             {problem === null ? null : (
-              <p className="text-xs text-destructive" role="alert">
+              <p className="text-xs text-destructive-foreground" role="alert">
                 {problem}
               </p>
             )}

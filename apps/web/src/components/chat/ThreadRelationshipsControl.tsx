@@ -301,7 +301,7 @@ function RemoteSubagentRow(props: {
             </span>
           </span>
           <span
-            className={`shrink-0 text-2xs ${failed ? "text-destructive" : "text-muted-foreground"}`}
+            className={`shrink-0 text-2xs ${failed ? "text-destructive-foreground" : "text-muted-foreground"}`}
           >
             {t("on {label} · {status}", {
               label: remoteChild.label,
@@ -766,7 +766,7 @@ export function ThreadRelationshipsPanel(props: {
             className={
               workflowGroup
                 ? "sr-only"
-                : `shrink-0 text-2xs ${failed ? "text-destructive" : "text-muted-foreground"} ${trailingVisibilityClass}`
+                : `shrink-0 text-2xs ${failed ? "text-destructive-foreground" : "text-muted-foreground"} ${trailingVisibilityClass}`
             }
           >
             {threadRelationshipStatusLabel(rowStatus)}

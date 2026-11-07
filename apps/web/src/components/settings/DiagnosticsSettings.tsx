@@ -104,7 +104,7 @@ function StatBlock({
         className={cn(
           "mt-1 truncate font-mono text-lg font-semibold tabular-nums text-foreground",
           tone === "warning" && "text-warning-foreground",
-          tone === "danger" && "text-destructive",
+          tone === "danger" && "text-destructive-foreground",
         )}
       >
         {value}
@@ -974,13 +974,13 @@ function DiagnosticsSettingsBody() {
         {processDiagnosticsError || processError ? (
           <div className="space-y-2 border-t border-border/60 px-4 py-3 text-xs text-muted-foreground sm:px-5">
             {processDiagnosticsError ? (
-              <div className="flex items-start gap-2 text-destructive">
+              <div className="flex items-start gap-2 text-destructive-foreground">
                 <AlertTriangleIcon className="size-3.5 h-lh shrink-0" />
                 <span>{processDiagnosticsError.message}</span>
               </div>
             ) : null}
             {processError ? (
-              <div className="flex items-start gap-2 text-destructive">
+              <div className="flex items-start gap-2 text-destructive-foreground">
                 <AlertTriangleIcon className="size-3.5 h-lh shrink-0" />
                 <span>{processError}</span>
               </div>
@@ -1050,13 +1050,13 @@ function DiagnosticsSettingsBody() {
         {processResourceError || resourceError ? (
           <div className="space-y-2 border-t border-border/60 px-4 py-3 text-xs text-muted-foreground sm:px-5">
             {processResourceError ? (
-              <div className="flex items-start gap-2 text-destructive">
+              <div className="flex items-start gap-2 text-destructive-foreground">
                 <AlertTriangleIcon className="size-3.5 h-lh shrink-0" />
                 <span>{processResourceError.message}</span>
               </div>
             ) : null}
             {resourceError ? (
-              <div className="flex items-start gap-2 text-destructive">
+              <div className="flex items-start gap-2 text-destructive-foreground">
                 <AlertTriangleIcon className="size-3.5 h-lh shrink-0" />
                 <span>{resourceError}</span>
               </div>
@@ -1135,7 +1135,7 @@ function DiagnosticsSettingsBody() {
         {openLogsDirectoryError || traceDiagnosticsError || error ? (
           <div className="space-y-2 border-t border-border/60 px-4 py-3 text-xs text-muted-foreground sm:px-5">
             {openLogsDirectoryError ? (
-              <div className="flex items-start gap-2 text-destructive">
+              <div className="flex items-start gap-2 text-destructive-foreground">
                 <AlertTriangleIcon className="size-3.5 h-lh shrink-0" />
                 <span>{openLogsDirectoryError}</span>
               </div>
@@ -1144,7 +1144,9 @@ function DiagnosticsSettingsBody() {
               <div
                 className={cn(
                   "flex items-start gap-2",
-                  traceDiagnosticsPartialFailure ? "text-warning-foreground" : "text-destructive",
+                  traceDiagnosticsPartialFailure
+                    ? "text-warning-foreground"
+                    : "text-destructive-foreground",
                 )}
               >
                 <AlertTriangleIcon className="size-3.5 h-lh shrink-0" />
@@ -1159,7 +1161,7 @@ function DiagnosticsSettingsBody() {
               </div>
             ) : null}
             {error ? (
-              <div className="flex items-start gap-2 text-destructive">
+              <div className="flex items-start gap-2 text-destructive-foreground">
                 <AlertTriangleIcon className="size-3.5 h-lh shrink-0" />
                 <span>{error}</span>
               </div>

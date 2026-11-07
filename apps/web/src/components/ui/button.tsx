@@ -29,7 +29,7 @@ const buttonVariants = cva(
           "size-7 sm:size-6 not-in-data-[slot=input-group]:[&_svg:not([class*='size-'])]:size-4 sm:not-in-data-[slot=input-group]:[&_svg:not([class*='size-'])]:size-3.5",
         lg: "h-10 px-[calc(--spacing(3.5)-1px)] sm:h-9",
         micro:
-          "h-5 gap-1 rounded-sm px-[calc(--spacing(1.5)-1px)] text-[11px] before:rounded-[calc(var(--radius-sm)-1px)] sm:text-[11px] [&_svg:not([class*='size-'])]:size-3 sm:[&_svg:not([class*='size-'])]:size-3",
+          "h-5 gap-1 rounded-sm px-[calc(--spacing(1.5)-1px)] text-2xs before:rounded-[calc(var(--radius-sm)-1px)] sm:text-2xs [&_svg:not([class*='size-'])]:size-3 sm:[&_svg:not([class*='size-'])]:size-3",
         multiline:
           "min-h-9 px-[calc(--spacing(3)-1px)] py-[calc(--spacing(1.5)-1px)] whitespace-normal sm:min-h-8",
         sm: "h-8 gap-1.5 px-[calc(--spacing(2.5)-1px)] sm:h-7",
@@ -50,7 +50,7 @@ const buttonVariants = cva(
         "ghost-muted":
           "[--control-icon-color:currentColor] border-transparent text-muted-foreground data-pressed:bg-accent [:hover,[data-pressed]]:bg-accent [:hover,[data-pressed]]:text-foreground",
         "ghost-destructive":
-          "[--control-icon-color:currentColor] border-transparent text-muted-foreground data-pressed:bg-accent [:hover,[data-pressed]]:bg-accent [:hover,[data-pressed]]:text-destructive",
+          "[--control-icon-color:currentColor] border-transparent text-muted-foreground data-pressed:bg-accent [:hover,[data-pressed]]:bg-accent [:hover,[data-pressed]]:text-destructive-foreground",
         glass:
           "surface-glass [--control-icon-color:var(--contrast-muted-foreground)] rounded-full border-border/60 text-foreground shadow-sm before:rounded-full [:hover,[data-pressed]]:border-border",
         link: "border-transparent underline-offset-4 [:hover,[data-pressed]]:underline",
@@ -106,7 +106,7 @@ const inlineButtonVariants = cva(
       tone: {
         default: "text-foreground",
         muted: "text-muted-foreground hover:text-foreground",
-        destructive: "text-destructive/80 hover:text-destructive",
+        destructive: "text-destructive-foreground/80 hover:text-destructive-foreground",
         picker:
           "gap-1 text-foreground decoration-from-font underline-offset-4 data-popup-open:underline",
       },

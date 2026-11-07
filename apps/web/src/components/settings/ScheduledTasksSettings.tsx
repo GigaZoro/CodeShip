@@ -1248,7 +1248,7 @@ function ScheduledTaskRow({
             <span className="flex basis-full flex-col items-start gap-1">
               <span
                 className={cn(
-                  "whitespace-pre-wrap break-words text-destructive",
+                  "whitespace-pre-wrap break-words text-destructive-foreground",
                   !errorExpanded && "line-clamp-2",
                 )}
               >
@@ -1399,7 +1399,7 @@ function WebhookDeliveriesDialog({
           <DialogDescription>{t("Recent requests to this task's webhook URL.")}</DialogDescription>
         </DialogHeader>
         <DialogPanel>
-          {error ? <p className="text-sm text-destructive">{error}</p> : null}
+          {error ? <p className="text-sm text-destructive-foreground">{error}</p> : null}
           {selectedId !== null && selected === null && selectedQuery.error === null ? (
             <p className="text-sm text-muted-foreground" role="status">
               {t("Loading delivery…")}
@@ -1426,7 +1426,7 @@ function WebhookDeliveriesDialog({
                   className={
                     selected.outcome === "filtered"
                       ? "text-sm text-muted-foreground"
-                      : "text-sm text-destructive"
+                      : "text-sm text-destructive-foreground"
                   }
                 >
                   {selected.error}
@@ -2052,7 +2052,7 @@ function ScheduledTaskEditorForm({
         {/* Fieldsets default to min-width: min-content, which lets one wide control widen the form past the dialog. */}
         <fieldset disabled={saving} className="min-w-0 space-y-5">
           {!connected ? (
-            <p className="text-sm text-destructive">
+            <p className="text-sm text-destructive-foreground">
               {t("Reconnect this environment before saving.")}
             </p>
           ) : null}
@@ -2238,12 +2238,12 @@ function ScheduledTaskEditorForm({
             </div>
           ) : null}
           {tasksQuery.error ? (
-            <p className="text-sm text-destructive" role="status">
+            <p className="text-sm text-destructive-foreground" role="status">
               {tasksQuery.error}
             </p>
           ) : null}
           {editingTaskMissing ? (
-            <p className="text-xs text-destructive" role="status">
+            <p className="text-xs text-destructive-foreground" role="status">
               {t("This scheduled task no longer exists.")}
             </p>
           ) : null}

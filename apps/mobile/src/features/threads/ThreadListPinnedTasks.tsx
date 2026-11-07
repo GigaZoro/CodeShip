@@ -111,7 +111,7 @@ const STATUS_DISPLAY: Record<
     iconTintClassName: "accent-warning-foreground",
   },
   input: {
-    label: msg("Input"),
+    label: msg("Question"),
     icon: "questionmark.bubble",
     className: "text-adaptive-indigo-600-300",
     iconTintClassName: "accent-adaptive-indigo-600-300",
@@ -293,12 +293,12 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
           {describeSchedule(task)}
           {task.enabled && task.nextRunAt !== null ? (
             <>
-              {" · next "}
+              {" · "}
               <NextRunCountdown nextRunAt={task.nextRunAt} />
             </>
           ) : task.lastRunAt !== null ? (
             <>
-              {" · last run "}
+              {" · "}
               <LastRunAgo lastRunAt={task.lastRunAt} />
             </>
           ) : null}

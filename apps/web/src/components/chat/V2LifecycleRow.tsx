@@ -475,7 +475,7 @@ function SubagentTimelineLink(props: {
         <span
           className={cn(
             "block text-2xs leading-relaxed",
-            failed ? "text-destructive" : "text-muted-foreground",
+            failed ? "text-destructive-foreground" : "text-muted-foreground",
           )}
         >
           {detail === null ? (
@@ -489,7 +489,10 @@ function SubagentTimelineLink(props: {
       </span>
       {detail !== null && (props.event !== undefined || status !== "completed") ? (
         <span
-          className={cn("shrink-0 text-xs", failed ? "text-destructive" : "text-muted-foreground")}
+          className={cn(
+            "shrink-0 text-xs",
+            failed ? "text-destructive-foreground" : "text-muted-foreground",
+          )}
         >
           {statusLabel}
         </span>

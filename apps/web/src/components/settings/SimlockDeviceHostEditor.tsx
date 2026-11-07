@@ -218,7 +218,7 @@ export function SimlockDeviceHostEditor(props: {
                   )}
             </p>
             {problem === null || !gatewayUrl ? null : (
-              <p className="text-xs text-destructive" role="alert">
+              <p className="text-xs text-destructive-foreground" role="alert">
                 {problem}
               </p>
             )}
@@ -279,7 +279,9 @@ function SimlockTokenField(props: {
       </span>
     ) : AsyncResult.isFailure(check) ? (
       <span
-        className={props.token.kind === "cleared" ? "text-muted-foreground" : "text-destructive"}
+        className={
+          props.token.kind === "cleared" ? "text-muted-foreground" : "text-destructive-foreground"
+        }
       >
         {failureMessage(check.cause)}
       </span>

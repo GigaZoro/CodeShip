@@ -276,7 +276,7 @@ export function SourceControlAppSignInSettings({
       {state.status === "failed" && !signedIn ? (
         <p
           role="alert"
-          className="border-t border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+          className="border-t border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive-foreground"
         >
           {state.message}
         </p>

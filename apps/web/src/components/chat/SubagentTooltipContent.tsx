@@ -157,7 +157,7 @@ export function SubagentTooltipContent(props: {
             working
               ? "text-info"
               : failed
-                ? "text-error"
+                ? "text-error-foreground"
                 : props.status === "completed"
                   ? "text-success"
                   : "text-muted-foreground",

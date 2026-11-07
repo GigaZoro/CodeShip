@@ -92,7 +92,7 @@ export function ThreadFindBar(props: ThreadFindBarProps) {
             aria-live="polite"
             className={cn(
               "min-w-10 text-center text-xs tabular-nums",
-              noResults ? "text-destructive" : "text-muted-foreground",
+              noResults ? "text-destructive-foreground" : "text-muted-foreground",
             )}
           >
             {label}

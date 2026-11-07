@@ -303,7 +303,7 @@ function DiagramError({
   return (
     <div>
       <div className="flex items-center justify-between gap-2">
-        <p className="m-0 text-xs text-destructive">
+        <p className="m-0 text-xs text-destructive-foreground">
           {t("Unable to render diagram: {message}", { message })}
         </p>
         {onRetry ? (

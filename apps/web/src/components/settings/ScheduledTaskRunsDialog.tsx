@@ -113,7 +113,9 @@ export function ScheduledTaskRunsDialog({
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
-          {runsQuery.error ? <p className="text-sm text-destructive">{runsQuery.error}</p> : null}
+          {runsQuery.error ? (
+            <p className="text-sm text-destructive-foreground">{runsQuery.error}</p>
+          ) : null}
           {runs === null ? (
             runsQuery.error ? null : (
               <p className="text-sm text-muted-foreground" role="status">
@@ -170,7 +172,7 @@ export function ScheduledTaskRunsDialog({
                       </p>
                     ) : null}
                     {run.error !== null ? (
-                      <pre className="max-h-32 overflow-auto rounded-md bg-muted p-2 text-xs whitespace-pre-wrap break-words text-destructive">
+                      <pre className="max-h-32 overflow-auto rounded-md bg-muted p-2 text-xs whitespace-pre-wrap break-words text-destructive-foreground">
                         {run.error}
                       </pre>
                     ) : null}

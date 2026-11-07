@@ -50,7 +50,9 @@ export function CommandOutputPanel(props: {
   if (text.length === 0) {
     if (error)
       return (
-        <div className="text-destructive">{t("Couldn't load output: {error}", { error })}</div>
+        <div className="text-destructive-foreground">
+          {t("Couldn't load output: {error}", { error })}
+        </div>
       );
     if (data === null)
       return <div className="text-muted-foreground italic">{t("Loading output…")}</div>;

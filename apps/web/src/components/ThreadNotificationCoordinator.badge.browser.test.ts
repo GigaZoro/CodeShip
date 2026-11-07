@@ -106,6 +106,7 @@ const thread = {
   title: "Test thread",
   archivedAt: null as string | null,
   settledAt: null as string | null,
+  snoozedUntil: null as string | null,
   hasPendingApprovals: false,
   hasPendingUserInput: false,
   session: null as { status: string } | null,
@@ -166,6 +167,8 @@ function toV2ThreadShell(input: typeof thread) {
     settledOverride: input.settledAt ? "settled" : null,
     settledAt: input.settledAt ? DateTime.makeUnsafe(input.settledAt) : null,
     lastVisitedAt: null,
+    snoozedUntil: input.snoozedUntil ? DateTime.makeUnsafe(input.snoozedUntil) : null,
+    snoozedAt: input.snoozedUntil ? SHELL_NOW : null,
     deletedAt: null,
   };
 }
@@ -276,6 +279,23 @@ it("does not notify a completion the user settles during the grace", async () =>
   state.shells.set("one", shell({ latestTurn, settledAt: "2026-09-13T07:00:02.000Z" }));
   await vi.advanceTimersByTimeAsync(WORKING_EXIT_GRACE_MS);
   expect(TestNotification.sent.map((sent) => sent.title)).toEqual([]);
+});
+
+it("does not notify a completion while the thread is snoozed", async () => {
+  await using app = setup();
+  app.start();
+  using _timers = fakeTimers();
+  const snoozedUntil = "2999-01-01T00:00:00.000Z";
+  state.shells.set("one", shell({ snoozedUntil }));
+  state.shells.set(
+    "one",
+    shell({
+      snoozedUntil,
+      latestTurn: { turnId: "turn", state: "completed", completedAt: "2026-09-13T07:00:01.000Z" },
+    }),
+  );
+  await vi.advanceTimersByTimeAsync(WORKING_EXIT_GRACE_MS);
+  expect(TestNotification.sent).toEqual([]);
 });
 
 it("still notifies a completion that auto-settles during the grace", async () => {

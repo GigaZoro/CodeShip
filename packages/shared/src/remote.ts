@@ -154,6 +154,13 @@ export const getPairingTokenFromUrl = (url: URL): string | null => {
   return searchToken.length > 0 ? searchToken : null;
 };
 
+/** A pasted pairing link stands for the token it carries; anything else is the credential itself. */
+export const pairingCredentialFromInput = (input: string): string => {
+  const trimmed = input.trim();
+  if (!/^https?:\/\//i.test(trimmed) || !URL.canParse(trimmed)) return trimmed;
+  return getPairingTokenFromUrl(new URL(trimmed)) ?? trimmed;
+};
+
 export const stripPairingTokenFromUrl = (url: URL): URL => {
   const next = new URL(url.toString());
   const hashParams = readHashParams(next);

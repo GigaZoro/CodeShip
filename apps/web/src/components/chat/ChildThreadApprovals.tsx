@@ -72,7 +72,7 @@ function ChildApproval({ entry }: { entry: ChildThreadApproval }) {
         />
       </div>
       {error !== null ? (
-        <p role="alert" className="mt-2 text-destructive">
+        <p role="alert" className="mt-2 text-destructive-foreground">
           {error}
         </p>
       ) : null}

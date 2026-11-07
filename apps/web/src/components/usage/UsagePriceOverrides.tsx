@@ -434,7 +434,10 @@ export function UsagePriceOverrides({
                               {errors.has(row.id) &&
                               (row.model.trim() !== "" ||
                                 Object.values(row.values).some((value) => value !== "")) ? (
-                                <p role="alert" className="mt-1 text-xs text-destructive">
+                                <p
+                                  role="alert"
+                                  className="mt-1 text-xs text-destructive-foreground"
+                                >
                                   {errors.get(row.id)}
                                 </p>
                               ) : null}
@@ -586,7 +589,7 @@ export function UsagePriceOverrides({
                     <span
                       className={
                         result?.status === "failed"
-                          ? "text-right text-destructive"
+                          ? "text-right text-destructive-foreground"
                           : "text-muted-foreground"
                       }
                     >

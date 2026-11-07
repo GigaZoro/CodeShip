@@ -271,7 +271,7 @@ export function SavedBackendListRow({
                       status.tone === "error" &&
                       !resumingServerUpdate &&
                       !diagnosis &&
-                      "text-destructive",
+                      "text-destructive-foreground",
                   )}
                 />
               }
@@ -589,7 +589,7 @@ function ConfiguredCloudLinkRow({ canManageRelay }: { readonly canManageRelay: b
     reachability?.status === "reachable" ? (
       formatConnectReachable(reachability)
     ) : reachability?.status === "unreachable" ? (
-      <span className="block text-destructive">
+      <span className="block text-destructive-foreground">
         {[reachability.reason, reachability.hint, t("Fix: {fix}", { fix: reachability.fix })]
           .filter(Boolean)
           .join(" ")}{" "}

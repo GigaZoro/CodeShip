@@ -1,16 +1,19 @@
 import { useAtomValue } from "@effect/atom-react";
 import { Undo2Icon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
+import { t } from "~/i18n";
 import {
   threadUndoLabel,
+  threadUndoNoticeSummary,
   undoLatestThreadAction,
   useThreadUndoNotice,
 } from "../../hooks/showThreadUndoNotice";
 import { cn } from "../../lib/utils";
 import { primaryServerKeybindingsAtom } from "../../state/server";
 import { InlineButton } from "../ui/button";
-import { SidebarMenuItem } from "../ui/sidebar";
+import { SidebarMenuItem, useSidebarVisibility } from "../ui/sidebar";
+import { toastManager } from "../ui/toast";
 
 /** Sits in the sidebar footer below the list's scroll area, so it never covers a thread. */
 export function SidebarThreadUndoNotice() {
@@ -59,4 +62,27 @@ export function SidebarThreadUndoNotice() {
       </div>
     </SidebarMenuItem>
   );
+}
+
+/** A collapsed sidebar hides the footer notice, so the same undo shows as a toast instead. */
+export function CollapsedSidebarUndoToast() {
+  const notice = useThreadUndoNotice((state) => state.notice);
+  const sidebarVisible = useSidebarVisibility();
+  const summary = notice !== null && !sidebarVisible ? threadUndoNoticeSummary(notice) : null;
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- mirrors the undo notice into the toast manager, which lives outside React
+  useEffect(() => {
+    if (summary === null) return;
+    const toastId = toastManager.add({
+      type: "info",
+      title: summary,
+      // The notice's own expiry closes the toast through this effect's cleanup.
+      timeout: 0,
+      data: { hideCopyButton: true },
+      actionProps: { children: t("Undo"), onClick: undoLatestThreadAction },
+    });
+    return () => toastManager.close(toastId);
+  }, [summary]);
+
+  return null;
 }

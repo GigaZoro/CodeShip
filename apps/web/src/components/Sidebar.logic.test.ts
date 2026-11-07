@@ -41,6 +41,7 @@ import {
   resolveSidebarScopedProjectKeys,
   sidebarFolderExpansionKeys,
   sortSidebarMachines,
+  resolveNextThreadAfterPark,
 } from "./Sidebar.logic";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
@@ -469,7 +470,7 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toMatchObject({ label: "Plan Ready", pulse: false });
+    ).toMatchObject({ label: "Plan ready", pulse: false });
   });
 
   it("does not manufacture completed state without a client visit marker", () => {
@@ -868,6 +869,41 @@ describe("navigation after parking a thread", () => {
       ).toBe(expected);
     },
   );
+});
+
+describe("resolveNextThreadAfterPark", () => {
+  const orderedKeys = ["a", "b", "c", "d"];
+  it.each<{
+    name: string;
+    working: string[];
+    parked: string[];
+    expected: string | null;
+  }>([
+    { name: "skips threads that are still working", working: ["c"], parked: [], expected: "d" },
+    { name: "skips parked threads", working: [], parked: ["c"], expected: "d" },
+    { name: "wraps past the end of the list", working: ["c", "d"], parked: [], expected: "a" },
+    {
+      name: "opens a working thread when nothing else remains",
+      working: ["a", "c", "d"],
+      parked: [],
+      expected: "c",
+    },
+    {
+      name: "finds nothing when the rest is parked",
+      working: [],
+      parked: ["a", "c", "d"],
+      expected: null,
+    },
+  ])("$name", ({ working, parked, expected }) => {
+    expect(
+      resolveNextThreadAfterPark({
+        orderedKeys,
+        currentKey: "b",
+        isParked: (key) => parked.includes(key),
+        isWorking: (key) => working.includes(key),
+      }),
+    ).toBe(expected);
+  });
 });
 
 describe("unseen completion with background work", () => {

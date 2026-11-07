@@ -90,7 +90,7 @@ export function ConnectionDiagnosisSummary({
 }) {
   return (
     <div className="text-xs">
-      <p className="text-destructive">{diagnosis.headline}</p>
+      <p className="text-destructive-foreground">{diagnosis.headline}</p>
       <p className="flex flex-wrap items-center gap-1 text-muted-foreground">
         {retryAt !== null ? <RetryCountdown retryAt={retryAt} /> : null}
         {retryAt !== null && attempt > 0 ? <span aria-hidden>·</span> : null}
@@ -148,7 +148,7 @@ export function ConnectionDiagnosisPanel({
             key={hop.hop}
             className={cn(
               "flex gap-2",
-              hop.result === "failed" ? "text-destructive" : "text-muted-foreground",
+              hop.result === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
             )}
           >
             <span aria-hidden className="w-3 text-center">

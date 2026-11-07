@@ -1311,7 +1311,7 @@ export default function DiffPanel({
             )}
             {selectedPatchError && !renderablePatch && (
               <div className="px-3">
-                <p className="mb-2 text-2xs text-error/80">{selectedPatchError}</p>
+                <p className="mb-2 text-2xs text-error-foreground">{selectedPatchError}</p>
               </div>
             )}
             {!renderablePatch && toolCallPreview && toolCallPreview.content.length > 0 ? (

@@ -203,7 +203,7 @@ function WorkspaceImagePreview(props: {
   if (assetUrl._tag === "Failure") {
     return (
       <MediaActions source={actionsSource}>
-        <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs leading-relaxed text-destructive">
+        <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs leading-relaxed text-destructive-foreground">
           {t("Unable to load workspace image.")}
         </div>
       </MediaActions>
@@ -254,7 +254,7 @@ export function WorkspaceBrowserPreview(props: {
 
   if (assetUrl._tag === "Failure") {
     return (
-      <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs leading-relaxed text-destructive">
+      <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs leading-relaxed text-destructive-foreground">
         {t("Unable to load file preview.")}
       </div>
     );
@@ -1455,7 +1455,7 @@ export default function FilePreviewPanel({
               className="scrollbar-gutter-both flex min-h-0 flex-1 flex-col overflow-auto"
             >
               <div className="my-auto flex shrink-0 flex-col gap-3 px-6 py-6 text-center text-xs leading-relaxed">
-                <p className="text-destructive">
+                <p className="text-destructive-foreground">
                   {file.readError ? filePreviewReadErrorMessage(file.readError) : file.error}
                 </p>
                 {attemptedPath ? (

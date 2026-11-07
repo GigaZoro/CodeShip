@@ -106,7 +106,7 @@ export function SecretProviderDialog({
                 <p
                   id="secret-provider-name-error"
                   role="alert"
-                  className="text-xs text-destructive"
+                  className="text-xs text-destructive-foreground"
                 >
                   {nameError}
                 </p>
@@ -130,7 +130,7 @@ export function SecretProviderDialog({
                 <p
                   id="secret-provider-account-error"
                   role="alert"
-                  className="text-xs text-destructive"
+                  className="text-xs text-destructive-foreground"
                 >
                   {accountError}
                 </p>

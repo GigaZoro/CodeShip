@@ -125,7 +125,7 @@ const V2SubagentGroup = memo(function V2SubagentGroup({
             <span
               className={cn(
                 "block truncate text-3xs text-muted-foreground",
-                summary.active ? "text-info" : summary.failed && "text-destructive",
+                summary.active ? "text-info" : summary.failed && "text-destructive-foreground",
               )}
             >
               {statusSummary}

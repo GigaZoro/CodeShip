@@ -390,7 +390,7 @@ function NameForm({
         />
       </label>
       {error !== null ? (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" className="text-sm text-destructive-foreground">
           {error}
         </p>
       ) : null}
@@ -816,7 +816,7 @@ function GuestComposer({
         </ComposerControl>
         <GuestModelLabel model={model} />
         {error !== null ? (
-          <p role="alert" className="min-w-0 flex-1 text-xs text-destructive">
+          <p role="alert" className="min-w-0 flex-1 text-xs text-destructive-foreground">
             {error}
           </p>
         ) : (

@@ -341,12 +341,12 @@ export function SnapShotSetupDialog({
               </div>
             )}
             {step === "shortcut" && !accessReady ? (
-              <p role="alert" className="text-destructive">
+              <p role="alert" className="text-destructive-foreground">
                 {t("Capture needs attention. Go back to check access.")}
               </p>
             ) : null}
             {error ? (
-              <p role="alert" className="text-destructive">
+              <p role="alert" className="text-destructive-foreground">
                 {t("Couldn't finish this step. Try again or check Advanced for help.")}
               </p>
             ) : null}

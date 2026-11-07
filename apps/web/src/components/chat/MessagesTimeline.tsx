@@ -1612,7 +1612,7 @@ function ContextCompactionTimelineRow({
       aria-label={row.failure ? t("{label}: {failure}", { label, failure: row.failure }) : label}
       className={cn(
         "mx-auto flex w-full max-w-(--chat-content-max-width) items-center gap-3 py-1 text-xs",
-        row.failed ? "text-destructive" : "text-muted-foreground",
+        row.failed ? "text-destructive-foreground" : "text-muted-foreground",
       )}
     >
       <span className={cn("h-px flex-1", row.failed ? "bg-destructive/30" : "bg-border/70")} />

@@ -145,6 +145,9 @@ export const make = Effect.gen(function* () {
     const settingsClick = () => {
       runMenuEffect("open-settings", dispatchMenuAction("open-settings"));
     };
+    const keybindingsClick = () => {
+      runMenuEffect("open-keybindings", dispatchMenuAction("open-keybindings"));
+    };
     // Chromium and the renderer already handle this chord; injecting another paste duplicates text.
     const pasteAsTextClick = (
       _item: Electron.MenuItem,
@@ -309,10 +312,14 @@ export const make = Effect.gen(function* () {
       {
         role: "help",
         submenu: [
-          {
-            label: t("Check for Updates..."),
-            click: checkForUpdatesClick,
-          },
+          { label: t("Keybindings"), click: keybindingsClick },
+          // macOS keeps this in the app menu.
+          ...(environment.platform === "darwin"
+            ? []
+            : [
+                { type: "separator" as const },
+                { label: t("Check for Updates..."), click: checkForUpdatesClick },
+              ]),
         ],
       },
     );

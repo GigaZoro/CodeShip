@@ -788,7 +788,7 @@ export function ConnectionsSettings() {
           <SettingsRow
             {...searchableSetting("wsl-backend")}
             description={t("Couldn't load the WSL backend state.")}
-            status={<span className="block text-destructive">{desktopWslError}</span>}
+            status={<span className="block text-destructive-foreground">{desktopWslError}</span>}
             control={
               <Button
                 size="sm"
@@ -816,7 +816,7 @@ export function ConnectionsSettings() {
           )}
           status={
             desktopWslError ? (
-              <span className="block text-destructive">{desktopWslError}</span>
+              <span className="block text-destructive-foreground">{desktopWslError}</span>
             ) : null
           }
           control={
@@ -852,9 +852,9 @@ export function ConnectionsSettings() {
           )}
           status={
             desktopWslError ? (
-              <span className="block text-destructive">{desktopWslError}</span>
+              <span className="block text-destructive-foreground">{desktopWslError}</span>
             ) : desktopWslState.preflightError ? (
-              <span className="block text-destructive">
+              <span className="block text-destructive-foreground">
                 {t("WSL backend couldn't start: {error}", {
                   error: desktopWslState.preflightError,
                 })}
@@ -949,7 +949,7 @@ export function ConnectionsSettings() {
     <>
       {desktopAccessManagementError ? (
         <div className={ITEM_ROW_CLASSNAME}>
-          <p className="text-xs text-destructive">{desktopAccessManagementError}</p>
+          <p className="text-xs text-destructive-foreground">{desktopAccessManagementError}</p>
         </div>
       ) : null}
       <PairingClientsList
@@ -996,7 +996,7 @@ export function ConnectionsSettings() {
       }
       status={
         desktopServerExposureError ? (
-          <span className="block text-destructive">{desktopServerExposureError}</span>
+          <span className="block text-destructive-foreground">{desktopServerExposureError}</span>
         ) : null
       }
       control={renderNetworkAccessToggle()}
@@ -1464,7 +1464,7 @@ export function ConnectionsSettings() {
                   />
                 </label>
                 {!isTailscaleServePortValid ? (
-                  <p className="mt-2 text-xs text-destructive">
+                  <p className="mt-2 text-xs text-destructive-foreground">
                     {t("Enter a port from 1 to 65535.")}
                   </p>
                 ) : null}

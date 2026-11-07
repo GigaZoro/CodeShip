@@ -5,6 +5,7 @@ import {
   presentThreadShell,
 } from "@t3tools/client-runtime/state/models";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
+import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import type { AnyRouter } from "@tanstack/react-router";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
 import type { EnvironmentId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
@@ -279,6 +280,7 @@ export function startThreadNotifications(
     entry.reconnecting = false;
     entry.previous = next;
     entry.gate.retain(new Set(next.keys()));
+    const now = new Date().toISOString();
     for (const [prior, state] of changed) {
       const { settledOverride, settledAt } = state.thread;
       // Auto and agent settles stamp the run's own completion; a later stamp is the user dismissing it.
@@ -288,7 +290,11 @@ export function startThreadNotifications(
         Date.parse(settledAt ?? "") > state.completedAt;
       entry.gate.observe(state.thread.id, prior, state, {
         archived: state.thread.archivedAt !== null,
-        quiet: state.raw.latestRunStopRequested === true || userSettled,
+        // A request or failure wakes a snoozed thread, so only its completions stay quiet.
+        quiet:
+          state.raw.latestRunStopRequested === true ||
+          userSettled ||
+          effectiveSnoozed(state.thread, { now }),
       });
     }
   };

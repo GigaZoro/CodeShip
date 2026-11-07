@@ -159,7 +159,7 @@ function WorkflowMemberRow(props: {
               <span
                 className={cn(
                   "block truncate text-2xs leading-relaxed",
-                  failed ? "text-destructive" : "text-muted-foreground",
+                  failed ? "text-destructive-foreground" : "text-muted-foreground",
                 )}
               >
                 {detail}

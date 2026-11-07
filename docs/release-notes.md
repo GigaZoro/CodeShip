@@ -1,3 +1,16 @@
+## 2026-11-06 — Interface fixes
+
+- Snoozed threads no longer notify you when a run finishes. A question, an approval or a failure still wakes them as before.
+- Select several threads in the sidebar to archive them together, next to Delete in the right-click menu.
+- Undo for settle, snooze, archive and unpin shows as a notice while the sidebar is collapsed.
+- Settling or snoozing the open thread moves to the next thread that is not still working, when there is one.
+- The thread hover card shows the actual error instead of "Error occurred".
+- The pairing page accepts a full pairing link as well as the token.
+- Error messages use a darker red that is easier to read.
+- The sidebar no longer redraws itself every time you press Shift or Cmd while typing.
+- On macOS, Help → Check for Updates is gone, since the app menu already has it. Help → Keybindings opens the shortcuts page.
+- In Ukrainian, a thread's waiting status, usage token types and the theme editor's input field each get their own correct word, the Windows taskbar badge is translated, and scheduled task countdowns no longer mix in English. In English, that thread status now reads Question.
+
 ## 2026-11-06 — MCP sign-ins on Windows
 
 - On Windows, an added Claude account no longer hides an MCP server from your other accounts after its own sign-in fails. Signing one account in to a server such as ThreadPage now shows the server as connected on that account.

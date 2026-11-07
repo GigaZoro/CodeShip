@@ -838,10 +838,10 @@ function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
             {publishError && !publishRepositoryAction.isPending ? (
               <div
                 role="alert"
-                className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+                className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive-foreground"
               >
                 <p className="font-medium">{t("Publish failed")}</p>
-                <p className="mt-0.5 text-destructive/90">{publishError}</p>
+                <p className="mt-0.5 text-destructive-foreground">{publishError}</p>
               </div>
             ) : null}
           </div>
@@ -1512,7 +1512,9 @@ export default function GitActionsControl({
             {t("Behind upstream. Pull/rebase first.")}
           </p>
         )}
-      {gitStatusError && <p className="px-2 py-1.5 text-xs text-destructive">{gitStatusError}</p>}
+      {gitStatusError && (
+        <p className="px-2 py-1.5 text-xs text-destructive-foreground">{gitStatusError}</p>
+      )}
     </>
   );
 

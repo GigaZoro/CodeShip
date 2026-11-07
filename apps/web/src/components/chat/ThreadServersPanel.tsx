@@ -10,7 +10,8 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { GlobeIcon, LoaderCircleIcon, SquareIcon } from "lucide-react";
+import { GlobeIcon, SquareIcon } from "lucide-react";
+import { Spinner } from "../ui/spinner";
 import { type MouseEvent, useState } from "react";
 
 import { resolveDiscoveredServerUrl } from "../../browser/browserTargetResolver";
@@ -154,7 +155,7 @@ export function ThreadServersPanel(props: {
                       }
                     >
                       {stoppingKey === key ? (
-                        <LoaderCircleIcon aria-hidden className="size-3 animate-spin" />
+                        <Spinner size="xs" aria-hidden />
                       ) : (
                         <SquareIcon aria-hidden className="size-3 fill-current" />
                       )}

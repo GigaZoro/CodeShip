@@ -2,6 +2,7 @@ import * as Electron from "electron";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { tn } from "@t3tools/shared/i18n";
 
 import * as ElectronApp from "../../electron/ElectronApp.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
@@ -29,7 +30,13 @@ function applyNotificationBadge(
         if (!window.isDestroyed()) {
           window.setOverlayIcon(
             overlay?.isEmpty() ? null : overlay,
-            count > 0 ? `${count} threads with new notifications` : "",
+            count > 0
+              ? tn(
+                  count,
+                  "{count} thread with new notifications",
+                  "{count} threads with new notifications",
+                )
+              : "",
           );
         }
       }

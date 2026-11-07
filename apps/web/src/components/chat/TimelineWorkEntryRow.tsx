@@ -229,12 +229,15 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         wrapLabel
         icon={
           <CircleAlertIcon
-            className={cn("size-4", warning ? "text-warning" : "text-destructive")}
+            className={cn("size-4", warning ? "text-warning" : "text-destructive-foreground")}
           />
         }
         label={
           <span
-            className={cn("text-sm font-medium", warning ? "text-warning" : "text-destructive")}
+            className={cn(
+              "text-sm font-medium",
+              warning ? "text-warning" : "text-destructive-foreground",
+            )}
           >
             {label}
           </span>
@@ -357,7 +360,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
     showWarningIndicator
       ? "text-warning"
       : showDestructiveRowStyle
-        ? "text-destructive"
+        ? "text-destructive-foreground"
         : showFailedIndicator
           ? failedToolIconClassName
           : workEntry.tone === "tool"
@@ -367,7 +370,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
   const headingClass = showWarningIndicator
     ? "font-medium text-warning"
     : showDestructiveRowStyle
-      ? "font-medium text-destructive"
+      ? "font-medium text-destructive-foreground"
       : workLogEntryIsToolLike(workEntry)
         ? "text-secondary-label"
         : "text-foreground/80";
@@ -376,7 +379,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
     .filter(Boolean)
     .join(": ");
   const accessibleDisplayText = showFailedIndicator
-    ? `${accessiblePreview}, tool call failed`
+    ? t("{preview}, tool call failed", { preview: accessiblePreview })
     : accessiblePreview;
   const rowToggleProps = canExpandProjectedItem
     ? {

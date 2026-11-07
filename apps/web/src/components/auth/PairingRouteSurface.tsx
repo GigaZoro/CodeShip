@@ -9,6 +9,7 @@ import {
   stripPairingTokenFromUrl,
   submitServerAuthCredential,
 } from "../../environments/primary";
+import { pairingCredentialFromInput } from "@t3tools/shared/remote";
 import { readHostedPairingRequest } from "../../hostedPairing";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -65,7 +66,7 @@ export function PairingRouteSurface({
 
   const handleSubmit = async (event?: React.SubmitEvent<HTMLFormElement>) => {
     event?.preventDefault();
-    await submitCredential(credential);
+    await submitCredential(pairingCredentialFromInput(credential));
   };
 
   const autoSubmit = useEffectEvent((token: string) => {

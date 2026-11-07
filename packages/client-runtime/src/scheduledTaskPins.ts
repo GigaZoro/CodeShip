@@ -74,30 +74,35 @@ export function scheduledTasksForThread(
 export function formatNextRunCountdown(nextRunAt: string, nowMs: number): string {
   const remainingMs = Date.parse(nextRunAt) - nowMs;
   if (Number.isNaN(remainingMs)) return "";
-  if (remainingMs <= 0) return "due now";
+  if (remainingMs <= 0) return t("due now");
   const totalSeconds = Math.ceil(remainingMs / 1000);
-  if (totalSeconds < 3600) {
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    return `in ${minutes}:${String(seconds).padStart(2, "0")}`;
-  }
   const hours = Math.floor(totalSeconds / 3600);
-  if (hours < 24) {
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    return minutes === 0 ? `in ${hours}h` : `in ${hours}h ${minutes}m`;
-  }
-  return `in ${Math.round(hours / 24)}d`;
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const duration =
+    hours === 0
+      ? `${minutes}:${String(totalSeconds % 60).padStart(2, "0")}`
+      : hours >= 24
+        ? t("{days}d", { days: Math.round(hours / 24) })
+        : minutes === 0
+          ? t("{hours}h", { hours })
+          : t("{hours}h {minutes}m", { hours, minutes });
+  return t("next in {duration}", { duration });
 }
 
 export function formatLastRunAgo(lastRunAt: string, nowMs: number): string {
   const elapsedMs = nowMs - Date.parse(lastRunAt);
   if (Number.isNaN(elapsedMs)) return "";
   const minutes = Math.floor(elapsedMs / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
+  const ago =
+    minutes < 1
+      ? t("just now")
+      : minutes < 60
+        ? t("{minutes}m ago", { minutes })
+        : hours < 24
+          ? t("{hours}h ago", { hours })
+          : t("{days}d ago", { days: Math.floor(hours / 24) });
+  return t("last run {ago}", { ago });
 }
 
 /** How far an interval task is through its wait for the next run, from 0 to 1. */

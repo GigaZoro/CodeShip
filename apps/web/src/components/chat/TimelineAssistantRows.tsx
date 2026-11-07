@@ -5,6 +5,7 @@ import { memo, use, useState } from "react";
 import { type ChatMessage, type TurnDiffSummary } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
 import { GitForkIcon, RotateCcwIcon } from "lucide-react";
+import { Spinner } from "../ui/spinner";
 import { ChevronDown, ChevronRight } from "lucide";
 import { MorphIcon } from "~/components/MorphIcon";
 import { Button } from "../ui/button";
@@ -133,7 +134,7 @@ function AssistantForkButton({
           />
         }
       >
-        <GitForkIcon className={cn("size-3", busy && "animate-pulse")} />
+        {busy ? <Spinner size="xs" aria-hidden /> : <GitForkIcon className="size-3" />}
       </TooltipTrigger>
       <TooltipPopup side="top">{t("Fork from this response")}</TooltipPopup>
     </Tooltip>

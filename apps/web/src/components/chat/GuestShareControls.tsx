@@ -140,7 +140,7 @@ function GuestShareDialog({
             </p>
           )}
           {state.status === "failed" ? (
-            <p role="alert" className="text-destructive text-xs">
+            <p role="alert" className="text-destructive-foreground text-xs">
               {state.message}
             </p>
           ) : null}

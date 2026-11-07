@@ -66,6 +66,22 @@ export function shouldNavigateAfterThreadPark(input: {
   );
 }
 
+/** After parking the open thread, the next one in list order that is not still working, else any. */
+export function resolveNextThreadAfterPark(input: {
+  readonly orderedKeys: ReadonlyArray<string>;
+  readonly currentKey: string;
+  readonly isParked: (key: string) => boolean;
+  readonly isWorking: (key: string) => boolean;
+}): string | null {
+  const currentIndex = input.orderedKeys.indexOf(input.currentKey);
+  if (currentIndex === -1) return null;
+  const candidates = [
+    ...input.orderedKeys.slice(currentIndex + 1),
+    ...input.orderedKeys.slice(0, currentIndex),
+  ].filter((key) => !input.isParked(key));
+  return candidates.find((key) => !input.isWorking(key)) ?? candidates[0] ?? null;
+}
+
 const THREAD_JUMP_HINT_SHOW_DELAY_MS = 200;
 
 export function resolveSidebarRowAccessibility(input: {
@@ -1310,7 +1326,7 @@ export function resolveThreadStatusPill(input: {
 
   if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
     return {
-      label: msg("Pending Approval"),
+      label: msg("Approval"),
       colorClass: "text-amber-600 dark:text-amber-300/90",
       dotClass: "bg-amber-500 dark:bg-amber-300/90",
       pulse: false,
@@ -1319,7 +1335,7 @@ export function resolveThreadStatusPill(input: {
 
   if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") {
     return {
-      label: msg("Awaiting Input"),
+      label: msg("Question"),
       colorClass: "text-indigo-600 dark:text-indigo-300/90",
       dotClass: "bg-indigo-500 dark:bg-indigo-300/90",
       pulse: false,
@@ -1328,7 +1344,7 @@ export function resolveThreadStatusPill(input: {
 
   if ((thread.pendingGuestMessageCount ?? 0) > 0) {
     return {
-      label: msg("Guest Request"),
+      label: msg("Request"),
       colorClass: "text-guest-foreground",
       dotClass: "bg-guest",
       pulse: false,
@@ -1388,7 +1404,7 @@ export function resolveThreadStatusPill(input: {
     thread.hasActionableProposedPlan;
   if (hasPlanReadyPrompt) {
     return {
-      label: msg("Plan Ready"),
+      label: msg("Plan ready"),
       colorClass: "text-violet-600 dark:text-violet-300/90",
       dotClass: "bg-violet-500 dark:bg-violet-300/90",
       pulse: false,

@@ -75,11 +75,11 @@ describe("formatNextRunCountdown", () => {
   const now = Date.parse("2026-11-02T10:00:00.000Z");
   it.each([
     { at: "2026-11-02T09:59:00.000Z", expected: "due now" },
-    { at: "2026-11-02T10:00:00.400Z", expected: "in 0:01" },
-    { at: "2026-11-02T10:04:05.000Z", expected: "in 4:05" },
-    { at: "2026-11-02T11:00:00.000Z", expected: "in 1h" },
-    { at: "2026-11-02T12:30:00.000Z", expected: "in 2h 30m" },
-    { at: "2026-11-05T10:00:00.000Z", expected: "in 3d" },
+    { at: "2026-11-02T10:00:00.400Z", expected: "next in 0:01" },
+    { at: "2026-11-02T10:04:05.000Z", expected: "next in 4:05" },
+    { at: "2026-11-02T11:00:00.000Z", expected: "next in 1h" },
+    { at: "2026-11-02T12:30:00.000Z", expected: "next in 2h 30m" },
+    { at: "2026-11-05T10:00:00.000Z", expected: "next in 3d" },
   ])("$at reads $expected", ({ at, expected }) => {
     expect(formatNextRunCountdown(at, now)).toBe(expected);
   });
@@ -88,11 +88,11 @@ describe("formatNextRunCountdown", () => {
 describe("formatLastRunAgo", () => {
   const now = Date.parse("2026-11-02T10:00:00.000Z");
   it.each([
-    { at: "2026-11-02T10:00:30.000Z", expected: "just now" },
-    { at: "2026-11-02T09:59:30.000Z", expected: "just now" },
-    { at: "2026-11-02T09:48:00.000Z", expected: "12m ago" },
-    { at: "2026-11-02T06:30:00.000Z", expected: "3h ago" },
-    { at: "2026-10-31T09:00:00.000Z", expected: "2d ago" },
+    { at: "2026-11-02T10:00:30.000Z", expected: "last run just now" },
+    { at: "2026-11-02T09:59:30.000Z", expected: "last run just now" },
+    { at: "2026-11-02T09:48:00.000Z", expected: "last run 12m ago" },
+    { at: "2026-11-02T06:30:00.000Z", expected: "last run 3h ago" },
+    { at: "2026-10-31T09:00:00.000Z", expected: "last run 2d ago" },
     { at: "not a date", expected: "" },
   ])("$at reads $expected", ({ at, expected }) => {
     expect(formatLastRunAgo(at, now)).toBe(expected);

@@ -232,9 +232,9 @@ function OpenContentSearchDialog(props: {
               <Spinner size="sm" /> {t("Searching…")}
             </span>
           ) : search.error ? (
-            <span className="text-destructive">{search.error}</span>
+            <span className="text-destructive-foreground">{search.error}</span>
           ) : search.invalidRegex ? (
-            <span className="text-destructive">{t("Invalid regular expression")}</span>
+            <span className="text-destructive-foreground">{t("Invalid regular expression")}</span>
           ) : (
             t("{results} in {files}", {
               results: tn(matches.length, "{count}{more} result", "{count}{more} results", {

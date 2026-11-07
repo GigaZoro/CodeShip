@@ -58,7 +58,7 @@ export function ThreadDetailsControl({
             // The row surface forces a faint hover fill with !important; the solid pill keeps its own.
             "bg-primary text-primary-foreground hover:text-primary-foreground hover:!bg-primary/85 data-pressed:!bg-primary/85 dark:hover:!bg-primary/85 dark:data-pressed:!bg-primary/85",
           tone === "destructive" &&
-            "text-destructive hover:text-destructive data-pressed:text-destructive",
+            "text-destructive-foreground hover:text-destructive-foreground data-pressed:text-destructive-foreground",
           // PR row actions share one 20px pill with a 1px inset focus ring that stays clear of the
           // label. The solid pill draws it in the canvas color so it shows against the fill.
           part === "meta" &&

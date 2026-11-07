@@ -92,7 +92,7 @@ import { CollapsibleSectionHeader } from "../ui/collapsible-section-header";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { WorkingDuration } from "./SidebarThreadRow";
 
-import { msg, t, tx, type Message } from "~/i18n";
+import { msg, t, type Message } from "~/i18n";
 const pinnedTasksAtom = Atom.family((environmentIdsKey: string) =>
   Atom.make((get) =>
     collectPinnedTasks(
@@ -139,7 +139,7 @@ const STATUS_DISPLAY: Record<
     className: "text-warning-foreground",
   },
   input: {
-    label: msg("Input"),
+    label: msg("Question"),
     icon: MessageCircleQuestionIcon,
     className: "text-indigo-600 dark:text-indigo-300",
   },
@@ -445,14 +445,12 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
               {task.enabled && task.nextRunAt !== null ? (
                 <>
                   {" · "}
-                  {tx("next {countdown}", {
-                    countdown: <NextRunCountdown nextRunAt={task.nextRunAt} />,
-                  })}
+                  <NextRunCountdown nextRunAt={task.nextRunAt} />
                 </>
               ) : task.lastRunAt !== null ? (
                 <>
                   {" · "}
-                  {tx("last run {ago}", { ago: <LastRunAgo lastRunAt={task.lastRunAt} /> })}
+                  <LastRunAgo lastRunAt={task.lastRunAt} />
                 </>
               ) : null}
             </span>
