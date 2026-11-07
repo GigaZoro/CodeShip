@@ -20,7 +20,7 @@ internal enum class ActivityPhase(
 ) {
   STARTING(
     "Connecting",
-    R.string.agent_activity_status_connecting,
+    R.string.agent_activity_status_starting,
     R.string.agent_activity_chip_working,
     R.color.agent_activity_working
   ),

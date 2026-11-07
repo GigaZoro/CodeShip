@@ -6,7 +6,7 @@
   <string name="agent_activity_open">Відкрити</string>
   <string name="agent_activity_dismiss">Закрити</string>
 
-  <string name="agent_activity_status_connecting">Підключення</string>
+  <string name="agent_activity_status_starting">Запуск</string>
   <string name="agent_activity_status_working">Виконується</string>
   <string name="agent_activity_status_approval">Схвалення</string>
   <string name="agent_activity_status_question">Питання</string>

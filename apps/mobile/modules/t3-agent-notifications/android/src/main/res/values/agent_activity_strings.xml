@@ -7,7 +7,7 @@
   <string name="agent_activity_open">Open</string>
   <string name="agent_activity_dismiss">Dismiss</string>
 
-  <string name="agent_activity_status_connecting">Connecting</string>
+  <string name="agent_activity_status_starting">Starting</string>
   <string name="agent_activity_status_working">Working</string>
   <string name="agent_activity_status_approval">Approval</string>
   <string name="agent_activity_status_question">Question</string>
