@@ -2046,14 +2046,25 @@ const make = Effect.gen(function* () {
             .pipe(Effect.orElseSucceed(() => undefined));
     const latest = records === undefined ? undefined : ThreadManagementService.latestRun(records);
     if (latest === undefined) return { at, outcome: "completed" as const };
-    return {
-      at,
-      outcome: ThreadManagementService.isTerminalRunStatus(latest.status)
-        ? latest.status === "completed"
-          ? ("completed" as const)
-          : ("failed" as const)
-        : ("working" as const),
-    };
+    if (!ThreadManagementService.isTerminalRunStatus(latest.status)) {
+      return { at, outcome: "working" as const };
+    }
+    if (latest.status === "completed") return { at, outcome: "completed" as const };
+    // A run a server restart cut off goes on once its continuation starts, so it is still going.
+    if (yield* threadManagement.restartContinuationPending(latest)) {
+      return { at, outcome: "working" as const };
+    }
+    // A Stop from the user or an agent leaves an interrupt request; other machines leave it stopped.
+    const stopped = yield* threadManagement
+      .getThreadRecords(latest.threadId, ["turnItems"], {
+        turnItemTypes: ["run_interrupt_request"],
+        turnItemRunIds: [latest.id],
+      })
+      .pipe(
+        Effect.map(({ turnItems }) => turnItems.length > 0),
+        Effect.orElseSucceed(() => false),
+      );
+    return { at, outcome: "failed" as const, ...(stopped ? { stopped: true as const } : {}) };
   });
 
   /**

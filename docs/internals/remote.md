@@ -175,6 +175,23 @@ a grace period, then asks the machines in the order through its peer links
 one is working on or finished that occurrence. A machine that can't ask one
 runs the task and records it, so a missing or expired link causes a duplicate
 run, not a missed one. A late first machine asks the same way before it runs.
+An answer of "still working" is not final: the asking machine keeps the
+occurrence and asks again each grace period until the run ends or the next
+occurrence is due (12 hours for a one-time task), and runs it if that run
+fails. A run a restart cut off reports working while its continuation is
+pending, and a machine that was working must miss two checks in a row before
+another takes over, so neither starts a second copy of a long run. Every
+machine behind a run watches it, so when it ends only the nearest takes over at
+once; the others wait their place and ask again, which finds that machine's new
+run. A Stop from the user or an agent leaves an interrupt request on the run, so
+its `lastRun` says `stopped` and other machines treat it as settled. A
+usage-limit stop that auto-resume later continues still counts as not
+finishing. Waits and watches live in memory.
+After a restart, `next_run_at` may hold a check time, so the occurrence is
+recovered from the schedule (the latest aligned slot or fixed time at or before
+it) before asking. The restarted machine does lose the watch, so its first
+check is an ordinary one: an unanswered call then runs the task, as any
+machine that can't ask does.
 
 Clients otherwise read a machine only through their own connection to it. The
 exception is a linked machine's task list, which its owner wants to see while that

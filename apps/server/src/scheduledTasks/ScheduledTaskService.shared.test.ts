@@ -440,11 +440,29 @@ const oneMachineShared = (machineOrder: string[]) => ({
   machineOrder,
 });
 
+const FINISHED_THERE: SharedTaskPeerCheck.PeerCheckResult = {
+  ranOn: OTHER as never,
+  working: false,
+  unchecked: [],
+};
+const WORKING_THERE: SharedTaskPeerCheck.PeerCheckResult = { ...FINISHED_THERE, working: true };
+const FAILED_THERE: SharedTaskPeerCheck.PeerCheckResult = {
+  ranOn: null,
+  working: false,
+  unchecked: [],
+};
+const SILENT_THERE: SharedTaskPeerCheck.PeerCheckResult = {
+  ranOn: null,
+  working: false,
+  unchecked: [{ environmentId: OTHER as never, reason: "It did not answer in time." }],
+};
+
 // The task is due one hour after NOW. Each tick fires at `atMs`, and `settled` waits for the
-// change the tick published, so nothing polls.
+// change the tick published, so nothing polls. A list of answers is given out in turn, the last
+// one repeating.
 const runScenario = <A, E>(
   machineOrder: string[],
-  peers: SharedTaskPeerCheck.PeerCheckResult,
+  peers: SharedTaskPeerCheck.PeerCheckResult | ReadonlyArray<SharedTaskPeerCheck.PeerCheckResult>,
   body: (scenario: {
     readonly service: ScheduledTaskService.ScheduledTaskService["Service"];
     readonly sql: SqlClient.SqlClient;
@@ -464,10 +482,14 @@ const runScenario = <A, E>(
       linkedEnvironmentIds: Effect.succeed([]),
       linkStatus: Effect.succeed({ enabled: false, links: [] }),
       check: (input) =>
-        Ref.update(peerCalls, (calls) => [
+        Ref.updateAndGet(peerCalls, (calls) => [
           ...calls,
           { peers: input.peers, since: input.since },
-        ]).pipe(Effect.as(peers)),
+        ]).pipe(
+          Effect.map((calls) =>
+            "ranOn" in peers ? peers : peers[Math.min(calls.length, peers.length) - 1]!,
+          ),
+        ),
     });
     return yield* withService(
       (service, sql) =>
@@ -507,7 +529,7 @@ const nextRunAtOf = (sql: SqlClient.SqlClient) =>
   );
 
 it.effect("a later machine waits its turn, then skips an occurrence an earlier machine has", () =>
-  runScenario([OTHER, HERE_ENVIRONMENT_ID], { ranOn: OTHER as never, unchecked: [] }, (scenario) =>
+  runScenario([OTHER, HERE_ENVIRONMENT_ID], FINISHED_THERE, (scenario) =>
     Effect.gen(function* () {
       yield* scenario.tick(DUE + 1_000);
       yield* scenario.settled;
@@ -535,6 +557,7 @@ it.effect(
       [OTHER, HERE_ENVIRONMENT_ID],
       {
         ranOn: null,
+        working: false,
         unchecked: [{ environmentId: OTHER as never, reason: "This machine is not linked." }],
       },
       (scenario) =>
@@ -553,7 +576,7 @@ it.effect(
 );
 
 it.effect("the first machine in the order runs on time without asking anyone", () =>
-  runScenario([HERE_ENVIRONMENT_ID, OTHER], { ranOn: OTHER as never, unchecked: [] }, (scenario) =>
+  runScenario([HERE_ENVIRONMENT_ID, OTHER], FINISHED_THERE, (scenario) =>
     Effect.gen(function* () {
       yield* scenario.tick(DUE + 1_000);
       yield* Queue.take(scenario.launches);
@@ -563,7 +586,7 @@ it.effect("the first machine in the order runs on time without asking anyone", (
 );
 
 it.effect("the first machine asks first when it is late", () =>
-  runScenario([HERE_ENVIRONMENT_ID, OTHER], { ranOn: OTHER as never, unchecked: [] }, (scenario) =>
+  runScenario([HERE_ENVIRONMENT_ID, OTHER], FINISHED_THERE, (scenario) =>
     Effect.gen(function* () {
       // The scheduler ticks every 5 seconds, so lateness needs a due time already in the past.
       const lateDue = iso(NOW - 2 * MINUTE_MS);
@@ -593,7 +616,7 @@ it.effect(
   () =>
     runScenario(
       [OTHER, HERE_ENVIRONMENT_ID],
-      { ranOn: OTHER as never, unchecked: [] },
+      FINISHED_THERE,
       (scenario) =>
         Effect.gen(function* () {
           // This machine was asleep at the time; the earlier machine was on.
@@ -630,6 +653,159 @@ it.effect(
         timeOfDay: `${missedLocal.hour}:${String(missedLocal.minute).padStart(2, "0")}`,
       },
     ),
+);
+
+// Fires the task when it is next due and waits for what that tick published.
+const fireWhenDue = (scenario: {
+  readonly sql: SqlClient.SqlClient;
+  readonly tick: (atMs: number) => Effect.Effect<void>;
+  readonly settled: Effect.Effect<void>;
+}) =>
+  nextRunAtOf(scenario.sql).pipe(
+    Effect.flatMap((next) => scenario.tick(Date.parse(next!) + 1_000)),
+    Effect.andThen(scenario.settled),
+  );
+
+it.effect.each([
+  { name: "fails", answers: [WORKING_THERE, FAILED_THERE], runsHere: true },
+  { name: "finishes", answers: [WORKING_THERE, FINISHED_THERE], runsHere: false },
+  {
+    name: "stops answering twice",
+    answers: [WORKING_THERE, SILENT_THERE, SILENT_THERE],
+    runsHere: true,
+  },
+  {
+    name: "misses one check, then finishes",
+    answers: [WORKING_THERE, SILENT_THERE, FINISHED_THERE],
+    runsHere: false,
+  },
+])(
+  "a later machine keeps asking about a run still going on an earlier one, which $name",
+  ({ answers, runsHere }) =>
+    runScenario([OTHER, HERE_ENVIRONMENT_ID], answers, (scenario) =>
+      Effect.gen(function* () {
+        // Wait its turn, then ask once per answer, five minutes apart.
+        yield* fireWhenDue(scenario);
+        for (const _ of answers.slice(0, -1)) {
+          yield* fireWhenDue(scenario);
+          expect(yield* Queue.size(scenario.launches)).toBe(0);
+        }
+        const lastAskedAt = Date.parse((yield* nextRunAtOf(scenario.sql))!);
+        expect(lastAskedAt).toBeGreaterThanOrEqual(DUE + 5 * answers.length * MINUTE_MS);
+        if (runsHere) {
+          yield* scenario.tick(lastAskedAt + 1_000);
+          yield* Queue.take(scenario.launches);
+        } else {
+          yield* fireWhenDue(scenario);
+          expect(yield* Queue.size(scenario.launches)).toBe(0);
+          expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(DUE + HOUR_MS));
+        }
+        expect(yield* Ref.get(scenario.peerCalls)).toHaveLength(answers.length);
+      }),
+    ),
+);
+
+it.effect(
+  "a later machine leaves a run still going when the next occurrence is due, and judges that one on its own",
+  () =>
+    runScenario(
+      [OTHER, HERE_ENVIRONMENT_ID],
+      WORKING_THERE,
+      (scenario) =>
+        Effect.gen(function* () {
+          const due = NOW + 10 * MINUTE_MS;
+          // Ten-minute slots: the turn and each check are 2.5 minutes apart, so the third check
+          // lands on the next slot.
+          for (let step = 0; step < 4; step++) yield* fireWhenDue(scenario);
+          expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(due + 10 * MINUTE_MS));
+          yield* fireWhenDue(scenario);
+          expect(yield* Ref.get(scenario.peerCalls)).toHaveLength(3);
+          const runs = (yield* scenario.service.listRuns({
+            id: "scheduled-task:shared" as ScheduledTaskId,
+          })).runs;
+          expect(runs).toMatchObject([
+            {
+              outcome: "skipped",
+              skipReason: "ran_elsewhere",
+              ranOn: OTHER,
+              scheduledFor: iso(due),
+            },
+          ]);
+          // The next slot waits its own turn before asking.
+          yield* scenario.tick(due + 10 * MINUTE_MS + 6_000);
+          yield* scenario.settled;
+          expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(due + 12.5 * MINUTE_MS));
+          expect(yield* Queue.size(scenario.launches)).toBe(0);
+        }),
+      { type: "interval", everyMs: 10 * MINUTE_MS },
+    ),
+);
+
+it.effect(
+  "machines further back let the nearest one take over a run that ended, then ask again",
+  () =>
+    runScenario(
+      [OTHER, "environment-middle", HERE_ENVIRONMENT_ID],
+      [WORKING_THERE, FAILED_THERE, FAILED_THERE],
+      (scenario) =>
+        Effect.gen(function* () {
+          // Two places back: wait its turn, then watch the first machine's run.
+          yield* fireWhenDue(scenario);
+          yield* fireWhenDue(scenario);
+          // That run failed. The middle machine takes over; this one waits a place, then asks.
+          yield* fireWhenDue(scenario);
+          expect(yield* Queue.size(scenario.launches)).toBe(0);
+          yield* scenario.tick(Date.parse((yield* nextRunAtOf(scenario.sql))!) + 1_000);
+          yield* Queue.take(scenario.launches);
+          expect(yield* Ref.get(scenario.peerCalls)).toHaveLength(3);
+        }),
+    ),
+);
+
+it.effect(
+  "a machine waiting for a nearer one to take over still gives the occurrence up when the next is due",
+  () =>
+    runScenario(
+      [OTHER, "environment-middle", HERE_ENVIRONMENT_ID],
+      [WORKING_THERE, FAILED_THERE],
+      (scenario) =>
+        Effect.gen(function* () {
+          const due = NOW + 10 * MINUTE_MS;
+          // Ten-minute slots, 2.5 minutes a place: wait two places, watch, see the run fail, then
+          // wait one place for the middle machine, which reaches the next slot.
+          for (let step = 0; step < 3; step++) yield* fireWhenDue(scenario);
+          expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(due + 10 * MINUTE_MS));
+          yield* fireWhenDue(scenario);
+          expect(yield* Queue.size(scenario.launches)).toBe(0);
+          expect(yield* Ref.get(scenario.peerCalls)).toHaveLength(2);
+          const runs = (yield* scenario.service.listRuns({
+            id: "scheduled-task:shared" as ScheduledTaskId,
+          })).runs;
+          expect(runs).toMatchObject([{ outcome: "skipped", scheduledFor: iso(due) }]);
+          // The next slot waits its own two places.
+          yield* scenario.tick(due + 10 * MINUTE_MS + 6_000);
+          yield* scenario.settled;
+          expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(due + 15 * MINUTE_MS));
+        }),
+      { type: "interval", everyMs: 10 * MINUTE_MS },
+    ),
+);
+
+it.effect("a machine that lost its wait to a restart still asks about the occurrence", () =>
+  runScenario([OTHER, HERE_ENVIRONMENT_ID], FINISHED_THERE, (scenario) =>
+    Effect.gen(function* () {
+      // It was watching, so next_run_at holds a check time 40 minutes after the occurrence.
+      const checkAt = DUE + 40 * MINUTE_MS;
+      yield* scenario.sql`UPDATE scheduled_tasks SET next_run_at = ${iso(checkAt)}`;
+      yield* scenario.tick(checkAt);
+      yield* scenario.settled;
+      yield* fireWhenDue(scenario);
+      expect(yield* Ref.get(scenario.peerCalls)).toEqual([
+        { peers: [OTHER], since: iso(DUE - 30 * MINUTE_MS) },
+      ]);
+      expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(DUE + HOUR_MS));
+    }),
+  ),
 );
 
 const copyOf = (id: string, overrides: Record<string, unknown> = {}) => {

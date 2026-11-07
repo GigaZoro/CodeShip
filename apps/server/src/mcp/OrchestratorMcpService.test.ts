@@ -2864,35 +2864,66 @@ describe("OrchestratorMcpService provider resolution", () => {
         outcome: "failed",
       },
       {
+        name: "started, thread stopped by a user or agent",
+        task: { lastRunAt: "2026-10-05T01:00:00.000Z", lastRunStatus: "succeeded" },
+        runStatus: "interrupted",
+        stopRequested: true,
+        outcome: "failed",
+      },
+      {
+        name: "started, thread cut off by a restart that will continue it",
+        task: { lastRunAt: "2026-10-05T01:00:00.000Z", lastRunStatus: "succeeded" },
+        runStatus: "interrupted",
+        continues: true,
+        outcome: "working",
+      },
+      {
         name: "started, thread gone",
         task: { lastRunAt: "2026-10-05T01:00:00.000Z", lastRunStatus: "succeeded" },
         runStatus: undefined,
         outcome: "completed",
       },
-    ])("reports the last run as $outcome when it was $name", ({ task, runStatus, outcome }) =>
-      Effect.gen(function* () {
-        const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
-        const listed: ScheduledTask = {
-          ...existing,
-          ...task,
-          lastRunThreadId: ThreadId.make("thread:last-run"),
-        } as ScheduledTask;
-        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
-          Effect.provide(
-            service(masterRepository, saved, [listed], {
-              getThreadRecords: () =>
-                runStatus === undefined
-                  ? Effect.fail("thread is gone" as never)
-                  : Effect.succeed({ runs: [{ ordinal: 1, status: runStatus }] } as never),
-            }),
-          ),
-        );
-        const { tasks } = yield* mcp.listScheduledTasks(client, { projectId });
-        assert.deepEqual(
-          tasks[0]?.lastRun,
-          outcome === null ? null : { at: "2026-10-05T01:00:00.000Z", outcome },
-        );
-      }),
+    ])(
+      "reports the last run as $outcome when it was $name",
+      ({ task, runStatus, outcome, ...row }) =>
+        Effect.gen(function* () {
+          const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
+          const listed: ScheduledTask = {
+            ...existing,
+            ...task,
+            lastRunThreadId: ThreadId.make("thread:last-run"),
+          } as ScheduledTask;
+          const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+            Effect.provide(
+              service(masterRepository, saved, [listed], {
+                getThreadRecords: (_threadId, records) =>
+                  runStatus === undefined
+                    ? Effect.fail("thread is gone" as never)
+                    : (records as ReadonlyArray<string>).includes("turnItems")
+                      ? Effect.succeed({
+                          turnItems:
+                            "stopRequested" in row ? [{ type: "run_interrupt_request" }] : [],
+                        } as never)
+                      : Effect.succeed({
+                          runs: [{ ordinal: 1, status: runStatus, threadId: "thread:last-run" }],
+                        } as never),
+                restartContinuationPending: () =>
+                  Effect.succeed("continues" in row && row.continues === true),
+              }),
+            ),
+          );
+          const { tasks } = yield* mcp.listScheduledTasks(client, { projectId });
+          assert.deepEqual<unknown>(
+            tasks[0]?.lastRun,
+            outcome === null
+              ? null
+              : {
+                  at: "2026-10-05T01:00:00.000Z",
+                  outcome,
+                  ...("stopRequested" in row ? { stopped: true } : {}),
+                },
+          );
+        }),
     );
 
     it.effect("refuses to bind a shared task to a thread", () =>

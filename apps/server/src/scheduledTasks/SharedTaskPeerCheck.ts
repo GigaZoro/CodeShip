@@ -22,8 +22,10 @@ interface LinkStatus {
 }
 
 export interface PeerCheckResult {
-  /** The machine that is running or has finished the occurrence. */
+  /** The machine that is running or has finished the occurrence; one that finished comes first. */
   readonly ranOn: EnvironmentId | null;
+  /** `ranOn` is still running it, so its run may yet fail. */
+  readonly working: boolean;
   /** Machines that could not be asked, and why. */
   readonly unchecked: ReadonlyArray<{
     readonly environmentId: EnvironmentId;
@@ -81,9 +83,9 @@ const make = Effect.gen(function* () {
 
   const check: SharedTaskPeerCheck["Service"]["check"] = Effect.fn("SharedTaskPeerCheck.check")(
     function* (input) {
-      if (input.peers.length === 0) return { ranOn: null, unchecked: [] };
+      if (input.peers.length === 0) return { ranOn: null, working: false, unchecked: [] };
       const unreachable = (reason: string) => (environmentId: EnvironmentId) =>
-        Effect.succeed({ environmentId, reason, has: false });
+        Effect.succeed({ environmentId, reason, has: null });
       const enabled = yield* links.enabled;
       const now = yield* DateTime.now;
       // The stored link, not `list`, which first probes every linked machine.
@@ -110,35 +112,44 @@ const make = Effect.gen(function* () {
             Effect.timeoutOption(PeerMcpClient.PEER_READ_TIMEOUT),
             Effect.map((answer) => {
               if (Option.isNone(answer)) {
-                return { environmentId, reason: "It did not answer in time.", has: false };
+                return { environmentId, reason: "It did not answer in time.", has: null };
               }
               const task = answer.value.tasks.find(
                 (candidate) => candidate.scheduledTaskId === input.taskId,
               );
               if (task === undefined) {
-                return { environmentId, reason: "It does not have this task yet.", has: false };
+                return { environmentId, reason: "It does not have this task yet.", has: null };
               }
               if (task.lastRun === undefined) {
                 return {
                   environmentId,
                   reason: "It runs an older version of T3.CodeShip.",
-                  has: false,
+                  has: null,
                 };
               }
+              // A run someone stopped on purpose is settled, so it counts as finished.
               const has =
-                task.lastRun !== null &&
-                Date.parse(task.lastRun.at) >= Date.parse(input.since) &&
-                task.lastRun.outcome !== "failed";
+                task.lastRun === null ||
+                Date.parse(task.lastRun.at) < Date.parse(input.since) ||
+                (task.lastRun.outcome === "failed" && task.lastRun.stopped !== true)
+                  ? null
+                  : task.lastRun.outcome === "working"
+                    ? "working"
+                    : "completed";
               return { environmentId, reason: null, has };
             }),
             Effect.catch((error) =>
-              Effect.succeed({ environmentId, reason: error.message, has: false }),
+              Effect.succeed({ environmentId, reason: error.message, has: null }),
             ),
           );
       });
       const answers = yield* Effect.forEach(input.peers, askOne, { concurrency: "unbounded" });
+      const holder =
+        answers.find((answer) => answer.has === "completed") ??
+        answers.find((answer) => answer.has === "working");
       return {
-        ranOn: answers.find((answer) => answer.has)?.environmentId ?? null,
+        ranOn: holder?.environmentId ?? null,
+        working: holder?.has === "working",
         unchecked: answers.flatMap((answer) =>
           answer.reason === null
             ? []

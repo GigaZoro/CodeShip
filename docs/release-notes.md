@@ -1,3 +1,8 @@
+## 2026-11-07 — One-machine tasks finish even when the first machine doesn't
+
+- A one-machine scheduled task no longer gets lost when the machine running it fails partway. The next machine in the project's order keeps checking while that run is still going, and runs the task itself if the run fails or the machine stops answering (for example, it went to sleep or shut down), until the next run is due.
+- A one-machine run that you or an agent stop stays stopped: the next machine doesn't start it again.
+
 ## 2026-11-07 — The fork's server runs on Linux servers
 
 - Each release now includes the Linux x64 server (`t3`) and a `SHA256SUMS` file. Install it on a Linux server with `curl -fsSL https://raw.githubusercontent.com/GigaZoro/CodeShip/main/scripts/install.sh | T3CODE_RELEASE_REPOSITORY=GigaZoro/CodeShip sh`, then `t3 service install`.

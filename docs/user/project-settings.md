@@ -149,7 +149,11 @@ A task's **Runs** choice keeps a copy of it on each of your machines:
   project's machine order that is online and finishes it. Each later machine
   waits a few minutes per place in the order, then asks the machines ahead of
   it. It runs the task only when none of them ran it, or their run failed, for
-  example when a machine is offline or out of usage. The order belongs to the
+  example when a machine is offline or out of usage. While a machine ahead is
+  still running it, the later machine keeps asking every few minutes and runs
+  the task itself if that run fails or the machine stops answering, until the
+  next run is due. A run you or an agent stop stays stopped. The order belongs
+  to the
   project, so changing it in one task changes it for every one-machine task in
   that project.
 

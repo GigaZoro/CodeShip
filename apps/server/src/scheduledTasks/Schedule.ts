@@ -59,6 +59,17 @@ export function nextAlignedIntervalRunAt(
   return DateTime.makeUnsafe(anchorMs + k * step);
 }
 
+/** The latest aligned slot at or before `at`, or null before the first one. */
+export function latestAlignedIntervalRunAt(
+  everyMs: number,
+  anchorMs: number,
+  at: DateTime.DateTime,
+): DateTime.DateTime | null {
+  const step = Math.max(everyMs, MIN_SCHEDULED_TASK_INTERVAL_MS);
+  const k = Math.floor((DateTime.toEpochMillis(at) - anchorMs) / step);
+  return k >= 1 ? DateTime.makeUnsafe(anchorMs + k * step) : null;
+}
+
 function weekdayKey(weekdays: ReadonlyArray<number> | undefined): string {
   const unique = [...new Set(weekdays ?? [])].toSorted((x, y) => x - y);
   if (unique.length === 0 || unique.length === 7) return "daily";

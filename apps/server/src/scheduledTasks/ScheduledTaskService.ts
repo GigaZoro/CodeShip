@@ -90,6 +90,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import {
   isMissedFixedTimeRun,
   isSameSchedule,
+  latestAlignedIntervalRunAt,
   latestMissedFixedTimeRun,
   nextAlignedIntervalRunAt,
   nextScheduledRunAt,
@@ -421,6 +422,14 @@ function iso(value: DateTime.DateTime): string {
 
 const localNow = DateTime.withCurrentZoneLocal(DateTime.nowInCurrentZone);
 
+interface OneMachineWatch {
+  readonly environmentId: EnvironmentId;
+  /** Checks in a row it did not answer. */
+  readonly silentChecks: number;
+  /** Its run ended unfinished, and this machine waits for nearer machines to take over. */
+  readonly ended: boolean;
+}
+
 type NextRunTask = Pick<ScheduledTask, "enabled" | "schedule"> &
   Partial<Pick<ScheduledTask, "createdAt" | "shared">>;
 
@@ -442,6 +451,22 @@ function nextRunAt(task: NextRunTask, from: DateTime.DateTime): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The occurrence a one-machine due time stands for. After a restart forgets a deferral,
+ * `next_run_at` holds the time this machine meant to ask again, which is later than it.
+ */
+function oneMachineOccurrenceMs(task: NextRunTask, due: DateTime.DateTime): number {
+  const dueMs = DateTime.toEpochMillis(due);
+  const anchorMs = Date.parse(task.createdAt ?? "");
+  const latest =
+    task.schedule.type === "interval" && hasAlignedSlots(task) && Number.isFinite(anchorMs)
+      ? latestAlignedIntervalRunAt(task.schedule.everyMs, anchorMs, due)
+      : task.schedule.type === "once"
+        ? DateTime.make(task.schedule.runAt).pipe(Option.getOrNull)
+        : (latestMissedFixedTimeRun(task.schedule, due)?.at ?? null);
+  return latest === null ? dueMs : Math.min(dueMs, DateTime.toEpochMillis(latest));
 }
 
 /**
@@ -671,6 +696,8 @@ export const layer = Layer.effect(
           readonly occurrenceDueMs: number;
           readonly deferredTo: string;
           readonly catchUp: boolean;
+          /** The machine whose run of this occurrence was still going at the last check. */
+          readonly watching: OneMachineWatch | null;
         }
       >
     >(new Map());
@@ -1823,44 +1850,111 @@ export const layer = Layer.effect(
         const resumed = deferral !== undefined && deferral.deferredTo === task.nextRunAt;
         const catchingUp = resumed ? deferral.catchUp : catchUp;
         const windowMs = oneMachineWindowMs(task.schedule);
+        const graceMs = Math.min(ONE_MACHINE_GRACE_CAP_MS, windowMs / 2);
         const plan = yield* oneMachinePlan(sharing);
+        const shared = { ...task, shared: sharing };
+        const occurrenceDueMs = resumed
+          ? deferral.occurrenceDueMs
+          : oneMachineOccurrenceMs(shared, DateTime.subtract(now, { milliseconds: nowMs - dueMs }));
+        // Come back to this occurrence at `atMs` and ask again.
+        const deferTo = Effect.fnUntraced(function* (
+          atMs: number,
+          watching: OneMachineWatch | null,
+          decision: ScheduledTaskOneMachineDecision | null,
+        ) {
+          const deferredTo = iso(DateTime.makeUnsafe(atMs));
+          yield* sql`
+            UPDATE scheduled_tasks SET next_run_at = ${deferredTo}, updated_at = ${iso(now)}
+            WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
+          `.pipe(
+            Effect.andThen(
+              decision === null ? Effect.void : recordOneMachineDecision(task.id, decision),
+            ),
+            Effect.mapError((cause) =>
+              taskError("Could not defer the schedule task run.", { taskId: task.id, cause }),
+            ),
+          );
+          yield* Ref.update(oneMachineDeferrals, (current) =>
+            new Map(current).set(task.id, {
+              occurrenceDueMs,
+              deferredTo,
+              catchUp: catchingUp,
+              watching,
+            }),
+          );
+          yield* notifyChanged;
+        });
         if (!resumed) {
           if (plan.rank > 0) {
-            const graceMs = Math.min(ONE_MACHINE_GRACE_CAP_MS, windowMs / 2);
             // Machines ahead may be catching up too, so a catch-up waits its turn from now.
-            const deferredTo = iso(
-              DateTime.makeUnsafe((catchUp ? nowMs : dueMs) + plan.rank * graceMs),
-            );
-            yield* sql`
-              UPDATE scheduled_tasks SET next_run_at = ${deferredTo}, updated_at = ${iso(now)}
-              WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
-            `.pipe(
-              Effect.mapError((cause) =>
-                taskError("Could not defer the schedule task run.", { taskId: task.id, cause }),
-              ),
-            );
-            yield* Ref.update(oneMachineDeferrals, (current) =>
-              new Map(current).set(task.id, { occurrenceDueMs: dueMs, deferredTo, catchUp }),
-            );
-            return yield* notifyChanged;
+            return yield* deferTo((catchUp ? nowMs : dueMs) + plan.rank * graceMs, null, null);
           }
-          if (nowMs - dueMs <= ONE_MACHINE_ON_TIME_MS) {
+          if (nowMs - occurrenceDueMs <= ONE_MACHINE_ON_TIME_MS) {
             return yield* runTask(task, "scheduled", undefined, {
-              scheduledFor: task.nextRunAt,
+              scheduledFor: iso(DateTime.makeUnsafe(occurrenceDueMs)),
               catchUp,
             }).pipe(Effect.asVoid);
           }
         }
-        const occurrenceDueMs = resumed ? deferral.occurrenceDueMs : dueMs;
-        const answer = yield* peerCheck.check({
-          taskId: task.id,
-          peers: plan.peers,
-          since: iso(DateTime.makeUnsafe(occurrenceDueMs - windowMs)),
-        });
+        // In the local zone of `now`, so a fixed time's next run keeps its local hour.
+        const occurrenceDue = DateTime.subtract(now, { milliseconds: nowMs - occurrenceDueMs });
+        const following = nextRunAt(shared, occurrenceDue);
+        // Watching a run ends when the next occurrence is due, which is judged on its own.
+        const watchUntilMs =
+          following === null ? occurrenceDueMs + ONE_MACHINE_WINDOW_CAP_MS : Date.parse(following);
+        const watched = resumed ? deferral.watching : null;
         yield* Ref.update(oneMachineDeferrals, (current) => {
           const next = new Map(current);
           next.delete(task.id);
           return next;
+        });
+        const skipOccurrence = Effect.fnUntraced(function* (
+          ranOn: EnvironmentId,
+          next: string | null,
+          decision: ScheduledTaskOneMachineDecision | null,
+        ) {
+          yield* sql
+            .withTransaction(
+              sql`
+                UPDATE scheduled_tasks SET next_run_at = ${next}, updated_at = ${iso(now)}
+                WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
+              `.pipe(
+                Effect.andThen(
+                  decision === null ? Effect.void : recordOneMachineDecision(task.id, decision),
+                ),
+              ),
+            )
+            .pipe(
+              Effect.mapError((cause) =>
+                taskError("Could not skip the schedule task run.", { taskId: task.id, cause }),
+              ),
+            );
+          yield* Effect.logInfo("Skipping a one-machine task run another machine has", {
+            taskId: task.id,
+            ranOn,
+          });
+          yield* insertRunRecord({
+            id: `${task.id}:${iso(occurrenceDue)}:skipped`,
+            taskId: task.id,
+            trigger: catchingUp ? "catch_up" : "scheduled",
+            scheduledFor: iso(occurrenceDue),
+            startedAt: iso(now),
+            completedAt: iso(now),
+            outcome: "skipped",
+            skipReason: "ran_elsewhere",
+            ranOn,
+            failover: null,
+          });
+          yield* notifyChanged;
+        });
+        // Still going when the next one is due: leave it to that machine and judge the next one now.
+        if (watched !== null && nowMs >= watchUntilMs) {
+          return yield* skipOccurrence(watched.environmentId, following, null);
+        }
+        const answer = yield* peerCheck.check({
+          taskId: task.id,
+          peers: plan.peers,
+          since: iso(DateTime.makeUnsafe(occurrenceDueMs - windowMs)),
         });
         yield* Effect.forEach(
           answer.unchecked,
@@ -1877,6 +1971,36 @@ export const layer = Layer.effect(
           ranOn: answer.ranOn,
           unchecked: answer.unchecked,
         };
+        // A run still going may yet fail or stop, so keep asking until it ends. A machine that
+        // was running it gets one unanswered check before this one takes over, so one dropped
+        // call doesn't start a second run.
+        const watchNext: OneMachineWatch | null =
+          answer.ranOn !== null && answer.working
+            ? { environmentId: answer.ranOn, silentChecks: 0, ended: false }
+            : watched !== null &&
+                !watched.ended &&
+                watched.silentChecks === 0 &&
+                answer.ranOn === null &&
+                answer.unchecked.some((peer) => peer.environmentId === watched.environmentId)
+              ? { ...watched, silentChecks: 1 }
+              : null;
+        if (watchNext !== null) {
+          return yield* deferTo(Math.min(nowMs + graceMs, watchUntilMs), watchNext, decision);
+        }
+        // The machines between the one whose run ended and this one were watching it too. The
+        // nearest takes over at once; each one after it waits its place and asks again, still
+        // giving the occurrence up when the next one is due.
+        if (watched !== null && !watched.ended && answer.ranOn === null) {
+          const watchedAt = plan.peers.indexOf(watched.environmentId);
+          const between = plan.rank - watchedAt - 1;
+          if (watchedAt !== -1 && between > 0) {
+            return yield* deferTo(
+              Math.min(nowMs + between * graceMs, watchUntilMs),
+              { ...watched, ended: true },
+              decision,
+            );
+          }
+        }
         if (answer.ranOn === null) {
           yield* recordOneMachineDecision(task.id, decision).pipe(
             Effect.catch((cause) =>
@@ -1891,40 +2015,9 @@ export const layer = Layer.effect(
             catchUp: catchingUp,
           }).pipe(Effect.asVoid);
         }
-        // In the local zone of `now`, so a fixed time's next run keeps its local hour.
-        const occurrenceDue = DateTime.subtract(now, { milliseconds: nowMs - occurrenceDueMs });
-        const shared = { ...task, shared: sharing };
-        let next = nextRunAt(shared, occurrenceDue);
-        if (next !== null && Date.parse(next) <= nowMs) next = nextRunAt(shared, now);
-        yield* sql
-          .withTransaction(
-            sql`
-              UPDATE scheduled_tasks SET next_run_at = ${next}, updated_at = ${iso(now)}
-              WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
-            `.pipe(Effect.andThen(recordOneMachineDecision(task.id, decision))),
-          )
-          .pipe(
-            Effect.mapError((cause) =>
-              taskError("Could not skip the schedule task run.", { taskId: task.id, cause }),
-            ),
-          );
-        yield* Effect.logInfo("Skipping a one-machine task run another machine has", {
-          taskId: task.id,
-          ranOn: answer.ranOn,
-        });
-        yield* insertRunRecord({
-          id: `${task.id}:${iso(occurrenceDue)}:skipped`,
-          taskId: task.id,
-          trigger: catchingUp ? "catch_up" : "scheduled",
-          scheduledFor: iso(occurrenceDue),
-          startedAt: iso(now),
-          completedAt: iso(now),
-          outcome: "skipped",
-          skipReason: "ran_elsewhere",
-          ranOn: answer.ranOn,
-          failover: null,
-        });
-        yield* notifyChanged;
+        const next =
+          following !== null && Date.parse(following) <= nowMs ? nextRunAt(shared, now) : following;
+        yield* skipOccurrence(answer.ranOn, next, decision);
       },
     );
 

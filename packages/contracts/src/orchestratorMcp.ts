@@ -728,9 +728,13 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
       Schema.Struct({
         at: IsoDateTime,
         outcome: Schema.Literals(["working", "completed", "failed"]),
+        stopped: Schema.optional(Schema.Literal(true)),
       }),
     ),
-  ).annotate({ description: "The last run here. working: its thread is still going." }),
+  ).annotate({
+    description:
+      "The last run here. working: its thread is still going. stopped: a user or agent stopped it on purpose.",
+  }),
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;
 

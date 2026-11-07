@@ -15,16 +15,19 @@ const TASK = ScheduledTaskId.make("scheduled-task:shared");
 const PEER = EnvironmentId.make("environment-peer");
 const SINCE = "2026-09-09T11:30:00.000Z";
 
-type PeerAnswer = () => Effect.Effect<unknown, OrchestratorMcpFailure>;
+type PeerAnswer = (call: {
+  readonly environmentId: EnvironmentId;
+}) => Effect.Effect<unknown, OrchestratorMcpFailure>;
 
 const check = (input: {
   readonly linked?: "reachable" | "expired" | "none";
   readonly enabled?: boolean;
+  readonly peers?: ReadonlyArray<EnvironmentId>;
   readonly answer: PeerAnswer;
 }) =>
   Effect.gen(function* () {
     const service = yield* SharedTaskPeerCheck.SharedTaskPeerCheck;
-    return yield* service.check({ taskId: TASK, peers: [PEER], since: SINCE });
+    return yield* service.check({ taskId: TASK, peers: input.peers ?? [PEER], since: SINCE });
   }).pipe(
     Effect.provide(
       SharedTaskPeerCheck.layer.pipe(
@@ -59,28 +62,55 @@ it.effect.each([
     name: "working in the window",
     lastRun: { at: "2026-09-09T12:00:00.000Z", outcome: "working" },
     ranOn: PEER,
+    working: true,
   },
   {
     name: "completed in the window",
     lastRun: { at: "2026-09-09T11:30:00.000Z", outcome: "completed" },
     ranOn: PEER,
+    working: false,
   },
   {
     name: "completed before the window",
     lastRun: { at: "2026-09-09T11:29:59.999Z", outcome: "completed" },
     ranOn: null,
+    working: false,
   },
   {
     name: "failed in the window",
     lastRun: { at: "2026-09-09T12:00:00.000Z", outcome: "failed" },
     ranOn: null,
+    working: false,
   },
-  { name: "never run", lastRun: null, ranOn: null },
-])("a peer's last run $name", ({ lastRun, ranOn }) =>
+  {
+    name: "stopped on purpose in the window",
+    lastRun: { at: "2026-09-09T12:00:00.000Z", outcome: "failed", stopped: true },
+    ranOn: PEER,
+    working: false,
+  },
+  { name: "never run", lastRun: null, ranOn: null, working: false },
+])("a peer's last run $name", ({ lastRun, ranOn, working }) =>
   check({ answer: peerTask(lastRun) }).pipe(
     Effect.map((result) => {
       expect(result.ranOn).toBe(ranOn);
+      expect(result.working).toBe(working);
       expect(result.unchecked).toEqual([]);
+    }),
+  ),
+);
+
+it.effect("a peer that finished wins over one still working", () =>
+  check({
+    peers: [EnvironmentId.make("environment-working"), PEER],
+    answer: ({ environmentId }) =>
+      peerTask({
+        at: "2026-09-09T12:00:00.000Z",
+        outcome: environmentId === PEER ? "completed" : "working",
+      })(),
+  }).pipe(
+    Effect.map((result) => {
+      expect(result.ranOn).toBe(PEER);
+      expect(result.working).toBe(false);
     }),
   ),
 );

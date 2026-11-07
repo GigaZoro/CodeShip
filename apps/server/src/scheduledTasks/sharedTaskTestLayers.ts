@@ -22,7 +22,7 @@ export interface TestSharedProject {
 const layerNoPeersRan = Layer.mock(SharedTaskPeerCheck.SharedTaskPeerCheck)({
   linkedEnvironmentIds: Effect.succeed([]),
   linkStatus: Effect.succeed({ enabled: false, links: [] }),
-  check: () => Effect.succeed({ ranOn: null, unchecked: [] }),
+  check: () => Effect.succeed({ ranOn: null, working: false, unchecked: [] }),
 });
 
 /** This machine's id and its projects, for services that only need to identify a repository. */
