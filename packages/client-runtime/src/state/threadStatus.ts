@@ -66,7 +66,7 @@ export type ThreadStatusTone =
   | "success"
   | "plan";
 
-export interface ThreadStatusDisplay {
+interface ThreadStatusDisplay {
   /** The short word rows, pills, and task lists show. */
   readonly label: Message;
   /** The sentence notifications and screen readers say, for statuses they announce. */

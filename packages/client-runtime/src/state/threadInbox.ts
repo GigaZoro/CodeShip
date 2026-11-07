@@ -117,7 +117,7 @@ function threadNeedsYouSince(thread: NeedsYouInput, reason: NeedsYouReason): num
 export interface NeedsYouThreads<T> {
   /** Longest wait first. */
   readonly threads: readonly T[];
-  readonly reasonOf: (thread: T) => NeedsYouReason;
+  /** When the thread started waiting on the user, in epoch milliseconds. */
   readonly sinceOf: (thread: T) => number;
   /** When a failed thread's snooze ends and it rejoins, so a caller can recompute then. */
   readonly nextChangeAt: number | null;
@@ -126,12 +126,12 @@ export interface NeedsYouThreads<T> {
 export function collectNeedsYouThreads<
   T extends NeedsYouInput & Pick<EnvironmentThreadShell, "id" | "environmentId">,
 >(threads: readonly T[], options: { readonly now: string }): NeedsYouThreads<T> {
-  const entries = new Map<T, { reason: NeedsYouReason; since: number }>();
+  const sinceByThread = new Map<T, number>();
   let nextChangeAt: number | null = null;
   for (const thread of threads) {
     const reason = threadNeedsYouReason(thread, options);
     if (reason !== null) {
-      entries.set(thread, { reason, since: threadNeedsYouSince(thread, reason) });
+      sinceByThread.set(thread, threadNeedsYouSince(thread, reason));
       continue;
     }
     if (
@@ -145,16 +145,15 @@ export function collectNeedsYouThreads<
       }
     }
   }
-  const sorted = [...entries.keys()].sort(
+  const sorted = [...sinceByThread.keys()].sort(
     (left, right) =>
-      entries.get(left)!.since - entries.get(right)!.since ||
+      sinceByThread.get(left)! - sinceByThread.get(right)! ||
       left.id.localeCompare(right.id) ||
       left.environmentId.localeCompare(right.environmentId),
   );
   return {
     threads: sorted,
-    reasonOf: (thread) => entries.get(thread)?.reason ?? "approval",
-    sinceOf: (thread) => entries.get(thread)?.since ?? 0,
+    sinceOf: (thread) => sinceByThread.get(thread) ?? 0,
     nextChangeAt,
   };
 }
