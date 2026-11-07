@@ -1,12 +1,18 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as ClaudeSdk from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerStatus } from "@anthropic-ai/claude-agent-sdk";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as TestClock from "effect/testing/TestClock";
+import { vi } from "vite-plus/test";
 
 import { claudeMcpServerEntry, claudeMcpServers, makeClaudeMcpManagement } from "./ClaudeMcp.ts";
+
+vi.mock("@anthropic-ai/claude-agent-sdk", { spy: true });
 
 // What `mcpServerStatus()` reports for each kind of server Claude 2.1 loads.
 const statuses: ReadonlyArray<McpServerStatus> = [
@@ -290,6 +296,57 @@ it.layer(NodeServices.layer)("makeClaudeMcpManagement", (it) => {
         args: [],
         env: {},
       });
+    }),
+  );
+
+  it.effect("finishes a sign-in whose address was pasted once Claude reconnects the server", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-mcp-" });
+      // Like Claude: a pasted address saves the token, and the server reports
+      // needs-auth until the host asks for a reconnect.
+      let reconnected = false;
+      const reconnect = vi.fn(async (_name: string) => {
+        reconnected = true;
+      });
+      const querySpy = vi.spyOn(ClaudeSdk, "query").mockImplementation(
+        () =>
+          ({
+            initializationResult: async () => ({}),
+            mcpAuthenticate: async () => ({
+              authUrl: "https://docs.example/authorize",
+              requiresUserAction: true,
+            }),
+            mcpSubmitOAuthCallbackUrl: async () => undefined,
+            reconnectMcpServer: reconnect,
+            mcpServerStatus: async (): Promise<Array<McpServerStatus>> => [
+              {
+                name: "docs",
+                status: reconnected ? "connected" : "needs-auth",
+                scope: "user",
+                config: { type: "http", url: "https://docs.example/mcp" },
+              },
+            ],
+          }) as unknown as ClaudeSdk.Query,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(() => querySpy.mockRestore()));
+      const mcp = yield* makeClaudeMcpManagement({
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        binaryPath: "claude",
+        environment: {},
+        cwd: root,
+        configPath: path.join(root, ".claude.json"),
+        settingsPath: path.join(root, "settings.json"),
+      });
+
+      const signIn = yield* mcp.signIn("docs");
+      const completing = yield* signIn.completed.pipe(Effect.forkChild({ startImmediately: true }));
+      yield* signIn.submitCallbackUrl("http://localhost:4567/callback?code=c&state=s");
+
+      assert.deepEqual(reconnect.mock.calls, [["docs"]]);
+      yield* TestClock.adjust("1 second");
+      yield* Fiber.join(completing);
     }),
   );
 });

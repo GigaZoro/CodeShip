@@ -1,3 +1,7 @@
+## 2026-11-08 — Claude MCP sign-in no longer hangs after the browser returns
+
+- Signing in to an MCP server for a Claude provider on another machine now finishes once you approve in the browser. Before, Claude saved the sign-in but the dialog stayed on "Waiting for approval…" for up to five minutes, and trying again showed "No active OAuth flow for server". The same fix applies when you paste the redirect address yourself.
+
 ## 2026-11-08 — Account switching moves Claude turns held at a usage limit
 
 - With **Switch accounts at usage limits** on, a Claude turn that Claude holds open until its usage limit resets now continues on another account of the same provider that has usage left, instead of waiting for the reset. A reset less than five minutes away is still waited out, and with switching off or no account with room the turn keeps waiting as before.

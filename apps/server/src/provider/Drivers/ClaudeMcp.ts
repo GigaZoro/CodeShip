@@ -646,14 +646,17 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
           reason: "unsupported",
         });
       }
-      const response = yield* Effect.tryPromise({
-        try: () => query.mcpAuthenticate(name),
-        catch: thrown("signIn"),
-      }).pipe(
-        Effect.timeoutOrElse({
-          duration: CONTROL_TIMEOUT,
-          orElse: () => Effect.fail(failure("signIn", "Claude did not start the sign-in in time.")),
-        }),
+      const control = <A>(request: () => Promise<A>, lateMessage: string) =>
+        Effect.tryPromise({ try: request, catch: thrown("signIn") }).pipe(
+          Effect.timeoutOrElse({
+            duration: CONTROL_TIMEOUT,
+            orElse: () => Effect.fail(failure("signIn", lateMessage)),
+          }),
+        );
+      const response = yield* control(
+        () => query.mcpAuthenticate(name),
+        "Claude did not start the sign-in in time.",
+      ).pipe(
         Effect.flatMap((raw) =>
           decodeAuthenticateResponse(raw).pipe(
             Effect.mapError((cause) => failure("signIn", undefined, cause)),
@@ -673,16 +676,18 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
         authorizationUrl: response.authUrl,
         completed: awaitConnected(query, name),
         submitCallbackUrl: (callbackUrl) =>
-          Effect.tryPromise({
-            try: () => query.mcpSubmitOAuthCallbackUrl(name, callbackUrl),
-            catch: thrown("signIn"),
-          }).pipe(
-            Effect.timeoutOrElse({
-              duration: CONTROL_TIMEOUT,
-              orElse: () =>
-                Effect.fail(failure("signIn", "Claude did not take the address in time.")),
-            }),
-            Effect.asVoid,
+          control(
+            () => query.mcpSubmitOAuthCallbackUrl(name, callbackUrl),
+            "Claude did not take the address in time.",
+          ).pipe(
+            // Claude saves the token from a submitted address but leaves the server waiting
+            // for its host to reconnect it, so `completed` would never see it connect.
+            Effect.andThen(
+              control(
+                () => query.reconnectMcpServer(name),
+                "Claude did not reconnect the server in time.",
+              ),
+            ),
           ),
       };
     }),
