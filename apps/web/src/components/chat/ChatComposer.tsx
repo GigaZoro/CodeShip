@@ -944,6 +944,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         runtimeModeCeilingDenial ??
         (multipleModelSelections === null ? providerSendBlockReason : null)));
   const isSendDisabled = sendDisabledReason !== null;
+  // Plain text to a thread the machine already has waits in this browser for it to reconnect.
+  const offlineQueueMachine =
+    environmentUnavailable !== null && routeKind === "server" && !activePendingProgress
+      ? environmentUnavailable.label
+      : null;
   const selectedProviderStatus = selectedProviderEntry?.snapshot ?? null;
   const skillAvailability = resolveProjectSettings(settings, activeProjectId).settings
     .skillAvailability;
@@ -1256,7 +1261,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isSendDisabled ||
     noProviderAvailable ||
     projectSelectionRequired ||
-    environmentUnavailable !== null ||
+    (environmentUnavailable !== null && offlineQueueMachine === null) ||
     (!composerSendState.hasSendableContent && !showResumeAction);
   const collapsedComposerPrimaryActionLabel = showResumeAction
     ? t("Resume thread")
@@ -3544,10 +3549,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     isSendBusy={isSendBusy}
                     sendDisabledReason={sendDisabledReason}
                     isEnvironmentUnavailable={
-                      environmentUnavailable !== null ||
+                      (environmentUnavailable !== null && offlineQueueMachine === null) ||
                       noProviderAvailable ||
                       projectSelectionRequired
                     }
+                    offlineQueueMachine={offlineQueueMachine}
                     isPreparingWorktree={isPreparingWorktree}
                     hasSendableContent={composerSendState.hasSendableContent}
                     canResume={showResumeAction}

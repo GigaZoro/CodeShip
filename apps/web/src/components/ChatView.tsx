@@ -1,3 +1,4 @@
+import { useQueuedMessagesBanner } from "./chat/useQueuedMessagesBanner";
 import { t } from "~/i18n";
 import { ChildThreadApprovals } from "./chat/ChildThreadApprovals";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
@@ -1293,6 +1294,11 @@ export default function ChatView(props: ChatViewProps) {
     hasMultipleRegisteredEnvironments: environments.length > 1,
     automaticEnvironment,
     autoUpdateEnvironments,
+  });
+  const queuedMessagesBanner = useQueuedMessagesBanner({
+    environmentId: activeThread?.environmentId ?? null,
+    threadId: isServerThread ? (activeThread?.id ?? null) : null,
+    machineLabel: activeEnvironment?.label ?? null,
   });
   const providerInstanceEntries = providerInstanceEntriesFor(
     providerStatuses,
@@ -2639,6 +2645,7 @@ export default function ChatView(props: ChatViewProps) {
         ...limitRecoveryItems,
         ...usageLimitsItems,
         ...projectCloneItems,
+        ...(queuedMessagesBanner === null ? [] : [queuedMessagesBanner]),
         ...systemComposerBannerItems,
       ];
     }
@@ -2648,6 +2655,7 @@ export default function ChatView(props: ChatViewProps) {
       ...limitRecoveryItems,
       ...usageLimitsItems,
       ...projectCloneItems,
+      ...(queuedMessagesBanner === null ? [] : [queuedMessagesBanner]),
       ...systemComposerBannerItems,
       branchMismatchBannerItem({
         mismatchKey: activeBranchMismatchKey,

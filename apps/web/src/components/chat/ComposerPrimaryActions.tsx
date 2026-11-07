@@ -40,6 +40,8 @@ interface ComposerPrimaryActionsProps {
   isSendBusy: boolean;
   sendDisabledReason: string | null;
   isEnvironmentUnavailable: boolean;
+  /** The offline machine a message here waits for, which turns Send into Queue. */
+  offlineQueueMachine?: string | null;
   isPreparingWorktree: boolean;
   hasSendableContent: boolean;
   canResume?: boolean;
@@ -100,6 +102,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   isSendBusy,
   sendDisabledReason,
   isEnvironmentUnavailable,
+  offlineQueueMachine = null,
   isPreparingWorktree,
   hasSendableContent,
   canResume = false,
@@ -282,15 +285,17 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
 
   const submitLabel = showResume
     ? t("Resume thread")
-    : isEditingQueuedMessage
-      ? t("Update queued message")
-      : compactsBeforeSend
-        ? t("Compact and send")
-        : isQueuing
-          ? t("Queue message")
-          : isRunning
-            ? t("Steer message")
-            : t("Submit message");
+    : offlineQueueMachine !== null
+      ? t("Queue until {name} reconnects", { name: offlineQueueMachine })
+      : isEditingQueuedMessage
+        ? t("Update queued message")
+        : compactsBeforeSend
+          ? t("Compact and send")
+          : isQueuing
+            ? t("Queue message")
+            : isRunning
+              ? t("Steer message")
+              : t("Submit message");
   const submitStatus = isEnvironmentUnavailable
     ? t("Environment disconnected")
     : (sendDisabledReason ??

@@ -122,6 +122,7 @@ import { MiddleTruncate } from "../ui/middle-truncate";
 import { ActivityShimmerOverlay } from "../chat/TimelineRowParts";
 import { observeVisibleAnimation } from "~/lib/visibleAnimation";
 import { useThreadHasUnsentDraft } from "../../composerDraftStore";
+import { useThreadOutboxStore } from "../../threadOutboxStore";
 
 import { t, tn } from "~/i18n";
 // The fields thread rows show. Provider status pushes refresh `checkedAt`,
@@ -753,6 +754,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
   const terminalProcessCount = runningTerminalIds.length;
   const hasUnsentDraft = useThreadHasUnsentDraft(threadRef) && !props.isRouteThread;
+  const hasQueuedMessages = useThreadOutboxStore((state) =>
+    state.messages.some(
+      (message) => message.environmentId === thread.environmentId && message.threadId === thread.id,
+    ),
+  );
   const handleDiscardDraftClick = (event: ReactMouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
@@ -1146,6 +1152,22 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       <TooltipPopup side="top">{t("Unsent draft")}</TooltipPopup>
     </Tooltip>
   ) : null;
+  const queuedIndicator = hasQueuedMessages ? (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span
+            role="img"
+            aria-label={t("Messages queued to send")}
+            className="inline-flex shrink-0 items-center text-muted-foreground"
+          />
+        }
+      >
+        <ClockIcon aria-hidden className="size-3" />
+      </TooltipTrigger>
+      <TooltipPopup side="top">{t("Messages queued to send")}</TooltipPopup>
+    </Tooltip>
+  ) : null;
   const showPin =
     props.isPinned && (!sortable?.isDragging || (props.dragOverPinned && props.dropVerb === null));
   const pinIndicator = showPin ? (
@@ -1322,6 +1344,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 </span>
               )}
               {draftIndicator}
+              {queuedIndicator}
               {title}
               {multiline ? titleLineIcons : null}
               {scheduledIndicator}
@@ -1516,6 +1539,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           >
             <div className="flex h-5 min-w-0 items-center gap-1.5">
               {draftIndicator}
+              {queuedIndicator}
               {props.project ? (
                 <ProjectFavicon project={props.project} className="size-4 shrink-0" />
               ) : null}

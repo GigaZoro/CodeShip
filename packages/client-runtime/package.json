@@ -335,6 +335,10 @@
       "types": "./src/state/threadInbox.ts",
       "default": "./src/state/threadInbox.ts"
     },
+    "./state/thread-outbox": {
+      "types": "./src/state/threadOutbox.ts",
+      "default": "./src/state/threadOutbox.ts"
+    },
     "./state/thread-relationships": {
       "types": "./src/state/threadRelationships.ts",
       "default": "./src/state/threadRelationships.ts"

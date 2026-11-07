@@ -1,10 +1,7 @@
-import { isTransportConnectionErrorMessage } from "@t3tools/client-runtime/errors";
 import {
   clampFileAttachmentUploadBytes,
   fileAttachmentTooLargeMessage,
 } from "@t3tools/client-runtime/state/attachments";
-import type { EnvironmentShellStatus } from "@t3tools/client-runtime/state/shell";
-import type { ThreadFamilyRead } from "@t3tools/client-runtime/state/threads";
 import {
   CommandId,
   EnvironmentId,
@@ -20,6 +17,10 @@ import {
   type RuntimeMode as RuntimeModeType,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import {
+  shouldRetryThreadOutboxDelivery,
+  type ThreadOutboxDeliveryAction,
+} from "@t3tools/client-runtime/state/thread-outbox";
 
 import { DraftComposerAttachmentSchema } from "../lib/composer-image-schema";
 import type { ComposerDispatchMode } from "@t3tools/client-runtime/state/composer-dispatch";
@@ -152,35 +153,6 @@ export function threadOutboxRetryDelayMs(attempt: number): number {
   return Math.min(1_000 * 2 ** Math.max(0, attempt - 1), THREAD_OUTBOX_MAX_RETRY_DELAY_MS);
 }
 
-export type ThreadOutboxDeliveryAction = "wait" | "remove" | "send";
-
-export function resolveThreadOutboxDeliveryAction(input: {
-  readonly isCreation: boolean;
-  readonly threadExists: boolean;
-  readonly shellStatus: EnvironmentShellStatus;
-  readonly environmentConnected: boolean;
-  /**
-   * Set when the shell can leave idle subagent children out: absence alone is not deletion there,
-   * only a settled family read without the row is.
-   */
-  readonly familyRead?: ThreadFamilyRead;
-}): ThreadOutboxDeliveryAction {
-  if (input.isCreation) {
-    if (input.threadExists) {
-      return "remove";
-    }
-    // Wait for live shells; an unsynchronized list can hide delivered creations and cause duplicate re-issuance.
-    return input.environmentConnected && input.shellStatus === "live" ? "send" : "wait";
-  }
-  if (!input.threadExists) {
-    return input.shellStatus === "live" &&
-      (input.familyRead === undefined || input.familyRead === "settled")
-      ? "remove"
-      : "wait";
-  }
-  return input.environmentConnected ? "send" : "wait";
-}
-
 export type ThreadOutboxDispatchStep =
   | { readonly step: "wait" }
   | { readonly step: "remove" }
@@ -224,35 +196,6 @@ export function isQueuedThreadCreationSendable(message: QueuedThreadMessage): bo
     return false;
   }
   return message.creation.workspaceMode !== "worktree" || Boolean(message.creation.branch);
-}
-
-function errorMessage(error: unknown): string | null {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (typeof error === "object" && error !== null && "message" in error) {
-    return typeof error.message === "string" ? error.message : null;
-  }
-  return typeof error === "string" ? error : null;
-}
-
-/** Dispatch/auth rejections invalidate payloads; other typed failures may be disconnected transports and must retry. */
-export function shouldRetryThreadOutboxDelivery(error: unknown): boolean {
-  if (typeof error === "object" && error !== null && "_tag" in error) {
-    switch (error._tag) {
-      case "OrchestrationDispatchCommandError":
-      case "EnvironmentAuthorizationError":
-        return false;
-      case "ConnectionTransientError":
-      case "RpcClientError":
-      case "EnvironmentRpcUnavailableError":
-      case "EnvironmentNotRegisteredError":
-        return true;
-      default:
-        break;
-    }
-  }
-  return isTransportConnectionErrorMessage(errorMessage(error));
 }
 
 export type ThreadOutboxCommandStage = "settings-sync" | "start-turn";

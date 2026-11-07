@@ -17,6 +17,7 @@ import {
 import { isUsageLimitsCommand } from "@t3tools/shared/usageLimits";
 import {
   AuthOrchestrationOperateScope,
+  CommandId,
   DEFAULT_MODEL,
   type EnvironmentId,
   type ModelSelection,
@@ -60,7 +61,8 @@ import { resolvePlanFollowUpSubmission } from "../../proposedPlan";
 import { type ChatMessage } from "../../types";
 import { recordPromptSent } from "../GitHubStarPrompt";
 import { stackedThreadToast, toastManager } from "../ui/toast";
-import { newMessageId, newThreadId } from "~/lib/utils";
+import { newMessageId, newThreadId, randomUUID } from "~/lib/utils";
+import { useThreadOutboxStore } from "../../threadOutboxStore";
 import { useNewThreadHandler } from "../../hooks/useHandleNewThread";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import {
@@ -463,6 +465,34 @@ export function useComposerSend(input: ComposerSendInput) {
       return;
     }
     if (activeEnvironmentUnavailable) {
+      const queueCtx = composerRef.current?.getSendContext();
+      // Plain text to a thread the machine already has can wait in this browser for a reconnect.
+      // Attachments and context are uploaded to the machine, so they still need it connected.
+      if (
+        queueCtx &&
+        isServerThread &&
+        !directAnnotation &&
+        !queueCtx.answeringPendingUserInput &&
+        queueCtx.multipleModelSelections === null &&
+        !draftHasNonPromptContent(composerDraftTarget) &&
+        promptAtSend.trim().length > 0
+      ) {
+        useThreadOutboxStore.getState().enqueue({
+          environmentId,
+          threadId: activeThread.id,
+          commandId: CommandId.make(randomUUID()),
+          messageId: newMessageId(),
+          text: promptAtSend,
+          modelSelection: queueCtx.selectedModelSelection,
+          runtimeMode,
+          interactionMode: queueCtx.interactionMode,
+          createdAt: new Date().toISOString(),
+        });
+        promptRef.current = "";
+        setComposerDraftPrompt(composerDraftTarget, "");
+        composerRef.current?.resetCursorState();
+        return;
+      }
       const toastSlot = environmentUnavailableSendToastSlotRef.current;
       environmentUnavailableSendToastSlotRef.current =
         (toastSlot + 1) % ENVIRONMENT_UNAVAILABLE_SEND_TOAST_TRAIL_SIZE;
@@ -470,7 +500,9 @@ export function useComposerSend(input: ComposerSendInput) {
         ...stackedThreadToast({
           type: "warning",
           title: t("Not connected: message not sent"),
-          description: t("Reconnecting to the environment. Try again once it is connected."),
+          description: t(
+            "Only plain text can wait for the machine to reconnect. Send attachments and context once it is connected.",
+          ),
         }),
         id: `chat-send-environment-unavailable:${toastSlot}`,
       });
