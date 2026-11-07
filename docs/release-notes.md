@@ -1,3 +1,8 @@
+## 2026-11-08 — Panel tabs no longer slide under the top-right buttons
+
+- With the right panel open on a wide window, its tabs and scroll arrows no longer run underneath the **Terminal**, **Panel** and maximize buttons. The tab strip now ends before those buttons at any width and language. On web and desktop.
+- On desktop, the whole of those buttons is clickable again with the panel open. Before, clicking their left part could drag the window instead.
+
 ## 2026-11-08 — Chats that settle themselves stay settled
 
 - When an agent settles its own chat at the end of its turn, the chat now settles even if a delegated task's result or a finished background command starts one more turn right as the first ends. The settle waits for that turn instead of being dropped. A message you send in the meantime still keeps the chat active.

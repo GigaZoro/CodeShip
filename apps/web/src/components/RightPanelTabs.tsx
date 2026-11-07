@@ -104,6 +104,7 @@ import { PierreEntryIcon } from "./chat/PierreEntryIcon";
 import { resolvePullRequestState } from "./pullRequest/pullRequestPresentation";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { observeResize } from "~/lib/observeResize";
+import { reserveTitlebarControlsSpace } from "~/lib/titlebarControlsSpace";
 import { surfaceShortcutKey } from "~/lib/surfaceShortcutKey";
 
 export interface RightPanelTabsProps {
@@ -1298,6 +1299,13 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
     };
   };
 
+  // Inline, the window's panel controls are drawn over the tab bar's right end.
+  const reservesTitlebarControls = props.mode === "inline" && !props.layoutControls;
+  const attachTabBar = (element: HTMLDivElement | null) =>
+    element === null || !reservesTitlebarControls
+      ? undefined
+      : reserveTitlebarControlsSpace(element);
+
   return (
     <PreviewPanelShell
       workspaceArea
@@ -1317,9 +1325,9 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       {...(props.inlineSize ? { inlineSize: props.inlineSize } : {})}
     >
       <div
+        ref={attachTabBar}
         className={cn(
-          "flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center gap-1 pl-2",
-          props.mode === "inline" && !props.layoutControls ? "pr-28" : "pr-3",
+          "flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center gap-1 pr-3 pl-2",
           ownsDesktopTitleBar && "drag-region",
           ownsDesktopTitleBar && "wco:pr-(--workspace-native-controls-inset)",
           props.mode === "inline" && props.maximized && COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
@@ -1496,13 +1504,11 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
           </div>
         ) : null}
         {props.layoutControls}
-        {ownsDesktopTitleBar && !props.layoutControls ? (
-          <span aria-hidden className="hidden w-24 shrink-0 wco:block" />
-        ) : null}
         {ownsDesktopTitleBar ? (
+          // The controls come earlier in the DOM, so this later no-drag box keeps them clickable.
           <span
             aria-hidden
-            className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] h-[var(--workspace-topbar-height)] w-28 [-webkit-app-region:no-drag]"
+            className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] mr-px h-[var(--workspace-topbar-height)] w-(--titlebar-controls-width) [-webkit-app-region:no-drag]"
           />
         ) : null}
       </div>
