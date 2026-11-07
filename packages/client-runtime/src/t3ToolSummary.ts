@@ -363,6 +363,14 @@ export function summarizeT3ToolCalls(
         ),
       );
       break;
+    case "question-ask": {
+      const questions = selected.reduce((total, call) => {
+        const asked = call.input?.questions;
+        return total + (Array.isArray(asked) ? asked.length : 1);
+      }, 0);
+      label = phrase(t("Asked"), t("ask"), tn(questions, "{count} question", "{count} questions"));
+      break;
+    }
     case "secret-request":
       label = phrase(
         t("Asked for"),

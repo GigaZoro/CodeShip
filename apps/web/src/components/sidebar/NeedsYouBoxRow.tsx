@@ -1,5 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
-import { AuthOrchestrationOperateScope, type ScopedThreadRef } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  type RuntimeRequestId,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
+import { oneTapUserInputAnswers } from "@t3tools/client-runtime/state/pending-user-input";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import {
@@ -116,10 +121,68 @@ function ApprovalRequest(props: {
   );
 }
 
-function QuestionRequest(props: { threadRef: ScopedThreadRef; fallback: string }) {
-  const question = useAtomValue(environmentThreadDetails.pendingRequestsAtom(props.threadRef))
-    ?.userInputs[0]?.questions[0]?.question;
-  return <RequestSummary>{question ? firstLine(question) : props.fallback}</RequestSummary>;
+/** The thread's own question, answered here when one tap answers it and its composer is elsewhere. */
+function QuestionRequest(props: {
+  threadRef: ScopedThreadRef;
+  icon: ReactNode;
+  fallback: string;
+  answerable: boolean;
+}) {
+  const userInput =
+    useAtomValue(environmentThreadDetails.pendingRequestsAtom(props.threadRef))?.userInputs[0] ??
+    null;
+  const canRespond = useEnvironmentScope(
+    props.threadRef.environmentId,
+    AuthOrchestrationOperateScope,
+  );
+  const respond = useAtomCommand(threadEnvironment.respondToUserInput, { reportFailure: false });
+  const [responding, setResponding] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const question = userInput?.questions[0]?.question;
+  const answers =
+    props.answerable && userInput !== null && userInput.responseCapability !== "not_resumable"
+      ? oneTapUserInputAnswers(userInput.questions)
+      : null;
+  const submit = async (requestId: RuntimeRequestId, answer: Record<string, string>) => {
+    setResponding(true);
+    setError(null);
+    const result = await respond({
+      environmentId: props.threadRef.environmentId,
+      input: { threadId: props.threadRef.threadId, requestId, answers: answer },
+    });
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      const failure = squashAtomCommandFailure(result);
+      setError(failure instanceof Error ? failure.message : t("Failed to submit user input."));
+    }
+    setResponding(false);
+  };
+  return (
+    <>
+      <RequestLine icon={props.icon}>
+        <RequestSummary>{question ? firstLine(question) : props.fallback}</RequestSummary>
+      </RequestLine>
+      {answers !== null && userInput !== null ? (
+        // Buttons answer the question; the row's own click opens the thread.
+        <div className="flex flex-wrap items-center gap-x-3 ps-5 pt-1" onClick={stopRowActivation}>
+          {answers.map((answer, index) => (
+            <InlineButton
+              key={answer.value}
+              tone={index === 0 ? "default" : "muted"}
+              disabled={!canRespond || responding}
+              onClick={() => void submit(userInput.requestId, answer.answers)}
+            >
+              {answer.label}
+            </InlineButton>
+          ))}
+        </div>
+      ) : null}
+      {error !== null ? (
+        <p role="alert" className="ps-5 pt-1 text-xs text-destructive-foreground">
+          {error}
+        </p>
+      ) : null}
+    </>
+  );
 }
 
 function RequestLine(props: { icon: ReactNode; children: ReactNode }) {
@@ -273,13 +336,16 @@ export const NeedsYouBoxRow = memo(function NeedsYouBoxRow(props: {
             fallback={reasonLabel}
             answerable={!props.isOpen}
           />
+        ) : reason === "input" && thread.hasPendingUserInput ? (
+          <QuestionRequest
+            threadRef={threadRef}
+            icon={reasonIcon}
+            fallback={reasonLabel}
+            answerable={!props.isOpen}
+          />
         ) : (
           <RequestLine icon={reasonIcon}>
-            {reason === "input" && thread.hasPendingUserInput ? (
-              <QuestionRequest threadRef={threadRef} fallback={reasonLabel} />
-            ) : (
-              <RequestSummary>{reasonLabel}</RequestSummary>
-            )}
+            <RequestSummary>{reasonLabel}</RequestSummary>
           </RequestLine>
         )}
         {failure && props.settlementSupported ? (

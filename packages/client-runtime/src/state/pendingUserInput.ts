@@ -174,3 +174,23 @@ export function buildPendingUserInputAnswers(
 
   return answers;
 }
+
+/**
+ * The answers a list row sends with one tap: each option of a lone single-choice question,
+ * as the full card would submit it. Anything else is answered in the thread.
+ */
+export function oneTapUserInputAnswers(
+  questions: ReadonlyArray<PendingUserInputQuestion>,
+): ReadonlyArray<{
+  readonly label: string;
+  readonly value: string;
+  readonly answers: Record<string, string>;
+}> | null {
+  const [question, ...others] = questions;
+  if (question === undefined || others.length > 0 || question.multiSelect) return null;
+  if (question.options.length === 0) return null;
+  return question.options.map((option) => {
+    const value = option.value ?? option.label;
+    return { label: option.label, value, answers: { [question.id]: value } };
+  });
+}

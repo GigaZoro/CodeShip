@@ -615,6 +615,10 @@ it("readThread and sendToThread reach threads in other projects", async () => {
       .requestSecret(makeScope(), { label: "Secret", reason: "requires a run" })
       .pipe(Effect.flip);
     expect(secret.code).toBe("parent_not_active");
+    const ask = yield* service
+      .askUser(makeScope(), { questions: [{ question: "Requires a run?" }] })
+      .pipe(Effect.flip);
+    expect(ask.code).toBe("parent_not_active");
 
     parentShell = { ...parentShell, providerInstanceId: customCodexInstanceId };
     const switchedScope = {

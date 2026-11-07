@@ -354,7 +354,7 @@ export function usePendingThreadRequests(input: {
       const error = squashAtomCommandFailure(result);
       setThreadError(
         activeThreadId,
-        error instanceof Error ? error.message : "Failed to submit user input.",
+        error instanceof Error ? error.message : t("Failed to submit user input."),
       );
     }
     userInputResponsesInFlight.current.delete(responseKey);

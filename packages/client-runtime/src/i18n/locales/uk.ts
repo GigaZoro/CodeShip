@@ -2332,6 +2332,7 @@ const catalog: MessageCatalog = {
   "Artifacts and logs": "Артефакти й журнали",
   "Artifacts breadcrumb": "Навігація артефактів",
   Artwork: "Ілюстрація",
+  ask: "поставити",
   "Ask a question": "Поставити запитання",
   "Ask a side question in a new side chat": "Поставити побічне запитання в новому побічному чаті",
   "Ask a side question while this thread keeps working.":
@@ -2362,6 +2363,7 @@ const catalog: MessageCatalog = {
   "Ask the owner for a new link. Each link works in one browser.":
     "Попросіть власника надіслати нове посилання. Кожне посилання працює в одному браузері.",
   "ask to link": "запитати зв’язування з",
+  Asked: "Поставлено",
   "Asked for": "Запитано",
   "Asked in a thread": "Запитано в чаті",
   "Asked to link": "Запитано зв’язування з",
@@ -5499,6 +5501,7 @@ const catalog: MessageCatalog = {
   "Failed to snooze threads": "Не вдалося відкласти чати",
   "Failed to stop background work.": "Не вдалося зупинити фонову роботу.",
   "Failed to submit approval decision.": "Не вдалося надіслати рішення щодо схвалення.",
+  "Failed to submit user input.": "Не вдалося надіслати відповідь.",
   "Failed to switch checkout": "Не вдалося перемкнути checkout",
   "Failed to switch ref.": "Не вдалося перемкнути посилання.",
   "Failed to switch the backend off.": "Не вдалося вимкнути бекенд.",

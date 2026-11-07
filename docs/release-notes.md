@@ -1,3 +1,9 @@
+## 2026-11-07 — Money questions reach Needs you
+
+- Agents ask you only about money: spending it, real funds, or money being lost now. Everything else they decide themselves and say what they chose.
+- Such a question stays open after the agent's turn ends, also in a scheduled task's run, so the thread shows under **Needs you** instead of only saying "Needs you" in its reply. Answer in the thread or from the Needs you box.
+- A question that offers choices can be answered with one tap in the Needs you box on web and desktop, and in the Needs you rows on mobile. Your answer goes to the agent as your next message, and it carries on from there.
+
 ## 2026-11-07 — Clearer subscription limits
 
 - **Usage → Limits** says which machine isn't connected when a provider's limits come from its last reading, such as "Zoro-PC not connected · read 6h ago", instead of a bare "Checked 6h ago". The account's details say so too, and its **Use reset** waits until the machine is back.

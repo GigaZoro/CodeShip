@@ -54,6 +54,7 @@ import { copyThreadReference } from "../../lib/copyThreadReference";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { useEnvironmentScope } from "../../state/session";
 import { NeedsYouRowApproval } from "./NeedsYouRowApproval";
+import { NeedsYouRowQuestion } from "./NeedsYouRowQuestion";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import {
   pendingDraftBranchNeedsRefs,
@@ -1831,6 +1832,12 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       {/* Outside the row's press and swipe area, so each answer is its own button. */}
       {props.waitingSince !== undefined && thread.hasPendingApprovals && !selected ? (
         <NeedsYouRowApproval
+          threadRef={{ environmentId: thread.environmentId, threadId: thread.id }}
+          title={thread.title}
+          sidebarPane={sidebarPane}
+        />
+      ) : props.waitingSince !== undefined && thread.hasPendingUserInput && !selected ? (
+        <NeedsYouRowQuestion
           threadRef={{ environmentId: thread.environmentId, threadId: thread.id }}
           title={thread.title}
           sidebarPane={sidebarPane}

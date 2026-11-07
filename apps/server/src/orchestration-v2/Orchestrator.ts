@@ -28,7 +28,7 @@ import {
   isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
   MessageId,
-  type NodeId,
+  NodeId,
   type ModelSelection,
   OrchestrationV2Command,
   type OrchestrationV2InternalCommand,
@@ -608,6 +608,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
       return command.parentThreadId;
     case "secret_request.record":
     case "link_request.record":
+    case "user_input_request.record":
       return command.threadId;
     case "thread.fork":
     case "thread.merge_back":
@@ -8923,6 +8924,127 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   );
 
   /**
+   * Answering it, dismissing it or settling the thread closes it, through the
+   * message-mode paths a provider's async question already takes.
+   */
+  const dispatchUserInputRequestRecord = Effect.fn(
+    "orchestrationV2.dispatch.userInputRequestRecord",
+  )(function* (
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: "user_input_request.record" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const projection = yield* projectionStore
+      .getThreadRecords(
+        command.threadId,
+        ["runs", "attempts", "providerTurns", "runtimeRequests"],
+        {
+          messageRoles: [],
+        },
+      )
+      .pipe(mapDispatchError(command));
+    const now = yield* DateTime.now;
+    const emitEvent = emit(events, command);
+    const existing = projection.runtimeRequests.find((request) => request.id === command.requestId);
+    if (existing !== undefined) {
+      // A retry finds its question as it was asked, or answered.
+      yield* emitEvent({
+        type: "runtime-request.updated",
+        threadId: command.threadId,
+        nodeId: existing.nodeId,
+        occurredAt: now,
+        payload: existing,
+      });
+      return;
+    }
+    const run = projection.runs.find((candidate) => candidate.id === command.runId);
+    const rootNodeId = run?.rootNodeId ?? null;
+    if (
+      run === undefined ||
+      rootNodeId === null ||
+      !isActiveRun(run) ||
+      (yield* stopReachedRun(command, command.threadId, run.id))
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Run ${command.runId} is not active.`,
+      });
+    }
+    const nodeId = NodeId.make(`node:user-input:${command.requestId}`);
+    const providerTurnId = providerTurnForRun(projection, run)?.id ?? null;
+    const base = {
+      threadId: command.threadId,
+      runId: run.id,
+      nodeId,
+      providerInstanceId: run.providerInstanceId,
+      occurredAt: now,
+    };
+    yield* emitEvent({
+      ...base,
+      type: "node.updated",
+      payload: {
+        id: nodeId,
+        threadId: command.threadId,
+        runId: run.id,
+        parentNodeId: rootNodeId,
+        rootNodeId,
+        kind: "user_input_request",
+        status: "waiting",
+        countsForRun: false,
+        providerThreadId: run.providerThreadId,
+        providerTurnId,
+        nativeItemRef: null,
+        runtimeRequestId: command.requestId,
+        checkpointScopeId: null,
+        startedAt: now,
+        completedAt: null,
+      },
+    });
+    yield* emitEvent({
+      ...base,
+      type: "runtime-request.updated",
+      payload: {
+        id: command.requestId,
+        nodeId,
+        providerTurnId,
+        nativeRequestRef: null,
+        kind: "user_input",
+        status: "pending",
+        responseCapability: { type: "message" },
+        createdAt: now,
+        resolvedAt: null,
+      },
+    });
+    yield* emitEvent({
+      ...base,
+      type: "turn-item.updated",
+      payload: {
+        id: TurnItemId.make(`turn-item:user-input:${command.requestId}`),
+        threadId: command.threadId,
+        runId: run.id,
+        nodeId,
+        providerThreadId: run.providerThreadId,
+        providerTurnId,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: yield* nextTurnItemOrdinal(projection),
+        status: "waiting",
+        title: null,
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+        type: "user_input_request",
+        requestId: command.requestId,
+        questions: command.questions,
+        responseMode: "message",
+      },
+    });
+  });
+
+  /**
    * Closes the link cards still waiting for the user. Their agent stopped
    * waiting long ago, so nobody is woken: stopping or archiving the thread
    * means the user is done with it.
@@ -13410,6 +13532,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "link_request.record":
         yield* dispatchLinkRequestRecord(command, events, effects);
+        break;
+      case "user_input_request.record":
+        yield* dispatchUserInputRequestRecord(command, events);
         break;
       default:
         return yield* dispatchUnsupported(command);

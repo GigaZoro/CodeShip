@@ -1,4 +1,6 @@
 import {
+  OrchestratorMcpAskUserInput,
+  OrchestratorMcpAskUserResult,
   OrchestratorMcpCapabilitiesInput,
   OrchestratorMcpCapabilitiesResult,
   OrchestrationV2StopWorkflowInput,
@@ -224,6 +226,19 @@ const RequestSecretTool = Tool.make("request_secret", {
   .annotate(Tool.Title, "Request a secret from the user")
   .annotate(Tool.Destructive, false);
 
+const AskUserTool = Tool.make("ask_user", {
+  description:
+    "Ask the user about money only: spending it, real funds, or money being lost now. Decide anything else yourself and say what you chose. The question stays in this thread and in their Needs you list after your turn ends. Give `options` for one-tap answers. Their answer arrives as your next message, so end your turn after asking.",
+  parameters: OrchestratorMcpAskUserInput,
+  success: OrchestratorMcpAskUserResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Ask the user")
+  .annotate(Tool.Destructive, false)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromSubagents);
+
 const CreateThreadsTool = Tool.make("create_threads", {
   description:
     "Create new top-level threads in this checkout. Not delegation. One thread or its own worktree: `t3_thread_launch`. Project, branch, and worktree inherit.",
@@ -376,6 +391,7 @@ export const OrchestratorToolkit = Toolkit.make(
   SharedScheduledTasksTool,
   DeleteScheduledTaskTool,
   RequestSecretTool,
+  AskUserTool,
   CreateThreadsTool,
   ThreadListTool,
   ThreadReadTool,

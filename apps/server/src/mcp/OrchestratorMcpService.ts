@@ -23,8 +23,11 @@ import {
   type OrchestratorMcpDelegateTaskInput,
   type OrchestratorMcpDelegateTaskResult,
   type OrchestratorMcpDeleteScheduledTaskInput,
+  type OrchestratorMcpAskUserInput,
+  type OrchestratorMcpAskUserResult,
   type OrchestratorMcpRequestSecretInput,
   type OrchestratorMcpRequestSecretResult,
+  RuntimeRequestId,
   type OrchestratorMcpDeleteScheduledTaskResult,
   type OrchestratorMcpListScheduledTasksResult,
   type OrchestratorMcpSharedScheduledTasksInput,
@@ -205,6 +208,11 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpRequestSecretInput,
   ) => Effect.Effect<OrchestratorMcpRequestSecretResult, OrchestratorMcpFailure>;
+  /** Records the question and returns; the user's answer starts the caller's next turn. */
+  readonly askUser: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpAskUserInput,
+  ) => Effect.Effect<OrchestratorMcpAskUserResult, OrchestratorMcpFailure>;
   readonly listThreads: (
     scope: McpInvocationScope,
     input: OrchestratorMcpThreadListInput,
@@ -2488,6 +2496,46 @@ const make = Effect.gen(function* () {
         );
       }
       return { status, secretRef: secretRef.value };
+    }),
+
+    askUser: Effect.fn("OrchestratorMcpService.askUser")(function* (scope, input) {
+      const { scope: threadScope, parent } = yield* loadThreadCaller(scope, "ask_user");
+      const threadId = threadScope.thread.threadId;
+      const run = ThreadManagementService.latestActiveRun(parent);
+      if (run === undefined || run.providerInstanceId !== threadScope.thread.providerInstanceId) {
+        return yield* failure(
+          "parent_not_active",
+          "Asking the user requires an active run owned by this MCP provider session.",
+        );
+      }
+      const key = yield* requestKey(input.clientRequestId);
+      const requestId = RuntimeRequestId.make(
+        `runtime-request:ask-user:${stablePart(threadId)}:${stablePart(key)}`,
+      );
+      yield* threadManagement
+        .dispatch({
+          type: "user_input_request.record",
+          commandId: stableCommandId({ scope, requestKey: key, operation: "ask-user" }),
+          threadId,
+          runId: run.id,
+          requestId,
+          questions: input.questions.map((question, index) => ({
+            id: `q${index + 1}`,
+            header: question.header ?? "Question",
+            question: question.question,
+            options: (question.options ?? []).map((option) => ({
+              label: option.label,
+              description: option.description ?? option.label,
+            })),
+            ...(question.multiSelect === true ? { multiSelect: true } : {}),
+          })),
+        })
+        .pipe(
+          Effect.mapError((error) =>
+            failure("orchestration_error", `Could not ask the user: ${errorMessage(error)}`),
+          ),
+        );
+      return { status: "asked" as const, requestId };
     }),
 
     capabilities: Effect.fn("OrchestratorMcpService.capabilities")(function* (scope, input = {}) {

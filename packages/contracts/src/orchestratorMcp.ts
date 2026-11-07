@@ -832,6 +832,41 @@ export const OrchestratorMcpRequestSecretResult = Schema.Union([
 ]);
 export type OrchestratorMcpRequestSecretResult = typeof OrchestratorMcpRequestSecretResult.Type;
 
+export const OrchestratorMcpAskUserInput = Schema.Struct({
+  questions: Schema.Array(
+    Schema.Struct({
+      question: TrimmedNonEmptyString.annotate({
+        description: "The money decision, with its cost or risk.",
+      }),
+      header: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(24))).annotate({
+        description: "Short label, e.g. 'Approve'.",
+      }),
+      options: Schema.optional(
+        Schema.Array(
+          Schema.Struct({
+            label: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+            description: Schema.optional(TrimmedNonEmptyString),
+          }),
+        ).check(Schema.isMaxLength(4)),
+      ).annotate({ description: "One-tap answers. The user can always type their own." }),
+      multiSelect: Schema.optional(Schema.Boolean),
+    }),
+  ).check(Schema.isMinLength(1), Schema.isMaxLength(4)),
+  clientRequestId: Schema.optional(OrchestratorMcpClientRequestId).annotate({
+    description: "Retry key for this ask.",
+  }),
+});
+export type OrchestratorMcpAskUserInput = typeof OrchestratorMcpAskUserInput.Type;
+
+export const OrchestratorMcpAskUserResult = Schema.Struct({
+  status: Schema.Literal("asked").annotate({
+    description:
+      "Waiting in this thread and in Needs you. The answer arrives as your next message: end your turn.",
+  }),
+  requestId: RuntimeRequestId,
+});
+export type OrchestratorMcpAskUserResult = typeof OrchestratorMcpAskUserResult.Type;
+
 export const OrchestratorMcpEnvironmentLinkInput = Schema.Struct({
   environmentId: Schema.optional(EnvironmentId).annotate({
     description:

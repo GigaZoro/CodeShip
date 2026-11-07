@@ -61,10 +61,17 @@ Threads waiting on you sit together under **Needs you** on web and desktop, in a
 bottom of the thread's **Details** column: an approval, an answer to a question, a subagent's
 request, a guest's message, or a run that failed or hit a usage limit. The longest wait comes
 first, and each row shows how long it has waited and what the thread asks. Approve or decline an
-approval, or settle a failed run, right in the box; select a row to open its thread. When the
-chat is too narrow for the Details column, on pages other than a thread, and on mobile, they
-appear at the top of the thread list, below scheduled task rows. On mobile, an approval's row
-offers allow and decline right in the list.
+approval, pick an answer to a question that offers choices, or settle a failed run, right in the
+box; select a row to open its thread. When the chat is too narrow for the Details column, on pages
+other than a thread, and on mobile, they appear at the top of the thread list, below scheduled
+task rows. On mobile, an approval's row offers allow and decline, and a question's row its
+choices, right in the list.
+
+Agents ask you only about money: spending it, such as a paid plan, real funds, or money being
+lost now. They decide everything else themselves and say what they chose. Such a question stays
+open after the agent's turn ends, even in a scheduled task's run. It shows in the thread and under
+**Needs you**; answer in either place, and the agent picks up from your answer. Settling the
+thread, or dismissing the question, closes it unanswered.
 
 To put one off, choose **Later** on its row in the box, or **Decide later** in the thread's menu
 (on mobile, long-press the row). It moves under **Later**, below the threads that need you now,

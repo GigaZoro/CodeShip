@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildPendingUserInputAnswers,
   isPendingUserInputOptionSelected,
+  oneTapUserInputAnswers,
   resolvePendingUserInputAnswer,
   setPendingUserInputCustomAnswer,
   togglePendingUserInputOptionSelection,
@@ -176,5 +177,22 @@ describe("buildPendingUserInputAnswers", () => {
       scope: "Orchestration-first",
       compat: "Keep the current envelope for one release window",
     });
+  });
+});
+
+describe("oneTapUserInputAnswers", () => {
+  it("offers each option of a lone single-choice question as the card would submit it", () => {
+    expect(oneTapUserInputAnswers([nativeChoiceQuestion])).toEqual([
+      { label: "Result", value: " first\t", answers: { result: " first\t" } },
+      { label: "Result", value: "second", answers: { result: "second" } },
+    ]);
+  });
+
+  it.each([
+    ["several questions", [singleSelectQuestion, compatQuestion]],
+    ["a multi-select question", [{ ...singleSelectQuestion, multiSelect: true }]],
+    ["a free-text question", [{ ...singleSelectQuestion, options: [] }]],
+  ])("leaves %s to the thread", (_name, questions) => {
+    expect(oneTapUserInputAnswers(questions)).toBeNull();
   });
 });

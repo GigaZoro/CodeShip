@@ -1702,6 +1702,101 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
     }),
   );
 
+  it.effect("keeps a question an agent asked without waiting after its run ends", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("runtime-ask-user");
+      const requestId = RuntimeRequestId.make("runtime-ask-user-request");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("runtime-ask-user-create"),
+        createdBy: "agent",
+        creationSource: "mcp",
+        threadId,
+        projectId: ProjectId.make("runtime-ask-user-project"),
+        title: "Machine inbox",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      const ask = (commandId: string, runId: RunId) =>
+        orchestrator.dispatch({
+          type: "user_input_request.record",
+          commandId: CommandId.make(commandId),
+          threadId,
+          runId,
+          requestId,
+          questions: [
+            {
+              id: "q1",
+              header: "Approve",
+              question: "Approve the autopilot on this machine?",
+              options: [
+                { label: "Approve", description: "Approve" },
+                { label: "Not now", description: "Not now" },
+              ],
+            },
+          ],
+        });
+      const idle = yield* ask(
+        "runtime-ask-user-without-run",
+        RunId.make("runtime-ask-user-missing-run"),
+      ).pipe(Effect.result);
+      assert.equal(idle._tag, "Failure");
+
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("runtime-ask-user-run"),
+        threadId,
+        messageId: MessageId.make("runtime-ask-user-message"),
+        text: "Run the inbox",
+        attachments: [],
+        createdBy: "agent",
+        creationSource: "mcp",
+        dispatchMode: { type: "start_immediately" },
+      });
+      const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+      yield* ask("runtime-ask-user-ask", run.id);
+      yield* ask("runtime-ask-user-retry", run.id);
+      const now = yield* DateTime.now;
+      yield* eventSink.write({
+        commandId: CommandId.make("runtime-ask-user-run-ends"),
+        events: [
+          {
+            id: EventId.make("runtime-ask-user-run-ends-event"),
+            type: "run.updated",
+            threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: { ...run, status: "completed", startedAt: now, completedAt: now },
+          },
+        ],
+      });
+
+      const asked = yield* orchestrator.getThreadProjection(threadId);
+      assert.lengthOf(asked.runtimeRequests, 1);
+      assert.deepInclude(asked.runtimeRequests[0], {
+        id: requestId,
+        kind: "user_input",
+        status: "pending",
+        responseCapability: { type: "message" },
+      });
+      const card = asked.turnItems.find((item) => item.type === "user_input_request");
+      assert.deepInclude(card, { requestId, status: "waiting", responseMode: "message" });
+      const shell = (yield* orchestrator.getShellSnapshot()).threads.find(
+        (thread) => thread.id === threadId,
+      );
+      assert.equal(shell?.status, "completed");
+      assert.deepInclude(shell?.pendingRuntimeRequest, { id: requestId, kind: "user_input" });
+
+      const late = yield* ask("runtime-ask-user-late", run.id).pipe(Effect.result);
+      assert.equal(late._tag, "Success", "a retry after the run ends finds its question");
+    }),
+  );
+
   it.effect("reports an answer that never reaches its provider without reopening it", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

@@ -126,6 +126,19 @@ Passes on the bad case, 3 samples each, Codex login on 2026-11-07. The control p
 
 Claude models are not measured yet: they need `ANTHROPIC_API_KEY`.
 
+## Question cases
+
+`cases/questions.ndjson` checks that agents ask the user only about money, through `ask_user`, so the question reaches Needs you. In `unattended-run-asks-about-money`, a scheduled run can go on only on a $49/month plan: it must ask, and must not upgrade the plan itself. In `unattended-hands-on-step-does-not-ask`, a release waits on the owner's hardware key, which is not money: the agent reports it without asking. `attended-chat-does-not-ask-user` is the control: with the work in reach, the agent does it.
+
+Passes, 3 samples each, Codex login on 2026-11-07:
+
+| Runtime text                                                                     | Model       | Money | Hands-on | Control |
+| -------------------------------------------------------------------------------- | ----------- | ----- | -------- | ------- |
+| `runtime_info`: "Whenever your turn ends waiting on the user… call `ask_user`"   | GPT-6 Astra | n/a   | 0/3      | 2/3     |
+| `runtime_info`: "Ask the user only about money… Decide anything else…" (current) | GPT-6 Astra | 3/3   | 3/3      | 3/3     |
+
+The money case was added with the money-only rule, so it has no run on the earlier text; on the text before `ask_user` existed it could not pass. Astra's earlier control failure was the simulator showing an empty checkout; the control's world now has a `package.json`. GPT-6 Luna at low effort never loaded the deferred `ask_user` tool on any wording tried (0/3). Delegated children do not see `ask_user`.
+
 ## Where T3's text lives
 
 - `packages/provider-core/src/server/runtimeInstructions.ts`
