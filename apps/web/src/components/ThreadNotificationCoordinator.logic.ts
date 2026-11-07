@@ -79,3 +79,20 @@ export function createThreadNotificationGate<Key>(
     },
   };
 }
+
+/**
+ * Where a notified thread lives, naming the project and the machine only when the user has more
+ * than one of each, so "Thread completed" says which of several look-alike threads it was.
+ */
+export function threadNotificationPlace(input: {
+  readonly projectTitle: string | null;
+  readonly machineLabel: string | null;
+  readonly projectCount: number;
+  readonly machineCount: number;
+}): string | null {
+  const parts = [
+    input.projectCount > 1 ? input.projectTitle : null,
+    input.machineCount > 1 ? input.machineLabel : null,
+  ].filter((part): part is string => part !== null && part.length > 0);
+  return parts.length === 0 ? null : parts.join(" · ");
+}

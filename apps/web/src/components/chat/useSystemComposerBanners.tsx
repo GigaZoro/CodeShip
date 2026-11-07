@@ -22,6 +22,7 @@ import { type EnvironmentPresentation } from "../../state/environments";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
 import { ENVIRONMENT_RECONNECT_WARNING_GRACE_MS } from "../ChatView.logic";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { useReconnectEnvironment } from "../../hooks/useReconnectEnvironment";
 import { Button } from "../ui/button";
 import { ServerUpdateAction, serverUpdateStageLabel } from "../ServerUpdateAction";
 import { useAutoBalanceUpdateBanner } from "./useAutoBalanceUpdateBanner";
@@ -68,7 +69,6 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
     autoUpdateEnvironments,
   } = input;
   const navigate = useNavigate();
-  const retryEnvironment = useAtomCommand(environmentCatalog.retryNow, { reportFailure: false });
   const setEnvironmentEnabled = useAtomCommand(environmentCatalog.setEnabled, {
     reportFailure: false,
   });
@@ -84,26 +84,7 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
     activeReconnectingEnvironmentId,
     ENVIRONMENT_RECONNECT_WARNING_GRACE_MS,
   );
-  const handleReconnectActiveEnvironment = async (environmentId: EnvironmentId) => {
-    // A retry does nothing while the environment is switched off.
-    const result =
-      activeEnvironment?.entry.enabled === false
-        ? await setEnvironmentEnabled({ environmentId, enabled: true })
-        : await retryEnvironment(environmentId);
-    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-      const error = squashAtomCommandFailure(result);
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: t("Could not reconnect environment"),
-          description: error instanceof Error ? error.message : t("Failed to reconnect."),
-        }),
-      );
-    }
-  };
-  const handleReconnectActiveEnvironmentStable = useStableCallback(
-    handleReconnectActiveEnvironment,
-  );
+  const handleReconnectActiveEnvironmentStable = useStableCallback(useReconnectEnvironment());
   const disconnectDelayElapsed = useEnvironmentDisconnectDelay(
     activeEnvironmentUnavailable && activeEnvironment ? activeEnvironment.environmentId : null,
   );

@@ -99,11 +99,18 @@ export function createEnvironmentPresentationAtoms<E>(input: {
           get(input.serverConfigValueAtom(environmentId)),
           previous?.serverConfig ?? null,
         ),
+        lastSeenAt:
+          connection.phase === "connected"
+            ? null
+            : previous?.connection.phase === "connected"
+              ? Date.now()
+              : (previous?.lastSeenAt ?? null),
       } satisfies EnvironmentPresentation;
       return previous !== null &&
         previous.entry === next.entry &&
         previous.connection === next.connection &&
-        previous.serverConfig === next.serverConfig
+        previous.serverConfig === next.serverConfig &&
+        previous.lastSeenAt === next.lastSeenAt
         ? previous
         : next;
     }).pipe(Atom.withLabel(`environment-presentation:${environmentId}`)),
@@ -173,6 +180,7 @@ export function createEnvironmentPresentationAtoms<E>(input: {
         prior !== undefined &&
           prior.entry === presentation.entry &&
           prior.connection === presentation.connection &&
+          prior.lastSeenAt === presentation.lastSeenAt &&
           prior.serverConfig === serverConfig
           ? prior
           : { ...presentation, serverConfig },
@@ -199,6 +207,7 @@ export interface EnvironmentConnectionSummary {
   readonly connectionState: EnvironmentConnectionPhase;
   readonly connectionError: string | null;
   readonly connectionErrorTraceId: string | null;
+  readonly lastSeenAt: number | null;
 }
 
 export function projectEnvironmentConnectionSummary(
@@ -214,6 +223,7 @@ export function projectEnvironmentConnectionSummary(
     connectionState: environment.connection.phase,
     connectionError: environment.connection.error,
     connectionErrorTraceId: environment.connection.traceId,
+    lastSeenAt: environment.lastSeenAt,
   };
 }
 
@@ -265,7 +275,8 @@ export function createEnvironmentSummaryAtoms(input: {
         previous.isEnabled === next.isEnabled &&
         previous.connectionState === next.connectionState &&
         previous.connectionError === next.connectionError &&
-        previous.connectionErrorTraceId === next.connectionErrorTraceId
+        previous.connectionErrorTraceId === next.connectionErrorTraceId &&
+        previous.lastSeenAt === next.lastSeenAt
       )
         return previous;
       return next;
@@ -320,6 +331,7 @@ export function createEnvironmentSummaryAtoms(input: {
   );
   return {
     environmentIdsAtom,
+    environmentAtom,
     connectedEnvironmentIdsAtom,
     identitiesAtom,
     environmentsAtom,

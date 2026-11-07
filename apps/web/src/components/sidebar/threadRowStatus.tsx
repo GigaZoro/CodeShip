@@ -6,7 +6,13 @@ import {
   MessageCircleQuestionIcon,
   ShieldQuestionIcon,
   UserRoundIcon,
+  WifiOffIcon,
 } from "lucide-react";
+import {
+  machineAvailabilityLabel,
+  machineShowsLastKnownState,
+  type MachineAvailability,
+} from "@t3tools/client-runtime/connection";
 
 import { cn } from "~/lib/utils";
 import type { SidebarThreadStatus } from "../Sidebar.logic";
@@ -20,6 +26,7 @@ const THREAD_ROW_STATUS_ICONS = {
   approval: ShieldQuestionIcon,
   failed: CircleAlertIcon,
   woke: AlarmClockIcon,
+  offline: WifiOffIcon,
 } as const;
 
 type ThreadRowStatusIconName = keyof typeof THREAD_ROW_STATUS_ICONS;
@@ -30,6 +37,8 @@ export type ThreadRowStatus =
       readonly icon: ThreadRowStatusIconName;
       readonly unseen?: undefined;
       readonly className: string;
+      /** Set when the machine is unreachable and the status is only what was last seen. */
+      readonly lastKnown?: { readonly label: string } | undefined;
     }
   /** A finished turn the user has not opened yet: shown as a dot, not a pill. */
   | {
@@ -37,10 +46,51 @@ export type ThreadRowStatus =
       readonly icon?: undefined;
       readonly unseen: true;
       readonly className: string;
+      readonly lastKnown?: undefined;
     };
 
 /** The short status a thread row shows in place of its age, or null when it has none. */
 export function resolveThreadRowStatus(input: {
+  readonly status: SidebarThreadStatus;
+  readonly goalActive: boolean;
+  readonly isWoke: boolean;
+  readonly isUnread: boolean;
+  /** The thread's machine; while it is unreachable, a live status shows as last known. */
+  readonly machine?: MachineAvailability | undefined;
+}): ThreadRowStatus | null {
+  const status = resolveLiveThreadRowStatus(input);
+  if (
+    status?.icon === undefined ||
+    input.machine === undefined ||
+    !machineShowsLastKnownState(input.machine) ||
+    !LIVE_ICONS.has(status.icon)
+  ) {
+    return status;
+  }
+  const machineLabel = machineAvailabilityLabel(input.machine);
+  return {
+    label: t("{machine} · {status}", { machine: machineLabel, status: status.label }),
+    icon: "offline",
+    className: "text-muted-foreground",
+    lastKnown: {
+      label: t("{machine}, last known status: {status}", {
+        machine: machineLabel,
+        status: status.label,
+      }),
+    },
+  };
+}
+
+// Statuses that change while the machine runs; an unreachable machine can only report the last one.
+const LIVE_ICONS: ReadonlySet<ThreadRowStatusIconName> = new Set([
+  "working",
+  "waiting",
+  "input",
+  "request",
+  "approval",
+]);
+
+function resolveLiveThreadRowStatus(input: {
   readonly status: SidebarThreadStatus;
   readonly goalActive: boolean;
   readonly isWoke: boolean;
@@ -97,7 +147,14 @@ export function ThreadRowStatusContent(props: { status: ThreadRowStatus; iconCla
   return (
     <>
       <ThreadRowStatusIcon icon={status.icon} className={props.iconClassName} />
-      {status.label}
+      {status.lastKnown ? (
+        <>
+          <span aria-hidden>{status.label}</span>
+          <span className="sr-only">{status.lastKnown.label}</span>
+        </>
+      ) : (
+        status.label
+      )}
     </>
   );
 }

@@ -257,6 +257,7 @@ import {
   useActiveRowReveal,
 } from "./sidebar/routeReveal";
 import { stackedThreadToast, toastManager } from "./ui/toast";
+import { useReconnectEnvironment } from "../hooks/useReconnectEnvironment";
 import { copyThreadReference } from "../lib/copyThreadReference";
 import { threadChipCopyTarget } from "@t3tools/client-runtime/thread-reference";
 import { Button } from "./ui/button";
@@ -1812,6 +1813,7 @@ export default function Sidebar({
       onAbort: () => {},
     });
   });
+  const reconnectEnvironment = useReconnectEnvironment();
   const handleMachineFolderContextMenu = useStableCallback(
     (machine: SidebarMachine, position: { x: number; y: number }) => {
       const api = readLocalApi();
@@ -1822,6 +1824,7 @@ export default function Sidebar({
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
             [
+              ...(machine.disconnected ? [{ id: "reconnect", label: t("Reconnect") }] : []),
               { id: "new-thread", label: t("New thread"), disabled: machine.disconnected },
               ...(projectFolders.length > 1
                 ? [
@@ -1859,6 +1862,9 @@ export default function Sidebar({
         );
         if (clicked._tag === "Failure") return;
         switch (clicked.value) {
+          case "reconnect":
+            void reconnectEnvironment(machine.environmentId);
+            return;
           case "new-thread":
             startThreadOnMachine(machine);
             return;

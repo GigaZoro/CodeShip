@@ -1,4 +1,6 @@
-import type { WorkspaceState } from "../../state/workspaceModel";
+import { machineAvailability } from "@t3tools/client-runtime/connection";
+
+import type { WorkspaceEnvironment, WorkspaceState } from "../../state/workspaceModel";
 import { t, tn } from "../../lib/i18n";
 
 export interface WorkspaceConnectionStatusPresentation {
@@ -8,7 +10,9 @@ export interface WorkspaceConnectionStatusPresentation {
 
 function shouldShowWorkspaceConnectionStatus(state: WorkspaceState): boolean {
   if (state.networkStatus === "offline") return true;
-  if (state.hasReadyEnvironment) return state.hasSyncingConnectedEnvironment;
+  if (state.hasReadyEnvironment) {
+    return state.hasSyncingConnectedEnvironment || state.unreachableEnvironments.length > 0;
+  }
   return (
     state.connectionError !== null ||
     state.hasConnectingEnvironment ||
@@ -22,6 +26,7 @@ function workspaceConnectionStatusLabel(state: WorkspaceState): string {
   if (state.hasReadyEnvironment && state.hasSyncingConnectedEnvironment) {
     return state.hasLoadedShellSnapshot ? t("Syncing threads...") : t("Loading threads...");
   }
+  if (state.hasReadyEnvironment) return unreachableMachinesLabel(state.unreachableEnvironments);
   if (state.connectingEnvironments.length === 1) {
     return t("Reconnecting to {name}", { name: state.connectingEnvironments[0]!.environmentLabel });
   }
@@ -39,6 +44,23 @@ function workspaceConnectionStatusLabel(state: WorkspaceState): string {
   return t("Not connected");
 }
 
+// One machine is named with its state; more are counted, since names would not fit a header.
+function unreachableMachinesLabel(environments: ReadonlyArray<WorkspaceEnvironment>): string {
+  const [only] = environments;
+  if (only === undefined || environments.length > 1) {
+    return tn(environments.length, "{count} machine unreachable", "{count} machines unreachable");
+  }
+  const name = only.environmentLabel;
+  switch (machineAvailability(only.connectionState)) {
+    case "reconnecting":
+      return t("Reconnecting to {name}", { name });
+    case "error":
+      return t("Can't connect to {name}", { name });
+    default:
+      return t("{name} is offline", { name });
+  }
+}
+
 export function workspaceConnectionStatusPresentation(
   state: WorkspaceState,
 ): WorkspaceConnectionStatusPresentation | null {
@@ -47,6 +69,7 @@ export function workspaceConnectionStatusPresentation(
     label: workspaceConnectionStatusLabel(state),
     showsProgress:
       state.networkStatus !== "offline" &&
+      (!state.hasReadyEnvironment || state.hasSyncingConnectedEnvironment) &&
       (state.hasReadyEnvironment || state.connectionError === null) &&
       (state.connectingEnvironments.length > 0 || state.hasPendingShellSnapshot),
   };

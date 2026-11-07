@@ -23,7 +23,7 @@ import type {
 } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentThreadSearchMatch } from "@t3tools/client-runtime/state/thread-search";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
-import { AuthOrchestrationOperateScope, type EnvironmentMachineKind } from "@t3tools/contracts";
+import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import type { SnoozePresetSetting } from "@t3tools/contracts/settings";
 import { canSnooze } from "@t3tools/client-runtime/state/thread-settled";
 import { threadChipCopyTarget } from "@t3tools/client-runtime/thread-reference";
@@ -37,7 +37,7 @@ import type { ThreadListProvider } from "../../state/thread-list-environments";
 import { SymbolView, type AppSymbolName } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Menu } from "../../components/ui/Menu";
-import { EnvironmentMachineSymbol } from "../../components/EnvironmentMachineSymbol";
+import { MachineBadge } from "../../components/MachineBadge";
 import { ProjectFavicon } from "../../components/ProjectFavicon";
 import { ProviderIcon, ProviderInstanceIcon } from "../../components/ProviderIcon";
 import { useNowAfter } from "../../lib/clock";
@@ -78,7 +78,11 @@ import {
   type ThreadListV2Status,
 } from "./threadListV2";
 import { QueuedMessageIcon } from "./queued-message-icon";
-import { shouldRecedeThreadRow } from "./thread-row-emphasis";
+import { shouldRecedeThreadRow, threadRowLastKnownMachine } from "./thread-row-emphasis";
+import {
+  machineAvailabilityLabel,
+  type MachineAvailability,
+} from "@t3tools/client-runtime/connection";
 import { ThreadSearchMatchExcerpt } from "./thread-search-match";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
@@ -375,7 +379,6 @@ export const ThreadListV2SettledShelfHeader = memo(function ThreadListV2SettledS
 export const ThreadListV2FolderHeader = memo(function ThreadListV2FolderHeader(props: {
   readonly folder: ThreadListV2Folder;
   readonly project: EnvironmentProject | null;
-  readonly machine: EnvironmentMachineKind | undefined;
   readonly hiddenCount: number;
   readonly pane?: "screen" | "sidebar";
   readonly newThreadTargets: ReadonlyArray<HomeFolderNewThreadTarget>;
@@ -446,11 +449,7 @@ export const ThreadListV2FolderHeader = memo(function ThreadListV2FolderHeader(p
             />
           ) : null
         ) : (
-          <EnvironmentMachineSymbol
-            kind={props.machine ?? "server"}
-            size={14}
-            tintColorClassName={mutedTint}
-          />
+          <MachineBadge environmentId={folder.environmentId} label={folder.label} size={16} />
         )}
         <Text
           numberOfLines={1}
@@ -553,7 +552,6 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
   readonly project: EnvironmentProject | null;
   readonly projectTitle?: string;
   readonly environmentLabel: string | null;
-  readonly environmentMachine?: EnvironmentMachineKind;
   readonly pane?: "screen" | "sidebar";
   readonly showPendingDivider: boolean;
   readonly showTrailingDivider?: boolean;
@@ -710,15 +708,11 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
       ) : null}
       {branch || props.environmentLabel ? (
         <View className="mt-1 flex-row items-center gap-1" style={{ paddingLeft: titleTextInset }}>
-          {props.environmentLabel && props.environmentMachine ? (
-            <EnvironmentMachineSymbol
-              kind={props.environmentMachine}
-              size={machineIconSize}
-              tintColorClassName={
-                selected
-                  ? selectedThreadRowColors.mutedIconTintClassName
-                  : rowAppearance.tertiaryIconTintClassName
-              }
+          {props.environmentLabel ? (
+            <MachineBadge
+              environmentId={pendingTask.environmentId}
+              label={props.environmentLabel}
+              size={Math.round(machineIconSize)}
             />
           ) : null}
           <Text
@@ -840,7 +834,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly providers: ReadonlyArray<ThreadListProvider> | undefined;
   readonly providerInstance: ThreadRowProviderInstance | null;
   readonly environmentLabel: string | null;
-  readonly environmentMachine?: EnvironmentMachineKind;
+  /** The thread's machine; while it is unreachable, a live status shows as last known. */
+  readonly machineAvailability?: MachineAvailability;
   readonly pane?: "screen" | "sidebar";
   readonly showTrailingDivider?: boolean;
   readonly selected?: boolean;
@@ -949,13 +944,26 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     (status === "working" && workingLabel !== undefined && thread.goal?.status === "active"
       ? { ...workingLabel, label: msg("Goal") }
       : workingLabel) ?? (isUnread ? DONE_STATUS_LABEL : undefined);
-  const recede = shouldRecedeThreadRow({ status, selected });
+  const lastKnownMachine = threadRowLastKnownMachine(status, props.machineAvailability);
+  const lastKnownMachineLabel =
+    lastKnownMachine === null ? null : machineAvailabilityLabel(lastKnownMachine);
+  const recede = shouldRecedeThreadRow({
+    status,
+    selected,
+    machineUnreachable: lastKnownMachine !== null,
+  });
   const isRegeneratingTitle = thread.titleRegeneration != null;
   const hasScheduledTask = useThreadHasScheduledTask(thread.environmentId, thread.id);
   const rowAccessibilityLabel = [
     thread.title,
     hasScheduledTask ? t("scheduled task") : null,
     props.hasQueuedMessages ? t("messages queued to send") : null,
+    lastKnownMachineLabel !== null && statusLabel
+      ? t("{machine}, last known status: {status}", {
+          machine: lastKnownMachineLabel,
+          status: t(statusLabel.label),
+        })
+      : null,
     isRegeneratingTitle ? t("regenerating title") : null,
   ]
     .filter(Boolean)
@@ -1413,6 +1421,34 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                 {t("Woke")}
               </Text>
             </Pressable>
+          ) : statusLabel && lastKnownMachineLabel !== null ? (
+            // A frozen status gets no live clock and no status colour.
+            <View className="flex-row items-center gap-1">
+              <SymbolView
+                name="wifi.slash"
+                size={13}
+                tintColorClassName={
+                  selected
+                    ? selectedThreadRowColors.iconTintClassName
+                    : rowAppearance.tertiaryIconTintClassName
+                }
+                type="monochrome"
+                weight="semibold"
+              />
+              <Text
+                className={cn(
+                  "text-xs font-t3-bold",
+                  selected
+                    ? selectedThreadRowColors.foregroundClassName
+                    : rowAppearance.tertiaryForegroundClassName,
+                )}
+              >
+                {t("{machine} · {status}", {
+                  machine: lastKnownMachineLabel,
+                  status: t(statusLabel.label),
+                })}
+              </Text>
+            </View>
           ) : statusLabel ? (
             <View className="flex-row items-center gap-1">
               <SymbolView
@@ -1482,17 +1518,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           </Text>
         ) : props.environmentLabel ? (
           <View className="min-w-0 flex-1 flex-row items-center gap-1">
-            {props.environmentMachine ? (
-              <EnvironmentMachineSymbol
-                kind={props.environmentMachine}
-                size={machineIconSize}
-                tintColorClassName={
-                  selected
-                    ? selectedThreadRowColors.mutedIconTintClassName
-                    : rowAppearance.tertiaryIconTintClassName
-                }
-              />
-            ) : null}
+            <MachineBadge
+              environmentId={thread.environmentId}
+              label={props.environmentLabel}
+              size={Math.round(machineIconSize)}
+            />
             <Text
               className={cn(
                 "shrink text-xs",

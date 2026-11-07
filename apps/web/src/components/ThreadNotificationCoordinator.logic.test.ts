@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 import {
   createThreadNotificationGate,
+  threadNotificationPlace,
   type ThreadNotificationObservation,
 } from "./ThreadNotificationCoordinator.logic";
 
@@ -189,5 +190,29 @@ describe("createThreadNotificationGate", () => {
     observe(completed(2), { ...visible, quiet: true });
     vi.advanceTimersByTime(WORKING_EXIT_GRACE_MS * 2);
     expect(notify).not.toHaveBeenCalled();
+  });
+});
+
+describe("threadNotificationPlace", () => {
+  it.each([
+    [{ projectCount: 1, machineCount: 1 }, null],
+    [{ projectCount: 2, machineCount: 1 }, "CodeShip"],
+    [{ projectCount: 1, machineCount: 2 }, "Zoro-PC"],
+    [{ projectCount: 3, machineCount: 2 }, "CodeShip · Zoro-PC"],
+  ])("names only what tells threads apart for %o", (counts, expected) => {
+    expect(
+      threadNotificationPlace({ projectTitle: "CodeShip", machineLabel: "Zoro-PC", ...counts }),
+    ).toBe(expected);
+  });
+
+  it("leaves out names it does not know", () => {
+    expect(
+      threadNotificationPlace({
+        projectTitle: null,
+        machineLabel: "Zoro-PC",
+        projectCount: 2,
+        machineCount: 2,
+      }),
+    ).toBe("Zoro-PC");
   });
 });

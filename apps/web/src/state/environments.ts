@@ -118,3 +118,8 @@ export function useConnectedEnvironmentIds() {
 export function useEnvironmentConnectionSummaries() {
   return useAtomValue(environmentSummaries.environmentsAtom);
 }
+
+/** One machine's connection, so a row re-renders only when its own machine changes. */
+export function useEnvironmentConnectionSummary(environmentId: EnvironmentId) {
+  return useAtomValue(environmentSummaries.environmentAtom(environmentId));
+}

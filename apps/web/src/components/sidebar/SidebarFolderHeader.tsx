@@ -1,4 +1,8 @@
 import type { EnvironmentId, EnvironmentMachineKind } from "@t3tools/contracts";
+import {
+  machineAvailabilityLabel,
+  type MachineAvailability,
+} from "@t3tools/client-runtime/connection";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { ChevronDownIcon, SquarePenIcon } from "lucide-react";
@@ -15,7 +19,7 @@ import {
   resolveThreadLastVisitedAt,
   sidebarMachineFolderKey,
 } from "../Sidebar.logic";
-import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
+import { MachineBadge, MachineLastSeen } from "../MachineBadge";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -26,6 +30,10 @@ export interface SidebarMachine {
   readonly label: string;
   readonly machineKind: EnvironmentMachineKind;
   readonly disconnected: boolean;
+  readonly availability: MachineAvailability;
+  /** False when the user switched the connection off; a retry does nothing until it is on. */
+  readonly enabled: boolean;
+  readonly lastSeenAt: number | null;
 }
 
 const FOLDER_DOT_CLASS_NAME = {
@@ -108,17 +116,19 @@ export const SidebarMachineFolderHeader = memo(function SidebarMachineFolderHead
   return (
     <SidebarFolderHeader
       rowId={sidebarFolderRowId(folderKey)}
-      icon={
-        <EnvironmentMachineIcon
-          aria-hidden
-          kind={machine.machineKind}
-          className="size-4 shrink-0 text-sidebar-muted-foreground"
-        />
-      }
+      icon={<MachineBadge environmentId={machine.environmentId} label={machine.label} />}
       label={machine.label}
       status={
         machine.disconnected ? (
-          <span className="shrink-0 text-xs text-sidebar-muted-foreground">{t("Offline")}</span>
+          <span className="shrink-0 text-xs text-sidebar-muted-foreground">
+            {machineAvailabilityLabel(machine.availability)}
+            {machine.lastSeenAt !== null ? (
+              <>
+                {" · "}
+                <MachineLastSeen lastSeenAt={machine.lastSeenAt} compact />
+              </>
+            ) : null}
+          </span>
         ) : null
       }
       collapsed={props.collapsed}

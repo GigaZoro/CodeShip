@@ -2,6 +2,8 @@ import { type EnvironmentShellSummary } from "@t3tools/client-runtime/state/shel
 import type { EnvironmentId, ServerConfig } from "@t3tools/contracts";
 
 import {
+  machineAvailability,
+  machineShowsLastKnownState,
   type EnvironmentConnectionPhase,
   type NetworkStatus,
 } from "@t3tools/client-runtime/connection";
@@ -16,6 +18,8 @@ export interface WorkspaceConnectionState {
   readonly hasReadyEnvironment: boolean;
   readonly hasConnectingEnvironment: boolean;
   readonly connectingEnvironments: ReadonlyArray<WorkspaceEnvironment>;
+  /** Enabled machines whose threads show only what was last seen. */
+  readonly unreachableEnvironments: ReadonlyArray<WorkspaceEnvironment>;
   readonly connectionState: EnvironmentConnectionPhase;
   readonly connectionError: string | null;
   readonly networkStatus: NetworkStatus;
@@ -79,6 +83,9 @@ export function projectWorkspaceConnectionState(input: {
       activeEnvironments.some((environment) => environment.connectionState === "connected"),
     hasConnectingEnvironment: connectingEnvironments.length > 0,
     connectingEnvironments,
+    unreachableEnvironments: activeEnvironments.filter((environment) =>
+      machineShowsLastKnownState(machineAvailability(environment.connectionState)),
+    ),
     connectionState: overallConnectionState(activeEnvironments, input.networkStatus),
     connectionError:
       activeEnvironments.find((environment) => environment.connectionError !== null)

@@ -44,6 +44,7 @@ import {
   SquarePenIcon,
   TerminalIcon,
   Undo2Icon,
+  WifiOffIcon,
   XIcon,
 } from "lucide-react";
 import {
@@ -65,12 +66,19 @@ import { useNowSecond } from "../../hooks/useNowSecond";
 import { vcsEnvironment } from "../../state/vcs";
 import { useEnvironmentQuery } from "../../state/query";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
+import { useEnvironmentConnectionSummary } from "../../state/environments";
+import {
+  machineAvailability,
+  machineAvailabilityLabel,
+  machineShowsLastKnownState,
+} from "@t3tools/client-runtime/connection";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import type { SidebarThreadSummary } from "../../types";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { cn } from "~/lib/utils";
 import { textDirection } from "~/textDirection";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
+import { MachineBadge, MachineLastSeen } from "../MachineBadge";
 import {
   animateSidebarLayoutChanges,
   hasUnseenCompletion,
@@ -242,6 +250,7 @@ function SidebarThreadTooltip({
   branchMismatch,
   terminalStatus,
   terminalProcessCount,
+  unreachableMachine = null,
 }: {
   thread: SidebarThreadSummary;
   project: ProjectFaviconProject | null;
@@ -259,6 +268,11 @@ function SidebarThreadTooltip({
   } | null;
   terminalStatus: TerminalStatusIndicator | null;
   terminalProcessCount: number;
+  unreachableMachine?: {
+    readonly label: string;
+    readonly state: string;
+    readonly lastSeenAt: number | null;
+  } | null;
 }) {
   const driverKind = providerEntry?.driverKind ?? null;
   const previousProviderNames = thread.providerInstanceHistory
@@ -290,6 +304,24 @@ function SidebarThreadTooltip({
               className="size-3 shrink-0 stroke-muted-foreground"
             />
             <div className="min-w-0 truncate text-foreground/75">{environmentLabel}</div>
+          </div>
+        ) : null}
+        {unreachableMachine ? (
+          <div className="flex min-w-0 items-start gap-2 text-muted-foreground">
+            <WifiOffIcon aria-hidden className="mt-0.5 size-3 shrink-0 stroke-current" />
+            <div className="min-w-0 flex-1 wrap-break-word">
+              {unreachableMachine.state}
+              {unreachableMachine.lastSeenAt !== null ? (
+                <>
+                  {" · "}
+                  <MachineLastSeen lastSeenAt={unreachableMachine.lastSeenAt} />
+                </>
+              ) : null}
+              {". "}
+              {t("The status is the last one seen. Actions wait until {name} reconnects.", {
+                name: unreachableMachine.label,
+              })}
+            </div>
           </div>
         ) : null}
         {thread.branch ? (
@@ -760,19 +792,29 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     lastVisitedAt,
     settled: thread.settledOverride === "settled",
   });
-  const shouldRecede = shouldRecedeSidebarThread({
-    status,
-    isUnread,
-    isWoke,
-    isActive: props.isActive,
-    isSelected,
-  });
+  const machineConnection = useEnvironmentConnectionSummary(thread.environmentId);
+  const machine = machineConnection
+    ? machineAvailability(machineConnection.connectionState)
+    : "live";
+  const machineUnreachable = machineShowsLastKnownState(machine);
+  const shouldRecede =
+    (machineUnreachable && !props.isActive && !isSelected) ||
+    shouldRecedeSidebarThread({
+      status,
+      isUnread,
+      isWoke,
+      isActive: props.isActive,
+      isSelected,
+    });
   const topStatus = resolveThreadRowStatus({
     status,
     goalActive: thread.goal?.status === "active",
     isWoke,
     isUnread,
+    machine,
   });
+  // A frozen status has no live clock: the time it shows would only keep counting from memory.
+  const statusIsLive = topStatus?.lastKnown === undefined;
   const isWokeStatus = topStatus?.icon === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
@@ -813,6 +855,15 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       branchMismatch={branchMismatch}
       terminalStatus={terminalStatus}
       terminalProcessCount={terminalProcessCount}
+      unreachableMachine={
+        machineUnreachable && machineConnection
+          ? {
+              label: machineConnection.environmentLabel,
+              state: machineAvailabilityLabel(machine),
+              lastSeenAt: machineConnection.lastSeenAt,
+            }
+          : null
+      }
     />
   );
 
@@ -925,7 +976,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     setSnoozeGateClock({ thread, now: new Date(snoozeGateOpensAt).toISOString() });
   }
   const showSnoozeButton =
-    canOperateThread && props.snoozeSupported && canSnooze(thread, { now: snoozeGateNow });
+    canOperateThread &&
+    props.snoozeSupported &&
+    !machineUnreachable &&
+    canSnooze(thread, { now: snoozeGateNow });
+  const settlementSupported = props.settlementSupported && !machineUnreachable;
   // Closing here, not just masking, keeps the menu from reopening when the button returns.
   if (snoozeMenuOpenRaw && !showSnoozeButton) setSnoozeMenuOpen(false);
   const snoozeMenuOpen = snoozeMenuOpenRaw && showSnoozeButton;
@@ -996,7 +1051,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
 
   const accessibility = resolveSidebarRowAccessibility({
     title: thread.title,
-    statusLabel: topStatus?.label ?? null,
+    statusLabel: topStatus?.lastKnown?.label ?? topStatus?.label ?? null,
     projectDisplayName: props.projectDisplayName,
     isActive: props.isActive,
   });
@@ -1133,8 +1188,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   // A machine folder already names the machine.
   const remoteMachineIcon =
     isRemote && !showsScratchMachine && !props.inMachineFolder ? (
-      <span className="inline-flex shrink-0 items-center text-sidebar-muted-foreground/70">
-        <EnvironmentMachineIcon aria-hidden kind={props.environmentMachine} className="size-3.5" />
+      <span className="inline-flex shrink-0 items-center">
+        <MachineBadge
+          environmentId={thread.environmentId}
+          label={machineConnection?.environmentLabel ?? props.environmentLabel ?? ""}
+          className="size-3.5 text-4xs"
+        />
       </span>
     ) : null;
   const diff = latestRunDiff(thread);
@@ -1156,10 +1215,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         </>
       ) : showsScratchMachine ? (
         <>
-          <EnvironmentMachineIcon
-            aria-hidden
-            kind={props.environmentMachine}
-            className="size-3 shrink-0"
+          <MachineBadge
+            environmentId={thread.environmentId}
+            label={machineConnection?.environmentLabel ?? props.scratchMachineLabel ?? ""}
+            className="size-3.5 text-4xs"
           />
           <span className="min-w-0 flex-1 truncate">{props.scratchMachineLabel}</span>
         </>
@@ -1268,10 +1327,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {scheduledIndicator}
               {pinIndicator}
               {inFolder && !multiline && isRemote && !props.inMachineFolder ? (
-                <EnvironmentMachineIcon
-                  aria-hidden
-                  kind={props.environmentMachine}
-                  className="size-3.5 shrink-0 text-sidebar-muted-foreground/70"
+                <MachineBadge
+                  environmentId={thread.environmentId}
+                  label={machineConnection?.environmentLabel ?? props.environmentLabel ?? ""}
+                  className="size-3.5 text-4xs"
                 />
               ) : null}
               {multiline ? null : terminalStatusIcon}
@@ -1329,7 +1388,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       >
                         <ThreadRowStatusContent status={topStatus} iconClassName="size-3" />
                         {/* The Working shelf's one-line rows keep the elapsed time its cards showed. */}
-                        {variant === "line" && status === "working" ? (
+                        {variant === "line" && status === "working" && statusIsLive ? (
                           <span aria-hidden className="font-normal">
                             <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
                           </span>
@@ -1362,7 +1421,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                         <AlarmClockOffIcon className="mb-px size-3" />
                       </button>
                     )
-                  ) : !props.settlementSupported ? null : variantAction === "unsettle" ? (
+                  ) : !settlementSupported ? null : variantAction === "unsettle" ? (
                     <Tooltip>
                       <TooltipTrigger
                         render={
@@ -1524,7 +1583,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                             BackgroundThreadAnnouncer and the open thread's
                             timeline speak status changes instead. */}
                           <ThreadRowStatusContent status={topStatus} iconClassName="size-4" />
-                          {status === "working" ? (
+                          {!statusIsLive ? null : status === "working" ? (
                             <span aria-hidden>
                               <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
                             </span>
@@ -1539,7 +1598,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       <RelativeTimeLabel timestamp={threadTimeTimestamp(thread)} />
                     )}
                   </span>
-                  {props.settlementSupported || showSnoozeButton || hasUnsentDraft ? (
+                  {settlementSupported || showSnoozeButton || hasUnsentDraft ? (
                     <span
                       className={cn(
                         // Mouse clicks leave Settle focused; focus-within would pin controls over
@@ -1574,7 +1633,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                           environmentId={thread.environmentId}
                         />
                       ) : null}
-                      {props.settlementSupported ? (
+                      {settlementSupported ? (
                         <Tooltip>
                           <TooltipTrigger
                             render={

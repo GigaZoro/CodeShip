@@ -38,6 +38,7 @@ function environment(
     connectionState,
     connectionError: null,
     connectionErrorTraceId: null,
+    lastSeenAt: null,
   };
 }
 

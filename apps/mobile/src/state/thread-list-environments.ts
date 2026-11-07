@@ -1,10 +1,4 @@
-import {
-  resolveEnvironmentMachineKind,
-  type EnvironmentId,
-  type EnvironmentMachineKind,
-  type ServerConfig,
-  type ServerProvider,
-} from "@t3tools/contracts";
+import { type EnvironmentId, type ServerConfig, type ServerProvider } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
 export type ThreadListProvider = Pick<
@@ -27,7 +21,6 @@ function selectEnvironment(config: ServerConfig, isConnected: boolean) {
         iconUrl,
       }),
     ),
-    machineKind: resolveEnvironmentMachineKind(config),
     capabilities: config.environment.capabilities,
     snoozePresets: config.settings.snoozePresets,
   };
@@ -57,26 +50,20 @@ function sameProviders(
 
 function collectEnvironments(environments: ReadonlyMap<EnvironmentId, ListEnvironment>) {
   const providersByEnvironmentId = new Map<EnvironmentId, ReadonlyArray<ThreadListProvider>>();
-  const machineByEnvironmentId = new Map<EnvironmentId, EnvironmentMachineKind>();
   // Every protocol-2 server supports these thread actions; they only wait for its config.
   const loadedEnvironmentIds = new Set<EnvironmentId>();
   const autoSettleOptOutEnvironmentIds = new Set<EnvironmentId>();
   const reorderableEnvironmentIds = new Set<EnvironmentId>();
   const snoozePresetsByEnvironmentId = new Map<EnvironmentId, ListEnvironment["snoozePresets"]>();
-  for (const [
-    id,
-    { providers, machineKind, capabilities, isConnected, snoozePresets },
-  ] of environments) {
+  for (const [id, { providers, capabilities, isConnected, snoozePresets }] of environments) {
     providersByEnvironmentId.set(id, providers);
     snoozePresetsByEnvironmentId.set(id, snoozePresets);
-    machineByEnvironmentId.set(id, machineKind);
     loadedEnvironmentIds.add(id);
     if (capabilities.threadAutoSettleOptOut === true) autoSettleOptOutEnvironmentIds.add(id);
     if (isConnected) reorderableEnvironmentIds.add(id);
   }
   return {
     providersByEnvironmentId,
-    machineByEnvironmentId,
     settlementEnvironmentIds: loadedEnvironmentIds,
     snoozeEnvironmentIds: loadedEnvironmentIds,
     pinningEnvironmentIds: loadedEnvironmentIds,
@@ -111,7 +98,6 @@ export function createThreadListEnvironmentsAtom(
       const unchanged =
         prior &&
         prior.providers === selected.providers &&
-        prior.machineKind === selected.machineKind &&
         prior.isConnected === selected.isConnected &&
         prior.snoozePresets === selected.snoozePresets &&
         capabilityKeys.every(

@@ -8,7 +8,12 @@ import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import type { AnyRouter } from "@tanstack/react-router";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
-import type { EnvironmentId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  OrchestrationV2ThreadShell,
+  ProjectId,
+  ThreadId,
+} from "@t3tools/contracts";
 import type { ClientSettings } from "@t3tools/contracts/settings";
 import * as Option from "effect/Option";
 import type { AtomRegistry } from "effect/reactivity";
@@ -35,6 +40,7 @@ import {
 import { resolveSidebarThreadStatus, type SidebarThreadStatus } from "./Sidebar.logic";
 import {
   createThreadNotificationGate,
+  threadNotificationPlace,
   type ThreadNotificationKind,
   type ThreadNotificationObservation,
 } from "./ThreadNotificationCoordinator.logic";
@@ -53,6 +59,8 @@ interface WatchedEnvironment {
   unsubscribe: () => void;
   previous: Map<ThreadId, NotificationState>;
   reconnecting: boolean;
+  /** Kept from the last live shell, so a notification can name the thread's project. */
+  projects: ReadonlyArray<{ readonly id: ProjectId; readonly title: string }>;
   readonly gate: ReturnType<typeof createThreadNotificationGate<ThreadId>>;
 }
 
@@ -113,6 +121,24 @@ export function startThreadNotifications(
     setNotificationBadge(0);
   };
 
+  const notificationPlace = (environmentId: EnvironmentId, projectId: ProjectId) => {
+    const projectTitles = new Set<string>();
+    for (const entry of watched.values()) {
+      for (const project of entry.projects) projectTitles.add(project.title);
+    }
+    const environments = registry.get(environmentSummaries.environmentsAtom);
+    return threadNotificationPlace({
+      projectTitle:
+        watched.get(environmentId)?.projects.find((project) => project.id === projectId)?.title ??
+        null,
+      machineLabel:
+        environments.find((environment) => environment.environmentId === environmentId)
+          ?.environmentLabel ?? null,
+      projectCount: projectTitles.size,
+      machineCount: environments.length,
+    });
+  };
+
   // Completions fire from a timer, so read settings, focus and route when presenting.
   const present = (
     environmentId: EnvironmentId,
@@ -143,6 +169,7 @@ export function startThreadNotifications(
               : status === "request"
                 ? t("Guest request")
                 : t("Input needed");
+    const place = notificationPlace(environmentId, thread.projectId);
     if (hasNotificationSound(mode)) {
       void playNotificationSound(kind, () =>
         hasNotificationSound(getClientSettings().notificationMode),
@@ -159,7 +186,15 @@ export function startThreadNotifications(
         onRemove: (): void => forgetToast(toastKey, toastId),
         type: kind === "completion" ? "success" : status === "failed" ? "error" : "warning",
         title,
-        description: thread.title,
+        description:
+          place === null ? (
+            thread.title
+          ) : (
+            <>
+              <span className="block">{thread.title}</span>
+              <span className="block text-muted-foreground">{place}</span>
+            </>
+          ),
         data: {
           hideCopyButton: true,
           leadingIcon:
@@ -198,7 +233,7 @@ export function startThreadNotifications(
       return;
     try {
       const notification = new Notification(title, {
-        body: thread.title,
+        body: place === null ? thread.title : `${thread.title}\n${place}`,
         tag: threadNotificationTag(environmentId, thread.id),
         silent: true,
         // Windows drops clicks after a toast moves into Notification Center.
@@ -303,6 +338,7 @@ export function startThreadNotifications(
     const entry: WatchedEnvironment = {
       previous: new Map(),
       reconnecting: false,
+      projects: [],
       unsubscribe: () => {},
       gate: createThreadNotificationGate<ThreadId>((threadId, kind) => {
         const state = entry.previous.get(threadId);
@@ -317,6 +353,7 @@ export function startThreadNotifications(
           shell.status === "live" && Option.isSome(shell.snapshot)
             ? shell.snapshot.value.threads
             : null;
+        if (Option.isSome(shell.snapshot)) entry.projects = shell.snapshot.value.projects;
         if (threads !== null) {
           observeThreads(environmentId, entry, threads);
           return;

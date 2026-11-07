@@ -1,3 +1,4 @@
+import { SidebarMachineStrip } from "./SidebarMachineStrip";
 import { ArrowLeftIcon, ArrowRightIcon } from "lucide-react";
 import { memo } from "react";
 import { Link } from "@tanstack/react-router";
@@ -187,6 +188,7 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   return (
     // Takes no space while it has nothing to show, so the thread list runs to the bottom.
     <SidebarFooter className="not-has-[>:not(:empty)]:hidden">
+      <SidebarMachineStrip />
       <SidebarProviderUpdatePill />
       <SidebarUpdateArchitectureWarning />
       <SidebarMenu className="flex-row items-center empty:hidden">

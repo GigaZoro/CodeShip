@@ -32,6 +32,54 @@ export interface EnvironmentPresentation {
   readonly entry: ConnectionCatalogEntry;
   readonly connection: EnvironmentConnectionPresentation;
   readonly serverConfig: EnvironmentServerConfig | null;
+  /**
+   * When this client last had the machine connected, in epoch ms. Null while it is connected and
+   * before this client reached it at all; it is not persisted across app restarts.
+   */
+  readonly lastSeenAt: number | null;
+}
+
+/** How a machine's threads can be trusted: live, on their way, or frozen at what was last seen. */
+export type MachineAvailability = "live" | "connecting" | "reconnecting" | "offline" | "error";
+
+export function machineAvailability(phase: EnvironmentConnectionPhase): MachineAvailability {
+  switch (phase) {
+    case "connected":
+      return "live";
+    case "connecting":
+      return "connecting";
+    case "reconnecting":
+      return "reconnecting";
+    case "available":
+    case "offline":
+      return "offline";
+    case "error":
+    case "unsupported":
+      return "error";
+  }
+}
+
+/**
+ * Thread state from a machine in these states is only what was last seen. A first connection
+ * attempt still counts as current, so cached rows do not flash offline on every launch.
+ */
+export function machineShowsLastKnownState(availability: MachineAvailability): boolean {
+  return availability === "reconnecting" || availability === "offline" || availability === "error";
+}
+
+export function machineAvailabilityLabel(availability: MachineAvailability): string {
+  switch (availability) {
+    case "live":
+      return t("Connected");
+    case "connecting":
+      return t("Connecting");
+    case "reconnecting":
+      return t("Reconnecting");
+    case "offline":
+      return t("Offline");
+    case "error":
+      return t("Can't connect");
+  }
 }
 
 export function presentConnectionState(

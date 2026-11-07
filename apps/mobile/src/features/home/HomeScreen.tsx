@@ -58,6 +58,8 @@ import { usePendingThreadOrder } from "../../state/thread-order";
 import { threadListEnvironmentsAtom } from "../../state/presentation";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useQueuedThreadKeys } from "../../state/use-thread-outbox";
+import { useReconnectMachines } from "../connection/useReconnectMachines";
+import { machineAvailabilityOf } from "../threads/thread-row-emphasis";
 import {
   ThreadListV2FolderHeader,
   ThreadListV2PendingRow,
@@ -264,6 +266,7 @@ export function HomeScreen(props: HomeScreenProps) {
   const columnMetrics = useNativeColumnLayoutMetrics();
   const activeNewTask = useActiveNewTask();
   const selectedThreadKey = activeNewTask ? null : (primaryColumn?.selectedThreadKey ?? null);
+  const machineReconnect = useReconnectMachines(props.environments);
   const fullSwipeWidth = primaryColumn && columnMetrics ? columnMetrics.width - 20 : undefined;
   const queuedThreadKeys = useQueuedThreadKeys();
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
@@ -482,7 +485,6 @@ export function HomeScreen(props: HomeScreenProps) {
   const listEnvironments = useAtomValue(threadListEnvironmentsAtom);
   const {
     providersByEnvironmentId,
-    machineByEnvironmentId,
     settlementEnvironmentIds,
     snoozeEnvironmentIds,
     snoozePresetsByEnvironmentId,
@@ -571,7 +573,6 @@ export function HomeScreen(props: HomeScreenProps) {
                 null)
               : null
           }
-          environmentMachine={machineByEnvironmentId.get(item.pendingTask.environmentId)}
           showPendingDivider={item.showPendingDivider}
           showTrailingDivider={item.showTrailingDivider}
           onSelectPendingTask={props.onSelectPendingTask}
@@ -592,11 +593,6 @@ export function HomeScreen(props: HomeScreenProps) {
             item.folder.kind === "project"
               ? (projectByKey.get(item.folder.projectKey) ?? null)
               : null
-          }
-          machine={
-            item.folder.kind === "machine"
-              ? machineByEnvironmentId.get(item.folder.environmentId)
-              : undefined
           }
           hiddenCount={item.hiddenCount}
           pane={primaryColumn ? "sidebar" : "screen"}
@@ -670,7 +666,11 @@ export function HomeScreen(props: HomeScreenProps) {
             ? (props.savedConnectionsById[thread.environmentId]?.environmentLabel ?? null)
             : null
         }
-        environmentMachine={machineByEnvironmentId.get(thread.environmentId)}
+        machineAvailability={machineAvailabilityOf(
+          props.environments.find(
+            (environment) => environment.environmentId === thread.environmentId,
+          )?.connectionState,
+        )}
         searchMatch={
           // Only rows listed for their messages show one and open at it.
           contentOnlyThreadKeys.has(
@@ -734,6 +734,9 @@ export function HomeScreen(props: HomeScreenProps) {
     workingShelfEnabled,
     groupByProject: groupBy.project,
     groupByMachine: groupBy.machine,
+    machineStatesKey: props.environments
+      .map((environment) => `${environment.environmentId}:${environment.connectionState}`)
+      .join(","),
   };
 
   const hasAnyThreads =
@@ -919,6 +922,8 @@ export function HomeScreen(props: HomeScreenProps) {
                 ) : null
               }
               ListEmptyComponent={v2ListEmpty}
+              refreshing={machineReconnect.refreshing}
+              onRefresh={() => void machineReconnect.reconnect()}
               style={{ flex: 1 }}
               automaticallyAdjustsScrollIndicatorInsets={Platform.OS === "ios"}
               // UIKit owns the bar's inset, so a minimizing bar and a resized column move

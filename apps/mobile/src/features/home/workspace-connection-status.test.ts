@@ -1,7 +1,24 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import type { WorkspaceState } from "../../state/workspaceModel";
+import type { WorkspaceEnvironment, WorkspaceState } from "../../state/workspaceModel";
 import { workspaceConnectionStatusPresentation } from "./workspace-connection-status";
+
+function environment(
+  label: string,
+  connectionState: WorkspaceEnvironment["connectionState"],
+): WorkspaceEnvironment {
+  return {
+    environmentId: label as never,
+    environmentLabel: label,
+    displayUrl: "",
+    isRelayManaged: false,
+    isEnabled: true,
+    connectionState,
+    connectionError: connectionState === "connected" ? null : "Could not reach sleeping laptop",
+    connectionErrorTraceId: null,
+    lastSeenAt: null,
+  };
+}
 
 function workspaceState(overrides: Partial<WorkspaceState> = {}): WorkspaceState {
   return {
@@ -13,6 +30,7 @@ function workspaceState(overrides: Partial<WorkspaceState> = {}): WorkspaceState
     hasReadyEnvironment: true,
     hasConnectingEnvironment: false,
     connectingEnvironments: [],
+    unreachableEnvironments: [],
     connectionState: "connected",
     connectionError: null,
     shellSnapshotError: null,
@@ -23,54 +41,49 @@ function workspaceState(overrides: Partial<WorkspaceState> = {}): WorkspaceState
 
 describe("workspace connection status", () => {
   it.each([
-    ["reconnecting", "Could not reach sleeping laptop"],
-    ["error", "Could not reach sleeping laptop"],
+    ["reconnecting", "Reconnecting to Sleeping laptop"],
+    ["offline", "Sleeping laptop is offline"],
+    ["error", "Can't connect to Sleeping laptop"],
   ] as const)(
-    "keeps the brand while a secondary environment is %s (%s)",
-    (connectionState, connectionError) => {
+    "names a secondary machine that is %s while another is connected",
+    (connectionState, label) => {
+      const unreachable = environment("Sleeping laptop", connectionState);
       const state = workspaceState({
-        hasConnectingEnvironment: connectionState !== "error",
-        hasPendingShellSnapshot: true,
-        connectionError,
-        connectingEnvironments:
-          connectionState === "error"
-            ? []
-            : [
-                {
-                  environmentId: "environment-2" as never,
-                  environmentLabel: "Sleeping laptop",
-                  displayUrl: "",
-                  isRelayManaged: false,
-                  isEnabled: true,
-                  connectionState,
-                  connectionError,
-                  connectionErrorTraceId: null,
-                },
-              ],
+        connectionError: unreachable.connectionError,
+        unreachableEnvironments: [unreachable],
       });
 
-      expect(workspaceConnectionStatusPresentation(state)).toBeNull();
+      expect(workspaceConnectionStatusPresentation(state)).toEqual({
+        label,
+        showsProgress: false,
+      });
     },
   );
 
+  it("counts several unreachable machines", () => {
+    const state = workspaceState({
+      unreachableEnvironments: [
+        environment("Sleeping laptop", "reconnecting"),
+        environment("Zoro-PC", "offline"),
+      ],
+    });
+
+    expect(workspaceConnectionStatusPresentation(state)?.label).toBe("2 machines unreachable");
+  });
+
+  it("keeps the brand while every machine is connected", () => {
+    expect(workspaceConnectionStatusPresentation(workspaceState())).toBeNull();
+  });
+
   it("shows connected shell catch-up even while a secondary environment is unreachable", () => {
+    const unreachable = environment("Sleeping laptop", "reconnecting");
     const state = workspaceState({
       hasSyncingConnectedEnvironment: true,
       hasPendingShellSnapshot: true,
       hasConnectingEnvironment: true,
-      connectionError: "Could not reach sleeping laptop",
-      connectingEnvironments: [
-        {
-          environmentId: "environment-2" as never,
-          environmentLabel: "Sleeping laptop",
-          displayUrl: "",
-          isRelayManaged: false,
-          isEnabled: true,
-          connectionState: "reconnecting",
-          connectionError: "Could not reach sleeping laptop",
-          connectionErrorTraceId: null,
-        },
-      ],
+      connectionError: unreachable.connectionError,
+      connectingEnvironments: [unreachable],
+      unreachableEnvironments: [unreachable],
     });
 
     expect(workspaceConnectionStatusPresentation(state)).toEqual({

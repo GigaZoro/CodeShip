@@ -93,6 +93,7 @@ function presentation(index: number, version = 0): SourcePresentation {
       index === 6
         ? null
         : ({ cwd: `/workspace-${version}` } as NonNullable<SourcePresentation["serverConfig"]>),
+    lastSeenAt: null,
   };
 }
 

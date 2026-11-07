@@ -1,4 +1,4 @@
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it, vi } from "@effect/vitest";
 import { EnvironmentId, type ServerConfig } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
@@ -154,6 +154,38 @@ describe("connection presentation", () => {
       h.registry.set(h.state, AsyncResult.success({ ...AVAILABLE_CONNECTION_STATE }));
       expect(phase()).toBe("available");
     } finally {
+      stop();
+      h.registry.dispose();
+    }
+  });
+
+  it("remembers when a machine was last connected until it connects again", () => {
+    const h = harness();
+    const connected = { ...AVAILABLE_CONNECTION_STATE, desired: true, phase: "connected" as const };
+    const lastSeenAt = () => h.registry.get(h.full.presentationAtom(FIRST))?.lastSeenAt;
+    const summaryLastSeenAt = () =>
+      h.registry.get(h.environmentsAtom).find((environment) => environment.environmentId === FIRST)
+        ?.lastSeenAt;
+    const stop = h.registry.subscribe(h.environmentsAtom, () => {});
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    try {
+      expect(lastSeenAt()).toBeNull();
+      h.registry.set(h.state, AsyncResult.success(connected));
+      expect(lastSeenAt()).toBeNull();
+      now.mockReturnValue(5_000);
+      h.registry.set(
+        h.state,
+        AsyncResult.success({ ...connected, phase: "backoff" as const, attempt: 2 }),
+      );
+      expect(lastSeenAt()).toBe(5_000);
+      expect(summaryLastSeenAt()).toBe(5_000);
+      now.mockReturnValue(9_000);
+      h.registry.set(h.state, AsyncResult.success({ ...connected, phase: "offline" as const }));
+      expect(lastSeenAt()).toBe(5_000);
+      h.registry.set(h.state, AsyncResult.success(connected));
+      expect(lastSeenAt()).toBeNull();
+    } finally {
+      now.mockRestore();
       stop();
       h.registry.dispose();
     }

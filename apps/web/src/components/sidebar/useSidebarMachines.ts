@@ -1,4 +1,4 @@
-import { distinctEnvironmentLabels } from "@t3tools/client-runtime/connection";
+import { distinctEnvironmentLabels, machineAvailability } from "@t3tools/client-runtime/connection";
 
 import {
   useEnvironmentConnectionSummaries,
@@ -26,6 +26,9 @@ export function useSidebarMachines(): readonly SidebarMachine[] {
       machineKind: machineById.get(environment.environmentId) ?? "server",
       // A machine still syncing its threads is answering, so it is not offline.
       disconnected: isSidebarEnvironmentDisconnected(environment.connectionState, true),
+      availability: machineAvailability(environment.connectionState),
+      enabled: environment.isEnabled,
+      lastSeenAt: environment.lastSeenAt,
     })),
     primaryEnvironmentId,
   );

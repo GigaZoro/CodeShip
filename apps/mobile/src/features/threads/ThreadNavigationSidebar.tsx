@@ -17,6 +17,8 @@ import type {
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { AnimatedLegendList } from "@legendapp/list/reanimated";
 import { THREAD_SIDEBAR_ROW_LAYOUT } from "./threadListAnimations";
+import { machineAvailabilityOf } from "./thread-row-emphasis";
+import { useReconnectMachines } from "../connection/useReconnectMachines";
 import { ThreadListPinnedTasks, useScheduledTaskHiddenThreadKeys } from "./ThreadListPinnedTasks";
 import type { MenuAction } from "@react-native-menu/menu";
 import { useAtomValue } from "@effect/atom-react";
@@ -181,6 +183,7 @@ function ThreadNavigationSidebarPane(
   const openArchivedThreads = useOpenArchivedThreads();
   const openArtifacts = useOpenArtifacts();
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
+  const machineReconnect = useReconnectMachines(workspaceEnvironments);
   const { savedConnectionsById } = useSavedRemoteConnections();
   const searchInputRef = useRef<TextInputInstance>(null);
   const searchBarRef = useRef<SearchBarCommands>(null);
@@ -324,6 +327,10 @@ function ThreadNavigationSidebarPane(
       (environment) => [environment.environmentId, environment.connectionState] as const,
     ),
   );
+  // A string, so rows re-render when a machine's state changes but not on every render.
+  const machineStatesKey = workspaceEnvironments
+    .map((environment) => `${environment.environmentId}:${environment.connectionState}`)
+    .join(",");
   const grouping = buildHomeThreadListGrouping({
     grouping: groupBy,
     folderExpanded,
@@ -355,7 +362,6 @@ function ThreadNavigationSidebarPane(
   const listEnvironments = useAtomValue(threadListEnvironmentsAtom);
   const {
     providersByEnvironmentId,
-    machineByEnvironmentId,
     settlementEnvironmentIds,
     snoozeEnvironmentIds,
     snoozePresetsByEnvironmentId,
@@ -581,6 +587,7 @@ function ThreadNavigationSidebarPane(
     workingShelfEnabled,
     groupByProject: groupBy.project,
     groupByMachine: groupBy.machine,
+    machineStatesKey,
   };
   useThreadJumpShortcuts(listItems, handleSelectThread);
   const sidebarItemsAreEqual = (previous: SidebarListItem, item: SidebarListItem): boolean => {
@@ -635,7 +642,6 @@ function ThreadNavigationSidebarPane(
                 ? (savedConnectionsById[item.pendingTask.environmentId]?.environmentLabel ?? null)
                 : null
             }
-            environmentMachine={machineByEnvironmentId.get(item.pendingTask.environmentId)}
             pane="sidebar"
             showPendingDivider={item.showPendingDivider}
             onSelectPendingTask={props.onOpenPendingTask}
@@ -671,7 +677,9 @@ function ThreadNavigationSidebarPane(
                 ? (savedConnectionsById[thread.environmentId]?.environmentLabel ?? null)
                 : null
             }
-            environmentMachine={machineByEnvironmentId.get(thread.environmentId)}
+            machineAvailability={machineAvailabilityOf(
+              connectionStateByEnvironmentId.get(thread.environmentId),
+            )}
             searchMatch={
               // Only rows listed for their messages show one and open at it.
               contentOnlyThreadKeys.has(
@@ -736,11 +744,6 @@ function ThreadNavigationSidebarPane(
               item.folder.kind === "project"
                 ? (projectByKey.get(item.folder.projectKey) ?? null)
                 : null
-            }
-            machine={
-              item.folder.kind === "machine"
-                ? machineByEnvironmentId.get(item.folder.environmentId)
-                : undefined
             }
             hiddenCount={item.hiddenCount}
             pane="sidebar"
@@ -883,6 +886,8 @@ function ThreadNavigationSidebarPane(
                 itemsAreEqual={sidebarItemsAreEqual}
                 keyExtractor={(item) => item.key}
                 renderItem={renderListItem}
+                refreshing={machineReconnect.refreshing}
+                onRefresh={() => void machineReconnect.reconnect()}
                 automaticallyAdjustsScrollIndicatorInsets={NATIVE_LIQUID_GLASS_SUPPORTED}
                 contentInsetAdjustmentBehavior={
                   NATIVE_LIQUID_GLASS_SUPPORTED ? "automatic" : "never"
@@ -954,6 +959,8 @@ function ThreadNavigationSidebarPane(
                 itemsAreEqual={sidebarItemsAreEqual}
                 keyExtractor={(item) => item.key}
                 renderItem={renderListItem}
+                refreshing={machineReconnect.refreshing}
+                onRefresh={() => void machineReconnect.reconnect()}
                 contentContainerStyle={[
                   styles.threadListContent,
                   Platform.OS === "android" ? { paddingHorizontal: 0 } : null,
