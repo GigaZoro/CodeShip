@@ -1,3 +1,8 @@
+## 2026-11-07 — Claude asks for Anthropic's updated terms at sign-in
+
+- When a Claude account hasn't reviewed Anthropic's updated Consumer Terms, Claude won't start for it. **Settings → Providers & models** now says so for that account instead of "Claude Agent CLI failed while checking account status", and a chat on it says the same instead of "Claude Code exited with code 1".
+- Signing in to a Claude account, when you add it or select **Sign in** for it, now opens Claude in the sign-in terminal if the account still has the terms to review. Answer Claude's prompt there, then type `/exit`. The answer belongs to the account, so every machine signed in to it works again.
+
 ## 2026-11-07 — New scheduled tasks show in the Scheduled section
 
 - The scheduled task place that adds a row to the **Scheduled** section of the thread list is now called **Scheduled section** instead of **Pinned**, in **Show in**, **Show all in** and **Settings → General → Show new scheduled tasks in**. It was easy to mistake for the pinned threads section. On web, desktop and mobile.

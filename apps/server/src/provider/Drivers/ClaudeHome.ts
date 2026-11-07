@@ -131,6 +131,31 @@ export const makeClaudeCapabilitiesCacheKey = Effect.fn("makeClaudeCapabilitiesC
   },
 );
 
+/**
+ * After Anthropic's updated Consumer Terms take effect, Claude Code refuses to start a non-interactive
+ * session for an account that has not answered them, prints this notice on stderr and exits 1. Only an
+ * interactive `claude` lets the account's owner answer.
+ */
+const CLAUDE_TERMS_REVIEW_NOTICE = /\[ACTION REQUIRED\][^\n]*Consumer Terms/;
+
+export const isClaudeTermsReviewNotice = (text: string): boolean =>
+  CLAUDE_TERMS_REVIEW_NOTICE.test(text);
+
+export const CLAUDE_TERMS_REVIEW_MESSAGE =
+  "Anthropic updated its Consumer Terms, and Claude won't start for this account until they are reviewed. In Settings → Providers & models, select Sign in for this account to review them.";
+
+/** Claude Code refused to start because its account has not reviewed Anthropic's updated Consumer Terms. */
+export class ClaudeTermsReviewRequiredError extends Schema.TaggedError<ClaudeTermsReviewRequiredError>()(
+  "ClaudeTermsReviewRequiredError",
+  { cause: Schema.optional(Schema.Defect()) },
+) {
+  override get message(): string {
+    return CLAUDE_TERMS_REVIEW_MESSAGE;
+  }
+}
+
+export const isClaudeTermsReviewRequiredError = Schema.is(ClaudeTermsReviewRequiredError);
+
 /** Separate spawn env from login commands to preserve literal paths, including relative inherited values. */
 export const claudeSignedOutMessage = (input: {
   readonly configDir: string | undefined;

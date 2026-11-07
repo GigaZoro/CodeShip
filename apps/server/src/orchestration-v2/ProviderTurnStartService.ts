@@ -105,8 +105,9 @@ const isProviderAdapterOpenSessionError = Schema.is(
 
 /**
  * Claude refuses these before it reads the prompt: replacing a process running background work,
- * launch arguments whose appended system prompt or settings cannot be read, or MCP registration
- * that never answers while the query opens.
+ * launch arguments whose appended system prompt or settings cannot be read, MCP registration
+ * that never answers while the query opens, or an account that has not reviewed Anthropic's
+ * updated Consumer Terms.
  */
 const PROMPT_REFUSAL_TAGS = [
   "ClaudeBackgroundWorkBlocksQueryReplacementError",
@@ -114,6 +115,7 @@ const PROMPT_REFUSAL_TAGS = [
   "ClaudeAppendSystemPromptMissingValueError",
   "ClaudeSettingsLaunchArgError",
   "ClaudeMcpRegistrationTimeoutError",
+  "ClaudeTermsReviewRequiredError",
 ] as const;
 
 const refusedBeforePrompt = (error: unknown): boolean =>

@@ -44,6 +44,7 @@ import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 
 import { checkCodexProviderStatus, type CodexAppServerProviderSnapshot } from "./CodexProvider.ts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
+import { ClaudeTermsReviewRequiredError } from "./Drivers/ClaudeHome.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as AntigravityInstallation from "./AntigravityInstallation.ts";
 import * as ModelManifest from "./ModelManifest.ts";
@@ -2795,6 +2796,26 @@ it.layer(
           layerMockSpawner((args) => {
             const joined = args.join(" ");
             if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+            throw new Error(`Unexpected args: ${joined}`);
+          }),
+        ),
+      ),
+    );
+
+    it.effect("reports an account with unreviewed Consumer Terms as unable to run", () =>
+      Effect.gen(function* () {
+        const status = yield* checkClaudeProviderStatus(
+          defaultClaudeSettings,
+          () => Effect.fail(new ClaudeTermsReviewRequiredError()),
+          { ANTHROPIC_BASE_URL: "" },
+        );
+        assert.strictEqual(status.status, "error");
+        assert.include(status.message, "Consumer Terms");
+      }).pipe(
+        Effect.provide(
+          layerMockSpawner((args) => {
+            const joined = args.join(" ");
+            if (joined === "--version") return { stdout: "2.1.319\n", stderr: "", code: 0 };
             throw new Error(`Unexpected args: ${joined}`);
           }),
         ),

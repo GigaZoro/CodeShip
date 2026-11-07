@@ -13,63 +13,73 @@ import { makeClaudeAuth } from "./ClaudeAuth.ts";
 const instanceId = ProviderInstanceId.make("claudeAgent_personal");
 const environment = { PATH: "/tools", CLAUDE_CONFIG_DIR: "/state/home" };
 
-const makeHarness = Effect.gen(function* () {
-  const events: Array<string> = [];
-  const spawnedInputs: Array<PtyAdapter.PtySpawnInput> = [];
-  // Ready once the exit listener is attached, so a test's exit reaches it.
-  const listening = yield* Deferred.make<void>();
-  let data: ((data: string) => void) | undefined;
-  let exit: ((event: PtyAdapter.PtyExitEvent) => void) | undefined;
-  const auth = yield* makeClaudeAuth({
-    instanceId,
-    binaryPath: "claude",
-    cwd: "/state",
-    environment,
-    configDir: "/state/home",
-    prepare: Effect.sync(() => void events.push("prepare")),
-    canLogout: true,
-  }).pipe(
-    Effect.provideService(PtyAdapter.PtyAdapter, {
-      spawn: (input) =>
-        Effect.sync(() => {
-          events.push(`spawn ${input.args?.join(" ")}`);
-          spawnedInputs.push(input);
-          return {
-            pid: 1,
-            write: () => {},
-            resize: () => {},
-            kill: () => {},
-            onData: (callback) => {
-              data = callback;
-              return () => {};
-            },
-            onExit: (callback) => {
-              exit = callback;
-              Deferred.doneUnsafe(listening, Effect.void);
-              return () => {};
-            },
-          };
-        }),
-    }),
-  );
-  const state = (predicate: (state: ProviderAuthState) => boolean) =>
-    auth.controller
-      .subscribe("owner")
-      .pipe(Stream.filter(predicate), Stream.runHead, Effect.map(Option.getOrThrow));
-  return {
-    auth,
-    events,
-    spawnedInputs,
-    state,
-    listening: Deferred.await(listening),
-    print: (value: string) => data?.(value),
-    exit: (exitCode: number) => exit?.({ exitCode, signal: null }),
-  };
-});
+/** `termsReviews` answers each terms check in turn; checks past the list answer false. */
+const makeHarness = (termsReviews: ReadonlyArray<boolean> = []) =>
+  Effect.gen(function* () {
+    const events: Array<string> = [];
+    const spawnedInputs: Array<PtyAdapter.PtySpawnInput> = [];
+    // Each spawn is ready once its exit listener is attached, so a test's exit reaches it.
+    const listeners = [yield* Deferred.make<void>(), yield* Deferred.make<void>()];
+    let data: ((data: string) => void) | undefined;
+    let exit: ((event: PtyAdapter.PtyExitEvent) => void) | undefined;
+    let termsChecks = 0;
+    const auth = yield* makeClaudeAuth({
+      instanceId,
+      binaryPath: "claude",
+      cwd: "/state",
+      environment,
+      configDir: "/state/home",
+      prepare: Effect.sync(() => void events.push("prepare")),
+      canLogout: true,
+      needsTermsReview: Effect.sync(() => {
+        events.push("check terms");
+        return termsReviews[termsChecks++] ?? false;
+      }),
+    }).pipe(
+      Effect.provideService(PtyAdapter.PtyAdapter, {
+        spawn: (input) =>
+          Effect.sync(() => {
+            events.push(`spawn ${input.args?.join(" ")}`);
+            spawnedInputs.push(input);
+            return {
+              pid: 1,
+              write: () => {},
+              resize: () => {},
+              kill: () => {},
+              onData: (callback) => {
+                data = callback;
+                return () => {};
+              },
+              onExit: (callback) => {
+                exit = callback;
+                const listener = listeners[spawnedInputs.length - 1];
+                if (listener) Deferred.doneUnsafe(listener, Effect.void);
+                return () => {};
+              },
+            };
+          }),
+      }),
+    );
+    const state = (predicate: (state: ProviderAuthState) => boolean) =>
+      auth.controller
+        .subscribe("owner")
+        .pipe(Stream.filter(predicate), Stream.runHead, Effect.map(Option.getOrThrow));
+    return {
+      auth,
+      events,
+      spawnedInputs,
+      state,
+      listening: Deferred.await(listeners[0]!),
+      /** Waits for the second Claude run in the sign-in terminal. */
+      reviewing: Deferred.await(listeners[1]!),
+      print: (value: string) => data?.(value),
+      exit: (exitCode: number) => exit?.({ exitCode, signal: null }),
+    };
+  });
 
 it.effect("signs the account's own folder in with claude auth login", () =>
   Effect.gen(function* () {
-    const h = yield* makeHarness;
+    const h = yield* makeHarness();
     yield* h.auth.controller.start("owner");
     yield* h.state((value) => value.phase === "waiting");
     assert.deepEqual(h.events, ["prepare", "spawn auth login"]);
@@ -92,9 +102,49 @@ it.effect("signs the account's own folder in with claude auth login", () =>
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+it.effect("opens Claude after sign-in when the account must review Anthropic's terms", () =>
+  Effect.gen(function* () {
+    const h = yield* makeHarness([true, false]);
+    yield* h.auth.controller.start("owner");
+    yield* h.listening;
+    h.exit(0);
+    yield* h.reviewing;
+    yield* h.state(
+      (value) =>
+        value.interaction?.type === "terminal" &&
+        value.interaction.output.includes("Consumer Terms"),
+    );
+    assert.deepEqual(h.spawnedInputs[1]?.args, []);
+    assert.deepEqual(h.spawnedInputs[1]?.env, environment);
+    h.exit(0);
+    yield* h.state((value) => value.phase === "succeeded");
+    assert.deepEqual(h.events, [
+      "prepare",
+      "spawn auth login",
+      "check terms",
+      "prepare",
+      "spawn ",
+      "check terms",
+    ]);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("fails a sign-in whose account still has Anthropic's terms to review", () =>
+  Effect.gen(function* () {
+    const h = yield* makeHarness([true, true]);
+    yield* h.auth.controller.start("owner");
+    yield* h.listening;
+    h.exit(0);
+    yield* h.reviewing;
+    h.exit(0);
+    const failed = yield* h.state((value) => value.phase === "failed");
+    assert.include(failed.message, "Consumer Terms");
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 it.effect("reports a sign-in that Claude did not finish", () =>
   Effect.gen(function* () {
-    const h = yield* makeHarness;
+    const h = yield* makeHarness();
     yield* h.auth.controller.start("owner");
     yield* h.state((value) => value.phase === "waiting");
     h.exit(1);
@@ -105,7 +155,7 @@ it.effect("reports a sign-in that Claude did not finish", () =>
 
 it.effect("signs the account's own folder out with claude auth logout", () =>
   Effect.gen(function* () {
-    const h = yield* makeHarness;
+    const h = yield* makeHarness();
     const logout = yield* h.auth.controller.logout(Effect.void).pipe(Effect.forkScoped);
     yield* h.listening;
     h.exit(0);
@@ -125,6 +175,7 @@ it.effect("offers no sign-in while CLAUDE_CODE_OAUTH_TOKEN overrides it", () =>
       configDir: "/state/home",
       prepare: Effect.void,
       canLogout: true,
+      needsTermsReview: Effect.succeed(false),
     }).pipe(Effect.provideService(PtyAdapter.PtyAdapter, { spawn: () => Effect.die("spawned") }));
     assert.isFalse(auth.canAuthenticate);
     yield* auth.controller.start("owner");

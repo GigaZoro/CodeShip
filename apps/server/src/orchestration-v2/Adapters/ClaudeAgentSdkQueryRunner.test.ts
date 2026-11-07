@@ -460,20 +460,21 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
 
   const startupDeathStderr = "error: An internal error occurred (EPERM) at /Users/private-16297";
 
-  const failStartup = Effect.gen(function* () {
-    const cli = fakeClaudeCli(`printf '%s\\n' '${startupDeathStderr}' >&2\nexit 1`);
-    yield* Effect.addFinalizer(() =>
-      Effect.sync(() => NodeFS.rmSync(NodePath.dirname(cli), { recursive: true, force: true })),
-    );
-    const session = yield* openFakeCli(cli).pipe(Effect.provide(realQueryRunner));
-    const exit = yield* Stream.runDrain(session.messages).pipe(Effect.exit);
-    if (!Exit.isFailure(exit)) throw new Error("Expected the CLI's exit to fail the stream");
-    return exit.cause;
-  });
+  const failStartup = (stderr = startupDeathStderr) =>
+    Effect.gen(function* () {
+      const cli = fakeClaudeCli(`printf '%s\\n' '${stderr}' >&2\nexit 1`);
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(NodePath.dirname(cli), { recursive: true, force: true })),
+      );
+      const session = yield* openFakeCli(cli).pipe(Effect.provide(realQueryRunner));
+      const exit = yield* Stream.runDrain(session.messages).pipe(Effect.exit);
+      if (!Exit.isFailure(exit)) throw new Error("Expected the CLI's exit to fail the stream");
+      return exit.cause;
+    });
 
   it.effect("names Claude Code's exit code when it exits before answering", () =>
     Effect.gen(function* () {
-      const cause = yield* failStartup;
+      const cause = yield* failStartup();
       const { message } = makeProviderFailure({
         cause: Cause.squash(cause),
         class: "transport_error",
@@ -484,9 +485,25 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
     }),
   );
 
+  it.effect(
+    "asks for Anthropic's updated terms when Claude refuses to start until they are reviewed",
+    () =>
+      Effect.gen(function* () {
+        const cause = yield* failStartup(
+          "[ACTION REQUIRED] An update to our Consumer Terms and Privacy Policy has taken effect on October 8, 2025. You must run `claude` to review the updated terms.",
+        );
+        const { message } = makeProviderFailure({
+          cause: Cause.squash(cause),
+          class: "transport_error",
+        });
+        assert.include(message, "Consumer Terms");
+        assert.include(message, "Sign in");
+      }),
+  );
+
   it.effect("keeps the CLI's startup stderr for the server log", () =>
     Effect.gen(function* () {
-      assert.include(Cause.pretty(yield* failStartup), startupDeathStderr);
+      assert.include(Cause.pretty(yield* failStartup()), startupDeathStderr);
     }),
   );
 

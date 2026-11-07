@@ -11,8 +11,14 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 
 import { resolveClaudeSdkExecutablePath } from "./ClaudeExecutable.ts";
+import { CLAUDE_TERMS_REVIEW_MESSAGE } from "./ClaudeHome.ts";
 
 const TRANSCRIPT_LIMIT = 16_384;
+
+const DEFAULT_TERMINAL_SIZE = { cols: 80, rows: 24 };
+
+const TERMS_REVIEW_PROMPT =
+  "Anthropic updated its Consumer Terms. Claude opens below so this account can review them: answer Claude's prompt, then type /exit to finish signing in.";
 
 const LOGIN_METHOD: ProviderAuthMethod = {
   id: "login",
@@ -32,15 +38,18 @@ export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: {
   /** Links the shared Claude files into the account's folder before Claude writes to it. */
   readonly prepare: Effect.Effect<void>;
   readonly canLogout: boolean;
+  /** True while Claude refuses to start until this account reviews Anthropic's updated Consumer Terms. */
+  readonly needsTermsReview: Effect.Effect<boolean>;
 }) {
   const pty = yield* Effect.serviceOption(PtyAdapter.PtyAdapter);
   const failure = (operation: string, detail: string, cause?: unknown) =>
     new ProviderSetupError({ instanceId: options.instanceId, operation, detail, cause });
 
-  /** Runs `claude auth <command>` in a terminal and resolves with its exit code. */
-  const runAuthCommand = Effect.fn("ClaudeAuth.runAuthCommand")(function* (
-    command: "login" | "logout",
+  /** Runs `claude <args>` in a terminal and resolves with its exit code. */
+  const runClaude = Effect.fn("ClaudeAuth.runClaude")(function* (
+    args: ReadonlyArray<string>,
     onOutput: (data: string) => void,
+    size: { readonly cols: number; readonly rows: number } = DEFAULT_TERMINAL_SIZE,
   ) {
     if (Option.isNone(pty))
       return yield* failure("start", "Interactive sign-in is unavailable on this environment.");
@@ -51,11 +60,11 @@ export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: {
     );
     // Older npm installs resolve to a script entry that the SDK also runs with node.
     const launch = executable.endsWith(".js")
-      ? { shell: "node", args: [executable, "auth", command] }
-      : { shell: executable, args: ["auth", command] };
+      ? { shell: "node", args: [executable, ...args] }
+      : { shell: executable, args: [...args] };
     const exited = yield* Deferred.make<number>();
     const process = yield* pty.value
-      .spawn({ ...launch, cwd: options.cwd, cols: 80, rows: 24, env: options.environment })
+      .spawn({ ...launch, cwd: options.cwd, ...size, env: options.environment })
       .pipe(Effect.mapError((cause) => failure("start", "Could not start Claude sign-in.", cause)));
     const detachData = process.onData(onOutput);
     const detachExit = process.onExit(({ exitCode }) => {
@@ -78,9 +87,17 @@ export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: {
     context: ProviderAuthFlow.ProviderAuthFlowContext,
   ) {
     const output = yield* Queue.sliding<string>(64);
-    const { process, exitCode } = yield* runAuthCommand("login", (data) => {
-      Queue.offerUnsafe(output, data.slice(-TRANSCRIPT_LIMIT));
+    const print = (data: string) => Queue.offerUnsafe(output, data.slice(-TRANSCRIPT_LIMIT));
+    // One terminal for the whole sign-in: the terms review reuses it at the size the client last set.
+    let size = DEFAULT_TERMINAL_SIZE;
+    let current: PtyAdapter.PtyProcess | undefined;
+    /** Starts one Claude command in the sign-in terminal; the result waits for its exit code. */
+    const startInTerminal = Effect.fnUntraced(function* (args: ReadonlyArray<string>) {
+      const { process, exitCode } = yield* runClaude(args, print, size);
+      current = process;
+      return exitCode;
     });
+    const login = yield* startInTerminal(["auth", "login"]);
     let transcript = "";
     let outputOffset = 0;
     const update = (): Effect.Effect<void> =>
@@ -91,8 +108,11 @@ export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: {
             ? Effect.void
             : Effect.try({
                 try: () => {
-                  if (response.size) process.resize(response.size.cols, response.size.rows);
-                  if (response.data) process.write(response.data);
+                  if (response.size) {
+                    size = response.size;
+                    current?.resize(response.size.cols, response.size.rows);
+                  }
+                  if (response.data) current?.write(response.data);
                 },
                 catch: () =>
                   failure("respond", "The Claude sign-in terminal is no longer available."),
@@ -108,14 +128,23 @@ export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: {
       Effect.forever,
       Effect.forkScoped,
     );
-    if ((yield* exitCode) !== 0)
+    if ((yield* login) !== 0)
       return yield* failure("start", "Claude sign-in did not finish. Start sign-in again.");
+    // The terms answer is the account owner's own (it includes whether chats help train models),
+    // so the sign-in hands them Claude's prompt instead of answering it for them.
+    if (yield* options.needsTermsReview) {
+      print(`\r\n\r\n${TERMS_REVIEW_PROMPT}\r\n\r\n`);
+      const review = yield* startInTerminal([]);
+      yield* review;
+      if (yield* options.needsTermsReview)
+        return yield* failure("start", CLAUDE_TERMS_REVIEW_MESSAGE);
+    }
     yield* context.verifying;
   });
 
   const logout = Effect.scoped(
     Effect.gen(function* () {
-      const { exitCode } = yield* runAuthCommand("logout", () => {});
+      const { exitCode } = yield* runClaude(["auth", "logout"], () => {});
       if ((yield* exitCode) !== 0)
         return yield* failure("logout", "Claude could not sign this account out. Try again.");
       return "Signed this Claude account out.";

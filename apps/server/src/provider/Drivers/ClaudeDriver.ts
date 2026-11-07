@@ -72,6 +72,7 @@ import { makeClaudeAuth } from "./ClaudeAuth.ts";
 import { makeClaudeMcpManagement } from "./ClaudeMcp.ts";
 import { makeClaudePluginManagement } from "./ClaudePlugins.ts";
 import {
+  isClaudeTermsReviewRequiredError,
   makeClaudeCapabilitiesCacheKey,
   makeClaudeContinuationGroupKey,
   makeClaudeEnvironment,
@@ -270,6 +271,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       configDir,
       prepare: prepareAccountHome,
       canLogout: accountHome !== undefined,
+      // Any other failure is left to the status check that ends every sign-in.
+      needsTermsReview: probeClaudeCapabilities(effectiveConfig, processEnv, stateDir, false).pipe(
+        Effect.as(false),
+        Effect.catch((error) => Effect.succeed(isClaudeTermsReviewRequiredError(error))),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      ),
     });
     const plugins = yield* makeClaudePluginManagement({
       instanceId,
@@ -360,23 +368,26 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
             ),
           ),
           Effect.tap(({ capabilities }) => Ref.set(lastGoodCapabilities, capabilities)),
-          Effect.catch((error) =>
-            Ref.getAndSet(lastGoodCapabilities, undefined).pipe(
-              Effect.flatMap((capabilities) =>
-                capabilities === undefined
-                  ? Effect.fail(error)
-                  : ClaudeResetCredits.readClaudeOrganizationId(accountConfigPath).pipe(
-                      Effect.flatMap((workspaceId) =>
-                        workspaceId === capabilities.workspaceId
-                          ? Effect.succeed({
-                              _tag: "fallback" as const,
-                              capabilities: withoutUsage(capabilities),
-                            })
-                          : Effect.fail(error),
+          // Pending terms are not a transient miss: every session fails until they are reviewed.
+          Effect.catchIf(
+            (error) => !isClaudeTermsReviewRequiredError(error),
+            (error) =>
+              Ref.getAndSet(lastGoodCapabilities, undefined).pipe(
+                Effect.flatMap((capabilities) =>
+                  capabilities === undefined
+                    ? Effect.fail(error)
+                    : ClaudeResetCredits.readClaudeOrganizationId(accountConfigPath).pipe(
+                        Effect.flatMap((workspaceId) =>
+                          workspaceId === capabilities.workspaceId
+                            ? Effect.succeed({
+                                _tag: "fallback" as const,
+                                capabilities: withoutUsage(capabilities),
+                              })
+                            : Effect.fail(error),
+                        ),
                       ),
-                    ),
+                ),
               ),
-            ),
           ),
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),

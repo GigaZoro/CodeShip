@@ -163,6 +163,8 @@ import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import {
   claudeSignedOutMessage,
+  ClaudeTermsReviewRequiredError,
+  isClaudeTermsReviewNotice,
   makeClaudeEnvironment,
   mergeClaudeInstanceEnvironment,
   mergeClaudeProcessEnvironment,
@@ -1175,13 +1177,13 @@ export const layerQueryRunner: Layer.Layer<
               // An aborted SDK query is a stop T3 asked for, not a CLI that died.
               const exit = answered || cause instanceof ClaudeAbortError ? undefined : exitStatus;
               const stderr = stderrTail.trim();
+              const stderrCause = stderr === "" ? cause : new Error(`stderr: ${stderr}`, { cause });
               return queryRunnerError(
                 exit === undefined || exit.exitCode === 0
                   ? cause
-                  : new ClaudeCodeStartupExitError({
-                      ...exit,
-                      cause: stderr === "" ? cause : new Error(`stderr: ${stderr}`, { cause }),
-                    }),
+                  : isClaudeTermsReviewNotice(stderr)
+                    ? new ClaudeTermsReviewRequiredError({ cause: stderrCause })
+                    : new ClaudeCodeStartupExitError({ ...exit, cause: stderrCause }),
                 "fromAsyncIterable",
               );
             }).pipe(

@@ -40,7 +40,10 @@ import {
 } from "@t3tools/provider-core/server/snapshotProbe";
 import { resolveClaudeSdkExecutablePath } from "./Drivers/ClaudeExecutable.ts";
 import {
+  ClaudeTermsReviewRequiredError,
   hasClaudeManagedMcpConfig,
+  isClaudeTermsReviewNotice,
+  isClaudeTermsReviewRequiredError,
   makeClaudeEnvironment,
   resolveClaudeHomePath,
 } from "./Drivers/ClaudeHome.ts";
@@ -345,22 +348,29 @@ const probeClaudeCapabilities = (
       claudeEnvironment,
     );
     const managedMcpConfig = yield* hasClaudeManagedMcpConfig();
-    return yield* Effect.tryPromise(async () => {
-      const q = claudeQuery({
-        // oxlint-disable-next-line require-yield -- never yields, so no prompt reaches the API
-        prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
-          await waitForAbortSignal(abort.signal);
-        })(),
-        options: buildClaudeCapabilitiesProbeQueryOptions({
-          executablePath,
-          abortController: abort,
-          environment: claudeEnvironment,
-          cwd,
-          managedMcpConfig,
-        }),
-      });
-      const init = await q.initializationResult();
-      return { q, init };
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const q = claudeQuery({
+          // oxlint-disable-next-line require-yield -- never yields, so no prompt reaches the API
+          prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
+            await waitForAbortSignal(abort.signal);
+          })(),
+          options: buildClaudeCapabilitiesProbeQueryOptions({
+            executablePath,
+            abortController: abort,
+            environment: claudeEnvironment,
+            cwd,
+            managedMcpConfig,
+          }),
+        });
+        const init = await q.initializationResult();
+        return { q, init };
+      },
+      // The SDK's exit error ends with the CLI's stderr tail, which names why Claude refused to start.
+      catch: (cause) =>
+        cause instanceof Error && isClaudeTermsReviewNotice(cause.message)
+          ? new ClaudeTermsReviewRequiredError({ cause })
+          : new Cause.UnknownError(cause),
     });
   }).pipe(
     Effect.timeout(CAPABILITIES_PROBE_TIMEOUT_MS),
@@ -408,7 +418,13 @@ const probeClaudeCapabilities = (
       }),
     ),
     Effect.tapError((error) =>
-      Effect.logWarning("Claude capability probe failed.", { errorTag: error._tag }),
+      Effect.logWarning("Claude capability probe failed.", {
+        errorTag: error._tag,
+        // Server logs only: the CLI's stderr can hold private paths or settings.
+        ...(Cause.isUnknownError(error) && error.cause instanceof Error
+          ? { reason: error.cause.message }
+          : {}),
+      }),
     ),
   );
 };
@@ -611,6 +627,8 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
 
   if (!capabilities) {
+    // Claude cannot start any session for this account, so it is an error, not an unverified check.
+    const termsReviewRequired = isClaudeTermsReviewRequiredError(probeFailure);
     return buildServerProvider({
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
@@ -622,13 +640,15 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       probe: {
         installed: true,
         version: parsedVersion,
-        status: "warning",
+        status: termsReviewRequired ? "error" : "warning",
         auth: { status: "unknown" },
-        message: probeFailure
-          ? Cause.isTimeoutError(probeFailure)
-            ? `Timed out after ${CAPABILITIES_PROBE_TIMEOUT_MS / 1_000}s while checking Claude account status.`
-            : "Claude Agent CLI failed while checking account status."
-          : "Could not verify Claude authentication status from initialization result.",
+        message: termsReviewRequired
+          ? probeFailure.message
+          : probeFailure
+            ? Cause.isTimeoutError(probeFailure)
+              ? `Timed out after ${CAPABILITIES_PROBE_TIMEOUT_MS / 1_000}s while checking Claude account status.`
+              : "Claude Agent CLI failed while checking account status."
+            : "Could not verify Claude authentication status from initialization result.",
       },
     });
   }
