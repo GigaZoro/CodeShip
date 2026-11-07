@@ -5625,7 +5625,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.dispatchMode,
       command.deliveryIntent,
     );
-    if (dispatchMode.type === "steer_active") {
+    if (dispatchMode.type === "steer_active" || dispatchMode.type === "restart_active") {
       const targetRunId = dispatchMode.targetRunId;
       const target = projection.runs.find((run) => run.id === targetRunId);
       const turn = latestProviderTurnForAttempt(
@@ -5633,7 +5633,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         target?.activeAttemptId,
       );
       // The client may still show a running turn while its completion is being
-      // projected. Preserve the submission as a new turn when steering is too late.
+      // projected. Preserve the submission as a new turn when steering or
+      // stopping is too late.
       if (
         target !== undefined &&
         (target.status === "completed" ||

@@ -49,6 +49,13 @@ export interface TimelineRowSharedState {
   onRespondToApproval:
     | ((requestId: RuntimeRequestId, decision: ProviderApprovalDecision) => Promise<unknown>)
     | undefined;
+  /** The approval keyboard shortcuts answer, with their labels by decision. */
+  approvalShortcuts: {
+    readonly requestId: RuntimeRequestId;
+    readonly labels: Partial<Record<ProviderApprovalDecision, string>>;
+  } | null;
+  /** Stops the running turn; unset when this client cannot. */
+  onStopRun: (() => void) | undefined;
   citationRequest: AssistantCitationTarget | null;
   listRef: React.RefObject<LegendListRef | null>;
   timestampFormat: TimestampFormat;

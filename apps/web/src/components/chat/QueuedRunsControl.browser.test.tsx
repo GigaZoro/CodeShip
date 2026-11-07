@@ -8,6 +8,8 @@ import { page } from "vite-plus/test/browser";
 const state = vi.hoisted(() => ({
   projection: null as unknown,
   workflow: null as unknown,
+  startTurn: null as unknown as (value: unknown) => Promise<unknown>,
+  addToast: null as unknown as (toast: unknown) => string,
 }));
 
 vi.mock(import("@t3tools/client-runtime/state/thread-workflows"), async (importOriginal) => ({
@@ -31,8 +33,21 @@ vi.mock(import("../../state/query"), async (importOriginal) => ({
 
 vi.mock(import("../../state/use-atom-command"), async (importOriginal) => ({
   ...(await importOriginal()),
-  useAtomCommand: (() => async () => undefined) as never,
+  useAtomCommand: (() => async () => ({ _tag: "Success" })) as never,
 }));
+
+vi.mock(import("../../state/use-orchestration-command"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  useOrchestrationCommand: (() => (value: unknown) => state.startTurn(value)) as never,
+}));
+
+vi.mock(import("../ui/toast"), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    toastManager: { ...actual.toastManager, add: (toast: never) => state.addToast(toast) } as never,
+  };
+});
 
 vi.mock(import("../../assets/assetUrls"), async (importOriginal) => ({
   ...(await importOriginal()),
@@ -47,6 +62,8 @@ import { QueuedRunsControl } from "./QueuedRunsControl";
 function setup() {
   state.projection = null;
   state.workflow = null;
+  state.startTurn = vi.fn(async () => ({ _tag: "Success" }));
+  state.addToast = vi.fn(() => "toast:test");
 }
 
 const baseProps = {
@@ -202,4 +219,52 @@ it("stays inside the timeline scroller instead of growing the chat column", asyn
   await expect.element(page.getByText("Later", { exact: true })).toBeInTheDocument();
   const column = screen.getByTestId("column").element();
   expect(column.scrollHeight).toBe(column.clientHeight);
+});
+
+it("queues a removed message again from the toast's Undo", async () => {
+  setup();
+  const message = {
+    id: "message:removed",
+    role: "user",
+    text: "Run the migrations",
+    createdAt: DateTime.makeUnsafe("2026-10-27T12:00:00.000Z"),
+  };
+  const modelSelection = { instanceId: "codex", model: "gpt-5" };
+  state.projection = {
+    projection: {
+      messages: [message],
+      thread: { runtimeMode: "full-access", interactionMode: "default" },
+    },
+  };
+  state.workflow = {
+    activeRun: { id: "run:active" },
+    canPromoteToSteer: true,
+    queuedRuns: [
+      {
+        run: { id: "run:removed", userMessageId: message.id, modelSelection },
+        text: message.text,
+        attachments: [],
+        message,
+      },
+    ],
+  };
+  await using _screen = await renderQueue();
+
+  await page.getByRole("button", { name: "Remove queued message", exact: true }).click();
+  await vi.waitFor(() => expect(state.addToast).toHaveBeenCalledOnce());
+  const toast = vi.mocked(state.addToast).mock.calls[0]![0] as {
+    actionProps: { onClick: () => void };
+  };
+  toast.actionProps.onClick();
+
+  expect(state.startTurn).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({
+      input: expect.objectContaining({
+        threadId: "thread:test",
+        message: expect.objectContaining({ text: "Run the migrations", attachments: [] }),
+        modelSelection,
+        dispatchMode: "queue",
+      }),
+    }),
+  );
 });

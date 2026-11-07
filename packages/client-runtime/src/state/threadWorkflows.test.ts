@@ -13,6 +13,7 @@ const capabilities = (input?: {
   readonly queued?: boolean;
   readonly steer?: boolean;
   readonly restartSteer?: boolean;
+  readonly interrupt?: boolean;
   readonly nativeFork?: boolean;
   readonly portableFork?: boolean;
 }) =>
@@ -21,6 +22,7 @@ const capabilities = (input?: {
       supportsQueuedMessages: input?.queued ?? false,
       supportsActiveSteering: input?.steer ?? false,
       supportsSteeringByInterruptRestart: input?.restartSteer ?? false,
+      supportsInterrupt: input?.interrupt ?? false,
     },
     threads: {
       canForkThread: input?.nativeFork ?? false,
@@ -241,7 +243,7 @@ describe("thread workflows", () => {
         {
           id: "provider-session",
           status: "running",
-          capabilities: capabilities({ queued: true, restartSteer: true }),
+          capabilities: capabilities({ queued: true, restartSteer: true, interrupt: true }),
         },
       ],
     } as never);
@@ -256,6 +258,7 @@ describe("thread workflows", () => {
     ]);
     expect(state.activeRun?.id).toBe("active");
     expect(state.canPromoteToSteer).toBe(true);
+    expect(state.canStopAndSend).toBe(true);
     expect(state.canSendNow).toBe(false);
   });
 
@@ -276,6 +279,7 @@ describe("thread workflows", () => {
 
       expect(state.canSendNow).toBe(true);
       expect(state.canPromoteToSteer).toBe(false);
+      expect(state.canStopAndSend).toBe(false);
       expect(state.isHeld).toBe(true);
     },
   );
@@ -460,12 +464,18 @@ describe("thread workflows", () => {
           {
             id: "provider-session",
             status: "running",
-            capabilities: capabilities({ queued: true, steer: true }),
+            capabilities: capabilities({
+              queued: true,
+              steer: true,
+              restartSteer: true,
+              interrupt: true,
+            }),
           },
         ],
       } as never);
 
       expect(state.canPromoteToSteer).toBe(false);
+      expect(state.canStopAndSend).toBe(false);
     },
   );
 

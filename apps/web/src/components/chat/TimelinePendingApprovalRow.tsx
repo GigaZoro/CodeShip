@@ -41,7 +41,13 @@ export const TimelinePendingApprovalRow = memo(function TimelinePendingApprovalR
 }: {
   approval: PendingApproval;
 }) {
-  const { respondingRequestIds, canOperateThread, onRespondToApproval } = use(TimelineRowCtx);
+  const {
+    respondingRequestIds,
+    canOperateThread,
+    onRespondToApproval,
+    approvalShortcuts,
+    onStopRun,
+  } = use(TimelineRowCtx);
   const presentation = APPROVAL_PRESENTATION[approval.requestKind];
   const canRespond = approval.responseCapability === "live";
   return (
@@ -95,15 +101,32 @@ export const TimelinePendingApprovalRow = memo(function TimelinePendingApprovalR
                     isResponding={respondingRequestIds.includes(approval.requestId)}
                     canRespond={canRespond}
                     options={approval.options}
+                    shortcutLabels={
+                      approvalShortcuts?.requestId === approval.requestId
+                        ? approvalShortcuts.labels
+                        : undefined
+                    }
                     onRespondToApproval={onRespondToApproval}
                   />
                 </>
               ) : null}
             </>
           ) : (
-            <span className="text-warning">
-              {t("Provider process is gone. Interrupt or restart the run to respond.")}
-            </span>
+            <>
+              <span className="text-warning">
+                {t("The agent's process has ended, so this request can't be answered.")}
+              </span>
+              {onStopRun ? (
+                <>
+                  <span aria-hidden className="text-muted-foreground">
+                    ·
+                  </span>
+                  <InlineButton disabled={!canOperateThread} onClick={onStopRun}>
+                    {t("Stop agent")}
+                  </InlineButton>
+                </>
+              ) : null}
+            </>
           )}
           {approval.fullAccessOverride ? (
             <Popover>

@@ -151,7 +151,7 @@ function Row({
   layout = "inline",
   ...props
 }: useRender.ComponentProps<"div"> & {
-  layout?: "inline" | "wrap-actions" | "approval";
+  layout?: "inline" | "wrap-actions";
 }) {
   const rowProps = {
     className: cn(
@@ -160,7 +160,6 @@ function Row({
       "[&:is(button)]:cursor-pointer [&:is(button)]:rounded-xl [&:is(button)]:hover:bg-foreground/5 [&:is(button)]:focus-visible:outline-2 [&:is(button)]:focus-visible:-outline-offset-2 [&:is(button)]:focus-visible:outline-ring",
       layout === "wrap-actions" &&
         "flex flex-wrap *:data-[slot=composer-banner-content]:max-w-[calc(100%-var(--composer-banner-icon-column)-var(--spacing))] *:data-[slot=composer-banner-content]:grow",
-      layout === "approval" && "items-start gap-x-2 gap-y-3",
       className,
     ),
     "data-composer-banner-row": "true",
@@ -180,7 +179,6 @@ function Icon({ className, ...props }: ComponentProps<"span">) {
       data-slot="composer-banner-icon"
       className={cn(
         "col-start-1 row-start-1 flex w-(--composer-banner-icon-column) min-w-0 flex-none items-center justify-center text-muted-foreground [&>svg]:size-3",
-        "group-data-[composer-banner-layout=approval]/banner-row:pt-0.5 group-data-[composer-banner-layout=approval]/banner-row:text-warning group-data-[composer-banner-layout=approval]/banner-row:[&>svg]:size-4",
         className,
       )}
       {...props}
@@ -194,7 +192,6 @@ function Content({ className, ...props }: ComponentProps<"span">) {
       data-slot="composer-banner-content"
       className={cn(
         "col-start-2 row-start-1 flex min-w-0 items-center gap-1 *:data-[slot=composer-banner-separator]:mx-0",
-        "@max-[560px]:group-data-[composer-banner-layout=approval]/banner-row:col-end-4",
         "group-not-has-[>[data-slot=composer-banner-icon]]/banner-row:col-[1/3] group-not-has-[>[data-slot=composer-banner-icon]]/banner-row:ps-2 sm:group-not-has-[>[data-slot=composer-banner-icon]]/banner-row:ps-1.5",
         "group-not-has-[>[data-slot=composer-banner-icon],>[data-slot=composer-banner-actions]]/banner-row:pe-2 sm:group-not-has-[>[data-slot=composer-banner-icon],>[data-slot=composer-banner-actions]]/banner-row:pe-1.5",
         className,
@@ -222,7 +219,6 @@ function Actions({ className, ...props }: ComponentProps<"span">) {
       data-slot="composer-banner-actions"
       className={cn(
         "col-start-3 row-start-1 flex flex-wrap items-center justify-end gap-1",
-        "group-data-[composer-banner-layout=approval]/banner-row:self-center group-data-[composer-banner-layout=approval]/banner-row:gap-1.5 @max-[560px]:group-data-[composer-banner-layout=approval]/banner-row:col-start-2 @max-[560px]:group-data-[composer-banner-layout=approval]/banner-row:col-end-4 @max-[560px]:group-data-[composer-banner-layout=approval]/banner-row:row-start-2",
         "group-data-[composer-banner-layout=wrap-actions]/banner-row:ms-auto",
         className,
       )}

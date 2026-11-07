@@ -9,9 +9,9 @@ In **Settings → Keybindings → Other shortcuts → Send shortcut**, choose wh
 `mod+Enter` for multiline prompts, or always requires `mod+Enter`. `Shift+Enter`
 inserts a new line. This applies to the web and desktop composer at desktop widths.
 
-**Follow-up behavior** chooses Queue or Steer while the agent runs. Use
-`mod+Enter` to do the opposite for one message, even when the send shortcut
-requires a modifier. `mod+Alt+Enter` sends, keeps that thread running in the
+**Follow-up behavior** chooses Steer, Queue, or Stop and send while the agent runs. Use
+`mod+Enter` for the alternate action for one message (Queue, or Steer when your default
+is Queue), even when the send shortcut requires a modifier. `mod+Alt+Enter` sends, keeps that thread running in the
 background, and opens a fresh new-thread composer. In a new thread, `mod+Enter`
 does the same. Change these shortcuts in **Settings → Keybindings** under
 **Composer: Opposite Queue or Steer Action**, **Composer: Start in Background**,
@@ -119,8 +119,9 @@ Join modifiers and a key with `+`, such as `mod+shift+d` or `ctrl+l`.
 
 Available context keys are `terminalFocus`, `terminalOpen`, `previewFocus`,
 `previewOpen`, `modelPickerOpen`, `usagePageOpen`, `diffFocus`, `composerFocus`, `draftThreadRoute`,
-`turnRunning`, `editableFocus`, `isWeb`, and `isDesktop`.
+`turnRunning`, `approvalPending`, `editableFocus`, `isWeb`, and `isDesktop`.
 `diffFocus` is true while the keyboard is in the Diff panel.
+`approvalPending` is true while the open thread shows an approval you can answer.
 `draftThreadRoute` is true on a draft thread, including a restored draft, until it is first sent.
 `editableFocus` is true while a text field, the composer, or another editor has
 the keyboard. `isWeb` is true in a browser tab. `isDesktop` is true in the
@@ -157,8 +158,11 @@ a shortcut.
 `mod+alt+z` snoozes the open thread by opening the command palette on its Snooze options, and
 `mod+alt+e` archives it. Pin, settle, rename and the other thread actions are in the command palette too.
 
-`thread.stop` interrupts the running turn in the focused thread. It has no default
-shortcut; assign one in **Settings → Keybindings**.
+`thread.stop` (`mod+.` by default) stops the running turn in the focused thread.
+
+`approval.approve` (`mod+alt+y`), `approval.alwaysAllow` (`mod+alt+shift+y`), and
+`approval.decline` (`mod+alt+x`) answer the approval the open thread is waiting on, even
+while you type in the composer. Hover an approval's buttons to see them.
 
 `thread.undo` (`mod+z` by default) reverses the actions shown in the notice at the
 bottom of the sidebar, such as unpin, settle, snooze, archive, or discarding a

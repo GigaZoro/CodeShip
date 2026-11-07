@@ -20,7 +20,11 @@ and modes you choose in a draft keep their permissions.
 An administrator can cap the modes available on a machine with a
 [managed policy](./managed-policy.md#permission-modes); modes above the cap show who manages them.
 
-Approve or reject requests in the conversation to let the agent continue. Permission modes do
+Approve or reject requests in the conversation to let the agent continue. On web and desktop,
+`Cmd+Option+Y` on macOS or `Ctrl+Alt+Y` on Windows and Linux approves, adding `Shift` always
+allows for the session, and `Cmd+Option+X` or `Ctrl+Alt+X` declines; change them in
+[Keybindings](./keybindings.md#commands-with-special-behavior). If the agent's process has ended,
+the request can't be answered; choose **Stop agent** beside it. Permission modes do
 not prevent the agent from asking questions about the task. Subagent approval requests appear in
 the parent conversation with the subagent's name, so you can respond without switching threads.
 

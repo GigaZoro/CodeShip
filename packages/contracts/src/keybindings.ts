@@ -50,6 +50,13 @@ const THREAD_KEYBINDING_COMMANDS = [
   ...THREAD_JUMP_KEYBINDING_COMMANDS,
 ] as const;
 
+export const APPROVAL_KEYBINDING_COMMANDS = [
+  "approval.approve",
+  "approval.decline",
+  "approval.alwaysAllow",
+] as const;
+export type ApprovalKeybindingCommand = (typeof APPROVAL_KEYBINDING_COMMANDS)[number];
+
 const MODEL_PICKER_KEYBINDING_COMMANDS = [
   "modelPicker.toggle",
   "modelPicker.previousProvider",
@@ -121,6 +128,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "usage.period.quarter",
   ...MODEL_PICKER_KEYBINDING_COMMANDS,
   ...THREAD_KEYBINDING_COMMANDS,
+  ...APPROVAL_KEYBINDING_COMMANDS,
 ] as const;
 
 export const SCRIPT_RUN_COMMAND_PATTERN = Schema.TemplateLiteral([

@@ -1,5 +1,6 @@
 import { msg, t, type Message } from "~/i18n";
 import {
+  type ApprovalKeybindingCommand,
   type ProviderApprovalDecision,
   type ProviderApprovalOption,
   type RuntimeRequestId,
@@ -7,13 +8,29 @@ import {
 import { memo } from "react";
 import { EllipsisIcon, TriangleAlertIcon } from "lucide-react";
 import { Button, InlineButton } from "../ui/button";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { Menu, MenuItem, MenuPopup, MenuShortcut, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { composerFloatingLayerProps } from "./composerEventScope";
+
+export const APPROVAL_SHORTCUT_DECISIONS = {
+  "approval.approve": "accept",
+  "approval.decline": "decline",
+  "approval.alwaysAllow": "acceptForSession",
+} as const satisfies Record<ApprovalKeybindingCommand, ProviderApprovalDecision>;
+
+/** Approvals without their own options offer every default decision. */
+export function approvalOffersDecision(
+  options: ReadonlyArray<ProviderApprovalOption> | undefined,
+  decision: ProviderApprovalDecision,
+): boolean {
+  return (options ?? DEFAULT_APPROVAL_OPTIONS).some((option) => option.decision === decision);
+}
 
 interface ComposerPendingApprovalActionsProps {
   presentation?: "composer" | "inline";
   requestId: RuntimeRequestId;
+  /** Keyboard shortcuts that answer this request, by decision. */
+  shortcutLabels?: Partial<Record<ProviderApprovalDecision, string>> | undefined;
   isResponding: boolean;
   canRespond: boolean;
   disabled?: boolean;
@@ -42,6 +59,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
   canRespond,
   disabled = false,
   options = DEFAULT_APPROVAL_OPTIONS,
+  shortcutLabels,
   onRespondToApproval,
 }: ComposerPendingApprovalActionsProps) {
   const optionLabel = (option: ProviderApprovalOption) => {
@@ -97,10 +115,16 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
               {content}
             </Button>
           );
-        return option.warning ? (
+        const shortcut = shortcutLabels?.[option.decision];
+        return option.warning || shortcut ? (
           <Tooltip key={option.decision}>
             <TooltipTrigger render={button} />
-            <TooltipPopup side="top">{option.warning}</TooltipPopup>
+            <TooltipPopup side="top">
+              {option.warning ? <div>{option.warning}</div> : null}
+              {shortcut ? (
+                <div>{t("{text} ({shortcut})", { text: optionLabel(option), shortcut })}</div>
+              ) : null}
+            </TooltipPopup>
           </Tooltip>
         ) : (
           button
@@ -136,6 +160,9 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
                   <span className="min-w-0 whitespace-normal wrap-break-word">
                     {optionLabel(option)}
                   </span>
+                  {shortcutLabels?.[option.decision] ? (
+                    <MenuShortcut>{shortcutLabels[option.decision]}</MenuShortcut>
+                  ) : null}
                 </MenuItem>
               );
               return option.warning ? (

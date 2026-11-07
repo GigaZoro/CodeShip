@@ -741,5 +741,6 @@ export function useComposerStash(input: {
     restoreStashEntryStable,
     deleteStashEntryStable,
     toggleStashMenuStable,
+    stashCurrentPromptStable,
   };
 }

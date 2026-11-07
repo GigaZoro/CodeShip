@@ -1,5 +1,6 @@
 import { t } from "~/i18n";
 import type { ModelSelection, ProviderInstanceId, RuntimeMode } from "@t3tools/contracts";
+import type { ActiveTurnComposerAction } from "@t3tools/client-runtime/state/composer-dispatch";
 import { createModelSelection } from "@t3tools/shared/model";
 import { type ComponentProps, memo, useId, useRef, useState } from "react";
 
@@ -202,9 +203,11 @@ export const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryA
   } | null;
   isRunning: boolean;
   canInterrupt: boolean;
-  followUpBehavior: "queue" | "steer";
+  followUpBehavior: ActiveTurnComposerAction;
   canSteer: boolean;
+  canRestart: boolean;
   alternateShortcutLabel: string | null;
+  stopShortcutLabel: string | null;
   showPlanFollowUpPrompt: boolean;
   promptHasText: boolean;
   isSendBusy: boolean;
@@ -216,6 +219,7 @@ export const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryA
   preserveComposerFocusOnPointerDown?: boolean;
   isEditingQueuedMessage: boolean;
   onSubmitMessage: React.MouseEventHandler<HTMLButtonElement>;
+  onSendWithAction: (action: ActiveTurnComposerAction) => void;
   onResume: () => void;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
@@ -234,7 +238,9 @@ export const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryA
         canInterrupt={props.canInterrupt}
         followUpBehavior={props.followUpBehavior}
         canSteer={props.canSteer}
+        canRestart={props.canRestart}
         alternateShortcutLabel={props.alternateShortcutLabel}
+        stopShortcutLabel={props.stopShortcutLabel}
         showPlanFollowUpPrompt={props.showPlanFollowUpPrompt}
         promptHasText={props.promptHasText}
         isSendBusy={props.isSendBusy}
@@ -247,6 +253,7 @@ export const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryA
         preserveComposerFocusOnPointerDown={props.preserveComposerFocusOnPointerDown ?? false}
         isEditingQueuedMessage={props.isEditingQueuedMessage}
         onSubmitMessage={props.onSubmitMessage}
+        onSendWithAction={props.onSendWithAction}
         onResume={props.onResume}
         onPreviousPendingQuestion={props.onPreviousPendingQuestion}
         onInterrupt={props.onInterrupt}

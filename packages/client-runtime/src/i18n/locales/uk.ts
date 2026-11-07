@@ -1887,6 +1887,7 @@ const catalog: MessageCatalog = {
   "Add instance": "Додати екземпляр",
   "Add it to an agent, e.g. claude mcp add --transport http t3 {url}":
     "Додайте його агенту, напр. claude mcp add --transport http t3 {url}",
+  "Add it to what the agent is doing": "Додати до того, що агент робить зараз",
   "Add keybinding": "Додати комбінацію клавіш",
   "Add labels": "Додати мітки",
   "Add light palette": "Додати світлу палітру",
@@ -2579,6 +2580,8 @@ const catalog: MessageCatalog = {
   Breakdown: "Розбивка",
   Brightness: "Яскравість",
   "Bring back": "Повернути",
+  "Bring it back from the stash once the retry is on its way.":
+    "Поверніть її з відкладених, коли повтор буде надіслано.",
   "Bring past and new conversations into T3.CodeShip, including ones from while it was closed.":
     "Імпортувати до T3.CodeShip минулі й нові розмови, зокрема ті, що відбулися, поки він був закритий.",
   "Bring this thread's latest turn into its source":
@@ -3027,6 +3030,7 @@ const catalog: MessageCatalog = {
   "Choose how new worktree branches are named from your first message.":
     "Виберіть, як називати нові гілки worktree за вашим першим повідомленням.",
   "Choose how to continue.": "Виберіть, як продовжити.",
+  "Choose how to send": "Вибрати спосіб надсилання",
   "Choose how to send this message": "Виберіть, як надіслати це повідомлення",
   "Choose icon": "Виберіть значок",
   "Choose light variant, {count} options, currently {name}":
@@ -4953,6 +4957,8 @@ const catalog: MessageCatalog = {
   "Edit {name}": "Редагувати: {name}",
   "Edit {title}": "Редагувати {title}",
   "Edit Action": "Редагувати дію",
+  "Edit and keep files": "Редагувати, зберегти файли",
+  "Edit and undo file changes": "Редагувати й скасувати зміни файлів",
   "Edit citation comment": "Редагувати коментар до цитати",
   "Edit comment": "Редагувати коментар",
   "Edit description": "Редагувати опис",
@@ -6152,11 +6158,9 @@ const catalog: MessageCatalog = {
   "Interface font": "Шрифт інтерфейсу",
   "Interface font size": "Розмір шрифту інтерфейсу",
   interrupt: "перервати",
-  Interrupt: "Перервати",
   "Interrupt requested": "Перерву запитано",
   "Interrupt the current turn before reverting checkpoints.":
     "Перервіть поточний хід, перш ніж відкочувати контрольні точки.",
-  "Interrupt what the agent is doing": "Перервати те, що робить агент",
   Interrupted: "Перервано",
   Interval: "Інтервал",
   "Intervals must be at least 1 minute. Update this interval before saving.":
@@ -6671,8 +6675,8 @@ const catalog: MessageCatalog = {
   "Long press to copy the trace ID": "Утримуйте, щоб скопіювати ID трасування",
   "Long press to copy.": "Натисніть і утримуйте, щоб скопіювати.",
   "Long press to remove from this device": "Утримуйте, щоб видалити з цього пристрою",
-  "Long-press the send button to use the other option for a single message. With a hardware keyboard, hold Command while sending.":
-    "Утримуйте кнопку надсилання, щоб застосувати інший варіант для одного повідомлення. З апаратною клавіатурою утримуйте Command під час надсилання.",
+  "Long-press the send button to choose another option for a single message. With a hardware keyboard, hold Command while sending to queue, or to steer when your default is Queue.":
+    "Утримуйте кнопку надсилання, щоб вибрати інший варіант для одного повідомлення. З апаратною клавіатурою утримуйте Command під час надсилання, щоб поставити в чергу, або щоб скерувати, якщо типово вибрано «Черга».",
   Longitude: "Довгота",
   "Look closely": "Придивіться",
   "Looking for browsers…": "Пошук браузерів…",
@@ -8211,12 +8215,12 @@ const catalog: MessageCatalog = {
   "Preparing...": "Підготовка...",
   "Presentation template": "Шаблон презентації",
   "Preset…": "Набір…",
-  "Press {modifier} + Enter for single-line prompts or {modifier} + Shift + Enter for multiline prompts to do the opposite for one message.":
-    "Натисніть {modifier} + Enter для однорядкових запитів або {modifier} + Shift + Enter для багаторядкових, щоб зробити навпаки для одного повідомлення.",
-  "Press {modifier} + Enter to do the opposite for one message.":
-    "Натисніть {modifier} + Enter, щоб зробити навпаки для одного повідомлення.",
-  "Press {modifier} + Shift + Enter to do the opposite for one message.":
-    "Натисніть {modifier} + Shift + Enter, щоб зробити навпаки для одного повідомлення.",
+  "Press {modifier} + Enter for single-line prompts or {modifier} + Shift + Enter for multiline prompts to {alternate} instead for one message.":
+    "Натисніть {modifier} + Enter для однорядкових запитів або {modifier} + Shift + Enter для багаторядкових, щоб для одного повідомлення {alternate}.",
+  "Press {modifier} + Enter to {alternate} instead for one message.":
+    "Натисніть {modifier} + Enter, щоб для одного повідомлення {alternate}.",
+  "Press {modifier} + Shift + Enter to {alternate} instead for one message.":
+    "Натисніть {modifier} + Shift + Enter, щоб для одного повідомлення {alternate}.",
   "Press {shortcut} again to quit": "Натисніть {shortcut} ще раз, щоб вийти",
   "Press {shortcut} with a prompt in the composer to stash it.":
     "Натисніть {shortcut}, коли в полі повідомлення є запит, щоб відкласти його.",
@@ -8394,10 +8398,6 @@ const catalog: MessageCatalog = {
   "Provider instance added": "Екземпляр провайдера додано",
   "Provider not allowed": "Провайдера не дозволено",
   "Provider not found": "Провайдера не знайдено",
-  "Provider process is gone. Interrupt or restart the child thread to respond.":
-    "Процес провайдера завершився. Перервіть або перезапустіть дочірній чат, щоб відповісти.",
-  "Provider process is gone. Interrupt or restart the run to respond.":
-    "Процес провайдера завершився. Перервіть або перезапустіть запуск, щоб відповісти.",
   "Provider recovered ({progress} retries)": {
     one: "Провайдер відновився ({progress} повтор)",
     few: "Провайдер відновився ({progress} повтори)",
@@ -8516,12 +8516,11 @@ const catalog: MessageCatalog = {
   Puzzle: "Пазл",
   Query: "Запит",
   Question: "Питання",
+  "Question waiting": "Чекає на відповідь",
   Questions: "Питання",
   "Questions to consider": "Питання для роздумів",
   queue: "поставити в чергу",
   Queue: "Черга",
-  "Queue follow-ups while the agent runs or steer the current run.":
-    "Ставте наступні повідомлення в чергу, поки агент працює, або скеровуйте поточний запуск.",
   "Queue message": "Поставити повідомлення в чергу",
   "Queue paused": "Чергу призупинено",
   "Queue until {name} reconnects": "У чергу, доки {name} не підключиться",
@@ -9025,6 +9024,7 @@ const catalog: MessageCatalog = {
   "removed code, showing {shown} of {total} diff lines":
     "видалений код, показано {shown} із {total} рядків змін",
   "Removed profile": "Профіль видалено",
+  "Removed queued message": "Повідомлення прибрано з черги",
   "Removing runtime": "Видалення середовища виконання",
   "Removing…": "Видалення…",
   Rename: "Перейменувати",
@@ -9176,7 +9176,6 @@ const catalog: MessageCatalog = {
   "Response streaming": "Потокове виведення відповіді",
   Responsive: "Адаптивний",
   restart: "перезапустити",
-  Restart: "Перезапустити",
   "Restart agent session": "Перезапустити сеанс агента",
   "Restart and disable": "Перезапустити й вимкнути",
   "Restart and enable": "Перезапустити й увімкнути",
@@ -9190,7 +9189,6 @@ const catalog: MessageCatalog = {
   "Restart the app from the update button to install it.":
     "Перезапустіть застосунок кнопкою оновлення, щоб установити його.",
   "Restart to update": "Перезапустити для оновлення",
-  "Restart turn": "Перезапустити хід",
   restarting: "перезапуск",
   Restarting: "Перезапуск",
   "Restarting and reconnecting…": "Перезапуск і повторне підключення…",
@@ -9229,6 +9227,8 @@ const catalog: MessageCatalog = {
   "Resume thread": "Відновити чат",
   Retry: "Повторити",
   "Retry {name}": "Повторити {name}",
+  "Retry and keep files": "Повторити, зберегти файли",
+  "Retry and undo file changes": "Повторити й скасувати зміни файлів",
   "Retry audio": "Повторити аудіо",
   "Retry cancel": "Повторити скасування",
   "Retry connection": "Повторити підключення",
@@ -9262,7 +9262,6 @@ const catalog: MessageCatalog = {
   "Retry uploading {name}": "Повторити завантаження {name}",
   "Retry video": "Повторити відео",
   "Retry workspace preparation": "Повторити підготовку робочого простору",
-  "Retry, keep changes": "Повторити, зберегти зміни",
   "Retry. If it keeps failing, copy the diagnostics.":
     "Повторіть. Якщо помилка повторюється, скопіюйте діагностику.",
   retrying: "повторна спроба",
@@ -9292,9 +9291,7 @@ const catalog: MessageCatalog = {
   "Reveal in Finder": "Показати у Finder",
   "Reveals the account email": "Показує email облікового запису",
   "Revert {term} opened": "Скасування відкрито: {term}",
-  "Revert and keep changes": "Скасувати й зберегти зміни",
   "Revert changes": "Скасувати зміни",
-  "Revert files too": "Також скасувати зміни у файлах",
   Reverted: "Скасовано",
   review: "рев’ю",
   Review: "Рев’ю",
@@ -9367,10 +9364,6 @@ const catalog: MessageCatalog = {
   },
   "Revoked 1 other client": "Відкликано 1 іншого клієнта",
   "Revoking…": "Відкликання…",
-  "Rewind chat to before this message. Your prompt and attachments return to the composer. “Revert files too” also undoes your own edits.":
-    "Повернути чат до моменту перед цим повідомленням. Ваш запит і вкладення повернуться в поле повідомлення. «Також скасувати зміни у файлах» додатково скасовує і ваші правки.",
-  "Rewind chat to before this response and send your message again. “Revert files too” also undoes the edits the response made, so the retry starts from the earlier files.":
-    "Повернути чат до моменту перед цією відповіддю й надіслати ваше повідомлення знову. «Також скасувати зміни у файлах» додатково скасовує правки цієї відповіді, тож повтор почнеться з попередніх файлів.",
   "Rewinding conversation": "Перемотування розмови",
   Rewrite: "Створити заново",
   "Rewrite guide": "Створити посібник заново",
@@ -9416,7 +9409,6 @@ const catalog: MessageCatalog = {
   "Run a prompt automatically on an interval, at a fixed time, once at a set date, or when a webhook is called.":
     "Запускайте запит автоматично з інтервалом, у задений час, один раз у вказану дату або під час виклику вебхука.",
   "Run action on default branch?": "Виконати дію в типовій гілці?",
-  "Run after the current turn": "Запустити після поточного ходу",
   "Run agents on this computer. Turn off to use T3.CodeShip only with remote environments.":
     "Запускати агентів на цьому комп’ютері. Вимкніть, щоб використовувати T3.CodeShip лише з віддаленими середовищами.",
   "Run an installed ACP executable on {environment}.":
@@ -9823,6 +9815,7 @@ const catalog: MessageCatalog = {
   "Send it to one person. It works once and expires in 24 hours.":
     "Надішліть одній людині. Працює один раз і спливає за 24 години.",
   "Send it to your workspace admin.": "Надішліть його адміністратору вашого робочого простору.",
+  "Send it when the current turn ends": "Надіслати, коли поточний хід завершиться",
   "send message": "надіслати повідомлення",
   "Send message": "Надіслати повідомлення",
   "Send Message": "Надіслати повідомлення",
@@ -10136,6 +10129,7 @@ const catalog: MessageCatalog = {
   "Show sidebar": "Показати бічну панель",
   "Show skills in slash menu": "Показувати навички в меню зі скісною рискою",
   "Show source": "Показати вихідний код",
+  "Show stash": "Показати відкладені",
   "Show table": "Показати таблицю",
   "Show tabs, {tab} selected": "Показати вкладки, вибрано {tab}",
   "Show test files": "Показувати тестові файли",
@@ -10477,7 +10471,6 @@ const catalog: MessageCatalog = {
     "Запустіть Tailscale, щоб налаштувати HTTPS-доступ через MagicDNS.",
   "Start the matching WSL backend, then choose the folder again.":
     "Запустіть відповідний бекенд WSL, а потім виберіть папку знову.",
-  "Start the turn over with this message": "Почати хід заново з цим повідомленням",
   "Start the WSL backend": "Запустити бекенд WSL",
   "Start tour": "Почати тур",
   "Start with files expanded or collapsed when opening diffs or a pull request's Code tab.":
@@ -10569,9 +10562,11 @@ const catalog: MessageCatalog = {
   "Stop agent": "Зупинити агента",
   "Stop agent {label}": "Зупинити агента {label}",
   "Stop agent?": "Зупинити агента?",
+  "stop and send": "зупинити й надіслати",
+  "Stop and send": "Зупинити й надіслати",
+  "Stop and send message": "Зупинити й надіслати повідомлення",
   "Stop background work": "Зупинити фонову роботу",
   "Stop entire workflow": "Зупинити весь робочий процес",
-  "Stop generation": "Зупинити генерацію",
   "Stop localhost:{port}": "Зупинити localhost:{port}",
   "Stop recording": "Зупинити запис",
   "Stop server": "Зупинити сервер",
@@ -10584,6 +10579,7 @@ const catalog: MessageCatalog = {
   "Stop the agent first": "Спочатку зупиніть агента",
   "Stop the agent to edit": "Зупиніть агента, щоб редагувати",
   "Stop the agent to retry": "Зупиніть агента, щоб повторити",
+  "Stop the current turn and send it instead": "Зупинити поточний хід і надіслати замість нього",
   "Stop the provider from automatically merging this {term}.":
     "Вимкнути автоматичне злиття провайдером: {term}.",
   "stop watching": "припинити стеження",
@@ -11011,6 +11007,8 @@ const catalog: MessageCatalog = {
     "Агент активно керує цим браузером. Закриття може перервати поточну дію в браузері.",
   "The agent reads T3.CodeShip's logs and source here, and asks before it applies a fix or posts anything.":
     "Агент читає тут журнали та вихідний код T3.CodeShip і питає, перш ніж застосувати виправлення чи щось опублікувати.",
+  "The agent's process has ended, so this request can't be answered.":
+    "Процес агента завершився, тому на цей запит не можна відповісти.",
   "The Android device list may be incomplete. Check the device host and try again.":
     "Список пристроїв Android може бути неповним. Перевірте хост пристроїв і спробуйте ще раз.",
   "The Android SDK and Emulator are available on {host}.":
@@ -11057,6 +11055,10 @@ const catalog: MessageCatalog = {
     "Не вдалося зберегти захоплене вікно в чернетку.",
   "The captured window is too large to attach.": "Захоплене вікно завелике для додавання.",
   "The car’s microphone": "Мікрофон автомобіля",
+  "The chat goes back to before this message, and the message returns to the message box for you to change. Your files can stay as they are now, or go back to how they were before this message. Going back also undoes any changes you made to them yourself since then.":
+    "Чат повернеться до стану перед цим повідомленням, а саме повідомлення повернеться в поле повідомлення, щоб ви могли його змінити. Файли можуть залишитися такими, як зараз, або повернутися до стану перед цим повідомленням. Повернення також скасує зміни, які ви внесли в них самі відтоді.",
+  "The chat goes back to before this response, and your message is sent again. Your files can stay as they are now, or go back to how they were before this response. Going back also undoes any changes you made to them yourself since then.":
+    "Чат повернеться до стану перед цією відповіддю, і ваше повідомлення буде надіслано знову. Файли можуть залишитися такими, як зараз, або повернутися до стану перед цією відповіддю. Повернення також скасує зміни, які ви внесли в них самі відтоді.",
   "The chat isn't ready to accept input right now.": "Чат зараз не готовий приймати введення.",
   "The checkout is ready on `{branch}`. Point a thread at it from the branch picker, then ask again.":
     "Чекаут готовий на `{branch}`. Вкажіть чату цю гілку в списку гілок і запитайте знову.",
@@ -11088,6 +11090,8 @@ const catalog: MessageCatalog = {
   "The cookies were imported, but the new profile couldn't be saved. Try again.":
     "Cookie імпортовано, але новий профіль не вдалося зберегти. Спробуйте ще раз.",
   "the current environment": "поточне середовище",
+  "The current turn stops and your message starts a new one. Agents that can't restart a turn steer instead.":
+    "Поточний хід зупиняється, а ваше повідомлення починає новий. Агенти, які не можуть перезапустити хід, натомість скеровують.",
   "The current URL stops working immediately.": "Поточний URL одразу перестане працювати.",
   "The desktop app resumed without installing the prepared update.":
     "Десктопний застосунок відновився без встановлення підготовленого оновлення.",
@@ -11980,6 +11984,8 @@ const catalog: MessageCatalog = {
     "Цей запит довший за {limit} символів, тому T3.CodeShip його не відкрив.",
   "This provider accepts a reviewer ID but cannot list candidates.":
     "Цей провайдер приймає ID рецензента, але не може показати кандидатів.",
+  "This provider can't stop and restart a turn":
+    "Цей провайдер не може зупинити й перезапустити хід",
   "This provider does not currently report limits.":
     "Цей провайдер наразі не повідомляє про ліміти.",
   "This provider does not support merging here.": "Цей провайдер не підтримує злиття тут.",
@@ -12121,6 +12127,8 @@ const catalog: MessageCatalog = {
   "This thread was deleted or is no longer available.":
     "Цей чат видалено або він більше недоступний.",
   "This thread was deleted.": "Цей чат видалено.",
+  "This thread's agent process has ended, so the request can't be answered.":
+    "Процес агента цього чату завершився, тому на запит не можна відповісти.",
   "This thread's branch has no pull request yet.": "У гілки цього чату ще немає пул-реквесту.",
   "This tool call changed {count} files. The recorded patch omits {omitted} of them.": {
     one: "Цей виклик інструмента змінив {count} файл. У записаному патчі пропущено {omitted} з них.",
@@ -13196,6 +13204,8 @@ const catalog: MessageCatalog = {
   Wed: "Ср",
   Wednesday: "Середа",
   Weekdays: "У будні",
+  "What a message you send while the agent works does. Steer adds it to the current turn, Queue sends it when the turn ends, and Stop and send stops the turn and sends it instead. Providers that can't restart a turn steer instead of stopping.":
+    "Що відбувається з повідомленням, яке ви надсилаєте, поки агент працює. «Скерування» додає його до поточного ходу, «Черга» надсилає його, коли хід завершиться, а «Зупинити й надіслати» зупиняє хід і надсилає його замість нього. Провайдери, які не можуть перезапустити хід, скеровують замість зупинки.",
   "What agents here may do there": "Що агенти звідси можуть робити там",
   "What it may do": "Що він може робити",
   "What should the agent do each time this runs?": "Що має робити агент під час кожного запуску?",
@@ -13441,6 +13451,7 @@ const catalog: MessageCatalog = {
     "Ваш робочий стіл може запитати дозвіл під час першого захоплення.",
   "Your desktop will confirm this shortcut when you save it.":
     "Ваш робочий стіл підтвердить це скорочення під час збереження.",
+  "Your draft is in the stash": "Вашу чернетку відкладено",
   "Your draft is saved on this device. Connect to an environment to choose its first model.":
     "Вашу чернетку збережено на цьому пристрої. Підключіться до середовища, щоб вибрати першу модель.",
   "Your edit is still in the composer.": "Вашу правку збережено в полі повідомлення.",

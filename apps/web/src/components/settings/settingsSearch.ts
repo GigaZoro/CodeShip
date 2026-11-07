@@ -623,7 +623,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "follow-up-behavior",
     title: msg("Follow-up behavior"),
     to: "/settings/chat",
-    searchTerms: ["queue steer running turn send default behavior composer"],
+    searchTerms: ["queue steer stop and send restart interrupt running turn default composer"],
   },
   {
     id: "provider-update-checks",

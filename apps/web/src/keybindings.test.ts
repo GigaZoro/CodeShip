@@ -265,6 +265,41 @@ describe("thread undo shortcut", () => {
   });
 });
 
+describe("approval shortcuts", () => {
+  it("answer only while an approval waits", () => {
+    const approve = event({ key: "y", code: "KeyY", metaKey: true, altKey: true });
+    assert.strictEqual(
+      resolveShortcutCommand(approve, DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "MacIntel",
+        context: { approvalPending: true, editableFocus: true },
+      }),
+      "approval.approve",
+    );
+    assert.isNull(
+      resolveShortcutCommand(approve, DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "MacIntel",
+        context: { approvalPending: false },
+      }),
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(
+        event({ key: "x", code: "KeyX", ctrlKey: true, altKey: true }),
+        DEFAULT_RESOLVED_KEYBINDINGS,
+        { platform: "Win32", context: { approvalPending: true } },
+      ),
+      "approval.decline",
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(
+        event({ key: "Y", code: "KeyY", ctrlKey: true, altKey: true, shiftKey: true }),
+        DEFAULT_RESOLVED_KEYBINDINGS,
+        { platform: "Win32", context: { approvalPending: true } },
+      ),
+      "approval.alwaysAllow",
+    );
+  });
+});
+
 describe("split/new/close terminal shortcuts", () => {
   it("supports when expressions", () => {
     const keybindings = compile([

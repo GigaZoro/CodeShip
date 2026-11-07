@@ -103,6 +103,10 @@ import {
   SettingsSection,
 } from "./settingsLayout";
 import { msg, t, tn, type Message } from "~/i18n";
+import {
+  ACTIVE_TURN_COMPOSER_ACTIONS,
+  alternateComposerDispatchAction,
+} from "@t3tools/client-runtime/state/composer-dispatch";
 import { searchableSetting } from "./settingsSearch";
 import { LanguageSettingsRow } from "./LanguageSettingsRow";
 import { BackgroundActivitySettingsRow } from "./BackgroundActivitySettings";
@@ -1057,11 +1061,26 @@ export function SendShortcutRow() {
   );
 }
 
+const FOLLOW_UP_BEHAVIOR_LABEL = {
+  steer: msg("Steer"),
+  queue: msg("Queue"),
+  restart: msg("Stop and send"),
+} as const;
+
+const FOLLOW_UP_ALTERNATE_LABEL = {
+  steer: msg("steer"),
+  queue: msg("queue"),
+  restart: msg("stop and send"),
+} as const;
+
 export function ChatSettingsPanel() {
   // oxlint-disable-next-line t3code/no-untranslated-text -- keyboard key names
   const modifierLabel = isMacPlatform(navigator.platform) ? "⌘" : "Ctrl";
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
+  const followUpAlternateLabel = t(
+    FOLLOW_UP_ALTERNATE_LABEL[alternateComposerDispatchAction(settings.followUpBehavior)],
+  );
 
   return (
     <SettingsPageContainer>
@@ -1171,19 +1190,23 @@ export function ChatSettingsPanel() {
         <SettingsRow
           {...searchableSetting("follow-up-behavior")}
           description={
-            t("Queue follow-ups while the agent runs or steer the current run.") +
+            t(
+              "What a message you send while the agent works does. Steer adds it to the current turn, Queue sends it when the turn ends, and Stop and send stops the turn and sends it instead. Providers that can't restart a turn steer instead of stopping.",
+            ) +
             " " +
             (settings.sendShortcut === "mod-enter-multiline"
               ? t(
-                  "Press {modifier} + Enter for single-line prompts or {modifier} + Shift + Enter for multiline prompts to do the opposite for one message.",
-                  { modifier: modifierLabel },
+                  "Press {modifier} + Enter for single-line prompts or {modifier} + Shift + Enter for multiline prompts to {alternate} instead for one message.",
+                  { modifier: modifierLabel, alternate: followUpAlternateLabel },
                 )
               : settings.sendShortcut === "mod-enter"
-                ? t("Press {modifier} + Shift + Enter to do the opposite for one message.", {
+                ? t("Press {modifier} + Shift + Enter to {alternate} instead for one message.", {
                     modifier: modifierLabel,
+                    alternate: followUpAlternateLabel,
                   })
-                : t("Press {modifier} + Enter to do the opposite for one message.", {
+                : t("Press {modifier} + Enter to {alternate} instead for one message.", {
                     modifier: modifierLabel,
+                    alternate: followUpAlternateLabel,
                   }))
           }
           resetAction={
@@ -1202,7 +1225,7 @@ export function ChatSettingsPanel() {
             <Select
               value={settings.followUpBehavior}
               onValueChange={(value) => {
-                if (value === "queue" || value === "steer") {
+                if (value === "queue" || value === "steer" || value === "restart") {
                   updateSettings({ followUpBehavior: value });
                 }
               }}
@@ -1212,13 +1235,14 @@ export function ChatSettingsPanel() {
                 className="w-auto min-w-0"
                 aria-label={t("Follow-up behavior")}
               >
-                <SelectValue>
-                  {settings.followUpBehavior === "queue" ? t("Queue") : t("Steer")}
-                </SelectValue>
+                <SelectValue>{t(FOLLOW_UP_BEHAVIOR_LABEL[settings.followUpBehavior])}</SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem value="queue">{t("Queue")}</SelectItem>
-                <SelectItem value="steer">{t("Steer")}</SelectItem>
+                {ACTIVE_TURN_COMPOSER_ACTIONS.map((action) => (
+                  <SelectItem key={action} value={action}>
+                    {t(FOLLOW_UP_BEHAVIOR_LABEL[action])}
+                  </SelectItem>
+                ))}
               </SelectPopup>
             </Select>
           }

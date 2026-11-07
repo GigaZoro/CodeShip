@@ -226,20 +226,20 @@ export function RevertConfirmHost(props: {
           <AlertDialogDescription>
             {retry
               ? t(
-                  "Rewind chat to before this response and send your message again. “Revert files too” also undoes the edits the response made, so the retry starts from the earlier files.",
+                  "The chat goes back to before this response, and your message is sent again. Your files can stay as they are now, or go back to how they were before this response. Going back also undoes any changes you made to them yourself since then.",
                 )
               : t(
-                  "Rewind chat to before this message. Your prompt and attachments return to the composer. “Revert files too” also undoes your own edits.",
+                  "The chat goes back to before this message, and the message returns to the message box for you to change. Your files can stay as they are now, or go back to how they were before this message. Going back also undoes any changes you made to them yourself since then.",
                 )}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogClose render={<Button variant="outline" />}>{t("Cancel")}</AlertDialogClose>
           <Button variant="destructive-outline" onClick={() => confirm(true)}>
-            {t("Revert files too")}
+            {retry ? t("Retry and undo file changes") : t("Edit and undo file changes")}
           </Button>
           <Button onClick={() => confirm(false)}>
-            {retry ? t("Retry, keep changes") : t("Revert and keep changes")}
+            {retry ? t("Retry and keep files") : t("Edit and keep files")}
           </Button>
         </AlertDialogFooter>
       </AlertDialogPopup>

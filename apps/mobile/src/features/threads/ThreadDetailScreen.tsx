@@ -276,6 +276,7 @@ export interface ThreadDetailScreenProps {
   readonly composerDraftKey: string | null;
   readonly followUpBehavior: FollowUpBehavior;
   readonly canSteerActiveTurn: boolean;
+  readonly canStopAndSend: boolean;
   readonly isSavingQueuedEdit: boolean;
   readonly onCancelQueuedRunEdit: () => void;
   readonly onRemoveQueuedEditAttachment: (attachmentId: string) => void;
@@ -1768,6 +1769,7 @@ function ThreadDetailBody(
                             approval={props.activePendingApproval}
                             respondingApprovalId={props.respondingApprovalId}
                             onRespond={props.onRespondToApproval}
+                            onStopThread={props.canStopThread ? props.onStopThread : undefined}
                           />
                         ) : null}
                         {props.activePendingUserInput ? (
@@ -1883,6 +1885,7 @@ function ThreadDetailBody(
                             : props.followUpBehavior
                         }
                         canSteerActiveTurn={props.canSteerActiveTurn}
+                        canStopAndSend={props.canStopAndSend}
                         hidden={composerSlotHidden}
                         queuedEdit={
                           props.queuedRunEdit === null

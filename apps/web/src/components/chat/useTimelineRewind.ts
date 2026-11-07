@@ -38,6 +38,7 @@ import { rewindToMessage } from "./chatViewSend";
 import { makeThreadErrorSetter } from "../ChatView.logic";
 import { markRetryRewind, takeRetryRewind } from "./timelineRetry";
 import { t } from "~/i18n";
+import { toastManager } from "../ui/toast";
 
 interface TimelineRewindInput {
   readonly environmentId: EnvironmentId;
@@ -149,11 +150,29 @@ export function useTimelineRewind(input: TimelineRewindInput) {
       return;
     }
     if (retry) {
-      // The rewind appends to the composer, so an unsent draft would be sent with the retry.
-      const draft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
-      if (composerDraftHasUserContent(draft)) {
-        setThreadError(activeThread.id, t("Clear the message box before retrying."));
-        return;
+      // The rewind appends to the composer, so an unsent draft moves to the stash first.
+      const draftHasContent = () =>
+        composerDraftHasUserContent(
+          useComposerDraftStore.getState().getComposerDraft(composerDraftTarget),
+        );
+      if (draftHasContent()) {
+        composerRef.current?.stashDraft();
+        if (draftHasContent()) {
+          setThreadError(activeThread.id, t("Clear the message box before retrying."));
+          return;
+        }
+        const toastId = toastManager.add({
+          type: "info",
+          title: t("Your draft is in the stash"),
+          description: t("Bring it back from the stash once the retry is on its way."),
+          actionProps: {
+            children: t("Show stash"),
+            onClick: () => {
+              toastManager.close(toastId);
+              composerRef.current?.openStash();
+            },
+          },
+        });
       }
     }
 

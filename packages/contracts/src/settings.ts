@@ -504,7 +504,7 @@ export const ClientSettingsSchema = Schema.Struct({
   sendShortcut: Schema.Literals(["enter", "mod-enter-multiline", "mod-enter"]).pipe(
     Schema.withDecodingDefault(Effect.succeed("enter")),
   ),
-  followUpBehavior: Schema.Literals(["queue", "steer"]).pipe(
+  followUpBehavior: Schema.Literals(["queue", "steer", "restart"]).pipe(
     Schema.withDecodingDefault(Effect.succeed("steer")),
   ),
   proactivePanelsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -1959,7 +1959,7 @@ export const ClientSettingsPatch = Schema.Struct({
   pullRequestLinksOpenInApp: Schema.optionalKey(Schema.Boolean),
   composerRichTextEnabled: Schema.optionalKey(Schema.Boolean),
   sendShortcut: Schema.optionalKey(Schema.Literals(["enter", "mod-enter-multiline", "mod-enter"])),
-  followUpBehavior: Schema.optionalKey(Schema.Literals(["queue", "steer"])),
+  followUpBehavior: Schema.optionalKey(Schema.Literals(["queue", "steer", "restart"])),
   proactivePanelsEnabled: Schema.optionalKey(Schema.Boolean),
   showSkillsInSlashMenu: Schema.optionalKey(Schema.Boolean),
   sidebarGroupByProject: Schema.optionalKey(Schema.Boolean),

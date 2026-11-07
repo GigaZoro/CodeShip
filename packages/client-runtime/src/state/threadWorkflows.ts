@@ -40,6 +40,8 @@ export interface ThreadQueueWorkflowState {
   /** The active run is a compaction, so promoting a queued message stops it instead of steering. */
   readonly promoteSkipsCompaction: boolean;
   readonly canSendNow: boolean;
+  /** The running provider turn can be stopped and restarted with a new message. */
+  readonly canStopAndSend: boolean;
 }
 
 export function resolveActiveThreadRun(projection: Pick<Projection, "runs">): Run | null {
@@ -178,6 +180,10 @@ export function deriveThreadQueueWorkflowState(projection: Projection): ThreadQu
         (capabilities?.supportsActiveSteering === true ||
           capabilities?.supportsSteeringByInterruptRestart === true)),
     promoteSkipsCompaction,
+    canStopAndSend:
+      hasSteerableProviderTurn &&
+      capabilities?.supportsInterrupt === true &&
+      capabilities.supportsSteeringByInterruptRestart,
   };
 }
 

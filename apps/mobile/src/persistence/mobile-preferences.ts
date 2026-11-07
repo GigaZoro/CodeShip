@@ -326,7 +326,11 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   if (parsed.composerEnterBehavior === "send" || parsed.composerEnterBehavior === "newline") {
     preferences.composerEnterBehavior = parsed.composerEnterBehavior;
   }
-  if (parsed.followUpBehavior === "queue" || parsed.followUpBehavior === "steer") {
+  if (
+    parsed.followUpBehavior === "queue" ||
+    parsed.followUpBehavior === "steer" ||
+    parsed.followUpBehavior === "restart"
+  ) {
     preferences.followUpBehavior = parsed.followUpBehavior;
   }
   if (Array.isArray(parsed.microphones)) {

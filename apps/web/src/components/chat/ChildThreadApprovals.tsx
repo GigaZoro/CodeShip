@@ -11,11 +11,13 @@ import { useState } from "react";
 import { useEnvironmentScope } from "../../state/session";
 import { childThreadApprovalsAtom, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { InlineButton } from "../ui/button";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 
 function ChildApproval({ entry }: { entry: ChildThreadApproval }) {
   const canRespond = useEnvironmentScope(entry.thread.environmentId, AuthOrchestrationOperateScope);
   const respond = useAtomCommand(threadEnvironment.respondToApproval, { reportFailure: false });
+  const interrupt = useAtomCommand(threadEnvironment.interruptTurn);
   const [responding, setResponding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { approval } = entry;
@@ -32,8 +34,19 @@ function ChildApproval({ entry }: { entry: ChildThreadApproval }) {
       </pre>
       {approval.appName ? <p className="mt-2 text-muted-foreground">{approval.appName}</p> : null}
       {approval.responseCapability !== "live" ? (
-        <p className="mt-2 text-warning">
-          {t("Provider process is gone. Interrupt or restart the child thread to respond.")}
+        <p className="mt-2 flex flex-wrap items-center gap-x-2 text-warning">
+          {t("This thread's agent process has ended, so the request can't be answered.")}
+          <InlineButton
+            disabled={!canRespond}
+            onClick={() =>
+              void interrupt({
+                environmentId: entry.thread.environmentId,
+                input: { threadId: entry.thread.threadId },
+              })
+            }
+          >
+            {t("Stop agent")}
+          </InlineButton>
         </p>
       ) : null}
       {approval.reason ? <p className="mt-2 text-muted-foreground">{approval.reason}</p> : null}

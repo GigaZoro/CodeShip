@@ -247,6 +247,10 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+alt+z", command: "thread.snooze", when: "!terminalFocus" },
   { key: "mod+alt+e", command: "thread.archive", when: "!terminalFocus" },
   { key: "mod+z", command: "thread.undo", when: "!terminalFocus && !editableFocus" },
+  { key: "mod+.", command: "thread.stop", when: "!terminalFocus" },
+  { key: "mod+alt+y", command: "approval.approve", when: "approvalPending" },
+  { key: "mod+alt+shift+y", command: "approval.alwaysAllow", when: "approvalPending" },
+  { key: "mod+alt+x", command: "approval.decline", when: "approvalPending" },
   ...THREAD_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({
     key: `mod+${index + 1}`,
     command,

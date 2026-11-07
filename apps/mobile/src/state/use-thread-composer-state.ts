@@ -73,6 +73,7 @@ import {
   useComposerDraftSettings,
 } from "./use-composer-drafts";
 import {
+  resolveActiveTurnDefault,
   resolveComposerDispatchMode,
   type ActiveTurnComposerAction,
 } from "@t3tools/client-runtime/state/composer-dispatch";
@@ -262,14 +263,18 @@ export function useThreadComposerState() {
   })();
 
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
-  const followUpBehavior = AsyncResult.isSuccess(preferencesResult)
-    ? (preferencesResult.value.followUpBehavior ?? DEFAULT_FOLLOW_UP_BEHAVIOR)
-    : DEFAULT_FOLLOW_UP_BEHAVIOR;
   const queueWorkflow = useAtomValue(
     selectedThreadDetailRef === null
       ? EMPTY_QUEUE_WORKFLOW_ATOM
       : environmentThreadDetails.queueWorkflowAtom(selectedThreadDetailRef),
   );
+  const canStopAndSend = queueWorkflow?.canStopAndSend === true;
+  const followUpBehavior = resolveActiveTurnDefault({
+    preferred: AsyncResult.isSuccess(preferencesResult)
+      ? (preferencesResult.value.followUpBehavior ?? DEFAULT_FOLLOW_UP_BEHAVIOR)
+      : DEFAULT_FOLLOW_UP_BEHAVIOR,
+    canRestart: canStopAndSend,
+  });
   const queuedRunEdit = useQueuedRunEdit(selectedThreadKey);
   const composerDraftKey =
     selectedThreadKey === null
@@ -629,11 +634,12 @@ export function useThreadComposerState() {
     // Steering uses "auto" so an ended turn queues a run instead of restoring the draft.
     // An approval redirect must steer the waiting turn instead of queueing behind it.
     const activeTurnDefault = beforeDispatch !== undefined ? "steer" : followUpBehavior;
-    const followUpAction = resolveComposerDispatchMode({
-      running: activeThreadBusy && canSteerActiveTurn,
-      alternateModifier: followUpOverride !== undefined && followUpOverride !== activeTurnDefault,
-      activeTurnDefault,
-    });
+    const running = activeThreadBusy && canSteerActiveTurn;
+    // The send menu names its action outright; the hardware-keyboard shortcut sends the alternate.
+    const followUpAction =
+      running && followUpOverride !== undefined
+        ? followUpOverride
+        : resolveComposerDispatchMode({ running, alternateModifier: false, activeTurnDefault });
     const setupRunning = [selectedThreadActivityRun?.status, selectedThreadRuntime?.status].some(
       (status) => status === "preparing" || status === "starting",
     );
@@ -641,9 +647,9 @@ export function useThreadComposerState() {
       ? "queue"
       : followUpAction === "auto"
         ? null
-        : followUpAction === "queue"
-          ? "queue"
-          : "auto";
+        : followUpAction === "steer"
+          ? "auto"
+          : followUpAction;
 
     const metadata = makeQueuedMessageMetadata();
     const messageId = MessageId.make(metadata.messageId);
@@ -720,6 +726,7 @@ export function useThreadComposerState() {
     composerDraftKey,
     followUpBehavior,
     canSteerActiveTurn,
+    canStopAndSend,
     queueHeld,
     resumableRunId,
     queuedRunEdit,

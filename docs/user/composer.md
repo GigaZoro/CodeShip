@@ -55,13 +55,16 @@ See [images and videos](#images-and-videos-in-messages) for previewing and savin
 
 ## Send while the agent is working
 
-On web and desktop, choose **Settings → Chat & diffs → Follow-up behavior** to queue
-new messages for a later turn or steer the running turn immediately. The setting
-applies to this client; already queued messages keep their place. Queued messages
+On web and desktop, choose **Settings → Chat & diffs → Follow-up behavior** to decide
+what a message sent while the agent works does: **Steer** adds it to the running turn,
+**Queue** sends it when the turn ends, and **Stop and send** stops the turn and sends it
+in its place. Stop and send needs an agent that can restart a turn, such as Codex,
+OpenCode, or Cursor; with Claude and others it steers instead. The setting applies to
+this client; already queued messages keep their place. Queued messages
 are saved on the server and can be edited or removed before they send.
 When Enter sends, `Cmd+Enter` on macOS or `Ctrl+Enter` on Windows and Linux uses
-the opposite action: it steers when your default is Queue and queues when your
-default is Steer.
+the alternate action: it steers when your default is Queue and queues otherwise.
+To pick any of the three for one message, open the arrow next to the send button.
 If your **Send shortcut** requires `Cmd+Enter` or `Ctrl+Enter`, that shortcut uses
 your default follow-up behavior; add **Shift** to use the opposite action. This
 applies only to multiline messages when you choose the multiline send option.
@@ -77,9 +80,9 @@ start of the composer to edit the most recently queued message. Change
 `thread.editQueuedMessage` to use another shortcut.
 
 Mobile has the same choice under **Settings → Chat**. While a turn is
-running the send button shows which action it will take. Long-press it to use the
-other action for a single message, or hold `Cmd` while sending from a hardware
-keyboard. The button only offers Steer when the running agent supports it.
+running the send button shows which action it will take. Long-press it to choose
+another action for a single message, or hold `Cmd` while sending from a hardware
+keyboard. The button only offers Steer, and Stop and send, when the running agent supports them.
 
 ## Queue messages for an offline machine
 
@@ -163,8 +166,8 @@ into a normal draft.
 ## Edit an earlier prompt
 
 Choose **Edit from here** beneath a sent message to rewind
-the conversation to before that message. On mobile it is the pencil button under the message. Choose **Revert and keep changes** to
-leave workspace files as they are, or **Revert files too** to put the workspace back
+the conversation to before that message. On mobile it is the pencil button under the message. Choose **Edit and keep files** to
+leave workspace files as they are, or **Edit and undo file changes** to put the workspace back
 to its checkpoint from before that message. That also undoes edits you made yourself.
 File restore is only offered for threads running in a worktree, and it is
 refused when another thread or agent session also uses that directory, a folder
@@ -216,17 +219,18 @@ transcription or cancellation; only the message text is sent when you submit.
 
 ## Queued messages
 
-On web and desktop, the composer shows **Interrupt** while the agent is working and the draft is
-empty. Adding text or attachments replaces it with a send button that shows your
-[Follow-up behavior](#send-while-the-agent-is-working): a queue icon for Queue or a steer arrow for
-Steer. Click it or press your send shortcut to use that action. Hold `Cmd` on macOS or `Ctrl` on
+On web and desktop, the composer shows **Stop agent** while the agent is working (`Cmd+.` on macOS,
+`Ctrl+.` on Windows and Linux). It stays while you type, next to a send button that shows your
+[Follow-up behavior](#send-while-the-agent-is-working): a queue icon for Queue, a steer arrow for
+Steer, or a restart arrow for Stop and send. Click it or press your send shortcut to use that action. Hold `Cmd` on macOS or `Ctrl` on
 Windows and Linux to switch the button to the opposite action, then click, or use the opposite-action
 shortcut described above.
 
 On web and desktop, queued messages appear at the end of the thread as dashed messages that have
 not been sent yet. On mobile they appear above the composer. Each shows its text and any attached
 images. **Send now** sends a message right away, into the running turn if there is one. You can
-also edit or remove it.
+also edit or remove it. On web and desktop, **Undo** in the notice after removing a message
+queues it again, at the end of the queue.
 
 If you stop the agent or the server restarts, queued messages keep their order and are held.
 Press **Resume** in an empty composer to continue. **Resume** also continues a stopped
@@ -284,6 +288,8 @@ Provider commands must start the message to run. T3.CodeShip commands such as
 
 Choose **Retry** under the last assistant reply to rewind and send your last message again,
 on web, desktop and mobile. A retry whose turn changed no files skips the question about files.
+On web and desktop, an unsent draft moves to the [prompt stash](#prompt-stash) first; restore it
+from there afterwards. On mobile, clear the message box before retrying.
 
 Send `/compact` in an existing conversation to reduce context usage when the
 provider supports it, even before the context meter appears.

@@ -1025,6 +1025,80 @@ it.effect("starts a steer that missed the turn on the saved next-turn selection"
   ),
 );
 
+it.effect("starts a stop-and-send that arrives after the provider turn completed", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { events, started, interrupted, layer, startFirstTurn } =
+        yield* nextTurnSelectionHarness("restart-after-turn-completed", true);
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const threadId = yield* startFirstTurn;
+        const first = started[0]!;
+        const turnCompleted = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "provider-turn.updated" && event.payload.status === "completed",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        const turn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns[0]!;
+        yield* Queue.offer(events, {
+          type: "provider_turn.updated",
+          driver,
+          providerTurn: { ...turn, status: "completed", completedAt: yield* DateTime.now },
+        });
+        yield* Fiber.join(turnCompleted);
+
+        // The composer still showed the turn running when the user chose Stop and send.
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("restart"),
+          threadId,
+          messageId: MessageId.make("message:restart"),
+          text: "late stop and send",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          deliveryIntent: "restart",
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const settled = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "run.updated" &&
+              event.payload.id === first.runId &&
+              event.payload.status === "waiting",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        yield* Queue.offer(events, {
+          type: "turn.terminal",
+          driver,
+          providerThreadId: turn.providerThreadId,
+          providerTurnId: turn.id,
+          runOrdinal: first.runOrdinal,
+          status: "completed",
+          failure: null,
+          threadDisposition: "reusable",
+        });
+        yield* Fiber.join(settled);
+        yield* worker.drain();
+        yield* orchestrator.resumeQueuedRuns;
+        yield* worker.drain();
+
+        assert.deepEqual(interrupted, []);
+        assert.equal(started.length, 2);
+        assert.equal(started[1]?.message.messageId, MessageId.make("message:restart"));
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
+
 it.effect("queues a steer the provider can only run as its own turn behind the running turn", () =>
   Effect.scoped(
     Effect.gen(function* () {

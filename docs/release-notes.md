@@ -1,3 +1,17 @@
+## 2026-11-07 — Controlling a running agent
+
+- Stop and send is a third Follow-up behavior next to Steer and Queue, on web, desktop and mobile. It stops the current turn and sends your message instead, on agents that can restart a turn such as Codex, OpenCode and Cursor; others steer.
+- While the agent works, the arrow next to the send button picks Steer now, Queue or Stop and send for one message. On mobile, long-press the send button.
+- A Stop and send that arrives just as the turn finishes starts a new turn with your message instead of failing, including one sent by an agent.
+- The Stop button stays next to Send while you type a correction, on web, desktop and mobile. It has a shortcut, Cmd+. on macOS or Ctrl+. elsewhere, and one name, Stop agent.
+- Approvals answer from the keyboard: Cmd+Option+Y approves, adding Shift always allows, and Cmd+Option+X declines (Ctrl+Alt on Windows and Linux). Change them in Settings → Keybindings.
+- Scroll to end says when an approval or a question is waiting below.
+- Removing a queued message offers Undo, which queues it again.
+- On web and desktop, Retry no longer refuses when the message box has a draft. The draft moves to the stash, and the notice opens it.
+- An approval whose agent process has ended offers Stop agent, on web and mobile, including approvals from child threads.
+- The Edit from here and Retry dialogs explain in plain words what happens to the chat and your files.
+- On mobile, the Steer option no longer says it interrupts the agent.
+
 ## 2026-11-07 — Offline machines shown honestly
 
 - Threads on a machine you cannot reach show their last known status, dimmed, for example "Offline · Working", without a running timer. Hover one to see when the machine was last seen; Settle and Snooze wait until it is back.

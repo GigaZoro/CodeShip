@@ -24,6 +24,8 @@ export interface PendingApprovalCardProps {
     requestId: RuntimeRequestId,
     decision: ProviderApprovalDecision,
   ) => Promise<unknown>;
+  /** Offered when the request can no longer be answered. */
+  readonly onStopThread?: (() => void) | undefined;
 }
 
 const APPROVAL_TITLES = {
@@ -132,10 +134,16 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
       ) : null}
       {!canRespond ? (
         <Text className="font-sans text-sm leading-5 text-foreground-muted">
-          {t(
-            "The provider process for this request is no longer available. Interrupt or restart the run to continue.",
-          )}
+          {t("The agent's process has ended, so this request can't be answered.")}
         </Text>
+      ) : null}
+      {!canRespond && props.onStopThread ? (
+        <Button
+          label={t("Stop agent")}
+          tone="danger"
+          disabled={!props.canOperateThread}
+          onPress={props.onStopThread}
+        />
       ) : null}
       {warning ? (
         <Text className="font-sans text-xs leading-normal text-warning-foreground">{warning}</Text>

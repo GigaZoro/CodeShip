@@ -231,6 +231,8 @@ interface MessagesTimelineProps {
   respondingRequestIds?: TimelineRowSharedState["respondingRequestIds"];
   canOperateThread?: boolean;
   onRespondToApproval?: TimelineRowSharedState["onRespondToApproval"];
+  approvalShortcuts?: TimelineRowSharedState["approvalShortcuts"];
+  onStopRun?: TimelineRowSharedState["onStopRun"];
   citationRequest?: AssistantCitationRequest | null;
   citationHistory?: CitedHistory;
   onCiteAssistantText?: (
@@ -350,6 +352,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
   respondingRequestIds = EMPTY_RESPONDING_REQUEST_IDS,
   canOperateThread = false,
   onRespondToApproval,
+  approvalShortcuts = null,
+  onStopRun,
   citationRequest = null,
   citationHistory = CITED_HISTORY_LOADING,
   onCiteAssistantText,
@@ -1074,6 +1078,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
     respondingRequestIds,
     canOperateThread,
     onRespondToApproval,
+    approvalShortcuts,
+    onStopRun,
     citationRequest: readyCitationRequest,
     listRef,
     timestampFormat,

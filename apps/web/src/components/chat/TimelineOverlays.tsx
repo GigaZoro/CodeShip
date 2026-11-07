@@ -26,6 +26,8 @@ export function WorkspaceFileDropOverlay() {
  */
 export function ScrollToEndButton(props: {
   readonly bottom: number;
+  /** A request below that waits for the user, such as an approval. */
+  readonly attention: string | null;
   readonly summary: string | null;
   readonly onScrollToEnd: () => void;
 }) {
@@ -44,6 +46,12 @@ export function ScrollToEndButton(props: {
       >
         <ChevronDownIcon className="size-3.5" />
         {t("Scroll to end")}
+        {props.attention === null ? null : (
+          <span className="text-warning-foreground">
+            <span aria-hidden>· </span>
+            {props.attention}
+          </span>
+        )}
         {props.summary === null ? null : (
           <span className="text-muted-foreground">
             <span aria-hidden>· </span>

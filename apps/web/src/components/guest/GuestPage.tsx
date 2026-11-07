@@ -559,6 +559,7 @@ function GuestThread({
         </HostImageUrlContext>
         {follow.showScrollToBottom ? (
           <ScrollToEndButton
+            attention={null}
             summary={null}
             bottom={4}
             onScrollToEnd={() => follow.scrollToEnd(true)}

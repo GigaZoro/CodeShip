@@ -1,4 +1,5 @@
 import {
+  ACTIVE_TURN_COMPOSER_ACTIONS,
   alternateComposerDispatchAction,
   type ActiveTurnComposerAction,
 } from "@t3tools/client-runtime/state/composer-dispatch";
@@ -13,22 +14,33 @@ export interface ComposerSendPresentation {
     | "tray.and.arrow.up"
     | "checkmark"
     | "list.number"
-    | "arrow.turn.left.up";
+    | "arrow.turn.left.up"
+    | "arrow.clockwise";
   readonly action: ActiveTurnComposerAction | null;
   readonly alternate: ActiveTurnComposerAction | null;
+  /** What the long-press menu offers, in order. */
+  readonly choices: ReadonlyArray<ActiveTurnComposerAction>;
   readonly offersFollowUpChoice: boolean;
 }
 
 const ACTION_LABEL: Record<ActiveTurnComposerAction, Message> = {
   queue: msg("Queue"),
   steer: msg("Steer"),
-  restart: msg("Restart"),
+  restart: msg("Stop and send"),
 };
+
+const ACTION_ICON = {
+  queue: "list.number",
+  steer: "arrow.turn.left.up",
+  restart: "arrow.clockwise",
+} as const satisfies Record<ActiveTurnComposerAction, ComposerSendPresentation["icon"]>;
 
 export function resolveComposerSendPresentation(input: {
   readonly editingQueuedMessage: boolean;
   readonly running: boolean;
   readonly canSteer: boolean;
+  /** The running turn can be stopped and restarted with this message. */
+  readonly canRestart: boolean;
   readonly followUpBehavior: FollowUpBehavior;
   readonly deliveryDeferred: boolean;
 }): ComposerSendPresentation {
@@ -38,6 +50,7 @@ export function resolveComposerSendPresentation(input: {
       icon: "checkmark",
       action: null,
       alternate: null,
+      choices: [],
       offersFollowUpChoice: false,
     };
   }
@@ -47,6 +60,7 @@ export function resolveComposerSendPresentation(input: {
       icon: input.deliveryDeferred ? "tray.and.arrow.up" : "arrow.up",
       action: null,
       alternate: null,
+      choices: [],
       offersFollowUpChoice: false,
     };
   }
@@ -54,9 +68,12 @@ export function resolveComposerSendPresentation(input: {
   const alternate = alternateComposerDispatchAction(action);
   return {
     label: t(ACTION_LABEL[action]),
-    icon: action === "steer" ? "arrow.turn.left.up" : "list.number",
+    icon: ACTION_ICON[action],
     action,
     alternate: input.canSteer ? alternate : null,
+    choices: input.canSteer
+      ? ACTIVE_TURN_COMPOSER_ACTIONS.filter((choice) => choice !== "restart" || input.canRestart)
+      : [],
     offersFollowUpChoice: input.canSteer,
   };
 }

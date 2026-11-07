@@ -1,7 +1,7 @@
 import { msg, t } from "~/i18n";
 import { memo, type MouseEventHandler, type PointerEventHandler } from "react";
 import { CheckIcon, ChevronDownIcon, ChevronLeftIcon, Minimize2Icon, PlayIcon } from "lucide-react";
-import { CornerUpRight, ListPlus } from "lucide";
+import { CornerUpRight, ListPlus, RotateCcw } from "lucide";
 import { MorphIcon } from "~/components/MorphIcon";
 import { useEnvironmentIdentificationMode } from "~/hooks/useSettings";
 import { formatContextWindowTokens } from "~/lib/contextWindow";
@@ -9,11 +9,13 @@ import { cn, isMacPlatform } from "~/lib/utils";
 import { useShortcutModifierSelection } from "../../shortcutModifierState";
 import { StageBackdropButtonArt, useSidebarStageBackdropVariant } from "../SidebarStageBackdrop";
 import { Button } from "../ui/button";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { Menu, MenuItem, MenuPopup, MenuShortcut, MenuTrigger } from "../ui/menu";
 import { Spinner } from "../ui/spinner";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { composerFloatingLayerProps } from "./composerEventScope";
 import {
+  ACTIVE_TURN_COMPOSER_ACTIONS,
+  type ActiveTurnComposerAction,
   alternateComposerDispatchAction,
   resolveComposerDispatchMode,
 } from "@t3tools/client-runtime/state/composer-dispatch";
@@ -32,9 +34,12 @@ interface ComposerPrimaryActionsProps {
   pendingAction: PendingActionState | null;
   isRunning: boolean;
   canInterrupt: boolean;
-  followUpBehavior?: "queue" | "steer";
+  followUpBehavior?: ActiveTurnComposerAction;
   canSteer?: boolean;
+  /** The provider can stop the running turn and start it again with a new message. */
+  canRestart?: boolean;
   alternateShortcutLabel?: string | null;
+  stopShortcutLabel?: string | null;
   showPlanFollowUpPrompt: boolean;
   promptHasText: boolean;
   isSendBusy: boolean;
@@ -48,6 +53,7 @@ interface ComposerPrimaryActionsProps {
   preserveComposerFocusOnPointerDown?: boolean;
   isEditingQueuedMessage?: boolean;
   onSubmitMessage?: MouseEventHandler<HTMLButtonElement>;
+  onSendWithAction?: (action: ActiveTurnComposerAction) => void;
   onResume?: () => void;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
@@ -60,7 +66,28 @@ interface ComposerPrimaryActionsProps {
 const FOLLOW_UP_ACTION_LABEL = {
   queue: msg("queue"),
   steer: msg("steer"),
-  restart: msg("restart"),
+  restart: msg("stop and send"),
+} as const;
+
+const FOLLOW_UP_MENU_ITEM = {
+  steer: { label: msg("Steer now"), description: msg("Add it to what the agent is doing") },
+  queue: { label: msg("Queue"), description: msg("Send it when the current turn ends") },
+  restart: {
+    label: msg("Stop and send"),
+    description: msg("Stop the current turn and send it instead"),
+  },
+} as const;
+
+const FOLLOW_UP_SUBMIT_LABEL = {
+  queue: msg("Queue message"),
+  steer: msg("Steer message"),
+  restart: msg("Stop and send message"),
+} as const;
+
+const FOLLOW_UP_ICON = {
+  queue: ListPlus,
+  steer: CornerUpRight,
+  restart: RotateCcw,
 } as const;
 
 const formatPendingPrimaryActionLabel = (input: {
@@ -96,7 +123,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   canInterrupt,
   followUpBehavior = "steer",
   canSteer = true,
+  canRestart = false,
   alternateShortcutLabel = null,
+  stopShortcutLabel = null,
   showPlanFollowUpPrompt,
   promptHasText,
   isSendBusy,
@@ -109,6 +138,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   preserveComposerFocusOnPointerDown = false,
   isEditingQueuedMessage = false,
   onSubmitMessage,
+  onSendWithAction,
   onResume,
   onPreviousPendingQuestion,
   onInterrupt,
@@ -124,14 +154,14 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   const alternateModifier = useShortcutModifierSelection(
     (modifiers) => modifiers.metaKey || modifiers.ctrlKey,
   );
-  const isQueuing =
-    !isEditingQueuedMessage &&
-    resolveComposerDispatchMode({
-      running: isRunning,
-      activeTurnDefault: followUpBehavior,
-      canSteer,
-      alternateModifier,
-    }) === "queue";
+  const dispatchMode = isEditingQueuedMessage
+    ? "auto"
+    : resolveComposerDispatchMode({
+        running: isRunning,
+        activeTurnDefault: followUpBehavior,
+        canSteer,
+        alternateModifier,
+      });
   const alternateAction = alternateComposerDispatchAction(followUpBehavior);
   const isSendDisabled = !canOperateThread || sendDisabledReason !== null;
   const stageBackdropVariant = useSidebarStageBackdropVariant(environmentIdentificationMode);
@@ -151,7 +181,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
             onClick={() => {
               if (canOperateThread) onInterrupt();
             }}
-            aria-label={t("Stop generation")}
+            aria-label={t("Stop agent")}
           />
         }
       >
@@ -159,7 +189,11 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           <rect x="2" y="2" width="8" height="8" rx="1.5" />
         </svg>
       </TooltipTrigger>
-      <TooltipPopup>{t("Interrupt")}</TooltipPopup>
+      <TooltipPopup>
+        {stopShortcutLabel
+          ? t("{text} ({shortcut})", { text: t("Stop agent"), shortcut: stopShortcutLabel })
+          : t("Stop agent")}
+      </TooltipPopup>
     </Tooltip>
   );
 
@@ -291,11 +325,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
         ? t("Update queued message")
         : compactsBeforeSend
           ? t("Compact and send")
-          : isQueuing
-            ? t("Queue message")
-            : isRunning
-              ? t("Steer message")
-              : t("Submit message");
+          : dispatchMode === "auto"
+            ? t("Submit message")
+            : t(FOLLOW_UP_SUBMIT_LABEL[dispatchMode]);
   const submitStatus = isEnvironmentUnavailable
     ? t("Environment disconnected")
     : (sendDisabledReason ??
@@ -355,8 +387,8 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
         <PlayIcon className="size-4 fill-current" aria-hidden="true" />
       ) : isEditingQueuedMessage ? (
         <CheckIcon className="size-4" aria-hidden="true" />
-      ) : isRunning ? (
-        <MorphIcon className="size-4" icon={isQueuing ? ListPlus : CornerUpRight} />
+      ) : dispatchMode !== "auto" ? (
+        <MorphIcon className="size-4" icon={FOLLOW_UP_ICON[dispatchMode]} />
       ) : (
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
           <path
@@ -371,11 +403,68 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     </button>
   );
 
-  const submit = (
+  const sendTooltip = (
     <Tooltip key="submit">
       <TooltipTrigger render={<span className="inline-flex" />}>{sendButton}</TooltipTrigger>
       <TooltipPopup>{submitTooltip}</TooltipPopup>
     </Tooltip>
+  );
+  const followsUpRunningTurn = isRunning && !showResume && !isEditingQueuedMessage;
+  // Stop stays beside Send so a correction can be typed while the agent works.
+  const submit = followsUpRunningTurn ? (
+    <div data-chat-composer-follow-up-actions="true" className="flex items-center gap-1.5">
+      {canInterrupt ? renderStopGenerationButton(false) : null}
+      {canSteer && onSendWithAction ? (
+        <Menu>
+          <MenuTrigger
+            render={
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                aria-label={t("Choose how to send")}
+                onMouseDown={
+                  preserveComposerFocusOnPointerDown ? (event) => event.preventDefault() : undefined
+                }
+                disabled={
+                  isSendBusy || isSendDisabled || isEnvironmentUnavailable || !hasSendableContent
+                }
+              />
+            }
+          >
+            <ChevronDownIcon />
+          </MenuTrigger>
+          <MenuPopup align="end" side="top" {...composerFloatingLayerProps}>
+            {ACTIVE_TURN_COMPOSER_ACTIONS.map((action) => {
+              const unavailable = action === "restart" && !canRestart;
+              return (
+                <MenuItem
+                  key={action}
+                  disabled={unavailable}
+                  onClick={() => {
+                    if (!unavailable) onSendWithAction(action);
+                  }}
+                >
+                  <span className="flex min-w-0 flex-col">
+                    <span>{t(FOLLOW_UP_MENU_ITEM[action].label)}</span>
+                    <span className="text-muted-foreground text-xs">
+                      {unavailable
+                        ? t("This provider can't stop and restart a turn")
+                        : t(FOLLOW_UP_MENU_ITEM[action].description)}
+                    </span>
+                  </span>
+                  {action === alternateAction && alternateShortcutLabel ? (
+                    <MenuShortcut>{alternateShortcutLabel}</MenuShortcut>
+                  ) : null}
+                </MenuItem>
+              );
+            })}
+          </MenuPopup>
+        </Menu>
+      ) : null}
+      {sendTooltip}
+    </div>
+  ) : (
+    sendTooltip
   );
   if (compactTokens === null) return submit;
 

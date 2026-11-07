@@ -48,6 +48,13 @@ const FOLLOW_UP_OPTIONS: ReadonlyArray<{
     label: msg("Steer"),
     description: msg("Your message reaches the agent right away, changing what it is working on."),
   },
+  {
+    behavior: "restart",
+    label: msg("Stop and send"),
+    description: msg(
+      "The current turn stops and your message starts a new one. Agents that can't restart a turn steer instead.",
+    ),
+  },
 ];
 
 export function SettingsFollowUpRouteScreen() {
@@ -123,7 +130,7 @@ export function SettingsFollowUpRouteScreen() {
       </SettingsSection>
       <Text className="px-2 text-sm text-foreground-muted">
         {t(
-          "Long-press the send button to use the other option for a single message. With a hardware keyboard, hold Command while sending.",
+          "Long-press the send button to choose another option for a single message. With a hardware keyboard, hold Command while sending to queue, or to steer when your default is Queue.",
         )}
       </Text>
       <SettingsSection

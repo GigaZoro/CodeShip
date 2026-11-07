@@ -234,6 +234,7 @@ export interface ThreadComposerProps {
   } | null;
   readonly followUpBehavior: FollowUpBehavior;
   readonly canSteerActiveTurn: boolean;
+  readonly canStopAndSend: boolean;
   readonly hidden: boolean;
   readonly editorRef?: RefObject<ComposerEditorHandle | null>;
   readonly onChangeDraftMessage: (value: string) => void;
@@ -295,13 +296,13 @@ const AnimatedGlassSurface = Animated.createAnimatedComponent(GlassSurface);
 const FOLLOW_UP_ACTION_LABEL = {
   queue: msg("Queue"),
   steer: msg("Steer now"),
-  restart: msg("Restart turn"),
+  restart: msg("Stop and send"),
 } as const;
 
 const FOLLOW_UP_ACTION_SUBTITLE = {
-  queue: msg("Run after the current turn"),
-  steer: msg("Interrupt what the agent is doing"),
-  restart: msg("Start the turn over with this message"),
+  queue: msg("Send it when the current turn ends"),
+  steer: msg("Add it to what the agent is doing"),
+  restart: msg("Stop the current turn and send it instead"),
 } as const;
 
 function SendActionButton(props: {
@@ -325,14 +326,11 @@ function SendActionButton(props: {
   if (!presentation.offersFollowUpChoice || presentation.action === null || props.disabled) {
     return button;
   }
-  const actions = [presentation.action, presentation.alternate].filter(
-    (action): action is ActiveTurnComposerAction => action !== null,
-  );
   return (
     <Menu
       accessibilityLabel={t("Choose how to send this message")}
       shouldOpenOnLongPress
-      actions={actions.map((action) => ({
+      actions={presentation.choices.map((action) => ({
         id: action,
         title: t(FOLLOW_UP_ACTION_LABEL[action]),
         subtitle: t(FOLLOW_UP_ACTION_SUBTITLE[action]),
@@ -457,11 +455,13 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     draftAttachments.length > 0 ||
     (queuedEdit?.existingAttachments.length ?? 0) > 0;
   const stripAttachments = composerStripAttachments(draftAttachments);
-  const showStopAction = !hasContent && props.canStopThread && queuedEdit === null;
+  const showStopAction = props.canStopThread && queuedEdit === null;
   const onResumeQueue = props.onResumeQueue;
   const [resumingQueue, setResumingQueue] = useState(false);
   const showResumeAction =
     !hasContent && !showStopAction && queuedEdit === null && onResumeQueue !== null;
+  // Stop stays beside Send so a correction can be typed while the agent works.
+  const showSendAction = hasContent || (!showStopAction && !showResumeAction);
   const handleResumeQueue = async () => {
     if (resumingQueue || onResumeQueue === null) return;
     setResumingQueue(true);
@@ -482,6 +482,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     editingQueuedMessage: queuedEdit !== null,
     running: props.activeThreadBusy,
     canSteer: props.canSteerActiveTurn,
+    canRestart: props.canStopAndSend,
     followUpBehavior: props.followUpBehavior,
     deliveryDeferred:
       props.connectionState !== "connected" || props.queueCount > 0 || attachmentsUploading,
@@ -1117,7 +1118,8 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                     disabled={!props.canOperateThread}
                     onPress={props.onStopThread}
                   />
-                ) : showResumeAction ? (
+                ) : null}
+                {showResumeAction ? (
                   <ComposerActionButton
                     size={usesLargeControls ? "large" : "regular"}
                     accessibilityLabel={t("Resume thread")}
@@ -1125,7 +1127,8 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                     disabled={!props.canOperateThread || resumingQueue}
                     onPress={() => void handleResumeQueue()}
                   />
-                ) : (
+                ) : null}
+                {showSendAction ? (
                   <SendActionButton
                     size={usesLargeControls ? "large" : "regular"}
                     accessibilityLabel={sendBlockedReason ?? sendLabel}
@@ -1133,7 +1136,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                     disabled={!canSend}
                     onSend={handleSend}
                   />
-                )}
+                ) : null}
               </View>
             </ComposerDictationDraftContent>
           </View>
@@ -1186,7 +1189,8 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                       disabled={!props.canOperateThread}
                       onPress={props.onStopThread}
                     />
-                  ) : showResumeAction && voicePresentation.showsSend ? (
+                  ) : null}
+                  {showResumeAction && voicePresentation.showsSend ? (
                     <ComposerActionButton
                       size={usesLargeControls ? "large" : "regular"}
                       accessibilityLabel={t("Resume thread")}
@@ -1194,7 +1198,8 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                       disabled={!props.canOperateThread || resumingQueue}
                       onPress={() => void handleResumeQueue()}
                     />
-                  ) : voicePresentation.showsSend ? (
+                  ) : null}
+                  {showSendAction && voicePresentation.showsSend ? (
                     <SendActionButton
                       size={usesLargeControls ? "large" : "regular"}
                       accessibilityLabel={sendBlockedReason ?? sendLabel}

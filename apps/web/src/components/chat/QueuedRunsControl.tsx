@@ -31,9 +31,11 @@ import { useAssetUrls } from "../../assets/assetUrls";
 import { threadEnvironment } from "../../state/threads";
 import { useQuietThreadShell, useThreadProjection } from "../../state/entities";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { isImageAttachment, type ChatMessage } from "../../types";
-import { cn } from "~/lib/utils";
+import { cn, newMessageId } from "~/lib/utils";
 import { Button, InlineButton } from "../ui/button";
+import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { GuestMessageName } from "./guestMessageStyle";
@@ -104,6 +106,7 @@ export function QueuedRunsControl({
   const promote = useAtomCommand(threadEnvironment.promoteQueuedRun);
   const resume = useAtomCommand(threadEnvironment.resumeThreadQueue);
   const cancel = useAtomCommand(threadEnvironment.cancelQueuedRun);
+  const startTurn = useOrchestrationCommand(threadEnvironment.startTurn);
   const [showAll, setShowAll] = useState(false);
   const queueListId = useId();
   const [busyRunId, setBusyRunId] = useState<RunId | null>(null);
@@ -221,13 +224,61 @@ export function QueuedRunsControl({
 
   if (items.length === 0) return null;
 
+  // Undo queues the message again, at the end of the queue.
+  const restore = (
+    removed: (typeof queued)[number],
+    thread: NonNullable<typeof projection>["thread"],
+  ) => {
+    if (!removed.message) return;
+    void startTurn({
+      environmentId: props.environmentId,
+      input: {
+        threadId: props.threadId,
+        message: {
+          messageId: newMessageId(),
+          role: "user",
+          text: removed.message.text,
+          attachments: removed.attachments,
+          ...(removed.context ? { context: removed.context } : {}),
+        },
+        modelSelection: removed.run.modelSelection,
+        runtimeMode: thread.runtimeMode,
+        interactionMode: thread.interactionMode,
+        ...(removed.run.sourcePlanRef ? { sourceProposedPlan: removed.run.sourcePlanRef } : {}),
+        dispatchMode: "queue",
+      },
+    });
+  };
+
   const remove = async (runId: RunId) => {
+    const removed = queued.find((entry) => entry.run.id === runId);
+    const thread = projection?.thread;
     setBusyRunId(runId);
-    await cancel({
+    const result = await cancel({
       environmentId: props.environmentId,
       input: { threadId: props.threadId, runId },
     });
     setBusyRunId(null);
+    // A guest's message keeps the guest's attribution, which the owner cannot send again.
+    if (
+      result._tag === "Failure" ||
+      !removed?.message ||
+      removed.context?.guest !== undefined ||
+      !thread
+    ) {
+      return;
+    }
+    const toastId = toastManager.add({
+      type: "info",
+      title: t("Removed queued message"),
+      actionProps: {
+        children: t("Undo"),
+        onClick: () => {
+          toastManager.close(toastId);
+          restore(removed, thread);
+        },
+      },
+    });
   };
 
   const collapsible = items.length > QUEUE_VISIBLE_ROWS;

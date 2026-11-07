@@ -241,6 +241,8 @@ import type {
   TimelineEntry,
 } from "../../session-logic";
 import {
+  type ActiveTurnComposerAction,
+  resolveActiveTurnDefault,
   resolveComposerDispatchMode,
   type ComposerDispatchMode,
 } from "@t3tools/client-runtime/state/composer-dispatch";
@@ -302,6 +304,9 @@ export interface ChatComposerHandle {
   compactContext: () => void;
   /** Sends the current draft exactly as pressing Send would; false when the composer is not mounted. */
   submit: () => boolean;
+  /** Moves a non-empty draft to the stash. The draft clears at once when the stash accepts it. */
+  stashDraft: () => void;
+  openStash: () => void;
   readSnapshot: () => {
     value: string;
     cursor: number;
@@ -363,6 +368,8 @@ export interface ChatComposerProps {
 
   phase: SessionPhase;
   canInterrupt: boolean;
+  /** The running turn's provider can stop it and start over with a new message. */
+  canStopAndSend: boolean;
   isSendBusy: boolean;
   canResume: boolean;
   isRevertingCheckpoint?: boolean;
@@ -512,6 +519,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     projectSelectionRequired,
     phase,
     canInterrupt,
+    canStopAndSend,
     isSendBusy,
     canResume,
     isRevertingCheckpoint = false,
@@ -1195,7 +1203,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     (approval) => !heldRequestIds.has(approval.requestId),
   )
     ? "steer"
-    : settings.followUpBehavior;
+    : resolveActiveTurnDefault({
+        preferred: settings.followUpBehavior,
+        canRestart: canStopAndSend,
+      });
   const composerSuggestionsVisible = composerMenuOpen;
   const composerSuggestionListVisible = composerSuggestionsVisible && composerMenuItems.length > 0;
   const activePendingUserInput = pendingUserInputs[0] ?? null;
@@ -2140,6 +2151,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     );
   };
   const handleSubmitMessageStable = useStableCallback(handleSubmitMessage);
+  const sendWithFollowUpActionStable = useStableCallback((action: ActiveTurnComposerAction) => {
+    submitComposer(undefined, action);
+  });
   const submitCitationAndSend = () => {
     submitComposer(
       undefined,
@@ -2245,6 +2259,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     restoreStashEntryStable,
     deleteStashEntryStable,
     toggleStashMenuStable,
+    stashCurrentPromptStable,
   } = useComposerStash({
     environmentId,
     composerDraftTarget,
@@ -2935,6 +2950,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         form.requestSubmit();
         return lastFormSubmitStartedRef.current;
       },
+      stashDraft: () => {
+        // An empty stash shortcut restores a stash entry instead, so only stash text or files.
+        if (
+          promptRef.current.trim().length > 0 ||
+          composerImagesRef.current.length > 0 ||
+          composerFilesRef.current.length > 0
+        ) {
+          void stashCurrentPromptStable();
+        }
+      },
+      openStash: () => setIsStashMenuOpen(true),
       readSnapshot: () => {
         return readComposerSnapshotStable();
       },
@@ -3087,6 +3113,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       selectedProviderModels,
       interactionMode,
       compactThreadContextStable,
+      stashCurrentPromptStable,
+      setIsStashMenuOpen,
     ],
   );
 
@@ -3531,6 +3559,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     canInterrupt={canInterrupt}
                     followUpBehavior={followUpBehavior}
                     canSteer={!isCompacting}
+                    canRestart={canStopAndSend}
+                    stopShortcutLabel={shortcutLabelForCommand(keybindings, "thread.stop")}
                     alternateShortcutLabel={shortcutLabelForCommand(
                       keybindings,
                       "composer.sendAlternate",
@@ -3564,6 +3594,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     preserveComposerFocusOnPointerDown={isMobileViewport}
                     isEditingQueuedMessage={isEditingQueuedMessage}
                     onSubmitMessage={handleSubmitMessageStable}
+                    onSendWithAction={sendWithFollowUpActionStable}
                     onResume={onResume}
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                     onInterrupt={handleInterruptPrimaryActionStable}

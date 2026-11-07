@@ -18,6 +18,7 @@ import { t } from "../../lib/i18n";
 function ChildApproval({ entry }: { entry: ChildThreadApproval }) {
   const canRespond = useEnvironmentScope(entry.thread.environmentId, AuthOrchestrationOperateScope);
   const respond = useAtomCommand(threadEnvironment.respondToApproval, { reportFailure: false });
+  const interrupt = useAtomCommand(threadEnvironment.interruptTurn, "stop child thread");
   const [responding, setResponding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (
@@ -29,6 +30,12 @@ function ChildApproval({ entry }: { entry: ChildThreadApproval }) {
         canOperateThread={canRespond}
         approval={entry.approval}
         respondingApprovalId={responding ? entry.approval.requestId : null}
+        onStopThread={() =>
+          void interrupt({
+            environmentId: entry.thread.environmentId,
+            input: { threadId: entry.thread.threadId },
+          })
+        }
         onRespond={async (requestId, decision) => {
           if (!canRespond || responding) return;
           setResponding(true);

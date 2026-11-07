@@ -57,10 +57,15 @@ import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
 import { feedbackBannerItem } from "./chat/ComposerFeedback";
 import { useUsageLimitsPanel } from "./chat/useUsageLimitsPanel";
 import { useWorktreeSetup } from "./chat/useWorktreeSetup";
-import { useChatShortcuts } from "./chat/useChatShortcuts";
+import { type ChatShortcutCommands, useChatShortcuts } from "./chat/useChatShortcuts";
+import {
+  APPROVAL_SHORTCUT_DECISIONS,
+  approvalOffersDecision,
+} from "./chat/ComposerPendingApprovalActions";
 import { ChatBannerLane } from "./chat/ChatBannerLane";
 import * as Schema from "effect/Schema";
 import {
+  APPROVAL_KEYBINDING_COMMANDS,
   AuthOrchestrationOperateScope,
   AuthSourceControlWriteScope,
   AuthPreviewOperateScope,
@@ -97,6 +102,7 @@ import {
   workflowOpeningParentThreadId,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
+  deriveThreadQueueWorkflowState,
   getUserQueuedThreadRuns,
   threadSupportsProviderHandoff,
 } from "@t3tools/client-runtime/state/thread-workflows";
@@ -1826,6 +1832,10 @@ export default function ChatView(props: ChatViewProps) {
   const focusComposerStable = useStableCallback(focusComposer);
   const canInterruptRunningThread =
     canOperateThread && deriveCanInterruptRunningThread(activeThread !== undefined, activeRuntime);
+  const canStopAndSend =
+    canInterruptRunningThread &&
+    serverProjection !== null &&
+    deriveThreadQueueWorkflowState(serverProjection).canStopAndSend;
   const onInterrupt = async () => {
     if (
       !activeThread ||
@@ -2693,6 +2703,44 @@ export default function ChatView(props: ChatViewProps) {
     if (activeThreadRef && !embedded) return focusTerminalOnThreadEnter(activeThreadRef);
   }, [activeThreadRef, embedded]);
 
+  // Shortcuts answer only the approval the composer shows, never one held back while typing.
+  const shortcutApproval =
+    canOperateThread &&
+    activePendingApproval !== null &&
+    activePendingApproval.responseCapability === "live" &&
+    !heldApprovalRequestIds.has(activePendingApproval.requestId)
+      ? activePendingApproval
+      : null;
+  const approvalShortcutCommands = Object.fromEntries(
+    APPROVAL_KEYBINDING_COMMANDS.map((command) => [
+      command,
+      ({ event }: { readonly event: KeyboardEvent }) => {
+        const decision = APPROVAL_SHORTCUT_DECISIONS[command];
+        if (
+          shortcutApproval === null ||
+          !approvalOffersDecision(shortcutApproval.options, decision)
+        )
+          return false;
+        if (!event.repeat && !respondingRequestIds.includes(shortcutApproval.requestId)) {
+          void onRespondToApprovalStable(shortcutApproval.requestId, decision);
+        }
+      },
+    ]),
+  ) satisfies ChatShortcutCommands;
+  const approvalShortcuts =
+    shortcutApproval === null
+      ? null
+      : {
+          requestId: shortcutApproval.requestId,
+          labels: Object.fromEntries(
+            APPROVAL_KEYBINDING_COMMANDS.flatMap((command) => {
+              const label = shortcutLabelForCommand(keybindings, command, {
+                context: { approvalPending: true },
+              });
+              return label === null ? [] : [[APPROVAL_SHORTCUT_DECISIONS[command], label]];
+            }),
+          ),
+        };
   const getShortcutContext = (eventTarget: EventTarget | null = document.activeElement) => ({
     terminalFocus: getTerminalFocusOwner() !== null,
     terminalOpen: Boolean(terminalUiState.terminalOpen),
@@ -2705,6 +2753,7 @@ export default function ChatView(props: ChatViewProps) {
       isInSideChatPane(document.activeElement) === embedded,
     draftThreadRoute: routeKind === "draft",
     turnRunning: phase === "running",
+    approvalPending: shortcutApproval !== null,
     composerRequiresModifier: composerRequiresModifier(settings.sendShortcut, promptRef.current),
     isWeb: !isElectron,
     isDesktop: isElectron,
@@ -2823,6 +2872,7 @@ export default function ChatView(props: ChatViewProps) {
         if (!canInterruptRunningThread) return false;
         if (!event.repeat) void onInterruptStable();
       },
+      ...approvalShortcutCommands,
     },
     fallback: (command) => {
       const scriptId = projectScriptIdFromCommand(command);
@@ -3223,6 +3273,13 @@ export default function ChatView(props: ChatViewProps) {
         message.inputIntent === "queued_turn" &&
         !serverProjection?.messages.some((committed) => committed.id === message.id),
     );
+  const scrollToEndAttention = pendingApprovals.some(
+    (approval) => !heldApprovalRequestIds.has(approval.requestId),
+  )
+    ? t("Approval needed")
+    : pendingUserInputs.length > 0
+      ? t("Question waiting")
+      : null;
   const scrollToEndSummary =
     [
       childInputNow?.waitingLabel ?? null,
@@ -3525,6 +3582,8 @@ export default function ChatView(props: ChatViewProps) {
                 heldApprovalRequestIds={heldApprovalRequestIds}
                 respondingRequestIds={respondingRequestIds}
                 onRespondToApproval={onRespondToApprovalStable}
+                approvalShortcuts={approvalShortcuts}
+                onStopRun={canInterruptRunningThread ? onInterruptStable : undefined}
                 canOperateThread={canOperateThread}
                 threadDetailRef={routeThreadDetailRef}
                 entriesInput={timelineEntriesInput}
@@ -3624,6 +3683,7 @@ export default function ChatView(props: ChatViewProps) {
               {showScrollToBottom && !isThreadFindActive && (
                 <ScrollToEndButton
                   bottom={scrollToEndClearance + 4}
+                  attention={scrollToEndAttention}
                   summary={scrollToEndSummary}
                   onScrollToEnd={() => scrollToEnd(true)}
                 />
@@ -3739,6 +3799,7 @@ export default function ChatView(props: ChatViewProps) {
                               phase={phase}
                               isCompacting={isCompacting}
                               canInterrupt={canInterruptRunningThread}
+                              canStopAndSend={canStopAndSend}
                               isSendBusy={
                                 (isSendBusy && !sendQueuesBehindSetup) ||
                                 (setupQueueSendThreadKey !== null &&
