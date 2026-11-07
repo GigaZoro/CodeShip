@@ -12,7 +12,7 @@ pnpm mcp-tool-use --case review-round-uses-thread-send --samples 1 --out runs/ch
 pnpm mcp-tool-use --model claude-opus-5-5 --out runs/opus
 ```
 
-- With one available provider, the runner selects it automatically. OpenAI uses `OPENAI_API_KEY` or your existing `codex login`; Anthropic uses `ANTHROPIC_API_KEY`.
+- With one available provider, the runner selects it automatically. OpenAI uses `OPENAI_API_KEY` or your existing `codex login`; Anthropic uses `ANTHROPIC_API_KEY`. Without `codex` on your PATH, set `CODEX_BIN` to the Codex that T3.CodeShip installs, `~/.t3/tools/codex/<version>/bin/codex`.
 - With both available, choose `--provider openai` or `--provider anthropic`. Set `CODESHIP_EVAL_PROVIDER=openai` (or `anthropic`) in the repo root's gitignored `.env` to save your default. An explicit `--provider` or `--model` overrides it; an unavailable explicit choice fails without switching providers.
 - Both the agent and shell simulator use the selected provider. OpenAI defaults to Luna for both; Anthropic defaults to Sonnet and Haiku. `--model` and `--shell-model` select models within that provider.
 - Existing CLIProxyAPI setups can opt in with `--provider openai --proxy`; this uses the `vibeproxy` entry in `~/.codex/config.toml`. The proxy must serve the selected OpenAI agent and simulator models.
@@ -110,6 +110,21 @@ Raw-route checks inspect possible literal invocations; managed capture and recor
 Commands built at run time, external script files and full shell/interpreter semantics (including complex quoting, dynamic control flow and exception handling) are outside the bounded parser. Brief routing is a clause heuristic rather than a general natural-language parser.
 
 This API replay measures routing and recovery decisions. Screenshots return product text and metadata without rendered image blocks, and Codex code cells have no `image` helper, so a cell that calls it fails with `image is not defined`. The shell remains simulated, children are not executed, and `priorTurns` is synthetic context rather than native resume or compaction. It does not test launcher execution, binding, pruning, actual device state, transport failures or resource cleanup, and it models agent-device's session check rather than running it. DEL-02 checks managed recording start/stop and the final filename; it does not inspect video bytes, required flow, transforms, codec or size. Screenshots and final text do not establish delivered artifacts or honesty. Keep local real-harness results separate; their scores and costs are not API-replay results. Offline validation costs $0. Record fresh per-model baseline and candidate costs before using device-case scores as release evidence.
+
+## Reply cases
+
+`cases/replies.ndjson` checks how a final reply hands a command to the user. In `user-command-in-run-block`, `gh` is not signed in and the agent must end with `gh auth login` alone in a fenced `sh` block, which the web client's Run in terminal button needs. `agent-runs-own-command` is the control: the agent runs a test itself instead of handing it over.
+
+Passes on the bad case, 3 samples each, Codex login on 2026-11-07. The control passed 3/3 on both models with the final text.
+
+| Runtime text                                                      | GPT-6 Luna | GPT-6 Astra |
+| ----------------------------------------------------------------- | ---------- | ----------- |
+| Before (no rule)                                                  | 0/3        | 0/3         |
+| "Give a command the user should run as its own fenced `sh` block" | 0/3        | 0/3         |
+| "…put the exact command alone in a fenced `sh` block…"            | 0/3        | 2/3         |
+| "…end your reply with the exact command alone…" (current)         | 1/3        | 2/3         |
+
+Claude models are not measured yet: they need `ANTHROPIC_API_KEY`.
 
 ## Where T3's text lives
 

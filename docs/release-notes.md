@@ -1,3 +1,7 @@
+## 2026-11-07 — Agents more often hand you a runnable command
+
+- When an agent stops because you need to run something, such as signing in, it now ends its reply with the command in a code block more often, so **Run in terminal** can run it.
+
 ## 2026-11-07 — Commands to run come as code blocks
 
 - When an agent needs you to run a command, such as signing in with `gh auth login`, it gives the command in its own code block, so you can run it with **Run in terminal** on web and desktop instead of copying it.
