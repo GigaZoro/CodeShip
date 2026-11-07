@@ -1,3 +1,8 @@
+## 2026-11-08 — Importing conversations says what it brought in
+
+- Turning on **Import conversations** for Claude Code and Codex now says how many conversations came in once the import finishes, such as "Imported 39 conversations · find them under Settled", instead of looking like nothing happened. Imported threads start settled, so on web and desktop **Show** opens the most recently active one and expands **Settled**. On mobile the same message appears as an alert.
+- An import that finds nothing new says "No new conversations to import", and one that fails says so instead.
+
 ## 2026-11-08 — Reset covers the provider health check interval
 
 - **Reset page** on **Settings → Providers** now restores the **Health check interval** too. It resets only that interval and keeps the rest of your Background activity policy.

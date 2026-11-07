@@ -351,7 +351,9 @@ While it is on, T3.CodeShip imports a project's whole history, then picks up new
 server starts, when you add the project, and every few minutes. Conversations from while T3.CodeShip was
 closed appear the next time it starts. Only conversations started in a project's own folder are
 imported, so add a project to manage its conversations in T3.CodeShip. Codex app chats that have no
-project go to **No project** on that computer. Imported threads start settled.
+project go to **No project** on that computer. Imported threads start settled. When you turn the
+switch on, T3.CodeShip says how many conversations it brought in once the import finishes. On web and
+desktop, **Show** opens the most recently active one and expands **Settled**.
 Conversations T3.CodeShip already owns, and imported threads you deleted, are not imported again.
 Imports follow the limits described in [Import your projects](welcome-wizard.md#import-your-projects),
 except that there is no 30-day window and no per-run file cap.

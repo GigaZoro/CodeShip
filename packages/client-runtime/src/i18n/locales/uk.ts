@@ -3996,6 +3996,8 @@ const catalog: MessageCatalog = {
   "Could not hash the DPoP public key thumbprint.":
     "Не вдалося обчислити хеш відбитка відкритого ключа DPoP.",
   "Could not import ACP session": "Не вдалося імпортувати сеанс ACP",
+  "Could not import conversations": "Не вдалося імпортувати розмови",
+  "Could not import on {label}: {message}": "Не вдалося імпортувати для {label}: {message}",
   "Could not import shared content": "Не вдалося імпортувати спільний вміст",
   "Could not import thread history.": "Не вдалося імпортувати історію чатів.",
   "could not install": "не вдалося встановити",
@@ -6065,6 +6067,12 @@ const catalog: MessageCatalog = {
   Important: "Важливо",
   Imported: "Імпортовано",
   "Imported {cookies}": "Імпортовано: {cookies}",
+  "Imported {count} conversations · find them under Settled": {
+    one: "Імпортовано {count} розмову · шукайте її в розділі «Завершені»",
+    few: "Імпортовано {count} розмови · шукайте їх у розділі «Завершені»",
+    many: "Імпортовано {count} розмов · шукайте їх у розділі «Завершені»",
+    other: "Імпортовано {count} розмови · шукайте їх у розділі «Завершені»",
+  },
   "Imported {count} threads": {
     one: "Імпортовано {count} чат",
     few: "Імпортовано {count} чати",
@@ -6079,6 +6087,7 @@ const catalog: MessageCatalog = {
   },
   Importing: "Імпорт",
   "importing browser cookies": "імпорт файлів cookie браузера",
+  "Importing conversations…": "Імпорт розмов…",
   "Importing cookies": "Імпорт cookie",
   "Importing from this browser isn't possible on this platform.":
     "Імпорт із цього браузера на цій платформі неможливий.",
@@ -7412,6 +7421,7 @@ const catalog: MessageCatalog = {
   "No models match.": "Немає відповідних моделей.",
   "No models reported for this provider yet.": "Цей провайдер ще не повідомив про жодну модель.",
   "No net changes in this selection.": "У цьому виборі немає підсумкових змін.",
+  "No new conversations to import": "Немає нових розмов для імпорту",
   "No newer version is available yet.": "Новішої версії поки немає.",
   "No non-test files loaded yet": "Нетестові файли ще не завантажено",
   "No open {label}": "Немає відкритого {label}",
@@ -10519,6 +10529,8 @@ const catalog: MessageCatalog = {
     "Вміст деяких файлів недоступний. Відкрийте {term} у його провайдера, щоб побачити всі зміни.",
   "Some history was not imported": "Частину історії не імпортовано",
   "Some of this diff was not shown": "Частину змін не показано",
+  "Some projects on {label} could not be imported.":
+    "Не вдалося імпортувати деякі проєкти ({label}).",
   "Some queued messages could not be loaded": "Не вдалося завантажити деякі повідомлення в черзі",
   "Some requests are slow": "Деякі запити повільні",
   "Some settings are managed by {organizations} and cannot be changed here.":
@@ -11259,6 +11271,8 @@ const catalog: MessageCatalog = {
     "Налаштоване середовище виконання Antigravity недоступне.",
   "The connected environment did not report any projects.":
     "Підключене середовище не повідомило про жодні проєкти.",
+  "The connection closed. Reconnect and retry.":
+    "З’єднання закрито. Підключіться знову й повторіть спробу.",
   "The conversation could not be updated": "Не вдалося оновити обговорення",
   "The conversation couldn't be displayed": "Не вдалося показати розмову",
   "The cookies were imported, but the new profile couldn't be saved. Try again.":

@@ -45,6 +45,22 @@ export function hasProjectSettingsOverrides(
 }
 
 /** Legacy aggregate fields apply only until folded into overrides, so stale values cannot undo later resets. */
+/** Which projects import Claude Code and Codex conversations; equal policies import the same ones. */
+export function agentConversationImportPolicy(
+  settings: Pick<ServerSettings, "importAgentConversations" | "projectSettingsOverrides">,
+): string {
+  return JSON.stringify([
+    settings.importAgentConversations,
+    Object.entries(settings.projectSettingsOverrides)
+      .flatMap(([projectId, overrides]) =>
+        overrides.importAgentConversations === undefined
+          ? []
+          : [[projectId, overrides.importAgentConversations] as const],
+      )
+      .sort(([left], [right]) => left.localeCompare(right)),
+  ]);
+}
+
 export interface LegacyProjectSettingsFields {
   readonly defaultModelSelection?: ModelSelection | null | undefined;
   readonly defaultThreadEnvMode?: ThreadEnvMode | null | undefined;

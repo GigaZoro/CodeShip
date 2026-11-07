@@ -31,6 +31,10 @@
       "types": "./src/handoff.ts",
       "default": "./src/handoff.ts"
     },
+    "./agent-conversation-import": {
+      "types": "./src/agentConversationImport.ts",
+      "default": "./src/agentConversationImport.ts"
+    },
     "./device/stream": {
       "types": "./src/device/stream.ts",
       "default": "./src/device/stream.ts"

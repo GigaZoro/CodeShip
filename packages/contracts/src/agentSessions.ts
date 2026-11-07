@@ -1,5 +1,11 @@
 import * as Schema from "effect/Schema";
-import { IsoDateTime, NonNegativeInt, ProjectId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  IsoDateTime,
+  NonNegativeInt,
+  ProjectId,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 export const AgentSessionSource = Schema.Literals(["claudeAgent", "codex", "pi"]);
@@ -77,6 +83,18 @@ export const AgentSessionImportResult = Schema.Struct({
   skippedCount: NonNegativeInt,
 });
 export type AgentSessionImportResult = typeof AgentSessionImportResult.Type;
+
+export const AgentConversationSyncInput = Schema.Struct({});
+export type AgentConversationSyncInput = typeof AgentConversationSyncInput.Type;
+
+/** What importing has brought in since the import settings last changed. */
+export const AgentConversationSyncResult = Schema.Struct({
+  importedCount: NonNegativeInt,
+  latestThread: Schema.NullOr(Schema.Struct({ threadId: ThreadId, updatedAt: IsoDateTime })),
+  /** False when a project's import failed, so a zero count is not "nothing new". */
+  complete: Schema.Boolean,
+});
+export type AgentConversationSyncResult = typeof AgentConversationSyncResult.Type;
 
 export class AgentSessionScanError extends Schema.TaggedError<AgentSessionScanError>()(
   "AgentSessionScanError",

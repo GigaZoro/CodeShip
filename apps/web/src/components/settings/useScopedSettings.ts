@@ -28,6 +28,7 @@ import {
   scopedSettingsAreMixed,
   scopedSettingsSource,
   type ProjectOverrideEntry,
+  type SavedScopedServerWrite,
   type ScopedSettingsPatch,
   type ScopedSettingsPlan,
 } from "./scopedSettings";
@@ -49,16 +50,23 @@ export function useScopedSettingSource(keys: readonly (keyof ServerSettings)[]) 
   return scopedSettingsSource(targets, keys);
 }
 
+export interface ScopedSettingsWriteOptions {
+  /** Runs when any target rejects or drops the patch, so a draft can fall back. */
+  readonly onFailed?: () => void;
+  /** Runs with each target that saved the patch and the settings it now has. */
+  readonly onSaved?: (saved: ReadonlyArray<SavedScopedServerWrite>) => void;
+}
+
 export function useRunScopedSettingsPlan() {
   const persistServer = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
-  return (plan: ScopedSettingsPlan, onFailed?: () => void) => {
+  return (plan: ScopedSettingsPlan, options?: ScopedSettingsWriteOptions) => {
     if (plan.unavailableReason) {
       toastManager.add({
         type: "warning",
         title: t("Setting not saved"),
         description: plan.unavailableReason,
       });
-      onFailed?.();
+      options?.onFailed?.();
       return;
     }
     void persistScopedSettingsPatch(
@@ -80,8 +88,9 @@ export function useRunScopedSettingsPlan() {
       },
       persistClientSettingsPatch,
     ).then(({ failedEnvironments, savedEnvironments, savedEnvironmentCount }) => {
+      if (savedEnvironmentCount > 0) options?.onSaved?.(savedEnvironments);
       if (failedEnvironments.length === 0) return;
-      onFailed?.();
+      options?.onFailed?.();
       toastManager.add({
         type: "error",
         title:
@@ -108,9 +117,8 @@ export function useRunScopedSettingsPlan() {
 export function useUpdateScopedSettings() {
   const { scope, environments } = useSettingsScope();
   const run = useRunScopedSettingsPlan();
-  /** `onFailed` runs when any target rejects or drops the patch, so a draft can fall back. */
-  return (patch: ScopedSettingsPatch, options?: { readonly onFailed?: () => void }) =>
-    run(planScopedSettingsPatch(scope, environments, patch), options?.onFailed);
+  return (patch: ScopedSettingsPatch, options?: ScopedSettingsWriteOptions) =>
+    run(planScopedSettingsPatch(scope, environments, patch), options);
 }
 
 export function useClearScopedSettings() {

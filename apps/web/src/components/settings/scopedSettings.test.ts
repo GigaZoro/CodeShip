@@ -230,7 +230,10 @@ describe("scoped settings writes", () => {
   });
 
   it("writes an aggregate preference only to connected environments with loaded configuration", async () => {
-    const persistServer = vi.fn().mockResolvedValue({ _tag: "Success" });
+    const persistServer = vi.fn().mockResolvedValue({
+      _tag: "Success",
+      value: { ...DEFAULT_SERVER_SETTINGS, enableProviderUpdateChecks: false },
+    });
     const persistClient = vi.fn();
     await persistScopedSettingsPatch(
       planScopedSettingsPatch(all, environments, { enableProviderUpdateChecks: false }),
@@ -311,7 +314,10 @@ describe("scoped settings writes", () => {
   });
 
   it("persists client keys locally at any scope alongside server keys", async () => {
-    const persistServer = vi.fn().mockResolvedValue({ _tag: "Success" });
+    const persistServer = vi.fn().mockResolvedValue({
+      _tag: "Success",
+      value: { ...DEFAULT_SERVER_SETTINGS, enableProviderUpdateChecks: false },
+    });
     const persistClient = vi.fn();
     await persistScopedSettingsPatch(
       planScopedSettingsPatch(named, environments, {
@@ -508,9 +514,13 @@ describe("scoped settings writes", () => {
     const fourth = environment("Fourth");
     const selected = [...environments, third, fourth];
     const scope = resolveSettingsScope({}, [], selected);
+    const saved = {
+      _tag: "Success",
+      value: { ...DEFAULT_SERVER_SETTINGS, enableAgentBrowserAccess: false },
+    };
     const persistServer = vi
       .fn()
-      .mockResolvedValueOnce({ _tag: "Success" })
+      .mockResolvedValueOnce(saved)
       .mockResolvedValueOnce({
         _tag: "Failure",
         cause: Cause.fail(
@@ -521,7 +531,7 @@ describe("scoped settings writes", () => {
         ),
       })
       .mockRejectedValueOnce(new Error("Disconnected during save"))
-      .mockResolvedValueOnce({ _tag: "Success" });
+      .mockResolvedValueOnce(saved);
     const result = await persistScopedSettingsPatch(
       planScopedSettingsPatch(scope, selected, { enableAgentBrowserAccess: false }),
       persistServer,

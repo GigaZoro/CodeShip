@@ -530,8 +530,7 @@ function writeWasDropped(value: unknown, before: unknown, saved: unknown): boole
 }
 
 /** Older servers silently drop unknown keys; report them so rows cannot stay mixed forever. */
-function droppedSettingKeys(write: ScopedServerWrite, saved: ServerSettings | undefined) {
-  if (saved === undefined) return [];
+function droppedSettingKeys(write: ScopedServerWrite, saved: ServerSettings) {
   return Object.entries(write.patch).flatMap(([key, value]) =>
     writeWasDropped(
       value,
@@ -543,16 +542,17 @@ function droppedSettingKeys(write: ScopedServerWrite, saved: ServerSettings | un
   );
 }
 
+export type SavedScopedServerWrite = ScopedServerWrite & { readonly settings: ServerSettings };
+
 export async function persistScopedSettingsPatch(
   plan: ReturnType<typeof planScopedSettingsPatch>,
   persistServer: (input: {
     environmentId: EnvironmentId;
     input: { patch: ServerSettingsPatch };
-  }) => Promise<{
-    readonly _tag: "Success" | "Failure";
-    readonly cause?: Cause.Cause<unknown>;
-    readonly value?: ServerSettings;
-  }>,
+  }) => Promise<
+    | { readonly _tag: "Success"; readonly value: ServerSettings }
+    | { readonly _tag: "Failure"; readonly cause: Cause.Cause<unknown> }
+  >,
   persistClient: (patch: ClientSettingsPatch) => void,
 ) {
   if (plan.hasClientWrite) persistClient(plan.clientPatch);
@@ -561,16 +561,14 @@ export async function persistScopedSettingsPatch(
       persistServer({ environmentId, input: { patch } }),
     ),
   );
-  const saved = (index: number) => {
+  const savedSettings = (index: number): ServerSettings | null => {
     const result = results[index];
-    return (
-      result?.status === "fulfilled" &&
-      result.value._tag === "Success" &&
-      droppedSettingKeys(plan.serverWrites[index]!, result.value.value).length === 0
-    );
+    if (result?.status !== "fulfilled" || result.value._tag !== "Success") return null;
+    const settings = result.value.value;
+    return droppedSettingKeys(plan.serverWrites[index]!, settings).length === 0 ? settings : null;
   };
   const failedEnvironments = plan.serverWrites.flatMap((environment, index) => {
-    if (saved(index)) return [];
+    if (savedSettings(index) !== null) return [];
     const result = results[index];
     if (result?.status === "fulfilled" && result.value._tag === "Success") {
       return [
@@ -583,7 +581,7 @@ export async function persistScopedSettingsPatch(
     const error: unknown =
       result?.status === "rejected"
         ? result.reason
-        : result?.status === "fulfilled" && result.value.cause
+        : result?.status === "fulfilled" && result.value._tag === "Failure"
           ? Cause.squash(result.value.cause)
           : undefined;
     return [
@@ -596,7 +594,10 @@ export async function persistScopedSettingsPatch(
       },
     ];
   });
-  const savedEnvironments = plan.serverWrites.filter((_, index) => saved(index));
+  const savedEnvironments = plan.serverWrites.flatMap((write, index) => {
+    const settings = savedSettings(index);
+    return settings === null ? [] : [{ ...write, settings }];
+  });
   return {
     failedEnvironments,
     savedEnvironments,

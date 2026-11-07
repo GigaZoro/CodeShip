@@ -37,6 +37,7 @@ import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import { SourceControlSignInSection } from "./components/SourceControlSignInSection";
 import { SettingsProjectOverridesSection } from "./components/SettingsProjectOverridesSection";
 import { useSettingsEnvironmentFilter } from "./settings-environment-filter";
+import { useReportConversationImport } from "./useReportConversationImport";
 import { useSettingsWriter } from "./useSettingsWriter";
 import {
   managedSettingReason,
@@ -248,6 +249,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
     reference === null ||
     displayTargets.some((entry) => entry.settings[key] !== reference.settings[key]);
   const writeSettings = useSettingsWriter();
+  const reportImport = useReportConversationImport();
   const write = (patch: ServerSettingsPatch) => {
     if (writeInFlight.current) {
       const queued = queuedPatch.current;
@@ -269,16 +271,20 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
     writeInFlight.current = true;
     setPendingTargets(targets);
     setPendingWrites((count) => count + 1);
-    void writeSettings(targets, writes).finally(() => {
-      writeInFlight.current = false;
-      setPendingTargets(null);
-      setPendingWrites((count) => count - 1);
-      const queued = queuedPatch.current;
-      queuedPatch.current = null;
-      // These targets may not show this write yet, so send it again with the
-      // queued patch; project overrides are replaced whole.
-      if (queued?.key === targetsKey) write({ ...patch, ...queued.patch });
-    });
+    void writeSettings(targets, writes)
+      .then((saved) => {
+        if (patch.importAgentConversations === true) void reportImport(saved);
+      })
+      .finally(() => {
+        writeInFlight.current = false;
+        setPendingTargets(null);
+        setPendingWrites((count) => count - 1);
+        const queued = queuedPatch.current;
+        queuedPatch.current = null;
+        // These targets may not show this write yet, so send it again with the
+        // queued patch; project overrides are replaced whole.
+        if (queued?.key === targetsKey) write({ ...patch, ...queued.patch });
+      });
   };
   const clearProjectOverrides = () => {
     if (

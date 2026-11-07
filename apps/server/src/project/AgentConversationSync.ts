@@ -1,6 +1,10 @@
-import type { ServerSettings } from "@t3tools/contracts";
+import type { AgentConversationSyncResult, ServerSettings } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import {
+  agentConversationImportPolicy,
+  resolveProjectSettings,
+} from "@t3tools/shared/projectSettings";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -17,17 +21,9 @@ import * as ProjectService from "./ProjectService.ts";
 // Picks up conversations started outside T3.CodeShip; startup covers the time the server was off.
 const SYNC_INTERVAL = "10 minutes";
 
-function syncPolicy(settings: ServerSettings): string {
-  return JSON.stringify([
-    settings.importAgentConversations,
-    Object.entries(settings.projectSettingsOverrides)
-      .flatMap(([projectId, overrides]) =>
-        overrides.importAgentConversations === undefined
-          ? []
-          : [[projectId, overrides.importAgentConversations] as const],
-      )
-      .sort(([left], [right]) => left.localeCompare(right)),
-  ]);
+interface ImportedSincePolicyChange extends AgentConversationSyncResult {
+  readonly policy: string;
+  readonly epoch: number;
 }
 
 const make = Effect.gen(function* () {
@@ -37,20 +33,61 @@ const make = Effect.gen(function* () {
   const importer = yield* AgentSessionImporter.AgentSessionImporter;
   const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
 
+  const imported = yield* Ref.make<ImportedSincePolicyChange>({
+    policy: agentConversationImportPolicy(yield* settingsService.getSettings.pipe(Effect.orDie)),
+    epoch: 0,
+    importedCount: 0,
+    latestThread: null,
+    complete: true,
+  });
+  // Whoever sees a new policy first (the change stream or a run) starts a new epoch, so runs
+  // that began under the old one never count toward it.
+  const observePolicy = (settings: ServerSettings) =>
+    Ref.modify(imported, (current) => {
+      const policy = agentConversationImportPolicy(settings);
+      if (policy === current.policy) return [{ changed: false, epoch: current.epoch }, current];
+      const epoch = current.epoch + 1;
+      return [
+        { changed: true, epoch },
+        { policy, epoch, importedCount: 0, latestThread: null, complete: true },
+      ];
+    });
+
   const sync = Effect.fn("AgentConversationSync.sync")(function* () {
     const settings = yield* settingsService.getSettings;
+    const { epoch } = yield* observePolicy(settings);
+    const record = (update: (current: ImportedSincePolicyChange) => ImportedSincePolicyChange) =>
+      Ref.update(imported, (current) => (current.epoch === epoch ? update(current) : current));
     const enabled = (yield* projects.listShells()).filter(
       (project) => resolveProjectSettings(settings, project.id).settings.importAgentConversations,
     );
     if (enabled.length === 0) return;
-    yield* scanner.refresh;
+    yield* scanner.refresh.pipe(
+      Effect.tapError(() => record((current) => ({ ...current, complete: false }))),
+    );
     for (const project of enabled) {
       yield* importer.importAllAgentThreads(project.id).pipe(
+        Effect.flatMap(({ createdCount, latestCreated }) =>
+          record((current) => ({
+            ...current,
+            importedCount: current.importedCount + createdCount,
+            latestThread:
+              latestCreated !== null &&
+              (current.latestThread === null ||
+                latestCreated.updatedAt > current.latestThread.updatedAt)
+                ? latestCreated
+                : current.latestThread,
+          })),
+        ),
         Effect.catch((cause) =>
-          Effect.logWarning("Could not import agent conversations", {
-            projectId: project.id,
-            cause,
-          }),
+          record((current) => ({ ...current, complete: false })).pipe(
+            Effect.andThen(
+              Effect.logWarning("Could not import agent conversations", {
+                projectId: project.id,
+                cause,
+              }),
+            ),
+          ),
         ),
       );
     }
@@ -68,7 +105,6 @@ const make = Effect.gen(function* () {
   );
 
   const changes = yield* settingsService.subscribeChanges;
-  let lastPolicy = syncPolicy(yield* settingsService.getSettings.pipe(Effect.orDie));
   yield* forkParked(
     requestSync.pipe(
       Effect.andThen(worker.drain),
@@ -77,12 +113,11 @@ const make = Effect.gen(function* () {
     ),
   );
   yield* forkParked(
-    Stream.runForEach(changes, (settings) => {
-      const policy = syncPolicy(settings);
-      if (policy === lastPolicy) return Effect.void;
-      lastPolicy = policy;
-      return requestSync;
-    }),
+    Stream.runForEach(changes, (settings) =>
+      observePolicy(settings).pipe(
+        Effect.flatMap(({ changed }) => (changed ? requestSync : Effect.void)),
+      ),
+    ),
   );
   const afterSequence = yield* applicationEvents.latestApplicationSequence.pipe(Effect.orDie);
   yield* forkParked(
@@ -94,6 +129,23 @@ const make = Effect.gen(function* () {
       ),
     ),
   );
+
+  return {
+    /** Runs a sync under the current settings, then reports everything since they last changed. */
+    importedSinceSettingsChange: Effect.fn("AgentConversationSync.importedSinceSettingsChange")(
+      function* () {
+        yield* requestSync;
+        yield* worker.drain;
+        const { importedCount, latestThread, complete } = yield* Ref.get(imported);
+        return { importedCount, latestThread, complete } satisfies AgentConversationSyncResult;
+      },
+    ),
+  };
 });
 
-export const layer = Layer.effectDiscard(make);
+export class AgentConversationSync extends Context.Service<
+  AgentConversationSync,
+  Effect.Success<typeof make>
+>()("t3/project/AgentConversationSync") {}
+
+export const layer = Layer.effect(AgentConversationSync, make);

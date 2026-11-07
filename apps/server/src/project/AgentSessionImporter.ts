@@ -14,6 +14,7 @@ import {
   ProviderDriverKind,
   ThreadId,
   TurnItemId,
+  type AgentConversationSyncResult,
   type AgentSessionImportInput,
   type AgentSessionImportResult,
   type OrchestrationV2AppThread,
@@ -82,6 +83,12 @@ class AgentSessionThreadModifiedError extends Schema.TaggedError<AgentSessionThr
 
 const importThreadId = (providerInstanceId: string, providerSessionId: string) =>
   ThreadId.make(`import:${providerInstanceId}:${providerSessionId}`);
+
+export interface AgentSessionImportOutcome extends AgentSessionImportResult {
+  /** Threads this import created, unlike `importedCount`, which also counts earlier imports. */
+  readonly createdCount: number;
+  readonly latestCreated: AgentConversationSyncResult["latestThread"];
+}
 
 function dateTime(value: string): DateTime.Utc {
   return DateTime.makeUnsafe(value);
@@ -257,6 +264,8 @@ const make = Effect.gen(function* () {
     const importedThreadIds = new Set<ThreadId>();
     let importedCount = 0;
     let skippedCount = 0;
+    let createdCount = 0;
+    let latestCreated: AgentConversationSyncResult["latestThread"] = null;
 
     yield* Stream.runForEach(outcomes, (outcome) =>
       Effect.gen(function* () {
@@ -324,7 +333,7 @@ const make = Effect.gen(function* () {
             }
             yield* persistRuntime;
             yield* runtimes.recordImportedTranscript({ threadId, source });
-            return true;
+            return "updated" as const;
           }
 
           // Like any No project thread, follow-ups run in a folder of their own.
@@ -460,7 +469,7 @@ const make = Effect.gen(function* () {
           if (committed.length === 0) return null;
           yield* persistRuntime;
           yield* runtimes.recordImportedTranscript({ threadId, source });
-          return true;
+          return "created" as const;
         }).pipe(
           Effect.catch((cause) =>
             Effect.logWarning("Could not import an agent session", {
@@ -470,16 +479,29 @@ const make = Effect.gen(function* () {
             }).pipe(Effect.as(false)),
           ),
         );
-        if (imported === true) {
+        if (imported === "created" || imported === "updated") {
           importedThreadIds.add(threadId);
           importedCount += 1;
+        }
+        if (imported === "created") {
+          createdCount += 1;
+          const { updatedAt } = outcome.thread;
+          if (latestCreated === null || updatedAt > latestCreated.updatedAt) {
+            latestCreated = { threadId, updatedAt };
+          }
         } else if (imported === false) {
           skippedCount += 1;
         }
       }),
     );
 
-    return { importedCount, skippedCount } satisfies AgentSessionImportResult;
+    const result: AgentSessionImportOutcome = {
+      importedCount,
+      skippedCount,
+      createdCount,
+      latestCreated,
+    };
+    return result;
   });
 
   return {
