@@ -12,7 +12,7 @@ const threadRef = {
   threadId: ThreadId.make("thread-1"),
 };
 const otherThreadRef = { ...threadRef, threadId: ThreadId.make("thread-2") };
-const measurements = (width: number, height = 900): ChatCanvasMeasurements => ({
+const measurements = (width: number, height = 900, needsYouHeight = 0): ChatCanvasMeasurements => ({
   width,
   height,
   padding: 48,
@@ -21,6 +21,7 @@ const measurements = (width: number, height = 900): ChatCanvasMeasurements => ({
   composerHeight: 180,
   timelineGutter: 0,
   findBar: null,
+  needsYouHeight,
 });
 const preview: ChatCanvasPreview = {
   key: "browser:one",
@@ -55,6 +56,24 @@ describe("chat canvas model", () => {
     const model = resolve(400);
     expect(model.layout.overlapsDetailsCard).toBe(true);
     expect(model.detailsCardMode).toBe("popover");
+  });
+
+  it("keeps the chat and the details card clear of Needs you at the foot of the column", () => {
+    const resolve = (needsYouHeight: number) => {
+      const model = resolveChatCanvasModel({
+        measurements: measurements(1400, 900, needsYouHeight),
+        detailsCardMeasurement: null,
+        threadRef,
+        preview: null,
+        detailsCardInlineOpen: true,
+      });
+      return {
+        chatRight: model.layout.chat.left + model.layout.chat.width,
+        detailsHeight: model.detailsCardPlacement?.height,
+      };
+    };
+    expect(resolve(0)).toEqual({ chatRight: 1084, detailsHeight: 876 });
+    expect(resolve(200)).toEqual({ chatRight: 1076, detailsHeight: 664 });
   });
 
   it("ignores a details card measured for another thread", () => {

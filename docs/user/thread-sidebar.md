@@ -57,12 +57,12 @@ and worktree while you stay in the new thread composer. This requires a Git proj
 
 ## See what needs you
 
-Threads waiting on you sit together under **Needs you** in a box at the bottom right on web
-and desktop: an approval, an answer to a question, a subagent's request, or a guest's message.
-Use the **Needs you** button at the top of a thread to hide or show that box, or the button in
-the box's header to move it into the thread list. While it is hidden,
-while the right panel is open, in narrow windows, and on mobile, they appear at the top of the
-thread list, below scheduled task rows.
+Threads waiting on you sit together under **Needs you** on web and desktop, in a box at the
+bottom of the thread's **Details** column: an approval, an answer to a question, a subagent's
+request, or a guest's message. Use the **Needs you** button at the top of a thread to hide or show
+that box, or the button in the box's header to move it into the thread list. While it is hidden,
+when the chat is too narrow for the Details column, on pages other than a thread, and on mobile,
+they appear at the top of the thread list, below scheduled task rows.
 It lists them from every machine and project, even when the list is filtered to one, the thread's
 folder is closed, or the thread is pinned or settled. Once you answer, the thread returns to its
 usual place.

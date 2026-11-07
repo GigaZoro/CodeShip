@@ -4,12 +4,11 @@ import { Maximize2, Minimize2 } from "lucide";
 import { MorphIcon } from "~/components/MorphIcon";
 import { memo, type ReactNode } from "react";
 
-import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "~/lib/utils";
 
 import type { ThreadPanelPresentation } from "../../rightPanelLayout";
 import { ReleaseNotesButton } from "../ReleaseNotesButton";
-import { NEEDS_YOU_COLUMN_MIN_WIDTH, useNeedsYouColumnVisible } from "../sidebar/needsYouColumn";
+import { useNeedsYouColumnVisible } from "../sidebar/needsYouColumn";
 import { PopoverCreateHandle, PopoverTrigger } from "../ui/popover";
 import { Toggle } from "../ui/toggle";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -34,6 +33,8 @@ export interface PanelLayoutControlsProps {
   threadPanelPresentation: ThreadPanelPresentation;
   threadPanelPopoverHandle?: ReturnType<typeof PopoverCreateHandle>;
   threadPanelShortcutLabel: string | null;
+  /** The chat has room for the details column that holds Needs you. */
+  needsYouColumnAvailable?: boolean;
   rightPanelAvailable: boolean;
   rightPanelOpen: boolean;
   rightPanelShortcutLabel: string | null;
@@ -54,6 +55,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
   threadPanelPresentation,
   threadPanelPopoverHandle,
   threadPanelShortcutLabel,
+  needsYouColumnAvailable = false,
   rightPanelAvailable,
   rightPanelOpen,
   rightPanelShortcutLabel,
@@ -63,7 +65,6 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
   onToggleRightPanel,
 }: PanelLayoutControlsProps) {
   const [needsYouColumnVisible, setNeedsYouColumnVisible] = useNeedsYouColumnVisible();
-  const needsYouColumnFits = useMediaQuery({ min: NEEDS_YOU_COLUMN_MIN_WIDTH });
   const threadPanelToggle = (
     <Toggle
       className="relative shrink-0 [-webkit-app-region:no-drag]"
@@ -99,7 +100,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
       className="flex h-full shrink-0 items-center gap-1 [-webkit-app-region:no-drag]"
       data-panel-layout-controls
     >
-      {needsYouColumnFits && !rightPanelOpen ? (
+      {needsYouColumnAvailable ? (
         <Tooltip>
           <TooltipTrigger render={<span className="flex shrink-0" />}>
             <Toggle

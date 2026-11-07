@@ -1,4 +1,11 @@
-import { useLayoutEffect, useRef, useState, type ComponentProps, type CSSProperties } from "react";
+import {
+  use,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type CSSProperties,
+} from "react";
 import { useStore } from "zustand";
 import { ChatCanvasContext } from "./ChatCanvasContext";
 import type { ChatCanvasPreview } from "./chatCanvasLayout";
@@ -6,6 +13,7 @@ import { resolveChatCanvasModel, type ChatCanvasStore } from "./canvasStore";
 import { selectThreadPanelOpen, useRightPanelStore } from "../../rightPanelStore";
 import { observeResize } from "../../lib/observeResize";
 import type { ScopedThreadRef } from "@t3tools/contracts";
+import { NeedsYouSlotContext } from "../sidebar/needsYouColumn";
 
 export function ChatCanvas({
   store,
@@ -13,6 +21,7 @@ export function ChatCanvas({
   preview,
   composerOverlayElement,
   detailsCardTopInset = 0,
+  hostsNeedsYou = false,
   children,
   ...props
 }: Omit<ComponentProps<"div">, "className" | "style" | "ref"> & {
@@ -23,10 +32,18 @@ export function ChatCanvas({
   preview: ChatCanvasPreview | null;
   composerOverlayElement: HTMLElement | null;
   detailsCardTopInset?: number;
+  /** Offers the foot of the details column to Needs you; side chats leave it to the main chat. */
+  hostsNeedsYou?: boolean;
 }) {
   const elementRef = useRef<HTMLDivElement | null>(null);
   const widthProbeRef = useRef<HTMLDivElement | null>(null);
   const [timelineElement, registerTimeline] = useState<HTMLElement | null>(null);
+  const [needsYouSlot, setNeedsYouSlot] = useState<HTMLElement | null>(null);
+  const registerNeedsYouSlot = use(NeedsYouSlotContext);
+  const needsYouSlotRef = (element: HTMLElement | null) => {
+    setNeedsYouSlot(element);
+    return registerNeedsYouSlot(element);
+  };
   const measurements = useStore(store, (state) => state.measurements);
   const detailsCardMeasurement = useStore(store, (state) => state.detailsCardMeasurement);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- observes canvas, find bar and timeline resizes and writes the measurements to the canvas store
@@ -58,6 +75,7 @@ export function ChatCanvas({
         timelineGutter: timelineElement
           ? (timelineElement.offsetWidth - timelineElement.clientWidth) / 2
           : 0,
+        needsYouHeight: needsYouSlot?.offsetHeight ?? 0,
       });
     };
     measure();
@@ -65,8 +83,9 @@ export function ChatCanvas({
     if (findBar) observed.push(findBar);
     if (composerOverlayElement) observed.push(composerOverlayElement);
     if (timelineElement) observed.push(timelineElement);
+    if (needsYouSlot) observed.push(needsYouSlot);
     return observeResize(observed, measure);
-  }, [store, composerOverlayElement, timelineElement, detailsCardTopInset]);
+  }, [store, composerOverlayElement, timelineElement, detailsCardTopInset, needsYouSlot]);
   const detailsCardInlineOpen = useRightPanelStore((state) =>
     threadRef === null
       ? false
@@ -113,6 +132,13 @@ export function ChatCanvas({
           className="pointer-events-none invisible absolute h-0 w-(--chat-content-max-width) min-w-[40rem] box-content ps-3 sm:ps-12"
         />
         {children}
+        {hostsNeedsYou && model.preferredDetailsCard ? (
+          <div
+            ref={needsYouSlotRef}
+            className="absolute right-3 bottom-3 z-20 flex max-h-[40%] w-(--thread-details-panel-width) flex-col"
+            data-needs-you-slot
+          />
+        ) : null}
       </div>
     </ChatCanvasContext>
   );

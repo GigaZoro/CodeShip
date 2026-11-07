@@ -20,22 +20,26 @@ export function resolveThreadDetailsCardLayout({
   frame,
   overlapsDetailsCard = false,
   topInset = 0,
+  bottomInset = 0,
 }: {
   container: { width: number; height: number };
   lane: { padding: number; minChatWidth: number };
   frame: PreviewMiniPlayerFrame | null;
   overlapsDetailsCard?: boolean;
   topInset?: number;
+  /** Room kept free below the card, as for Needs you at the foot of the column. */
+  bottomInset?: number;
 }) {
   const gap = THREAD_DETAILS_CARD_GAP;
   const width = THREAD_DETAILS_CARD_WIDTH;
   const x = container.width - width - gap;
   if (x - DETAILS_CARD_CLEARANCE - lane.padding < lane.minChatWidth) return null;
   const y = gap + topInset;
+  const columnHeight = container.height - y - gap - bottomInset;
   const height =
     overlapsDetailsCard && frame && frame.x + frame.width > x - gap && frame.x < x + width + gap
-      ? Math.min(container.height - y - gap, frame.y - y - gap)
-      : container.height - y - gap;
+      ? Math.min(columnHeight, frame.y - y - gap)
+      : columnHeight;
   if (height < 160) return null;
   return {
     x,

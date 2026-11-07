@@ -3,7 +3,7 @@ import { createStore } from "zustand";
 import type { ThreadPanelPresentation } from "../../rightPanelLayout";
 import type { DetailsCardMeasurement } from "./ChatCanvasContext";
 import { resolveChatCanvasLayout, type ChatCanvasPreview } from "./chatCanvasLayout";
-import { resolveThreadDetailsCardLayout } from "./threadDetailsCardLayout";
+import { resolveThreadDetailsCardLayout, THREAD_DETAILS_CARD_GAP } from "./threadDetailsCardLayout";
 
 interface CanvasEdges {
   readonly left: number;
@@ -21,6 +21,8 @@ export interface ChatCanvasMeasurements {
   readonly timelineGutter: number;
   /** The find bar's box in canvas coordinates while it is shown. */
   readonly findBar: CanvasEdges | null;
+  /** Needs you at the foot of the details column; 0 when the column holds none. */
+  readonly needsYouHeight: number;
 }
 
 interface ChatCanvasStoreState {
@@ -39,6 +41,7 @@ const INITIAL_MEASUREMENTS: ChatCanvasMeasurements = {
   composerHeight: 0,
   timelineGutter: 0,
   findBar: null,
+  needsYouHeight: 0,
 };
 
 const sameEdges = (a: CanvasEdges | null, b: CanvasEdges | null) =>
@@ -53,6 +56,7 @@ const sameMeasurements = (a: ChatCanvasMeasurements, b: ChatCanvasMeasurements) 
   a.minChatWidth === b.minChatWidth &&
   a.composerHeight === b.composerHeight &&
   a.timelineGutter === b.timelineGutter &&
+  a.needsYouHeight === b.needsYouHeight &&
   sameEdges(a.findBar, b.findBar);
 
 /**
@@ -79,6 +83,16 @@ export const createChatCanvasStore = () =>
 
 export type ChatCanvasStore = ReturnType<typeof createChatCanvasStore>;
 
+/** The right-hand column the details card and Needs you share; null when the canvas is too narrow. */
+export function resolveDetailsColumn(measurements: ChatCanvasMeasurements) {
+  return resolveThreadDetailsCardLayout({
+    container: { width: measurements.width, height: measurements.height },
+    lane: { padding: measurements.padding, minChatWidth: measurements.minChatWidth },
+    frame: null,
+    topInset: measurements.findBar?.bottom ?? 0,
+  });
+}
+
 export function resolveChatCanvasModel({
   measurements,
   detailsCardMeasurement,
@@ -99,12 +113,11 @@ export function resolveChatCanvasModel({
   const lane = { padding: measurements.padding, minChatWidth: measurements.minChatWidth };
   // The preview avoids where an open inline card would sit, whether or not a
   // preview overlap has pushed the card itself into popover mode.
-  const preferredDetailsCard = resolveThreadDetailsCardLayout({
-    container,
-    lane,
-    frame: null,
-    topInset: detailsCardTopInset,
-  });
+  const preferredDetailsCard = resolveDetailsColumn(measurements);
+  const needsYouInset =
+    preferredDetailsCard && measurements.needsYouHeight > 0
+      ? measurements.needsYouHeight + THREAD_DETAILS_CARD_GAP
+      : 0;
   // The canvas outlives thread switches, so a measurement only counts for the
   // thread whose card is shown now.
   const detailsCardMeasured =
@@ -114,17 +127,23 @@ export function resolveChatCanvasModel({
     detailsCardMeasurement.threadRef.threadId === threadRef.threadId
       ? detailsCardMeasurement
       : null;
+  // Needs you holds the column's foot, so the chat and preview keep out of the whole column.
+  const detailsCardBottom =
+    needsYouInset > 0
+      ? container.height
+      : detailsCardInlineOpen &&
+          preferredDetailsCard &&
+          detailsCardMeasured?.width === preferredDetailsCard.width &&
+          detailsCardMeasured.fullContentHeight > 0
+        ? preferredDetailsCard.y +
+          Math.min(detailsCardMeasured.fullContentHeight, preferredDetailsCard.height)
+        : null;
   const detailsCard =
-    detailsCardInlineOpen &&
-    preferredDetailsCard &&
-    detailsCardMeasured?.width === preferredDetailsCard.width &&
-    detailsCardMeasured.fullContentHeight > 0
+    preferredDetailsCard && detailsCardBottom !== null
       ? {
           left: preferredDetailsCard.x,
           right: preferredDetailsCard.x + preferredDetailsCard.width,
-          bottom:
-            preferredDetailsCard.y +
-            Math.min(detailsCardMeasured.fullContentHeight, preferredDetailsCard.height),
+          bottom: detailsCardBottom,
         }
       : null;
   const layout = resolveChatCanvasLayout({
@@ -143,6 +162,7 @@ export function resolveChatCanvasModel({
     frame: layout.frame,
     overlapsDetailsCard: layout.overlapsDetailsCard,
     topInset: detailsCardTopInset,
+    bottomInset: needsYouInset,
   });
   const detailsCardMode: ThreadPanelPresentation = detailsCardPlacement ? "inline" : "popover";
   return {
