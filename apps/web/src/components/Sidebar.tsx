@@ -21,6 +21,7 @@ import * as Schema from "effect/Schema";
 import { offersSidebarMachineGrouping } from "@t3tools/contracts/settings";
 import {
   DndContext,
+  getScrollableAncestors,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -115,6 +116,7 @@ import { readLocalApi } from "../localApi";
 import { useSidebarPendingFileDropStore } from "../sidebarPendingFileDropStore";
 import {
   pickableProjectGroups,
+  tierProjectGroups,
   selectProjectGroupingSettings,
 } from "@t3tools/client-runtime/state/project-grouping";
 import {
@@ -124,7 +126,7 @@ import {
   type SidebarProjectGroupMember,
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
-import { reorderProjects, resolveProjectExpanded, useUiStateStore } from "../uiStateStore";
+import { resolveProjectExpanded, useUiStateStore } from "../uiStateStore";
 import {
   getThreadKeysToDeselectAfterDelete,
   useThreadSelectionStore,
@@ -142,6 +144,7 @@ import { useTerminalFocus } from "../hooks/useTerminalFocus";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { registerSettleAndAdvance } from "../settleAndAdvance";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
+import { canMoveProjectGroup, useMoveProjectGroup } from "../hooks/useProjectOrder";
 import { updateClientSettings, useClientSettings, useSidebarGrouping } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../hooks/useLocalStorage";
@@ -221,6 +224,7 @@ import {
   resolveSidebarDropTarget,
   resolveSidebarDropVerb,
   resolveSidebarFolderDropSlot,
+  sidebarDragAutoScrollDelta,
   resolveSidebarThreadSection,
   resolveSidebarReorderableThreadKeys,
   searchSidebarThreads,
@@ -1422,8 +1426,7 @@ export default function Sidebar({
     /** The sibling that draws the drop line, and the line's offset from its top. */
     readonly line: { readonly folderKey: string; readonly offset: number } | null;
   } | null>(null);
-  const setProjectOrder = useUiStateStore((store) => store.setProjectOrder);
-  const projectSortOrder = useClientSettings((settings) => settings.sidebarProjectSortOrder);
+  const moveProjectGroup = useMoveProjectGroup();
   const snoozingThreadKeysRef = useRef(new Set<string>());
   const removeFromSelection = useThreadSelectionStore((s) => s.removeFromSelection);
   const terminalFocused = useTerminalFocus();
@@ -1720,8 +1723,8 @@ export default function Sidebar({
         ? {
             groups:
               scopedProjectGroups.length === 0
-                ? // Pinned projects lead; an archived project keeps a folder for its active threads, below the rest.
-                  [...scopeGroups, ...projectGroups.filter((project) => project.archived)]
+                ? // An archived project keeps a folder for its active threads, below the rest.
+                  tierProjectGroups(projectGroups)
                 : scopedProjectGroups,
             keepEmpty: (group) =>
               scopedProjectGroups.length > 0 || (group.pinned && !group.archived),
@@ -1750,20 +1753,22 @@ export default function Sidebar({
         tier(candidate.group) === tier(folder.group),
     );
   };
-  // Moving a folder saves the order shown with it moved, so the projects keep it from then on.
   const moveProjectFolder = useStableCallback(
     (folder: SidebarProjectFolder, target: SidebarProjectFolder, placement: "before" | "after") => {
-      const memberKeys = (group: SidebarProjectSnapshot) =>
-        group.memberProjects.map((member) => member.physicalProjectKey);
-      const order = reorderProjects(projectGroups.flatMap(memberKeys), memberKeys(folder.group), {
-        ids: memberKeys(target.group),
-        placement,
+      const movedKey = folder.group.projectKey;
+      const orderedKeys = projectFolderSiblings(folder.key)
+        .map((sibling) => sibling.group.projectKey)
+        .filter((key) => key !== movedKey);
+      const at = orderedKeys.indexOf(target.group.projectKey);
+      if (at < 0) return;
+      orderedKeys.splice(at + (placement === "after" ? 1 : 0), 0, movedKey);
+      void moveProjectGroup({
+        groups: projectGroups,
+        keyOf: (group) => group.projectKey,
+        projectsOf: (group) => group.memberProjects,
+        orderedKeys,
+        movedKey,
       });
-      if (order === null) return;
-      setProjectOrder(order);
-      if (projectSortOrder !== "manual") {
-        void updateClientSettings({ sidebarProjectSortOrder: "manual" });
-      }
     },
   );
   const startProjectFolderDrag = useStableCallback((folderKey: string, event: PointerEvent) => {
@@ -1772,10 +1777,29 @@ export default function Sidebar({
     const list = threadListRef.current;
     if (from < 0 || siblings.length < 2 || list === null) return;
     const folder = siblings[from]!;
+    if (!canMoveProjectGroup(folder.group.memberProjects)) return;
     const others = siblings.filter((candidate) => candidate !== folder);
     const rowOf = (selector: string) => list.querySelector(selector)?.closest("li") ?? null;
     let drop: { target: SidebarProjectFolder; placement: "before" | "after" } | null = null;
     let lineKey = "";
+    // The list scrolls while the pointer rests near its top or bottom, and the drop line follows
+    // the rows that scroll under it, by wheel or by this.
+    const scroller = getScrollableAncestors(list, 1)[0] ?? null;
+    let pointerY = event.clientY;
+    let dragging = false;
+    let scrollFrame: number | null = null;
+    const scrollStep = () => {
+      scrollFrame = null;
+      if (scroller === null) return;
+      const delta = sidebarDragAutoScrollDelta(pointerY, scroller.getBoundingClientRect());
+      const before = scroller.scrollTop;
+      scroller.scrollTop = before + delta;
+      if (scroller.scrollTop !== before) scrollFrame = requestAnimationFrame(scrollStep);
+    };
+    const followScroll = () => {
+      if (dragging) moveTo(pointerY);
+    };
+    scroller?.addEventListener("scroll", followScroll, { passive: true });
     const moveTo = (y: number) => {
       // A folder spans its header and its rows, so an open folder is dropped around as a whole.
       const extents = others.flatMap((sibling) => {
@@ -1815,13 +1839,27 @@ export default function Sidebar({
         distance: SIDEBAR_DRAG_DISTANCE,
         onAttach: () => {},
         onFinish: () => {
+          if (scrollFrame !== null) cancelAnimationFrame(scrollFrame);
+          scroller?.removeEventListener("scroll", followScroll);
           dragSensorRef.current = null;
           setProjectFolderDrag(null);
         },
       },
       onPending: () => {},
-      onStart: () => {},
-      onMove: ({ y }) => moveTo(y),
+      onStart: () => {
+        dragging = true;
+      },
+      onMove: ({ y }) => {
+        pointerY = y;
+        moveTo(y);
+        if (
+          scrollFrame === null &&
+          scroller !== null &&
+          sidebarDragAutoScrollDelta(y, scroller.getBoundingClientRect()) !== 0
+        ) {
+          scrollFrame = requestAnimationFrame(scrollStep);
+        }
+      },
       onEnd: () => {
         if (drop) moveProjectFolder(folder, drop.target, drop.placement);
       },
@@ -1916,6 +1954,7 @@ export default function Sidebar({
       const index = siblings.findIndex((candidate) => candidate.key === folderKey);
       const previous = siblings[index - 1];
       const next = siblings[index + 1];
+      const movable = siblings.length > 1 && canMoveProjectGroup(group.memberProjects);
       const projectFolders = allProjectFolders;
       void (async () => {
         const clicked = await settlePromise(() =>
@@ -1952,7 +1991,7 @@ export default function Sidebar({
                     },
                   ]
                 : []),
-              ...(siblings.length > 1
+              ...(movable
                 ? [
                     {
                       id: "move-up",
@@ -1967,7 +2006,7 @@ export default function Sidebar({
                 id: "project-settings",
                 label: t("Project settings"),
                 icon: "settings",
-                separatorBefore: siblings.length > 1 || projectFolders.length > 1,
+                separatorBefore: movable || projectFolders.length > 1,
               },
             ],
             position,

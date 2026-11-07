@@ -25,6 +25,8 @@ const row = (overrides: Partial<ProjectRow> = {}): ProjectRow => ({
   scripts: [],
   pinnedAt: null,
   archivedAt: null,
+  orderKey: null,
+  orderedAt: null,
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
   deletedAt: null,
@@ -109,6 +111,27 @@ describe("planProjectCommand", () => {
     const untouched = update(organized, {});
     assert.notProperty(untouched, "pinnedAt");
     assert.notProperty(untouched, "archivedAt");
+  });
+
+  it("moves a project without counting the move as activity", () => {
+    const earlier = "2025-12-01T00:00:00.000Z";
+    const update = (change: { orderKey?: string; title?: string }) =>
+      payloadOf(
+        plan(
+          {
+            type: "project.meta.update",
+            commandId: CommandId.make("cmd-move"),
+            projectId,
+            ...change,
+          },
+          { project: row({ updatedAt: earlier }) },
+        ),
+      );
+    assert.deepInclude(update({ orderKey: "a1" }), { orderKey: "a1", updatedAt: earlier });
+    assert.deepInclude(update({ orderKey: "a1", title: "Renamed" }), {
+      orderKey: "a1",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
   });
 
   it("rejects a workspace root held by another active project", () => {

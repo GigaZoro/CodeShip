@@ -5451,6 +5451,7 @@ const catalog: MessageCatalog = {
   "Failed to load the t3 command state.": "Не вдалося завантажити стан команди t3.",
   "Failed to load WSL state.": "Не вдалося завантажити стан WSL.",
   "Failed to move cursor": "Не вдалося перемістити курсор",
+  "Failed to move project": "Не вдалося перемістити проєкт",
   "Failed to open project": "Не вдалося відкрити проєкт",
   "Failed to pair with the environment.": "Не вдалося сполучитися із середовищем.",
   "Failed to parse patch. Showing raw patch.":
@@ -8090,6 +8091,8 @@ const catalog: MessageCatalog = {
     "Порядок для {project}, спільний для всіх його завдань на одному комп’ютері. Кожен запуск виконує перший комп’ютер у мережі; наступний виконує його, якщо перший не в мережі або запуск на ньому не вдався.",
   "Order of project folders, the sidebar project picker, and the command palette.":
     "Порядок тек проєктів, засобу вибору проєкту на бічній панелі та палітри команд.",
+  "Order of project folders. Manual is the order you set by moving project folders on web or desktop.":
+    "Порядок тек проєктів. «Уручну» – порядок, який ви задали, переміщуючи теки проєктів у вебверсії чи десктопі.",
   "Order: {machines}": "Порядок: {machines}",
   organization: "організація",
   Organization: "Організація",

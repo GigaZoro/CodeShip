@@ -85,12 +85,6 @@ function deriveProjectGroupingOverrideKey(
   return derivePhysicalProjectKey(project);
 }
 
-export function getProjectOrderKey(
-  project: Pick<EnvironmentProject, "environmentId" | "workspaceRoot">,
-): string {
-  return derivePhysicalProjectKey(project);
-}
-
 function resolveProjectGroupingMode(
   project: Pick<EnvironmentProject, "environmentId" | "workspaceRoot">,
   settings: ProjectGroupingSettings,
@@ -254,6 +248,13 @@ export function pickableProjectGroups<
 >(groups: ReadonlyArray<TGroup>): TGroup[] {
   const open = groups.filter((group) => !group.archived);
   return [...open.filter((group) => group.pinned), ...open.filter((group) => !group.pinned)];
+}
+
+/** Project folder order: pinned groups lead and archived ones trail, each keeping its order. */
+export function tierProjectGroups<
+  TGroup extends { readonly pinned: boolean; readonly archived: boolean },
+>(groups: ReadonlyArray<TGroup>): TGroup[] {
+  return [...pickableProjectGroups(groups), ...groups.filter((group) => group.archived)];
 }
 
 function projectFreshnessTime(project: EnvironmentProject): number {

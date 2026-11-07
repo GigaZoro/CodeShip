@@ -20,11 +20,9 @@ const LEGACY_PERSISTED_STATE_KEYS = [
 
 export interface PersistedUiState {
   projectExpandedById?: Record<string, boolean>;
-  projectOrder?: string[];
   threadLastVisitedAtById?: Record<string, string>;
   collapsedProjectCwds?: string[];
   expandedProjectCwds?: string[];
-  projectOrderCwds?: string[];
   defaultAdvertisedEndpointKey?: string | null;
   sidebarProjectScopeKey?: string | null;
   sidebarProjectScopeKeys?: string[];
@@ -36,7 +34,6 @@ export interface PersistedUiState {
 
 export interface UiProjectState {
   projectExpandedById: Record<string, boolean>;
-  projectOrder: string[];
   sidebarProjectScopeKeys: string[];
   sidebarMachineScopeIds: string[];
 }
@@ -59,7 +56,6 @@ export interface UiState
 
 const initialState: UiState = {
   projectExpandedById: {},
-  projectOrder: [],
   sidebarProjectScopeKeys: [],
   sidebarMachineScopeIds: [],
   threadLastVisitedAtById: {},
@@ -140,14 +136,8 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
           return migrated;
         })()
       : sanitizeBooleanRecord(parsed.projectExpandedById);
-  const projectOrder =
-    parsed.projectOrder === undefined
-      ? sanitizeStringArray(parsed.projectOrderCwds).map(legacyProjectCwdPreferenceKey)
-      : sanitizeStringArray(parsed.projectOrder);
-
   return {
     projectExpandedById,
-    projectOrder,
     threadLastVisitedAtById: sanitizeTimestampRecord(parsed.threadLastVisitedAtById),
     threadChangedFilesExpandedById:
       parsed.threadChangedFilesExpansionVersion === THREAD_CHANGED_FILES_EXPANSION_VERSION
@@ -228,7 +218,6 @@ export function persistState(state: UiState): void {
       PERSISTED_STATE_KEY,
       JSON.stringify({
         projectExpandedById,
-        projectOrder: state.projectOrder,
         threadLastVisitedAtById: state.threadLastVisitedAtById,
         defaultAdvertisedEndpointKey: state.defaultAdvertisedEndpointKey,
         sidebarProjectScopeKeys: state.sidebarProjectScopeKeys,
@@ -393,24 +382,6 @@ export function setProjectExpanded(
   };
 }
 
-/** The project order with `movedIds` moved next to `target`, or null when nothing moves. */
-export function reorderProjects(
-  currentProjectOrder: readonly string[],
-  movedIds: readonly string[],
-  target: { readonly ids: readonly string[]; readonly placement: "before" | "after" },
-): string[] | null {
-  const moved = new Set(movedIds);
-  const targets = new Set(target.ids);
-  const movedOrder = currentProjectOrder.filter((id) => moved.has(id));
-  const projectOrder = currentProjectOrder.filter((id) => !moved.has(id));
-  const first = projectOrder.findIndex((id) => targets.has(id));
-  if (movedOrder.length === 0 || first < 0) return null;
-  const insertAt =
-    target.placement === "before" ? first : projectOrder.findLastIndex((id) => targets.has(id)) + 1;
-  projectOrder.splice(insertAt, 0, ...movedOrder);
-  return projectOrder.every((id, index) => id === currentProjectOrder[index]) ? null : projectOrder;
-}
-
 interface UiStateStore extends UiState {
   markThreadVisited: (threadId: string, visitedAt: string) => void;
   markThreadUnread: (threadId: string, latestTurnCompletedAt: string | null | undefined) => void;
@@ -420,7 +391,6 @@ interface UiStateStore extends UiState {
   setSidebarMachineScopeIds: (environmentIds: readonly string[]) => void;
   setPullRequestMergeMethod: (method: PullRequestMergeMethod) => void;
   setProjectExpanded: (projectIds: string | readonly string[], expanded: boolean) => void;
-  setProjectOrder: (projectOrder: readonly string[]) => void;
 }
 
 export const useUiStateStore = create<UiStateStore>((set) => ({
@@ -440,7 +410,6 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
   setPullRequestMergeMethod: (method) => set((state) => setPullRequestMergeMethod(state, method)),
   setProjectExpanded: (projectIds, expanded) =>
     set((state) => setProjectExpanded(state, projectIds, expanded)),
-  setProjectOrder: (projectOrder) => set({ projectOrder: [...projectOrder] }),
 }));
 
 useUiStateStore.subscribe((state) => debouncedPersistState.maybeExecute(state));

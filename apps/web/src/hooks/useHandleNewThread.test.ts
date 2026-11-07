@@ -211,7 +211,6 @@ vi.mock("../lib/utils", () => ({
 }));
 vi.mock("@t3tools/client-runtime/state/project-grouping", () => ({
   deriveLogicalProjectKeyFromSettings: () => "remote-project",
-  getProjectOrderKey: () => "remote-project",
   selectProjectGroupingSettings: () => ({}),
 }));
 vi.mock("../state/entities", () => {
@@ -244,10 +243,6 @@ vi.mock("../state/inheritedDefaultModel", () => ({
 }));
 vi.mock("../threadRoutes", () => ({
   resolveThreadRouteTarget: () => testState.openDraftRoute,
-}));
-vi.mock("../uiStateStore", () => ({
-  legacyProjectCwdPreferenceKey: () => "remote-project",
-  useUiStateStore: () => [],
 }));
 vi.mock("./useSettings", () => ({ getClientSettings: () => ({}) }));
 

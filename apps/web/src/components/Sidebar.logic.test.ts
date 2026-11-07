@@ -633,17 +633,15 @@ describe("sortSidebarV2ProjectGroups", () => {
     const olderProjectId = ProjectId.make("project-older");
     const newerProjectId = ProjectId.make("project-newer");
     const olderRootThreadId = ThreadId.make("thread-older-root");
+    const logical = (project: ReturnType<typeof makeProject>, projectKey: string) => ({
+      ...project,
+      projectKey,
+      memberProjectRefs: [{ environmentId: project.environmentId, projectId: project.id }],
+      memberProjects: [project],
+    });
     const projects = [
-      {
-        ...makeProject({ id: olderProjectId, title: "A older project" }),
-        projectKey: "logical-older",
-        memberProjectRefs: [{ environmentId: localEnvironmentId, projectId: olderProjectId }],
-      },
-      {
-        ...makeProject({ id: newerProjectId, title: "Z newer project" }),
-        projectKey: "logical-newer",
-        memberProjectRefs: [{ environmentId: localEnvironmentId, projectId: newerProjectId }],
-      },
+      logical(makeProject({ id: olderProjectId, title: "A older project" }), "logical-older"),
+      logical(makeProject({ id: newerProjectId, title: "Z newer project" }), "logical-newer"),
     ];
     const threads = [
       makeThread({

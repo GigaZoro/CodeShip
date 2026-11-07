@@ -41,6 +41,8 @@ export const ProjectRow = Schema.Struct({
   scripts: Schema.Array(ProjectScript),
   pinnedAt: Schema.NullOr(IsoDateTime),
   archivedAt: Schema.NullOr(IsoDateTime),
+  orderKey: Schema.NullOr(Schema.String),
+  orderedAt: Schema.NullOr(IsoDateTime),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),
@@ -69,6 +71,8 @@ function toShell(row: ProjectRow): OrchestrationProjectShell {
     scripts: row.scripts,
     pinnedAt: row.pinnedAt,
     archivedAt: row.archivedAt,
+    orderKey: row.orderKey,
+    orderedAt: row.orderedAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -104,6 +108,17 @@ export class ProjectStoreV2 extends Context.Service<
 export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const encodeRow = Schema.encodeEffect(ProjectDbRow);
+  // Fork columns, kept out of the migration ledger so upstream ids stay free. Without them no
+  // project can be read, so a failure here stops startup.
+  yield* Effect.gen(function* () {
+    const columns = yield* sql<{ readonly name: string }>`PRAGMA table_info(projection_projects)`;
+    if (!columns.some((column) => column.name === "order_key")) {
+      yield* sql`ALTER TABLE projection_projects ADD COLUMN order_key TEXT`;
+    }
+    if (!columns.some((column) => column.name === "ordered_at")) {
+      yield* sql`ALTER TABLE projection_projects ADD COLUMN ordered_at TEXT`;
+    }
+  }).pipe(Effect.orDie);
 
   const selectRows = SqlSchema.findAll({
     Request: Schema.Struct({
@@ -126,6 +141,8 @@ export const make = Effect.gen(function* () {
         scripts_json AS "scripts",
         pinned_at AS "pinnedAt",
         archived_at AS "archivedAt",
+        order_key AS "orderKey",
+        ordered_at AS "orderedAt",
         created_at AS "createdAt",
         updated_at AS "updatedAt",
         deleted_at AS "deletedAt"
@@ -158,6 +175,8 @@ export const make = Effect.gen(function* () {
             scripts_json,
             pinned_at,
             archived_at,
+            order_key,
+            ordered_at,
             created_at,
             updated_at,
             deleted_at
@@ -174,6 +193,8 @@ export const make = Effect.gen(function* () {
             ${encoded.scripts},
             ${encoded.pinnedAt},
             ${encoded.archivedAt},
+            ${encoded.orderKey},
+            ${encoded.orderedAt},
             ${encoded.createdAt},
             ${encoded.updatedAt},
             ${encoded.deletedAt}
@@ -190,6 +211,8 @@ export const make = Effect.gen(function* () {
             scripts_json = excluded.scripts_json,
             pinned_at = excluded.pinned_at,
             archived_at = excluded.archived_at,
+            order_key = excluded.order_key,
+            ordered_at = excluded.ordered_at,
             created_at = excluded.created_at,
             updated_at = excluded.updated_at,
             deleted_at = excluded.deleted_at
@@ -240,6 +263,8 @@ export const make = Effect.gen(function* () {
           scripts: payload.scripts,
           pinnedAt: null,
           archivedAt: null,
+          orderKey: null,
+          orderedAt: null,
           createdAt: payload.createdAt,
           updatedAt: payload.updatedAt,
           deletedAt: null,
@@ -272,6 +297,9 @@ export const make = Effect.gen(function* () {
         ...(payload.scripts === undefined ? {} : { scripts: payload.scripts }),
         ...(payload.pinnedAt === undefined ? {} : { pinnedAt: payload.pinnedAt }),
         ...(payload.archivedAt === undefined ? {} : { archivedAt: payload.archivedAt }),
+        ...(payload.orderKey === undefined
+          ? {}
+          : { orderKey: payload.orderKey, orderedAt: event.occurredAt }),
         updatedAt: payload.updatedAt,
       }).pipe(mapError("apply"));
     },

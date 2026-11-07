@@ -1,3 +1,10 @@
+## 2026-11-08 — Project order on every device
+
+- A project order you set by moving folders on web or desktop is now saved on your machines instead of in one browser, so every device whose **Project order** is **Manual** shows the same order. An order saved only in a browser before this update isn't carried over; move a folder once to save it again.
+- Mobile gets **Settings → General → Project order**. Choose **Manual** to see the order you set on web or desktop. Pinned projects now get the top folders on mobile too, and archived ones the last.
+- Dragging a project folder near the top or bottom of the sidebar scrolls the list, and the drop line follows the rows when you scroll with the mouse wheel mid-drag.
+- The project picker on a new draft follows the manual order too.
+
 ## 2026-11-08 — Panel tabs no longer slide under the top-right buttons
 
 - With the right panel open on a wide window, its tabs and scroll arrows no longer run underneath the **Terminal**, **Panel** and maximize buttons. The tab strip now ends before those buttons at any width and language. On web and desktop.

@@ -1,7 +1,11 @@
 import { msg, t, type Message } from "../../lib/i18n";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import type { SidebarProjectGroupingMode } from "@t3tools/contracts";
+import {
+  DEFAULT_SIDEBAR_PROJECT_SORT_ORDER,
+  type SidebarProjectGroupingMode,
+  type SidebarProjectSortOrder,
+} from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -42,6 +46,15 @@ const GROUPING_OPTIONS: ReadonlyArray<{
   },
 ];
 
+const PROJECT_ORDER_OPTIONS: ReadonlyArray<{
+  readonly order: SidebarProjectSortOrder;
+  readonly label: Message;
+}> = [
+  { order: "updated_at", label: msg("Last user message") },
+  { order: "created_at", label: msg("Created at") },
+  { order: "manual", label: msg("Manual") },
+];
+
 export function SettingsProjectGroupingRouteScreen() {
   const insets = useSafeAreaInsets();
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
@@ -53,6 +66,9 @@ export function SettingsProjectGroupingRouteScreen() {
   const groupedByMachine =
     AsyncResult.isSuccess(preferencesResult) &&
     preferencesResult.value.threadListGroupByMachine === true;
+  const projectOrder = AsyncResult.isSuccess(preferencesResult)
+    ? (preferencesResult.value.projectSortOrder ?? DEFAULT_SIDEBAR_PROJECT_SORT_ORDER)
+    : null;
 
   return (
     <SettingsScreen title={t("General")}>
@@ -82,6 +98,23 @@ export function SettingsProjectGroupingRouteScreen() {
               separated={index > 0}
               disabled={!preferencesReady}
               onPress={() => savePreferences(mobileProjectGroupingModePatch(option.mode))}
+            />
+          ))}
+        </SettingsSection>
+        <SettingsSection
+          title={t("Project order")}
+          footer={t(
+            "Order of project folders. Manual is the order you set by moving project folders on web or desktop.",
+          )}
+        >
+          {PROJECT_ORDER_OPTIONS.map((option, index) => (
+            <SettingsChoiceRow
+              key={option.order}
+              label={t(option.label)}
+              selected={projectOrder === option.order}
+              separated={index > 0}
+              disabled={!preferencesReady}
+              onPress={() => savePreferences({ projectSortOrder: option.order })}
             />
           ))}
         </SettingsSection>

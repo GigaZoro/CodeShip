@@ -39,6 +39,7 @@ export interface ProjectMetaUpdateCommand {
   readonly scripts?: ReadonlyArray<ProjectScript>;
   readonly pinned?: boolean;
   readonly archived?: boolean;
+  readonly orderKey?: string;
 }
 
 export interface ProjectDeleteCommand {
@@ -105,6 +106,12 @@ export interface ProjectCommandState {
 
 const monogramSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const isScriptRunCommand = Schema.is(SCRIPT_RUN_COMMAND_PATTERN);
+const ORDER_ONLY_UPDATE_KEYS = new Set(["type", "commandId", "projectId", "orderKey"]);
+const isOrderOnlyUpdate = (command: ProjectMetaUpdateCommand) =>
+  command.orderKey !== undefined &&
+  Object.entries(command).every(
+    ([key, value]) => value === undefined || ORDER_ONLY_UPDATE_KEYS.has(key),
+  );
 
 /** Read state and commit the planned event under the project lock. */
 export function planProjectCommand(input: {
@@ -217,7 +224,9 @@ export function planProjectCommand(input: {
           ...(command.archived === undefined
             ? {}
             : { archivedAt: command.archived ? (project.archivedAt ?? occurredAt) : null }),
-          updatedAt: occurredAt,
+          ...(command.orderKey === undefined ? {} : { orderKey: command.orderKey }),
+          // Moving a project is not activity, so Recent activity order does not see it.
+          updatedAt: isOrderOnlyUpdate(command) ? project.updatedAt : occurredAt,
         },
       });
     }

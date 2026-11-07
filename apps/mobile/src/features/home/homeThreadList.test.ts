@@ -10,6 +10,7 @@ import {
   buildHomeThreadListGrouping,
   findHomeProjectScope,
   homeFolderNewThreadTargets,
+  sortHomeProjectScopes,
   type HomeProjectScope,
 } from "./homeThreadList";
 import { makeThreadShellFixture } from "../../test-fixtures";
@@ -227,6 +228,54 @@ describe("home project scopes", () => {
     expect(findHomeProjectScope(scopes, "environment-local:project-target")).toBe(targetScope);
     expect(findHomeProjectScope(scopes, "environment-local:missing")).toBeNull();
     expect(findHomeProjectScope(scopes, null)).toBeNull();
+  });
+
+  it("orders folders like web: pinned first and archived last, in the manual order", () => {
+    const environmentId = EnvironmentId.make("local");
+    const at = "2026-06-02T00:00:00.000Z";
+    const scopes = buildHomeProjectScopes({
+      projects: [
+        makeProject({ environmentId, id: ProjectId.make("old"), title: "Old" }),
+        makeProject({
+          environmentId,
+          id: ProjectId.make("gone"),
+          title: "Gone",
+          orderKey: "c",
+          orderedAt: at,
+          archivedAt: at,
+        }),
+        makeProject({
+          environmentId,
+          id: ProjectId.make("second"),
+          title: "Second",
+          orderKey: "m",
+          orderedAt: at,
+        }),
+        makeProject({
+          environmentId,
+          id: ProjectId.make("first"),
+          title: "First",
+          orderKey: "g",
+          orderedAt: at,
+        }),
+        makeProject({ environmentId, id: ProjectId.make("pinned"), title: "Pinned", pinnedAt: at }),
+      ],
+      environmentId: null,
+      projectGroupingMode: "separate",
+    });
+    const sorted = sortHomeProjectScopes({
+      scopes,
+      threads: [],
+      pendingTasks: [],
+      projectSortOrder: "manual",
+    });
+    expect(sorted.map((scope) => scope.title)).toEqual([
+      "Pinned",
+      "First",
+      "Second",
+      "Old",
+      "Gone",
+    ]);
   });
 });
 

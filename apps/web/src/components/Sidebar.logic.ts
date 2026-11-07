@@ -10,6 +10,10 @@ import { t, type Message } from "~/i18n";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
+import {
+  sortProjectGroupsManually,
+  type OrderedProject,
+} from "@t3tools/client-runtime/state/project-order";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
@@ -370,6 +374,25 @@ export function sidebarThreadKeyAtY(list: HTMLElement, y: number): string | null
   return key;
 }
 
+const SIDEBAR_DRAG_AUTOSCROLL_ZONE_PX = 48;
+const SIDEBAR_DRAG_AUTOSCROLL_MAX_PX = 16;
+
+/**
+ * Pixels per frame to scroll a list while a drag holds the pointer near its top or bottom edge,
+ * faster the closer it is and fastest past the edge; zero away from both.
+ */
+export function sidebarDragAutoScrollDelta(
+  y: number,
+  bounds: { readonly top: number; readonly bottom: number },
+): number {
+  const zone = Math.min(SIDEBAR_DRAG_AUTOSCROLL_ZONE_PX, (bounds.bottom - bounds.top) / 4);
+  const speed = (distance: number) =>
+    Math.ceil(SIDEBAR_DRAG_AUTOSCROLL_MAX_PX * (1 - Math.max(0, distance) / zone));
+  if (y - bounds.top < zone) return -speed(y - bounds.top);
+  if (bounds.bottom - y < zone) return speed(bounds.bottom - y);
+  return 0;
+}
+
 /** A dragged folder lands before the first sibling whose middle is below the pointer, else last. */
 export function resolveSidebarFolderDropSlot<
   TSibling extends { readonly top: number; readonly bottom: number },
@@ -599,6 +622,7 @@ type LogicalSidebarProject = SidebarProject & {
     environmentId: string;
     projectId: string;
   }[];
+  memberProjects: readonly OrderedProject[];
 };
 
 type ThreadTraversalDirection = "previous" | "next";
@@ -1415,14 +1439,10 @@ function getProjectSortTimestamp(
 
 function sortProjectsByActivity<TProject extends SidebarProject>(
   projects: readonly TProject[],
-  sortOrder: SidebarProjectSortOrder,
+  sortOrder: Exclude<SidebarProjectSortOrder, "manual">,
   getProjectThreads: (project: TProject) => readonly ThreadSortInput[],
   compareTies: (left: TProject, right: TProject) => number,
 ): TProject[] {
-  if (sortOrder === "manual") {
-    return [...projects];
-  }
-
   // Project timestamps scan all threads; compute once per project instead of per comparison.
   return projects
     .map((project) => ({
@@ -1445,6 +1465,9 @@ export function sortLogicalProjectsForSidebar<
   threads: readonly TThread[],
   sortOrder: SidebarProjectSortOrder,
 ): TProject[] {
+  if (sortOrder === "manual") {
+    return sortProjectGroupsManually(projects, (project) => project.memberProjects);
+  }
   const groupKeyByProjectRef = new Map(
     projects.flatMap((project) =>
       project.memberProjectRefs.map(
@@ -1498,7 +1521,7 @@ export function sortScopedProjectsForSidebar<
 >(
   projects: readonly TProject[],
   threads: readonly TThread[],
-  sortOrder: SidebarProjectSortOrder,
+  sortOrder: Exclude<SidebarProjectSortOrder, "manual">,
 ): TProject[] {
   const scopedKey = (environmentId: string, projectId: string) =>
     `${environmentId}\u0000${projectId}`;

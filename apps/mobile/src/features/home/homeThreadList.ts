@@ -1,4 +1,8 @@
-import { buildProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
+import {
+  buildProjectGroups,
+  tierProjectGroups,
+} from "@t3tools/client-runtime/state/project-grouping";
+import { sortProjectGroupsManually } from "@t3tools/client-runtime/state/project-order";
 import type {
   EnvironmentProject,
   EnvironmentThreadShell,
@@ -21,8 +25,6 @@ import { scopedProjectKey } from "../../lib/scopedEntities";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import type { ThreadListV2Folder, ThreadListV2Grouping } from "../threads/threadListV2";
 
-export type HomeProjectSortOrder = Exclude<SidebarProjectSortOrder, "manual">;
-
 export interface HomeProjectScope {
   readonly key: string;
   readonly title: string;
@@ -35,7 +37,7 @@ export interface HomeProjectScope {
 
 function getProjectSortTimestamp(
   project: EnvironmentProject,
-  sortOrder: HomeProjectSortOrder,
+  sortOrder: Exclude<SidebarProjectSortOrder, "manual">,
 ): number {
   return sortOrder === "created_at"
     ? (toSortableTimestamp(project.createdAt) ?? Number.NEGATIVE_INFINITY)
@@ -90,12 +92,17 @@ export function findHomeProjectScope(
   );
 }
 
+/** Folder order, as on web: pinned projects first and archived ones last, each in this order. */
 export function sortHomeProjectScopes(input: {
   readonly scopes: ReadonlyArray<HomeProjectScope>;
   readonly threads: ReadonlyArray<EnvironmentThreadShell>;
   readonly pendingTasks: ReadonlyArray<PendingNewTask>;
-  readonly projectSortOrder: HomeProjectSortOrder;
+  readonly projectSortOrder: SidebarProjectSortOrder;
 }): ReadonlyArray<HomeProjectScope> {
+  const sortOrder = input.projectSortOrder;
+  if (sortOrder === "manual") {
+    return tierProjectGroups(sortProjectGroupsManually(input.scopes, (scope) => scope.projects));
+  }
   const scopeKeyByProjectRef = new Map(
     input.scopes.flatMap((scope) =>
       scope.projectRefs.map(
@@ -117,7 +124,7 @@ export function sortHomeProjectScopes(input: {
     if (thread.archivedAt !== null) continue;
     recordActivity(
       scopeKeyByProjectRef.get(scopedProjectKey(thread.environmentId, thread.projectId)),
-      getThreadSortTimestamp(thread, input.projectSortOrder),
+      getThreadSortTimestamp(thread, sortOrder),
     );
   }
   for (const pendingTask of input.pendingTasks) {
@@ -127,25 +134,25 @@ export function sortHomeProjectScopes(input: {
     );
   }
 
-  return Arr.sort(
-    input.scopes,
-    Order.mapInput(
-      Order.Struct({
-        timestamp: Order.flip(Order.Number),
-        title: Order.String,
-        key: Order.String,
-      }),
-      (scope: HomeProjectScope) => ({
-        timestamp:
-          latestActivityByScope.get(scope.key) ??
-          Math.max(
-            ...scope.projects.map((project) =>
-              getProjectSortTimestamp(project, input.projectSortOrder),
+  return tierProjectGroups(
+    Arr.sort(
+      input.scopes,
+      Order.mapInput(
+        Order.Struct({
+          timestamp: Order.flip(Order.Number),
+          title: Order.String,
+          key: Order.String,
+        }),
+        (scope: HomeProjectScope) => ({
+          timestamp:
+            latestActivityByScope.get(scope.key) ??
+            Math.max(
+              ...scope.projects.map((project) => getProjectSortTimestamp(project, sortOrder)),
             ),
-          ),
-        title: scope.title,
-        key: scope.key,
-      }),
+          title: scope.title,
+          key: scope.key,
+        }),
+      ),
     ),
   );
 }

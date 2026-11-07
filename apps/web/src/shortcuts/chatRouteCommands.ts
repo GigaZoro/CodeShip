@@ -24,7 +24,6 @@ import { readEnvironmentScope } from "../state/session";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { resolveThreadRouteTarget } from "../threadRoutes";
-import { useUiStateStore } from "../uiStateStore";
 import { type CommandHandler, registerCommands, registerMenuAction } from "./dispatcher";
 
 const CHAT_ROUTE_ID = "/_chat";
@@ -71,10 +70,7 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
     return {
       activeDraftThread,
       activeThread: activeThread ?? undefined,
-      defaultProjectRef: resolveDefaultProjectRef(
-        readProjects(),
-        useUiStateStore.getState().projectOrder,
-      ),
+      defaultProjectRef: resolveDefaultProjectRef(readProjects()),
       handleNewThread,
     };
   };

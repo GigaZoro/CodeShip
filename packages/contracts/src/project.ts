@@ -199,6 +199,8 @@ export const ProjectUpdatePayload = Schema.Struct({
       description: "Threads and files are kept.",
     }),
   ),
+  /** The project's place in the manual project order, a key that sorts between its neighbors'. */
+  orderKey: Schema.optional(TrimmedNonEmptyString),
 });
 export type ProjectUpdatePayload = typeof ProjectUpdatePayload.Type;
 

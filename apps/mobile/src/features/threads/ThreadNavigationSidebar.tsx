@@ -42,6 +42,7 @@ import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
 import { useOpenArchivedThreads } from "../archive/useOpenArchivedThreads";
 import { useOpenArtifacts } from "../artifacts/useOpenArtifacts";
 import { useProjects, useNavigationThreadShells } from "../../state/entities";
+import { useMobileProjectSortOrder } from "../../state/project-grouping";
 import { useThreadSearch } from "../../state/queries";
 import { useThreadListV2ShelfPreferences } from "./use-thread-list-v2-shelf-preferences";
 import { useThreadListNow } from "./use-thread-list-now";
@@ -229,6 +230,7 @@ function ThreadNavigationSidebarPane(
   );
   const { options, setSelectedEnvironmentId, setSelectedProjectKey } =
     useHomeListOptions(availableEnvironmentIds);
+  const projectSortOrder = useMobileProjectSortOrder();
   const searchEnvironmentIds =
     options.selectedEnvironmentId === null
       ? workspaceEnvironments
@@ -340,7 +342,7 @@ function ThreadNavigationSidebarPane(
           scopes: projectScopes,
           threads,
           pendingTasks,
-          projectSortOrder: options.projectSortOrder,
+          projectSortOrder,
         })
       : projectScopes,
     environments: environments

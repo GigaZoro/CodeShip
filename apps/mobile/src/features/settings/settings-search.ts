@@ -64,6 +64,7 @@ const SETTINGS_SEARCH_TERMS = {
     msg("combine matching projects"),
     msg("group projects"),
     msg("group threads"),
+    msg("project order"),
     msg("folders"),
     msg("by machine"),
     msg("organization"),

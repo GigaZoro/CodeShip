@@ -20,6 +20,10 @@ export const OrchestrationProjectShell = Schema.Struct({
   // Pinned projects lead project pickers; archived ones leave them. Optional so older servers decode.
   pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   archivedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** Where the project sits in the manual project order; null until moved, absent from older servers. */
+  orderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  /** When `orderKey` was written, so the latest move of a project on several machines wins. */
+  orderedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
