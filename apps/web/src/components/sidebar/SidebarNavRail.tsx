@@ -17,9 +17,11 @@ import { isElectron } from "../../env";
 import { shortcutLabelForCommand } from "../../keybindings";
 import { primaryServerKeybindingsAtom } from "../../state/server";
 import { usePullRequestsSupported } from "../../state/environments";
+import { environmentThreadShells } from "../../state/threads";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPreferences";
 import { THREAD_SIDEBAR_NAV_RAIL_WIDTH } from "../threadSidebarWidth";
+import { Badge } from "../ui/badge";
 import { ProgressRing } from "../ui/progress-ring";
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -34,7 +36,7 @@ import { isSettingsPage, isSidebarSectionPage, useNavigateToMainApp } from "./ma
 import { SidebarUpdatePill } from "./SidebarUpdatePill";
 import { useScheduledTasksRailBadge } from "./useScheduledTasksRailBadge";
 
-import { t } from "~/i18n";
+import { t, tn } from "~/i18n";
 type SidebarNavDestination =
   | "threads"
   | "projects"
@@ -149,6 +151,33 @@ function SidebarNavRailUsageItem({
   );
 }
 
+/** Threads, counting what needs the user, as the dock badge does. */
+function SidebarNavRailThreadsItem(props: { isActive: boolean; onClick: () => void }) {
+  const count = useAtomValue(environmentThreadShells.needsYouThreadsAtom).threads.length;
+  return (
+    <SidebarNavRailItem
+      icon={<MessagesSquareIcon />}
+      label={
+        count > 0
+          ? tn(count, "Threads, {count} needs you", "Threads, {count} need you")
+          : t("Threads")
+      }
+      badge={
+        count > 0 ? (
+          // Beside the button, which clips its children.
+          <span aria-hidden className="pointer-events-none absolute -top-1 -right-1">
+            <Badge variant="destructive" size="sm">
+              {count > 99 ? "99+" : count}
+            </Badge>
+          </span>
+        ) : null
+      }
+      isActive={props.isActive}
+      onClick={props.onClick}
+    />
+  );
+}
+
 /** The app's top-level places, beside the thread list. */
 export const SidebarNavRail = memo(function SidebarNavRail() {
   const navigate = useNavigate();
@@ -169,9 +198,7 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
       style={{ width: THREAD_SIDEBAR_NAV_RAIL_WIDTH }}
     >
       <SidebarMenu className="items-center">
-        <SidebarNavRailItem
-          icon={<MessagesSquareIcon />}
-          label={t("Threads")}
+        <SidebarNavRailThreadsItem
           isActive={active === "threads"}
           onClick={go(navigateToMainApp)}
         />

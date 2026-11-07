@@ -63,8 +63,8 @@ describe("nextBackgroundThreadAnnouncement", () => {
         { threads: [login({ runId: RunId.make("run-3"), runStatus: "interrupted" })] },
       ]),
     ).toEqual([
-      "Needs approval: Fix login redirect",
-      "Needs your input: Fix login redirect",
+      "Approval needed: Fix login redirect",
+      "Input needed: Fix login redirect",
       "Done: Fix login redirect",
       "Failed: Fix login redirect",
       "Stopped: Fix login redirect",
@@ -92,7 +92,7 @@ describe("nextBackgroundThreadAnnouncement", () => {
         { threads: [login({ request: "approval", requestId: "request-1" })] },
         { threads: [login({ request: "approval", requestId: "request-2" })] },
       ]),
-    ).toEqual(["Needs approval: Fix login redirect", "Needs approval: Fix login redirect"]);
+    ).toEqual(["Approval needed: Fix login redirect", "Approval needed: Fix login redirect"]);
   });
 
   it("doesn't call a thread stopped when a queued message is cancelled while it works", () => {
@@ -136,7 +136,7 @@ describe("nextBackgroundThreadAnnouncement", () => {
           open: "env:login",
         },
       ]),
-    ).toEqual(["Needs your input: Update docs"]);
+    ).toEqual(["Input needed: Update docs"]);
   });
 
   it("keeps a snoozed thread quiet, even after it wakes", () => {
@@ -155,7 +155,7 @@ describe("nextBackgroundThreadAnnouncement", () => {
         { threads: [login(), docs()] },
         { threads: [login({ runStatus: "completed" }), docs({ request: "approval" })] },
       ]),
-    ).toEqual(["Done: Fix login redirect. Needs approval: Update docs"]);
+    ).toEqual(["Done: Fix login redirect. Approval needed: Update docs"]);
   });
 });
 
@@ -184,6 +184,6 @@ describe("resolveBackgroundThreadRequest", () => {
         { threads: [login(childApproval("question-2"))] },
         { threads: [login(childApproval(null))] },
       ]),
-    ).toEqual(["Needs approval: Fix login redirect"]);
+    ).toEqual(["Approval needed: Fix login redirect"]);
   });
 });

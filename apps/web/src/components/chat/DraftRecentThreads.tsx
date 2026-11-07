@@ -1,3 +1,4 @@
+import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status";
 import { t } from "~/i18n";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
@@ -13,7 +14,6 @@ import { useUiStateStore } from "~/uiStateStore";
 import {
   hasUnseenCompletion,
   isSidebarHiddenThread,
-  resolveSidebarThreadStatus,
   resolveThreadLastVisitedAt,
 } from "../Sidebar.logic";
 import { resolveThreadRowStatus, ThreadRowStatusContent } from "../sidebar/threadRowStatus";
@@ -39,7 +39,7 @@ function RecentThreadRow(props: {
   );
   const lastVisitedAt = resolveThreadLastVisitedAt(thread.lastVisitedAt, localLastVisitedAt);
   const status = resolveThreadRowStatus({
-    status: resolveSidebarThreadStatus(thread),
+    status: resolveThreadStatus(thread),
     goalActive: thread.goal?.status === "active",
     isWoke: false,
     isUnread: hasUnseenCompletion({ ...thread, lastVisitedAt }),

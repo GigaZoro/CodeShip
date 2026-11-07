@@ -6,7 +6,7 @@ import { tn } from "@t3tools/shared/i18n";
 
 import * as ElectronApp from "../../electron/ElectronApp.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
-import { SET_NOTIFICATION_BADGE_CHANNEL } from "../channels.ts";
+import { SET_NOTIFICATION_BADGE_CHANNEL, WINDOW_FOCUS_CHANNEL } from "../channels.ts";
 
 const NotificationBadge = Schema.Struct({
   count: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 2_147_483_647 })),
@@ -23,20 +23,13 @@ function applyNotificationBadge(
   { count, image }: typeof NotificationBadge.Type,
 ): void {
   try {
-    if (Electron.BrowserWindow.getFocusedWindow()) count = 0;
     if (platform === "win32") {
       const overlay = count > 0 && image ? Electron.nativeImage.createFromDataURL(image) : null;
       for (const window of Electron.BrowserWindow.getAllWindows()) {
         if (!window.isDestroyed()) {
           window.setOverlayIcon(
             overlay?.isEmpty() ? null : overlay,
-            count > 0
-              ? tn(
-                  count,
-                  "{count} thread with new notifications",
-                  "{count} threads with new notifications",
-                )
-              : "",
+            count > 0 ? tn(count, "{count} thread needs you", "{count} threads need you") : "",
           );
         }
       }
@@ -53,10 +46,11 @@ export const installNotificationBadge = Effect.fn("desktop.ipc.installNotificati
     const ipc = yield* DesktopIpc.DesktopIpc;
     const app = yield* ElectronApp.ElectronApp;
     const platform = yield* HostProcess.Platform;
-    const clear = () => {
-      applyNotificationBadge(platform, { count: 0, image: null });
+    // The badge counts threads that need the user, so it stays while a window is focused.
+    const clear = () => applyNotificationBadge(platform, { count: 0, image: null });
+    const announceFocus = () => {
       for (const window of Electron.BrowserWindow.getAllWindows()) {
-        if (!window.isDestroyed()) window.webContents.send(SET_NOTIFICATION_BADGE_CHANNEL);
+        if (!window.isDestroyed()) window.webContents.send(WINDOW_FOCUS_CHANNEL);
       }
     };
     yield* ipc.handle(
@@ -64,14 +58,10 @@ export const installNotificationBadge = Effect.fn("desktop.ipc.installNotificati
         channel: SET_NOTIFICATION_BADGE_CHANNEL,
         payload: NotificationBadge,
         result: Schema.Void,
-        handler: (badge) =>
-          Effect.sync(() => {
-            if (badge.count > 0 && Electron.BrowserWindow.getFocusedWindow()) clear();
-            else applyNotificationBadge(platform, badge);
-          }),
+        handler: (badge) => Effect.sync(() => applyNotificationBadge(platform, badge)),
       }),
     );
-    yield* app.on("browser-window-focus", clear);
+    yield* app.on("browser-window-focus", announceFocus);
     yield* app.on("before-quit", clear);
     yield* Effect.addFinalizer(() => Effect.sync(clear));
   },

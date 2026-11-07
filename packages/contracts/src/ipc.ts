@@ -1028,7 +1028,8 @@ export interface DesktopBridge {
   getPathForFile: (file: File) => string;
   getClientPlatform: () => string;
   setNotificationBadge: (badge: { count: number; image: string | null }) => Promise<void>;
-  onNotificationBadgeClear: (listener: () => void) => () => void;
+  /** A window of the app gained focus, so notifications already shown are seen. */
+  onWindowFocus: (listener: () => void) => () => void;
   onTrackpadScrollBegin: (listener: () => void) => () => void;
   onTrackpadScrollEnd: (listener: () => void) => () => void;
   /**

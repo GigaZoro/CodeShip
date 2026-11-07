@@ -59,13 +59,20 @@ and worktree while you stay in the new thread composer. This requires a Git proj
 
 Threads waiting on you sit together under **Needs you** on web and desktop, in a box at the
 bottom of the thread's **Details** column: an approval, an answer to a question, a subagent's
-request, or a guest's message. Use the **Needs you** button at the top of a thread to hide or show
-that box, or the button in the box's header to move it into the thread list. While it is hidden,
-when the chat is too narrow for the Details column, on pages other than a thread, and on mobile,
-they appear at the top of the thread list, below scheduled task rows.
+request, a guest's message, or a run that failed or hit a usage limit. The longest wait comes
+first, and each row shows how long it has waited. Use the **Needs you** button at the top of a
+thread to hide or show that box, or the button in the box's header to move it into the thread
+list. While it is hidden, when the chat is too narrow for the Details column, on pages other than
+a thread, and on mobile, they appear at the top of the thread list, below scheduled task rows.
 It lists them from every machine and project, even when the list is filtered to one, the thread's
 folder is closed, or the thread is pinned or settled. Once you answer, the thread returns to its
-usual place.
+usual place. A failed run leaves when you retry it, settle it, or snooze it; a usage-limited run
+set to resume on its own is not listed.
+
+Press `Mod+Shift+U`, or choose **Next thread that needs you** in the command palette, to open each
+waiting thread in turn. On mobile, the **N more need you** button above the composer does the same.
+The count also shows on the **Threads** icon in the side rail, the desktop dock or taskbar icon,
+and the mobile app icon.
 
 ## Choose where scheduled tasks show
 

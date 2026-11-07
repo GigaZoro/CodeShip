@@ -1,4 +1,8 @@
 import {
+  resolveThreadStatus,
+  THREAD_STATUS_DISPLAY,
+} from "@t3tools/client-runtime/state/thread-status";
+import {
   closestCenter,
   DndContext,
   PointerSensor,
@@ -58,6 +62,7 @@ import {
   PauseIcon,
   PinOffIcon,
   ShieldQuestionIcon,
+  UserRoundIcon,
 } from "lucide-react";
 import {
   memo,
@@ -81,18 +86,15 @@ import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ScheduledTaskRunsDialog } from "../settings/ScheduledTaskRunsDialog";
 import { scheduleLabel } from "../settings/ScheduledTasksSettings";
-import {
-  resolveSidebarRowAccessibility,
-  resolveSidebarThreadStatus,
-  resolveWorkingStartedAt,
-} from "../Sidebar.logic";
+import { resolveSidebarRowAccessibility, resolveWorkingStartedAt } from "../Sidebar.logic";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { CollapsibleSectionHeader } from "../ui/collapsible-section-header";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { WorkingDuration } from "./SidebarThreadRow";
+import { THREAD_ROW_TONE_CLASS } from "./threadRowStatus";
 
-import { msg, t, type Message } from "~/i18n";
+import { t } from "~/i18n";
 const pinnedTasksAtom = Atom.family((environmentIdsKey: string) =>
   Atom.make((get) =>
     collectPinnedTasks(
@@ -127,25 +129,25 @@ export function useScheduledTaskHiddenThreadKeys(environmentIdsKey: string): Rea
   return useAtomValue(hiddenThreadKeysAtom(environmentIdsKey));
 }
 
-const STATUS_DISPLAY: Record<
-  Exclude<PinnedTaskStatus, "idle">,
-  { readonly label: Message; readonly icon: typeof CircleDashedIcon; readonly className: string }
-> = {
-  starting: { label: msg("Starting"), icon: CircleDashedIcon, className: "text-info-foreground" },
-  working: { label: msg("Working"), icon: CircleDashedIcon, className: "text-info-foreground" },
-  approval: {
-    label: msg("Approval"),
-    icon: ShieldQuestionIcon,
-    className: "text-warning-foreground",
-  },
-  input: {
-    label: msg("Question"),
-    icon: MessageCircleQuestionIcon,
-    className: "text-indigo-600 dark:text-indigo-300",
-  },
-  failed: { label: msg("Failed"), icon: CircleAlertIcon, className: "text-error-foreground" },
-  paused: { label: msg("Paused"), icon: PauseIcon, className: "text-muted-foreground" },
+const STATUS_ICON: Record<Exclude<PinnedTaskStatus, "idle">, typeof CircleDashedIcon> = {
+  starting: CircleDashedIcon,
+  working: CircleDashedIcon,
+  approval: ShieldQuestionIcon,
+  input: MessageCircleQuestionIcon,
+  request: UserRoundIcon,
+  failed: CircleAlertIcon,
+  limited: CircleAlertIcon,
+  paused: PauseIcon,
 };
+
+function pinnedTaskStatusDisplay(status: Exclude<PinnedTaskStatus, "idle">) {
+  const display = THREAD_STATUS_DISPLAY[status];
+  return {
+    label: display.label,
+    icon: STATUS_ICON[status],
+    className: THREAD_ROW_TONE_CLASS[display.tone],
+  };
+}
 
 type PinnedTaskMenuId =
   | "open-run"
@@ -231,11 +233,11 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
     runThread === null
       ? null
       : {
-          status: resolveSidebarThreadStatus(runThread),
+          status: resolveThreadStatus(runThread),
           runtimeStatus: runThread.runtime?.status ?? null,
         },
   );
-  const display = status === "idle" ? null : STATUS_DISPLAY[status];
+  const display = status === "idle" ? null : pinnedTaskStatusDisplay(status);
   const isActive = runThreadRef !== null && scopedThreadKey(runThreadRef) === props.routeThreadKey;
   const accessibility = resolveSidebarRowAccessibility({
     title: task.title,

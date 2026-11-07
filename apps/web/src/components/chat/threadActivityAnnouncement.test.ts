@@ -206,7 +206,7 @@ describe("nextThreadAnnouncement", () => {
         busy("input"),
         idle(secondRun, "completed"),
       ]),
-    ).toEqual(["Needs approval", "Needs your input", "Done"]);
+    ).toEqual(["Approval needed", "Input needed", "Done"]);
   });
 
   it("announces a second request of the same kind once the first is answered", () => {
@@ -216,6 +216,6 @@ describe("nextThreadAnnouncement", () => {
         busy("approval", secondRun, "running", "request-1"),
         busy("approval", secondRun, "running", "request-2"),
       ]),
-    ).toEqual(["Needs approval", "Needs approval"]);
+    ).toEqual(["Approval needed", "Approval needed"]);
   });
 });

@@ -31,7 +31,7 @@ import { memo } from "react";
 import { View } from "react-native";
 
 import * as Dialog from "../../components/ui/Dialog";
-import { SymbolView, type AppSymbolName } from "../../components/ui/AppSymbol";
+import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Menu } from "../../components/ui/Menu";
 import { RowPressable } from "../../components/ui/RowPressable";
@@ -50,10 +50,11 @@ import {
   THREAD_LIST_V2_ROW_DIVIDERS,
   getThreadListV2RowAppearance,
 } from "./thread-list-v2-row-appearance";
-import { resolveThreadListV2Status } from "./threadListV2";
+import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status";
+import { threadStatusLabel } from "./thread-list-v2-items";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
 import { useVisibleWorkingDurationLabel } from "./use-visible-working-duration-label";
-import { msg, t, type Message } from "../../lib/i18n";
+import { t } from "../../lib/i18n";
 
 const pinnedTasksAtom = Atom.family((environmentIdsKey: string) =>
   Atom.make((get) =>
@@ -89,46 +90,16 @@ export function useScheduledTaskHiddenThreadKeys(environmentIdsKey: string): Rea
   return useAtomValue(hiddenThreadKeysAtom(environmentIdsKey));
 }
 
-const WORKING_TONE = {
-  className: "text-adaptive-sky-600-400",
-  iconTintClassName: "accent-adaptive-sky-600-400",
-};
-const STATUS_DISPLAY: Record<
-  Exclude<PinnedTaskStatus, "idle">,
-  {
-    readonly label: Message;
-    readonly icon: AppSymbolName;
-    readonly className: string;
-    readonly iconTintClassName: string;
-  }
-> = {
-  starting: { label: msg("Starting"), icon: "circle.dashed", ...WORKING_TONE },
-  working: { label: msg("Working"), icon: "circle.dashed", ...WORKING_TONE },
-  approval: {
-    label: msg("Approval"),
-    icon: "exclamationmark.shield",
-    className: "text-warning-foreground",
-    iconTintClassName: "accent-warning-foreground",
-  },
-  input: {
-    label: msg("Question"),
-    icon: "questionmark.bubble",
-    className: "text-adaptive-indigo-600-300",
-    iconTintClassName: "accent-adaptive-indigo-600-300",
-  },
-  failed: {
-    label: msg("Failed"),
-    icon: "exclamationmark.circle",
-    className: "text-danger-foreground",
-    iconTintClassName: "accent-danger-foreground",
-  },
-  paused: {
-    label: msg("Paused"),
-    icon: "slash.circle",
-    className: "text-foreground-muted",
-    iconTintClassName: "accent-foreground-muted",
-  },
-};
+const STATUS_DISPLAY = {
+  starting: threadStatusLabel("starting", "circle.dashed"),
+  working: threadStatusLabel("working", "circle.dashed"),
+  approval: threadStatusLabel("approval", "exclamationmark.shield"),
+  input: threadStatusLabel("input", "questionmark.bubble"),
+  request: threadStatusLabel("request", "person.crop.circle"),
+  failed: threadStatusLabel("failed", "exclamationmark.circle"),
+  limited: threadStatusLabel("limited", "exclamationmark.circle"),
+  paused: threadStatusLabel("paused", "slash.circle"),
+} satisfies Record<Exclude<PinnedTaskStatus, "idle">, ReturnType<typeof threadStatusLabel>>;
 
 function WorkingDuration(props: { readonly thread: EnvironmentThreadShell }) {
   return useVisibleWorkingDurationLabel(resolveThreadWorkingStartedAt(props.thread));
@@ -180,7 +151,7 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
     runThread === null
       ? null
       : {
-          status: resolveThreadListV2Status(runThread),
+          status: resolveThreadStatus(runThread),
           runtimeStatus: runThread.runtime?.status ?? null,
         },
   );

@@ -15,7 +15,12 @@ import {
 } from "@t3tools/client-runtime/connection";
 
 import { cn } from "~/lib/utils";
-import type { SidebarThreadStatus } from "../Sidebar.logic";
+import {
+  THREAD_STATUS_DISPLAY,
+  type ThreadStatus,
+  type ThreadStatusDisplayKey,
+  type ThreadStatusTone,
+} from "@t3tools/client-runtime/state/thread-status";
 
 import { t } from "~/i18n";
 const THREAD_ROW_STATUS_ICONS = {
@@ -49,9 +54,26 @@ export type ThreadRowStatus =
       readonly lastKnown?: undefined;
     };
 
+/** Row text colour for each status tone; the pill and mobile keep their own palettes. */
+export const THREAD_ROW_TONE_CLASS: Record<ThreadStatusTone, string> = {
+  attention: "text-warning-foreground",
+  question: "text-indigo-600 dark:text-indigo-300",
+  guest: "text-guest-foreground",
+  active: "text-info-foreground",
+  muted: "text-muted-foreground",
+  error: "text-error-foreground",
+  success: "text-success-foreground",
+  plan: "text-violet-600 dark:text-violet-300",
+};
+
+function rowStatus(key: ThreadStatusDisplayKey, icon: ThreadRowStatusIconName): ThreadRowStatus {
+  const display = THREAD_STATUS_DISPLAY[key];
+  return { label: t(display.label), icon, className: THREAD_ROW_TONE_CLASS[display.tone] };
+}
+
 /** The short status a thread row shows in place of its age, or null when it has none. */
 export function resolveThreadRowStatus(input: {
-  readonly status: SidebarThreadStatus;
+  readonly status: ThreadStatus;
   readonly goalActive: boolean;
   readonly isWoke: boolean;
   readonly isUnread: boolean;
@@ -91,42 +113,32 @@ const LIVE_ICONS: ReadonlySet<ThreadRowStatusIconName> = new Set([
 ]);
 
 function resolveLiveThreadRowStatus(input: {
-  readonly status: SidebarThreadStatus;
+  readonly status: ThreadStatus;
   readonly goalActive: boolean;
   readonly isWoke: boolean;
   readonly isUnread: boolean;
 }): ThreadRowStatus | null {
   switch (input.status) {
     case "working":
-      return {
-        label: input.goalActive ? t("Goal") : t("Working"),
-        icon: "working",
-        className: "text-info-foreground",
-      };
+      return rowStatus(input.goalActive ? "goal" : "working", "working");
     case "waiting":
-      return { label: t("Waiting"), icon: "waiting", className: "text-muted-foreground" };
+      return rowStatus("waiting", "waiting");
     case "approval":
-      return { label: t("Approval"), icon: "approval", className: "text-warning-foreground" };
+      return rowStatus("approval", "approval");
     case "input":
-      return {
-        label: t("Question"),
-        icon: "input",
-        className: "text-indigo-600 dark:text-indigo-300",
-      };
+      return rowStatus("input", "input");
     case "request":
-      return { label: t("Request"), icon: "request", className: "text-guest-foreground" };
+      return rowStatus("request", "request");
     case "limited":
-      return { label: t("Limited"), icon: "failed", className: "text-warning-foreground" };
+      return rowStatus("limited", "failed");
     case "failed":
-      return { label: t("Failed"), icon: "failed", className: "text-error-foreground" };
+      return rowStatus("failed", "failed");
   }
-  if (input.isWoke) {
-    return { label: t("Woke"), icon: "woke", className: "text-warning-foreground" };
-  }
+  if (input.isWoke) return rowStatus("woke", "woke");
   if (input.isUnread) {
     return {
       label: t("Finished, not yet opened"),
-      className: "text-success-foreground",
+      className: THREAD_ROW_TONE_CLASS[THREAD_STATUS_DISPLAY.done.tone],
       unseen: true,
     };
   }

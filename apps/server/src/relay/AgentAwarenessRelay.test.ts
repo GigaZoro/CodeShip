@@ -106,6 +106,7 @@ describe("startup agent activity", () => {
     const ids = AgentAwarenessRelay.resolveAgentAwarenessRelayActiveThreadIds({
       environmentId: EnvironmentId.make("relay-env"),
       startedAt,
+      nowMs: startedAt,
       projects: [{ id: PROJECT_ID, title: "Project" }],
       threads: [
         shell(),
@@ -478,6 +479,34 @@ describe("AgentAwarenessRelay", () => {
       assert.deepEqual(
         publications.map((publication) => publication.state?.phase ?? null),
         ["running", "completed", null],
+      );
+    }),
+  );
+
+  it.effect("keeps a snoozed thread's completion off the phone, but its failure still alerts", () =>
+    Effect.gen(function* () {
+      const { relay, currentShell, publications } = yield* makeTestRelay();
+      yield* relay.publishThread(THREAD_ID);
+      const now = yield* DateTime.now;
+      const snoozed = { snoozedAt: now, snoozedUntil: DateTime.add(now, { hours: 1 }) };
+      yield* Ref.set(currentShell, shell({ status: "completed", ...snoozed }));
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running", null],
+      );
+
+      yield* Ref.set(
+        currentShell,
+        shell({ status: "failed", latestRunCompletedAt: yield* DateTime.now, ...snoozed }),
+      );
+      yield* relay.publishThread(THREAD_ID);
+      yield* relay.drain;
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running", null, "failed"],
       );
     }),
   );

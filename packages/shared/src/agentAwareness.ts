@@ -40,6 +40,8 @@ function buildAgentAwarenessDeepLink(input: {
 
 export interface ProjectThreadAwarenessV2Input {
   readonly environmentId: EnvironmentId;
+  /** Epoch milliseconds, to tell whether a snooze is still running. */
+  readonly nowMs: number;
   readonly project: Pick<Project, "title">;
   readonly thread: Pick<
     OrchestrationV2ThreadShell,
@@ -51,6 +53,7 @@ export interface ProjectThreadAwarenessV2Input {
     | "pendingBackgroundTasks"
     | "pendingRuntimeRequest"
     | "settledOverride"
+    | "snoozedUntil"
     | "status"
     | "title"
     | "updatedAt"
@@ -67,6 +70,14 @@ export function projectThreadAwarenessV2(
     return null;
   }
   if (phase === "completed" && thread.latestRunStopRequested === true) return null;
+  // A snoozed thread's completion stays quiet, as on web; a request or failure still wakes it.
+  if (
+    phase === "completed" &&
+    thread.snoozedUntil != null &&
+    DateTime.toEpochMillis(thread.snoozedUntil) > input.nowMs
+  ) {
+    return null;
+  }
   // Resolve the phase first so live or waiting work stays visible after settlement.
   if (
     thread.settledOverride === "settled" &&

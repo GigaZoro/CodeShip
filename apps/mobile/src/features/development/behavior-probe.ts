@@ -111,15 +111,15 @@ function scanTree() {
         expanded?: boolean;
       }>;
       if (data.some((entry) => entry?.type?.startsWith("v2-"))) {
-        const { resolveThreadListV2Status } = require("../threads/threadListV2") as {
-          resolveThreadListV2Status: (thread: unknown) => string;
+        const { resolveThreadStatus } = require("@t3tools/client-runtime/state/thread-status") as {
+          resolveThreadStatus: (thread: unknown) => string;
         };
         homeList = data.map((entry) => ({
           type: String(entry.type),
           ...(entry.item?.thread?.id
             ? {
                 threadId: entry.item.thread.id,
-                status: resolveThreadListV2Status(entry.item.thread),
+                status: resolveThreadStatus(entry.item.thread),
                 pinned: entry.item.pinned === true,
               }
             : {}),
@@ -197,8 +197,8 @@ function snapshot() {
   const { environmentThreadShells } = require("../../state/threads") as {
     environmentThreadShells: { threadShellsAtom: Atom };
   };
-  const { resolveThreadListV2Status } = require("../threads/threadListV2") as {
-    resolveThreadListV2Status: (thread: unknown) => string;
+  const { resolveThreadStatus } = require("@t3tools/client-runtime/state/thread-status") as {
+    resolveThreadStatus: (thread: unknown) => string;
   };
   const shells = readAtom<ReadonlyArray<{ id: string; environmentId: string }>>(
     environmentThreadShells.threadShellsAtom,
@@ -207,9 +207,7 @@ function snapshot() {
     /** Saved environments the app has threads from. */
     environments: [...new Set(shells.map((shell) => shell.environmentId))],
     /** The app's own status for every thread it knows, including rows folded into a shelf. */
-    threads: Object.fromEntries(
-      shells.map((shell) => [shell.id, resolveThreadListV2Status(shell)]),
-    ),
+    threads: Object.fromEntries(shells.map((shell) => [shell.id, resolveThreadStatus(shell)])),
     route: at,
     feed: feed ? feedState(feed) : null,
     composer: {

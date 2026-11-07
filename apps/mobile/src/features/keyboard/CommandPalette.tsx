@@ -51,7 +51,8 @@ import {
 import { useThreadSearch } from "../../state/queries";
 import { requestThreadMessageJump } from "../threads/threadMessageJump";
 import { useCanShareWithGuest } from "../threads/ThreadGuestShareSheet";
-import { threadEnvironment } from "../../state/threads";
+import { environmentThreadShells, threadEnvironment } from "../../state/threads";
+import { nextNeedsYouThread } from "@t3tools/client-runtime/state/thread-inbox";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { serverEnvironment } from "../../state/server";
 import { useWorkspaceEnvironments } from "../../state/workspace";
@@ -292,6 +293,10 @@ export function CommandPalette(props: {
     triageEnvironmentId !== null &&
     serverConfigs.get(triageEnvironmentId)?.environment.capabilities.triage === true;
   const canShareWithGuest = useCanShareWithGuest(activeThreadRef?.environmentId ?? null);
+  const nextNeedsYou = nextNeedsYouThread(
+    useAtomValue(environmentThreadShells.needsYouThreadsAtom).threads,
+    activeThreadRef,
+  );
   const contentMatchByKey = new Map(
     search.matches
       .filter((match) => match.source === "user" || match.source === "assistant")
@@ -402,6 +407,20 @@ export function CommandPalette(props: {
           }),
       });
     }
+    if (nextNeedsYou !== null) {
+      actions.push({
+        key: "nextNeedsYou",
+        kind: "action",
+        title: t("Next thread that needs you"),
+        detail: nextNeedsYou.title,
+        searchTerms: ["needs you", "approval", "question", "failed", "inbox", "next"],
+        run: () =>
+          selectDetail({
+            name: "Thread",
+            params: { environmentId: nextNeedsYou.environmentId, threadId: nextNeedsYou.id },
+          }),
+      });
+    }
     if (activeThreadRef) {
       const threadActions = [
         ["files", t("Go to file"), ["open", "files", "browse", "search"]],
@@ -501,6 +520,7 @@ export function CommandPalette(props: {
     canTriage,
     canShareWithGuest,
     navigation,
+    nextNeedsYou,
     projects,
     runCommand,
     savedConnectionsById,

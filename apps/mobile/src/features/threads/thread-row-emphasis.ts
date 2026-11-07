@@ -4,11 +4,10 @@ import {
   type EnvironmentConnectionPhase,
   type MachineAvailability,
 } from "@t3tools/client-runtime/connection";
-
-import type { ThreadListV2Status } from "./threadListV2";
+import type { ThreadStatus } from "@t3tools/client-runtime/state/thread-status";
 
 // Statuses that change while the machine runs; an unreachable machine can only report the last one.
-const LIVE_STATUSES: ReadonlySet<ThreadListV2Status> = new Set([
+const LIVE_STATUSES: ReadonlySet<ThreadStatus> = new Set([
   "working",
   "waiting",
   "approval",
@@ -24,7 +23,7 @@ export function machineAvailabilityOf(
 
 /** The machine's state when the row's status is only what was last seen, otherwise null. */
 export function threadRowLastKnownMachine(
-  status: ThreadListV2Status,
+  status: ThreadStatus,
   machine: MachineAvailability | undefined,
 ): MachineAvailability | null {
   return machine !== undefined && machineShowsLastKnownState(machine) && LIVE_STATUSES.has(status)
@@ -33,7 +32,7 @@ export function threadRowLastKnownMachine(
 }
 
 export function shouldRecedeThreadRow(input: {
-  readonly status: ThreadListV2Status;
+  readonly status: ThreadStatus;
   readonly selected: boolean;
   readonly machineUnreachable?: boolean;
 }): boolean {

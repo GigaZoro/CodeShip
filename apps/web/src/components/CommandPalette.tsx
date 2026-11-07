@@ -62,6 +62,7 @@ import {
   ChevronsDownUpIcon,
   ChevronsUpDownIcon,
   ArrowLeftIcon,
+  BellDotIcon,
   BlocksIcon,
   BugIcon,
   CalendarClockIcon,
@@ -131,7 +132,8 @@ import { filesystemEnvironment, useFilesystemReadAccess } from "../state/filesys
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import { serverEnvironment } from "../state/server";
-import { threadEnvironment } from "../state/threads";
+import { environmentThreadShells, threadEnvironment } from "../state/threads";
+import { nextNeedsYouThread } from "@t3tools/client-runtime/state/thread-inbox";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { sourceControlEnvironment } from "../state/sourceControl";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -557,6 +559,10 @@ function OpenCommandPaletteDialog(props: {
   };
   const threads = useVisibleThreadShells();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const nextNeedsYou = nextNeedsYouThread(
+    useAtomValue(environmentThreadShells.needsYouThreadsAtom).threads,
+    activeThread ? { environmentId: activeThread.environmentId, threadId: activeThread.id } : null,
+  );
   const activeThreadLifecycleItems = useActiveThreadPaletteItems(activeThread);
   const providersByEnvironment = useEnvironmentProviders();
   const { changeThemeItem, changeAppearanceItem, themeEditorItem } = useCommandPaletteThemeItems();
@@ -1441,6 +1447,24 @@ function OpenCommandPaletteDialog(props: {
         },
       },
     );
+  }
+
+  if (nextNeedsYou !== null) {
+    actionItems.push({
+      kind: "action",
+      value: "action:next-needs-you",
+      searchTerms: ["needs you", "approval", "question", "failed", "inbox", "next", "attention"],
+      title: t("Next thread that needs you"),
+      description: nextNeedsYou.title,
+      icon: <BellDotIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "thread.nextNeedsYou",
+      run: async () => {
+        await navigate({
+          to: "/$environmentId/$threadId",
+          params: { environmentId: nextNeedsYou.environmentId, threadId: nextNeedsYou.id },
+        });
+      },
+    });
   }
 
   if (activeThreadKey !== null && supportsThreadFind) {

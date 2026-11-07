@@ -2,27 +2,22 @@ import type { EnvironmentId, ScheduledTask, ScheduledTaskPlacement } from "@t3to
 
 import { msg, t, type Message } from "@t3tools/shared/i18n";
 import { planPinnedReorder } from "./state/threadSort.ts";
+import type { ThreadStatus } from "./state/threadStatus.ts";
 
 export type PinnedTaskStatus =
   | "starting"
   | "working"
   | "approval"
   | "input"
+  | "request"
   | "failed"
+  | "limited"
   | "paused"
   | "idle";
 
 /** The run thread as each client's thread list already classifies it. */
 export interface PinnedTaskRunThread {
-  readonly status:
-    | "approval"
-    | "input"
-    | "request"
-    | "waiting"
-    | "working"
-    | "failed"
-    | "limited"
-    | "ready";
+  readonly status: ThreadStatus;
   readonly runtimeStatus: string | null;
 }
 
@@ -40,10 +35,15 @@ export function resolvePinnedTaskStatus(
   ) {
     return "working";
   }
-  if (threadStatus === "approval" || threadStatus === "input") return threadStatus;
-  if (task.lastRunStatus === "failed" || threadStatus === "failed" || threadStatus === "limited") {
-    return "failed";
+  if (
+    threadStatus === "approval" ||
+    threadStatus === "input" ||
+    threadStatus === "request" ||
+    threadStatus === "limited"
+  ) {
+    return threadStatus;
   }
+  if (task.lastRunStatus === "failed" || threadStatus === "failed") return "failed";
   return task.enabled ? "idle" : "paused";
 }
 

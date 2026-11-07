@@ -62,6 +62,18 @@ describe("resolvePinnedTaskStatus", () => {
       expected: "failed",
     },
     {
+      name: "a run stopped on a usage limit reads Limited, as its thread row does",
+      task: { enabled: true, lastRunStatus: "succeeded" as const },
+      thread: { status: "limited" as const, runtimeStatus: "failed" },
+      expected: "limited",
+    },
+    {
+      name: "a guest waiting on the run thread",
+      task: { enabled: true, lastRunStatus: "succeeded" as const },
+      thread: { status: "request" as const, runtimeStatus: "completed" },
+      expected: "request",
+    },
+    {
       name: "a paused task between runs",
       task: { enabled: false, lastRunStatus: "succeeded" as const },
       thread: null,

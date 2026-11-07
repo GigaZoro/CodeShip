@@ -55,6 +55,9 @@ vi.mock(import("../state/threads"), async (original) => {
       get delegatedUnderParentAtom() {
         return noDelegatedAtom as never;
       },
+      get needsYouThreadsAtom() {
+        return needsYouAtom as never;
+      },
     },
   };
 });
@@ -83,6 +86,7 @@ const shellAtom = Atom.family((_id: string) => Atom.make<unknown>(null));
 const environmentIdsAtom = Atom.make<ReadonlyArray<string>>([]);
 const noRequestsAtom = Atom.make(new Map());
 const noDelegatedAtom = Atom.make<ReadonlySet<string>>(new Set<string>());
+const needsYouAtom = Atom.make<{ readonly threads: ReadonlyArray<unknown> }>({ threads: [] });
 state.shells = { set: (id, value) => registry.set(shellAtom(id), value) };
 
 class TestNotification extends EventTarget {
@@ -226,13 +230,26 @@ function setup() {
   };
 }
 
+it("badges the Needs you count, keeps it on focus, and clears it when notifications are off", async () => {
+  await using app = setup();
+  registry.set(needsYouAtom, { threads: [] });
+  app.start();
+  expect(state.badge).toHaveBeenLastCalledWith(0);
+  registry.set(needsYouAtom, { threads: [{}, {}] });
+  expect(state.badge).toHaveBeenLastCalledWith(2);
+  window.dispatchEvent(new Event("focus"));
+  expect(state.badge).toHaveBeenLastCalledWith(2);
+  state.mode = "sound";
+  app.changeSettings();
+  expect(state.badge).toHaveBeenLastCalledWith(0);
+});
+
 it.each(["hasPendingApprovals", "hasPendingUserInput"] as const)(
-  "badges %s and clears when notifications are disabled",
+  "notifies %s, opens it on click, and closes it when notifications are disabled",
   async (flag) => {
     await using app = setup();
     app.start();
     state.shells.set("one", shell({ [flag]: true }));
-    expect(state.badge).toHaveBeenLastCalledWith(1);
     const notification = TestNotification.sent[0]!;
     notification.dispatchEvent(new Event("click"));
     expect(state.navigate).toHaveBeenCalledWith({
@@ -241,7 +258,6 @@ it.each(["hasPendingApprovals", "hasPendingUserInput"] as const)(
     });
     state.mode = "sound";
     app.changeSettings();
-    expect(state.badge).toHaveBeenLastCalledWith(0);
     expect(notification.close).toHaveBeenCalled();
   },
 );

@@ -17,6 +17,8 @@ import { Atom } from "effect/reactivity";
 import type { EnvironmentThreadShell, PendingSubagentRequest } from "./models.ts";
 import { presentThreadShell, threadRuntimeIsActive } from "./models.ts";
 import { hiddenThreadKeys, NO_HIDDEN_THREADS } from "./threadTagFilter.ts";
+import { collectNeedsYouThreads, type NeedsYouThreads } from "./threadInbox.ts";
+import { deadlineStore } from "../clock.ts";
 import { type EnvironmentCatalogState, enabledEnvironmentIds } from "./connections.ts";
 import {
   arrayElementsEqual,
@@ -765,6 +767,34 @@ export function createEnvironmentThreadShellAtoms(input: {
     return next;
   }).pipe(Atom.withLabel("environment-delegated-under-parent"));
 
+  // One list of what needs the user, so Needs you, badges, and the next-thread command agree.
+  // Quiet shells keep streaming from rebuilding it.
+  let previousNeedsYou: NeedsYouThreads<EnvironmentThreadShell> | null = null;
+  const needsYouThreadsAtom = Atom.make((get) => {
+    const underParent = get(delegatedUnderParentAtom);
+    const listed = get(quietThreadShellsAtom).filter(
+      (thread) =>
+        thread.archivedAt === null &&
+        !isShownUnderParent(
+          { environmentId: thread.environmentId, threadId: thread.id },
+          thread.lineage,
+          underParent,
+        ),
+    );
+    // @effect-diagnostics-next-line globalDate:off - A failed thread rejoins when its snooze ends on the wall clock.
+    const now = new Date().toISOString();
+    const next = collectNeedsYouThreads(listed, { now });
+    if (next.nextChangeAt !== null) {
+      get.addFinalizer(deadlineStore(next.nextChangeAt).subscribe(() => get.refreshSelf()));
+    }
+    // Same shells in the same order give the same reasons.
+    if (previousNeedsYou !== null && arrayElementsEqual(previousNeedsYou.threads, next.threads)) {
+      return previousNeedsYou;
+    }
+    previousNeedsYou = next;
+    return next;
+  }).pipe(Atom.withLabel("environment-needs-you-threads"));
+
   let previousNavigationShells: ReadonlyArray<EnvironmentThreadShell> = [];
   const navigationThreadShellsAtom = Atom.make((get) => {
     const next: EnvironmentThreadShell[] = [];
@@ -800,6 +830,7 @@ export function createEnvironmentThreadShellAtoms(input: {
     anyEnvironmentHidingAtom,
     quietThreadShellsAtom,
     navigationThreadShellsAtom,
+    needsYouThreadsAtom,
     delegatedUnderParentAtom,
     pendingSubagentRequestsAtom,
     threadShellsForProjectRefsAtom: (refs: ReadonlyArray<ScopedProjectRef>) =>

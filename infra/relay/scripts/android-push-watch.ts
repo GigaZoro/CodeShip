@@ -158,12 +158,14 @@ const main = Effect.gen(function* () {
               threads.delete(item.threadId);
               break;
           }
+          const nowMs = yield* Clock.currentTimeMillis;
           const next = new Map<string, RelayAgentActivityState>();
           for (const thread of threads.values()) {
             const project = projects.get(thread.projectId);
             if (!project || thread.archivedAt) continue;
             const state = projectThreadAwarenessV2({
               environmentId: config.environment.environmentId,
+              nowMs,
               project,
               thread,
             });

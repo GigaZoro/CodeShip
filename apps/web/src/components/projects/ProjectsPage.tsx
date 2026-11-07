@@ -1,3 +1,4 @@
+import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import {
@@ -63,7 +64,6 @@ import {
   groupSidebarThreadsByMachineAndProject,
   groupSidebarThreadsByProject,
   hasUnseenServerWake,
-  resolveSidebarThreadStatus,
   sidebarFolderExpansionKeys,
   sidebarMachineProjectFolderKey,
   sortPinnedThreadsForSidebar,
@@ -312,7 +312,7 @@ export function ProjectsPage() {
         (thread) =>
           thread.pinnedAt == null &&
           stateOf(thread) === "quiet" &&
-          resolveSidebarThreadStatus(thread) === "ready" &&
+          resolveThreadStatus(thread) === "ready" &&
           canSettle(thread),
       ),
       // Snoozed threads sit outside every status filter, so only the full view counts them.
@@ -966,7 +966,7 @@ function ProjectThreadRow(props: {
 }) {
   const { thread, onSettle } = props;
   const status = resolveThreadRowStatus({
-    status: resolveSidebarThreadStatus(thread),
+    status: resolveThreadStatus(thread),
     goalActive: thread.goal?.status === "active",
     isWoke: props.woke,
     isUnread: props.state === "done",

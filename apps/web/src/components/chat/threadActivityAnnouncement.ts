@@ -1,22 +1,26 @@
 import type { OrchestrationV2Run, OrchestrationV2RunStatus, RunId } from "@t3tools/contracts";
+import { THREAD_STATUS_DISPLAY } from "@t3tools/client-runtime/state/thread-status";
 import { latestExecutedRun } from "@t3tools/shared/orchestrationV2ThreadError";
 import { t } from "~/i18n";
 
 export type ThreadActivityStatus = "working" | "approval" | "input" | "idle";
 
-/** Background threads say these too, so a status sounds the same wherever it's heard. */
+/** Background threads and notifications say these too, so a status sounds the same everywhere. */
 export const THREAD_STATUS_TEXT = {
   get approval() {
-    return t("Needs approval");
+    return t(THREAD_STATUS_DISPLAY.approval.summary);
   },
   get input() {
-    return t("Needs your input");
+    return t(THREAD_STATUS_DISPLAY.input.summary);
   },
   get done() {
-    return t("Done");
+    return t(THREAD_STATUS_DISPLAY.done.label);
   },
   get failed() {
-    return t("Failed");
+    return t(THREAD_STATUS_DISPLAY.failed.label);
+  },
+  get working() {
+    return t(THREAD_STATUS_DISPLAY.working.summary);
   },
   get stopped() {
     return t("Stopped");
@@ -155,7 +159,7 @@ export function nextThreadAnnouncement(
             ? null
             : THREAD_STATUS_TEXT.input
           : turnStarted
-            ? "Working"
+            ? THREAD_STATUS_TEXT.working
             : null;
     return { memory: { ...memory, turnRunId: nextTurnRunId }, announcement };
   }

@@ -1,3 +1,4 @@
+import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { createInboxReturnTracker } from "@t3tools/client-runtime/state/thread-inbox";
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
@@ -36,7 +37,6 @@ import {
   getThreadListV2OrderedSection,
   resolveThreadListV2SnoozeMenuSelection,
   resolveThreadListV2SnoozePresets,
-  resolveThreadListV2Status,
   resolveThreadListV2WokeAt,
   sortThreadsForListV2,
   threadListV2ListItemsAreEqual,
@@ -101,7 +101,7 @@ describe("resolveThreadListV2SnoozePresets", () => {
   });
 });
 
-describe("resolveThreadListV2Status", () => {
+describe("resolveThreadStatus on decoded shells", () => {
   it("presents decoded thread waits as Waiting while preserving requests and older servers", () => {
     const raw = makeRawThreadShell({
       status: "running",
@@ -110,32 +110,18 @@ describe("resolveThreadListV2Status", () => {
     });
     const present = (shell: unknown) => presentThreadShell(environmentId, decodeThreadShell(shell));
 
-    expect(resolveThreadListV2Status(present(raw))).toBe("working");
+    expect(resolveThreadStatus(present(raw))).toBe("working");
     const blocked = present({ ...raw, blockedOnThreadWait: true });
     expect(
-      resolveThreadListV2Status({
+      resolveThreadStatus({
         ...blocked,
         hasPendingApprovals: true,
         hasPendingUserInput: true,
       }),
     ).toBe("approval");
-    expect(resolveThreadListV2Status({ ...blocked, hasPendingUserInput: true })).toBe("input");
-    expect(resolveThreadListV2Status(blocked)).toBe("waiting");
-    expect(resolveThreadListV2Status(present({ ...raw, blockedOnThreadWait: false }))).toBe(
-      "working",
-    );
-  });
-
-  it("shows a waiting guest message as Request, after the agent's own requests", () => {
-    const thread = presentThreadShell(
-      environmentId,
-      decodeThreadShell(makeRawThreadShell({ status: "running" })),
-    );
-    const guest = { ...thread, pendingGuestMessageCount: 1 };
-
-    expect(resolveThreadListV2Status(guest)).toBe("request");
-    expect(resolveThreadListV2Status({ ...guest, hasPendingUserInput: true })).toBe("input");
-    expect(resolveThreadListV2Status({ ...guest, hasPendingApprovals: true })).toBe("approval");
+    expect(resolveThreadStatus({ ...blocked, hasPendingUserInput: true })).toBe("input");
+    expect(resolveThreadStatus(blocked)).toBe("waiting");
+    expect(resolveThreadStatus(present({ ...raw, blockedOnThreadWait: false }))).toBe("working");
   });
 
   it.each([
@@ -156,7 +142,7 @@ describe("resolveThreadListV2Status", () => {
         }),
       );
 
-      expect(resolveThreadListV2Status(thread)).toBe(status);
+      expect(resolveThreadStatus(thread)).toBe(status);
       expect(threadHasUnseenCompletion(thread)).toBe(true);
     },
   );
@@ -825,7 +811,7 @@ describe("thread list folders", () => {
     ]);
   });
 
-  it("closes a folder down to the open thread and leads with every thread that needs you", () => {
+  it("closes a folder down to the open thread and leads with every thread that needs you, longest wait first", () => {
     const layout = buildThreadListV2Items({
       threads: [
         makeThread({ id: ThreadId.make("open"), title: "Open", projectId: projectA }),
@@ -833,7 +819,7 @@ describe("thread list folders", () => {
           id: ThreadId.make("approval"),
           title: "Approval",
           projectId: projectA,
-          createdAt: "2026-06-01T03:00:00.000Z",
+          updatedAt: "2026-06-01T01:00:00.000Z",
           hasPendingApprovals: true,
         }),
         makeThread({ id: ThreadId.make("quiet"), title: "Quiet", projectId: projectA }),
@@ -841,7 +827,7 @@ describe("thread list folders", () => {
           id: ThreadId.make("settled-question"),
           title: "Settled question",
           projectId: projectA,
-          createdAt: "2026-06-01T02:00:00.000Z",
+          updatedAt: "2026-06-01T02:00:00.000Z",
           hasPendingUserInput: true,
           settledOverride: "settled",
           settledAt: NOW,
@@ -851,7 +837,7 @@ describe("thread list folders", () => {
           title: "Other machine",
           environmentId: EnvironmentId.make("environment-remote"),
           projectId: projectB,
-          createdAt: "2026-06-01T01:00:00.000Z",
+          updatedAt: "2026-06-01T03:00:00.000Z",
           pinnedAt: NOW,
           pendingGuestMessageCount: 1,
         }),

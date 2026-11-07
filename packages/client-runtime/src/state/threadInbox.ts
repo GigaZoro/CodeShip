@@ -1,7 +1,10 @@
 // @effect-diagnostics globalTimers:off - Shelf placement timers run in web and native clients, outside an Effect runtime.
+import * as DateTime from "effect/DateTime";
+
 import { threadRuntimeIsActive, type EnvironmentThreadShell } from "./models.ts";
 import { toSortableTimestamp } from "./threadSort.ts";
-import { effectiveSnoozed } from "./threadSettled.ts";
+import { effectiveSnoozed, type ThreadSnoozeShell } from "./threadSettled.ts";
+import { resolveThreadStatus, type ThreadStatusInput } from "./threadStatus.ts";
 
 type WorkingThreadInput = Pick<
   EnvironmentThreadShell,
@@ -46,6 +49,133 @@ export function threadAwaitsUser(
     thread.pendingSubagentRequest != null ||
     (thread.pendingGuestMessageCount ?? 0) > 0
   );
+}
+
+/** Why a thread cannot go on without the user. */
+export type NeedsYouReason = "approval" | "input" | "request" | "failed" | "limited";
+
+type FailureInput = ThreadStatusInput & Pick<EnvironmentThreadShell, "latestRun">;
+
+/**
+ * A run that stopped on an error: the thread's own failure, or a latest run that failed while
+ * the session itself idled on. Notifications and Needs you both count these.
+ */
+export function threadFailureStatus(thread: FailureInput): "failed" | "limited" | null {
+  return failureFromStatus(resolveThreadStatus(thread), thread);
+}
+
+function failureFromStatus(
+  status: ReturnType<typeof resolveThreadStatus>,
+  thread: Pick<EnvironmentThreadShell, "latestRun">,
+): "failed" | "limited" | null {
+  if (status === "failed" || status === "limited") return status;
+  return status === "ready" && thread.latestRun?.status === "failed" ? "failed" : null;
+}
+
+export type NeedsYouInput = FailureInput &
+  ThreadSnoozeShell &
+  Pick<EnvironmentThreadShell, "settledOverride" | "updatedAt"> &
+  Partial<Pick<EnvironmentThreadShell, "limitRecovery">>;
+
+/**
+ * Requests always need the user, settled or not. A failure does until the user settles,
+ * snoozes, or retries it, or a usage-limited run is set to resume by itself.
+ */
+export function threadNeedsYouReason(
+  thread: NeedsYouInput,
+  options: { readonly now: string },
+): NeedsYouReason | null {
+  const status = resolveThreadStatus(thread);
+  if (status === "approval" || status === "input" || status === "request") return status;
+  const failure = failureFromStatus(status, thread);
+  if (failure === null || thread.settledOverride === "settled") return null;
+  if (effectiveSnoozed(thread, options)) return null;
+  const recovery = thread.limitRecovery;
+  if (
+    failure === "limited" &&
+    recovery?.autoResume === true &&
+    recovery.runId === thread.latestRun?.runId
+  ) {
+    return null;
+  }
+  return failure;
+}
+
+/** When the thread started waiting on the user, in epoch milliseconds. */
+function threadNeedsYouSince(thread: NeedsYouInput, reason: NeedsYouReason): number {
+  const request = thread.source?.pendingRuntimeRequest;
+  const exact =
+    (reason === "approval" || reason === "input") && request != null
+      ? DateTime.toEpochMillis(request.createdAt)
+      : reason === "failed" || reason === "limited"
+        ? toSortableTimestamp(thread.latestRun?.completedAt ?? undefined)
+        : undefined;
+  // Subagent and guest requests carry no time of their own; the thread's last change stands in.
+  return exact ?? toSortableTimestamp(thread.updatedAt) ?? 0;
+}
+
+export interface NeedsYouThreads<T> {
+  /** Longest wait first. */
+  readonly threads: readonly T[];
+  readonly reasonOf: (thread: T) => NeedsYouReason;
+  readonly sinceOf: (thread: T) => number;
+  /** When a failed thread's snooze ends and it rejoins, so a caller can recompute then. */
+  readonly nextChangeAt: number | null;
+}
+
+export function collectNeedsYouThreads<
+  T extends NeedsYouInput & Pick<EnvironmentThreadShell, "id" | "environmentId">,
+>(threads: readonly T[], options: { readonly now: string }): NeedsYouThreads<T> {
+  const entries = new Map<T, { reason: NeedsYouReason; since: number }>();
+  let nextChangeAt: number | null = null;
+  for (const thread of threads) {
+    const reason = threadNeedsYouReason(thread, options);
+    if (reason !== null) {
+      entries.set(thread, { reason, since: threadNeedsYouSince(thread, reason) });
+      continue;
+    }
+    if (
+      thread.snoozedUntil != null &&
+      thread.settledOverride !== "settled" &&
+      threadFailureStatus(thread) !== null
+    ) {
+      const wakeAt = Date.parse(thread.snoozedUntil);
+      if (wakeAt > Date.parse(options.now) && (nextChangeAt === null || wakeAt < nextChangeAt)) {
+        nextChangeAt = wakeAt;
+      }
+    }
+  }
+  const sorted = [...entries.keys()].sort(
+    (left, right) =>
+      entries.get(left)!.since - entries.get(right)!.since ||
+      left.id.localeCompare(right.id) ||
+      left.environmentId.localeCompare(right.environmentId),
+  );
+  return {
+    threads: sorted,
+    reasonOf: (thread) => entries.get(thread)?.reason ?? "approval",
+    sinceOf: (thread) => entries.get(thread)?.since ?? 0,
+    nextChangeAt,
+  };
+}
+
+/**
+ * Where "next thread that needs you" goes: the one after `current` in Needs you order,
+ * wrapping around, or the longest wait when the open thread is not listed.
+ */
+export function nextNeedsYouThread<T extends Pick<EnvironmentThreadShell, "environmentId" | "id">>(
+  threads: readonly T[],
+  current: { readonly environmentId: string; readonly threadId: string } | null,
+): T | null {
+  const index =
+    current === null
+      ? -1
+      : threads.findIndex(
+          (thread) =>
+            thread.environmentId === current.environmentId && thread.id === current.threadId,
+        );
+  if (index === -1) return threads[0] ?? null;
+  return threads.length > 1 ? threads[(index + 1) % threads.length]! : null;
 }
 
 type InboxThreadInput = Pick<

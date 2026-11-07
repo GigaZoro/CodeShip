@@ -1,3 +1,4 @@
+import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { resolveThreadRowStatus, ThreadRowStatusContent } from "./threadRowStatus";
 import { ThreadTerminalStatusButton } from "../ThreadStatusIndicators";
@@ -72,7 +73,7 @@ import {
   machineAvailabilityLabel,
   machineShowsLastKnownState,
 } from "@t3tools/client-runtime/connection";
-import { formatRelativeTimeLabel } from "../../timestampFormat";
+import { formatRelativeElapsed, formatRelativeTimeLabel } from "../../timestampFormat";
 import type { SidebarThreadSummary } from "../../types";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { cn } from "~/lib/utils";
@@ -85,7 +86,6 @@ import {
   hasUnseenWake,
   resolveSidebarRowAccessibility,
   type SidebarDropVerb,
-  resolveSidebarThreadStatus,
   resolveThreadLastVisitedAt,
   shouldRecedeSidebarThread,
   resolveWorkingStartedAt,
@@ -153,6 +153,12 @@ function RelativeTimeLabel(props: { timestamp: string | null }) {
     : compactSidebarTimeLabel(
         formatRelativeTimeLabel(props.timestamp, Date.parse(`${nowMinute}:00.000Z`)),
       );
+}
+
+/** How long a Needs you thread has waited on the user, on the shared minute tick. */
+function WaitingSinceLabel(props: { since: number }) {
+  const nowMinute = useNowMinute();
+  return formatRelativeElapsed(Math.max(0, Date.parse(`${nowMinute}:00.000Z`) - props.since)).value;
 }
 
 function threadTimeTimestamp(thread: SidebarThreadSummary): string {
@@ -623,6 +629,8 @@ type SidebarThreadRowProps = {
   sweepAction: SidebarSweepAction | null;
   snoozeWakeLabelText: string | null;
   wokeAt: string | null;
+  /** Set on Needs you rows: when the thread started waiting on the user, in epoch ms. */
+  waitingSince?: number | null | undefined;
   isActive: boolean;
   // Set on the active row only; scrolls it into view when a reveal is owed.
   revealRef?: ((row: HTMLElement, threadKey: string) => void) | undefined;
@@ -792,7 +800,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     : null;
 
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
-  const status = resolveSidebarThreadStatus(thread);
+  const status = resolveThreadStatus(thread);
   const isWoke = hasUnseenWake({
     wokeAt: props.wokeAt,
     lastVisitedAt,
@@ -1607,7 +1615,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                             BackgroundThreadAnnouncer and the open thread's
                             timeline speak status changes instead. */}
                           <ThreadRowStatusContent status={topStatus} iconClassName="size-4" />
-                          {!statusIsLive ? null : status === "working" ? (
+                          {!statusIsLive ? null : props.waitingSince != null ? (
+                            <span className="font-normal">
+                              <WaitingSinceLabel since={props.waitingSince} />
+                            </span>
+                          ) : status === "working" ? (
                             <span aria-hidden>
                               <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
                             </span>

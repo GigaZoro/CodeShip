@@ -1,3 +1,12 @@
+## 2026-11-07 — One "Needs you" everywhere
+
+- Needs you also lists runs that failed or hit a usage limit, the same ones that notify you. Retrying, settling or snoozing such a thread takes it off the list, and you can settle it right from the list.
+- Needs you puts the longest wait first and shows how long each thread has waited, on web, desktop and mobile.
+- Press Mod+Shift+U, or choose Next thread that needs you in the command palette, to step through the threads that need you. On mobile, a "N more need you" button above the composer does the same, and the iPad command palette has it too.
+- The desktop dock and Windows taskbar badge, the Threads icon in the side rail and the mobile app icon now count the threads that need you. The badge no longer clears when you switch to the window.
+- Thread statuses use the same words on every surface: the thread status pill says Starting instead of Connecting and Done instead of Completed, screen readers say "Approval needed" and "Input needed" as notifications do, and a pinned scheduled task says Limited or Request like its thread.
+- Your phone no longer alerts when a snoozed thread finishes. A failure or a request for approval or input still does.
+
 ## 2026-11-07 — Settings, scheduled tasks, archive, usage and MCP servers
 
 - Reset page now resets a setting that only another machine changed. The confirmation names the machines it writes to, and an Undo puts every machine's values back.

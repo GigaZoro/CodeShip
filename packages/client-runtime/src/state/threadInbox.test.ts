@@ -2,10 +2,13 @@ import { EnvironmentId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/con
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  collectNeedsYouThreads,
   createInboxReturnTracker,
   isThreadWorking,
+  nextNeedsYouThread,
   sortInboxThreadsByReturn,
   sortWorkingThreadsBySend,
+  threadNeedsYouReason,
 } from "./threadInbox.ts";
 
 const environmentId = EnvironmentId.make("environment-1");
@@ -241,3 +244,124 @@ describe("sortWorkingThreadsBySend", () => {
     ).toEqual(["sent-last", "sent-first", "launched"]);
   });
 });
+
+describe("Needs you", () => {
+  const now = "2026-06-01T12:00:00.000Z";
+  const run = (status: "completed" | "failed", completedAt: string) => ({
+    runId: RunId.make(`run:${completedAt}`),
+    status,
+    requestedAt: "2026-06-01T00:00:00.000Z",
+    startedAt: "2026-06-01T00:00:00.000Z",
+    completedAt,
+    assistantMessageId: null,
+  });
+  function failed(
+    id: string,
+    completedAt: string,
+    snooze: { readonly snoozedAt: string; readonly snoozedUntil: string } | null = null,
+    lastErrorClass: "usage_limit" | null = null,
+  ) {
+    return {
+      ...thread(id, false),
+      updatedAt: completedAt,
+      settledOverride: null,
+      snoozedAt: snooze?.snoozedAt ?? null,
+      snoozedUntil: snooze?.snoozedUntil ?? null,
+      latestRun: run("failed", completedAt),
+      runtime: {
+        status: "failed" as const,
+        activeRunId: null,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        providerName: "Codex",
+        lastError: "boom",
+        lastErrorClass,
+        updatedAt: completedAt,
+      },
+    };
+  }
+
+  it("lists failed and usage-limited runs until the user settles, snoozes, or retries them", () => {
+    const failure = failed("failed", "2026-06-01T10:00:00.000Z");
+    expect(threadNeedsYouReason(failure, { now })).toBe("failed");
+    const limited = failed("limited", "2026-06-01T10:00:00.000Z", null, "usage_limit");
+    expect(threadNeedsYouReason(limited, { now })).toBe("limited");
+    expect(threadNeedsYouReason({ ...failure, settledOverride: "settled" }, { now })).toBeNull();
+    expect(
+      threadNeedsYouReason(
+        {
+          ...failure,
+          snoozedAt: "2026-06-01T11:00:00.000Z",
+          snoozedUntil: "2026-06-01T13:00:00.000Z",
+        },
+        { now },
+      ),
+    ).toBeNull();
+    expect(
+      threadNeedsYouReason({ ...thread("retried", true), ...failedRetryFields() }, { now }),
+    ).toBeNull();
+    // A limit the thread resumes from by itself needs nothing from the user.
+    expect(
+      threadNeedsYouReason(
+        {
+          ...limited,
+          limitRecovery: {
+            runId: limited.latestRun.runId,
+            resetAt: "2026-06-01T13:00:00.000Z",
+            autoResume: true,
+          },
+        },
+        { now },
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps a waiting request listed even after the thread is settled", () => {
+    expect(
+      threadNeedsYouReason(
+        {
+          ...failed("asking", "2026-06-01T10:00:00.000Z"),
+          hasPendingApprovals: true,
+          settledOverride: "settled",
+        },
+        { now },
+      ),
+    ).toBe("approval");
+  });
+
+  it("orders the longest wait first and wakes when a failed thread's snooze ends", () => {
+    const recent = failed("recent", "2026-06-01T11:00:00.000Z");
+    const oldest = failed("oldest", "2026-06-01T08:00:00.000Z");
+    const snoozed = failed("snoozed", "2026-06-01T09:00:00.000Z", {
+      snoozedAt: "2026-06-01T09:30:00.000Z",
+      snoozedUntil: "2026-06-01T12:30:00.000Z",
+    });
+    const result = collectNeedsYouThreads([recent, snoozed, oldest], { now });
+    expect(result.threads.map((entry) => entry.id)).toEqual(["oldest", "recent"]);
+    expect(result.nextChangeAt).toBe(Date.parse("2026-06-01T12:30:00.000Z"));
+  });
+});
+
+describe("nextNeedsYouThread", () => {
+  it("walks Needs you in order and wraps, starting at the longest wait from elsewhere", () => {
+    const list = [thread("a", false), thread("b", false), thread("c", false)];
+    const at = (id: string | null) =>
+      nextNeedsYouThread(list, id === null ? null : { environmentId, threadId: id })?.id ?? null;
+    expect([at(null), at("a"), at("b"), at("c"), at("elsewhere")]).toEqual([
+      "a",
+      "b",
+      "c",
+      "a",
+      "a",
+    ]);
+    expect(nextNeedsYouThread([list[0]!], { environmentId, threadId: "a" })).toBeNull();
+  });
+});
+
+function failedRetryFields() {
+  return {
+    updatedAt: "2026-06-01T11:00:00.000Z",
+    settledOverride: null,
+    snoozedAt: null,
+    snoozedUntil: null,
+  };
+}

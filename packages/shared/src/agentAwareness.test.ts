@@ -51,6 +51,7 @@ describe("projectThreadAwarenessV2", () => {
   it("does not announce completion after a manual stop", () => {
     const input = {
       environmentId: "env-1" as EnvironmentId,
+      nowMs: 0,
       project,
       thread: v2Thread({ status: "completed" }),
     };
@@ -72,6 +73,7 @@ describe("projectThreadAwarenessV2", () => {
     expect(
       projectThreadAwarenessV2({
         environmentId: "env-1" as EnvironmentId,
+        nowMs: 0,
         project,
         thread: v2Thread({
           status,
@@ -91,6 +93,7 @@ describe("projectThreadAwarenessV2", () => {
     expect(
       projectThreadAwarenessV2({
         environmentId: "env-1" as EnvironmentId,
+        nowMs: 0,
         project,
         thread: v2Thread({ status: "cancelled", activityRunStatus: "running" }),
       }),
@@ -101,6 +104,7 @@ describe("projectThreadAwarenessV2", () => {
     expect(
       projectThreadAwarenessV2({
         environmentId: "env-1" as EnvironmentId,
+        nowMs: 0,
         project,
         thread: v2Thread({ status, settledOverride: "settled" }),
       }),
@@ -113,6 +117,7 @@ describe("projectThreadAwarenessV2", () => {
       expect(
         projectThreadAwarenessV2({
           environmentId: "env-1" as EnvironmentId,
+          nowMs: 0,
           project,
           thread: v2Thread({ status, settledOverride: "settled" }),
         }),
@@ -126,6 +131,7 @@ describe("projectThreadAwarenessV2", () => {
       expect(
         projectThreadAwarenessV2({
           environmentId: "env-1" as EnvironmentId,
+          nowMs: 0,
           project,
           thread: v2Thread({
             status: "completed",
@@ -147,6 +153,7 @@ describe("projectThreadAwarenessV2", () => {
     expect(
       projectThreadAwarenessV2({
         environmentId: "env-1" as EnvironmentId,
+        nowMs: 0,
         project,
         thread: v2Thread({
           status: "completed",
@@ -177,6 +184,7 @@ describe("projectThreadAwarenessV2", () => {
     expect(
       projectThreadAwarenessV2({
         environmentId: "env-1" as EnvironmentId,
+        nowMs: 0,
         project,
         thread: v2Thread({ status: "completed", pendingBackgroundTasks: tasks }),
       }),
@@ -186,6 +194,7 @@ describe("projectThreadAwarenessV2", () => {
   it("reports an async question as input while the run keeps working", () => {
     const input = {
       environmentId: "env-1" as EnvironmentId,
+      nowMs: 0,
       project,
       thread: v2Thread({
         pendingRuntimeRequest: {
@@ -206,6 +215,7 @@ describe("projectThreadAwarenessV2", () => {
     expect(
       projectThreadAwarenessV2({
         environmentId: "env-1" as EnvironmentId,
+        nowMs: 0,
         project,
         thread: v2Thread({
           pendingRuntimeRequest: {

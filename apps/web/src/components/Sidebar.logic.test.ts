@@ -1,3 +1,4 @@
+import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status";
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import { isThreadWorking as isSidebarThreadWorking } from "@t3tools/client-runtime/state/thread-inbox";
 import * as DateTime from "effect/DateTime";
@@ -17,7 +18,6 @@ import {
   orderItemsByPreferredIds,
   pinOrderKeyBetween,
   resolveSidebarSweepKeys,
-  resolveSidebarThreadStatus,
   resolveThreadStatusPill,
   resolveWorkingStartedAt,
   searchSidebarThreads,
@@ -222,65 +222,8 @@ describe("orderItemsByPreferredIds", () => {
   });
 });
 
-describe("resolveSidebarThreadStatus", () => {
-  const runtime = {
-    status: "running" as const,
-    activeRunId: null,
-    providerInstanceId: ProviderInstanceId.make("codex"),
-    providerName: "Codex",
-    lastError: null,
-    updatedAt: "2026-03-09T10:00:00.000Z",
-  };
-
-  const idle = { hasPendingApprovals: false, hasPendingUserInput: false, runtime: null };
-
-  it("prioritizes awaiting input over a running runtime, below approval", () => {
-    expect(
-      resolveSidebarThreadStatus({
-        ...idle,
-        hasPendingUserInput: true,
-        runtime,
-        blockedOnThreadWait: true,
-      }),
-    ).toBe("input");
-    expect(
-      resolveSidebarThreadStatus({
-        ...idle,
-        hasPendingApprovals: true,
-        hasPendingUserInput: true,
-        blockedOnThreadWait: true,
-        runtime,
-      }),
-    ).toBe("approval");
-  });
-
-  it("shows a waiting guest message as a Request, below the agent's own requests", () => {
-    expect(resolveSidebarThreadStatus({ ...idle, pendingGuestMessageCount: 1, runtime })).toBe(
-      "request",
-    );
-    expect(
-      resolveSidebarThreadStatus({
-        ...idle,
-        hasPendingUserInput: true,
-        pendingGuestMessageCount: 1,
-      }),
-    ).toBe("input");
-  });
-
-  it("keeps usage-limit stops Limited and visible until the thread recovers", () => {
-    const limited = {
-      ...runtime,
-      status: "failed" as const,
-      lastError: "Plan limit reached",
-      lastErrorClass: "usage_limit" as const,
-    };
-    expect(resolveSidebarThreadStatus({ ...idle, runtime: limited })).toBe("limited");
-    expect(
-      resolveSidebarThreadStatus({ ...idle, runtime: { ...limited, status: "running" } }),
-    ).toBe("working");
-    expect(
-      resolveSidebarThreadStatus({ ...idle, runtime: { ...limited, status: "completed" } }),
-    ).toBe("ready");
+describe("shouldRecedeSidebarThread", () => {
+  it("keeps a usage-limited thread prominent", () => {
     expect(
       shouldRecedeSidebarThread({
         status: "limited",
@@ -290,27 +233,6 @@ describe("resolveSidebarThreadStatus", () => {
         isSelected: false,
       }),
     ).toBe(false);
-  });
-
-  it("reports failed only while the latest run failed", () => {
-    expect(
-      resolveSidebarThreadStatus({
-        ...idle,
-        runtime: { ...runtime, status: "failed" as const, lastError: "boom" },
-      }),
-    ).toBe("failed");
-    expect(
-      resolveSidebarThreadStatus({
-        ...idle,
-        runtime: { ...runtime, status: "completed" as const, lastError: "persisted" },
-      }),
-    ).toBe("ready");
-    expect(
-      resolveSidebarThreadStatus({
-        ...idle,
-        runtime: { ...runtime, status: "idle" as const, lastError: "persisted" },
-      }),
-    ).toBe("waiting");
   });
 });
 
@@ -419,14 +341,14 @@ describe("resolveThreadStatusPill", () => {
 
   it("shows an active thread wait without a pulse and resumes Working when it ends", () => {
     const blocked = { ...baseThread, blockedOnThreadWait: true };
-    expect(resolveSidebarThreadStatus(blocked)).toBe("waiting");
+    expect(resolveThreadStatus(blocked)).toBe("waiting");
     expect(resolveThreadStatusPill({ thread: blocked })).toMatchObject({
       label: "Waiting",
       pulse: false,
     });
 
     const resumed = { ...blocked, blockedOnThreadWait: false };
-    expect(resolveSidebarThreadStatus(resumed)).toBe("working");
+    expect(resolveThreadStatus(resumed)).toBe("working");
     expect(resolveThreadStatusPill({ thread: resumed })).toMatchObject({
       label: "Working",
       pulse: true,
@@ -504,7 +426,7 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toMatchObject({ label: "Completed", pulse: false });
+    ).toMatchObject({ label: "Done", pulse: false });
   });
 
   it("shows failed, not completed, when the unseen run failed", () => {
@@ -913,14 +835,14 @@ describe("unseen completion with background work", () => {
       task: { kind: "command" },
       status: "ready",
       receded: false,
-      pill: "Completed",
+      pill: "Done",
     },
     {
       roster: "dev server watchdog",
       task: { kind: "monitor" },
       status: "ready",
       receded: false,
-      pill: "Completed",
+      pill: "Done",
     },
     {
       roster: "awaited command",
@@ -938,7 +860,7 @@ describe("unseen completion with background work", () => {
       lastVisitedAt: DateTime.makeUnsafe("2026-06-20T00:59:00.000Z"),
       pendingBackgroundTasks: [{ taskId: "background-work", ...expected.task }],
     });
-    const status = resolveSidebarThreadStatus(thread);
+    const status = resolveThreadStatus(thread);
     const isUnread = hasUnseenCompletion(thread);
 
     expect(isUnread).toBe(true);

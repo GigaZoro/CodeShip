@@ -16,7 +16,7 @@ import { createThreadVisitTracker } from "@t3tools/client-runtime/state/thread-v
 import { useChildThreadInputs, useThreadReportedModelSelection } from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
 import { ChatGptUsageLimitNotice } from "./ChatGptUsageLimitNotice";
-import { useFocusEffect, useNavigation } from "@react-navigation/native";
+import { StackActions, useFocusEffect, useNavigation } from "@react-navigation/native";
 import {
   effectiveSnoozed,
   threadWokeAt,
@@ -212,6 +212,7 @@ import { useThreadRewind } from "./useThreadRewind";
 import { unseenThreadWindow } from "@t3tools/client-runtime/state/thread-visits";
 import { useThreadTurnSubagents } from "./ThreadAgentsSheet";
 import { ComposerQueuedEditBanner } from "./ComposerQueuedEdit";
+import { NeedsYouNextChip } from "./NeedsYouNextChip";
 import { useThreadQueuedCount } from "./ThreadQueueControl";
 import { ThreadGuestShareBar } from "./ThreadGuestShareBar";
 import { ThreadSideChatsRow } from "./ThreadSideChatsRow";
@@ -1654,6 +1655,20 @@ function ThreadDetailBody(
                     keyboardShouldPersistTaps="handled"
                     nestedScrollEnabled
                   >
+                    {props.draftMode === undefined ? (
+                      <NeedsYouNextChip
+                        environmentId={props.environmentId}
+                        threadId={props.selectedThread.id}
+                        onOpen={(thread) =>
+                          navigation.dispatch(
+                            StackActions.replace("Thread", {
+                              environmentId: thread.environmentId,
+                              threadId: thread.id,
+                            }),
+                          )
+                        }
+                      />
+                    ) : null}
                     {props.queuedRunEdit !== null ? (
                       <Animated.View
                         className="shrink-0"

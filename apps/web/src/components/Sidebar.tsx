@@ -35,8 +35,10 @@ import {
   threadWokeAt,
 } from "@t3tools/client-runtime/state/thread-settled";
 import {
+  collectNeedsYouThreads,
   createInboxReturnTracker,
   isThreadWorking,
+  nextNeedsYouThread,
   threadAwaitsUser,
 } from "@t3tools/client-runtime/state/thread-inbox";
 import { sortSettledThreads } from "@t3tools/client-runtime/state/thread-sort";
@@ -923,10 +925,11 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   } = input;
   const preciseNow = new Date().toISOString();
   // Ignores the project scope: a thread waiting on the user must not hide in a folder, shelf, or filter.
-  const needsYou = filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent).filter(
-    threadAwaitsUser,
+  const needsYou = collectNeedsYouThreads(
+    filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent),
+    { now: preciseNow },
   );
-  const needsYouKeys = new Set(needsYou.map(threadShellKey));
+  const needsYouKeys = new Set(needsYou.threads.map(threadShellKey));
   const visible = filterSidebarV2VisibleThreads(
     threads,
     scopedProjectKeys,
@@ -999,7 +1002,8 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
       ? sortInboxThreadsByReturn(active, inboxObservation.returnedAt)
       : sortThreadsForSidebar(active);
   return {
-    needsYouThreads: sortWorkingThreadsBySend(needsYou),
+    needsYouThreads: needsYou.threads,
+    needsYouSinceOf: needsYou.sinceOf,
     pinnedThreads:
       optimisticDrop?.section !== "pinned" || optimisticDrop.order === null
         ? sortedPinned
@@ -1648,6 +1652,7 @@ export default function Sidebar({
   const {
     workingShelfEnabled,
     needsYouThreads,
+    needsYouSinceOf,
     pinnedThreads,
     draggableThreadKeys,
     activeReorderableThreadKeys,
@@ -3617,6 +3622,11 @@ export default function Sidebar({
         navigateToThread(scopeThreadRef(targetThread.environmentId, targetThread.id));
         return true;
       };
+      if (command === "thread.nextNeedsYou") {
+        const next = nextNeedsYouThread(needsYouThreads, routeThreadRef);
+        navigateToThreadKey(next === null ? null : threadShellKey(next));
+        return;
+      }
       const traversalDirection = threadTraversalDirectionFromCommand(command);
       if (traversalDirection !== null) {
         navigateToThreadKey(
@@ -3637,8 +3647,10 @@ export default function Sidebar({
   }, [
     keybindings,
     navigateToThread,
+    needsYouThreads,
     orderedThreadKeys,
     routeRowThreadKey,
+    routeThreadRef,
     routeTerminalOpen,
     threadByKey,
   ]);
@@ -4183,9 +4195,10 @@ export default function Sidebar({
                                   ? "unsettle"
                                   : "settle"
                             }
-                            // Settling would not move a thread that still waits on the user.
+                            // Settling would not move a thread a request holds; a failure it clears.
                             settlementSupported={
-                              !needsYou && serverConfigs.has(thread.environmentId)
+                              (!needsYou || !threadAwaitsUser(thread)) &&
+                              serverConfigs.has(thread.environmentId)
                             }
                             snoozeSupported={serverConfigs.has(thread.environmentId)}
                             pinningSupported={serverConfigs.has(thread.environmentId)}
@@ -4209,6 +4222,7 @@ export default function Sidebar({
                                 : null
                             }
                             wokeAt={threadWokeAt(thread, { now: snoozeNow })}
+                            waitingSince={needsYou ? needsYouSinceOf(thread) : null}
                             isActive={routeRowThreadKey === threadKey}
                             revealRef={
                               routeRowThreadKey === threadKey && !copy ? revealActiveRow : undefined

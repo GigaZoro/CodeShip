@@ -87,10 +87,10 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   getClientPlatform: () => clientPlatform,
   setNotificationBadge: (badge) =>
     ipcRenderer.invoke(IpcChannels.SET_NOTIFICATION_BADGE_CHANNEL, badge),
-  onNotificationBadgeClear: (listener) => {
+  onWindowFocus: (listener) => {
     const handler = () => listener();
-    ipcRenderer.on(IpcChannels.SET_NOTIFICATION_BADGE_CHANNEL, handler);
-    return () => ipcRenderer.removeListener(IpcChannels.SET_NOTIFICATION_BADGE_CHANNEL, handler);
+    ipcRenderer.on(IpcChannels.WINDOW_FOCUS_CHANNEL, handler);
+    return () => ipcRenderer.removeListener(IpcChannels.WINDOW_FOCUS_CHANNEL, handler);
   },
   onTrackpadScrollBegin: (listener) => {
     const handler = () => listener();

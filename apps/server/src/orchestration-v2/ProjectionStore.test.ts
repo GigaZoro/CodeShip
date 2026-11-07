@@ -7239,7 +7239,10 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         );
         assert.deepEqual(listed?.pendingBackgroundTasks, shell?.pendingBackgroundTasks);
         yield* assertShellIndexCoversShells();
-        return shell && projectThreadAwarenessV2({ environmentId, project, thread: shell })?.phase;
+        return (
+          shell &&
+          projectThreadAwarenessV2({ environmentId, nowMs: 0, project, thread: shell })?.phase
+        );
       });
 
       yield* syncPullRequests("watched", [
@@ -7370,7 +7373,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       const environmentId = EnvironmentId.make("environment:held-completion");
       const held = yield* store.getThreadShell(threadId);
       assert.equal(
-        held && projectThreadAwarenessV2({ environmentId, project, thread: held })?.phase,
+        held && projectThreadAwarenessV2({ environmentId, nowMs: 0, project, thread: held })?.phase,
         "running",
       );
 
@@ -7385,7 +7388,8 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       });
       const released = yield* store.getThreadShell(threadId);
       const state =
-        released && projectThreadAwarenessV2({ environmentId, project, thread: released });
+        released &&
+        projectThreadAwarenessV2({ environmentId, nowMs: 0, project, thread: released });
       assert.equal(state?.phase, "completed");
       assert.equal(state?.updatedAt, DateTime.formatIso(releasedAt));
 

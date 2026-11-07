@@ -42,7 +42,7 @@ beforeEach(() => {
   native.listeners.clear();
 });
 
-it.effect("validates IPC and clears on native focus, quit, and disposal", () =>
+it.effect("validates IPC, keeps the count through focus, and clears on quit and disposal", () =>
   Effect.gen(function* () {
     const handlers = new Map<string, DesktopIpc.DesktopIpcHandleListener>();
     yield* Effect.scoped(
@@ -63,15 +63,14 @@ it.effect("validates IPC and clears on native focus, quit, and disposal", () =>
         yield* Effect.promise(() => Promise.resolve(handler(event, badge)));
         expect(native.setBadgeCount).toHaveBeenLastCalledWith(2);
         native.listeners.get("browser-window-focus")!();
-        expect(native.setBadgeCount).toHaveBeenLastCalledWith(0);
-        expect(native.webContents.send).toHaveBeenCalledWith("desktop:set-notification-badge");
+        expect(native.setBadgeCount).toHaveBeenLastCalledWith(2);
+        expect(native.webContents.send).toHaveBeenCalledWith("desktop:window-focus");
         native.getFocusedWindow.mockReturnValue({});
-        yield* Effect.promise(() => Promise.resolve(handler(event, badge)));
-        expect(native.setBadgeCount).toHaveBeenLastCalledWith(0);
-        expect(native.webContents.send).toHaveBeenCalledTimes(2);
+        yield* Effect.promise(() => Promise.resolve(handler(event, { ...badge, count: 3 })));
+        expect(native.setBadgeCount).toHaveBeenLastCalledWith(3);
         yield* Effect.promise(() => Promise.resolve(handler(event, { count: 0, image: null })));
-        expect(native.webContents.send).toHaveBeenCalledTimes(2);
-        native.getFocusedWindow.mockReturnValue(null);
+        expect(native.setBadgeCount).toHaveBeenLastCalledWith(0);
+        expect(native.webContents.send).toHaveBeenCalledTimes(1);
         yield* Effect.promise(() => Promise.resolve(handler(event, badge)));
         native.listeners.get("before-quit")!();
         expect(native.setBadgeCount).toHaveBeenLastCalledWith(0);

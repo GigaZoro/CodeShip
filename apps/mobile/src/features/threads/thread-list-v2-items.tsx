@@ -1,3 +1,10 @@
+import {
+  resolveThreadStatus,
+  THREAD_STATUS_DISPLAY,
+  type ThreadStatus,
+  type ThreadStatusDisplayKey,
+  type ThreadStatusTone,
+} from "@t3tools/client-runtime/state/thread-status";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ThreadRowProviderInstance } from "./thread-provider-instance";
 import {
@@ -71,11 +78,9 @@ import {
   resolveThreadListV2SnoozeMenuSelection,
   resolveThreadListV2SnoozePresets,
   threadHasUnseenCompletion,
-  resolveThreadListV2Status,
   resolveThreadListV2ProviderDrivers,
   resolveThreadListV2SwipeActions,
   type ThreadListV2Folder,
-  type ThreadListV2Status,
 } from "./threadListV2";
 import { QueuedMessageIcon } from "./queued-message-icon";
 import { shouldRecedeThreadRow, threadRowLastKnownMachine } from "./thread-row-emphasis";
@@ -95,56 +100,55 @@ interface StatusLabel {
   readonly className: string;
   readonly iconTintClassName: string;
 }
-const STATUS_LABEL_BY_STATUS: Partial<Record<ThreadListV2Status, StatusLabel>> = {
-  approval: {
-    label: msg("Approval"),
-    icon: "exclamationmark.shield",
+
+/** Text and icon tint for each status tone; web keeps its own palette. */
+const THREAD_STATUS_TONE_CLASSES: Record<
+  ThreadStatusTone,
+  Pick<StatusLabel, "className" | "iconTintClassName">
+> = {
+  attention: {
     className: "text-warning-foreground",
     iconTintClassName: "accent-warning-foreground",
   },
-  input: {
-    label: msg("Question"),
-    icon: "questionmark.bubble",
+  question: {
     className: "text-adaptive-indigo-600-300",
     iconTintClassName: "accent-adaptive-indigo-600-300",
   },
-  request: {
-    label: msg("Request"),
-    icon: "person.crop.circle",
+  guest: {
     className: "text-adaptive-fuchsia-600-300",
     iconTintClassName: "accent-adaptive-fuchsia-600-300",
   },
-  working: {
-    label: msg("Working"),
-    icon: "circle.dashed",
+  active: {
     className: "text-adaptive-sky-600-400",
     iconTintClassName: "accent-adaptive-sky-600-400",
   },
-  waiting: {
-    label: msg("Waiting"),
-    icon: "circle.dashed.inset.filled",
-    className: "text-foreground-muted",
-    iconTintClassName: "accent-foreground-muted",
+  muted: { className: "text-foreground-muted", iconTintClassName: "accent-foreground-muted" },
+  error: { className: "text-danger-foreground", iconTintClassName: "accent-danger-foreground" },
+  success: {
+    className: "text-adaptive-emerald-700-300",
+    iconTintClassName: "accent-adaptive-emerald-700-300",
   },
-  failed: {
-    label: msg("Failed"),
-    icon: "exclamationmark.circle",
-    className: "text-danger-foreground",
-    iconTintClassName: "accent-danger-foreground",
-  },
-  limited: {
-    label: msg("Limited"),
-    icon: "exclamationmark.circle",
-    className: "text-warning-foreground",
-    iconTintClassName: "accent-warning-foreground",
+  plan: {
+    className: "text-adaptive-indigo-700-300",
+    iconTintClassName: "accent-adaptive-indigo-700-300",
   },
 };
-const DONE_STATUS_LABEL: StatusLabel = {
-  label: msg("Done"),
-  icon: "checkmark.circle",
-  className: "text-adaptive-emerald-700-300",
-  iconTintClassName: "accent-adaptive-emerald-700-300",
+
+export function threadStatusLabel(key: ThreadStatusDisplayKey, icon: AppSymbolName): StatusLabel {
+  const display = THREAD_STATUS_DISPLAY[key];
+  return { label: display.label, icon, ...THREAD_STATUS_TONE_CLASSES[display.tone] };
+}
+
+const STATUS_LABEL_BY_STATUS: Partial<Record<ThreadStatus, StatusLabel>> = {
+  approval: threadStatusLabel("approval", "exclamationmark.shield"),
+  input: threadStatusLabel("input", "questionmark.bubble"),
+  request: threadStatusLabel("request", "person.crop.circle"),
+  working: threadStatusLabel("working", "circle.dashed"),
+  waiting: threadStatusLabel("waiting", "circle.dashed.inset.filled"),
+  failed: threadStatusLabel("failed", "exclamationmark.circle"),
+  limited: threadStatusLabel("limited", "exclamationmark.circle"),
 };
+const DONE_STATUS_LABEL = threadStatusLabel("done", "checkmark.circle");
 
 function swipeHint(kind: "archive" | "unsnooze" | "unsettle" | "settle", withSnooze: boolean) {
   switch (kind) {
@@ -827,6 +831,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly snoozed?: boolean;
   readonly pinned?: boolean;
   readonly wokeAt: string | null;
+  /** Set on Needs you rows: when the thread started waiting on the user, in epoch ms. */
+  readonly waitingSince?: number | undefined;
   readonly snoozeWakeLabelText?: string;
   readonly timeLabel: string;
   readonly snoozePresetMinute: string;
@@ -936,13 +942,13 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const selected = props.selected === true;
   const rowAppearance = getThreadListV2RowAppearance(theme, sidebarPane, selected);
 
-  const status = resolveThreadListV2Status(thread);
+  const status = resolveThreadStatus(thread);
   const isUnread = status === "ready" && threadHasUnseenCompletion(thread);
   const workingLabel = STATUS_LABEL_BY_STATUS[status];
   const showsWoke = status === "ready" && props.wokeAt !== null;
   const statusLabel =
     (status === "working" && workingLabel !== undefined && thread.goal?.status === "active"
-      ? { ...workingLabel, label: msg("Goal") }
+      ? { ...workingLabel, label: THREAD_STATUS_DISPLAY.goal.label }
       : workingLabel) ?? (isUnread ? DONE_STATUS_LABEL : undefined);
   const lastKnownMachine = threadRowLastKnownMachine(status, props.machineAvailability);
   const lastKnownMachineLabel =
@@ -1470,7 +1476,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                 )}
               >
                 {t(statusLabel.label)}
-                {status === "working" ? (
+                {props.waitingSince !== undefined ? (
+                  <ThreadListV2Duration startedAt={new Date(props.waitingSince).toISOString()} />
+                ) : status === "working" ? (
                   <ThreadListV2Duration startedAt={resolveThreadWorkingStartedAt(thread)} />
                 ) : status === "waiting" ? (
                   <ThreadListV2Duration startedAt={thread.latestRun?.completedAt ?? null} />

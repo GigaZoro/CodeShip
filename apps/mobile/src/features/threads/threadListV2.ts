@@ -17,12 +17,13 @@ import {
 } from "@t3tools/client-runtime/state/thread-search";
 import { foldSearchQuery, rankSearchItems, scoreThreadSearch } from "@t3tools/shared/paletteSearch";
 import {
+  collectNeedsYouThreads,
   createInboxReturnTracker,
   isThreadWorking,
   sortInboxThreadsByReturn,
   sortWorkingThreadsBySend,
-  threadAwaitsUser,
 } from "@t3tools/client-runtime/state/thread-inbox";
+import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status";
 import {
   sortActiveThreadsByOrderKey,
   resolveSettledThreadTimestamp,
@@ -62,15 +63,6 @@ export function resolveThreadListV2ProviderDrivers(
   return currentDriver === undefined ? [] : drivers;
 }
 
-export type ThreadListV2Status =
-  | "approval"
-  | "input"
-  | "request"
-  | "working"
-  | "waiting"
-  | "failed"
-  | "limited"
-  | "ready";
 export type ThreadListV2SwipeAction = "archive" | "settle" | "unsettle" | "snooze" | "unsnooze";
 
 /**
@@ -220,45 +212,6 @@ export function resolveThreadListV2WokeAt(
     : null;
 }
 
-export function resolveThreadListV2Status(
-  thread: Pick<
-    EnvironmentThreadShell,
-    | "hasPendingApprovals"
-    | "hasPendingUserInput"
-    | "pendingSubagentRequest"
-    | "pendingGuestMessageCount"
-    | "runtime"
-    | "blockedOnThreadWait"
-  >,
-): ThreadListV2Status {
-  if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
-    return "approval";
-  }
-  if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") {
-    return "input";
-  }
-  // A guest is waiting on the owner; the agent's own requests come first.
-  if ((thread.pendingGuestMessageCount ?? 0) > 0) {
-    return "request";
-  }
-  if (thread.runtime?.status === "running" && thread.blockedOnThreadWait === true) {
-    return "waiting";
-  }
-  if (
-    thread.runtime !== null &&
-    ["preparing", "queued", "starting", "running", "waiting"].includes(thread.runtime.status)
-  ) {
-    return "working";
-  }
-  if (thread.runtime?.status === "idle") {
-    return "waiting";
-  }
-  if (thread.runtime?.status === "failed") {
-    return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
-  }
-  return "ready";
-}
-
 function parseTimestampMs(isoDate: string): number {
   const parsed = Date.parse(isoDate);
   return Number.isNaN(parsed) ? 0 : parsed;
@@ -325,6 +278,8 @@ export interface ThreadListV2Item {
   readonly copy?: boolean;
   /** Listed under Needs you, outside the order the user arranges. */
   readonly needsYou?: boolean;
+  /** When a Needs you thread started waiting on the user, in epoch ms. */
+  readonly waitingSince?: number;
 }
 
 interface ThreadListV2FolderBase {
@@ -488,6 +443,7 @@ export function threadListV2ListItemsAreEqual(
         previous.item.snoozed === item.item.snoozed &&
         previous.item.pinned === item.item.pinned &&
         previous.item.needsYou === item.item.needsYou &&
+        previous.item.waitingSince === item.item.waitingSince &&
         previous.item.wokeAt === item.item.wokeAt &&
         previous.snoozeWakeLabelText === item.snoozeWakeLabelText &&
         previous.timeLabel === item.timeLabel &&
@@ -568,7 +524,7 @@ function resolveThreadListV2ItemTimeLabel(
   if (showSnoozeWakeLabel) return "";
   if (
     variant === "card" &&
-    (resolveThreadListV2Status(thread) !== "ready" ||
+    (resolveThreadStatus(thread) !== "ready" ||
       item.wokeAt !== null ||
       threadHasUnseenCompletion(thread))
   )
@@ -807,10 +763,12 @@ export function buildThreadListV2Items(input: {
   const listableThreads = input.threads.filter(
     (thread) => thread.archivedAt === null && isListedThreadLineage(thread.lineage),
   );
+  const awaiting = collectNeedsYouThreads(listableThreads, { now });
+  const awaitingThreads = new Set(awaiting.threads);
   const listedThreads = listableThreads.filter(
     (thread) =>
       (input.hiddenTaskThreadKeys?.has(`${thread.environmentId}:${thread.id}`) !== true ||
-        threadAwaitsUser(thread)) &&
+        awaitingThreads.has(thread)) &&
       (input.environmentId === null || thread.environmentId === input.environmentId) &&
       (projectKeys === null || projectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
   );
@@ -828,10 +786,7 @@ export function buildThreadListV2Items(input: {
   const matchingThreads = rankedMatches === null ? null : new Set(rankedMatches);
   // Past the machine and project filters: a thread waiting on the user must not hide in a
   // folder, shelf, or filter. A search ranks every match in one list instead.
-  const needsYou =
-    rankedMatches === null
-      ? sortWorkingThreadsBySend(listableThreads.filter(threadAwaitsUser))
-      : [];
+  const needsYou = rankedMatches === null ? awaiting.threads : [];
   const needsYouThreads = new Set(needsYou);
   // Threads listed only because their messages match; only their rows show
   // the message and open at it.
@@ -974,6 +929,7 @@ export function buildThreadListV2Items(input: {
     wokeAt: resolveThreadListV2WokeAt(thread, { now }),
     isLast: false,
     needsYou: true,
+    waitingSince: awaiting.sinceOf(thread),
   }));
   for (const thread of applyPendingThreadOrder(
     sortPinnedThreadsByOrderKey(pinned),

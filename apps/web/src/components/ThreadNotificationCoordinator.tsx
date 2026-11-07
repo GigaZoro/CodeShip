@@ -6,6 +6,12 @@ import {
 } from "@t3tools/client-runtime/state/models";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
+import { threadFailureStatus } from "@t3tools/client-runtime/state/thread-inbox";
+import {
+  resolveThreadStatus,
+  THREAD_STATUS_DISPLAY,
+  type ThreadStatus,
+} from "@t3tools/client-runtime/state/thread-status";
 import type { AnyRouter } from "@tanstack/react-router";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
 import type {
@@ -37,7 +43,6 @@ import {
   threadNotificationTag,
   unlockNotificationAudio,
 } from "../threadNotifications";
-import { resolveSidebarThreadStatus, type SidebarThreadStatus } from "./Sidebar.logic";
 import {
   createThreadNotificationGate,
   threadNotificationPlace,
@@ -50,7 +55,7 @@ interface NotificationState extends ThreadNotificationObservation {
   readonly raw: OrchestrationV2ThreadShell;
   readonly subagentRequest: PendingSubagentRequest | null;
   readonly thread: EnvironmentThreadShell;
-  readonly status: SidebarThreadStatus;
+  readonly status: ThreadStatus;
 }
 
 type ToastId = ReturnType<typeof toastManager.add>;
@@ -66,7 +71,7 @@ interface WatchedEnvironment {
 
 /**
  * Turns thread status transitions in every connected environment into sounds, in-app toasts,
- * and desktop notifications, and keeps the dock badge in step with the unread ones.
+ * and desktop notifications, and keeps the dock badge at the Needs you count.
  */
 export function startThreadNotifications(
   registry: AtomRegistry.AtomRegistry,
@@ -85,7 +90,6 @@ export function startThreadNotifications(
   ) => {
     pending.get(notification.tag)?.notification.close();
     pending.set(notification.tag, { environmentId, threadId, notification });
-    setNotificationBadge(pending.size);
   };
   // Toast ids by thread key, so hiding a thread can close its open toasts.
   const openToasts = new Map<string, Array<ToastId>>();
@@ -107,18 +111,15 @@ export function startThreadNotifications(
       for (const toastId of toastIds) toastManager.close(toastId);
       openToasts.delete(key);
     }
-    const count = pending.size;
     for (const [tag, entry] of pending) {
       if (!shouldClose(threadKey(entry))) continue;
       entry.notification.close();
       pending.delete(tag);
     }
-    if (count !== pending.size) setNotificationBadge(pending.size);
   };
   const clearPending = () => {
     for (const { notification } of pending.values()) notification.close();
     pending.clear();
-    setNotificationBadge(0);
   };
 
   const notificationPlace = (environmentId: EnvironmentId, projectId: ProjectId) => {
@@ -157,18 +158,16 @@ export function startThreadNotifications(
       environmentId?: string;
       threadId?: string;
     };
-    const title =
+    const title = t(
       kind === "completion"
-        ? t("Thread completed")
-        : status === "approval"
-          ? t("Approval needed")
-          : status === "limited"
-            ? t("Usage limit reached")
-            : status === "failed"
-              ? t("Thread failed")
-              : status === "request"
-                ? t("Guest request")
-                : t("Input needed");
+        ? THREAD_STATUS_DISPLAY.done.summary
+        : status === "approval" ||
+            status === "limited" ||
+            status === "failed" ||
+            status === "request"
+          ? THREAD_STATUS_DISPLAY[status].summary
+          : THREAD_STATUS_DISPLAY.input.summary,
+    );
     const place = notificationPlace(environmentId, thread.projectId);
     if (hasNotificationSound(mode)) {
       void playNotificationSound(kind, () =>
@@ -288,8 +287,7 @@ export function startThreadNotifications(
         continue;
       }
       const thread = presentThreadShell(environmentId, rawThread, subagentRequest);
-      let status = resolveSidebarThreadStatus(thread);
-      if (status === "ready" && thread.latestRun?.status === "failed") status = "failed";
+      const status = threadFailureStatus(thread) ?? resolveThreadStatus(thread);
       const attention =
         status === "input" ||
         status === "request" ||
@@ -400,13 +398,11 @@ export function startThreadNotifications(
 
   const pruneRemovedEnvironments = () => {
     const activeIds = new Set(registry.get(environmentSummaries.environmentIdsAtom));
-    const count = pending.size;
     for (const [tag, entry] of pending) {
       if (activeIds.has(entry.environmentId)) continue;
       entry.notification.close();
       pending.delete(tag);
     }
-    if (count !== pending.size) setNotificationBadge(pending.size);
   };
 
   // Listeners that only exist for some notification modes, rebuilt when the mode changes.
@@ -420,10 +416,23 @@ export function startThreadNotifications(
     clearPending();
     const stops: Array<() => void> = [];
     if (hasDesktopNotifications(nextMode)) {
-      const unsubscribeBadgeClear = window.desktopBridge?.onNotificationBadgeClear(clearPending);
+      const unsubscribeWindowFocus = window.desktopBridge?.onWindowFocus(clearPending);
       window.addEventListener("focus", clearPending);
+      // The badge counts what needs the user, not what was announced, so focus leaves it.
+      let badgeCount = -1;
+      const unsubscribeBadge = registry.subscribe(
+        environmentThreadShells.needsYouThreadsAtom,
+        (needsYou) => {
+          if (needsYou.threads.length === badgeCount) return;
+          badgeCount = needsYou.threads.length;
+          setNotificationBadge(badgeCount);
+        },
+        { immediate: true },
+      );
       stops.push(() => {
-        unsubscribeBadgeClear?.();
+        unsubscribeWindowFocus?.();
+        unsubscribeBadge();
+        setNotificationBadge(0);
         window.removeEventListener("focus", clearPending);
         clearPending();
       });

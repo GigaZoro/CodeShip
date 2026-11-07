@@ -36,6 +36,7 @@ import {
   installAgentNotificationNavigation,
   setAgentNotificationPathname,
 } from "./features/agent-awareness/notificationNavigation";
+import { installNeedsYouBadge } from "./features/agent-awareness/needsYouBadge";
 import {
   installAppShortcuts,
   recordAppShortcutNavigationState,
@@ -194,6 +195,7 @@ const appServiceDisposers = [
   installSharedScheduledTaskSync(),
   startIncomingShareInbox(),
   installAgentNotificationNavigation(linkToAppPath),
+  installNeedsYouBadge(),
   installAppShortcuts(linkToAppPath),
   onLanguageApplied(setAndroidAgentNotificationLanguage),
   installAppUpdateChecks(),

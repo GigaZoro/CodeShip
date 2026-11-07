@@ -531,6 +531,12 @@ const catalog: MessageCatalog = {
     many: "Ще {count} файлів у повних змінах",
     other: "Ще {count} файлу у повних змінах",
   },
+  "{count} more need you": {
+    one: "Ще {count} потребує вас",
+    few: "Ще {count} потребують вас",
+    many: "Ще {count} потребують вас",
+    other: "Ще {count} потребують вас",
+  },
   "{count} more replies": {
     one: "Ще {count} відповідь",
     few: "Ще {count} відповіді",
@@ -977,12 +983,6 @@ const catalog: MessageCatalog = {
     few: "{count} чатам потрібна ваша увага",
     many: "{count} чатам потрібна ваша увага",
     other: "{count} чату потрібна ваша увага",
-  },
-  "{count} threads with new notifications": {
-    one: "{count} чат із новими сповіщеннями",
-    few: "{count} чати з новими сповіщеннями",
-    many: "{count} чатів із новими сповіщеннями",
-    other: "{count} чату з новими сповіщеннями",
   },
   "{count} times": {
     one: "{count} раз",
@@ -7086,14 +7086,12 @@ const catalog: MessageCatalog = {
   "Need a pairing link?": "Потрібне посилання сполучення?",
   "needs a manual update": "потрібне ручне оновлення",
   "needs a newer desktop app": "потрібен новіший настільний застосунок",
-  "Needs approval": "Потрібне схвалення",
   "Needs attention": "Потрібна увага",
   "Needs Keychain access to read its cookies.":
     "Потрібен доступ до Keychain, щоб прочитати його cookie.",
   "Needs sign-in": "Потрібен вхід",
   "Needs you": "Потрібні ви",
   "Needs you ({count})": "Потрібні ви ({count})",
-  "Needs your input": "Потрібна ваша відповідь",
   "Negate {name}": "Заперечити {name}",
   "Negate group": "Заперечити групу",
   Network: "Мережа",
@@ -7208,6 +7206,7 @@ const catalog: MessageCatalog = {
   "Next sheet": "Наступний аркуш",
   "Next slide": "Наступний слайд",
   "Next stop": "Наступний етап",
+  "Next thread that needs you": "Наступний чат, якому потрібні ви",
   "Next turn": "Наступний хід",
   "Next week": "Наступного тижня",
   "Next, choose your shortcut.": "Далі виберіть скорочення.",
@@ -12323,6 +12322,12 @@ const catalog: MessageCatalog = {
   "Threads you archive will appear here.": "Тут з’являться чати, які ви архівуєте.",
   "Threads you archived, with restore and delete.":
     "Заархівовані чати з можливістю відновлення та видалення.",
+  "Threads, {count} need you": {
+    one: "Чати, {count} потребує вашої уваги",
+    few: "Чати, {count} потребують вашої уваги",
+    many: "Чати, {count} потребують вашої уваги",
+    other: "Чати, {count} потребують вашої уваги",
+  },
   "through {count} files": {
     one: "через {count} файл",
     few: "через {count} файли",
