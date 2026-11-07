@@ -1,15 +1,21 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { EnvironmentId } from "@t3tools/contracts";
-import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
 import {
+  normalizeProviderAccentColor,
+  resolveProviderInstanceDisplayName,
+} from "@t3tools/client-runtime/state/provider-instance-display";
+import {
+  collectAccountFailover,
   collectLimitAccounts,
   collectExternalUsageLinks,
   collectLimitNotices,
   collectLimitPools,
   cursorUsageWindowDetails,
+  describeAccountFailover,
   displayLimitWindows,
   formatResetsIn,
+  oldestLimitsCheck,
   paceRemainingPercent,
   remainingPercent,
   type LimitAccount,
@@ -26,6 +32,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { environmentPresentations } from "../../state/presentation";
+import { relativeTime } from "../../lib/time";
 import { ResetCredits } from "./UsageLimitsSection";
 import { usageProviderKind, useProviderColors } from "./usageProviders";
 import { t, tn, msg, getFormattingLocale } from "../../lib/i18n";
@@ -41,6 +48,18 @@ const PACE_LABEL = {
   on: msg("On pace"),
   under: msg("Under pace"),
 } as const;
+
+function checkedAgo(checkedAt: string, now: number) {
+  const ago = relativeTime(checkedAt, now);
+  return ago === "<1m" ? t("Checked just now") : t("Checked {time} ago", { time: ago });
+}
+
+const formatResetTime = (isoDate: string) =>
+  new Date(isoDate).toLocaleString(getFormattingLocale(), {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 
 function segmentAccessibilityLabel(
   index: number,
@@ -451,6 +470,7 @@ export function UsageLimitsSection({
       ? presentations
       : new Map([...presentations].filter(([id]) => selectedEnvironmentIds.has(id)));
   const pools = collectLimitPools(collectLimitAccounts(selected), now);
+  const failover = collectAccountFailover(selected, now);
   const notices = collectLimitNotices(selected);
   const externalLinks = collectExternalUsageLinks(selected);
   const colors = useProviderColors();
@@ -474,15 +494,36 @@ export function UsageLimitsSection({
       ) : null}
       {pools.map((pool, index) => {
         const windows = displayLimitWindows(pool);
+        const checkedAt = oldestLimitsCheck(pool.accounts);
         return (
           <Fragment key={pool.driver}>
             {index === cursorPromptAt ? cursorPrompt : null}
             <View className="gap-3">
-              <View className="flex-row items-center gap-2 px-1">
-                <ProviderIcon provider={pool.driver} size={18} />
-                <Text className="text-base font-t3-medium text-foreground">
-                  {DRIVER_LABEL[pool.driver] ?? pool.driver}
-                </Text>
+              <View className="gap-1 px-1">
+                <View className="flex-row items-center gap-2">
+                  <ProviderIcon provider={pool.driver} size={18} />
+                  <Text className="min-w-0 flex-1 text-base font-t3-medium text-foreground">
+                    {DRIVER_LABEL[pool.driver] ?? pool.driver}
+                  </Text>
+                  {checkedAt ? (
+                    <Text className="text-xs tabular-nums text-foreground-tertiary">
+                      {checkedAgo(checkedAt, now)}
+                    </Text>
+                  ) : null}
+                </View>
+                {failover
+                  .filter((entry) => entry.driver === pool.driver)
+                  .map((entry) => (
+                    <Text key={entry.environmentId} className="text-xs text-foreground-muted">
+                      {selected.size > 1
+                        ? t("{environment}: ", { environment: entry.environmentLabel })
+                        : null}
+                      {describeAccountFailover(entry.status, {
+                        accountName: resolveProviderInstanceDisplayName,
+                        time: formatResetTime,
+                      })}
+                    </Text>
+                  ))}
               </View>
               {windows.map((window) => {
                 const details =
@@ -647,6 +688,14 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
                   {t("Restores {percent}% of the pool", { percent: reset.restoresPercent })}
                 </Text>
               ) : null}
+              <Text selectable className="text-sm text-foreground-muted">
+                {t("Checked at {time}", {
+                  time: new Date(account.limits.checkedAt).toLocaleString(getFormattingLocale(), {
+                    dateStyle: "medium",
+                    timeStyle: "short",
+                  }),
+                })}
+              </Text>
             </View>
             <View className="gap-2 rounded-[24px] border-continuous bg-grouped-card p-4">
               <Text className="text-sm font-t3-medium text-foreground">

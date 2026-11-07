@@ -5,10 +5,12 @@ import {
 } from "@t3tools/client-runtime/connection";
 import { AsyncResult } from "effect/reactivity";
 import {
+  ArrowRightLeftIcon,
   ChevronDownIcon,
   ChevronUpIcon,
   Clock3Icon,
   CopyIcon,
+  CopyPlusIcon,
   HistoryIcon,
   InboxIcon,
   MoreHorizontalIcon,
@@ -17,6 +19,7 @@ import {
   PlayIcon,
   PlusIcon,
   Trash2Icon,
+  TriangleAlertIcon,
 } from "lucide-react";
 import { type ReactNode, useContext, useRef, useState } from "react";
 import type {
@@ -58,8 +61,8 @@ import {
 import { getFormattingLocale, msg, t, tn, tx, type Message } from "~/i18n";
 import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
-import { formatRelativeTime } from "../../timestampFormat";
-import { useEnvironmentSettings } from "../../hooks/useSettings";
+import { formatRelativeTime, formatUpcomingTimestamp } from "../../timestampFormat";
+import { useClientSettings, useEnvironmentSettings } from "../../hooks/useSettings";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
 import { providerInstanceEntriesFor } from "../../providerInstances";
 import { usePrimaryCloudLinkState } from "../../cloud/primaryCloudLinkState";
@@ -88,6 +91,7 @@ import {
 import {
   describeOneMachineLinkWarning,
   effectiveOneMachineOrder,
+  groupSharedScheduledTasks,
   mergeMachineOrder,
   moveMachine,
   newestProjectMachineOrder,
@@ -95,10 +99,10 @@ import {
   projectMachineOrderSubject,
   seedMachineOrder,
   sharedProjectReference,
-  sharedSyncFailureKey,
   sharedUpsertField,
   toggleSharedExclusion,
   visibleMachineOrder,
+  type SharedScheduledTaskGroup,
 } from "@t3tools/client-runtime/scheduled-task-sharing";
 import {
   sharedScheduledTaskSnapshotsAtom,
@@ -132,6 +136,8 @@ import { SettingsGroup } from "./SettingsGroup";
 import { settingsScopeEnvironmentLabel, settingsScopeEnvironmentLabels } from "./settingsScopeAxis";
 import {
   WEBHOOK_SIGNATURE_DEFAULTS,
+  copyTaskDraft,
+  matchingProjectId,
   scheduleDraftErrors,
   toDateTimeLocalValue,
   webhookDeliveryLabel,
@@ -431,6 +437,100 @@ export function ScheduledRelativeLabel(props: { value: string | null }) {
   return relativeLabel(props.value, Date.parse(`${nowMinute}:00.000Z`));
 }
 
+function UpcomingTime(props: { value: string }) {
+  const nowMinute = useNowMinute();
+  const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
+  return (
+    <time dateTime={props.value}>
+      {formatUpcomingTimestamp(props.value, timestampFormat, Date.parse(`${nowMinute}:00.000Z`))}
+    </time>
+  );
+}
+
+/** What holds or comes next for a task on its machine. */
+function TaskNextRun({ task }: { readonly task: ScheduledTask }) {
+  if (task.blockedByPolicy !== undefined) return task.blockedByPolicy;
+  if (!task.enabled) return t("Paused");
+  if (task.schedule.type === "webhook") return t("Listening");
+  if (!task.nextRunAt) return t("Not scheduled");
+  return tx("Next run {when} ({time})", {
+    when: <ScheduledRelativeLabel value={task.nextRunAt} />,
+    time: <UpcomingTime value={task.nextRunAt} />,
+  });
+}
+
+/** The last run, linked to its thread on the machine that ran it. */
+function TaskLastRun({
+  environmentId,
+  task,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly task: ScheduledTask;
+}) {
+  if (!task.lastRunAt || task.lastRunStatus === "running") return null;
+  const label = tx("Last run {when}", { when: <ScheduledRelativeLabel value={task.lastRunAt} /> });
+  // A run that failed before it had a thread leaves an older run's thread recorded.
+  const threadId = task.lastRunStatus === "succeeded" ? pinnedTaskRunThreadId(task) : null;
+  if (threadId === null) return <span>{label}</span>;
+  return (
+    <Link
+      to="/$environmentId/$threadId"
+      params={buildThreadRouteParams(scopeThreadRef(environmentId, threadId))}
+      className="underline underline-offset-2 hover:text-foreground"
+    >
+      {label}
+    </Link>
+  );
+}
+
+function RunStatusBadge({ task }: { readonly task: ScheduledTask }) {
+  if (task.lastRunStatus === "never") return null;
+  return (
+    <Badge variant={statusVariant(task.lastRunStatus)}>{runStatusLabel(task.lastRunStatus)}</Badge>
+  );
+}
+
+/** Run errors are full cause traces, so they keep two lines until asked for more. */
+function RunError({ error }: { readonly error: string }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <span className="flex basis-full flex-col items-start gap-1">
+      <span
+        className={cn(
+          "whitespace-pre-wrap break-words text-destructive-foreground",
+          !expanded && "line-clamp-2",
+        )}
+      >
+        {error}
+      </span>
+      {error.length > 160 || error.includes("\n") ? (
+        <Button
+          size="xs"
+          variant="ghost"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? t("Show less") : t("Show full error")}
+        </Button>
+      ) : null}
+    </span>
+  );
+}
+
+function TaskWarnings({ warnings }: { readonly warnings: ReadonlyArray<string> }) {
+  if (warnings.length === 0) return null;
+  return (
+    <ul className="flex basis-full flex-col gap-0.5 text-warning-foreground">
+      {warnings.map((warning) => (
+        <li key={warning} className="flex items-start gap-1.5">
+          <TriangleAlertIcon aria-hidden className="mt-0.5 size-3 shrink-0" />
+          <span className="min-w-0 break-words">{warning}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /** The schedule and what holds or comes next: the policy blocking it, the next run, or paused. */
 export function ScheduledTaskScheduleLine(props: { task: ScheduledTask }) {
   const { task } = props;
@@ -439,9 +539,10 @@ export function ScheduledTaskScheduleLine(props: { task: ScheduledTask }) {
     return t("{schedule} · {policy}", { schedule, policy: task.blockedByPolicy });
   }
   if (task.enabled && task.nextRunAt !== null) {
-    return tx("{schedule} · next {when}", {
+    return tx("{schedule} · next {when} ({time})", {
       schedule,
       when: <ScheduledRelativeLabel value={task.nextRunAt} />,
+      time: <UpcomingTime value={task.nextRunAt} />,
     });
   }
   return task.enabled ? schedule : t("{schedule} · paused", { schedule });
@@ -490,6 +591,7 @@ export function ScheduledTasksSettings(target: {
   const [editor, setEditor] = useState<{
     environmentId: EnvironmentId;
     task: ScheduledTask | null;
+    source?: EditorSource;
   } | null>(null);
   const openForEdit = (environmentId: EnvironmentId, task: ScheduledTask) => {
     setEditor({ environmentId, task });
@@ -549,6 +651,30 @@ export function ScheduledTasksSettings(target: {
   const startTask = creationEnvironment
     ? () => setEditor({ environmentId: creationEnvironment.environmentId, task: null })
     : undefined;
+  const moveTargetIds = permittedEnvironments.map((entry) => entry.environmentId);
+  const actions: ScheduledTaskActions = {
+    onEdit: openForEdit,
+    onDuplicate: creationEnvironment
+      ? (environmentId, task) =>
+          setEditor({
+            environmentId: moveTargetIds.includes(environmentId)
+              ? environmentId
+              : creationEnvironment.environmentId,
+            task: null,
+            source: { kind: "duplicate", environmentId, task },
+          })
+      : undefined,
+    onMove: (environmentId, task) => {
+      const destination = moveTargetIds.find((id) => id !== environmentId);
+      if (destination === undefined) return;
+      setEditor({
+        environmentId: destination,
+        task: null,
+        source: { kind: "move", environmentId, task },
+      });
+    },
+    moveTargetIds,
+  };
   return (
     <>
       <WorkspacePageHeader electron={isElectron} className="border-b">
@@ -586,7 +712,7 @@ export function ScheduledTasksSettings(target: {
           <ScheduledTaskEnvironmentList
             environmentId={linkedEnvironmentId}
             taskId={target.taskId}
-            onEdit={openForEdit}
+            actions={actions}
             onCreate={startTask}
           />
         ) : (
@@ -596,7 +722,7 @@ export function ScheduledTasksSettings(target: {
                 key={entry.environmentId}
                 environment={entry}
                 taskId={linkedEnvironmentId === entry.environmentId ? target.taskId : undefined}
-                onEdit={openForEdit}
+                actions={actions}
                 onCreate={startTask}
               />
             ))}
@@ -605,9 +731,10 @@ export function ScheduledTasksSettings(target: {
       </SettingsPageContainer>
       {editor ? (
         <ScheduledTaskEditorDialog
-          key={`${editor.environmentId}:${editor.task?.id ?? "new"}`}
+          key={`${editor.environmentId}:${editor.task?.id ?? "new"}:${editor.source?.kind ?? ""}:${editor.source?.task.id ?? ""}`}
           initialEnvironmentId={editor.environmentId}
           task={editor.task}
+          source={editor.source}
           onClose={closeEditor}
         />
       ) : null}
@@ -693,12 +820,12 @@ function ShowAllTasksIn() {
 function ScheduledTaskEnvironmentList({
   environmentId,
   taskId,
-  onEdit,
+  actions,
   onCreate,
 }: {
   readonly environmentId: EnvironmentId | undefined;
   readonly taskId: ScheduledTaskId | undefined;
-  readonly onEdit: (environmentId: EnvironmentId, task: ScheduledTask) => void;
+  readonly actions: ScheduledTaskActions;
   readonly onCreate: (() => void) | undefined;
 }) {
   const { scope, environments } = useSettingsScope();
@@ -726,7 +853,19 @@ function ScheduledTaskEnvironmentList({
   const linkedTask = linkedState?.tasks?.find((task) => task.id === taskId);
 
   const loaded = states.filter((state) => state.connected && state.error === null && state.tasks);
-  const populated = loaded.filter((state) => state.tasks && state.tasks.length > 0);
+  const { shared: sharedGroups, local } = groupSharedScheduledTasks(
+    loaded.map((state) => ({
+      environmentId: state.environment.environmentId,
+      tasks: state.tasks ?? [],
+    })),
+  );
+  const localTasksOn = (id: EnvironmentId) =>
+    local.find((list) => list.environmentId === id)?.tasks ?? [];
+  const populated = loaded.filter(
+    (state) => localTasksOn(state.environment.environmentId).length > 0,
+  );
+  const holdsShared = (id: EnvironmentId) =>
+    sharedGroups.some((group) => group.copies.some((copy) => copy.environmentId === id));
   const notConnectedLabel = t("Not connected:");
   const loadingLabel = t("Loading scheduled tasks on");
   const noTasksLabel = t("No tasks on");
@@ -746,14 +885,28 @@ function ScheduledTaskEnvironmentList({
       failures.push({ environmentId: environment.environmentId, label, error });
     } else if (!tasks) {
       summaries[loadingLabel]!.push(label);
-    } else if (tasks.length === 0 && populated.length > 0) {
+    } else if (
+      tasks.length === 0 &&
+      !holdsShared(environment.environmentId) &&
+      (populated.length > 0 || sharedGroups.length > 0)
+    ) {
       summaries[noTasksLabel]!.push(label);
     }
   }
 
   return (
     <SettingsGroup>
-      {populated.map(({ environment, tasks }) => {
+      {sharedGroups.length > 0 ? (
+        <div className="divide-y divide-border/50">
+          <p className="px-3 py-2.5 text-sm font-medium text-foreground sm:px-4">
+            {t("On more than one machine")}
+          </p>
+          {sharedGroups.map((group) => (
+            <SharedScheduledTaskRow key={group.primary.task.id} group={group} actions={actions} />
+          ))}
+        </div>
+      ) : null}
+      {populated.map(({ environment }) => {
         const { primary, secondary } = settingsScopeEnvironmentLabels(environment, environments);
         return (
           <div key={environment.environmentId} className="divide-y divide-border/50">
@@ -772,12 +925,12 @@ function ScheduledTaskEnvironmentList({
                 {connectionStatusTitle(environment.connection)}
               </span>
             </EnvironmentRow>
-            {tasks?.map((task) => (
+            {localTasksOn(environment.environmentId).map((task) => (
               <ScheduledTaskRow
                 key={task.id}
                 environmentId={environment.environmentId}
                 task={task}
-                onEdit={() => onEdit(environment.environmentId, task)}
+                actions={actions}
               />
             ))}
           </div>
@@ -793,7 +946,10 @@ function ScheduledTaskEnvironmentList({
         />
       ) : null}
       {/* Only once every machine answered: one still loading or failing may hold tasks. */}
-      {populated.length === 0 && loaded.length > 0 && loaded.length === connectedIds.length ? (
+      {populated.length === 0 &&
+      sharedGroups.length === 0 &&
+      loaded.length > 0 &&
+      loaded.length === connectedIds.length ? (
         <ScheduledTasksEmptyRow
           onCreate={onCreate}
           everyMachineAnswered={loaded.length === environments.length}
@@ -903,12 +1059,12 @@ function ScheduledTaskEnvironmentSubtitle({
 function ScheduledTaskEnvironmentSection({
   environment,
   taskId,
-  onEdit,
+  actions,
   onCreate,
 }: {
   readonly environment: EnvironmentPresentation;
   readonly taskId?: ScheduledTaskId | undefined;
-  readonly onEdit: (environmentId: EnvironmentId, task: ScheduledTask) => void;
+  readonly actions: ScheduledTaskActions;
   readonly onCreate: (() => void) | undefined;
 }) {
   const { scope } = useSettingsScope();
@@ -983,7 +1139,7 @@ function ScheduledTaskEnvironmentSection({
                 key={task.id}
                 environmentId={environment.environmentId}
                 task={task}
-                onEdit={() => onEdit(environment.environmentId, task)}
+                actions={actions}
               />
             ))
           )}
@@ -993,13 +1149,8 @@ function ScheduledTaskEnvironmentSection({
   );
 }
 
-function SharedTaskBadge({
-  task,
-  environmentId,
-}: {
-  readonly task: ScheduledTask;
-  readonly environmentId: EnvironmentId;
-}) {
+/** What every client knows about a shared task across the machines it can reach. */
+function useSharedTaskView(task: ScheduledTask) {
   const nowMinute = useNowMinute();
   const { environments } = useEnvironments();
   const failures = useSharedScheduledTaskFailures();
@@ -1021,7 +1172,6 @@ function SharedTaskBadge({
   const notSynced = [...failures.values()].filter(
     (failure) => failure.subject === task.id || failure.subject === orderSubject,
   );
-  const leftOut = (shared?.excludedEnvironmentIds ?? []).map(labelOf);
   const order =
     oneMachine && shared
       ? effectiveOneMachineOrder(
@@ -1030,108 +1180,181 @@ function SharedTaskBadge({
           sharingIds,
         )
       : [];
-  const linkWarnings = oneMachineLinkWarnings(
-    snapshots,
+  return {
+    labelOf,
+    oneMachine,
     order,
-    Date.parse(`${nowMinute}:00.000Z`),
-  ).map((warning) => describeOneMachineLinkWarning(warning, labelOf));
-  const decision = oneMachine ? task.lastOneMachineDecision : null;
-  const unchecked = decision?.unchecked ?? [];
+    sharingIds,
+    excluded: shared?.excludedEnvironmentIds ?? [],
+    holders: snapshots.flatMap((snapshot) =>
+      snapshot.tasks.some((candidate) => candidate.id === task.id && candidate.shared)
+        ? [snapshot.environmentId]
+        : [],
+    ),
+    linkWarnings: oneMachineLinkWarnings(snapshots, order, Date.parse(`${nowMinute}:00.000Z`)).map(
+      (warning) => describeOneMachineLinkWarning(warning, labelOf),
+    ),
+    notSyncedIds: [...new Set(notSynced.map((failure) => failure.environmentId))],
+    /** Every failed sync of the task, or only those to one machine. */
+    syncWarnings: (environmentId?: EnvironmentId) =>
+      notSynced
+        .filter((failure) => environmentId === undefined || failure.environmentId === environmentId)
+        .map((failure) =>
+          t("Not synced to {machine}: {error}", {
+            machine: labelOf(failure.environmentId),
+            error: failure.error,
+          }),
+        ),
+  };
+}
+
+type SharedTaskView = ReturnType<typeof useSharedTaskView>;
+
+function copyWarnings(view: SharedTaskView, environmentId: EnvironmentId, task: ScheduledTask) {
+  const unchecked = view.oneMachine ? (task.lastOneMachineDecision?.unchecked ?? []) : [];
+  return [
+    ...unchecked.map((entry) =>
+      t("{machine} couldn't check {other}: {reason}", {
+        machine: view.labelOf(environmentId),
+        other: view.labelOf(entry.environmentId),
+        reason: entry.reason,
+      }),
+    ),
+    ...(task.modelUnavailableHere
+      ? [
+          t("Runs the default model on {machine}: the task's own model isn't set up there.", {
+            machine: view.labelOf(environmentId),
+          }),
+        ]
+      : []),
+  ];
+}
+
+function lastOneMachineDecisionLabel(
+  view: SharedTaskView,
+  environmentId: EnvironmentId,
+  task: ScheduledTask,
+) {
+  const decision = view.oneMachine ? task.lastOneMachineDecision : null;
+  if (!decision) return null;
+  const time = new Date(decision.at).toLocaleString(getFormattingLocale());
+  return decision.ranOn === null
+    ? t("{machine} ran it last, at {time}", { machine: view.labelOf(environmentId), time })
+    : t("Skipped {time}: {machine} ran it", { time, machine: view.labelOf(decision.ranOn) });
+}
+
+/** How the task is shared; warnings stay on the row, where they show without hovering. */
+function SharedTaskBadge({
+  view,
+  warn,
+  children,
+}: {
+  readonly view: SharedTaskView;
+  readonly warn: boolean;
+  readonly children?: ReactNode;
+}) {
+  const leftOut = view.excluded.map(view.labelOf);
   return (
     <Tooltip>
-      <TooltipTrigger
-        render={
-          <Badge
-            variant={
-              notSynced.length > 0 || unchecked.length > 0 || linkWarnings.length > 0
-                ? "warning"
-                : "info"
-            }
-            tabIndex={0}
-          />
-        }
-      >
-        {oneMachine ? t("One machine") : t("Every machine")}
+      <TooltipTrigger render={<Badge variant={warn ? "warning" : "info"} tabIndex={0} />}>
+        {view.oneMachine ? t("One machine") : t("Every machine")}
       </TooltipTrigger>
       <TooltipPopup side="top">
         <div className="space-y-1">
           <p>
-            {oneMachine
+            {view.oneMachine
               ? t(
                   "Each run happens on one machine: the first in the order that is online and finishes it.",
                 )
               : t("Runs on every machine, each on its own schedule.")}
           </p>
-          {order.length > 0 ? (
-            <p>{t("Order: {machines}", { machines: order.map(labelOf).join(" → ") })}</p>
+          {view.order.length > 0 ? (
+            <p>{t("Order: {machines}", { machines: view.order.map(view.labelOf).join(" → ") })}</p>
           ) : null}
           {leftOut.length > 0 ? (
             <p>{t("Not on: {machines}", { machines: leftOut.join(", ") })}</p>
           ) : null}
-          {decision ? (
-            <p>
-              {decision.ranOn === null
-                ? t("Last run here at {time}", {
-                    time: new Date(decision.at).toLocaleString(getFormattingLocale()),
-                  })
-                : t("Skipped {time}: {machine} ran it", {
-                    time: new Date(decision.at).toLocaleString(getFormattingLocale()),
-                    machine: labelOf(decision.ranOn),
-                  })}
-            </p>
-          ) : null}
-          {unchecked.map((entry) => (
-            <p key={entry.environmentId}>
-              {t("Couldn't check {machine}: {reason}", {
-                machine: labelOf(entry.environmentId),
-                reason: entry.reason,
-              })}
-            </p>
-          ))}
-          {linkWarnings.map((warning) => (
-            <p key={warning}>{warning}</p>
-          ))}
-          {task.modelUnavailableHere ? (
-            <p>
-              {t("Runs the default model on {machine}: its own model isn't set up here.", {
-                machine: labelOf(environmentId),
-              })}
-            </p>
-          ) : null}
-          {notSynced.map((failure) => (
-            <p key={sharedSyncFailureKey(failure.environmentId, failure.subject)}>
-              {t("Not synced to {machine}: {error}", {
-                machine: labelOf(failure.environmentId),
-                error: failure.error,
-              })}
-            </p>
-          ))}
+          {children}
         </div>
       </TooltipPopup>
     </Tooltip>
   );
 }
 
-function ScheduledTaskRow({
+function SharedTaskStatus({
   environmentId,
   task,
-  onEdit,
 }: {
   readonly environmentId: EnvironmentId;
   readonly task: ScheduledTask;
-  readonly onEdit: () => void;
 }) {
-  const canOperate = useAtomValue(
-    serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
+  const view = useSharedTaskView(task);
+  const warnings = [
+    ...view.linkWarnings,
+    ...copyWarnings(view, environmentId, task),
+    ...view.syncWarnings(),
+  ];
+  const decision = lastOneMachineDecisionLabel(view, environmentId, task);
+  return (
+    <>
+      <SharedTaskBadge view={view} warn={warnings.length > 0}>
+        {decision ? <p>{decision}</p> : null}
+      </SharedTaskBadge>
+      <TaskWarnings warnings={warnings} />
+    </>
   );
+}
+
+/** A task the editor starts from: Duplicate saves a copy; Move saves it elsewhere, then deletes this one. */
+interface EditorSource {
+  readonly kind: "duplicate" | "move";
+  readonly environmentId: EnvironmentId;
+  readonly task: ScheduledTask;
+}
+
+interface ScheduledTaskActions {
+  readonly onEdit: (environmentId: EnvironmentId, task: ScheduledTask) => void;
+  /** Undefined when no machine lets this client create a task. */
+  readonly onDuplicate: ((environmentId: EnvironmentId, task: ScheduledTask) => void) | undefined;
+  readonly onMove: (environmentId: EnvironmentId, task: ScheduledTask) => void;
+  /** Machines this client can create a task on. */
+  readonly moveTargetIds: ReadonlyArray<EnvironmentId>;
+}
+
+/**
+ * A shared task's copies follow one machine's edits, so it has one place to move from: a task of
+ * its own, not bound to a thread there, and without a webhook URL that would change on the way.
+ */
+function canMoveTask(
+  actions: ScheduledTaskActions,
+  environmentId: EnvironmentId,
+  task: ScheduledTask,
+) {
+  return (
+    !task.shared &&
+    task.schedule.type !== "webhook" &&
+    task.threadId === null &&
+    actions.moveTargetIds.some((id) => id !== environmentId)
+  );
+}
+
+function deleteConfirmation(task: ScheduledTask, machines: ReadonlyArray<string>) {
+  if (!task.shared) return t('Delete "{name}"?\nThis cannot be undone.', { name: task.title });
+  return t(
+    'Delete "{name}" on every machine?\nIt\'s shared, so this deletes it on {machines} and on any other machine with a copy. To remove it from one machine only, edit it and untick that machine. This cannot be undone.',
+    {
+      name: task.title,
+      machines: new Intl.ListFormat(getFormattingLocale(), {
+        style: "long",
+        type: "conjunction",
+      }).format(machines),
+    },
+  );
+}
+
+/** Row commands, one at a time per row; a failure toasts under the action's own title. */
+function useScheduledTaskCommands() {
   const [busy, setBusy] = useState(false);
-  const [deliveriesOpen, setDeliveriesOpen] = useState(false);
-  const [runsOpen, setRunsOpen] = useState(false);
-  const [errorExpanded, setErrorExpanded] = useState(false);
-  const isWebhook = task.schedule.type === "webhook";
-  const offersRunHistory =
-    useEnvironment(environmentId)?.serverConfig?.environment.capabilities
-      .scheduledTaskRunHistory === true;
   const toggle = useAtomCommand(serverEnvironment.setScheduledTaskEnabled, {
     label: "scheduled task enabled",
   });
@@ -1141,12 +1364,11 @@ function ScheduledTaskRow({
   const remove = useAtomCommand(serverEnvironment.deleteScheduledTask, {
     label: "scheduled task delete",
   });
-  const setPlacement = useSetScheduledTaskPlacement();
   const navigate = useNavigate();
   const failToast = (title: string, description: string) =>
     toastManager.add(stackedThreadToast({ type: "error", title, description }));
-  /** Runs one task command while the row is busy; a failure toasts under the action's own title. */
   const perform = async <A, E>(
+    environmentId: EnvironmentId,
     failureTitle: string,
     command: () => Promise<AtomCommandResult<A, E>>,
   ): Promise<A | null> => {
@@ -1160,13 +1382,17 @@ function ScheduledTaskRow({
     }
     return null;
   };
-  const toggleEnabled = () =>
-    perform(task.enabled ? t("Could not pause task") : t("Could not resume task"), () =>
-      toggle({ environmentId, input: { id: task.id, enabled: !task.enabled } }),
+  const toggleEnabled = (environmentId: EnvironmentId, task: ScheduledTask) =>
+    perform(
+      environmentId,
+      task.enabled ? t("Could not pause task") : t("Could not resume task"),
+      () => toggle({ environmentId, input: { id: task.id, enabled: !task.enabled } }),
     );
-  const runNow = async () => {
+  const runNow = async (environmentId: EnvironmentId, task: ScheduledTask) => {
     const ran = (
-      await perform(t("Could not run task"), () => run({ environmentId, input: { id: task.id } }))
+      await perform(environmentId, t("Could not run task"), () =>
+        run({ environmentId, input: { id: task.id } }),
+      )
     )?.task;
     if (!ran) return;
     // A run whose thread could not start still succeeds as a call and records why.
@@ -1196,18 +1422,67 @@ function ScheduledTaskRow({
       }),
     );
   };
-  const deleteTask = async () => {
+  /** `machines` names the machines known to hold a shared task's copies. */
+  const deleteTask = async (
+    environmentId: EnvironmentId,
+    task: ScheduledTask,
+    machines: ReadonlyArray<string>,
+  ) => {
     if (busy) return;
+    const message = deleteConfirmation(task, machines);
     const confirmed =
-      (await requestConfirmDialog(
-        t('Delete "{name}"?\nThis cannot be undone.', { name: task.title }),
-        { variant: "destructive" },
-      )) ?? window.confirm(t('Delete "{name}"? This cannot be undone.', { name: task.title }));
+      (await requestConfirmDialog(message, { variant: "destructive" })) ??
+      window.confirm(message.replace("\n", " "));
     if (confirmed) {
-      await perform(t("Could not delete task"), () =>
+      await perform(environmentId, t("Could not delete task"), () =>
         remove({ environmentId, input: { id: task.id } }),
       );
     }
+  };
+  return { busy, toggleEnabled, runNow, deleteTask };
+}
+
+function ScheduledTaskRow({
+  environmentId,
+  task,
+  actions,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly task: ScheduledTask;
+  readonly actions: ScheduledTaskActions;
+}) {
+  const canOperate = useAtomValue(
+    serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
+  );
+  const { environments } = useEnvironments();
+  const commands = useScheduledTaskCommands();
+  const busy = commands.busy;
+  const [deliveriesOpen, setDeliveriesOpen] = useState(false);
+  const [runsOpen, setRunsOpen] = useState(false);
+  const isWebhook = task.schedule.type === "webhook";
+  const environment = environments.find((entry) => entry.environmentId === environmentId);
+  const offersRunHistory =
+    environment?.serverConfig?.environment.capabilities.scheduledTaskRunHistory === true;
+  const setPlacement = useSetScheduledTaskPlacement();
+  const sharedHolders = useAtomValue(
+    sharedScheduledTaskSnapshotsAtom(
+      environmentIdsKey(
+        task.shared
+          ? environments
+              .filter(
+                (entry) =>
+                  entry.connection.phase === "connected" && supportsSharedScheduledTasks(entry),
+              )
+              .map((entry) => entry.environmentId)
+          : [],
+      ),
+    ),
+  ).flatMap((snapshot) =>
+    snapshot.tasks.some((candidate) => candidate.id === task.id) ? [snapshot.environmentId] : [],
+  );
+  const labelOf = (id: EnvironmentId) => {
+    const entry = environments.find((candidate) => candidate.environmentId === id);
+    return entry ? settingsScopeEnvironmentLabel(entry, environments) : id;
   };
   return (
     <SettingsRow
@@ -1218,54 +1493,13 @@ function ScheduledTaskRow({
           <span>
             {tx("{schedule} · {status}", {
               schedule: scheduleLabel(task.schedule),
-              status:
-                task.blockedByPolicy !== undefined
-                  ? task.blockedByPolicy
-                  : !task.enabled
-                    ? t("Paused")
-                    : isWebhook
-                      ? t("Listening")
-                      : task.nextRunAt
-                        ? tx("Next run {when}", {
-                            when: <ScheduledRelativeLabel value={task.nextRunAt} />,
-                          })
-                        : t("Not scheduled"),
+              status: <TaskNextRun task={task} />,
             })}
           </span>
-          {task.lastRunStatus !== "never" ? (
-            <Badge variant={statusVariant(task.lastRunStatus)}>
-              {runStatusLabel(task.lastRunStatus)}
-            </Badge>
-          ) : null}
-          {task.shared ? <SharedTaskBadge task={task} environmentId={environmentId} /> : null}
-          {task.lastRunAt && task.lastRunStatus !== "running" ? (
-            <span>
-              {tx("Last run {when}", { when: <ScheduledRelativeLabel value={task.lastRunAt} /> })}
-            </span>
-          ) : null}
-          {task.lastRunError ? (
-            // Run errors are full cause traces, so the row keeps two lines until asked for more.
-            <span className="flex basis-full flex-col items-start gap-1">
-              <span
-                className={cn(
-                  "whitespace-pre-wrap break-words text-destructive-foreground",
-                  !errorExpanded && "line-clamp-2",
-                )}
-              >
-                {task.lastRunError}
-              </span>
-              {task.lastRunError.length > 160 || task.lastRunError.includes("\n") ? (
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  aria-expanded={errorExpanded}
-                  onClick={() => setErrorExpanded((expanded) => !expanded)}
-                >
-                  {errorExpanded ? t("Show less") : t("Show full error")}
-                </Button>
-              ) : null}
-            </span>
-          ) : null}
+          <RunStatusBadge task={task} />
+          <TaskLastRun environmentId={environmentId} task={task} />
+          {task.shared ? <SharedTaskStatus environmentId={environmentId} task={task} /> : null}
+          {task.lastRunError ? <RunError error={task.lastRunError} /> : null}
         </div>
       }
       control={
@@ -1278,7 +1512,7 @@ function ScheduledTaskRow({
                 ? t("Enable {name} on every machine", { name: task.title })
                 : t("Enable {name}", { name: task.title })
             }
-            onCheckedChange={() => void toggleEnabled()}
+            onCheckedChange={() => void commands.toggleEnabled(environmentId, task)}
           />
           <Menu>
             <MenuTrigger
@@ -1294,17 +1528,29 @@ function ScheduledTaskRow({
               <MoreHorizontalIcon className="size-4" />
             </MenuTrigger>
             <MenuPopup align="end">
-              <MenuItem onClick={onEdit}>
+              <MenuItem onClick={() => actions.onEdit(environmentId, task)}>
                 <PencilIcon />
                 {t("Edit")}
               </MenuItem>
+              {actions.onDuplicate ? (
+                <MenuItem onClick={() => actions.onDuplicate?.(environmentId, task)}>
+                  <CopyPlusIcon />
+                  {t("Duplicate")}
+                </MenuItem>
+              ) : null}
+              {canMoveTask(actions, environmentId, task) ? (
+                <MenuItem onClick={() => actions.onMove(environmentId, task)}>
+                  <ArrowRightLeftIcon />
+                  {t("Move to another machine")}
+                </MenuItem>
+              ) : null}
               {isWebhook ? (
                 <MenuItem onClick={() => setDeliveriesOpen(true)}>
                   <InboxIcon />
                   {t("Deliveries")}
                 </MenuItem>
               ) : (
-                <MenuItem onClick={() => void runNow()}>
+                <MenuItem onClick={() => void commands.runNow(environmentId, task)}>
                   <PlayIcon />
                   {t("Run now")}
                 </MenuItem>
@@ -1330,9 +1576,18 @@ function ScheduledTaskRow({
                 </MenuSub>
               ) : null}
               <MenuSeparator />
-              <MenuItem variant="destructive" onClick={() => void deleteTask()}>
+              <MenuItem
+                variant="destructive"
+                onClick={() =>
+                  void commands.deleteTask(
+                    environmentId,
+                    task,
+                    [...new Set([environmentId, ...sharedHolders])].map(labelOf),
+                  )
+                }
+              >
                 <Trash2Icon />
-                {t("Delete")}
+                {task.shared ? t("Delete on every machine") : t("Delete")}
               </MenuItem>
             </MenuPopup>
           </Menu>
@@ -1348,6 +1603,242 @@ function ScheduledTaskRow({
               environmentId={environmentId}
               task={task}
               onClose={() => setDeliveriesOpen(false)}
+            />
+          ) : null}
+        </div>
+      }
+    />
+  );
+}
+
+/** One machine's copy of a shared task: when it runs there, how its last run went, and why not. */
+function SharedTaskCopyLine({
+  view,
+  environmentId,
+  task,
+}: {
+  readonly view: SharedTaskView;
+  readonly environmentId: EnvironmentId;
+  readonly task: ScheduledTask;
+}) {
+  const environment = useEnvironment(environmentId);
+  const decision = lastOneMachineDecisionLabel(view, environmentId, task);
+  return (
+    <li className="flex flex-wrap items-center gap-x-2 gap-y-1">
+      <EnvironmentMachineIcon
+        aria-hidden
+        kind={resolveEnvironmentMachineKind(environment?.serverConfig ?? null)}
+        className="size-3.5 shrink-0"
+      />
+      <span className="font-medium text-foreground">{view.labelOf(environmentId)}</span>
+      <span>
+        <TaskNextRun task={task} />
+      </span>
+      <RunStatusBadge task={task} />
+      <TaskLastRun environmentId={environmentId} task={task} />
+      {decision ? <span>{decision}</span> : null}
+      {task.lastRunError ? <RunError error={task.lastRunError} /> : null}
+      <TaskWarnings
+        warnings={[...copyWarnings(view, environmentId, task), ...view.syncWarnings(environmentId)]}
+      />
+    </li>
+  );
+}
+
+/**
+ * A shared task once, however many machines hold it. Edits, pausing and deleting go to the
+ * newest copy and reach the others by sync; running and history are per machine.
+ */
+function SharedScheduledTaskRow({
+  group,
+  actions,
+}: {
+  readonly group: SharedScheduledTaskGroup;
+  readonly actions: ScheduledTaskActions;
+}) {
+  const { environmentId, task } = group.primary;
+  const canOperate = useAtomValue(
+    serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
+  );
+  const { environments } = useEnvironments();
+  const view = useSharedTaskView(task);
+  const commands = useScheduledTaskCommands();
+  const busy = commands.busy;
+  const setPlacement = useSetScheduledTaskPlacement();
+  const [runsOpen, setRunsOpen] = useState(false);
+  const rank = (id: EnvironmentId) => {
+    const index = view.order.indexOf(id);
+    return index < 0 ? view.order.length : index;
+  };
+  const copies = view.oneMachine
+    ? group.copies.toSorted((left, right) => rank(left.environmentId) - rank(right.environmentId))
+    : group.copies;
+  const unsynced = view.sharingIds.filter(
+    (id) => !view.excluded.includes(id) && !copies.some((copy) => copy.environmentId === id),
+  );
+  const historyIds = copies.flatMap((copy) =>
+    environments.find((entry) => entry.environmentId === copy.environmentId)?.serverConfig
+      ?.environment.capabilities.scheduledTaskRunHistory === true
+      ? [copy.environmentId]
+      : [],
+  );
+  const placeable = copies.filter((copy) => supportsScheduledTaskPlacement(copy.task));
+  return (
+    <SettingsRow
+      title={task.title}
+      description={<span className="line-clamp-2">{task.prompt}</span>}
+      status={
+        <div className="space-y-1.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <span>
+              {task.enabled
+                ? scheduleLabel(task.schedule)
+                : t("{schedule} · paused", { schedule: scheduleLabel(task.schedule) })}
+            </span>
+            <SharedTaskBadge
+              view={view}
+              warn={
+                view.linkWarnings.length > 0 ||
+                view.notSyncedIds.length > 0 ||
+                copies.some((copy) => copyWarnings(view, copy.environmentId, copy.task).length > 0)
+              }
+            />
+          </div>
+          <ul aria-label={t("Machines")} className="space-y-1">
+            {copies.map((copy) => (
+              <SharedTaskCopyLine
+                key={copy.environmentId}
+                view={view}
+                environmentId={copy.environmentId}
+                task={copy.task}
+              />
+            ))}
+            {unsynced.map((id) => (
+              <li key={id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="font-medium text-foreground">{view.labelOf(id)}</span>
+                <span>{t("Not synced yet")}</span>
+                <TaskWarnings warnings={view.syncWarnings(id)} />
+              </li>
+            ))}
+          </ul>
+          <TaskWarnings
+            warnings={[
+              ...view.linkWarnings,
+              ...view.notSyncedIds
+                .filter(
+                  (id) =>
+                    !unsynced.includes(id) && !copies.some((copy) => copy.environmentId === id),
+                )
+                .flatMap((id) => view.syncWarnings(id)),
+            ]}
+          />
+        </div>
+      }
+      control={
+        <div className="flex items-center gap-2">
+          <Switch
+            checked={task.enabled}
+            disabled={busy || !canOperate}
+            aria-label={t("Enable {name} on every machine", { name: task.title })}
+            onCheckedChange={() => void commands.toggleEnabled(environmentId, task)}
+          />
+          <Menu>
+            <MenuTrigger
+              render={
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  disabled={busy || !canOperate}
+                  aria-label={t("Actions for {name}", { name: task.title })}
+                />
+              }
+            >
+              <MoreHorizontalIcon className="size-4" />
+            </MenuTrigger>
+            <MenuPopup align="end">
+              <MenuItem onClick={() => actions.onEdit(environmentId, task)}>
+                <PencilIcon />
+                {t("Edit")}
+              </MenuItem>
+              {actions.onDuplicate ? (
+                <MenuItem onClick={() => actions.onDuplicate?.(environmentId, task)}>
+                  <CopyPlusIcon />
+                  {t("Duplicate")}
+                </MenuItem>
+              ) : null}
+              {copies.length === 1 ? (
+                <MenuItem onClick={() => void commands.runNow(environmentId, task)}>
+                  <PlayIcon />
+                  {t("Run now")}
+                </MenuItem>
+              ) : (
+                <MenuSub>
+                  <MenuSubTrigger>
+                    <PlayIcon />
+                    {t("Run now on")}
+                  </MenuSubTrigger>
+                  <MenuSubPopup>
+                    {copies.map((copy) => (
+                      <MenuItem
+                        key={copy.environmentId}
+                        onClick={() => void commands.runNow(copy.environmentId, copy.task)}
+                      >
+                        {view.labelOf(copy.environmentId)}
+                      </MenuItem>
+                    ))}
+                  </MenuSubPopup>
+                </MenuSub>
+              )}
+              {historyIds.length > 0 ? (
+                <MenuItem onClick={() => setRunsOpen(true)}>
+                  <HistoryIcon />
+                  {t("Run history")}
+                </MenuItem>
+              ) : null}
+              {placeable.length > 0 ? (
+                <MenuSub>
+                  <MenuSubTrigger>
+                    <PinIcon />
+                    {t("Show in")}
+                  </MenuSubTrigger>
+                  <MenuSubPopup>
+                    <ScheduledTaskPlacementRadioGroup
+                      task={placeable[0]!.task}
+                      onChange={(placement) =>
+                        void Promise.all(
+                          placeable.map((copy) =>
+                            setPlacement(copy.environmentId, [copy.task], placement),
+                          ),
+                        )
+                      }
+                    />
+                  </MenuSubPopup>
+                </MenuSub>
+              ) : null}
+              <MenuSeparator />
+              <MenuItem
+                variant="destructive"
+                onClick={() =>
+                  void commands.deleteTask(
+                    environmentId,
+                    task,
+                    [
+                      ...new Set([...copies.map((copy) => copy.environmentId), ...view.holders]),
+                    ].map(view.labelOf),
+                  )
+                }
+              >
+                <Trash2Icon />
+                {t("Delete on every machine")}
+              </MenuItem>
+            </MenuPopup>
+          </Menu>
+          {runsOpen ? (
+            <ScheduledTaskRunsDialog
+              environmentId={environmentId}
+              environmentIds={historyIds}
+              task={task}
+              onClose={() => setRunsOpen(false)}
             />
           ) : null}
         </div>
@@ -1627,10 +2118,12 @@ function WebhookDeliveryMode({ environmentId }: { readonly environmentId: Enviro
 function ScheduledTaskEditorDialog({
   initialEnvironmentId,
   task,
+  source,
   onClose,
 }: {
   readonly initialEnvironmentId: EnvironmentId;
   readonly task: ScheduledTask | null;
+  readonly source: EditorSource | undefined;
   readonly onClose: () => void;
 }) {
   const [saving, setSaving] = useState(false);
@@ -1661,6 +2154,7 @@ function ScheduledTaskEditorDialog({
           key={shown.task?.id ?? "new"}
           initialEnvironmentId={shown.environmentId}
           task={shown.task}
+          source={shown.task === null ? source : undefined}
           justCreated={shown.created}
           saving={saving}
           onSavingChange={setSaving}
@@ -1716,6 +2210,7 @@ function ScheduledTaskDestination({
 function ScheduledTaskEditorForm({
   initialEnvironmentId,
   task,
+  source,
   justCreated,
   saving,
   onSavingChange: setSaving,
@@ -1725,6 +2220,7 @@ function ScheduledTaskEditorForm({
 }: {
   readonly initialEnvironmentId: EnvironmentId;
   readonly task: ScheduledTask | null;
+  readonly source: EditorSource | undefined;
   /** The save answered with this task, which the live list may not include yet. */
   readonly justCreated: boolean;
   readonly saving: boolean;
@@ -1737,6 +2233,12 @@ function ScheduledTaskEditorForm({
   const { scope, connectedEnvironments } = useSettingsScope();
   const [environmentId, setEnvironmentId] = useState(initialEnvironmentId);
   const environment = useEnvironment(environmentId);
+  const moving = source?.kind === "move";
+  const sourceLabel = useEnvironment(source?.environmentId ?? initialEnvironmentId)?.label;
+  // A move never lands back where it started.
+  const targetEnvironments = connectedEnvironments.filter(
+    (entry) => !moving || entry.environmentId !== source.environmentId,
+  );
   // Older servers reject one-time schedules, so offer Once only where it can save.
   const offersOnce =
     environment?.serverConfig?.environment.capabilities.oneTimeSchedules === true ||
@@ -1761,15 +2263,41 @@ function ScheduledTaskEditorForm({
   const upsertTask = useAtomCommand(serverEnvironment.upsertScheduledTask, {
     label: "scheduled task upsert",
   });
+  const deleteSource = useAtomCommand(serverEnvironment.deleteScheduledTask, {
+    label: "scheduled task delete",
+  });
   const webhookDenial = managedCapabilityDenial(useManagedPolicy(environmentId), "webhookTasks");
-  const [draft, setDraftState] = useState<DraftState>(() =>
-    task
-      ? taskToDraft(task)
-      : {
-          ...EMPTY_DRAFT,
-          projectId: defaultScheduledTaskProjectId(scopedProjects, scope),
-        },
-  );
+  const projectOnTarget = (
+    from: (typeof allProjects)[number] | undefined,
+    candidates: typeof allProjects,
+  ) =>
+    (from ? matchingProjectId(from, candidates) : "") ||
+    defaultScheduledTaskProjectId(candidates, scope);
+  const [draft, setDraftState] = useState<DraftState>(() => {
+    if (task) return taskToDraft(task);
+    if (!source) {
+      return { ...EMPTY_DRAFT, projectId: defaultScheduledTaskProjectId(scopedProjects, scope) };
+    }
+    const copy = copyTaskDraft(
+      source.task,
+      source.kind === "duplicate"
+        ? t("{name} (copy)", { name: source.task.title })
+        : source.task.title,
+    );
+    if (source.environmentId === initialEnvironmentId) return copy;
+    // Projects and threads are per machine; the run settings carry over.
+    return {
+      ...copy,
+      threadId: "",
+      projectId: projectOnTarget(
+        allProjects.find(
+          (project) =>
+            project.environmentId === source.environmentId && project.id === source.task.projectId,
+        ),
+        scopedProjects,
+      ),
+    };
+  });
   const setDraft: typeof setDraftState = (update) => {
     onEdited();
     setDraftState(update);
@@ -2005,6 +2533,7 @@ function ScheduledTaskEditorForm({
         clampManagedRuntimeMode(environment?.serverConfig?.managedPolicy, draft.runtimeMode) ??
         draft.runtimeMode,
       interactionMode: draft.interactionMode,
+      ...(source?.task.placement === undefined ? {} : { placement: source.task.placement }),
       creationSource: "web",
       ...sharedUpsertField({
         supported: offersShared,
@@ -2030,6 +2559,10 @@ function ScheduledTaskEditorForm({
       }
       return;
     }
+    if (moving) {
+      await finishMove();
+      return;
+    }
     if (task === null && result.value.task.schedule.type === "webhook") {
       onCreatedWebhook(environmentId, result.value.task);
       return;
@@ -2037,14 +2570,64 @@ function ScheduledTaskEditorForm({
     onClose();
   };
 
+  // The copy is saved before the original goes, so a failure leaves the task on both machines.
+  const finishMove = async () => {
+    if (!source) return;
+    const removed = await deleteSource({
+      environmentId: source.environmentId,
+      input: { id: source.task.id },
+    });
+    const machine = sourceLabel ?? source.environmentId;
+    if (removed._tag === "Failure") {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: t("Copied, but {name} is still on {machine}", {
+            name: source.task.title,
+            machine,
+          }),
+          description: isAtomCommandInterrupted(removed)
+            ? t("Delete it there to finish the move.")
+            : t("{error} Delete it there to finish the move.", {
+                error: String(squashAtomCommandFailure(removed)),
+              }),
+        }),
+      );
+    } else {
+      toastManager.add(
+        stackedThreadToast({
+          type: "success",
+          title: t("Moved {name} to {machine}", {
+            name: draft.title.trim(),
+            machine: environment?.label ?? environmentId,
+          }),
+        }),
+      );
+    }
+    onClose();
+  };
+
   return (
     <>
       <DialogHeader>
-        <DialogTitle>{draft.editingId ? t("Edit task") : t("New task")}</DialogTitle>
+        <DialogTitle>
+          {draft.editingId
+            ? t("Edit task")
+            : moving
+              ? t("Move task")
+              : source
+                ? t("Duplicate task")
+                : t("New task")}
+        </DialogTitle>
         <DialogDescription>
-          {t(
-            "Run a prompt automatically on an interval, at a fixed time, once at a set date, or when a webhook is called.",
-          )}
+          {moving
+            ? t(
+                "Saves it on the machine you pick, then deletes it from {machine}. Its run history isn't moved.",
+                { machine: sourceLabel ?? source.environmentId },
+              )
+            : t(
+                "Run a prompt automatically on an interval, at a fixed time, once at a set date, or when a webhook is called.",
+              )}
         </DialogDescription>
       </DialogHeader>
 
@@ -2061,17 +2644,23 @@ function ScheduledTaskEditorForm({
               value={environmentId}
               disabled={task !== null || saving}
               onValueChange={(id) => {
-                const next = connectedEnvironments.find((entry) => entry.environmentId === id);
+                const next = targetEnvironments.find((entry) => entry.environmentId === id);
                 if (!next) return;
                 setEnvironmentId(next.environmentId);
                 setDraft((current) => ({
                   ...current,
-                  projectId: defaultScheduledTaskProjectId(projectsOn(next.environmentId), scope),
-                  modelKey: "",
-                  baseModelSelection: null,
-                  baseRef: "main",
-                  startFromOrigin: true,
-                  existingWorktreePath: "",
+                  projectId: projectOnTarget(selectedProject, projectsOn(next.environmentId)),
+                  threadId: "",
+                  // A copy keeps its source's settings; a model the machine lacks falls back to its default.
+                  ...(source
+                    ? {}
+                    : {
+                        modelKey: "",
+                        baseModelSelection: null,
+                        baseRef: "main",
+                        startFromOrigin: true,
+                        existingWorktreePath: "",
+                      }),
                 }));
               }}
             >
@@ -2087,7 +2676,7 @@ function ScheduledTaskEditorForm({
                 </SelectValue>
               </SelectTrigger>
               <SelectPopup>
-                {connectedEnvironments.map((entry) => {
+                {targetEnvironments.map((entry) => {
                   const { secondary } = settingsScopeEnvironmentLabels(
                     entry,
                     connectedEnvironments,
@@ -2140,7 +2729,13 @@ function ScheduledTaskEditorForm({
                     }));
                   }}
                 >
-                  <Toggle value="this">{t("This machine")}</Toggle>
+                  <Toggle value="this">
+                    <span className="max-w-40 truncate">
+                      {t("Only {machine}", {
+                        machine: environment?.label ?? t("the machine it runs on"),
+                      })}
+                    </span>
+                  </Toggle>
                   <Toggle value="every">{t("Every machine")}</Toggle>
                   <Toggle value="one">{t("One machine")}</Toggle>
                 </ToggleGroup>
@@ -2732,11 +3327,13 @@ function ScheduledTaskEditorForm({
                     ))}
                   </ToggleGroup>
                 </div>
-                {/* The server reads the time in its own zone, which a remote machine may not share. */}
+                {/* Each server reads the time in its own zone, which a remote machine may not share. */}
                 <p className="text-xs text-muted-foreground">
-                  {t("Uses the clock on {name}.", {
-                    name: environment?.label ?? t("the machine that runs it"),
-                  })}
+                  {sharing
+                    ? t("Each machine runs it at this time by its own clock.")
+                    : t("Uses the clock on {name}.", {
+                        name: environment?.label ?? t("the machine that runs it"),
+                      })}
                 </p>
                 {offersCatchUp ? (
                   <div className="flex items-center justify-between gap-4">
@@ -2816,7 +3413,7 @@ function ScheduledTaskEditorForm({
           }
           onClick={() => void submit()}
         >
-          {draft.editingId ? t("Save task") : t("Create task")}
+          {draft.editingId ? t("Save task") : moving ? t("Move task") : t("Create task")}
         </Button>
       </DialogFooter>
     </>

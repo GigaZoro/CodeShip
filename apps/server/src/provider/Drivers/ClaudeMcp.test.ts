@@ -1,7 +1,12 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import type { McpServerStatus } from "@anthropic-ai/claude-agent-sdk";
+import { ProviderInstanceId } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 
-import { claudeMcpServerJson, claudeMcpServers } from "./ClaudeMcp.ts";
+import { claudeMcpServerEntry, claudeMcpServers, makeClaudeMcpManagement } from "./ClaudeMcp.ts";
 
 // What `mcpServerStatus()` reports for each kind of server Claude 2.1 loads.
 const statuses: ReadonlyArray<McpServerStatus> = [
@@ -97,6 +102,8 @@ it("claudeMcpServers offers sign-in only where Claude signs in, and removal only
     canSignIn: true,
     canSignOut: false,
     removable: true,
+    canToggle: true,
+    canEdit: true,
   });
   assert.deepEqual(
     [byName.get("threadpage")?.toolCount, byName.get("threadpage")?.canSignOut],
@@ -115,6 +122,8 @@ it("claudeMcpServers offers sign-in only where Claude signs in, and removal only
     canSignIn: true,
     canSignOut: false,
     removable: false,
+    canToggle: false,
+    canEdit: false,
   });
   // claude.ai connectors sign in on claude.ai.
   assert.deepEqual(
@@ -131,6 +140,8 @@ it("claudeMcpServers offers sign-in only where Claude signs in, and removal only
     canSignIn: false,
     canSignOut: false,
     removable: false,
+    canToggle: false,
+    canEdit: false,
   });
   assert.equal(byName.get("slow")?.status, "starting");
   // A blank slot for a claude.ai connector is not a broken server.
@@ -156,22 +167,129 @@ it("claudeMcpServers offers sign-in only where Claude signs in, and removal only
   );
 });
 
-it("claudeMcpServerJson leaves out empty header and environment tables", () => {
+it("claudeMcpServers lists a server settings.json turns off from the config Claude no longer shows", () => {
+  const servers = claudeMcpServers(statuses, {
+    servers: {
+      threadpage: { type: "http", url: "https://thread.page/mcp" },
+      quiet: {
+        type: "http",
+        url: "https://quiet.example/mcp?key=secret",
+        oauth: { clientId: "x" },
+      },
+    },
+    turnedOff: new Set(["quiet", "removed-elsewhere"]),
+  });
+  const byName = new Map(servers.map((server) => [server.name, server]));
+
+  assert.deepEqual(byName.get("quiet"), {
+    name: "quiet",
+    transport: "http",
+    target: "https://quiet.example/mcp",
+    status: "disabled",
+    origin: "config",
+    canSignIn: false,
+    canSignOut: false,
+    removable: true,
+    canToggle: true,
+    canEdit: true,
+  });
+  assert.isFalse(byName.has("removed-elsewhere"));
+  assert.equal(byName.get("threadpage")?.status, "connected");
+});
+
+it("claudeMcpServerEntry leaves out empty header and environment tables", () => {
   assert.deepEqual(
-    JSON.parse(
-      claudeMcpServerJson({ transport: "http", url: "https://mcp.example/mcp", headers: {} }),
-    ),
+    claudeMcpServerEntry({ transport: "http", url: "https://mcp.example/mcp", headers: {} }),
     { type: "http", url: "https://mcp.example/mcp" },
   );
   assert.deepEqual(
-    JSON.parse(
-      claudeMcpServerJson({
-        transport: "stdio",
-        command: "npx",
-        args: ["-y", "server"],
-        env: { API_KEY: "k" },
-      }),
-    ),
+    claudeMcpServerEntry({
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "server"],
+      env: { API_KEY: "k" },
+    }),
     { type: "stdio", command: "npx", args: ["-y", "server"], env: { API_KEY: "k" } },
+  );
+});
+
+it.layer(NodeServices.layer)("makeClaudeMcpManagement", (it) => {
+  it.effect("edits a user server in place and turns it off through settings.json", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.realPath(
+        yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-mcp-" }),
+      );
+      const configPath = path.join(root, ".claude.json");
+      const settingsPath = path.join(root, ".claude", "settings.json");
+      yield* fs.makeDirectory(path.dirname(settingsPath));
+      yield* fs.writeFileString(
+        configPath,
+        JSON.stringify({
+          numStartups: 3,
+          mcpServers: {
+            docs: {
+              type: "http",
+              url: "https://docs.example/mcp",
+              headers: { Authorization: "Bearer old" },
+              oauth: { clientId: "kept" },
+            },
+            tools: { command: "tools", args: [] },
+          },
+        }),
+      );
+      yield* fs.writeFileString(
+        settingsPath,
+        JSON.stringify({ deniedMcpServers: [{ serverUrl: "https://*.blocked.example/*" }] }),
+      );
+      const mcp = yield* makeClaudeMcpManagement({
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        binaryPath: "claude",
+        environment: {},
+        cwd: root,
+        configPath,
+        settingsPath,
+      });
+      const readJson = (file: string) =>
+        fs.readFileString(file).pipe(Effect.map((text): unknown => JSON.parse(text)));
+
+      yield* mcp.edit("docs", {
+        transport: "http",
+        url: "https://docs.example/v2/mcp",
+        headers: { Authorization: "Bearer new" },
+      });
+      yield* mcp.setEnabled("docs", false);
+      yield* mcp.setEnabled("docs", false);
+      const missing = yield* mcp.setEnabled("elsewhere", false).pipe(Effect.flip);
+
+      assert.deepEqual(yield* readJson(configPath), {
+        numStartups: 3,
+        mcpServers: {
+          docs: {
+            type: "http",
+            url: "https://docs.example/v2/mcp",
+            headers: { Authorization: "Bearer new" },
+            oauth: { clientId: "kept" },
+          },
+          tools: { command: "tools", args: [] },
+        },
+      });
+      assert.deepEqual(yield* readJson(settingsPath), {
+        deniedMcpServers: [{ serverUrl: "https://*.blocked.example/*" }, { serverName: "docs" }],
+      });
+      assert.equal(missing.message, "Claude's user config has no MCP server named elsewhere.");
+
+      yield* mcp.setEnabled("docs", true);
+      assert.deepEqual(yield* readJson(settingsPath), {
+        deniedMcpServers: [{ serverUrl: "https://*.blocked.example/*" }],
+      });
+      assert.deepEqual(yield* mcp.read("tools"), {
+        transport: "stdio",
+        command: "tools",
+        args: [],
+        env: {},
+      });
+    }),
   );
 });

@@ -1,19 +1,19 @@
-import type { ArchivedSnapshotEntry } from "@t3tools/client-runtime/state/threads";
+import type {
+  ArchivedSnapshotEntry,
+  ArchivedThreadsOrder,
+} from "@t3tools/client-runtime/state/threads";
 import {
   scopeProject,
   scopeThreadShell,
   type EnvironmentProject,
   type EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
-import { threadSearchSubject } from "@t3tools/client-runtime/state/thread-search";
-import type { EnvironmentId } from "@t3tools/contracts";
-import { foldSearchQuery, rankSearchItems, scoreThreadSearch } from "@t3tools/shared/paletteSearch";
 import * as Arr from "effect/Array";
 import * as Order from "effect/Order";
 
 import { scopedProjectKey } from "../../lib/scopedEntities";
 
-export type ArchivedThreadSortOrder = "newest" | "oldest";
+export type ArchivedThreadSortOrder = ArchivedThreadsOrder;
 
 export interface ArchivedThreadGroup {
   readonly key: string;
@@ -26,32 +26,18 @@ function archiveTimestamp(thread: EnvironmentThreadShell): number {
   return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
-function matchesQuery(value: string | null, query: string): boolean {
-  return value?.toLocaleLowerCase().includes(query) ?? false;
-}
-
+/** The loaded archive by project; the server already applied the search and machine. */
 export function buildArchivedThreadGroups(input: {
   readonly snapshots: ReadonlyArray<ArchivedSnapshotEntry>;
-  readonly environmentLabels: Readonly<Record<string, string>>;
-  readonly environmentId: EnvironmentId | null;
-  readonly searchQuery: string;
   readonly sortOrder: ArchivedThreadSortOrder;
 }): ReadonlyArray<ArchivedThreadGroup> {
-  const query = input.searchQuery.trim().toLocaleLowerCase();
-  const foldedQuery = foldSearchQuery(input.searchQuery);
+  const timestampOrder = input.sortOrder === "newest" ? Order.flip(Order.Number) : Order.Number;
   const groups: ArchivedThreadGroup[] = [];
 
   for (const entry of input.snapshots) {
-    if (input.environmentId !== null && input.environmentId !== entry.environmentId) {
-      continue;
-    }
-
-    const environmentLabel = input.environmentLabels[entry.environmentId] ?? null;
     const threadsByProjectId = new Map<string, EnvironmentThreadShell[]>();
     for (const thread of entry.snapshot.threads) {
-      if (thread.archivedAt === null) {
-        continue;
-      }
+      if (thread.archivedAt === null) continue;
       const threads = threadsByProjectId.get(thread.projectId) ?? [];
       threads.push(scopeThreadShell(entry.environmentId, thread));
       threadsByProjectId.set(thread.projectId, threads);
@@ -60,31 +46,12 @@ export function buildArchivedThreadGroups(input: {
     for (const rawProject of entry.snapshot.projects) {
       const project = scopeProject(entry.environmentId, rawProject);
       const projectThreads = threadsByProjectId.get(project.id) ?? [];
-      const groupMatches =
-        query.length === 0 ||
-        matchesQuery(project.title, query) ||
-        matchesQuery(project.workspaceRoot, query) ||
-        matchesQuery(environmentLabel, query);
-      // Threads match as in every other thread search; the list keeps its own order.
-      const matchingThreads = groupMatches
-        ? projectThreads
-        : rankSearchItems(projectThreads, (thread, options) =>
-            scoreThreadSearch(foldedQuery, threadSearchSubject(thread, null), 0, {
-              ...options,
-              picks: false,
-            }),
-          ).map(({ item }) => item);
-
-      if (matchingThreads.length === 0) {
-        continue;
-      }
-
-      const timestampOrder = input.sortOrder === "newest" ? Order.flip(Order.Number) : Order.Number;
+      if (projectThreads.length === 0) continue;
       groups.push({
         key: scopedProjectKey(project.environmentId, project.id),
         project,
         threads: Arr.sort(
-          matchingThreads,
+          projectThreads,
           Order.mapInput(
             Order.Struct({ timestamp: timestampOrder, title: Order.String, id: Order.String }),
             (thread: EnvironmentThreadShell) => ({
@@ -98,7 +65,6 @@ export function buildArchivedThreadGroups(input: {
     }
   }
 
-  const timestampOrder = input.sortOrder === "newest" ? Order.flip(Order.Number) : Order.Number;
   return Arr.sort(
     groups,
     Order.mapInput(

@@ -38,7 +38,14 @@ const configRead = {
       minions: { url: "https://minions.example/api/mcp?key=secret", enabled: true },
       threadpage: { url: "https://thread.page/mcp", enabled: true },
       "computer-use": { command: "./Computer Use", args: ["mcp"], enabled: false },
-      node_repl: { command: "node_repl", args: [], env: { TOKEN: "x" }, enabled: true },
+      node_repl: {
+        command: "node_repl",
+        args: [],
+        env: { TOKEN: "x" },
+        cwd: "/home/user",
+        startup_timeout_sec: 20,
+        enabled: true,
+      },
       policy: { url: "https://policy.example/mcp", enabled: true },
       silent: { command: "silent-server", enabled: true },
     },
@@ -95,6 +102,8 @@ it("codexMcpServers reads config for what a server is and status for whether it 
     canSignIn: true,
     canSignOut: false,
     removable: true,
+    canToggle: true,
+    canEdit: true,
   });
   assert.deepEqual(byName.get("threadpage"), {
     name: "threadpage",
@@ -106,6 +115,8 @@ it("codexMcpServers reads config for what a server is and status for whether it 
     canSignIn: false,
     canSignOut: true,
     removable: true,
+    canToggle: true,
+    canEdit: true,
   });
   assert.equal(byName.get("computer-use")?.status, "disabled");
   assert.equal(byName.get("computer-use")?.target, "./Computer Use mcp");
@@ -114,8 +125,13 @@ it("codexMcpServers reads config for what a server is and status for whether it 
     ["failed", "ENOENT"],
   );
   assert.deepEqual(
-    [byName.get("policy")?.origin, byName.get("policy")?.removable],
-    ["managed", false],
+    [
+      byName.get("policy")?.origin,
+      byName.get("policy")?.removable,
+      byName.get("policy")?.canToggle,
+      byName.get("policy")?.canEdit,
+    ],
+    ["managed", false, false, false],
   );
   assert.deepEqual(
     [byName.get("silent")?.status, byName.get("silent")?.message],
@@ -130,6 +146,8 @@ it("codexMcpServers reads config for what a server is and status for whether it 
     canSignIn: false,
     canSignOut: false,
     removable: false,
+    canToggle: false,
+    canEdit: false,
   });
   assert.deepEqual(
     [byName.get("codex_apps")?.origin, byName.get("codex_apps")?.target],
@@ -247,6 +265,88 @@ it.effect("adds servers as new config tables and removes them by key", () =>
       ],
     ]);
   }),
+);
+
+it.effect(
+  "edits a server in one write that keeps its other settings, and turns it off by key",
+  () =>
+    Effect.gen(function* () {
+      const { client, requests } = yield* makeClient;
+      const mcp = yield* makeCodexMcpManagement({
+        instanceId: ProviderInstanceId.make("codex"),
+        openClient: Effect.succeed(client),
+        runCli: () => Effect.die("unexpected CLI call"),
+      }).pipe(
+        Effect.provideService(
+          HttpClient.HttpClient,
+          HttpClient.make(() => Effect.die("no http")),
+        ),
+      );
+
+      assert.deepEqual(yield* mcp.read("node_repl"), {
+        transport: "stdio",
+        command: "node_repl",
+        args: [],
+        env: { TOKEN: "x" },
+      });
+      // A local server that becomes remote loses its command's settings, not its timeout.
+      yield* mcp.edit("node_repl", {
+        transport: "http",
+        url: "https://repl.example/mcp",
+        headers: {},
+      });
+      yield* mcp.edit("minions", {
+        transport: "http",
+        url: "https://minions.example/v2/mcp",
+        headers: { "X-Team": "acme" },
+      });
+      yield* mcp.setEnabled("threadpage", false);
+      const managed = yield* mcp.setEnabled("policy", false).pipe(Effect.flip);
+      assert.equal(managed.message, "Change this server in config.toml by hand.");
+
+      const writes = (yield* Ref.get(requests)).filter(
+        ([method]) => method === "config/batchWrite" || method === "config/value/write",
+      );
+      assert.deepEqual(writes, [
+        [
+          "config/batchWrite",
+          {
+            edits: [
+              {
+                keyPath: "mcp_servers.node_repl.url",
+                value: "https://repl.example/mcp",
+                mergeStrategy: "replace",
+              },
+              { keyPath: "mcp_servers.node_repl.command", value: null, mergeStrategy: "replace" },
+              { keyPath: "mcp_servers.node_repl.args", value: null, mergeStrategy: "replace" },
+              { keyPath: "mcp_servers.node_repl.env", value: null, mergeStrategy: "replace" },
+              { keyPath: "mcp_servers.node_repl.cwd", value: null, mergeStrategy: "replace" },
+            ],
+          },
+        ],
+        [
+          "config/batchWrite",
+          {
+            edits: [
+              {
+                keyPath: "mcp_servers.minions.url",
+                value: "https://minions.example/v2/mcp",
+                mergeStrategy: "replace",
+              },
+              {
+                keyPath: "mcp_servers.minions.http_headers",
+                value: { "X-Team": "acme" },
+                mergeStrategy: "replace",
+              },
+            ],
+          },
+        ],
+        [
+          "config/value/write",
+          { keyPath: "mcp_servers.threadpage.enabled", value: false, mergeStrategy: "replace" },
+        ],
+      ]);
+    }),
 );
 
 it.effect("signs in through the app server and forwards a pasted callback to its page", () =>

@@ -138,9 +138,14 @@ describe("threadRoutes", () => {
     ).toBe("ready");
   });
 
-  it.each(["missing", "deleted", "archived"] as const)(
-    "redirects an unlisted thread only after detail confirms it is %s",
-    (outcome) => {
+  it.each([
+    { outcome: "missing", state: "missing" },
+    { outcome: "deleted", state: "missing" },
+    // Archived threads open read-only; the shell never lists them.
+    { outcome: "archived", state: "ready" },
+  ] as const)(
+    "resolves an unlisted thread only after detail confirms it is $outcome",
+    ({ outcome, state }) => {
       const route = {
         bootstrapComplete: isThreadRouteSnapshotAuthoritative("live"),
         serverThreadExists: false,
@@ -178,7 +183,7 @@ describe("threadRoutes", () => {
                   }),
                 },
         }),
-      ).toBe("missing");
+      ).toBe(state);
     },
   );
 

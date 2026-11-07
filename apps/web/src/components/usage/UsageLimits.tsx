@@ -12,6 +12,7 @@ import {
 import { useAtomValue } from "@effect/atom-react";
 import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
 import {
+  collectAccountFailover,
   formatDuration,
   formatResetsIn,
   type LimitPace,
@@ -447,6 +448,7 @@ export function UsageLimitsSection({
     <UsageLimitsPooled
       presentations={selected}
       now={now}
+      failover={collectAccountFailover(selected, now)}
       cursorPrompt={cursorPrompt}
       {...(emptyMessage === undefined ? {} : { emptyMessage })}
     />

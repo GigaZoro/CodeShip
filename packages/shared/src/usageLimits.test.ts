@@ -10,6 +10,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   type LimitAccount,
+  accountFailoverStatus,
   collectProviderUsageLimits,
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
@@ -1587,5 +1588,123 @@ describe("ChatGPT sharing presentation", () => {
         auth: { status: "unauthenticated", subscriptionSharing: true },
       }),
     ).toBe(false);
+  });
+});
+
+describe("accountFailoverStatus", () => {
+  const codex = ProviderDriverKind.make("codex");
+  const account = (id: string, overrides: Partial<ServerProvider> = {}) =>
+    provider({
+      instanceId: ProviderInstanceId.make(id),
+      usageLimits: { checkedAt: "2026-09-03T11:00:00.000Z", windows: [window] },
+      ...overrides,
+    });
+  const limitedUntil = (resetsAt: string | undefined, id = "five_hour") => ({
+    checkedAt: "2026-09-03T11:00:00.000Z",
+    windows: [{ ...window, id, usedPercent: 100, resetsAt }],
+  });
+  const status = (
+    providers: readonly ServerProvider[],
+    settings: { failoverLimitedThreads?: boolean; order?: readonly string[] } = {},
+  ) =>
+    accountFailoverStatus({
+      driver: codex,
+      providers,
+      settings: {
+        failoverLimitedThreads: settings.failoverLimitedThreads ?? true,
+        providerInstanceFailoverOrder: (settings.order ?? []).map((id) =>
+          ProviderInstanceId.make(id),
+        ),
+      },
+      now,
+    });
+  const ids = (result: ReturnType<typeof status>) =>
+    result === null
+      ? null
+      : {
+          kind: result.kind,
+          ...("active" in result ? { active: result.active.instanceId } : {}),
+          ...("limited" in result
+            ? { limited: result.limited.map((entry) => entry.instanceId) }
+            : {}),
+          ...("until" in result ? { until: result.until } : {}),
+        };
+
+  it.each([
+    ["one account has nothing to switch to", [account("a")], {}, null],
+    [
+      "an API-key account never takes over",
+      [account("a"), account("b", { auth: { status: "authenticated", type: "apiKey" } })],
+      {},
+      null,
+    ],
+    [
+      "switching off",
+      [account("a"), account("b")],
+      { failoverLimitedThreads: false },
+      { kind: "off" },
+    ],
+    [
+      "the saved order picks the first account",
+      [account("a"), account("b")],
+      { order: ["b"] },
+      { kind: "ready", active: "b" },
+    ],
+    [
+      "a signed-out account is passed over, not counted as limited",
+      [account("a", { auth: { status: "unauthenticated" } }), account("b")],
+      {},
+      { kind: "ready", active: "b" },
+    ],
+    [
+      "a window past its reset no longer limits",
+      [account("a", { usageLimits: limitedUntil("2026-09-03T11:30:00.000Z") }), account("b")],
+      {},
+      { kind: "ready", active: "a" },
+    ],
+    [
+      "a limited first account sends threads to the next one",
+      [account("a", { usageLimits: limitedUntil("2026-09-03T14:00:00.000Z") }), account("b")],
+      {},
+      { kind: "switched", active: "b", limited: ["a"], until: "2026-09-03T14:00:00.000Z" },
+    ],
+    [
+      "every account limited reports the first reset",
+      [
+        account("a", { usageLimits: limitedUntil("2026-09-03T16:00:00.000Z") }),
+        account("b", { usageLimits: limitedUntil("2026-09-03T14:00:00.000Z") }),
+      ],
+      {},
+      { kind: "exhausted", until: "2026-09-03T14:00:00.000Z" },
+    ],
+    [
+      "an unknown reset is reported as unknown",
+      [account("a", { usageLimits: limitedUntil(undefined) }), account("b")],
+      {},
+      { kind: "switched", active: "b", limited: ["a"], until: null },
+    ],
+  ] as const)("%s", (_name, providers, settings, expected) => {
+    expect(ids(status(providers, settings))).toEqual(expected);
+  });
+
+  it("leaves a Claude account usable when only one model's weekly cap is spent", () => {
+    const claude = (id: string, usageLimits?: ServerProvider["usageLimits"]) =>
+      account(id, {
+        driver: ProviderDriverKind.make("claudeAgent"),
+        ...(usageLimits ? { usageLimits } : {}),
+      });
+    expect(
+      ids(
+        accountFailoverStatus({
+          driver: ProviderDriverKind.make("claudeAgent"),
+          providers: [
+            claude("a", limitedUntil("2026-09-05T00:00:00.000Z", "seven_day_opus")),
+            claude("b"),
+          ],
+          settings: { failoverLimitedThreads: true, providerInstanceFailoverOrder: [] },
+          now,
+        }),
+      ),
+    ).toEqual({ kind: "ready", active: "a" });
   });
 });

@@ -15,6 +15,7 @@ import { TYPOGRAPHY_ADVANCED_STORAGE_KEY } from "../../appearanceFonts";
 import { writeLocalStorageValue } from "../../hooks/useLocalStorage";
 import { commandLabel } from "./KeybindingsSettings.logic";
 import type { ResolvedSettingsScope } from "./settingsScope";
+import type { ExtensionsTab } from "../extensions/extensionsSearch";
 
 export type SettingsPath =
   | "/settings/projects"
@@ -31,6 +32,9 @@ export type SettingsPath =
   | "/settings/secrets"
   | "/settings/maintenance";
 
+/** Pages outside Settings that people still look for from its search. */
+type SettingsSearchAppPage = "/scheduled-tasks" | "/extensions" | "/usage";
+
 export type SettingsSearchScope =
   | "environment"
   | "environment-defaults"
@@ -42,7 +46,8 @@ export type SettingsSearchScope =
 export interface SettingsSearchItem {
   readonly id: string;
   readonly title: Message;
-  readonly to: SettingsPath;
+  readonly to: SettingsPath | SettingsSearchAppPage;
+  readonly extensionsTab?: ExtensionsTab;
   readonly targetId?: string;
   readonly searchTerms?: ReadonlyArray<string>;
   /** Null marks a device setting on a page whose other rows are scoped. */
@@ -63,6 +68,12 @@ export interface SettingsSearchItem {
   readonly peerLinksOnly?: boolean;
   readonly secondary?: boolean;
   readonly requiresThreadAutoSettlement?: boolean;
+}
+
+type SettingsPageSearchItem = SettingsSearchItem & { readonly to: SettingsPath };
+
+export function isSettingsPageSearchItem(item: SettingsSearchItem): item is SettingsPageSearchItem {
+  return item.to.startsWith("/settings/");
 }
 
 export interface SettingsSearchAvailability {
@@ -93,6 +104,18 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, Message>> = 
   "/settings/secrets": msg("Secrets"),
   "/settings/maintenance": msg("Maintenance & about"),
 };
+
+const SETTINGS_SEARCH_APP_PAGE_LABELS: Readonly<Record<SettingsSearchAppPage, Message>> = {
+  "/scheduled-tasks": msg("Scheduled tasks"),
+  "/extensions": msg("Extensions"),
+  "/usage": msg("Usage"),
+};
+
+export function settingsSearchSectionLabel(to: SettingsSearchItem["to"]): Message {
+  return to.startsWith("/settings/")
+    ? SETTINGS_SECTION_LABELS[to as SettingsPath]
+    : SETTINGS_SEARCH_APP_PAGE_LABELS[to as SettingsSearchAppPage];
+}
 
 /** Sidebar order. A group without a heading is set apart by space alone. */
 export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
@@ -152,7 +175,7 @@ export function sourceControlHostSettingsSearchId(kind: string) {
 export function sourceControlHostSearchItems(
   definitions: ReadonlyArray<SourceControlDefinition>,
 ): ReadonlyArray<
-  SettingsSearchItem & { readonly id: ReturnType<typeof sourceControlHostSettingsSearchId> }
+  SettingsPageSearchItem & { readonly id: ReturnType<typeof sourceControlHostSettingsSearchId> }
 > {
   return definitions.flatMap((definition) => {
     if (!definition.settings) return [];
@@ -258,7 +281,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "scheduled-task-model",
-    title: msg("Scheduled tasks"),
+    title: msg("Scheduled tasks model"),
     to: "/settings/providers",
     scope: "environment-defaults",
     searchTerms: ["scheduled task automation model default all tasks same as new threads"],
@@ -1246,6 +1269,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["add pair backend host code ssh config agent tunnel saved t3 connect"],
   },
   {
+    id: "machine-setting-differences",
+    title: msg("Differences between machines"),
+    to: "/settings/connections",
+    searchTerms: [
+      "compare machines environments settings mismatch sync same settings everywhere copy value",
+    ],
+  },
+  {
     id: "load-balancing",
     title: msg("Load balancing"),
     to: "/settings/connections",
@@ -1280,9 +1311,47 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "archive",
     title: msg("Archived threads"),
     to: "/settings/threads",
-    searchTerms: ["archive restore reopen deleted history projects"],
+    searchTerms: ["archive restore reopen deleted history projects search open read delete"],
   },
-] as const satisfies ReadonlyArray<SettingsSearchItem>;
+] as const satisfies ReadonlyArray<SettingsPageSearchItem>;
+
+export const SETTINGS_SEARCH_APP_PAGES: ReadonlyArray<SettingsSearchItem> = [
+  {
+    id: "scheduled-tasks-page",
+    title: msg("Scheduled tasks"),
+    to: "/scheduled-tasks",
+    searchTerms: ["automations recurring cron schedule webhook run history"],
+  },
+  {
+    id: "mcp-servers-page",
+    title: msg("MCP servers"),
+    to: "/extensions",
+    extensionsTab: "mcp",
+    searchTerms: [
+      "mcp model context protocol servers tools connectors turn off disable enable edit",
+    ],
+  },
+  {
+    id: "plugins-page",
+    title: msg("Plugins"),
+    to: "/extensions",
+    extensionsTab: "plugins",
+    searchTerms: ["plugins marketplace extensions install"],
+  },
+  {
+    id: "skills-page",
+    title: msg("Skills"),
+    to: "/extensions",
+    extensionsTab: "skills",
+    searchTerms: ["skills slash commands agents"],
+  },
+  {
+    id: "usage-page",
+    title: msg("Usage"),
+    to: "/usage",
+    searchTerms: ["usage limits tokens cost spend rate limit account failover"],
+  },
+];
 
 export type SettingsSearchItemId = (typeof SETTINGS_SEARCH_ITEMS)[number]["id"];
 
@@ -1350,7 +1419,7 @@ const MOVED_SECTION_ANCHORS: Readonly<Record<string, SettingsPath>> = {
 /** Where an old settings link now lives. Its anchor finds the page its row moved to. */
 export function movedSettingsPath(pathname: string, hash: string): SettingsPath | null {
   if (!SPLIT_SETTINGS_PATHS.has(pathname)) return null;
-  const items: readonly SettingsSearchItem[] = SETTINGS_SEARCH_ITEMS;
+  const items: readonly SettingsPageSearchItem[] = SETTINGS_SEARCH_ITEMS;
   const anchored = hash
     ? (items.find((item) => item.id === hash) ?? items.find((item) => item.targetId === hash))
     : undefined;
@@ -1360,7 +1429,7 @@ export function movedSettingsPath(pathname: string, hash: string): SettingsPath 
 }
 
 export function getSettingsSearchTargetScope(targetId: string) {
-  const items: readonly SettingsSearchItem[] = SETTINGS_SEARCH_ITEMS;
+  const items: readonly SettingsPageSearchItem[] = SETTINGS_SEARCH_ITEMS;
   const item =
     items.find((candidate) => candidate.id === targetId) ??
     items.find((candidate) => candidate.targetId === targetId);
@@ -1434,10 +1503,14 @@ export function searchableSetting(id: SettingsSearchItemId): {
   return { id: anchorId, title: t(title) };
 }
 
+export function settingsSearchItemPage(id: SettingsSearchItemId): SettingsPath {
+  return SEARCH_ITEMS_BY_ID.get(id)!.to;
+}
+
 export function filterAvailableSettingsSearchItems(
   availability: SettingsSearchAvailability,
-): ReadonlyArray<SettingsSearchItem> {
-  const items: ReadonlyArray<SettingsSearchItem> = SETTINGS_SEARCH_ITEMS;
+): ReadonlyArray<SettingsPageSearchItem> {
+  const items: ReadonlyArray<SettingsPageSearchItem> = SETTINGS_SEARCH_ITEMS;
   return items.filter(
     (item) =>
       (!item.cloudOnly || availability.hasCloudPublicConfig) &&
@@ -1454,9 +1527,9 @@ export function filterAvailableSettingsSearchItems(
 }
 
 /** The settings that exist on this platform and app channel. */
-export function settingsForThisPlatform(
-  items: ReadonlyArray<SettingsSearchItem>,
-): ReadonlyArray<SettingsSearchItem> {
+export function settingsForThisPlatform<Item extends SettingsSearchItem>(
+  items: ReadonlyArray<Item>,
+): ReadonlyArray<Item> {
   const platform = typeof navigator === "undefined" ? "" : navigator.platform;
   return items.filter(
     (item) =>
@@ -1470,7 +1543,10 @@ export function settingsForThisPlatform(
 
 export function searchSettings(
   query: string,
-  items: ReadonlyArray<SettingsSearchItem> = SETTINGS_SEARCH_ITEMS,
+  items: ReadonlyArray<SettingsSearchItem> = [
+    ...SETTINGS_SEARCH_APP_PAGES,
+    ...SETTINGS_SEARCH_ITEMS,
+  ],
 ): ReadonlyArray<SettingsSearchItem> {
   const normalizedQuery = normalizeSearchText(query);
   if (normalizedQuery.length === 0) return [];
@@ -1480,7 +1556,7 @@ export function searchSettings(
     .flatMap((item, index) => {
       const title = normalizeSearchText(t(item.title));
       const englishTitle = normalizeSearchText(item.title);
-      const sectionLabel = SETTINGS_SECTION_LABELS[item.to];
+      const sectionLabel = settingsSearchSectionLabel(item.to);
       const fields = [
         title,
         englishTitle,

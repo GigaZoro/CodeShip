@@ -23,10 +23,13 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import { editClaudeJsonFile, readClaudeMcpServers } from "./ClaudeAccountHome.ts";
 import { resolveClaudeSdkExecutablePath } from "./ClaudeExecutable.ts";
 
 const CLI_TIMEOUT = Duration.seconds(30);
@@ -92,6 +95,11 @@ function claudeOrigin(status: ClaudeMcpServerStatus): ProviderMcpServerOrigin {
 const hasAuthorizationHeader = (headers: Record<string, string> | undefined) =>
   Object.keys(headers ?? {}).some((name) => name.toLowerCase() === "authorization");
 
+const decodeSettingsJson = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+);
+const isProviderMcpError = Schema.is(ProviderMcpError);
+
 // Bounded to the longest name a provider instance can store.
 const UNSET_VARIABLE = /\$\{([A-Za-z_][A-Za-z0-9_]{0,127})\}/u;
 
@@ -143,17 +151,89 @@ function describeClaudeMcpConfig(config: ClaudeMcpServerStatus["config"]): {
   };
 }
 
+const ClaudeStoredMcpServer = Schema.Struct({
+  type: Schema.optional(Schema.String),
+  url: Schema.optional(Schema.String),
+  headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  command: Schema.optional(Schema.String),
+  args: Schema.optional(Schema.Array(Schema.String)),
+  env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+});
+const decodeStoredMcpServer = Schema.decodeUnknownOption(ClaudeStoredMcpServer);
+
+/** A user server from `.claude.json` as this page edits it; SSE servers have no form here. */
+function claudeStoredMcpServer(entry: unknown): ProviderMcpServerConfig | undefined {
+  const stored = Option.getOrUndefined(decodeStoredMcpServer(entry));
+  if (stored?.type === "http" && stored.url) {
+    return { transport: "http", url: stored.url, headers: stored.headers ?? {} };
+  }
+  if ((stored?.type === undefined || stored.type === "stdio") && stored?.command) {
+    return {
+      transport: "stdio",
+      command: stored.command,
+      args: stored.args ?? [],
+      env: stored.env ?? {},
+    };
+  }
+  return undefined;
+}
+
+/**
+ * Claude only turns a server off per project. A `deniedMcpServers` entry in the user's
+ * settings.json, which Claude merges from every settings file, turns it off everywhere; Claude
+ * then leaves the server out of its own list, so it is listed here from the config.
+ */
+export interface ClaudeUserMcpConfig {
+  readonly servers: Readonly<Record<string, unknown>>;
+  readonly turnedOff: ReadonlySet<string>;
+}
+
+const NO_USER_CONFIG: ClaudeUserMcpConfig = { servers: {}, turnedOff: new Set() };
+
+function turnedOffServer(name: string, entry: unknown): ProviderMcpServer {
+  const stored = claudeStoredMcpServer(entry);
+  const sse = Option.getOrUndefined(decodeStoredMcpServer(entry));
+  const described =
+    stored?.transport === "http"
+      ? { transport: "http" as const, target: displayProviderMcpUrl(stored.url) }
+      : stored?.transport === "stdio"
+        ? {
+            transport: "stdio" as const,
+            target: displayProviderMcpCommand(stored.command, stored.args),
+          }
+        : sse?.type === "sse" && sse.url
+          ? { transport: "sse" as const, target: displayProviderMcpUrl(sse.url) }
+          : {};
+  return {
+    name,
+    ...(described.transport ? { transport: described.transport } : {}),
+    ...(described.target ? { target: described.target } : {}),
+    status: "disabled",
+    origin: "config",
+    canSignIn: false,
+    canSignOut: false,
+    removable: true,
+    canToggle: true,
+    canEdit: stored !== undefined,
+  };
+}
+
 export function claudeMcpServers(
   statuses: ReadonlyArray<ClaudeMcpServerStatus>,
+  user: ClaudeUserMcpConfig = NO_USER_CONFIG,
 ): ReadonlyArray<ProviderMcpServer> {
-  return statuses.flatMap((status): ReadonlyArray<ProviderMcpServer> => {
+  const listed = statuses.flatMap((status): ReadonlyArray<ProviderMcpServer> => {
     const config = status.config;
     // In-process servers belong to the session that registered them, never to the config.
     if (status.source === "sdk" || config?.type === "sdk") return [];
     const origin = claudeOrigin(status);
     const plugin = origin === "plugin" ? splitPluginServerName(status.name) : undefined;
     const { transport, target, headerAuth = false, ...described } = describeClaudeMcpConfig(config);
-    const serverStatus = described.blankUrl ? "notConfigured" : CLAUDE_STATUSES[status.status];
+    const serverStatus = described.blankUrl
+      ? "notConfigured"
+      : user.turnedOff.has(status.name) && status.scope === "user"
+        ? "disabled"
+        : CLAUDE_STATUSES[status.status];
     const missingVariable = serverStatus === "failed" ? described.unsetVariable : undefined;
     const message = claudeMcpMessage(serverStatus, status.error, missingVariable);
     const signsInHere = (transport === "http" || transport === "sse") && origin !== "connector";
@@ -173,26 +253,70 @@ export function claudeMcpServers(
         canSignOut: signsInHere && serverStatus === "connected" && !headerAuth,
         // Servers in a project's or the local scope belong to that folder, not this page.
         removable: status.scope === "user",
+        canToggle: status.scope === "user",
+        canEdit: status.scope === "user" && (transport === "http" || transport === "stdio"),
       },
     ];
   });
+  const names = new Set(listed.map((server) => server.name));
+  const turnedOff = [...user.turnedOff]
+    .filter((name) => !names.has(name) && Object.hasOwn(user.servers, name))
+    .map((name) => turnedOffServer(name, user.servers[name]));
+  return [...listed, ...turnedOff];
 }
 
-/** The JSON `claude mcp add-json` takes, without empty header or environment tables. */
-export function claudeMcpServerJson(server: ProviderMcpServerConfig) {
+/** `deniedMcpServers` with one server's own entry added or taken out; other entries stay. */
+function claudeDeniedMcpServers(current: unknown, name: string, denied: boolean) {
+  const entries: ReadonlyArray<unknown> = Array.isArray(current) ? current : [];
+  const isOwnEntry = (entry: unknown) =>
+    typeof entry === "object" &&
+    entry !== null &&
+    Object.keys(entry).length === 1 &&
+    Reflect.get(entry, "serverName") === name;
+  const others = entries.filter((entry) => !isOwnEntry(entry));
+  return denied ? [...others, { serverName: name }] : others;
+}
+
+/** The names a settings.json turns off with an entry of their own. */
+function claudeTurnedOffMcpServers(settings: Readonly<Record<string, unknown>>) {
+  const entries: ReadonlyArray<unknown> = Array.isArray(settings.deniedMcpServers)
+    ? settings.deniedMcpServers
+    : [];
+  return new Set(
+    entries.flatMap((entry) => {
+      if (typeof entry !== "object" || entry === null || Object.keys(entry).length !== 1) return [];
+      const name: unknown = Reflect.get(entry, "serverName");
+      return typeof name === "string" ? [name] : [];
+    }),
+  );
+}
+
+/** The entry Claude keeps for a server, without empty header or environment tables. */
+export function claudeMcpServerEntry(server: ProviderMcpServerConfig): Record<string, unknown> {
   if (server.transport === "http") {
-    return JSON.stringify({
+    return {
       type: "http",
       url: server.url,
       ...(Object.keys(server.headers).length > 0 ? { headers: server.headers } : {}),
-    });
+    };
   }
-  return JSON.stringify({
+  return {
     type: "stdio",
     command: server.command,
     args: server.args,
     ...(Object.keys(server.env).length > 0 ? { env: server.env } : {}),
-  });
+  };
+}
+
+const TRANSPORT_KEYS = new Set(["type", "url", "headers", "command", "args", "env"]);
+
+/** A server's entry with a new address or command; settings this page does not show stay. */
+function editedClaudeMcpServerEntry(current: unknown, server: ProviderMcpServerConfig) {
+  const kept =
+    typeof current === "object" && current !== null
+      ? Object.fromEntries(Object.entries(current).filter(([key]) => !TRANSPORT_KEYS.has(key)))
+      : {};
+  return { ...claudeMcpServerEntry(server), ...kept };
 }
 
 function waitForAbort(signal: AbortSignal): Promise<void> {
@@ -209,14 +333,19 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
   /** Carries `CLAUDE_CONFIG_DIR` for an added account's own folder. */
   readonly environment: NodeJS.ProcessEnv;
   readonly cwd: string;
+  /** This account's `.claude.json`, where Claude keeps user MCP servers. */
+  readonly configPath: string;
+  /** The user settings.json every account on this config reads. */
+  readonly settingsPath: string;
   /** An added account copies the shared config's servers, so its changes go to that config. */
   readonly sharedConfig?: {
     readonly environment: NodeJS.ProcessEnv;
-    readonly serverNames: Effect.Effect<ReadonlySet<string>>;
+    readonly configPath: string;
     readonly copyServers: Effect.Effect<void>;
   };
 }) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const fileSystem = yield* FileSystem.FileSystem;
   const executablePath = yield* resolveClaudeSdkExecutablePath(
     options.binaryPath,
     options.environment,
@@ -355,12 +484,75 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
   });
 
   const shared = options.sharedConfig;
+  const syncShared = shared?.copyServers ?? Effect.void;
+
+  const userServers = (configPath: string) =>
+    readClaudeMcpServers(configPath).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
+
+  const readSettings = fileSystem.readFileString(options.settingsPath).pipe(
+    Effect.flatMap(decodeSettingsJson),
+    Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed({})),
+  );
+
+  const readUserConfig = Effect.all([
+    userServers(options.configPath),
+    readSettings.pipe(
+      Effect.map(claudeTurnedOffMcpServers),
+      Effect.catch((error) =>
+        Effect.logWarning("Claude's settings.json could not be read.", {
+          path: options.settingsPath,
+          error,
+        }).pipe(Effect.as(new Set<string>())),
+      ),
+    ),
+  ]).pipe(Effect.map(([servers, turnedOff]): ClaudeUserMcpConfig => ({ servers, turnedOff })));
+
+  /** Which config a change goes to: the shared one for a server every account has. */
+  const owningConfig = (name: string) =>
+    shared === undefined
+      ? Effect.succeed({ configPath: options.configPath, environment: options.environment })
+      : userServers(shared.configPath).pipe(
+          Effect.map((servers) =>
+            Object.hasOwn(servers, name)
+              ? { configPath: shared.configPath, environment: shared.environment }
+              : { configPath: options.configPath, environment: options.environment },
+          ),
+        );
+
+  const storedServer = Effect.fn("ClaudeMcp.storedServer")(function* (
+    operation: ProviderMcpOperation,
+    name: string,
+  ) {
+    yield* syncShared;
+    const servers = yield* userServers(options.configPath);
+    if (!Object.hasOwn(servers, name)) {
+      return yield* failure(operation, `Claude's user config has no MCP server named ${name}.`);
+    }
+    return servers[name];
+  });
+
+  const setTurnedOff = (operation: ProviderMcpOperation, name: string, turnedOff: boolean) =>
+    editClaudeJsonFile(
+      options.settingsPath,
+      (settings) => {
+        const denied = claudeDeniedMcpServers(settings.deniedMcpServers, name, turnedOff);
+        const { deniedMcpServers: _previous, ...rest } = settings;
+        return Effect.succeed(denied.length > 0 ? { ...rest, deniedMcpServers: denied } : rest);
+      },
+      { lock: false },
+    ).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.mapError((cause) =>
+        failure(operation, "Claude's settings.json could not be changed.", cause),
+      ),
+    );
 
   return {
-    list: (shared?.copyServers ?? Effect.void).pipe(
-      Effect.andThen(openSession("list")),
-      Effect.flatMap(settledStatuses),
-      Effect.map(claudeMcpServers),
+    list: syncShared.pipe(
+      Effect.andThen(
+        Effect.all([openSession("list").pipe(Effect.flatMap(settledStatuses)), readUserConfig]),
+      ),
+      Effect.map(([statuses, user]) => claudeMcpServers(statuses, user)),
       Effect.scoped,
       Effect.timeoutOrElse({
         duration: LIST_TIMEOUT,
@@ -368,23 +560,82 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
       }),
     ),
     add: (name, server) => {
-      const args = ["mcp", "add-json", "--scope", "user", name, claudeMcpServerJson(server)];
+      const args = [
+        "mcp",
+        "add-json",
+        "--scope",
+        "user",
+        name,
+        JSON.stringify(claudeMcpServerEntry(server)),
+      ];
       return shared === undefined
         ? mutate("add", args)
         : mutate("add", args, shared.environment).pipe(Effect.andThen(shared.copyServers));
     },
-    remove: (name) => {
-      const args = ["mcp", "remove", "--scope", "user", name];
-      if (shared === undefined) return mutate("remove", args);
-      // A server only this account has is removed from its own config.
-      return shared.serverNames.pipe(
-        Effect.flatMap((names) =>
-          names.has(name)
-            ? mutate("remove", args, shared.environment).pipe(Effect.andThen(shared.copyServers))
-            : mutate("remove", args),
+    remove: (name) =>
+      owningConfig(name).pipe(
+        Effect.flatMap(({ environment }) =>
+          mutate("remove", ["mcp", "remove", "--scope", "user", name], environment),
         ),
-      );
-    },
+        Effect.andThen(syncShared),
+        // A later server with the same name would otherwise start out turned off.
+        Effect.andThen(
+          setTurnedOff("remove", name, false).pipe(
+            writes.withPermits(1),
+            Effect.catch((error) =>
+              Effect.logWarning("The removed server's switch was left in Claude's settings.", {
+                name,
+                error,
+              }),
+            ),
+          ),
+        ),
+      ),
+    read: (name) =>
+      storedServer("read", name).pipe(
+        Effect.flatMap((entry) => {
+          const stored = claudeStoredMcpServer(entry);
+          return stored === undefined
+            ? Effect.fail(failure("read", "Change this server with `claude mcp` instead."))
+            : Effect.succeed(stored);
+        }),
+      ),
+    edit: (name, server) =>
+      owningConfig(name).pipe(
+        Effect.flatMap(({ configPath }) =>
+          editClaudeJsonFile(
+            configPath,
+            (config) => {
+              const servers =
+                typeof config.mcpServers === "object" && config.mcpServers !== null
+                  ? (config.mcpServers as Readonly<Record<string, unknown>>)
+                  : {};
+              if (!Object.hasOwn(servers, name)) {
+                return Effect.fail(
+                  failure("edit", `Claude's user config has no MCP server named ${name}.`),
+                );
+              }
+              return Effect.succeed({
+                ...config,
+                mcpServers: {
+                  ...servers,
+                  [name]: editedClaudeMcpServerEntry(servers[name], server),
+                },
+              });
+            },
+            { lock: true },
+          ).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem)),
+        ),
+        Effect.mapError((cause) =>
+          isProviderMcpError(cause) ? cause : failure("edit", undefined, cause),
+        ),
+        writes.withPermits(1),
+        Effect.andThen(syncShared),
+      ),
+    setEnabled: (name, enabled) =>
+      storedServer("setEnabled", name).pipe(
+        Effect.andThen(setTurnedOff("setEnabled", name, !enabled).pipe(writes.withPermits(1))),
+      ),
     signOut: (name) => mutate("signOut", ["mcp", "logout", name]),
     signIn: Effect.fn("ClaudeMcp.signIn")(function* (name) {
       const query = yield* openSession("signIn");

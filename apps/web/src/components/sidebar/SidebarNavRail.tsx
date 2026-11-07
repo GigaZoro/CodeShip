@@ -32,6 +32,7 @@ import {
 } from "../usage/UsageLimitsGlance";
 import { isSettingsPage, isSidebarSectionPage, useNavigateToMainApp } from "./mainAppLocation";
 import { SidebarUpdatePill } from "./SidebarUpdatePill";
+import { useScheduledTasksRailBadge } from "./useScheduledTasksRailBadge";
 
 import { t } from "~/i18n";
 type SidebarNavDestination =
@@ -62,6 +63,7 @@ function SidebarNavRailItem({
   icon,
   label,
   tooltip = label,
+  badge,
   onTooltipOpenChange,
   isActive,
   onClick,
@@ -69,6 +71,7 @@ function SidebarNavRailItem({
   icon: ReactNode;
   label: string;
   tooltip?: ReactNode;
+  badge?: ReactNode;
   onTooltipOpenChange?: (open: boolean) => void;
   isActive: boolean;
   onClick: () => void;
@@ -91,6 +94,7 @@ function SidebarNavRailItem({
         />
         <TooltipPopup side="right">{tooltip}</TooltipPopup>
       </Tooltip>
+      {badge}
     </SidebarMenuItem>
   );
 }
@@ -152,6 +156,7 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
   const { isMobile, setOpenMobile } = useSidebar();
   const active = useLocation({ select: (location) => resolveActiveDestination(location.pathname) });
   const pullRequestsSupported = usePullRequestsSupported();
+  const scheduledTasks = useScheduledTasksRailBadge();
   const go = (destination: () => unknown) => () => {
     if (isMobile) setOpenMobile(false);
     void destination();
@@ -188,7 +193,8 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
         ) : null}
         <SidebarNavRailItem
           icon={<CalendarClockIcon />}
-          label={t("Scheduled tasks")}
+          label={scheduledTasks.label}
+          badge={scheduledTasks.badge}
           isActive={active === "scheduled-tasks"}
           onClick={go(() => navigate({ to: "/scheduled-tasks" }))}
         />

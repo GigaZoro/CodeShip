@@ -15,7 +15,9 @@ import { threadAwaitsUser } from "@t3tools/client-runtime/state/thread-inbox";
 import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import {
+  ArchiveRestoreIcon,
   CheckIcon,
+  ChevronRightIcon,
   EllipsisIcon,
   FolderPlusIcon,
   PinIcon,
@@ -23,7 +25,7 @@ import {
   SquarePenIcon,
 } from "lucide-react";
 import { useId, useState } from "react";
-import type { EnvironmentId } from "@t3tools/contracts";
+import { AuthOrchestrationOperateScope, type EnvironmentId } from "@t3tools/contracts";
 
 import { ProjectSettingsSheet } from "./ProjectSettingsSheet";
 import { openCommandPalette } from "../../commandPaletteBus";
@@ -31,6 +33,7 @@ import { isElectron } from "../../env";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useHandleNewThread } from "../../hooks/useHandleNewThread";
 import { useNowMinute } from "../../hooks/useNowMinute";
+import { useProjectGroupUpdate } from "../../hooks/useProjectGroupUpdate";
 import { useClientSettings, useSidebarGrouping } from "../../hooks/useSettings";
 import { useSidebarProjectGroups } from "../../hooks/useSidebarProjectGroups";
 import { useThreadActions } from "../../hooks/useThreadActions";
@@ -48,6 +51,7 @@ import {
   useServerConfigs,
 } from "../../state/entities";
 import { usePrimaryEnvironmentId } from "../../state/environments";
+import { useEnvironmentsWithScope } from "../../state/session";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { resolveProjectExpanded, useUiStateStore } from "../../uiStateStore";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
@@ -71,6 +75,7 @@ import { resolveThreadRowStatus, ThreadRowStatusContent } from "../sidebar/threa
 import { useLocallyUnreadThreadKeys } from "../sidebar/useLocallyUnreadThreadKeys";
 import { useSidebarMachines } from "../sidebar/useSidebarMachines";
 import { Button } from "../ui/button";
+import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
 import {
@@ -143,6 +148,9 @@ interface ProjectCardHandlers {
   readonly onToggleSidebarFolder: (card: ProjectCard) => void;
   readonly onOpenSettings: (card: ProjectCard) => void;
   readonly onCopyPath: (card: ProjectCard) => void;
+  /** False on older servers and on connections that cannot change projects. */
+  readonly canArchive: (card: ProjectCard) => boolean;
+  readonly onSetArchived: (card: ProjectCard, archived: boolean) => void;
 }
 
 interface ProjectSection {
@@ -186,6 +194,13 @@ export function ProjectsPage() {
   const { handleNewThread } = useHandleNewThread();
   const [settingsProjectKey, setSettingsProjectKey] = useState<string | null>(null);
   const { settleThread, confirmSettlingUnmergedWork } = useThreadActions();
+  const { updateProjectGroup, canOrganizeProjectGroup } = useProjectGroupUpdate();
+  const operableEnvironmentIds = useEnvironmentsWithScope(
+    [...new Set(projects.map((project) => project.environmentId))].map((environmentId) => ({
+      environmentId,
+    })),
+    AuthOrchestrationOperateScope,
+  );
   const { copyToClipboard: copyPath } = useCopyToClipboard<{ path: string }>({
     onCopy: ({ path }) =>
       toastManager.add({ type: "success", title: t("Path copied"), description: path }),
@@ -369,6 +384,25 @@ export function ProjectsPage() {
     if (project === null) return;
     void handleNewThread(scopeProjectRef(project.environmentId, project.id));
   };
+  // Archive belongs to the whole project, so it writes every checkout, as Project settings does.
+  const setArchived = (card: ProjectCard, archived: boolean) => {
+    const name = card.group.displayName;
+    void updateProjectGroup(
+      card.group.memberProjects,
+      { archived },
+      archived ? t("Failed to archive project") : t("Failed to unarchive project"),
+    ).then((result) => {
+      if (result._tag !== "Success" || !archived) return;
+      toastManager.add(
+        stackedThreadToast({
+          type: "success",
+          title: t("Archived {name}", { name }),
+          description: t("It moved to Archived. Its threads and files are kept."),
+          actionProps: { children: t("Undo"), onClick: () => setArchived(card, false) },
+        }),
+      );
+    });
+  };
   const settle = (thread: EnvironmentThreadShell, unmergedWorkConfirmed = false) => {
     void (async () => {
       const result = await settleThread(scopeThreadRef(thread.environmentId, thread.id), {
@@ -416,7 +450,13 @@ export function ProjectsPage() {
       const { workspaceRoot } = card.member ?? card.group;
       copyPath(workspaceRoot, { path: workspaceRoot });
     },
+    canArchive: (card) =>
+      canOrganizeProjectGroup(card.group.memberProjects) &&
+      card.group.memberProjects.every((member) => operableEnvironmentIds.has(member.environmentId)),
+    onSetArchived: setArchived,
   };
+  // A search or a status filter asks for specific threads, so archived projects that match show.
+  const revealArchived = filter !== "all" || query.trim().length > 0;
 
   const filterOptions: ReadonlyArray<{
     readonly value: ProjectsOverviewFilter;
@@ -537,6 +577,7 @@ export function ProjectsPage() {
                       key={section.machine?.environmentId ?? "all"}
                       section={section}
                       handlers={handlers}
+                      revealArchived={revealArchived}
                     />
                   ))
                 )}
@@ -553,14 +594,57 @@ export function ProjectsPage() {
   );
 }
 
-function ProjectSectionView(props: { section: ProjectSection; handlers: ProjectCardHandlers }) {
+function ProjectSectionView(props: {
+  section: ProjectSection;
+  handlers: ProjectCardHandlers;
+  revealArchived: boolean;
+}) {
   const headingId = useId();
-  const quietHeadingId = useId();
   const { machine, cards } = props.section;
-  // Projects with nothing open shrink to a line each, so they do not bury the ones at work.
-  const activeCards = cards.filter((card) => card.counts.open > 0);
-  const quietCards = cards.filter((card) => card.counts.open === 0);
+  const archivedCards = cards.filter((card) => card.group.archived);
   const content = (
+    <>
+      <ProjectCardList
+        cards={cards.filter((card) => !card.group.archived)}
+        handlers={props.handlers}
+      />
+      {archivedCards.length > 0 ? (
+        <ArchivedProjects
+          cards={archivedCards}
+          handlers={props.handlers}
+          reveal={props.revealArchived}
+        />
+      ) : null}
+    </>
+  );
+  if (machine === null) return <div className="flex flex-col gap-6">{content}</div>;
+  return (
+    <section aria-labelledby={headingId} className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <EnvironmentMachineIcon
+          aria-hidden
+          kind={machine.machineKind}
+          className="size-4 shrink-0 text-muted-foreground"
+        />
+        <h2 id={headingId} className="text-sm font-semibold text-foreground">
+          {machine.label}
+        </h2>
+        {machine.disconnected ? (
+          <span className="text-xs text-muted-foreground">{t("Offline")}</span>
+        ) : null}
+        <ProjectCountsSummary counts={props.section.counts} />
+      </div>
+      {content}
+    </section>
+  );
+}
+
+function ProjectCardList(props: { cards: readonly ProjectCard[]; handlers: ProjectCardHandlers }) {
+  const quietHeadingId = useId();
+  // Projects with nothing open shrink to a line each, so they do not bury the ones at work.
+  const activeCards = props.cards.filter((card) => card.counts.open > 0);
+  const quietCards = props.cards.filter((card) => card.counts.open === 0);
+  return (
     <>
       {activeCards.length > 0 ? (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(min(20rem,100%),1fr))] items-start gap-4">
@@ -589,34 +673,47 @@ function ProjectSectionView(props: { section: ProjectSection; handlers: ProjectC
       ) : null}
     </>
   );
-  if (machine === null) return <div className="flex flex-col gap-6">{content}</div>;
+}
+
+/** Archived projects fold away below the rest, so they never read as current work. */
+function ArchivedProjects(props: {
+  cards: readonly ProjectCard[];
+  handlers: ProjectCardHandlers;
+  reveal: boolean;
+}) {
+  const [open, setOpen] = useState<boolean | null>(null);
+  const expanded = open ?? props.reveal;
   return (
-    <section aria-labelledby={headingId} className="flex flex-col gap-3">
-      <div className="flex items-center gap-2">
-        <EnvironmentMachineIcon
-          aria-hidden
-          kind={machine.machineKind}
-          className="size-4 shrink-0 text-muted-foreground"
-        />
-        <h2 id={headingId} className="text-sm font-semibold text-foreground">
-          {machine.label}
-        </h2>
-        {machine.disconnected ? (
-          <span className="text-xs text-muted-foreground">{t("Offline")}</span>
-        ) : null}
-        <ProjectCountsSummary counts={props.section.counts} />
-      </div>
-      {content}
-    </section>
+    <Collapsible open={expanded} onOpenChange={setOpen}>
+      <CollapsibleTrigger render={<Button size="xs" variant="ghost-muted" />}>
+        <ChevronRightIcon aria-hidden className={cn(expanded && "rotate-90")} />
+        {t("Archived")}
+        <span className="tabular-nums">{props.cards.length}</span>
+      </CollapsibleTrigger>
+      <CollapsiblePanel>
+        <div className="flex flex-col gap-4 pt-2">
+          <ProjectCardList cards={props.cards} handlers={props.handlers} />
+        </div>
+      </CollapsiblePanel>
+    </Collapsible>
   );
 }
 
 /** A project with no open threads: its name, when it last saw work, and how to start some. */
 function ProjectQuietRow(props: { card: ProjectCard; handlers: ProjectCardHandlers }) {
   const { card, handlers } = props;
+  const archived = card.group.archived;
   return (
-    <li className="flex h-11 min-w-0 items-center gap-2 rounded-xl border bg-card ps-3 pe-1.5 text-card-foreground">
-      <ProjectFavicon project={card.group} className="size-4 shrink-0" />
+    <li
+      className={cn(
+        "flex h-11 min-w-0 items-center gap-2 rounded-xl border ps-3 pe-1.5",
+        archived ? "border-dashed text-muted-foreground" : "bg-card text-card-foreground",
+      )}
+    >
+      <ProjectFavicon
+        project={card.group}
+        className={cn("size-4 shrink-0", archived && "opacity-60")}
+      />
       <span className="min-w-0 flex-1 truncate text-sm font-medium">{card.group.displayName}</span>
       {card.snoozedCount > 0 ? (
         <span className="shrink-0 text-xs text-muted-foreground">
@@ -627,9 +724,29 @@ function ProjectQuietRow(props: { card: ProjectCard; handlers: ProjectCardHandle
           <RelativeTime timestamp={card.lastActivityAt} />
         </span>
       ) : null}
-      <NewThreadButton card={card} handlers={handlers} />
+      {archived ? (
+        <UnarchiveButton card={card} handlers={handlers} />
+      ) : (
+        <NewThreadButton card={card} handlers={handlers} />
+      )}
       <ProjectCardMenu card={card} handlers={handlers} />
     </li>
+  );
+}
+
+function UnarchiveButton(props: { card: ProjectCard; handlers: ProjectCardHandlers }) {
+  const { card, handlers } = props;
+  if (!handlers.canArchive(card)) return null;
+  return (
+    <Button
+      size="xs"
+      variant="ghost"
+      aria-label={t("Unarchive {name}", { name: card.group.displayName })}
+      onClick={() => handlers.onSetArchived(card, false)}
+    >
+      <ArchiveRestoreIcon aria-hidden />
+      {t("Unarchive")}
+    </Button>
   );
 }
 
@@ -750,6 +867,11 @@ function ProjectCardMenu(props: { card: ProjectCard; handlers: ProjectCardHandle
         <MenuSeparator />
         <MenuItem onClick={() => handlers.onCopyPath(card)}>{t("Copy path")}</MenuItem>
         <MenuItem onClick={() => handlers.onOpenSettings(card)}>{t("Project settings")}</MenuItem>
+        {handlers.canArchive(card) ? (
+          <MenuItem onClick={() => handlers.onSetArchived(card, !card.group.archived)}>
+            {card.group.archived ? t("Unarchive project") : t("Archive project")}
+          </MenuItem>
+        ) : null}
       </MenuPopup>
     </Menu>
   );
@@ -765,20 +887,34 @@ function ProjectCardView(props: { card: ProjectCard; handlers: ProjectCardHandle
     (thread) => handlers.stateOf(thread) !== "quiet",
   );
   const rows = showingAll ? card.threads : preview.visible;
+  const archived = card.group.archived;
   return (
     <section
       aria-labelledby={headingId}
-      className="flex min-w-0 flex-col rounded-xl border bg-card text-card-foreground shadow-xs/5"
+      className={cn(
+        "flex min-w-0 flex-col rounded-xl border text-card-foreground",
+        archived ? "border-dashed" : "bg-card shadow-xs/5",
+      )}
     >
       <div className="flex items-start gap-2 px-3 pt-3 pb-2">
-        <ProjectFavicon project={card.group} className="mt-0.5 size-4 shrink-0" />
+        <ProjectFavicon
+          project={card.group}
+          className={cn("mt-0.5 size-4 shrink-0", archived && "opacity-60")}
+        />
         <div className="min-w-0 flex-1">
-          <h3 id={headingId} className="truncate text-sm font-semibold">
+          <h3
+            id={headingId}
+            className={cn("truncate text-sm font-semibold", archived && "text-muted-foreground")}
+          >
             {card.group.displayName}
           </h3>
           <ProjectCountsSummary counts={card.counts} className="mt-0.5" />
         </div>
-        <NewThreadButton card={card} handlers={handlers} />
+        {archived ? (
+          <UnarchiveButton card={card} handlers={handlers} />
+        ) : (
+          <NewThreadButton card={card} handlers={handlers} />
+        )}
         <ProjectCardMenu card={card} handlers={handlers} />
       </div>
       <ul className="flex flex-col px-1.5 pb-1.5">

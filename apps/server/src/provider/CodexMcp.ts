@@ -44,17 +44,25 @@ const MANAGED_CONFIG_LAYERS = new Set([
 
 const CodexMcpServerEntry = Schema.Struct({
   url: Schema.optional(Schema.String),
+  http_headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   command: Schema.optional(Schema.String),
   args: Schema.optional(Schema.Array(Schema.String)),
+  env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   enabled: Schema.optional(Schema.Boolean),
 });
 type CodexMcpServerEntry = typeof CodexMcpServerEntry.Type;
 const decodeServerEntry = Schema.decodeUnknownOption(CodexMcpServerEntry);
 
+// Codex rejects a server that mixes a local command's settings with a remote address's.
+const REMOTE_KEYS = ["url", "http_headers", "env_http_headers", "bearer_token_env_var"];
+const LOCAL_KEYS = ["command", "args", "env", "env_vars", "cwd"];
+
 export interface CodexConfiguredMcpServer extends CodexMcpServerEntry {
-  /** Only servers in the user's own config.toml can be removed here. */
+  /** Only servers in the user's own config.toml can be changed here. */
   readonly userConfig: boolean;
   readonly managed: boolean;
+  /** Every setting its table has, including ones this page does not show. */
+  readonly keys: ReadonlySet<string>;
 }
 
 type CodexMcpStatus = CodexSchema.V2ListMcpServerStatusResponse["data"][number];
@@ -76,6 +84,7 @@ export function codexConfiguredMcpServers(
       ...entry.value,
       userConfig: origin === undefined || origin.name.type === "user",
       managed: origin !== undefined && MANAGED_CONFIG_LAYERS.has(origin.name.type),
+      keys: new Set(typeof value === "object" && value !== null ? Object.keys(value) : []),
     });
   }
   return servers;
@@ -120,6 +129,9 @@ export function codexMcpServers(
           ? "Codex did not report this server."
           : boundedProviderMcpMessage(status.toolsError);
     const plugin = status?.pluginId ? splitProviderPluginId(status.pluginId).name : undefined;
+    // A dotted key path cannot address a name with dots or spaces.
+    const changeable =
+      entry?.userConfig === true && PROVIDER_MCP_NEW_SERVER_NAME_PATTERN.test(name);
     return {
       name,
       ...(transport ? { transport } : {}),
@@ -134,8 +146,55 @@ export function codexMcpServers(
       canSignIn: serverStatus === "needsAuth",
       canSignOut: status?.authStatus === "oAuth",
       removable: entry?.userConfig === true,
+      canToggle: changeable,
+      canEdit: changeable && Boolean(entry?.url || entry?.command),
     };
   });
+}
+
+/** The stored server an edit starts from, or nothing for a table without an address or command. */
+function codexStoredMcpServer(
+  entry: CodexConfiguredMcpServer,
+): ProviderMcpServerConfig | undefined {
+  if (entry.url) return { transport: "http", url: entry.url, headers: entry.http_headers ?? {} };
+  if (entry.command) {
+    return {
+      transport: "stdio",
+      command: entry.command,
+      args: entry.args ?? [],
+      env: entry.env ?? {},
+    };
+  }
+  return undefined;
+}
+
+/**
+ * The writes that give `[mcp_servers.<name>]` a new address or command. Settings the page does
+ * not show, such as timeouts or a bearer token variable, stay; the other transport's settings go.
+ */
+function codexMcpServerEdits(
+  name: string,
+  entry: CodexConfiguredMcpServer,
+  server: ProviderMcpServerConfig,
+): ReadonlyArray<CodexSchema.V2ConfigBatchWriteParams__ConfigEdit> {
+  const table = codexMcpServerEntry(server);
+  const [own, other] =
+    server.transport === "http"
+      ? (["http_headers", LOCAL_KEYS] as const)
+      : (["env", REMOTE_KEYS] as const);
+  const stale = [own, ...other].filter((key) => entry.keys.has(key) && !Object.hasOwn(table, key));
+  return [
+    ...Object.entries(table).map(([key, value]) => ({
+      keyPath: `mcp_servers.${name}.${key}`,
+      value,
+      mergeStrategy: "replace" as const,
+    })),
+    ...stale.map((key) => ({
+      keyPath: `mcp_servers.${name}.${key}`,
+      value: null,
+      mergeStrategy: "replace" as const,
+    })),
+  ];
 }
 
 /** The `[mcp_servers.<name>]` table Codex reads, without empty header or environment tables. */
@@ -288,6 +347,22 @@ export const makeCodexMcpManagement = Effect.fn("makeCodexMcpManagement")(functi
       client.request("config/value/write", params),
     ).pipe(Effect.asVoid);
 
+  /** A server in the user's own config.toml that a dotted key path can address. */
+  const ownServer = Effect.fn("CodexMcp.ownServer")(function* (
+    operation: ProviderMcpOperation,
+    name: string,
+  ) {
+    const configured = yield* withClient(operation, CONFIG_TIMEOUT, readConfigured);
+    const entry = configured.get(name);
+    if (entry === undefined) {
+      return yield* failure(operation, `Codex has no MCP server named ${name}.`);
+    }
+    if (!entry.userConfig || !PROVIDER_MCP_NEW_SERVER_NAME_PATTERN.test(name)) {
+      return yield* failure(operation, "Change this server in config.toml by hand.");
+    }
+    return entry;
+  });
+
   const forwardCallback = (redirect: CodexMcpRedirect | undefined, pasted: string) => {
     const callbackUrl = redirect ? codexMcpCallbackUrl(pasted, redirect) : undefined;
     if (callbackUrl === undefined) {
@@ -332,6 +407,39 @@ export const makeCodexMcpManagement = Effect.fn("makeCodexMcpManagement")(functi
             mergeStrategy: "replace",
           }).pipe(writes.withPermits(1))
         : Effect.fail(failure("remove", "Remove this server from config.toml by hand.")),
+    read: (name) =>
+      ownServer("read", name).pipe(
+        Effect.flatMap((entry) => {
+          const stored = codexStoredMcpServer(entry);
+          return stored === undefined
+            ? Effect.fail(failure("read", "Change this server in config.toml by hand."))
+            : Effect.succeed(stored);
+        }),
+      ),
+    edit: (name, server) =>
+      ownServer("edit", name).pipe(
+        Effect.flatMap((entry) =>
+          // One write, so a failed edit leaves the server as it was.
+          withClient("edit", CONFIG_TIMEOUT, (client) =>
+            client.request("config/batchWrite", {
+              edits: codexMcpServerEdits(name, entry, server),
+            }),
+          ),
+        ),
+        Effect.asVoid,
+        writes.withPermits(1),
+      ),
+    setEnabled: (name, enabled) =>
+      ownServer("setEnabled", name).pipe(
+        Effect.andThen(
+          write("setEnabled", {
+            keyPath: `mcp_servers.${name}.enabled`,
+            value: enabled,
+            mergeStrategy: "replace",
+          }),
+        ),
+        writes.withPermits(1),
+      ),
     signOut: (name) =>
       options.runCli(["mcp", "logout", name]).pipe(
         Effect.timeout(CLI_TIMEOUT),

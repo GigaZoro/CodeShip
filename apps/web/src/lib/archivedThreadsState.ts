@@ -1,8 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
-  type ArchivedSnapshotEntry,
+  type ArchivedThreadSnapshotsState,
+  type ArchivedThreadsView,
   createArchivedThreadSnapshotsAtomFamily,
-  makeArchivedThreadsEnvironmentKey,
+  makeArchivedThreadsViewKey,
 } from "@t3tools/client-runtime/state/threads";
 import type { EnvironmentId } from "@t3tools/contracts";
 
@@ -11,15 +12,9 @@ import { serverEnvironment } from "../state/server";
 import { environmentThreadShells } from "../state/threads";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 
-function archivedSnapshotAtom(environmentId: EnvironmentId) {
-  return orchestrationEnvironment.archivedShellSnapshot({
-    environmentId,
-    input: {},
-  });
-}
-
 const archivedSnapshotsAtom = createArchivedThreadSnapshotsAtomFamily({
-  getSnapshotAtom: archivedSnapshotAtom,
+  getPageAtom: (environmentId, input) =>
+    orchestrationEnvironment.archivedShellSnapshot({ environmentId, input }),
   hiddenThreadTagsAtom: serverEnvironment.hiddenThreadTagsAtom,
   hiddenThreadKeysAtom: environmentThreadShells.hiddenThreadKeysAtom,
   liveThreadRefsAtom: environmentThreadShells.threadRefsAtom,
@@ -28,25 +23,20 @@ const archivedSnapshotsAtom = createArchivedThreadSnapshotsAtomFamily({
 });
 
 export function refreshArchivedThreadsForEnvironment(environmentId: EnvironmentId): void {
-  appAtomRegistry.refresh(archivedSnapshotAtom(environmentId));
+  appAtomRegistry.update(
+    orchestrationEnvironment.archivedShellSnapshotRefresh(environmentId),
+    (count) => count + 1,
+  );
 }
 
-export function useArchivedThreadSnapshots(environmentIds: ReadonlyArray<EnvironmentId>): {
-  readonly snapshots: ReadonlyArray<ArchivedSnapshotEntry>;
-  readonly error: string | null;
-  readonly isLoading: boolean;
-  readonly refresh: () => void;
-} {
-  const environmentKey = makeArchivedThreadsEnvironmentKey(environmentIds);
-  const result = useAtomValue(archivedSnapshotsAtom(environmentKey));
+export function useArchivedThreadSnapshots(
+  view: ArchivedThreadsView,
+): ArchivedThreadSnapshotsState & { readonly refresh: () => void } {
+  const result = useAtomValue(archivedSnapshotsAtom(makeArchivedThreadsViewKey(view)));
   const refresh = () => {
-    for (const environmentId of environmentIds) {
-      appAtomRegistry.refresh(archivedSnapshotAtom(environmentId));
+    for (const environmentId of view.environmentIds) {
+      refreshArchivedThreadsForEnvironment(environmentId);
     }
   };
-
-  return {
-    ...result,
-    refresh,
-  };
+  return { ...result, refresh };
 }

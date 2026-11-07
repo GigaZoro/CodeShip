@@ -406,7 +406,10 @@ export function ThreadRelationshipsPanel(props: {
   const hiddenKeys = useHiddenThreadKeys();
   const hidingAnywhere = useAnyEnvironmentHiding();
   const allProjects = useProjects();
-  const archived = useArchivedThreadSnapshots([props.environmentId]);
+  const archived = useArchivedThreadSnapshots({
+    environmentIds: [props.environmentId],
+    familyOf: props.threadId,
+  });
   const archivedShells = archived.snapshots.find(
     (entry) => entry.environmentId === props.environmentId,
   )?.snapshot.threads;

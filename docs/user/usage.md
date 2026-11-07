@@ -135,6 +135,11 @@ the bar show each account's quota, countdown, and credits. Tap a row to open its
 The same account signed in on more than one environment, or reported by a hub as well, counts once.
 Filter with the environment dropdown to see what a single machine has.
 
+Each provider says when its limits were last checked, going by its oldest reading; on web, hover
+it for the exact time. For a provider with two or more accounts, a line under its name says
+whether **Switch accounts at usage limits** is on and which account a limited thread continues
+on, judged from the last reading. On web and desktop, its link opens that setting.
+
 When a Claude or Codex account has no overall weekly quota left, its pooled session contribution
 shows 0% left. The next refill depends on both reset times: an exhausted session must also reset,
 and a partly spent session may only regain its unused portion when the week resets. A session

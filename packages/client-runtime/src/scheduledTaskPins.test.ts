@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   applyHeldPinOrder,
   collectPinnedTasks,
+  failedScheduledTaskCount,
   formatLastRunAgo,
   formatNextRunCountdown,
   holdPinOrder,
@@ -321,5 +322,19 @@ describe("scheduledTasksForThread", () => {
     expect(scheduledTasksForThread([task as unknown as ScheduledTask], "t1")).toHaveLength(
       expected ? 1 : 0,
     );
+  });
+});
+
+describe("failedScheduledTaskCount", () => {
+  const task = (id: string, lastRunStatus: ScheduledTask["lastRunStatus"], enabled = true) =>
+    ({ id, enabled, lastRunStatus }) as unknown as ScheduledTask;
+
+  it("counts enabled tasks whose latest run failed, a shared task once", () => {
+    expect(
+      failedScheduledTaskCount([
+        [task("shared", "failed"), task("recovered", "succeeded"), task("paused", "failed", false)],
+        [task("shared", "failed"), task("rerunning", "running"), task("other", "failed")],
+      ]),
+    ).toBe(2);
   });
 });

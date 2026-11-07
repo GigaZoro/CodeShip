@@ -292,6 +292,7 @@ import { useCitedHistory } from "./chat/citationProcedure";
 import type { MessagesTimelineHistoryControls } from "./chat/MessagesTimeline";
 import { ThreadTimeline } from "./chat/ThreadTimeline";
 import { NativeChildWorkDialog } from "./chat/NativeChildWorkDialog";
+import { ArchivedThreadBar } from "./chat/ArchivedThreadBar";
 import { ProviderSubagentBar } from "./chat/ProviderSubagentBar";
 import { getTriggerDisplayModelName } from "./chat/providerIconUtils";
 import { resolveScrollToEndClearance } from "./composerFooterLayout";
@@ -1743,9 +1744,10 @@ export default function ChatView(props: ChatViewProps) {
     }
   }, [environmentId, gitStatusCwd, liveIsGitRepo]);
   const isGitRepo = liveIsGitRepo ?? recallCheckoutIsRepo(environmentId, gitStatusCwd) ?? true;
+  const archivedAt = isServerThread ? (activeThread?.archivedAt ?? null) : null;
   // Provider-native subagents cannot take messages; approvals and questions go to the top-level parent.
-  const showProviderSubagentBar = isProviderSubagent;
-  const composerMounted = !showProviderSubagentBar;
+  const showProviderSubagentBar = isProviderSubagent && archivedAt === null;
+  const composerMounted = !showProviderSubagentBar && archivedAt === null;
   const providerSubagentModels = selectedProviderEntry?.models ?? EMPTY_PROVIDER_MODELS;
   // Providers can report dated model ids or aliases.
   const providerSubagentModelSlug = selectedProviderEntry
@@ -3743,6 +3745,14 @@ export default function ChatView(props: ChatViewProps) {
                         aria-busy={queuedRunEdit.isSaving}
                       >
                         <div className="relative z-10">
+                          {archivedAt === null ? null : (
+                            <ArchivedThreadBar
+                              environmentId={environmentId}
+                              threadId={threadId}
+                              title={activeThread?.title ?? ""}
+                              archivedAt={archivedAt}
+                            />
+                          )}
                           {showProviderSubagentBar ? (
                             <ProviderSubagentBar
                               provider={selectedProviderEntry ?? null}

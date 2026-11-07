@@ -2,8 +2,9 @@
 
 MCP servers give Claude and Codex tools from other apps and services, such as an issue tracker or a
 documentation search. Open **Extensions** in the sidebar rail and choose the **MCP servers** tab, or **Open MCP servers** from the
-command palette, to see every provider's servers on one page, add new ones, sign in to them, and
-remove them. With more than one machine, pick the machine at the top right; the page remembers it.
+command palette, to see every provider's servers on one page, add new ones, sign in to them, turn
+them off, edit them, and remove them. With more than one machine, pick the machine at the top right;
+the page remembers it.
 Claude and Codex accounts on the same machine share their servers, so adding or removing a server on
 one changes it on the others, unless you gave an account its own config directory. Each account
 signs in to a server on its own, so each account gets its own list. Antigravity accounts all load
@@ -26,6 +27,24 @@ Choose **Add server**, give it a name, then pick a type:
 Claude adds the server for all of your projects. Both providers keep headers and environment
 variables in their own config file, `~/.claude.json` for Claude and `config.toml` for Codex. Each
 Claude account you add in T3.CodeShip keeps a copy of those servers in its own folder.
+
+## Turn off, edit, or remove a server
+
+- The switch on a server's row turns it off without deleting anything, and back on again. Codex
+  sets `enabled = false` on the server in `config.toml`. Claude only turns servers off per project
+  on its own, so T3.CodeShip adds the server to `deniedMcpServers` in Claude's user
+  `settings.json`, which turns it off in every project. While it is off, `claude mcp list` leaves
+  it out.
+- **Edit** changes a server's URL and headers, or its command and environment variables. Saved
+  header and variable values are never shown: their names appear with an empty value, and an empty
+  value keeps the saved one. A URL that carries a key is not shown either; leave the URL empty to
+  keep it.
+- **Remove** deletes the server's URL or command and every key saved with it. To stop using a
+  server but keep them, choose **Turn off instead**.
+- With more than one machine connected, **Compare** marks each server that another machine lacks
+  (**Not on**) or sets up with another address, command, or switch (**Differs on**), and lists the
+  servers only other machines have. It checks each machine's servers, which starts its providers,
+  so it stays off until you turn it on.
 
 ## Sign in
 

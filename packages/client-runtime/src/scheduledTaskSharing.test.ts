@@ -2,6 +2,7 @@ import {
   EnvironmentId,
   ScheduledTaskId,
   type ScheduledTask,
+  type ScheduledTaskRunRecord,
   type ScheduledTaskProjectMachineOrder,
   type ScheduledTaskSharedRevision,
 } from "@t3tools/contracts";
@@ -9,6 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 import {
   createSharedScheduledTaskSync,
+  groupSharedScheduledTasks,
+  mergeScheduledTaskRuns,
   planSharedScheduledTaskSync,
   sharedProjectReference,
   sharedSyncFailureKey,
@@ -377,5 +380,88 @@ describe("one-machine link warnings", () => {
     expect(
       describeOneMachineLinkWarning({ kind: "noLink", checker: B, target: A }, (id) => id),
     ).toBe("env-b has no link to env-a. Link it in Settings → Machines & access on env-b.");
+  });
+});
+
+describe("groupSharedScheduledTasks", () => {
+  it("lists a shared task once with every copy, led by the newest, and keeps local tasks", () => {
+    const onlyA = { id: ScheduledTaskId.make("only-a"), shared: null } as unknown as ScheduledTask;
+    const { shared: groups, local: lists } = groupSharedScheduledTasks([
+      { environmentId: A, tasks: [shared("1"), onlyA] },
+      { environmentId: B, tasks: [shared("2", { title: "new", by: B })] },
+      { environmentId: C, tasks: [local()] },
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.primary).toMatchObject({ environmentId: B, task: { title: "new" } });
+    expect(groups[0]?.copies.map((copy) => copy.environmentId)).toEqual([A, B]);
+    expect(lists.map((list) => [list.environmentId, list.tasks.map((task) => task.title)])).toEqual(
+      [
+        [A, [undefined]],
+        [B, []],
+        [C, ["local"]],
+      ],
+    );
+  });
+});
+
+describe("mergeScheduledTaskRuns", () => {
+  const run = (
+    id: string,
+    startedAt: string,
+    fields: Partial<ScheduledTaskRunRecord> = {},
+  ): ScheduledTaskRunRecord => ({
+    id,
+    trigger: "scheduled",
+    scheduledFor: null,
+    startedAt: `2026-11-07T${startedAt}:00.000Z`,
+    completedAt: null,
+    outcome: "succeeded",
+    threadId: null,
+    error: null,
+    skipReason: null,
+    ranOn: null,
+    failover: null,
+    ...fields,
+  });
+
+  it("orders every machine's runs newest first and drops skips another machine's run covers", () => {
+    const nine = "2026-11-07T09:00:00.000Z";
+    const ten = "2026-11-07T10:00:00.000Z";
+    const merged = mergeScheduledTaskRuns([
+      {
+        environmentId: A,
+        runs: [run("a-10", "10:00", { scheduledFor: ten }), run("a-manual", "08:30")],
+      },
+      {
+        environmentId: B,
+        runs: [
+          run("b-10", "10:00", {
+            scheduledFor: ten,
+            outcome: "skipped",
+            skipReason: "ran_elsewhere",
+            ranOn: A,
+          }),
+          run("b-9", "09:00", {
+            scheduledFor: nine,
+            outcome: "skipped",
+            skipReason: "ran_elsewhere",
+            ranOn: C,
+          }),
+          run("b-missed", "09:30", {
+            scheduledFor: nine,
+            outcome: "skipped",
+            skipReason: "missed",
+          }),
+        ],
+      },
+    ]);
+
+    expect(merged.map(({ environmentId, run }) => `${environmentId}:${run.id}`)).toEqual([
+      "env-a:a-10",
+      "env-b:b-missed",
+      "env-b:b-9",
+      "env-a:a-manual",
+    ]);
   });
 });

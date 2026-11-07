@@ -11,6 +11,10 @@ import {
   type OrchestrationV2SearchThreadsInput,
   type OrchestrationV2SearchThreadsResult,
   type OrchestrationV2ThreadShellSnapshot,
+  ORCHESTRATION_V2_ARCHIVED_THREADS_PAGE_DEFAULT,
+  type OrchestrationProjectShell,
+  type OrchestrationV2ArchivedThreadsCursor,
+  type OrchestrationV2GetArchivedShellSnapshotInput,
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -273,6 +277,23 @@ export class ThreadSearch extends Context.Service<
       readonly environmentLabel?: string | undefined;
       readonly messageThreadIds: ReadonlyArray<ThreadId>;
     }) => Effect.Effect<ReadonlyArray<ThreadId>, ThreadSearchError>;
+    /**
+     * A page of archived threads past `after`, in archive order, and the cursor for the next page
+     * (null after the last). A query keeps the threads the palette's matcher accepts, in that order.
+     */
+    readonly listArchived: (input: {
+      readonly after?: OrchestrationV2ArchivedThreadsCursor | undefined;
+      readonly limit: number;
+      readonly order: "newest" | "oldest";
+      readonly query?: string | undefined;
+      readonly projectIds?: ReadonlyArray<ProjectId> | undefined;
+    }) => Effect.Effect<
+      {
+        readonly threadIds: ReadonlyArray<ThreadId>;
+        readonly nextCursor: OrchestrationV2ArchivedThreadsCursor | null;
+      },
+      ThreadSearchError
+    >;
   }
 >()("t3/orchestration-v2/ThreadSearch") {}
 
@@ -292,6 +313,17 @@ const OlderSettledTitleRow = Schema.Struct({
   createdAt: IsoDateTime,
   projectTitle: Schema.String,
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
+});
+
+const ArchivedCandidateRow = Schema.Struct({
+  id: ThreadId,
+  archivedAt: IsoDateTime,
+  title: Schema.String,
+  branch: Schema.NullOr(Schema.String),
+  pullRequests: Schema.NullOr(Schema.fromJsonString(Schema.Array(ThreadPullRequestLink))),
+  linkedPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
+  branchPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
+  projectTitle: Schema.String,
 });
 
 /** @public */
@@ -392,6 +424,53 @@ export const make = Effect.gen(function* () {
         AND json_extract(threads.payload_json, '$.settledAt') < ${before}
         AND (${projectIds} IS NULL
           OR threads.project_id IN (SELECT value FROM json_each(${projectIds})))
+    `,
+  });
+
+  // Archive times are ISO strings in one format, so string order is time order. `oldest` is the
+  // exact reverse of `newest`, ties included.
+  const archivedCandidates = SqlSchema.findAll({
+    Request: Schema.Struct({
+      afterArchivedAt: Schema.NullOr(Schema.String),
+      afterThreadId: Schema.NullOr(Schema.String),
+      oldest: Schema.Boolean,
+      projectIds: Schema.NullOr(TokenList),
+      /** -1 reads every candidate. */
+      limit: Schema.Number,
+    }),
+    Result: ArchivedCandidateRow,
+    execute: ({ afterArchivedAt, afterThreadId, oldest, projectIds, limit }) => sql`
+      SELECT
+        threads.thread_id AS id,
+        threads.archived_at AS "archivedAt",
+        threads.title AS title,
+        json_extract(threads.payload_json, '$.branch') AS branch,
+        json_extract(threads.payload_json, '$.pullRequests') AS "pullRequests",
+        json_extract(threads.payload_json, '$.linkedPullRequest') AS "linkedPullRequest",
+        json_extract(threads.payload_json, '$.branchPullRequest') AS "branchPullRequest",
+        projects.title AS "projectTitle"
+      FROM orchestration_v2_projection_threads AS threads
+      INNER JOIN projection_projects AS projects
+        ON projects.project_id = threads.project_id
+      WHERE threads.deleted_at IS NULL
+        AND threads.archived_at IS NOT NULL
+        AND projects.deleted_at IS NULL
+        AND (${projectIds} IS NULL
+          OR threads.project_id IN (SELECT value FROM json_each(${projectIds})))${
+            afterArchivedAt === null
+              ? sql``
+              : oldest
+                ? sql` AND (threads.archived_at > ${afterArchivedAt}
+                  OR (threads.archived_at = ${afterArchivedAt} AND threads.thread_id < ${afterThreadId}))`
+                : sql` AND (threads.archived_at < ${afterArchivedAt}
+                  OR (threads.archived_at = ${afterArchivedAt} AND threads.thread_id > ${afterThreadId}))`
+          }
+      ORDER BY ${
+        oldest
+          ? sql`threads.archived_at ASC, threads.thread_id DESC`
+          : sql`threads.archived_at DESC, threads.thread_id ASC`
+      }
+      LIMIT ${limit}
     `,
   });
 
@@ -624,7 +703,55 @@ export const make = Effect.gen(function* () {
     ];
   });
 
-  return ThreadSearch.of({ search, searchThreads, searchOlderSettled });
+  const listArchived: ThreadSearch["Service"]["listArchived"] = Effect.fn(
+    "ThreadSearch.listArchived",
+  )(function* ({ after, limit, order, query, projectIds }) {
+    const normalizedQuery = foldSearchQuery(query ?? "");
+    const candidates = yield* read(
+      archivedCandidates({
+        afterArchivedAt: after?.archivedAt ?? null,
+        afterThreadId: after?.threadId ?? null,
+        oldest: order === "oldest",
+        projectIds: projectIds ?? null,
+        // One more than the page shows whether another page follows.
+        limit: normalizedQuery.length === 0 ? limit + 1 : -1,
+      }),
+    );
+    const matching =
+      normalizedQuery.length === 0
+        ? candidates
+        : candidates.filter(
+            (row) =>
+              scoreThreadSearch(
+                normalizedQuery,
+                {
+                  id: row.id,
+                  title: row.title,
+                  branch: row.branch,
+                  projectTitle: row.projectTitle,
+                  pullRequests: threadSearchPullRequests({
+                    pullRequests: row.pullRequests ?? undefined,
+                    linkedPullRequest: row.linkedPullRequest,
+                    branchPullRequest: row.branchPullRequest,
+                  }),
+                  activityAt: null,
+                },
+                0,
+                { picks: false },
+              ) !== null,
+          );
+    const page = matching.slice(0, limit);
+    const last = page.at(-1);
+    return {
+      threadIds: page.map((row) => row.id),
+      nextCursor:
+        matching.length > limit && last !== undefined
+          ? { archivedAt: last.archivedAt, threadId: last.id }
+          : null,
+    };
+  });
+
+  return ThreadSearch.of({ search, searchThreads, searchOlderSettled, listArchived });
 });
 
 export const layer = Layer.effect(ThreadSearch, make);
@@ -669,4 +796,67 @@ export const searchThreadsWithOlderSettledRows = Effect.fn(
     latestSequence: input.latestSequence,
   });
   return { ...messages, snapshotSequence: older.snapshotSequence, threads: older.threads };
+});
+
+/**
+ * A page of the archive with its threads' projects. Listed before the rows' transaction, so
+ * matching never holds the shared reader; a thread restored in between drops from the page.
+ */
+export const loadArchivedShellPage = Effect.fn("ThreadSearch.loadArchivedShellPage")(function* <
+  E1,
+  E2,
+  E3,
+  E4,
+  E5,
+>(input: {
+  readonly request: OrchestrationV2GetArchivedShellSnapshotInput;
+  readonly listArchived: (
+    input: Parameters<ThreadSearch["Service"]["listArchived"]>[0],
+  ) => Effect.Effect<Effect.Success<ReturnType<ThreadSearch["Service"]["listArchived"]>>, E1>;
+  readonly sql: SqlClient.SqlClient;
+  readonly readThreads: (
+    options: { readonly threadIds: ReadonlyArray<ThreadId> } | { readonly familyOf: ThreadId },
+  ) => Effect.Effect<Effect.Effect<OrchestrationV2ThreadShellSnapshot, E3>, E2>;
+  readonly listProjects: (
+    projectIds: ReadonlyArray<ProjectId>,
+  ) => Effect.Effect<ReadonlyArray<OrchestrationProjectShell>, E4>;
+  readonly latestSequence: Effect.Effect<number, E5>;
+}) {
+  const { familyOf, after, limit, order, query, projectIds } = input.request;
+  const listed =
+    familyOf === undefined
+      ? yield* input.listArchived({
+          after,
+          limit: limit ?? ORCHESTRATION_V2_ARCHIVED_THREADS_PAGE_DEFAULT,
+          order: order ?? "newest",
+          query,
+          projectIds,
+        })
+      : { familyOf };
+  const read = yield* input.sql
+    .withTransaction(
+      Effect.all({
+        decodeThreads: input.readThreads(
+          "familyOf" in listed ? listed : { threadIds: listed.threadIds },
+        ),
+        snapshotSequence: input.latestSequence,
+      }),
+    )
+    .pipe(NodeSqliteClient.readOnly);
+  const { schemaVersion, archivedThreads } = yield* read.decodeThreads;
+  let threads = archivedThreads;
+  if ("threadIds" in listed) {
+    const position = new Map(listed.threadIds.map((threadId, index) => [threadId, index]));
+    threads = archivedThreads.toSorted(
+      (left, right) => position.get(left.id)! - position.get(right.id)!,
+    );
+  }
+  const threadProjectIds = [...new Set(threads.map((thread) => thread.projectId))];
+  return {
+    schemaVersion,
+    snapshotSequence: read.snapshotSequence,
+    projects: threadProjectIds.length === 0 ? [] : yield* input.listProjects(threadProjectIds),
+    threads,
+    nextCursor: "nextCursor" in listed ? listed.nextCursor : null,
+  };
 });

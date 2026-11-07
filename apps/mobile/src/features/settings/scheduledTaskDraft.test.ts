@@ -5,8 +5,10 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProjectId,
+  type ScheduledTask,
 } from "@t3tools/contracts";
 import {
+  duplicateDraft,
   scheduledTaskDefaultModel,
   DEFAULT_SCHEDULE,
   scheduleDraftForTask,
@@ -79,6 +81,17 @@ describe("scheduleDraftForTask", () => {
     expect(
       scheduleFromDraft({ ...draft, filters: [{ id: "f1", path: "", op: "exists", value: "" }] }),
     ).toBeNull();
+    // A duplicate has nothing stored yet, so it sends the filters it starts with.
+    const copy = duplicateDraft(
+      {
+        title: "Triage",
+        schedule: { type: "webhook", signature: null, filters },
+        workspaceStrategy: { type: "root" },
+      } as unknown as ScheduledTask,
+      "Triage (copy)",
+    );
+    expect(copy.task).toBeNull();
+    expect(scheduleFromDraft(copy.schedule)).toMatchObject({ filters });
   });
 });
 

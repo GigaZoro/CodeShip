@@ -144,6 +144,14 @@ export interface ProviderMcpManagement {
     name: string,
   ) => Effect.Effect<ProviderMcpSignIn, ProviderMcpError, Scope.Scope>;
   readonly signOut: (name: string) => Effect.Effect<void, ProviderMcpError>;
+  /** The stored server an edit starts from. */
+  readonly read: (name: string) => Effect.Effect<ProviderMcpServerConfig, ProviderMcpError>;
+  /** Replaces the address or command in place; the provider's other settings for it stay. */
+  readonly edit: (
+    name: string,
+    server: ProviderMcpServerConfig,
+  ) => Effect.Effect<void, ProviderMcpError>;
+  readonly setEnabled: (name: string, enabled: boolean) => Effect.Effect<void, ProviderMcpError>;
 }
 
 export interface ProviderContinuationIdentity {

@@ -252,13 +252,14 @@ export function WorkingSectionSettings() {
   );
 }
 
+/** General has no environment filter, so this setting always applies to every machine. */
 export function ScheduledTaskPlacementSettings() {
-  const { selectedTargets } = useSettingsEnvironmentFilter();
+  const { availableTargets } = useSettingsEnvironmentFilter();
   const targets = resolveMobileSettingsTargets(
-    selectedTargets.filter(supportsSharedSettingsSync),
+    availableTargets.filter(supportsSharedSettingsSync),
     null,
   );
-  const writable = useEnvironmentsWithScope(selectedTargets, AuthSettingsWriteScope);
+  const writable = useEnvironmentsWithScope(availableTargets, AuthSettingsWriteScope);
   const [pending, setPending] = useState(false);
   const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
     label: "scheduled task default placement",
@@ -277,7 +278,8 @@ export function ScheduledTaskPlacementSettings() {
       icon="pin"
       label={t("Show new scheduled tasks in")}
       description={
-        managed ?? t("Where new scheduled tasks appear. Change a task's place from its menu.")
+        managed ??
+        t("Where new scheduled tasks appear on every machine. Change a task's place from its menu.")
       }
       detail={label}
       disabled={disabled}

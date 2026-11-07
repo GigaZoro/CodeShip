@@ -9,7 +9,10 @@ import {
   type KeyboardEvent,
 } from "react";
 import {
+  BlocksIcon,
   BotIcon,
+  CalendarClockIcon,
+  ChartNoAxesColumnIcon,
   GitBranchIcon,
   GlobeIcon,
   MessageSquareTextIcon,
@@ -21,6 +24,7 @@ import {
   SearchIcon,
   ServerIcon,
   Settings2Icon,
+  SparklesIcon,
   WrenchIcon,
   XIcon,
 } from "lucide-react";
@@ -41,10 +45,13 @@ import {
 } from "../ui/sidebar";
 import { scrollToSettingsTarget } from "./settingsLayout";
 import {
+  isSettingsPageSearchItem,
   searchSettings,
   revealSettingsSearchTarget,
   SETTINGS_NAV_GROUPS,
+  SETTINGS_SEARCH_APP_PAGES,
   SETTINGS_SECTION_LABELS,
+  settingsSearchSectionLabel,
   type SettingsPath,
   type SettingsSearchItem,
 } from "./settingsSearch";
@@ -98,6 +105,21 @@ function SettingsSectionIcon({ to }: { to: SettingsPath }) {
   return <Icon className="size-4 shrink-0 text-(--sidebar-icon-color)" />;
 }
 
+function SettingsSearchResultIcon({ item }: { item: SettingsSearchItem }) {
+  if (isSettingsPageSearchItem(item)) return <SettingsSectionIcon to={item.to} />;
+  const Icon =
+    item.to === "/scheduled-tasks"
+      ? CalendarClockIcon
+      : item.to === "/usage"
+        ? ChartNoAxesColumnIcon
+        : item.extensionsTab === "skills"
+          ? SparklesIcon
+          : item.extensionsTab === "mcp"
+            ? ServerIcon
+            : BlocksIcon;
+  return <Icon className="size-4 shrink-0 text-(--sidebar-icon-color)" />;
+}
+
 export function SettingsSidebarNav({
   pathname,
   inSidebar = false,
@@ -127,7 +149,7 @@ export function SettingsSidebarNav({
   const compactLayout = useMediaQuery("max-md");
   const [activeResultIndex, setActiveResultIndex] = useState(0);
   const searchableItems = useAvailableSettingsSearchItems(scopeSearch);
-  const results = searchSettings(query, searchableItems);
+  const results = searchSettings(query, [...SETTINGS_SEARCH_APP_PAGES, ...searchableItems]);
   const isSearching = query.trim().length > 0;
   const hasResults = results.length > 0;
   const maxResultIndex = Math.max(results.length - 1, 0);
@@ -194,6 +216,15 @@ export function SettingsSidebarNav({
   const handleSearchResultClick = (item: SettingsSearchItem) => {
     clearSearch();
     setCompactSearchOpen(false);
+    if (!isSettingsPageSearchItem(item)) {
+      void (item.to === "/extensions"
+        ? navigate({
+            to: "/extensions",
+            search: item.extensionsTab ? { tab: item.extensionsTab } : {},
+          })
+        : navigate({ to: item.to }));
+      return;
+    }
     const targetId = item.targetId ?? item.id;
     revealSettingsSearchTarget(targetId);
     if (pathname === item.to && currentHash.replace(/^#/, "") === targetId) {
@@ -344,13 +375,13 @@ export function SettingsSidebarNav({
                       onMouseMove={() => setActiveResultIndex(index)}
                       onClick={() => handleSearchResultClick(item)}
                     >
-                      <SettingsSectionIcon to={item.to} />
+                      <SettingsSearchResultIcon item={item} />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-medium text-sidebar-foreground">
                           {t(item.title)}
                         </span>
                         <span className="block truncate text-2xs text-sidebar-muted-foreground/75">
-                          {t(SETTINGS_SECTION_LABELS[item.to])}
+                          {t(settingsSearchSectionLabel(item.to))}
                         </span>
                       </span>
                     </SidebarMenuButton>

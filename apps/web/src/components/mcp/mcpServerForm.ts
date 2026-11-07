@@ -4,6 +4,8 @@ import {
   PROVIDER_MCP_NEW_SERVER_NAME_MAX_LENGTH,
   PROVIDER_MCP_NEW_SERVER_NAME_PATTERN,
   type ProviderMcpServerConfig,
+  type ProviderMcpServerEdit,
+  type ProviderMcpServerSettings,
 } from "@t3tools/contracts";
 import { t } from "~/i18n";
 
@@ -20,9 +22,15 @@ export interface McpServerForm {
 
 export type McpServerFormField = "name" | "url" | "headers" | "command" | "env";
 
+type McpServerFormErrors = Partial<Record<McpServerFormField, string>>;
+
 export type McpServerFormResult =
   | { readonly ok: true; readonly name: string; readonly server: ProviderMcpServerConfig }
-  | { readonly ok: false; readonly errors: Partial<Record<McpServerFormField, string>> };
+  | { readonly ok: false; readonly errors: McpServerFormErrors };
+
+export type McpServerEditFormResult =
+  | { readonly ok: true; readonly server: ProviderMcpServerEdit }
+  | { readonly ok: false; readonly errors: McpServerFormErrors };
 
 const URL_MAX_LENGTH = 2_048;
 const COMMAND_MAX_LENGTH = 1_024;
@@ -101,8 +109,46 @@ function parseKeyValueLines(
   return { values };
 }
 
-export function readMcpServerForm(form: McpServerForm): McpServerFormResult {
-  const errors: Partial<Record<McpServerFormField, string>> = {};
+/** Joins words back into a line `splitCommandLine` reads the same way. */
+export function joinCommandLine(words: ReadonlyArray<string>): string {
+  return words
+    .map((word) => {
+      if (word !== "" && !/[\s"']/u.test(word)) return word;
+      if (!word.includes("'")) return `'${word}'`;
+      return `"${word.replaceAll('"', '\\"')}"`;
+    })
+    .join(" ");
+}
+
+/**
+ * The form an edit opens with. Stored header and variable values never reach the client, so each
+ * name gets an empty value, which keeps the stored one.
+ */
+export function mcpServerFormFromSettings(
+  name: string,
+  settings: ProviderMcpServerSettings,
+): McpServerForm {
+  if (settings.transport === "stdio") {
+    return {
+      name,
+      kind: "local",
+      url: "",
+      headers: "",
+      command: joinCommandLine([settings.command, ...settings.args]),
+      env: settings.envNames.map((variable) => `${variable}=`).join("\n"),
+    };
+  }
+  return {
+    name,
+    kind: "remote",
+    url: settings.urlHasSecret ? "" : settings.url,
+    headers: settings.headerNames.map((header) => `${header}: `).join("\n"),
+    command: "",
+    env: "",
+  };
+}
+
+function readName(form: McpServerForm, errors: McpServerFormErrors) {
   const name = form.name.trim();
   if (!name) errors.name = t("Enter a name.");
   else if (name.length > PROVIDER_MCP_NEW_SERVER_NAME_MAX_LENGTH) {
@@ -112,10 +158,38 @@ export function readMcpServerForm(form: McpServerForm): McpServerFormResult {
   } else if (!PROVIDER_MCP_NEW_SERVER_NAME_PATTERN.test(name)) {
     errors.name = t("Use only letters, numbers, hyphens, and underscores.");
   }
+  return name;
+}
 
+/** An empty value keeps a stored one, so it needs a name the server already has. */
+function emptyValueError(
+  values: Readonly<Record<string, string>>,
+  storedNames: ReadonlySet<string> | undefined,
+) {
+  if (storedNames === undefined) return undefined;
+  const missing = Object.entries(values).find(
+    ([name, value]) => value === "" && !storedNames.has(name),
+  );
+  return missing
+    ? t("Enter a value for {name}, or remove its line.", { name: missing[0] })
+    : undefined;
+}
+
+/**
+ * The server the form describes. In an edit (`stored` set), an empty URL keeps a stored address
+ * that was too sensitive to show, and an empty value keeps that name's stored value.
+ */
+function readServer(
+  form: McpServerForm,
+  errors: McpServerFormErrors,
+  stored?: ProviderMcpServerSettings,
+): ProviderMcpServerEdit | undefined {
   if (form.kind === "remote") {
     const url = form.url.trim();
-    if (!url) errors.url = t("Enter the server's URL.");
+    const keepsUrl = !url && stored?.transport === "http" && stored.urlHasSecret;
+    if (keepsUrl) {
+      // The stored address stays.
+    } else if (!url) errors.url = t("Enter the server's URL.");
     else if (url.length > URL_MAX_LENGTH)
       errors.url = t("Use at most {max} characters.", { max: URL_MAX_LENGTH });
     else if (!URL.canParse(url) || !/^https?:$/u.test(new URL(url).protocol)) {
@@ -128,8 +202,17 @@ export function readMcpServerForm(form: McpServerForm): McpServerFormResult {
       "header",
     );
     if ("error" in headers) errors.headers = headers.error;
-    if (Object.keys(errors).length > 0 || "error" in headers) return { ok: false, errors };
-    return { ok: true, name, server: { transport: "http", url, headers: headers.values } };
+    else {
+      const empty = emptyValueError(
+        headers.values,
+        stored === undefined
+          ? undefined
+          : new Set(stored.transport === "http" ? stored.headerNames : []),
+      );
+      if (empty) errors.headers = empty;
+    }
+    if (Object.keys(errors).length > 0 || "error" in headers) return undefined;
+    return { transport: "http", ...(keepsUrl ? {} : { url }), headers: headers.values };
   }
 
   const words = splitCommandLine(form.command);
@@ -140,13 +223,40 @@ export function readMcpServerForm(form: McpServerForm): McpServerFormResult {
   }
   const env = parseKeyValueLines(form.env, "=", PROVIDER_MCP_ENV_NAME_PATTERN, "variable");
   if ("error" in env) errors.env = env.error;
-  if (Object.keys(errors).length > 0 || words === undefined || "error" in env) {
-    return { ok: false, errors };
+  else {
+    const empty = emptyValueError(
+      env.values,
+      stored === undefined
+        ? undefined
+        : new Set(stored.transport === "stdio" ? stored.envNames : []),
+    );
+    if (empty) errors.env = empty;
   }
+  if (Object.keys(errors).length > 0 || words === undefined || "error" in env) return undefined;
   const [command, ...args] = words;
+  return { transport: "stdio", command: command!, args, env: env.values };
+}
+
+export function readMcpServerForm(form: McpServerForm): McpServerFormResult {
+  const errors: McpServerFormErrors = {};
+  const name = readName(form, errors);
+  const server = readServer(form, errors);
+  if (server === undefined) return { ok: false, errors };
+  if (server.transport === "stdio") return { ok: true, name, server };
+  // A new server has no stored address to keep, so `readServer` always names one.
+  if (server.url === undefined) return { ok: false, errors };
   return {
     ok: true,
     name,
-    server: { transport: "stdio", command: command!, args, env: env.values },
+    server: { transport: "http", url: server.url, headers: server.headers },
   };
+}
+
+export function readMcpServerEditForm(
+  form: McpServerForm,
+  stored: ProviderMcpServerSettings,
+): McpServerEditFormResult {
+  const errors: McpServerFormErrors = {};
+  const server = readServer(form, errors, stored);
+  return server === undefined ? { ok: false, errors } : { ok: true, server };
 }

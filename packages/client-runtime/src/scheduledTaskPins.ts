@@ -47,6 +47,20 @@ export function resolvePinnedTaskStatus(
   return task.enabled ? "idle" : "paused";
 }
 
+/**
+ * Tasks whose latest run failed, once each: a shared task's copies share its id. The next run
+ * that starts clears a task, and pausing it counts as dealing with it.
+ */
+export function failedScheduledTaskCount(
+  lists: ReadonlyArray<ReadonlyArray<Pick<ScheduledTask, "id" | "enabled" | "lastRunStatus">>>,
+): number {
+  return new Set(
+    lists.flatMap((tasks) =>
+      tasks.flatMap((task) => (task.enabled && task.lastRunStatus === "failed" ? [task.id] : [])),
+    ),
+  ).size;
+}
+
 /** The thread a pinned task opens: the one its last run used, else the one it is bound to. */
 export function pinnedTaskRunThreadId(
   task: Pick<ScheduledTask, "lastRunThreadId" | "threadId">,

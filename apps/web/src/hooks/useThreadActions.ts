@@ -1010,14 +1010,18 @@ export function useThreadActions() {
       (result) => result._tag === "Success",
     );
 
-  const confirmAndDeleteThread = async (target: ScopedThreadRef) => {
+  /** `title` names a thread the live shell does not hold, such as an archived one. */
+  const confirmAndDeleteThread = async (
+    target: ScopedThreadRef,
+    opts: { readonly title?: string } = {},
+  ) => {
     const permissionFailure = threadOperationFailure(target);
     if (permissionFailure) return permissionFailure;
     const localApi = readLocalApi();
     const resolved = resolveThreadTarget(target);
 
     if (confirmThreadDelete && localApi) {
-      const title = resolved?.thread.title ?? t("this thread");
+      const title = resolved?.thread.title ?? opts.title ?? t("this thread");
       const confirmationResult = await settlePromise(() =>
         localApi.dialogs.confirm(
           [

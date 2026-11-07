@@ -1,3 +1,30 @@
+## 2026-11-07 — Settings, scheduled tasks, archive, usage and MCP servers
+
+- Reset page now resets a setting that only another machine changed. The confirmation names the machines it writes to, and an Undo puts every machine's values back.
+- **Settings → Machines & access** lists the settings that differ between your connected machines, with **Use everywhere** to copy one machine's value to the rest.
+- Settings search finds Scheduled tasks, MCP servers, Plugins, Skills and Usage, and the differences between machines.
+- **Show new scheduled tasks in** now applies to every machine.
+- Scheduled tasks:
+  - A task on several machines is listed once, with a line per machine and one run history across them.
+  - Deleting a shared task says it deletes it on every machine, and names them.
+  - **Last run** opens its thread, and the next run shows its time as well as how soon it is.
+  - Sync warnings show under the row instead of only in a tooltip, and the editor names the machine instead of saying "This machine".
+  - Tasks can be duplicated, and on web or desktop moved to another machine.
+  - The Scheduled tasks rail item shows a red dot while a task's latest run failed.
+- Archived threads:
+  - Open an archived thread to read it before you unarchive it.
+  - Search the archive.
+  - Delete a thread from its row.
+  - The archive loads 50 threads at a time instead of every archived thread from every machine at once.
+- Usage → Limits says when each provider's limits were last checked, and whether switching accounts at usage limits is on and which account a limited thread continues on, with a link to the setting.
+- The Projects page folds archived projects into their own **Archived** group, with **Archive project** and **Unarchive** in the menu.
+- MCP servers:
+  - Turn a Claude or Codex server off and on without removing it.
+  - Edit its address, command or keys; stored keys are never sent to the app.
+  - Compare the list with your other machines.
+  - Remove now says it deletes the stored keys and offers **Turn off instead**.
+  - Agents can manage these servers too.
+
 ## 2026-11-07 — Controlling a running agent
 
 - Stop and send is a third Follow-up behavior next to Steer and Queue, on web, desktop and mobile. It stops the current turn and sends your message instead, on agents that can restart a turn such as Codex, OpenCode and Cursor; others steer.

@@ -408,7 +408,8 @@ signed in to an account another provider already uses is unavailable until you
 sign it in to a different account. Some providers' terms forbid using extra
 accounts to get around limits. With this on, a scheduled task whose account has hit
 its limit starts its new thread on the first other account with usage left, and
-its **Run history** says which account it used.
+its **Run history** says which account it used. **Usage → Limits** shows which
+account a limited thread continues on right now.
 
 **Auto** picks the model and the account for you. Set it up in **Settings →
 Providers** on web or desktop: pick a primary provider under **Auto mode**, and

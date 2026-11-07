@@ -188,6 +188,7 @@ import { ManagedRuntimeModeNotice } from "./ManagedRuntimeModeNotice";
 import { ComposerFeedback } from "./ComposerFeedback";
 import { ComposerUsageLimits } from "./ComposerUsageLimits";
 import { PendingUserInputCard } from "./PendingUserInputCard";
+import { ArchivedThreadBar } from "./ArchivedThreadBar";
 import { ProviderSubagentBar } from "./ProviderSubagentBar";
 import { ThreadCreationFailedCard } from "./ThreadCreationFailedCard";
 import {
@@ -497,6 +498,7 @@ function ThreadDetailBody(
   const defaultComposerEditorRef = useRef<ComposerEditorHandle>(null);
   const composerEditorRef = props.draftMode?.editorRef ?? defaultComposerEditorRef;
   const isProviderSubagent = isProviderNativeSubagentThread(props.selectedThread.source);
+  const archivedAt = props.selectedThread.archivedAt;
   const editingRunId = props.queuedRunEdit?.runId ?? null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- focuses the composer editor on the next animation frame when a queued run edit starts
   useEffect(() => {
@@ -1799,7 +1801,7 @@ function ThreadDetailBody(
                 </View>
 
                 <View style={composerSlotHidden ? { display: "none" } : undefined}>
-                  {isProviderSubagent ? (
+                  {archivedAt !== null || isProviderSubagent ? (
                     <View
                       className="self-center px-3 pt-1.5"
                       style={{
@@ -1808,36 +1810,40 @@ function ThreadDetailBody(
                         paddingBottom: composerBottomInset + 6,
                       }}
                     >
-                      <ProviderSubagentBar
-                        provider={providerSubagentProvider ?? null}
-                        modelLabel={
-                          providerSubagentCatalogModel?.name ??
-                          formatModelSlugName(props.selectedThread.modelSelection.model)
-                        }
-                        effortLabel={formatModelSelectionEffort(
-                          props.selectedThread.modelSelection,
-                          providerSubagentProvider?.models,
-                          reportedModelSelection,
-                        )}
-                        status={props.providerSubagentStatus ?? null}
-                        inspect={
-                          providerSubagentProvider?.driver === "antigravity"
-                            ? {
-                                environmentId: props.environmentId,
-                                threadId: props.selectedThread.id,
-                              }
-                            : null
-                        }
-                        onOpenParent={
-                          props.selectedThread.lineage.parentThreadId === null
-                            ? null
-                            : () =>
-                                openLinkedThread({
-                                  environmentId: String(props.environmentId),
-                                  threadId: String(props.selectedThread.lineage.parentThreadId),
-                                })
-                        }
-                      />
+                      {archivedAt !== null ? (
+                        <ArchivedThreadBar thread={props.selectedThread} archivedAt={archivedAt} />
+                      ) : (
+                        <ProviderSubagentBar
+                          provider={providerSubagentProvider ?? null}
+                          modelLabel={
+                            providerSubagentCatalogModel?.name ??
+                            formatModelSlugName(props.selectedThread.modelSelection.model)
+                          }
+                          effortLabel={formatModelSelectionEffort(
+                            props.selectedThread.modelSelection,
+                            providerSubagentProvider?.models,
+                            reportedModelSelection,
+                          )}
+                          status={props.providerSubagentStatus ?? null}
+                          inspect={
+                            providerSubagentProvider?.driver === "antigravity"
+                              ? {
+                                  environmentId: props.environmentId,
+                                  threadId: props.selectedThread.id,
+                                }
+                              : null
+                          }
+                          onOpenParent={
+                            props.selectedThread.lineage.parentThreadId === null
+                              ? null
+                              : () =>
+                                  openLinkedThread({
+                                    environmentId: String(props.environmentId),
+                                    threadId: String(props.selectedThread.lineage.parentThreadId),
+                                  })
+                          }
+                        />
+                      )}
                     </View>
                   ) : (
                     <>

@@ -342,6 +342,36 @@ export function taskToDraft(task: ScheduledTask): DraftState {
   };
 }
 
+/** A new task's draft from an existing one. The new task stores nothing yet, so every field is sent. */
+export function copyTaskDraft(task: ScheduledTask, title: string): DraftState {
+  return { ...taskToDraft(task), editingId: null, title, savedFilters: [] };
+}
+
+/** Projects are per machine: another machine's copy has the same repository, else the same name. */
+export function matchingProjectId(
+  source: {
+    readonly title: string;
+    readonly repositoryIdentity?: { readonly canonicalKey: string } | null | undefined;
+  },
+  candidates: ReadonlyArray<{
+    readonly id: ProjectId;
+    readonly title: string;
+    readonly repositoryIdentity?: { readonly canonicalKey: string } | null | undefined;
+    readonly archivedAt?: string | null | undefined;
+  }>,
+): ProjectId | "" {
+  const open = candidates.filter((project) => project.archivedAt == null);
+  const key = source.repositoryIdentity?.canonicalKey;
+  return (
+    (
+      (key === undefined
+        ? undefined
+        : open.find((project) => project.repositoryIdentity?.canonicalKey === key)) ??
+      open.find((project) => project.title === source.title)
+    )?.id ?? ""
+  );
+}
+
 export function scheduledTaskDefaultModel(
   settings: ServerSettings,
   project: (LegacyProjectSettingsFields & { readonly id: ProjectId }) | null,

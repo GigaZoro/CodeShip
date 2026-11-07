@@ -4,17 +4,14 @@ import {
   type ProjectFileBackedSettingKey,
   resolveEnvironmentMachineKind,
   type ServerSettings,
-  type WorktreeSubmodules,
 } from "@t3tools/contracts";
 import { CheckIcon, ChevronRightIcon, LayersIcon } from "lucide-react";
 import * as Equal from "effect/Equal";
 
-import { msg, t, tn, type Message } from "~/i18n";
+import { t, tn } from "~/i18n";
 import { cn } from "../../lib/utils";
 import type { EnvironmentPresentation } from "../../state/environments";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
-import { resolveEnvModeLabel, WORKTREE_SUBMODULES_LABELS } from "../BranchToolbar.logic";
-import { PULL_REQUEST_MERGE_METHOD_LABELS } from "../pullRequest/pullRequestDetail.logic";
 import { Button, InlineButton } from "../ui/button";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
@@ -23,6 +20,7 @@ import { useOptionalSettingsScope } from "./SettingsScopeContext";
 import type { ProjectOverrideEntry, ScopedSettingsTarget } from "./scopedSettings";
 import { isProjectScopedSettingKey } from "./scopedSettings";
 import { settingsScopeEnvironmentLabels } from "./settingsScopeAxis";
+import { formatSettingValue } from "./settingValueFormat";
 
 interface InheritanceLayer {
   readonly key: "project" | "environment" | "t3.json" | "built-in";
@@ -30,76 +28,6 @@ interface InheritanceLayer {
   readonly value: string;
   readonly effective: boolean;
   readonly set: boolean;
-}
-
-const WRITING_STYLE_LABELS: Record<string, Message> = {
-  repo_conventions: msg("Repository conventions"),
-  conventional_commits: msg("Conventional Commits"),
-  custom: msg("Custom instructions"),
-};
-
-const BACKGROUND_ACTIVITY_PROFILE_LABELS: Record<string, Message> = {
-  balanced: msg("Balanced"),
-  performance: msg("Performance"),
-  "battery-saver": msg("Battery saver"),
-  custom: msg("Advanced"),
-};
-
-function labelOrRaw(label: Message | undefined, raw: string): string {
-  return label === undefined ? raw : t(label);
-}
-
-function formatValue(key: keyof ServerSettings, value: unknown): string {
-  if (value === null || value === undefined) {
-    return key === "pullRequestMergeMethod"
-      ? t("Last selected")
-      : key === "sidebarAutoSettleAfterDays"
-        ? t("Never")
-        : key === "defaultModelSelection"
-          ? t("Automatic")
-          : key === "sourceControlWriterModelSelection"
-            ? t("Text generation model")
-            : key === "reviewGuideModelSelection"
-              ? t("Source control writer model")
-              : key === "defaultThreadEnvMode" || key === "worktreeSubmodules"
-                ? t("Inherit")
-                : t("Not set");
-  }
-  if (typeof value === "boolean") return value ? t("On") : t("Off");
-  if (typeof value === "number") {
-    return key === "sidebarAutoSettleAfterDays"
-      ? tn(value, "{count} day", "{count} days")
-      : String(value);
-  }
-  if (typeof value === "string") {
-    if (key === "defaultThreadEnvMode" && (value === "local" || value === "worktree")) {
-      return resolveEnvModeLabel(value);
-    }
-    if (key === "worktreeSubmodules" && value in WORKTREE_SUBMODULES_LABELS) {
-      return t(WORKTREE_SUBMODULES_LABELS[value as WorktreeSubmodules]);
-    }
-    if (key === "pullRequestMergeMethod" && value in PULL_REQUEST_MERGE_METHOD_LABELS) {
-      return t(
-        PULL_REQUEST_MERGE_METHOD_LABELS[value as keyof typeof PULL_REQUEST_MERGE_METHOD_LABELS],
-      );
-    }
-    return value === "" ? t("Empty") : value;
-  }
-  if (Array.isArray(value)) return tn(value.length, "{count} item", "{count} items");
-  if (typeof value === "object") {
-    if (key === "backgroundActivity" && "profile" in value && typeof value.profile === "string") {
-      const label = BACKGROUND_ACTIVITY_PROFILE_LABELS[value.profile];
-      return label === undefined ? value.profile : t(label);
-    }
-    if ("model" in value && typeof value.model === "string") return value.model;
-    if ("mode" in value && typeof value.mode === "string") {
-      if (key === "worktreeCleanup") return value.mode === "off" ? "Off" : t("Custom");
-      return key === "sourceControlWritingStyle"
-        ? labelOrRaw(WRITING_STYLE_LABELS[value.mode], value.mode)
-        : value.mode;
-    }
-  }
-  return t("Custom");
 }
 
 /** Matches resolveProjectSettings order. */
@@ -117,7 +45,7 @@ export function settingInheritanceLayers(
     layers.push({
       key: "project",
       label: t("Project"),
-      value: source === "project" ? formatValue(key, target.settings[key]) : t("Inherits"),
+      value: source === "project" ? formatSettingValue(key, target.settings[key]) : t("Inherits"),
       effective: source === "project",
       set: source === "project",
     });
@@ -125,7 +53,7 @@ export function settingInheritanceLayers(
   layers.push({
     key: "environment",
     label: target.label,
-    value: environmentSet ? formatValue(key, environmentValue) : t("Inherits"),
+    value: environmentSet ? formatSettingValue(key, environmentValue) : t("Inherits"),
     effective: source === "environment" && environmentSet,
     set: environmentSet,
   });
@@ -133,7 +61,7 @@ export function settingInheritanceLayers(
     layers.push({
       key: "t3.json",
       label: "t3.json",
-      value: source === "t3.json" ? formatValue(key, target.settings[key]) : t("Inherits"),
+      value: source === "t3.json" ? formatSettingValue(key, target.settings[key]) : t("Inherits"),
       effective: source === "t3.json",
       set: source === "t3.json",
     });
@@ -145,7 +73,7 @@ export function settingInheritanceLayers(
   layers.push({
     key: "built-in",
     label: t("Default"),
-    value: formatValue(key, builtIn),
+    value: formatSettingValue(key, builtIn),
     effective: source === "environment" && !environmentSet,
     set: true,
   });
@@ -441,7 +369,7 @@ export function SettingInheritance({
                           </span>
                           <span className="max-w-32 truncate text-muted-foreground tabular-nums">
                             {isProjectScopedSettingKey(key)
-                              ? formatValue(
+                              ? formatSettingValue(
                                   key,
                                   members.find(
                                     (member) =>

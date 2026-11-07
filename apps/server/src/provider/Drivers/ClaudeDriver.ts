@@ -66,7 +66,6 @@ import {
 import {
   claudeAccountHomePath,
   materializeClaudeAccountHome,
-  readClaudeMcpServerNames,
   shareClaudeMcpServers,
 } from "./ClaudeAccountHome.ts";
 import { makeClaudeAuth } from "./ClaudeAuth.ts";
@@ -283,15 +282,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       binaryPath: effectiveConfig.binaryPath,
       environment: claudeEnvironment,
       cwd: stateDir,
+      configPath: accountConfigPath,
+      // An added account's settings.json links to the shared one.
+      settingsPath: path.join(sharedHome, "settings.json"),
       ...(accountHome === undefined
         ? {}
         : {
             sharedConfig: {
               // Without the account's CLAUDE_CONFIG_DIR, `claude mcp` edits the shared config.
               environment: processEnv,
-              serverNames: readClaudeMcpServerNames(sharedConfigPath).pipe(
-                Effect.provideService(FileSystem.FileSystem, fileSystem),
-              ),
+              configPath: sharedConfigPath,
               copyServers: copyMcpServers,
             },
           }),

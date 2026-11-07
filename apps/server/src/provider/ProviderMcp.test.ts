@@ -4,6 +4,7 @@ import {
   ProviderInstanceId,
   type ProviderMcpError,
   type ProviderMcpServer,
+  type ProviderMcpServerConfig,
   type ProviderMcpSignInState,
 } from "@t3tools/contracts";
 import type { ProviderInstance, ProviderMcpManagement } from "@t3tools/provider-core/server/driver";
@@ -35,6 +36,7 @@ const server = (
 const makeHarness = Effect.gen(function* () {
   const listReads = yield* Ref.make(0);
   const submitted = yield* Ref.make<ReadonlyArray<string>>([]);
+  const edited = yield* Ref.make<ReadonlyArray<readonly [string, ProviderMcpServerConfig]>>([]);
   const signedIn = yield* Deferred.make<void, ProviderMcpError>();
   const mcp: ProviderMcpManagement = {
     list: Ref.update(listReads, (count) => count + 1).pipe(
@@ -48,6 +50,14 @@ const makeHarness = Effect.gen(function* () {
     add: () => Effect.void,
     remove: () => Effect.void,
     signOut: () => Effect.void,
+    read: () =>
+      Effect.succeed({
+        transport: "http",
+        url: "https://alpha.example/mcp?key=secret",
+        headers: { Authorization: "Bearer secret" },
+      }),
+    edit: (name, config) => Ref.update(edited, (all) => [...all, [name, config] as const]),
+    setEnabled: () => Effect.void,
     signIn: (name) =>
       Effect.succeed({
         authorizationUrl: `https://auth.example/${name}`,
@@ -91,7 +101,7 @@ const makeHarness = Effect.gen(function* () {
     ),
     Layer.provide(NodeCrypto.layer),
   );
-  return { listReads, submitted, signedIn, layer };
+  return { listReads, submitted, edited, signedIn, layer };
 });
 
 it.effect("ProviderMcp lists config servers first and reads again after a change", () =>
@@ -172,4 +182,54 @@ it.effect("ProviderMcp hands a pasted callback only to the open sign-in it belon
       assert.equal(closed.reason, "signInClosed");
     }).pipe(Effect.provide(harness.layer));
   }),
+);
+
+it.effect(
+  "ProviderMcp keeps stored secrets out of a read and in an edit that leaves them empty",
+  () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Effect.gen(function* () {
+        const service = yield* ProviderMcp.ProviderMcp;
+        assert.deepEqual(yield* service.read({ instanceId, name: "alpha" }), {
+          server: {
+            transport: "http",
+            url: "https://alpha.example/mcp",
+            urlHasSecret: true,
+            headerNames: ["Authorization"],
+          },
+        });
+
+        yield* service.list({ instanceId });
+        yield* service.edit({
+          instanceId,
+          name: "alpha",
+          server: { transport: "http", headers: { Authorization: "" } },
+        });
+        assert.deepEqual(yield* Ref.get(harness.edited), [
+          [
+            "alpha",
+            {
+              transport: "http",
+              url: "https://alpha.example/mcp?key=secret",
+              headers: { Authorization: "Bearer secret" },
+            },
+          ],
+        ]);
+        const missing = yield* service
+          .edit({
+            instanceId,
+            name: "alpha",
+            server: { transport: "http", headers: { "X-Key": "" } },
+          })
+          .pipe(Effect.flip);
+        assert.equal(missing.message, "Enter a value for X-Key.");
+
+        // An edit or a switch is a change, so the next list asks the provider again.
+        yield* service.list({ instanceId });
+        yield* service.setEnabled({ instanceId, name: "alpha", enabled: false });
+        yield* service.list({ instanceId });
+        assert.equal(yield* Ref.get(harness.listReads), 3);
+      }).pipe(Effect.provide(harness.layer));
+    }),
 );

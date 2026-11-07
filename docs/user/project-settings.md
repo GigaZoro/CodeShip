@@ -83,10 +83,11 @@ default) on the highlighted row. **Pin project** in the command palette and **Se
 Projects** work too. A list keeps its order while it is open, so a new pin moves up the next time
 you open it.
 
-Archive a project you are done with in **Settings → Projects**. It leaves the project pickers.
-Its threads, settings, and files stay as they are, and archived projects still show in the
-Settings project list, marked **Archived**. Choose one there and select **Unarchive** to bring it
-back. On mobile, both are in **Settings → Projects → Organize**.
+Archive a project you are done with in **Settings → Projects**, or with **Archive project** in its
+menu on the **Projects** page. It leaves the project pickers. Its threads, settings, and files stay
+as they are, and archived projects still show in the Settings project list, marked **Archived**,
+and in the folded **Archived** group at the bottom of the Projects page. Select **Unarchive** in
+either place to bring one back. On mobile, both are in **Settings → Projects → Organize**.
 
 A project on several machines must have every machine connected to pin or archive it.
 
@@ -121,12 +122,18 @@ A fixed-time task whose time passed while its machine was off or asleep runs
 once when the machine is back, if that is nearer the missed time than the next
 run. **Catch up a missed run** in the task's editor turns this off or on; it
 starts on for daily tasks. **Run history** in a task's menu lists each time it
-fired on that machine: runs that started a thread, runs that failed before one
-existed, and missed or skipped times, with the reason. In the mobile Tasks tab,
-tapping a task opens its last run; edit it from its menu.
+fired: runs that started a thread, runs that failed before one existed, and
+missed or skipped times, with the reason. Select a task's **Last run** to open
+that run's thread. In the mobile Tasks tab, tapping a task opens its last run;
+edit it from its menu. The **Scheduled tasks** item in the side rail shows a
+red dot while any task's latest run failed; it clears when the next run starts,
+or when you pause the task.
 
-You can edit, pause, resume, run immediately, change where it shows, or delete a
-task from the list. See [Choose where scheduled tasks show](thread-sidebar.md#choose-where-scheduled-tasks-show).
+You can edit, duplicate, pause, resume, run immediately, change where it shows,
+or delete a task from the list. See [Choose where scheduled tasks show](thread-sidebar.md#choose-where-scheduled-tasks-show).
+On web or desktop, **Move to another machine** saves a task on the machine you
+pick, then deletes it from the one it was on; its run history isn't moved. A
+task that posts into a thread, has a webhook URL, or is shared can't be moved.
 Webhook tasks only run when their URL is called, so they can't be run
 immediately.
 Leaving an edited form asks before discarding unsaved changes.
@@ -157,14 +164,19 @@ Copies sync while T3.CodeShip on web, desktop, or mobile is connected to both
 machines. A machine that links to another also fetches newer copies from it
 every few minutes, even with no app open. Editing, pausing, or deleting a
 shared task on one machine does the same on the others; pinning and **Run now**
-stay on the machine where you use them. Choosing **This machine** keeps the task
-only on the machine you edit it on.
+stay on the machine where you use them. Choosing **Only** with the machine's name
+keeps the task only on that machine.
+
+A shared task is listed once, under **On more than one machine**, with a line
+for each machine: when it runs there next, how its last run went, and anything
+that stops it, such as a copy that didn't sync. Its **Run history** covers every
+machine.
 
 A shared task starts a new thread on each run and can't use a webhook. It runs
 in **No project**, or in the project with the same git remote on each machine;
 a machine without that project shows why its copy is missing. If a task's model
 isn't set up on a machine, such as another account, that machine runs its
-scheduled tasks model instead and the badge says so.
+scheduled tasks model instead and the task's row says so.
 
 ## Webhook automations
 

@@ -424,6 +424,8 @@ export interface ThreadManagementServiceShape {
   readonly listProjectThreads: (input: {
     readonly projectId?: ProjectId | undefined;
     readonly includeSubagents: boolean;
+    /** Active threads unless `archive`. */
+    readonly location?: "active" | "archive" | undefined;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2ThreadShell>, ThreadManagementError>;
   readonly sendToThread: (
     input: ThreadManagementSendInput,
@@ -840,7 +842,7 @@ const make = Effect.gen(function* () {
   const listProjectThreads: ThreadManagementServiceShape["listProjectThreads"] = (input) =>
     orchestrator
       .getShellSnapshot({
-        location: "active",
+        location: input.location ?? "active",
         ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
       })
       .pipe(
@@ -852,7 +854,7 @@ const make = Effect.gen(function* () {
             }),
         ),
         Effect.map((snapshot) =>
-          snapshot.threads
+          (input.location === "archive" ? snapshot.archivedThreads : snapshot.threads)
             .filter((thread) =>
               input.includeSubagents
                 ? thread.lineage.sideChat !== true

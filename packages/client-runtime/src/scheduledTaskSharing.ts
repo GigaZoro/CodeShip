@@ -9,6 +9,7 @@ import {
   type ScheduledTaskId,
   type ScheduledTaskListResult,
   type ScheduledTaskProjectMachineOrder,
+  type ScheduledTaskRunRecord,
   type ScheduledTaskSharedCopy,
   type ScheduledTaskSharedDeletion,
   type ScheduledTaskSharedProject,
@@ -514,4 +515,104 @@ export function describeOneMachineLinkWarning(
     case "targetLinksOff":
       return `Linked environments is off on ${target}, so ${checker} can't ask it.`;
   }
+}
+
+export interface ScheduledTaskCopy {
+  readonly environmentId: EnvironmentId;
+  readonly task: ScheduledTask;
+}
+
+export interface SharedScheduledTaskGroup {
+  /** The copy with the newest revision: the definition every machine settles on. */
+  readonly primary: ScheduledTaskCopy;
+  /** Every loaded copy, in the order of the lists. */
+  readonly copies: ReadonlyArray<ScheduledTaskCopy>;
+}
+
+/**
+ * A shared task keeps its id on every machine, so it is listed once with each machine's copy.
+ * Each machine keeps its other tasks, including one that only shares a shared task's id.
+ */
+export function groupSharedScheduledTasks(
+  lists: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly tasks: ReadonlyArray<ScheduledTask>;
+  }>,
+): {
+  readonly shared: ReadonlyArray<SharedScheduledTaskGroup>;
+  readonly local: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly tasks: ReadonlyArray<ScheduledTask>;
+  }>;
+} {
+  const groups = new Map<
+    ScheduledTaskId,
+    {
+      primary: ScheduledTaskCopy;
+      revision: ScheduledTaskSharedRevision;
+      copies: ScheduledTaskCopy[];
+    }
+  >();
+  const local = lists.map(({ environmentId, tasks }) => ({
+    environmentId,
+    tasks: tasks.filter((task) => {
+      if (!task.shared) return true;
+      const copy = { environmentId, task };
+      const group = groups.get(task.id);
+      if (group === undefined) {
+        groups.set(task.id, { primary: copy, revision: task.shared.revision, copies: [copy] });
+      } else {
+        group.copies.push(copy);
+        if (compareScheduledTaskSharedRevisions(task.shared.revision, group.revision) > 0) {
+          group.primary = copy;
+          group.revision = task.shared.revision;
+        }
+      }
+      return false;
+    }),
+  }));
+  return {
+    shared: [...groups.values()].map(({ primary, copies }) => ({ primary, copies })),
+    local,
+  };
+}
+
+export interface ScheduledTaskRunOnMachine {
+  readonly environmentId: EnvironmentId;
+  readonly run: ScheduledTaskRunRecord;
+}
+
+/**
+ * Every machine's runs of one shared task, newest first. A skip because another machine ran the
+ * occurrence is left out when that machine's own record of it is listed.
+ */
+export function mergeScheduledTaskRuns(
+  lists: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly runs: ReadonlyArray<ScheduledTaskRunRecord>;
+  }>,
+): ReadonlyArray<ScheduledTaskRunOnMachine> {
+  const occurrenceKey = (environmentId: EnvironmentId, scheduledFor: string) =>
+    `${environmentId}|${Date.parse(scheduledFor)}`;
+  const ran = new Set(
+    lists.flatMap(({ environmentId, runs }) =>
+      runs.flatMap((run) =>
+        run.outcome !== "skipped" && run.scheduledFor !== null
+          ? [occurrenceKey(environmentId, run.scheduledFor)]
+          : [],
+      ),
+    ),
+  );
+  return lists
+    .flatMap(({ environmentId, runs }) =>
+      runs.flatMap((run) =>
+        run.skipReason === "ran_elsewhere" &&
+        run.ranOn !== null &&
+        run.scheduledFor !== null &&
+        ran.has(occurrenceKey(run.ranOn, run.scheduledFor))
+          ? []
+          : [{ environmentId, run }],
+      ),
+    )
+    .sort((left, right) => Date.parse(right.run.startedAt) - Date.parse(left.run.startedAt));
 }

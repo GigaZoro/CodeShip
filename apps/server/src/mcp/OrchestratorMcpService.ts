@@ -3224,6 +3224,7 @@ const make = Effect.gen(function* () {
         .listProjectThreads({
           projectId: projectId ?? undefined,
           includeSubagents: input.includeSubagents !== false,
+          location: input.archived === true ? "archive" : "active",
         })
         .pipe(
           Effect.mapError((error) =>

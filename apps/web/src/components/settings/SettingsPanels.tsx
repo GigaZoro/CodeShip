@@ -5,7 +5,9 @@ import { CheckIcon } from "lucide-react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import {
+  DEFAULT_SERVER_SETTINGS,
   type DesktopUpdateChannel,
+  type EnvironmentId,
   IDLE_COMPACTION_MODES,
   globalIdleCompaction,
   ProviderDriverKind,
@@ -55,13 +57,28 @@ import {
 } from "../../hooks/useTheme";
 import {
   useScopedSettings,
-  useClearScopedSettings,
+  useRunScopedSettingsPlan,
   useScopedSettingsMixed,
   useUpdateScopedSettings,
 } from "./useScopedSettings";
 import { useScopedModelDisabledReason } from "./useScopedModelAvailability";
-import { useOptionalSettingsScope, useSettingsScope } from "./SettingsScopeContext";
-import { scopedIdleCompaction } from "./scopedSettings";
+import {
+  getClientSettings,
+  mergeEnvironmentSettings,
+  useClientSettings,
+} from "../../hooks/useSettings";
+import {
+  EveryMachineSettingsScope,
+  useOptionalSettingsScope,
+  useSettingsScope,
+} from "./SettingsScopeContext";
+import {
+  planPerEnvironmentSettingsPatch,
+  planScopedSettingsClear,
+  planScopedSettingsPatch,
+  planScopedSettingsUndo,
+  scopedIdleCompaction,
+} from "./scopedSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { ThreadTitleInstructionsSettings } from "./ThreadTitleInstructionsSettings";
 import { SnoozePresetsRow } from "./SnoozePresetsSettings";
@@ -76,7 +93,7 @@ import { ensureLocalApi, readLocalApi } from "../../localApi";
 import { isMacPlatform, isWindowsPlatform } from "../../lib/utils";
 import { useEnvironmentProviders, useEnvironments } from "../../state/environments";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
-import { Button } from "../ui/button";
+import { Button, InlineButton } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -87,13 +104,12 @@ import { ScopedSwitch } from "./ScopedSwitch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
-  changedRestorableSettingLabels,
   isProjectGroupingEnabled,
   projectGroupingModeFromToggle,
   readLastEnabledProjectGroupingMode,
   rememberEnabledProjectGroupingMode,
+  pageRestorePlan,
   projectScopedRestorePlan,
-  restorableSettingsPatch,
 } from "./SettingsPanels.logic";
 import {
   SETTINGS_PICKER_TRIGGER_CLASSNAME,
@@ -427,48 +443,78 @@ function AboutVersionSection() {
   );
 }
 
-/** Restores one page's settings, or every page's when `page` is null. */
+/** Restores one page's settings, or every page's when `page` is null, on every machine in scope. */
 export function useSettingsRestore(page: string | null, onRestored?: () => void) {
   const {
     theme,
     setTheme,
+    setAppearanceMode,
     followSystem,
     setFollowSystem,
     setThemeHalf,
     clearThemeHalves,
     themeHalves,
   } = useTheme();
-  const settings = useScopedSettings();
-  const updateSettings = useUpdateScopedSettings();
-  const clearScopedSettings = useClearScopedSettings();
-  const scopeContext = useOptionalSettingsScope();
-  const scope = scopeContext?.scope;
-  const projectPlan =
-    scopeContext && scope && (scope.kind === "project" || scope.kind === "checkout")
-      ? projectScopedRestorePlan(
-          settings,
-          page,
-          new Set(
-            scope.members.flatMap((member) => {
-              const overrides = scopeContext.environments.find(
-                (environment) => environment.environmentId === member.environmentId,
-              )?.serverConfig?.settings.projectSettingsOverrides?.[member.id];
-              return overrides ? Object.keys(overrides) : [];
-            }),
-          ),
-        )
-      : null;
+  const clientSettings = useClientSettings();
+  const runPlan = useRunScopedSettingsPlan();
+  const { scope, environments, targets, target } = useSettingsScope();
+  const projectScope = scope.kind === "project" || scope.kind === "checkout" ? scope : null;
+  const projectPlan = projectScope
+    ? projectScopedRestorePlan(
+        mergeEnvironmentSettings(target?.settings ?? DEFAULT_SERVER_SETTINGS, clientSettings),
+        page,
+        new Set(
+          projectScope.members.flatMap((member) => {
+            const overrides = environments.find(
+              (environment) => environment.environmentId === member.environmentId,
+            )?.serverConfig?.settings.projectSettingsOverrides?.[member.id];
+            return overrides ? Object.keys(overrides) : [];
+          }),
+        ),
+      )
+    : null;
+  const machinePlan = projectPlan
+    ? null
+    : pageRestorePlan<EnvironmentId | null>(
+        (targets.length > 0
+          ? targets
+          : [{ environmentId: null, settings: DEFAULT_SERVER_SETTINGS }]
+        ).map((candidate) => ({
+          environmentId: candidate.environmentId,
+          settings: mergeEnvironmentSettings(candidate.settings, clientSettings),
+        })),
+        page,
+      );
   const includesTheme = page === null || page === "/settings/appearance";
+  const themeChanged =
+    includesTheme && (theme !== "system" || !followSystem || themeHalves !== null);
 
   const changedSettingLabels = [
     ...(includesTheme && theme !== "system" ? [t("Theme")] : []),
     ...(includesTheme && !followSystem ? [t("Follow system")] : []),
     ...(includesTheme && themeHalves !== null ? [t("Theme mix")] : []),
-    ...(projectPlan ? projectPlan.labels : changedRestorableSettingLabels(settings, page)),
+    ...(projectPlan ? projectPlan.labels : (machinePlan?.labels ?? [])),
   ];
+
+  const settingsPlans = () =>
+    projectPlan
+      ? [
+          ...(projectPlan.clearKeys.length > 0
+            ? [planScopedSettingsClear(scope, environments, projectPlan.clearKeys)]
+            : []),
+          planScopedSettingsPatch(scope, environments, projectPlan.devicePatch),
+        ]
+      : machinePlan
+        ? [planPerEnvironmentSettingsPatch(scope, environments, machinePlan.patches)]
+        : [];
 
   const restoreDefaults = async () => {
     if (changedSettingLabels.length === 0) return;
+    const plans = settingsPlans();
+    const machines = [
+      ...new Set(plans.flatMap((plan) => plan.serverWrites.map(({ label }) => label))),
+      ...(themeChanged || plans.some((plan) => plan.hasClientWrite) ? [t("this device")] : []),
+    ];
     const api = readLocalApi();
     const confirmed = await (api ?? ensureLocalApi()).dialogs.confirm(
       [
@@ -476,11 +522,15 @@ export function useSettingsRestore(page: string | null, onRestored?: () => void)
           ? t("Restore every setting to its default?")
           : t("Reset this page to defaults?"),
         t("This will reset: {settings}.", { settings: changedSettingLabels.join(", ") }),
+        ...(machines.length > 0
+          ? [t("Applies to: {machines}.", { machines: machines.join(", ") })]
+          : []),
       ].join("\n"),
       { variant: "destructive" },
     );
     if (!confirmed) return;
 
+    let undoTheme: (() => void) | null = null;
     if (includesTheme) {
       // Reset only dirty theme keys so storage failures cannot block other settings; re-read after
       // confirmation for safe rollback.
@@ -489,9 +539,10 @@ export function useSettingsRestore(page: string | null, onRestored?: () => void)
         previousTheme = readThemePreference();
       } catch {}
       const liveHalves = readThemeHalves();
+      const previousAppearanceMode = readAppearanceModePreference(previousTheme);
       const needsThemeReset = previousTheme !== "system";
       const needsMixReset = liveHalves !== null;
-      const needsFollowSystemReset = readAppearanceModePreference(previousTheme) !== "system";
+      const needsFollowSystemReset = previousAppearanceMode !== "system";
       const notifyThemeRestoreFailure = () => {
         toastManager.add(
           stackedThreadToast({
@@ -522,14 +573,33 @@ export function useSettingsRestore(page: string | null, onRestored?: () => void)
         notifyThemeRestoreFailure();
         return;
       }
+      if (needsThemeReset || needsMixReset || needsFollowSystemReset) {
+        undoTheme = () => {
+          rollbackThemeState();
+          if (needsFollowSystemReset) setAppearanceMode(previousAppearanceMode);
+        };
+      }
     }
-    if (projectPlan) {
-      if (projectPlan.clearKeys.length > 0) clearScopedSettings(projectPlan.clearKeys);
-      updateSettings(projectPlan.devicePatch);
-    } else {
-      updateSettings(restorableSettingsPatch(settings, page));
-    }
+    const previousClient = getClientSettings();
+    const undoPlans = plans.map((plan) => planScopedSettingsUndo(plan, previousClient));
+    for (const plan of plans) runPlan(plan);
     onRestored?.();
+    const toastId = toastManager.add({
+      type: "success",
+      title: page === null ? t("Settings restored to defaults") : t("Page reset to defaults"),
+      ...(machines.length > 0
+        ? { description: t("Applies to: {machines}.", { machines: machines.join(", ") }) }
+        : {}),
+      actionProps: {
+        children: t("Undo"),
+        onClick: () => {
+          toastManager.close(toastId);
+          undoTheme?.();
+          for (const plan of undoPlans) runPlan(plan);
+          onRestored?.();
+        },
+      },
+    });
   };
 
   return {
@@ -608,27 +678,9 @@ export function GeneralSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection id="sidebar" title={t("Sidebar")}>
-        <SettingsRow
-          {...searchableSetting("scheduled-task-default-placement")}
-          serverScoped
-          settingKeys={["scheduledTaskDefaultPlacement"]}
-          description={t("Where new scheduled tasks appear. Change a task's place from its menu.")}
-          resetAction={
-            settings.scheduledTaskDefaultPlacement !==
-            DEFAULT_UNIFIED_SETTINGS.scheduledTaskDefaultPlacement ? (
-              <SettingResetButton
-                label={t("new scheduled task placement")}
-                onClick={() =>
-                  updateSettings({
-                    scheduledTaskDefaultPlacement:
-                      DEFAULT_UNIFIED_SETTINGS.scheduledTaskDefaultPlacement,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={<ScheduledTaskPlacementSelect />}
-        />
+        <EveryMachineSettingsScope>
+          <ScheduledTaskPlacementRow />
+        </EveryMachineSettingsScope>
         <SettingsRow
           {...searchableSetting("sidebar-grouping")}
           description={t(
@@ -1529,6 +1581,37 @@ function ScopedCompactIdleThreadsRow() {
   );
 }
 
+/** General has no scope picker, so this server setting always writes to every machine. */
+function ScheduledTaskPlacementRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  return (
+    <SettingsRow
+      {...searchableSetting("scheduled-task-default-placement")}
+      serverScoped
+      settingKeys={["scheduledTaskDefaultPlacement"]}
+      description={t(
+        "Where new scheduled tasks appear on every machine. Change a task's place from its menu.",
+      )}
+      resetAction={
+        settings.scheduledTaskDefaultPlacement !==
+        DEFAULT_UNIFIED_SETTINGS.scheduledTaskDefaultPlacement ? (
+          <SettingResetButton
+            label={t("new scheduled task placement")}
+            onClick={() =>
+              updateSettings({
+                scheduledTaskDefaultPlacement:
+                  DEFAULT_UNIFIED_SETTINGS.scheduledTaskDefaultPlacement,
+              })
+            }
+          />
+        ) : null
+      }
+      control={<ScheduledTaskPlacementSelect />}
+    />
+  );
+}
+
 function ScheduledTaskPlacementSelect() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
@@ -1595,9 +1678,16 @@ export function ThreadsSettingsPanel() {
         <SettingsRow
           serverScoped
           {...searchableSetting("auto-resume-limited-threads")}
-          description={t(
-            "Automatically resume threads when their usage limits reset. You can cancel auto-resume in each thread.",
-          )}
+          description={
+            <>
+              {t(
+                "Automatically resume threads when their usage limits reset. You can cancel auto-resume in each thread.",
+              )}{" "}
+              <InlineButton render={<Link to="/settings/providers" hash="account-failover" />}>
+                {t("Switch accounts at usage limits")}
+              </InlineButton>
+            </>
+          }
           settingKeys={["autoResumeLimitedThreads"]}
           control={
             <ScopedSwitch

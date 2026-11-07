@@ -14,9 +14,11 @@ import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
 import type { SidebarProjectSnapshot } from "../../sidebarProjectGrouping";
 import {
   persistScopedSettingsPatch,
+  planPerEnvironmentSettingsPatch,
   planProjectOverridesClear,
   planScopedSettingsClear,
   planScopedSettingsPatch,
+  planScopedSettingsUndo,
   scopedIdleCompaction,
   resolveScopedSettingsTargets,
   scopedSettingsAreMixed,
@@ -539,6 +541,76 @@ describe("scoped settings writes", () => {
       third.label,
     ]);
     expect(persistServer).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe("per-machine writes and their undo", () => {
+  const changedLaptop = environment("Laptop", { settings: { enableProviderUpdateChecks: false } });
+  const changedServer = environment("Server", { settings: { autoUpdateProviders: true } });
+  const machines = [changedLaptop, changedServer, offline];
+
+  it("writes each machine its own server patch and this device's keys once", () => {
+    const plan = planPerEnvironmentSettingsPatch(
+      all,
+      machines,
+      new Map([
+        [changedLaptop.environmentId, { enableProviderUpdateChecks: true, diffLayout: "stacked" }],
+        [changedServer.environmentId, { autoUpdateProviders: false, diffLayout: "stacked" }],
+        [offline.environmentId, { autoUpdateProviders: false }],
+      ]),
+    );
+    expect(plan.serverWrites.map(({ label, patch }) => ({ label, patch }))).toEqual([
+      { label: changedLaptop.label, patch: { enableProviderUpdateChecks: true } },
+      { label: changedServer.label, patch: { autoUpdateProviders: false } },
+    ]);
+    expect(plan.clientPatch).toEqual({ diffLayout: "stacked" });
+    expect(plan.unavailableReason).toBeNull();
+  });
+
+  it("skips a machine with nothing to write", () => {
+    const plan = planPerEnvironmentSettingsPatch(
+      all,
+      machines,
+      new Map([[changedLaptop.environmentId, { enableProviderUpdateChecks: true }]]),
+    );
+    expect(plan.serverWrites.map(({ label }) => label)).toEqual([changedLaptop.label]);
+  });
+
+  it("undoes exactly the keys each machine changed, back to that machine's own values", () => {
+    const plan = planPerEnvironmentSettingsPatch(
+      all,
+      machines,
+      new Map([
+        [
+          changedLaptop.environmentId,
+          { enableProviderUpdateChecks: true, autoUpdateProviders: false, diffLayout: "stacked" },
+        ],
+        [changedServer.environmentId, { autoUpdateProviders: false }],
+      ]),
+    );
+    const undo = planScopedSettingsUndo(plan, { diffLayout: "split" });
+    expect(undo.serverWrites.map(({ label, patch }) => ({ label, patch }))).toEqual([
+      {
+        label: changedLaptop.label,
+        patch: { enableProviderUpdateChecks: false, autoUpdateProviders: false },
+      },
+      { label: changedServer.label, patch: { autoUpdateProviders: true } },
+    ]);
+    expect(undo.clientPatch).toEqual({ diffLayout: "split" });
+  });
+
+  it("puts back a cleared project override, or removes one the plan created", () => {
+    const withOverrides = environment("Server", {
+      settings: { projectSettingsOverrides: { [projectId]: { defaultAutoPull: true } } },
+    });
+    const clear = planScopedSettingsClear(checkout, [laptop, withOverrides], ["defaultAutoPull"]);
+    expect(planScopedSettingsUndo(clear, {}).serverWrites[0]?.patch).toEqual({
+      projectSettingsOverrides: { [projectId]: { defaultAutoPull: true } },
+    });
+    const created = planScopedSettingsPatch(checkout, [laptop, server], { defaultAutoPull: true });
+    expect(planScopedSettingsUndo(created, {}).serverWrites[0]?.patch).toEqual({
+      projectSettingsOverrides: { [projectId]: null },
+    });
   });
 });
 

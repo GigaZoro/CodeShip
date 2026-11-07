@@ -14,7 +14,7 @@ import {
   resolveAutoModelSelection,
   supportsAccountFailover,
 } from "@t3tools/shared/serverSettings";
-import { exhaustedUsageWindow } from "@t3tools/shared/usageLimits";
+import { exhaustedUsageWindow, isSubscriptionAccount } from "@t3tools/shared/usageLimits";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -23,9 +23,6 @@ import * as Layer from "effect/Layer";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-
-// Pay-per-token instances bill every turn instead of drawing on a subscription.
-const METERED_AUTH_TYPES = new Set(["apiKey", "api-key", "bedrock"]);
 
 export interface AccountRoutingContext {
   readonly settings: Pick<
@@ -53,7 +50,7 @@ function modelWithRoom(
     !provider.installed ||
     provider.status === "error" ||
     provider.auth.status === "unauthenticated" ||
-    (provider.auth.type !== undefined && METERED_AUTH_TYPES.has(provider.auth.type)) ||
+    !isSubscriptionAccount(provider) ||
     !isProviderAvailable(provider) ||
     input.limitedInstanceIds.has(provider.instanceId) ||
     !resolveProjectProviderInstanceEnabled(input.settings, input.projectId, provider.instanceId)

@@ -54,10 +54,13 @@ import {
 import {
   ProviderMcpAddInput,
   ProviderMcpCompleteSignInInput,
+  ProviderMcpEditInput,
   ProviderMcpError,
   ProviderMcpListInput,
   ProviderMcpListResult,
+  ProviderMcpReadResult,
   ProviderMcpServerInput,
+  ProviderMcpSetEnabledInput,
   ProviderMcpSignInState,
 } from "./providerMcp.ts";
 import * as Schema from "effect/Schema";
@@ -501,6 +504,9 @@ export const WS_METHODS = {
   providerMcpSignIn: "provider.mcp.signIn",
   providerMcpCompleteSignIn: "provider.mcp.completeSignIn",
   providerMcpSignOut: "provider.mcp.signOut",
+  providerMcpRead: "provider.mcp.read",
+  providerMcpEdit: "provider.mcp.edit",
+  providerMcpSetEnabled: "provider.mcp.setEnabled",
 
   vcsPull: "vcs.pull",
   vcsRefreshStatus: "vcs.refreshStatus",
@@ -894,6 +900,22 @@ const WsProviderMcpCompleteSignInRpc = Rpc.make(WS_METHODS.providerMcpCompleteSi
 
 const WsProviderMcpSignOutRpc = Rpc.make(WS_METHODS.providerMcpSignOut, {
   payload: ProviderMcpServerInput,
+  error: ProviderMcpRpcError,
+});
+
+const WsProviderMcpReadRpc = Rpc.make(WS_METHODS.providerMcpRead, {
+  payload: ProviderMcpServerInput,
+  success: ProviderMcpReadResult,
+  error: ProviderMcpRpcError,
+});
+
+const WsProviderMcpEditRpc = Rpc.make(WS_METHODS.providerMcpEdit, {
+  payload: ProviderMcpEditInput,
+  error: ProviderMcpRpcError,
+});
+
+const WsProviderMcpSetEnabledRpc = Rpc.make(WS_METHODS.providerMcpSetEnabled, {
+  payload: ProviderMcpSetEnabledInput,
   error: ProviderMcpRpcError,
 });
 
@@ -2204,6 +2226,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderMcpSignInRpc,
   WsProviderMcpCompleteSignInRpc,
   WsProviderMcpSignOutRpc,
+  WsProviderMcpReadRpc,
+  WsProviderMcpEditRpc,
+  WsProviderMcpSetEnabledRpc,
   WsServerUpdateServerRpc,
   WsServerGetNpmReleaseRpc,
   WsServerUpdateServerWithProgressRpc,

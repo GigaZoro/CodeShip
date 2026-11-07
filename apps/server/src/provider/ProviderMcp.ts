@@ -1,13 +1,18 @@
 import {
   ProviderMcpError,
+  providerMcpServerSettings,
+  resolveProviderMcpServerEdit,
   type ProviderInstanceId,
   type ProviderMcpAddInput,
   type ProviderMcpCompleteSignInInput,
+  type ProviderMcpEditInput,
   type ProviderMcpListInput,
   type ProviderMcpListResult,
   type ProviderMcpOperation,
+  type ProviderMcpReadResult,
   type ProviderMcpServer,
   type ProviderMcpServerInput,
+  type ProviderMcpSetEnabledInput,
   type ProviderMcpSignInState,
 } from "@t3tools/contracts";
 import type {
@@ -62,6 +67,16 @@ export class ProviderMcp extends Context.Service<
     ) => Stream.Stream<ProviderMcpSignInState, ProviderMcpError>;
     readonly completeSignIn: (
       input: ProviderMcpCompleteSignInInput,
+    ) => Effect.Effect<void, ProviderMcpError>;
+    /** Names only for headers and variables: their values never leave the server. */
+    readonly read: (
+      input: ProviderMcpServerInput,
+    ) => Effect.Effect<ProviderMcpReadResult, ProviderMcpError>;
+    /** An empty header or variable value, or a missing address, keeps the stored one. */
+    readonly edit: (input: ProviderMcpEditInput) => Effect.Effect<void, ProviderMcpError>;
+    /** Turns a server off without deleting what it needs, and on again. */
+    readonly setEnabled: (
+      input: ProviderMcpSetEnabledInput,
     ) => Effect.Effect<void, ProviderMcpError>;
   }
 >()("t3/provider/ProviderMcp") {}
@@ -188,6 +203,37 @@ const make = Effect.gen(function* () {
         });
       }
       yield* open.signIn.submitCallbackUrl(input.callbackUrl);
+    }),
+    read: Effect.fn("ProviderMcp.read")(function* (input) {
+      yield* Effect.annotateCurrentSpan({ "provider.instance_id": input.instanceId });
+      const mcp = yield* management(input.instanceId, "read");
+      return { server: providerMcpServerSettings(yield* mcp.read(input.name)) };
+    }),
+    edit: Effect.fn("ProviderMcp.edit")(function* (input) {
+      yield* Effect.annotateCurrentSpan({ "provider.instance_id": input.instanceId });
+      yield* change(input.instanceId, "edit", (mcp) =>
+        mcp.read(input.name).pipe(
+          Effect.flatMap((stored) => {
+            const resolved = resolveProviderMcpServerEdit(stored, input.server);
+            return "server" in resolved
+              ? mcp.edit(input.name, resolved.server)
+              : Effect.fail(
+                  new ProviderMcpError({
+                    operation: "edit",
+                    instanceId: input.instanceId,
+                    reason: "providerFailed",
+                    providerMessage: `Enter a value for ${resolved.missing}.`,
+                  }),
+                );
+          }),
+        ),
+      );
+    }),
+    setEnabled: Effect.fn("ProviderMcp.setEnabled")(function* (input) {
+      yield* Effect.annotateCurrentSpan({ "provider.instance_id": input.instanceId });
+      yield* change(input.instanceId, "setEnabled", (mcp) =>
+        mcp.setEnabled(input.name, input.enabled),
+      );
     }),
   });
 });

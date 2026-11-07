@@ -107,6 +107,18 @@ export function SettingsScopeProvider({
   return <SettingsScopeContext value={value}>{children}</SettingsScopeContext>;
 }
 
+const EVERY_MACHINE_SCOPE: SettingsScopeSearch = {};
+const ignoreScopeChange = () => {};
+
+/** For rows on pages without a scope picker that read and write every machine. */
+export function EveryMachineSettingsScope({ children }: { children: ReactNode }) {
+  return (
+    <SettingsScopeProvider search={EVERY_MACHINE_SCOPE} onChange={ignoreScopeChange}>
+      {children}
+    </SettingsScopeProvider>
+  );
+}
+
 export function useOptionalSettingsScope() {
   return useContext(SettingsScopeContext);
 }

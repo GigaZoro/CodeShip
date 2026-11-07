@@ -1,4 +1,5 @@
 import {
+  type AccountFailoverEntry,
   CHATGPT_USAGE_URL,
   collectLimitAccounts,
   collectExternalUsageLinks,
@@ -11,6 +12,7 @@ import {
   type LimitPool,
   type LimitPoolMember,
   type LimitPoolWindow,
+  oldestLimitsCheck,
   paceRemainingPercent,
   remainingPercent,
 } from "@t3tools/shared/usageLimits";
@@ -31,7 +33,7 @@ import {
 import { ensureLocalApi } from "../../localApi";
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
-import { formatUpcomingTimestamp } from "../../timestampFormat";
+import { formatDayAwareTimestamp, formatUpcomingTimestamp } from "../../timestampFormat";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { providerClients } from "../settings/providerDriverMeta";
 import { RedactedSensitiveText } from "../settings/RedactedSensitiveText";
@@ -47,6 +49,7 @@ import {
   resetCreditsSummary,
   useResetCredit,
 } from "./UsageLimits";
+import { AccountFailoverNotice, LimitsCheckedAt, useCheckedAgo } from "./UsageLimitsStatus";
 import { t, tn } from "~/i18n";
 
 function accountInitials(email: string): string {
@@ -159,6 +162,7 @@ function SegmentPopover({
       : account.sourceLabel;
   const credits =
     redeem && account.limits.resetCredits?.availableCount ? account.limits.resetCredits : null;
+  const checkedAgo = useCheckedAgo(account.limits.checkedAt);
   return (
     <div className="flex w-72 max-w-[calc(100vw-3rem)] flex-col gap-2.5 text-xs">
       <div className="flex min-w-0 flex-col gap-0.5">
@@ -183,6 +187,10 @@ function SegmentPopover({
         {where ? (
           <Row label={account.environments.length > 0 ? t("Signed in") : t("Via")}>{where}</Row>
         ) : null}
+        <Row label={t("Checked")}>
+          {formatDayAwareTimestamp(account.limits.checkedAt, timestampFormat, now)}
+          {checkedAgo ? ` · ${checkedAgo}` : ""}
+        </Row>
       </div>
       <div className="flex flex-col gap-1 border-t border-border/60 pt-2.5">
         <Row label={t("Left")}>{remaining}%</Row>
@@ -592,22 +600,43 @@ function PoolWindowCard({
   );
 }
 
-function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: number }) {
+function PoolSection({
+  pool,
+  now,
+  failover,
+  showEnvironment,
+}: {
+  readonly pool: LimitPool;
+  readonly now: number;
+  readonly failover: readonly AccountFailoverEntry[];
+  readonly showEnvironment: boolean;
+}) {
   const color = barColor(pool.driver);
   const label = providerClients.get(pool.driver)?.label ?? String(pool.driver);
   const windows = displayLimitWindows(pool);
+  const checkedAt = oldestLimitsCheck(pool.accounts);
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
-        <ProviderInstanceIcon
-          driverKind={pool.driver}
-          displayName={label}
-          indicatorBackground="var(--background)"
-          className="size-5"
-          iconClassName="size-4 text-foreground/80"
+      <div className="flex flex-col gap-1">
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+          <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
+            <ProviderInstanceIcon
+              driverKind={pool.driver}
+              displayName={label}
+              indicatorBackground="var(--background)"
+              className="size-5"
+              iconClassName="size-4 text-foreground/80"
+            />
+            {label}
+          </h2>
+          {checkedAt ? <LimitsCheckedAt checkedAt={checkedAt} /> : null}
+        </div>
+        <AccountFailoverNotice
+          entries={failover.filter((entry) => entry.driver === pool.driver)}
+          now={now}
+          showEnvironment={showEnvironment}
         />
-        {label}
-      </h2>
+      </div>
       {windows.map((window) => {
         const details = pool.driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;
         return (
@@ -628,11 +657,14 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
 export function UsageLimitsPooled({
   presentations,
   now,
+  failover = [],
   cursorPrompt,
   emptyMessage = t("No provider on the selected environments reports subscription limits."),
 }: {
   readonly presentations: Parameters<typeof collectLimitAccounts>[0];
   readonly now: number;
+  /** Account switching per environment and provider, shown under each provider's limits. */
+  readonly failover?: readonly AccountFailoverEntry[];
   readonly cursorPrompt?: ReactNode;
   readonly emptyMessage?: string;
 }) {
@@ -657,7 +689,12 @@ export function UsageLimitsPooled({
         {pools.map((pool, index) => (
           <Fragment key={pool.driver}>
             {index === cursorPromptAt ? cursorPrompt : null}
-            <PoolSection pool={pool} now={now} />
+            <PoolSection
+              pool={pool}
+              now={now}
+              failover={failover}
+              showEnvironment={presentations.size > 1}
+            />
           </Fragment>
         ))}
       </SegmentPopoverContext>

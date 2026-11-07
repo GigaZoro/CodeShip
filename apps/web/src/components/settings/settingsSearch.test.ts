@@ -74,6 +74,31 @@ describe("searchSettings", () => {
     }
   });
 
+  it("sends pages that moved out of Settings to their own page", () => {
+    expect(searchSettings("scheduled tasks")[0]).toMatchObject({ to: "/scheduled-tasks" });
+    expect(searchSettings("automations")[0]).toMatchObject({ to: "/scheduled-tasks" });
+    expect(searchSettings("scheduled tasks model")[0]).toMatchObject({
+      id: "scheduled-task-model",
+      to: "/settings/providers",
+    });
+    for (const query of ["mcp", "MCP servers", "model context"]) {
+      expect(searchSettings(query)[0]).toMatchObject({ to: "/extensions", extensionsTab: "mcp" });
+    }
+    expect(searchSettings("plugins")[0]).toMatchObject({
+      to: "/extensions",
+      extensionsTab: "plugins",
+    });
+  });
+
+  it("finds the differences between machines", () => {
+    for (const query of ["differences", "compare machines", "same settings everywhere"]) {
+      expect(searchSettings(query)[0]).toMatchObject({
+        id: "machine-setting-differences",
+        to: "/settings/connections",
+      });
+    }
+  });
+
   it("hides the Secrets page from nav and search while the secrets feature is disabled", () => {
     expect(SETTINGS_NAV_GROUPS.flatMap((group) => group.paths)).not.toContain("/settings/secrets");
     expect(searchSettings("1password").map((item) => item.to)).not.toContain("/settings/secrets");

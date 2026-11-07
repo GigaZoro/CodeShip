@@ -124,15 +124,18 @@ export function useSettingsEnvironmentFilter() {
       ),
     [availableTargets, selectedIds],
   );
-  const selectableProjectGroups = useMemo(
-    () =>
-      projectGroups.filter((group) =>
-        group.members.some((member) =>
-          selectedTargets.some((target) => target.environmentId === member.project.environmentId),
-        ),
+  const selectableProjectGroups = useMemo(() => {
+    const groups = projectGroups.filter((group) =>
+      group.members.some((member) =>
+        selectedTargets.some((target) => target.environmentId === member.project.environmentId),
       ),
-    [projectGroups, selectedTargets],
-  );
+    );
+    // Archived projects follow the current ones, as on web, so they never read as current work.
+    return [
+      ...groups.filter((group) => !group.archived),
+      ...groups.filter((group) => group.archived),
+    ];
+  }, [projectGroups, selectedTargets]);
   return useMemo(
     () => ({
       availableTargets,

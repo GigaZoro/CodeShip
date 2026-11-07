@@ -8,6 +8,7 @@ import {
   type ProviderInstanceId,
   REASONING_EFFORT_OPTION_IDS,
   type ProviderConsumeResetCreditInput,
+  type ProviderDriverKind,
   type ServerProviderSlashCommand,
   isProviderAvailable,
   type ServerProvider,
@@ -18,8 +19,12 @@ import {
 
 import * as DateTime from "effect/DateTime";
 
-import { resolveAutoModelSelection } from "./serverSettings.ts";
-import { msg, t } from "./i18n.ts";
+import {
+  orderProviderInstancesForFailover,
+  resolveAutoModelSelection,
+  supportsAccountFailover,
+} from "./serverSettings.ts";
+import { msg, t, tn } from "./i18n.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -434,6 +439,17 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
     }
   }
   return [...accounts.values()];
+}
+
+/** The stalest read among `accounts`, which is how old the shown limits can be. */
+export function oldestLimitsCheck(accounts: readonly LimitAccount[]): string | null {
+  return accounts.reduce<string | null>(
+    (oldest, account) =>
+      oldest === null || Date.parse(account.limits.checkedAt) < Date.parse(oldest)
+        ? account.limits.checkedAt
+        : oldest,
+    null,
+  );
 }
 
 export function collectLimitNotices(presentations: LimitPresentations): readonly string[] {
@@ -961,4 +977,185 @@ export function collectProviderUsageLimits(
     }
   }
   return { createdAt: DateTime.formatIso(DateTime.makeUnsafe(now)), accounts, notices };
+}
+
+// Pay-per-token accounts bill every turn instead of drawing on a subscription, so failover skips them.
+const METERED_AUTH_TYPES: ReadonlySet<string> = new Set(["apiKey", "api-key", "bedrock"]);
+
+export const isSubscriptionAccount = (provider: ServerProvider): boolean =>
+  provider.auth.type === undefined || !METERED_AUTH_TYPES.has(provider.auth.type);
+
+export type AccountFailoverStatus =
+  | { readonly kind: "off" }
+  /** No account above `active` is limited, so a limited thread moves no further than it. */
+  | { readonly kind: "ready"; readonly active: ServerProvider }
+  | {
+      readonly kind: "switched";
+      readonly active: ServerProvider;
+      /** Limited accounts above `active`. */
+      readonly limited: readonly ServerProvider[];
+      /** The first of them back, null when no reset is known. */
+      readonly until: string | null;
+    }
+  | { readonly kind: "exhausted"; readonly until: string | null };
+
+/** When a limited account has room again: its last exhausted window's reset, null when unknown. */
+function limitedUntil(provider: ServerProvider, now: number): string | null | undefined {
+  let latest: number | undefined;
+  for (const window of provider.usageLimits?.windows ?? []) {
+    // A model-scoped window, such as Claude's weekly cap on one model, leaves the account usable.
+    if (
+      window.usedPercent < 100 ||
+      (provider.driver === "claudeAgent" && /^seven_day_./.test(window.id))
+    )
+      continue;
+    const reset = resetMillis(window);
+    if (reset === null) return null;
+    if (reset > now) latest = Math.max(latest ?? reset, reset);
+  }
+  return latest === undefined ? undefined : DateTime.formatIso(DateTime.makeUnsafe(latest));
+}
+
+function earliest(times: ReadonlyArray<string | null>): string | null {
+  const known = times.filter((time): time is string => time !== null);
+  return known.length === 0
+    ? null
+    : known.reduce((first, time) => (Date.parse(time) < Date.parse(first) ? time : first));
+}
+
+/**
+ * Where "Switch accounts at usage limits" sends a limited `driver` thread, judged from the accounts'
+ * last-read usage windows. The server also skips an account whose last run stopped on a limit,
+ * which clients cannot see. Null when the provider has no second subscription account to switch to.
+ */
+export function accountFailoverStatus(input: {
+  readonly driver: ProviderDriverKind;
+  readonly providers: readonly ServerProvider[];
+  readonly settings: Pick<
+    ServerSettings,
+    "failoverLimitedThreads" | "providerInstanceFailoverOrder"
+  >;
+  readonly now: number;
+}): AccountFailoverStatus | null {
+  if (!supportsAccountFailover(input.driver)) return null;
+  const accounts = orderProviderInstancesForFailover(
+    input.settings.providerInstanceFailoverOrder,
+    input.providers.filter(
+      (provider) =>
+        provider.driver === input.driver && provider.enabled && isSubscriptionAccount(provider),
+    ),
+  );
+  if (accounts.length < 2) return null;
+  if (!input.settings.failoverLimitedThreads) return { kind: "off" };
+  const limited: ServerProvider[] = [];
+  const returns: Array<string | null> = [];
+  for (const account of accounts) {
+    if (
+      !account.installed ||
+      account.status === "error" ||
+      account.auth.status === "unauthenticated" ||
+      !isProviderAvailable(account)
+    )
+      continue;
+    const until = limitedUntil(account, input.now);
+    if (until === undefined) {
+      return limited.length === 0
+        ? { kind: "ready", active: account }
+        : { kind: "switched", active: account, limited, until: earliest(returns) };
+    }
+    limited.push(account);
+    returns.push(until);
+  }
+  return limited.length === 0 ? null : { kind: "exhausted", until: earliest(returns) };
+}
+
+export interface AccountFailoverEntry {
+  readonly environmentId: EnvironmentId;
+  readonly environmentLabel: string;
+  readonly driver: ProviderDriverKind;
+  readonly status: AccountFailoverStatus;
+}
+
+/** Each environment's account switching for every provider that has accounts to switch between. */
+export function collectAccountFailover(
+  presentations: ReadonlyMap<
+    EnvironmentId,
+    {
+      readonly entry: { readonly target: { readonly label: string } };
+      readonly serverConfig: {
+        readonly providers: readonly ServerProvider[];
+        readonly settings: Pick<
+          ServerSettings,
+          "failoverLimitedThreads" | "providerInstanceFailoverOrder"
+        >;
+        readonly environment: {
+          readonly capabilities: { readonly usageLimitAccountFailover?: boolean | undefined };
+        };
+      } | null;
+    }
+  >,
+  now: number,
+): readonly AccountFailoverEntry[] {
+  return [...presentations].flatMap(([environmentId, presentation]) => {
+    const config = presentation.serverConfig;
+    if (config?.environment.capabilities.usageLimitAccountFailover !== true) return [];
+    const drivers = new Set(config.providers.map((provider) => provider.driver));
+    return [...drivers].flatMap((driver) => {
+      const status = accountFailoverStatus({
+        driver,
+        providers: config.providers,
+        settings: config.settings,
+        now,
+      });
+      return status === null
+        ? []
+        : [{ environmentId, environmentLabel: presentation.entry.target.label, driver, status }];
+    });
+  });
+}
+
+/** One sentence on where a limited thread goes, shared so web and mobile say the same thing. */
+export function describeAccountFailover(
+  status: AccountFailoverStatus,
+  format: {
+    readonly accountName: (account: ServerProvider) => string;
+    readonly time: (isoDate: string) => string;
+  },
+): string {
+  switch (status.kind) {
+    case "off":
+      return t(
+        "Switching accounts at usage limits is off, so a limited thread waits for its reset.",
+      );
+    case "ready":
+      return t("Switching accounts at usage limits is on. {account} is first in line.", {
+        account: format.accountName(status.active),
+      });
+    case "switched": {
+      const values = {
+        accounts: status.limited.map(format.accountName).join(", "),
+        account: format.accountName(status.active),
+      };
+      const count = status.limited.length;
+      return status.until === null
+        ? tn(
+            count,
+            "{accounts} is at its limit, so limited threads continue on {account}.",
+            "{accounts} are at their limits, so limited threads continue on {account}.",
+            values,
+          )
+        : tn(
+            count,
+            "{accounts} is at its limit until {time}, so limited threads continue on {account}.",
+            "{accounts} are at their limits, and the first resets {time}. Limited threads continue on {account}.",
+            { ...values, time: format.time(status.until) },
+          );
+    }
+    case "exhausted":
+      return status.until === null
+        ? t("Every account is at its limit, so limited threads wait for a reset.")
+        : t("Every account is at its limit, and the first resets {time}.", {
+            time: format.time(status.until),
+          });
+  }
 }

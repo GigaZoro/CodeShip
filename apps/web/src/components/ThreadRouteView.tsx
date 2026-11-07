@@ -4,6 +4,7 @@ import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
 import { visibilityParentKey } from "@t3tools/client-runtime/state/threads";
 import * as Option from "effect/Option";
+import { Atom } from "effect/reactivity";
 import { Navigate, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
@@ -17,6 +18,7 @@ import {
   useAnyEnvironmentHiding,
   useQuietThreadShell,
 } from "../state/entities";
+import { serverEnvironment } from "../state/server";
 import { useEnvironmentShellStatus } from "../state/shell";
 import { environmentThreadShells, useEnvironmentThread } from "../state/threads";
 import {
@@ -25,6 +27,8 @@ import {
   resolveThreadRouteRenderState,
   type ThreadRouteTarget,
 } from "../threadRoutes";
+
+const NO_HIDDEN_TAGS = Atom.make<ReadonlyArray<string> | null>(null);
 
 /**
  * Unkeyed so navigating between server threads reuses one ChatView. Rendered by the `_chat`
@@ -92,13 +96,24 @@ export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
     unlistedParentKey === null ? null : parseThreadKey(unlistedParentKey),
   );
   const hidingAnywhere = useAnyEnvironmentHiding();
+  const unlistedHiddenTags = useAtomValue(
+    unlistedThreadRef === null
+      ? NO_HIDDEN_TAGS
+      : serverEnvironment.hiddenThreadTagsAtom(unlistedThreadRef.environmentId),
+  );
   const draftRedirectShell = useQuietThreadShell(draftRedirect ?? null);
   const hiddenByTagFilter = serverThreadRef !== null && hiddenKeys.has(threadKey(serverThreadRef));
+  // Archived threads are never in the shell; a top-level one opens unless its own tags are hidden.
+  const visibleArchivedRoot =
+    unlistedThread?.archivedAt != null &&
+    unlistedParentKey === null &&
+    !(unlistedThread.tags ?? []).some((tag) => unlistedHiddenTags?.includes(tag) === true);
   // Cached detail can predate a tag or an archive, so while hiding an off-shell thread opens only
   // as the child of a loaded, visible parent (lineage never changes); anything else stays closed.
   const offShellBlocked =
     hidingAnywhere &&
     unlistedThreadRef !== null &&
+    !visibleArchivedRoot &&
     !(
       unlistedParentKey !== null &&
       unlistedParentShell !== null &&
@@ -127,14 +142,10 @@ export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
   const targetThreadKey = target.kind === "server" ? scopedThreadKey(target.threadRef) : null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- records which thread this route has shown, read when the thread later disappears
   useEffect(() => {
-    if (
-      targetThreadKey !== null &&
-      serverThreadShell !== null &&
-      serverThreadShell.deletedAt == null
-    ) {
+    if (targetThreadKey !== null && renderState === "ready") {
       shownThreadKeyRef.current = targetThreadKey;
     }
-  }, [serverThreadShell, targetThreadKey]);
+  }, [renderState, targetThreadKey]);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the user why the router is about to leave a thread they did not open on purpose
   useEffect(() => {
     if (unavailableNotice === null || shownThreadKeyRef.current === targetThreadKey) return;

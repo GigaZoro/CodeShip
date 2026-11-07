@@ -68,6 +68,10 @@ export const ProviderMcpServer = Schema.Struct({
   canSignIn: Schema.Boolean,
   canSignOut: Schema.Boolean,
   removable: Schema.Boolean,
+  /** The provider turns it off and on without deleting it; absent from servers older than the switch. */
+  canToggle: Schema.optionalKey(Schema.Boolean),
+  /** Its address or command can be changed here; absent from servers older than editing. */
+  canEdit: Schema.optionalKey(Schema.Boolean),
 });
 export type ProviderMcpServer = typeof ProviderMcpServer.Type;
 
@@ -93,20 +97,25 @@ const ProviderMcpHeaders = Schema.Record(
   Schema.String.check(Schema.isMaxLength(16_384)),
 ).check(Schema.isMaxProperties(64));
 
+const ProviderMcpUrl = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(2_048),
+  Schema.isPattern(/^https?:\/\//iu),
+);
+
+const ProviderMcpStdioServerConfig = Schema.Struct({
+  transport: Schema.Literal("stdio"),
+  command: TrimmedNonEmptyString.check(Schema.isMaxLength(1_024)),
+  args: Schema.Array(Schema.String.check(Schema.isMaxLength(4_096))).check(Schema.isMaxLength(64)),
+  env: ProviderMcpEnv,
+});
+
 export const ProviderMcpServerConfig = Schema.Union([
   Schema.Struct({
     transport: Schema.Literal("http"),
-    url: TrimmedNonEmptyString.check(Schema.isMaxLength(2_048), Schema.isPattern(/^https?:\/\//iu)),
+    url: ProviderMcpUrl,
     headers: ProviderMcpHeaders,
   }),
-  Schema.Struct({
-    transport: Schema.Literal("stdio"),
-    command: TrimmedNonEmptyString.check(Schema.isMaxLength(1_024)),
-    args: Schema.Array(Schema.String.check(Schema.isMaxLength(4_096))).check(
-      Schema.isMaxLength(64),
-    ),
-    env: ProviderMcpEnv,
-  }),
+  ProviderMcpStdioServerConfig,
 ]);
 export type ProviderMcpServerConfig = typeof ProviderMcpServerConfig.Type;
 
@@ -141,7 +150,70 @@ export const ProviderMcpCompleteSignInInput = Schema.Struct({
 });
 export type ProviderMcpCompleteSignInInput = typeof ProviderMcpCompleteSignInInput.Type;
 
-export const ProviderMcpOperation = Schema.Literals(["list", "add", "remove", "signIn", "signOut"]);
+/** What an edit starts from: stored header and variable values stay on the server. */
+export const ProviderMcpServerSettings = Schema.Union([
+  Schema.Struct({
+    transport: Schema.Literal("http"),
+    /** Without credentials, query, or fragment. */
+    url: Schema.String.check(Schema.isMaxLength(2_048)),
+    /** The stored address has credentials or a query `url` leaves out. */
+    urlHasSecret: Schema.Boolean,
+    headerNames: Schema.Array(Schema.String.check(Schema.isMaxLength(256))).check(
+      Schema.isMaxLength(64),
+    ),
+  }),
+  Schema.Struct({
+    transport: Schema.Literal("stdio"),
+    command: Schema.String.check(Schema.isMaxLength(1_024)),
+    args: Schema.Array(Schema.String.check(Schema.isMaxLength(4_096))).check(
+      Schema.isMaxLength(64),
+    ),
+    envNames: Schema.Array(Schema.String.check(Schema.isMaxLength(256))).check(
+      Schema.isMaxLength(64),
+    ),
+  }),
+]);
+export type ProviderMcpServerSettings = typeof ProviderMcpServerSettings.Type;
+
+export const ProviderMcpReadResult = Schema.Struct({ server: ProviderMcpServerSettings });
+export type ProviderMcpReadResult = typeof ProviderMcpReadResult.Type;
+
+/** An empty header or variable value keeps the stored one; a name left out is deleted. */
+export const ProviderMcpServerEdit = Schema.Union([
+  Schema.Struct({
+    transport: Schema.Literal("http"),
+    /** Absent keeps the stored address. */
+    url: Schema.optionalKey(ProviderMcpUrl),
+    headers: ProviderMcpHeaders,
+  }),
+  ProviderMcpStdioServerConfig,
+]);
+export type ProviderMcpServerEdit = typeof ProviderMcpServerEdit.Type;
+
+export const ProviderMcpEditInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  name: ProviderMcpServerName,
+  server: ProviderMcpServerEdit,
+});
+export type ProviderMcpEditInput = typeof ProviderMcpEditInput.Type;
+
+export const ProviderMcpSetEnabledInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  name: ProviderMcpServerName,
+  enabled: Schema.Boolean,
+});
+export type ProviderMcpSetEnabledInput = typeof ProviderMcpSetEnabledInput.Type;
+
+export const ProviderMcpOperation = Schema.Literals([
+  "list",
+  "add",
+  "remove",
+  "signIn",
+  "signOut",
+  "read",
+  "edit",
+  "setEnabled",
+]);
 export type ProviderMcpOperation = typeof ProviderMcpOperation.Type;
 
 export const ProviderMcpErrorReason = Schema.Literals([
@@ -158,6 +230,9 @@ const FAILED_OPERATION_MESSAGES: Record<ProviderMcpOperation, string> = {
   remove: "Could not remove the MCP server.",
   signIn: "Could not sign in to the MCP server.",
   signOut: "Could not sign out of the MCP server.",
+  read: "Could not read the MCP server's settings.",
+  edit: "Could not change the MCP server.",
+  setEnabled: "Could not turn the MCP server on or off.",
 };
 
 export class ProviderMcpError extends Schema.TaggedError<ProviderMcpError>()("ProviderMcpError", {
@@ -214,4 +289,63 @@ export function displayProviderMcpCommand(command: string, args: ReadonlyArray<s
   return line.length > PROVIDER_MCP_TARGET_MAX_LENGTH
     ? `${line.slice(0, PROVIDER_MCP_TARGET_MAX_LENGTH - 1)}…`
     : line;
+}
+
+/** A stored server as the edit form starts from it, with every header and variable value left out. */
+export function providerMcpServerSettings(
+  stored: ProviderMcpServerConfig,
+): ProviderMcpServerSettings {
+  if (stored.transport === "stdio") {
+    return {
+      transport: "stdio",
+      command: stored.command,
+      args: stored.args,
+      envNames: Object.keys(stored.env),
+    };
+  }
+  const parsed = URL.canParse(stored.url) ? new URL(stored.url) : undefined;
+  const urlHasSecret =
+    parsed === undefined ||
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.search !== "" ||
+    parsed.hash !== "";
+  return {
+    transport: "http",
+    url: urlHasSecret ? (displayProviderMcpUrl(stored.url) ?? "") : stored.url,
+    urlHasSecret,
+    headerNames: Object.keys(stored.headers),
+  };
+}
+
+/**
+ * The server an edit asks for, with each empty value and a missing address taken from the stored
+ * server. A value the edit keeps but the stored server never had is reported by name.
+ */
+export function resolveProviderMcpServerEdit(
+  stored: ProviderMcpServerConfig,
+  edit: ProviderMcpServerEdit,
+): { readonly server: ProviderMcpServerConfig } | { readonly missing: string } {
+  const keep = (
+    values: Readonly<Record<string, string>>,
+    storedValues: Readonly<Record<string, string>>,
+  ): Record<string, string> | string => {
+    const resolved: Record<string, string> = {};
+    for (const [name, value] of Object.entries(values)) {
+      const kept = value === "" ? storedValues[name] : value;
+      if (kept === undefined) return name;
+      resolved[name] = kept;
+    }
+    return resolved;
+  };
+  if (edit.transport === "stdio") {
+    const env = keep(edit.env, stored.transport === "stdio" ? stored.env : {});
+    return typeof env === "string" ? { missing: env } : { server: { ...edit, env } };
+  }
+  const url = edit.url ?? (stored.transport === "http" ? stored.url : undefined);
+  if (url === undefined) return { missing: "URL" };
+  const headers = keep(edit.headers, stored.transport === "http" ? stored.headers : {});
+  return typeof headers === "string"
+    ? { missing: headers }
+    : { server: { transport: "http", url, headers } };
 }

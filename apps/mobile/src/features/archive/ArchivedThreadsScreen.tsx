@@ -16,7 +16,7 @@ import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../components/ui/AppBar";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { useMemo, useRef, type ComponentProps } from "react";
-import { Platform, RefreshControl, useWindowDimensions, View } from "react-native";
+import { Platform, Pressable, RefreshControl, useWindowDimensions, View } from "react-native";
 import { GestureDetector, useNativeGesture } from "react-native-gesture-handler";
 import type { SwipeableMethods } from "react-native-gesture-handler/ReanimatedSwipeable";
 
@@ -182,6 +182,7 @@ function ArchivedThreadRow(props: {
   readonly isFirst: boolean;
   readonly isLast: boolean;
   readonly onDelete: () => void;
+  readonly onOpen: () => void;
   readonly onSwipeableClose: (methods: SwipeableMethods) => void;
   readonly onSwipeableWillOpen: (methods: SwipeableMethods) => void;
   readonly simultaneousSwipeGesture?: ComponentProps<typeof ThreadSwipeable>["simultaneousWith"];
@@ -198,8 +199,11 @@ function ArchivedThreadRow(props: {
     Boolean(part),
   );
   const rowContent = (
-    <View
-      className={`flex-row items-center gap-3 bg-grouped-card px-4 py-3 ${props.isLast ? "" : "border-b border-separator"}`}
+    <Pressable
+      accessibilityRole="button"
+      accessibilityHint={t("Opens the archived thread to read it")}
+      onPress={props.onOpen}
+      className={`flex-row items-center gap-3 bg-grouped-card px-4 py-3 active:opacity-70 ${props.isLast ? "" : "border-b border-separator"}`}
     >
       <View className="h-[34px] w-[34px] items-center justify-center rounded-[11px] bg-subtle">
         <SymbolView
@@ -239,7 +243,7 @@ function ArchivedThreadRow(props: {
           </View>
         ) : null}
       </View>
-    </View>
+    </Pressable>
   );
   const containerStyle = {
     borderTopLeftRadius: props.isFirst ? 20 : 0,
@@ -293,17 +297,21 @@ export function ArchivedThreadsScreen(props: {
   readonly error: string | null;
   readonly groups: ReadonlyArray<ArchivedThreadGroup>;
   readonly isLoading: boolean;
+  readonly loadingMore: boolean;
   readonly searchQuery: string;
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly sortOrder: ArchivedThreadSortOrder;
   readonly onDeleteThread: (thread: EnvironmentThreadShell) => void;
+  /** Absent when no further page exists or one is loading. */
+  readonly onEndReached: (() => void) | undefined;
+  readonly onOpenThread: (thread: EnvironmentThreadShell) => void;
   readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
   readonly onRefresh: () => void;
   readonly onSearchQueryChange: (query: string) => void;
   readonly onSortOrderChange: (sortOrder: ArchivedThreadSortOrder) => void;
   readonly onUnarchiveThread: (thread: EnvironmentThreadShell) => void;
 }) {
-  const { onDeleteThread, onUnarchiveThread } = props;
+  const { onDeleteThread, onOpenThread, onUnarchiveThread } = props;
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
   const archiveScrollGesture = useNativeGesture();
   const environmentLabelsById = useMemo(
@@ -373,6 +381,7 @@ export function ArchivedThreadsScreen(props: {
         isFirst={item.isFirst}
         isLast={item.isLast}
         onDelete={() => onDeleteThread(item.thread)}
+        onOpen={() => onOpenThread(item.thread)}
         onSwipeableClose={handleSwipeableClose}
         onSwipeableWillOpen={handleSwipeableWillOpen}
         onUnarchive={() => onUnarchiveThread(item.thread)}
@@ -438,11 +447,20 @@ export function ArchivedThreadsScreen(props: {
             ListHeaderComponent={
               props.error ? <ArchiveError message={props.error} onRetry={props.onRefresh} /> : null
             }
+            ListFooterComponent={
+              props.loadingMore ? (
+                <View className="items-center py-4">
+                  <AppActivityIndicator colorClassName="accent-icon" />
+                </View>
+              ) : null
+            }
+            onEndReached={props.onEndReached}
+            onEndReachedThreshold={0.5}
             onScrollBeginDrag={() => openSwipeableRef.current?.close()}
             refreshControl={
               <RefreshControl
                 onRefresh={props.onRefresh}
-                refreshing={props.isLoading && !isInitialLoad}
+                refreshing={props.isLoading && !isInitialLoad && !props.loadingMore}
                 tintColorClassName={String("accent-icon")}
               />
             }

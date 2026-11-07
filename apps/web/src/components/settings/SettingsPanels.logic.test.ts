@@ -3,11 +3,10 @@ import * as Duration from "effect/Duration";
 import { describe, expect, it } from "vite-plus/test";
 import {
   backgroundActivitySharedPolicySettings,
-  changedRestorableSettingLabels,
   getChangedBrowserSettingLabels,
   hasChangedBackgroundActivitySettings,
+  pageRestorePlan,
   projectScopedRestorePlan,
-  restorableSettingsPatch,
 } from "./SettingsPanels.logic";
 
 describe("background activity settings restore", () => {
@@ -100,18 +99,26 @@ describe("page reset", () => {
     skillAvailability: "shared",
   } as const;
 
+  const onOneMachine = (settings: typeof DEFAULT_UNIFIED_SETTINGS, page: string | null) => {
+    const plan = pageRestorePlan([{ environmentId: "laptop", settings }], page);
+    return { labels: plan.labels, patch: plan.patches.get("laptop") ?? {} };
+  };
+
   it("lists and restores only the settings its page shows", () => {
-    expect(changedRestorableSettingLabels(changed, "/settings/keybindings")).toEqual([
-      "Send shortcut",
-    ]);
-    expect(changedRestorableSettingLabels(changed, "/settings/chat")).toEqual([
-      "Diff layout",
-      "Skill availability",
-    ]);
-    expect(restorableSettingsPatch(changed, "/settings/chat").skillAvailability).toBe("provider");
+    expect(onOneMachine(changed, "/settings/keybindings")).toEqual({
+      labels: ["Send shortcut"],
+      patch: { sendShortcut: DEFAULT_UNIFIED_SETTINGS.sendShortcut },
+    });
+    const chat = onOneMachine(changed, "/settings/chat");
+    expect(chat.labels).toEqual(["Diff layout", "Skill availability"]);
+    expect(chat.patch.skillAvailability).toBe("provider");
+    expect(onOneMachine(DEFAULT_UNIFIED_SETTINGS, "/settings/keybindings").patch).toEqual({});
     expect(
       Object.keys(
-        restorableSettingsPatch(DEFAULT_UNIFIED_SETTINGS, "/settings/keybindings"),
+        onOneMachine(
+          { ...changed, confirmQuit: "direct", closeWindowToTray: false },
+          "/settings/keybindings",
+        ).patch,
       ).toSorted(),
     ).toEqual(["closeWindowToTray", "confirmQuit", "sendShortcut"]);
   });
@@ -163,20 +170,62 @@ describe("page reset", () => {
         },
       },
     } as const;
-    expect(changedRestorableSettingLabels(custom, "/settings/source-control")).toEqual([
-      "Git fetch interval",
-    ]);
-    expect(
-      changedRestorableSettingLabels(DEFAULT_UNIFIED_SETTINGS, "/settings/source-control"),
-    ).toEqual([]);
-    const patch = restorableSettingsPatch(custom, "/settings/source-control");
+    const { labels, patch } = onOneMachine(custom, "/settings/source-control");
+    expect(labels).toEqual(["Git fetch interval"]);
+    expect(onOneMachine(DEFAULT_UNIFIED_SETTINGS, "/settings/source-control").labels).toEqual([]);
     expect(Object.keys(patch)).toContain("backgroundActivity");
     expect(patch.backgroundActivity?.overrides?.pauseWhenOnBattery).toBe(true);
     expect(patch.backgroundActivity?.overrides?.automaticGitFetchInterval).toBeUndefined();
   });
 
+  it("lists a setting changed on any machine and restores each machine from its own values", () => {
+    const plan = pageRestorePlan(
+      [
+        { environmentId: "laptop", settings: DEFAULT_UNIFIED_SETTINGS },
+        { environmentId: "server", settings: changed },
+      ],
+      "/settings/chat",
+    );
+    expect(plan.labels).toEqual(["Diff layout", "Skill availability"]);
+    expect(plan.patches.get("laptop")).toEqual({});
+    expect(plan.patches.get("server")).toEqual({
+      diffLayout: DEFAULT_UNIFIED_SETTINGS.diffLayout,
+      skillAvailability: DEFAULT_UNIFIED_SETTINGS.skillAvailability,
+    });
+  });
+
+  it("keeps each machine's other background overrides when resetting the git fetch interval", () => {
+    const withOverrides = (overrides: Record<string, unknown>) =>
+      ({
+        ...DEFAULT_UNIFIED_SETTINGS,
+        backgroundActivity: {
+          schemaVersion: 1,
+          profile: "custom",
+          baseProfile: "balanced",
+          overrides: { automaticGitFetchInterval: Duration.seconds(42), ...overrides },
+        },
+      }) as typeof DEFAULT_UNIFIED_SETTINGS;
+    const plan = pageRestorePlan(
+      [
+        {
+          environmentId: "laptop",
+          settings: withOverrides({ providerHealthRefreshInterval: Duration.seconds(61) }),
+        },
+        {
+          environmentId: "server",
+          settings: withOverrides({ providerHealthRefreshInterval: Duration.seconds(92) }),
+        },
+      ],
+      "/settings/source-control",
+    );
+    const interval = (id: string) =>
+      plan.patches.get(id)?.backgroundActivity?.overrides?.providerHealthRefreshInterval;
+    expect(interval("laptop")).toEqual(Duration.seconds(61));
+    expect(interval("server")).toEqual(Duration.seconds(92));
+  });
+
   it("covers every page when resetting everything", () => {
-    expect(changedRestorableSettingLabels(changed, null)).toEqual(
+    expect(onOneMachine(changed, null).labels).toEqual(
       expect.arrayContaining(["Send shortcut", "Diff layout"]),
     );
   });

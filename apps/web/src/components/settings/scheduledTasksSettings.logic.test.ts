@@ -18,8 +18,10 @@ import { resolveSettingsScope, type SettingsScopeSearch } from "./settingsScope"
 
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import {
+  copyTaskDraft,
   scheduledTaskDefaultModel,
   defaultScheduledTaskProjectId,
+  matchingProjectId,
   matchesScheduledTaskScope,
   scheduleFromDraft,
   taskToDraft,
@@ -120,6 +122,25 @@ describe("scheduled task settings scope", () => {
     ).toBe("b");
     expect(defaultScheduledTaskProjectId([project("x", null, at)], all)).toBe("");
     expect(defaultScheduledTaskProjectId([project("x", null, at)], scoped)).toBe("x");
+  });
+
+  it("matches a project on another machine by repository, then by name", () => {
+    const project = (id: string, title: string, canonicalKey?: string, archivedAt?: string) => ({
+      id: ProjectId.make(id),
+      title,
+      repositoryIdentity: canonicalKey === undefined ? null : { canonicalKey },
+      archivedAt: archivedAt ?? null,
+    });
+    const candidates = [
+      project("renamed", "t3-fork", "github.com/acme/app"),
+      project("same-name", "app"),
+      project("archived", "notes", undefined, "2026-01-01T00:00:00.000Z"),
+    ];
+    expect(matchingProjectId(project("x", "app", "github.com/acme/app"), candidates)).toBe(
+      "renamed",
+    );
+    expect(matchingProjectId(project("x", "app"), candidates)).toBe("same-name");
+    expect(matchingProjectId(project("x", "notes"), candidates)).toBe("");
   });
 
   it("keeps tasks with removed projects manageable at environment scope", () => {
@@ -332,6 +353,13 @@ describe("webhook scheduled tasks", () => {
     });
     // Removing every row is a change, so it clears the stored filters.
     expect(scheduleFromDraft({ ...draft, filters: [] })).toMatchObject({ filters: [] });
+    // A copy has nothing stored yet, so it sends the filters it starts with.
+    const copy = copyTaskDraft(
+      { ...webhookTask, schedule: { type: "webhook", signature, filters } },
+      "Copy",
+    );
+    expect(copy.editingId).toBeNull();
+    expect(scheduleFromDraft(copy)).toMatchObject({ filters });
     expect(
       scheduleFromDraft({
         ...draft,

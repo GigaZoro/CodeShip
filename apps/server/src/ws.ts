@@ -1874,34 +1874,6 @@ export const layerWsRpc = (
           .refreshStatus(cwd)
           .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
 
-      const getOrchestrationV2ArchivedShellSnapshot = Effect.gen(function* () {
-        const { threads, projects, snapshotSequence } = yield* loadShellSnapshotParts({
-          sql,
-          readThreads: threadManagement.readShellSnapshot({ location: "archive" }),
-          listProjects: projectStore.listShells(),
-          latestSequence: applicationEvents.latestApplicationSequence,
-        });
-        return {
-          schemaVersion: threads.schemaVersion,
-          snapshotSequence,
-          projects,
-          threads: threads.archivedThreads,
-        } as const;
-      }).pipe(
-        Effect.flatMap((snapshot) =>
-          enrichProjectShells(snapshot.projects).pipe(
-            Effect.map(({ projects }) => ({ ...snapshot, projects })),
-          ),
-        ),
-        Effect.mapError(
-          (cause) =>
-            new OrchestrationV2GetShellSnapshotError({
-              message: "Failed to load archived thread snapshot",
-              cause,
-            }),
-        ),
-      );
-
       // Rows the shell can omit, read with the same snapshot sequence the shell uses.
       const readOmittableShellRows = Effect.fn("ws.orchestrationV2.readOmittableShellRows")(
         function* (
@@ -2041,8 +2013,29 @@ export const layerWsRpc = (
                 }),
             ),
           ),
-        [ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot]: (_input) =>
-          getOrchestrationV2ArchivedShellSnapshot,
+        [ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot]: (input) =>
+          ThreadSearch.loadArchivedShellPage({
+            request: input,
+            listArchived: threadSearch.listArchived,
+            sql,
+            readThreads: (options) =>
+              threadManagement.readShellSnapshot({ location: "archive", ...options }),
+            listProjects: (projectIds) => projectStore.listShells({ projectIds }),
+            latestSequence: applicationEvents.latestApplicationSequence,
+          }).pipe(
+            Effect.flatMap((snapshot) =>
+              enrichProjectShells(snapshot.projects).pipe(
+                Effect.map(({ projects }) => ({ ...snapshot, projects })),
+              ),
+            ),
+            Effect.mapError(
+              (cause) =>
+                new OrchestrationV2GetShellSnapshotError({
+                  message: "Failed to load archived thread snapshot",
+                  cause,
+                }),
+            ),
+          ),
         [ORCHESTRATION_V2_WS_METHODS.getThreadFamily]: (input) =>
           readOmittableShellRows({ familyOf: input.threadId }, "Failed to load the thread family"),
         [ORCHESTRATION_V2_WS_METHODS.getOlderSettledThreads]: (input) =>
@@ -2576,6 +2569,9 @@ export const layerWsRpc = (
         [WS_METHODS.providerMcpSignIn]: (input) => providerMcp.signIn(input),
         [WS_METHODS.providerMcpCompleteSignIn]: (input) => providerMcp.completeSignIn(input),
         [WS_METHODS.providerMcpSignOut]: (input) => providerMcp.signOut(input),
+        [WS_METHODS.providerMcpRead]: (input) => providerMcp.read(input),
+        [WS_METHODS.providerMcpEdit]: (input) => providerMcp.edit(input),
+        [WS_METHODS.providerMcpSetEnabled]: (input) => providerMcp.setEnabled(input),
         [WS_METHODS.serverUpdateServer]: (input) => serverSelfUpdate.update(input),
         [WS_METHODS.serverGetNpmRelease]: (input) => npmRelease.get(input),
         [WS_METHODS.serverUpdateServerWithProgress]: (input) =>

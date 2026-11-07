@@ -136,6 +136,7 @@ import {
   CloudRemoteEnvironmentRows,
   SavedBackendListRow,
 } from "./SavedEnvironmentRows";
+import { MachineSettingDifferencesSection } from "./MachineSettingDifferences";
 import { AddEnvironmentDialog } from "./AddEnvironmentDialog";
 import { t, tn } from "~/i18n";
 
@@ -1568,6 +1569,7 @@ export function ConnectionsSettings() {
           savedEnvironments={savedEnvironments}
         />
       </SettingsSection>
+      <MachineSettingDifferencesSection />
       {hasCloudPublicConfig() ? (
         <RemoveT3ConnectEnvironmentDialog
           environmentLabel={pendingT3ConnectRemoval?.label ?? null}

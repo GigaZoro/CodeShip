@@ -78,19 +78,21 @@ export function formatNextScheduledTaskRun(nextRunAt: string, now: number): stri
   if (remaining <= 0) return t("Next run due");
 
   const days = localCalendarDay(next) - localCalendarDay(current);
-  if (days === 0) {
-    if (remaining < MINUTE) return t("Next run in less than a minute");
-    return remaining < HOUR
-      ? tn(
-          Math.round(remaining / MINUTE),
-          "Next run in {count} minute",
-          "Next run in {count} minutes",
-        )
-      : tn(Math.round(remaining / HOUR), "Next run in {count} hour", "Next run in {count} hours");
-  }
-
   const locale = getFormattingLocale();
   const time = next.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
+  if (days === 0) {
+    if (remaining < MINUTE) return t("Next run in less than a minute");
+    const when =
+      remaining < HOUR
+        ? tn(
+            Math.round(remaining / MINUTE),
+            "Next run in {count} minute",
+            "Next run in {count} minutes",
+          )
+        : tn(Math.round(remaining / HOUR), "Next run in {count} hour", "Next run in {count} hours");
+    return t("{when}, at {time}", { when, time });
+  }
+
   if (days === 1) return t("Next run tomorrow at {time}", { time });
   if (days <= 7) {
     return t("Next run next {weekday} at {time}", {

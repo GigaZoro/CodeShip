@@ -150,6 +150,7 @@ const ClaudeConfigObject = Schema.Record(Schema.String, Schema.Unknown);
 const ClaudeConfigJson = Schema.fromJsonString(ClaudeConfigObject, { space: 2 });
 const CopiedNamesJson = Schema.fromJsonString(Schema.Array(Schema.String));
 const decodeClaudeConfig = Schema.decodeUnknownOption(ClaudeConfigJson);
+const decodeClaudeJsonFile = Schema.decodeEffect(ClaudeConfigJson);
 const encodeClaudeConfig = Schema.encodeSync(ClaudeConfigJson);
 const decodeMcpServers = Schema.decodeUnknownOption(Schema.UndefinedOr(ClaudeConfigObject));
 const decodeCopiedNames = Schema.decodeUnknownOption(CopiedNamesJson);
@@ -186,9 +187,9 @@ const readClaudeConfig = Effect.fn("ClaudeAccountHome.readClaudeConfig")(functio
 });
 
 /** The user MCP servers in a Claude config, or none when it cannot be read. */
-export const readClaudeMcpServerNames = Effect.fn("readClaudeMcpServerNames")(function* (
+export const readClaudeMcpServers = Effect.fn("readClaudeMcpServers")(function* (
   configPath: string,
-): Effect.fn.Return<ReadonlySet<string>, never, FileSystem.FileSystem> {
+): Effect.fn.Return<Readonly<Record<string, unknown>>, never, FileSystem.FileSystem> {
   const config = yield* readClaudeConfig(configPath).pipe(
     Effect.catch((error) =>
       Effect.logWarning("The Claude config could not be read.", { path: configPath, error }).pipe(
@@ -196,7 +197,7 @@ export const readClaudeMcpServerNames = Effect.fn("readClaudeMcpServerNames")(fu
       ),
     ),
   );
-  return new Set(Option.isSome(config) ? Object.keys(config.value.servers) : []);
+  return Option.isSome(config) ? config.value.servers : {};
 });
 
 const readCopiedNames = Effect.fn("ClaudeAccountHome.readCopiedNames")(function* (
@@ -215,7 +216,9 @@ const writeClaudeConfig = Effect.fn("ClaudeAccountHome.writeClaudeConfig")(funct
   config: Readonly<Record<string, unknown>>,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
-  const target = yield* fileSystem.realPath(configPath);
+  const target = yield* fileSystem
+    .realPath(configPath)
+    .pipe(Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(configPath)));
   const pending = `${target}.t3code-pending`;
   yield* fileSystem.writeFileString(pending, encodeClaudeConfig(config), { mode: 0o600 });
   yield* fileSystem
@@ -248,6 +251,29 @@ const withClaudeConfigLock = <A, E, R>(configPath: string, task: Effect.Effect<A
       return yield* task;
     }),
   );
+
+/**
+ * Rewrites one of Claude's JSON files in a single rename, so a failed change leaves it as it was.
+ * `.claude.json` is edited under Claude's own lock; a missing file starts empty.
+ */
+export const editClaudeJsonFile = Effect.fn("editClaudeJsonFile")(function* <E>(
+  filePath: string,
+  edit: (
+    content: Readonly<Record<string, unknown>>,
+  ) => Effect.Effect<Readonly<Record<string, unknown>>, E>,
+  options: { readonly lock: boolean },
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const task = Effect.gen(function* () {
+    const text = yield* fileSystem
+      .readFileString(filePath)
+      .pipe(Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed("{}")));
+    const content = yield* decodeClaudeJsonFile(text);
+    const edited = yield* edit(content);
+    if (!Equal.equals(edited, content)) yield* writeClaudeConfig(filePath, edited);
+  });
+  return yield* options.lock ? withClaudeConfigLock(filePath, task) : task;
+});
 
 /**
  * Claude keeps user MCP servers in `.claude.json` with the account's login, so an added account

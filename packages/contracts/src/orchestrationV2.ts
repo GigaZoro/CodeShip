@@ -3643,11 +3643,47 @@ export class OrchestrationV2CommandOutputError extends Schema.TaggedError<Orches
   },
 ) {}
 
+const ORCHESTRATION_V2_ARCHIVED_THREADS_PAGE_MAX = 100;
+/** The page a request without `limit` gets, which is every request from older clients. */
+export const ORCHESTRATION_V2_ARCHIVED_THREADS_PAGE_DEFAULT = 50;
+
+/** Where the next page of archived threads starts: past this archive time, then past this id. */
+export const OrchestrationV2ArchivedThreadsCursor = Schema.Struct({
+  archivedAt: IsoDateTime,
+  threadId: ThreadId,
+});
+export type OrchestrationV2ArchivedThreadsCursor = typeof OrchestrationV2ArchivedThreadsCursor.Type;
+
+/**
+ * A page of archived threads, newest archive first unless `order` is `oldest` (ties by id). Older
+ * servers ignore every key and answer all archived threads without `nextCursor`.
+ */
+export const OrchestrationV2GetArchivedShellSnapshotInput = Schema.Struct({
+  after: Schema.optionalKey(OrchestrationV2ArchivedThreadsCursor),
+  limit: Schema.optionalKey(
+    Schema.Int.check(
+      Schema.isBetween({ minimum: 1, maximum: ORCHESTRATION_V2_ARCHIVED_THREADS_PAGE_MAX }),
+    ),
+  ),
+  order: Schema.optionalKey(Schema.Literals(["newest", "oldest"])),
+  /** Matches as the thread palette does: title, branch, pull requests, project. */
+  query: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(256))),
+  /** Every project when absent. */
+  projectIds: Schema.optionalKey(Schema.Array(ProjectId).check(Schema.isMaxLength(100))),
+  /** The archived threads sharing this thread's root, unpaged; the other keys are ignored. */
+  familyOf: Schema.optionalKey(ThreadId),
+});
+export type OrchestrationV2GetArchivedShellSnapshotInput =
+  typeof OrchestrationV2GetArchivedShellSnapshotInput.Type;
+
 export const OrchestrationV2ArchivedShellSnapshot = Schema.Struct({
   schemaVersion: PositiveInt,
   snapshotSequence: NonNegativeInt,
+  /** The projects of `threads`. */
   projects: Schema.Array(OrchestrationProjectShell),
   threads: Schema.Array(OrchestrationV2ThreadShell),
+  /** Null on the last page; absent from older servers, which send every archived thread. */
+  nextCursor: Schema.optionalKey(Schema.NullOr(OrchestrationV2ArchivedThreadsCursor)),
 });
 export type OrchestrationV2ArchivedShellSnapshot = typeof OrchestrationV2ArchivedShellSnapshot.Type;
 
@@ -4283,7 +4319,7 @@ export const OrchestrationV2RpcSchemas = {
     output: OrchestrationGetFullThreadDiffResult,
   },
   getArchivedShellSnapshot: {
-    input: Schema.Struct({}),
+    input: OrchestrationV2GetArchivedShellSnapshotInput,
     output: OrchestrationV2ArchivedShellSnapshot,
   },
   getThreadFamily: {

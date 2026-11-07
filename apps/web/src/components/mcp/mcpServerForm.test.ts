@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { readMcpServerForm, splitCommandLine, type McpServerForm } from "./mcpServerForm";
+import {
+  joinCommandLine,
+  mcpServerFormFromSettings,
+  readMcpServerEditForm,
+  readMcpServerForm,
+  splitCommandLine,
+  type McpServerForm,
+} from "./mcpServerForm";
 
 const form = (overrides: Partial<McpServerForm>): McpServerForm => ({
   name: "context7",
@@ -23,6 +30,36 @@ describe("mcpServerForm", () => {
       "",
     ]);
     expect(splitCommandLine(`node "unfinished`)).toBeUndefined();
+    const words = ["npx", "@scope/server name", "C:\\dir\\", `say "hi"`, "it's", ""];
+    expect(splitCommandLine(joinCommandLine(words))).toEqual(words);
+  });
+
+  it("opens an edit with names only and keeps the values left empty", () => {
+    const stored = {
+      transport: "http" as const,
+      url: "https://minions.example/api",
+      urlHasSecret: true,
+      headerNames: ["Authorization"],
+    };
+    const opened = mcpServerFormFromSettings("minions", stored);
+    expect(opened).toMatchObject({ kind: "remote", url: "", headers: "Authorization: " });
+    expect(
+      readMcpServerEditForm({ ...opened, headers: `${opened.headers}\nX-Team: acme` }, stored),
+    ).toEqual({
+      ok: true,
+      server: { transport: "http", headers: { Authorization: "", "X-Team": "acme" } },
+    });
+    expect(readMcpServerEditForm({ ...opened, headers: "X-New:" }, stored)).toEqual({
+      ok: false,
+      errors: { headers: "Enter a value for X-New, or remove its line." },
+    });
+    // A local server's variables do not carry over to a remote one.
+    expect(
+      readMcpServerEditForm(
+        { ...opened, kind: "local", command: "server", env: "API_KEY=" },
+        stored,
+      ),
+    ).toEqual({ ok: false, errors: { env: "Enter a value for API_KEY, or remove its line." } });
   });
 
   it("builds the server a provider writes to its config", () => {

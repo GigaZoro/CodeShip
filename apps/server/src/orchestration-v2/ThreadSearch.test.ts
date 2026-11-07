@@ -2,10 +2,13 @@ import { assert, it } from "@effect/vitest";
 import {
   EventId,
   MessageId,
+  ORCHESTRATION_V2_ARCHIVED_THREADS_PAGE_DEFAULT,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  type OrchestrationV2ArchivedThreadsCursor,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2GetArchivedShellSnapshotInput,
   type ThreadLinkedPullRequest,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -953,6 +956,125 @@ it.layer(layerTest)("ThreadSearch.searchThreadsWithOlderSettledRows", (it) => {
             projections.readShellSnapshot({ location: "active", threadIds }),
           latestSequence: Effect.succeed(7),
         })).threads,
+      );
+    }),
+  );
+});
+
+it.layer(layerTest)("ThreadSearch.loadArchivedShellPage", (it) => {
+  const load = (request: OrchestrationV2GetArchivedShellSnapshotInput) =>
+    Effect.gen(function* () {
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const projects = yield* ProjectStore.ProjectStoreV2;
+      const search = yield* ThreadSearch.ThreadSearch;
+      return yield* ThreadSearch.loadArchivedShellPage({
+        request,
+        listArchived: search.listArchived,
+        sql: yield* SqlClient.SqlClient,
+        readThreads: (options) =>
+          projections.readShellSnapshot({ location: "archive", ...options }),
+        listProjects: (projectIds) => projects.listShells({ projectIds }),
+        latestSequence: Effect.succeed(7),
+      });
+    });
+
+  it.effect("answers a request without a limit with one bounded page", () =>
+    Effect.gen(function* () {
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const project = ProjectId.make("project:archive-bound");
+      yield* createProject(project);
+      yield* Effect.forEach(
+        Array.from({ length: ORCHESTRATION_V2_ARCHIVED_THREADS_PAGE_DEFAULT + 1 }, (_, index) =>
+          thread(ThreadId.make(`thread:archive-bound-${index}`), project, {
+            archivedAt: at(index % 50),
+          }),
+        ),
+        projections.apply,
+        { discard: true },
+      );
+      const page = yield* load({});
+      assert.lengthOf(page.threads, ORCHESTRATION_V2_ARCHIVED_THREADS_PAGE_DEFAULT);
+      assert.isNotNull(page.nextCursor);
+    }),
+  );
+
+  it.effect("pages every archived thread once, newest first, by query, project and family", () =>
+    Effect.gen(function* () {
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const project = ProjectId.make("project:archive-pages");
+      const other = ProjectId.make("project:osprey");
+      yield* createProject(project);
+      yield* createProject(other);
+      const id = (name: string) => ThreadId.make(`thread:archive-${name}`);
+      yield* Effect.forEach(
+        [
+          thread(id("a"), project, { title: "Kestrel nest", archivedAt: at(5) }),
+          // Same archive time as `a`: the id breaks the tie, so the cursor skips neither.
+          thread(id("b"), project, { title: "Heron", archivedAt: at(5) }),
+          thread(id("c"), project, { title: "Kestrel wing", archivedAt: at(3) }),
+          thread(id("d"), other, { title: "Plover", archivedAt: at(4) }),
+          thread(id("e-child"), project, { subagentOf: id("e"), archivedAt: at(1) }),
+          thread(id("e"), project, { title: "Egret", archivedAt: at(2) }),
+          thread(id("active"), project, { title: "Kestrel live" }),
+          thread(id("deleted"), project, { archivedAt: at(6), deletedAt: at(7) }),
+        ],
+        projections.apply,
+        { discard: true },
+      );
+      const archiveOrder = [id("a"), id("b"), id("d"), id("c"), id("e"), id("e-child")];
+      // The other test's threads share this database.
+      const inScope = { projectIds: [project, other] };
+      const pages: Array<ReadonlyArray<ThreadId>> = [];
+      let after: OrchestrationV2ArchivedThreadsCursor | undefined;
+      do {
+        const page = yield* load({
+          ...inScope,
+          limit: 2,
+          ...(after === undefined ? {} : { after }),
+        });
+        pages.push(page.threads.map((row) => row.id));
+        after = page.nextCursor ?? undefined;
+      } while (after !== undefined && pages.length < 10);
+      assert.deepEqual(pages.flat(), archiveOrder);
+      assert.deepEqual(pages.at(-1), [id("e"), id("e-child")]);
+
+      const oldest = yield* load({ ...inScope, order: "oldest" });
+      assert.deepEqual(
+        oldest.threads.map((row) => row.id),
+        archiveOrder.toReversed(),
+      );
+
+      const kestrel = yield* load({ query: "kestrel", limit: 1 });
+      assert.deepEqual(
+        kestrel.threads.map((row) => row.id),
+        [id("a")],
+      );
+      assert.deepEqual(
+        (yield* load({ query: "kestrel", limit: 1, after: kestrel.nextCursor! })).threads.map(
+          (row) => row.id,
+        ),
+        [id("c")],
+      );
+      // The project's title matches too, as in the palette.
+      assert.deepEqual(
+        (yield* load({ query: "osprey" })).threads.map((row) => row.id),
+        [id("d")],
+      );
+
+      const scoped = yield* load({ projectIds: [other] });
+      assert.deepEqual(
+        scoped.threads.map((row) => row.id),
+        [id("d")],
+      );
+      assert.deepEqual(
+        scoped.projects.map((row) => row.id),
+        [other],
+      );
+      assert.isNull(scoped.nextCursor);
+
+      assert.sameMembers(
+        (yield* load({ familyOf: id("e-child"), limit: 1 })).threads.map((row) => row.id),
+        [id("e"), id("e-child")],
       );
     }),
   );

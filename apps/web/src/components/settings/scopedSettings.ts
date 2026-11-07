@@ -344,6 +344,95 @@ export function planScopedSettingsPatch(
   return { clientPatch, hasClientWrite, serverWrites, unavailableReason };
 }
 
+export type ScopedSettingsPlan = ReturnType<typeof planScopedSettingsPatch>;
+
+function clientOnlyPatch(patch: ScopedSettingsPatch): ClientSettingsPatch {
+  return Object.fromEntries(
+    Object.entries(patch).filter(([key]) => CLIENT_KEYS.has(key) && !SERVER_KEYS.has(key)),
+  ) as ClientSettingsPatch;
+}
+
+/**
+ * Writes each machine its own patch, for writes such as a reset whose values depend on what each
+ * machine has. Client keys are this device's, so they are written once; a null key carries only them.
+ */
+export function planPerEnvironmentSettingsPatch(
+  scope: ResolvedSettingsScope,
+  environments: readonly ScopedSettingsEnvironment[],
+  patches: ReadonlyMap<EnvironmentId | null, ScopedSettingsPatch>,
+): ScopedSettingsPlan {
+  const clientPatch = Object.assign(
+    {},
+    ...[...patches.values()].map(clientOnlyPatch),
+  ) as ClientSettingsPatch;
+  const { connectedEnvironments } = selectScopedSettingsEnvironments(scope, environments, null);
+  const serverWrites: ScopedServerWrite[] =
+    scope.kind === "all" || scope.kind === "environment"
+      ? connectedEnvironments.flatMap((environment) => {
+          const previous = environment.serverConfig?.settings;
+          const patch = patches.get(environment.environmentId);
+          if (!previous || !patch) return [];
+          const serverPatch = Object.fromEntries(
+            Object.entries(patch).filter(([key]) => SERVER_KEYS.has(key)),
+          ) as ServerSettingsPatch;
+          if (Object.keys(serverPatch).length === 0) return [];
+          return [
+            {
+              environmentId: environment.environmentId,
+              label: environment.label,
+              previous,
+              patch: forDestination(previous, serverPatch),
+            },
+          ];
+        })
+      : [];
+  const hasClientWrite = Object.keys(clientPatch).length > 0;
+  return {
+    clientPatch,
+    hasClientWrite,
+    serverWrites,
+    unavailableReason:
+      hasClientWrite || serverWrites.length > 0 || [...patches.values()].every(isEmptyPatch)
+        ? null
+        : t("Connect an environment to save this setting."),
+  };
+}
+
+function isEmptyPatch(patch: ScopedSettingsPatch) {
+  return Object.keys(patch).length === 0;
+}
+
+/** Writes back each machine's values from before `plan`, for exactly the keys it changed. */
+export function planScopedSettingsUndo(
+  plan: ScopedSettingsPlan,
+  previousClient: Partial<Record<string, unknown>>,
+): ScopedSettingsPlan {
+  const clientPatch = Object.fromEntries(
+    Object.keys(plan.clientPatch).map((key) => [key, previousClient[key]]),
+  ) as ClientSettingsPatch;
+  return {
+    clientPatch,
+    hasClientWrite: plan.hasClientWrite,
+    serverWrites: plan.serverWrites.map((write) => ({
+      ...write,
+      patch: Object.fromEntries(
+        Object.entries(write.patch).map(([key, value]) => [
+          key,
+          key === "projectSettingsOverrides" && isPlainObject(value)
+            ? Object.fromEntries(
+                Object.keys(value).map((projectId) => [
+                  projectId,
+                  write.previous.projectSettingsOverrides[projectId as ProjectId] ?? null,
+                ]),
+              )
+            : write.previous[key as keyof ServerSettings],
+        ]),
+      ) as ServerSettingsPatch,
+    })),
+    unavailableReason: null,
+  };
+}
+
 export function planScopedSettingsClear(
   scope: ResolvedSettingsScope,
   environments: readonly ScopedSettingsEnvironment[],

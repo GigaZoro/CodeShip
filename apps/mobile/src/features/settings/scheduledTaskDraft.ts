@@ -283,6 +283,12 @@ export function createDraft(
   };
 }
 
+/** A new task like an existing one. It stores nothing yet, so its webhook filters are all sent. */
+export function duplicateDraft(task: ScheduledTask, title: string): ScheduledTaskDraft {
+  const draft = editDraft(task);
+  return { ...draft, task: null, title, schedule: { ...draft.schedule, savedFilters: [] } };
+}
+
 export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
   return {
     task,

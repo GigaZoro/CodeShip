@@ -1,4 +1,5 @@
 import {
+  type EnvironmentId,
   ORCHESTRATION_V2_WS_METHODS,
   type ThreadId,
   type OrchestrationGetTurnDiffResult,
@@ -40,6 +41,10 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
     options.onCheckpointDiffAnswer === undefined
       ? {}
       : { onAnswer: options.onCheckpointDiffAnswer };
+  // Bumped after an archive change, so every page of that environment's archive reads again.
+  const archivedShellSnapshotRefresh = Atom.family((_environmentId: EnvironmentId) =>
+    Atom.make(0).pipe(Atom.keepAlive),
+  );
   return {
     threadTranscript: createEnvironmentCommand(runtime, {
       label: "environment-data:orchestration:thread-transcript",
@@ -150,7 +155,9 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
     archivedShellSnapshot: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:orchestration:archived-shell-snapshot",
       tag: ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot,
+      refreshTrigger: ({ environmentId }) => archivedShellSnapshotRefresh(environmentId),
     }),
+    archivedShellSnapshotRefresh,
     htmlRenders: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:orchestration:html-renders",
       tag: ORCHESTRATION_V2_WS_METHODS.listHtmlRenders,

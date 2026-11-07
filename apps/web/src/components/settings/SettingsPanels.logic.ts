@@ -488,21 +488,30 @@ export function hasRestorableSettings(page: string): boolean {
   return page === "/settings/appearance" || restorableSettingsFor(page, false).length > 0;
 }
 
-export function changedRestorableSettingLabels(
-  settings: UnifiedSettings,
+/**
+ * Every machine contributes the rows it has changed, and each machine's patch is built from its own
+ * values, so one machine's partial restore cannot copy another machine's remaining settings.
+ */
+export function pageRestorePlan<Id>(
+  targets: ReadonlyArray<{ readonly environmentId: Id; readonly settings: UnifiedSettings }>,
   page: string | null,
-): string[] {
-  return restorableSettingsFor(page, false).flatMap((entry) => entry.changedLabels(settings));
-}
-
-export function restorableSettingsPatch(
-  settings: UnifiedSettings,
-  page: string | null,
-): ScopedSettingsPatch {
-  return Object.assign(
-    {},
-    ...restorableSettingsFor(page, false).map((entry) => entryPatch(entry, settings)),
-  ) as ScopedSettingsPatch;
+): { readonly labels: string[]; readonly patches: ReadonlyMap<Id, ScopedSettingsPatch> } {
+  const entries = restorableSettingsFor(page, false);
+  const labels = new Set(
+    entries.flatMap((entry) => targets.flatMap(({ settings }) => entry.changedLabels(settings))),
+  );
+  const patches = new Map(
+    targets.map(({ environmentId, settings }) => [
+      environmentId,
+      Object.assign(
+        {},
+        ...entries
+          .filter((entry) => entry.changedLabels(settings).length > 0)
+          .map((entry) => entryPatch(entry, settings)),
+      ) as ScopedSettingsPatch,
+    ]),
+  );
+  return { labels: [...labels], patches };
 }
 
 /**

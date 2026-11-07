@@ -1412,6 +1412,28 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:provider:mcp:complete-sign-in",
       tag: WS_METHODS.providerMcpCompleteSignIn,
     }),
+    readProviderMcpServer: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:mcp:read",
+      tag: WS_METHODS.providerMcpRead,
+    }),
+    editProviderMcpServer: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:mcp:edit",
+      tag: WS_METHODS.providerMcpEdit,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.instanceId, input.name]),
+      },
+    }),
+    setProviderMcpServerEnabled: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:mcp:set-enabled",
+      tag: WS_METHODS.providerMcpSetEnabled,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.instanceId, input.name]),
+      },
+    }),
     traceDiagnostics: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:trace-diagnostics",
       tag: WS_METHODS.serverGetTraceDiagnostics,
