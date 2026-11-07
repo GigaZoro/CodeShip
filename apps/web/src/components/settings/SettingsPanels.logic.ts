@@ -433,6 +433,9 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   restorable("/settings/maintenance", msg("Continue threads after restarts"), [
     "continueThreadsAfterServerUpdate",
   ]),
+  restorable("/settings/maintenance", msg("Retry threads after network errors"), [
+    "retryThreadsAfterNetworkErrors",
+  ]),
   {
     page: "/settings/maintenance",
     keys: BACKGROUND_ACTIVITY_KEYS,

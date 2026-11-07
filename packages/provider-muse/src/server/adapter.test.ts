@@ -641,6 +641,15 @@ describe("MuseAdapterV2", () => {
       });
       const throttled = yield* harness.takeEvent("turn.terminal");
       assert.strictEqual(throttled.failure?.class, "provider_error");
+
+      const offline = yield* startConversation(harness, fake, 3);
+      yield* fake.emit("turn/completed", {
+        turnId: offline.nativeId,
+        terminal: "failed",
+        error: { message: "connect ECONNREFUSED 31.13.71.36:443" },
+      });
+      const lost = yield* harness.takeEvent("turn.terminal");
+      assert.strictEqual(lost.failure?.class, "transport_error");
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 

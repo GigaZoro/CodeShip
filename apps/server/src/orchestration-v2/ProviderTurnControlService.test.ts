@@ -218,6 +218,7 @@ it.effect(
           getUsageLimitedProviderInstances: () =>
             Effect.die("unused getUsageLimitedProviderInstances"),
           getLimitRecoveryWakeAt: () => Effect.die("unused getLimitRecoveryWakeAt"),
+          getNetworkRecoveryCandidates: () => Effect.die("unused getNetworkRecoveryCandidates"),
           getOpenRemoteDelegatedTasks: Effect.die("unused getOpenRemoteDelegatedTasks"),
           getShellSnapshot: () => Effect.die("unused getShellSnapshot"),
           listActiveSubagentThreadIds: () => Effect.die("unused listActiveSubagentThreadIds"),

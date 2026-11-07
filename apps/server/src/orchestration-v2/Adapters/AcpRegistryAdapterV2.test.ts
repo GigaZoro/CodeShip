@@ -429,6 +429,16 @@ describe("AcpRegistryAdapterV2", () => {
     });
     assert.equal(acpRegistryPromptFailure("other-agent", limit).class, "provider_error");
     assert.equal(
+      acpRegistryPromptFailure(
+        "other-agent",
+        new EffectAcpErrors.AcpRequestError({
+          code: -32603,
+          errorMessage: "TypeError: fetch failed (connect ECONNREFUSED 10.0.0.1:443)",
+        }),
+      ).class,
+      "transport_error",
+    );
+    assert.equal(
       acpRegistryPromptFailure("mistral-vibe", new Error("private defect")).message,
       "Provider turn failed.",
     );

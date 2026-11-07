@@ -175,7 +175,8 @@ function hasErrorCode(error: unknown, codes: ReadonlySet<string>): boolean {
 
 const DNS_ERROR_CODES = new Set(["ENOTFOUND", "EAI_AGAIN", "EAI_NONAME"]);
 
-const canOpenTcp = (host: string, port: number) =>
+/** False on DNS failure, refusal, or no connection within 5 seconds. */
+export const canOpenTcp = (host: string, port: number) =>
   Effect.callback<boolean>((resume) => {
     const socket = NodeNet.connect({ host, port });
     const finish = (connected: boolean) => {

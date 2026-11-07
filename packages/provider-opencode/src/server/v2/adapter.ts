@@ -78,6 +78,7 @@ import * as ProviderContinuationRequests from "@t3tools/provider-core/server/Pro
 import {
   makeProviderFailure,
   makeProviderRetryTurnItem,
+  providerErrorClass,
 } from "@t3tools/provider-core/server/failure";
 import {
   makeSubagentChildThread,
@@ -2159,7 +2160,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
             failure: makeProviderFailure({
               message: readableProviderErrorMessage(message, status, response?.body),
               code: type,
-              class: usageLimit ? "usage_limit" : "provider_error",
+              class: usageLimit ? "usage_limit" : providerErrorClass(message),
             }),
           });
         }

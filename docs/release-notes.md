@@ -1,3 +1,9 @@
+## 2026-11-07 — Threads resume after a lost connection
+
+- A thread whose turn stopped because the internet dropped now resumes on its own once the connection is back, on every machine and with every agent. It waits while the machine is offline instead of failing again, and gives up after three quick failures in a row. Turn it off with Retry threads after network errors in Settings → Maintenance & about, on web, desktop and mobile.
+- A new thread whose worktree could not be set up because Git could not reach the remote now sets it up again once the connection is back, and then sends your message.
+- Turns that could not reach the provider (DNS, refused or dropped connections, no route) now show as connection errors instead of provider errors, for Claude, OpenCode, Cursor, Grok, Antigravity, Pi, Muse and other ACP agents. **Resume** in the composer works on them.
+
 ## 2026-11-07 — One-machine tasks finish even when the first machine doesn't
 
 - A one-machine scheduled task no longer gets lost when the machine running it fails partway. The next machine in the project's order keeps checking while that run is still going, and runs the task itself if the run fails or the machine stops answering (for example, it went to sleep or shut down), until the next run is due.

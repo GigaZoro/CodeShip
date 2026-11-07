@@ -83,7 +83,7 @@ import {
   type BackgroundWorkReport,
 } from "@t3tools/provider-core/server/notification";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
-import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import { makeProviderFailure, providerErrorClass } from "@t3tools/provider-core/server/failure";
 import {
   makeSubagentChildThread,
   makeSubagentConversationArtifacts,
@@ -989,7 +989,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                 ? "transport_error"
                 : usageLimited
                   ? "usage_limit"
-                  : "provider_error",
+                  : providerErrorClass(detail),
             message: detail ?? "Muse turn failed.",
             ...(usageLimited
               ? {

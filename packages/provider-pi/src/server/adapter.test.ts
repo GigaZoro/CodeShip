@@ -3929,6 +3929,7 @@ describe("PiAdapterV2", () => {
         terminal.type === "turn.terminal" &&
           terminal.status === "failed" &&
           terminal.failure.message === "socket timed out" &&
+          terminal.failure.class === "transport_error" &&
           terminal.retry?.attempt === 5 &&
           terminal.retry.maxAttempts === 5,
       );

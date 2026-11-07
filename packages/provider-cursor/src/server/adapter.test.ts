@@ -305,6 +305,15 @@ describe("CursorAdapterV2", () => {
       },
     },
     {
+      reason: "a run that lost its connection",
+      wait: Effect.succeed({
+        id: "native-cursor-run",
+        status: "error" as const,
+        error: { message: "getaddrinfo ENOTFOUND api2.cursor.sh" },
+      }),
+      failure: { class: "transport_error", message: "getaddrinfo ENOTFOUND api2.cursor.sh" },
+    },
+    {
       reason: "the SDK rate limit that broke the run",
       wait: Effect.fail(
         new CursorAgentSdk.CursorAgentSdkRunnerError({

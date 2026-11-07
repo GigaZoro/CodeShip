@@ -236,6 +236,21 @@ function boundedText(value: string, maxLength: number): string {
   return `${redacted.slice(0, end)}…`;
 }
 
+// Socket and DNS failures, as Node, Rust and Go clients word them. A lost connection
+// clears up on its own, so these turns resume once the network is back. TLS, certificate
+// and proxy sign-in errors are left out: waiting does not fix them.
+const CONNECTION_FAILURE_TEXT =
+  /\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ENETUNREACH|EHOSTUNREACH|ENETDOWN|ETIMEDOUT)\b|getaddrinfo|fetch failed|socket hang up|(?:socket|connection|connect) timed out|connection (?:reset|refused)|network is unreachable|error sending request/i;
+
+/** The class of a provider-reported error: a lost connection, or the provider's own error. */
+export function providerErrorClass(
+  message: string | null | undefined,
+): "transport_error" | "provider_error" {
+  return message != null && CONNECTION_FAILURE_TEXT.test(message)
+    ? "transport_error"
+    : "provider_error";
+}
+
 export function makeProviderFailure(input: {
   readonly cause?: unknown;
   readonly message?: string | undefined;

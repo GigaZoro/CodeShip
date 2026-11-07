@@ -1,4 +1,7 @@
-import { pendingGuestMessageCount } from "@t3tools/contracts";
+import {
+  ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+  pendingGuestMessageCount,
+} from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
@@ -189,6 +192,14 @@ export type ProjectionLimitRecoveryCandidate = Pick<
   /** The account the limited run used; the thread may point elsewhere since. */
   readonly latestRunProviderInstanceId?: ProviderInstanceId | null;
 };
+
+/** The latest run of a thread that a lost connection stopped, as network recovery reads it. */
+export interface ProjectionNetworkRecoveryCandidate {
+  readonly threadId: ThreadId;
+  readonly run: OrchestrationV2Run;
+  /** The workspace setup failed before the agent saw the message, so it is retried, not continued. */
+  readonly setupFailed: boolean;
+}
 
 export type ProjectionThreadPullRequests = Pick<
   OrchestrationV2AppThread,
@@ -536,6 +547,15 @@ export interface ProjectionStoreV2Shape {
   readonly getLimitRecoveryWakeAt: (
     now: DateTime.Utc,
   ) => Effect.Effect<number | null, ProjectionStoreV2Error>;
+  /**
+   * Threads whose latest run failed with a transport error after `since`, with nothing queued,
+   * pending, archived, settled or snoozed that makes resuming them unsafe. Delegated children
+   * are left out.
+   */
+  readonly getNetworkRecoveryCandidates: (options: {
+    readonly now: DateTime.Utc;
+    readonly since: DateTime.Utc;
+  }) => Effect.Effect<ReadonlyArray<ProjectionNetworkRecoveryCandidate>, ProjectionStoreV2Error>;
   readonly getSettlementCandidates: (
     threadId?: ThreadId,
   ) => Effect.Effect<ReadonlyArray<ProjectionSettlementCandidate>, ProjectionStoreV2Error>;
@@ -4071,6 +4091,83 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
 
+    const getNetworkRecoveryCandidates = Effect.fn("ProjectionStore.getNetworkRecoveryCandidates")(
+      function* (options: Parameters<ProjectionStoreV2Shape["getNetworkRecoveryCandidates"]>[0]) {
+        const nowIso = DateTime.formatIso(options.now);
+        const sinceIso = DateTime.formatIso(options.since);
+        const rows = yield* sql<{
+          readonly thread_id: string;
+          readonly run_payload_json: string;
+          readonly failure_code: string | null;
+        }>`
+          SELECT t.thread_id, r.payload_json AS run_payload_json,
+            json_extract(item.payload_json, '$.failure.code') AS failure_code
+          FROM orchestration_v2_projection_threads t
+          INNER JOIN orchestration_v2_projection_runs r ON r.run_id = (
+            SELECT latest.run_id FROM orchestration_v2_projection_runs latest
+            WHERE latest.thread_id = t.thread_id
+              AND latest.status <> 'queued'
+              AND NOT (
+                latest.status = 'cancelled'
+                AND json_extract(latest.payload_json, '$.startedAt') IS NULL
+              )
+            -- latestExecutedRun: the run that ended last (runRanAfter).
+            ORDER BY latest.completed_at IS NULL DESC, latest.completed_at DESC,
+              latest.ordinal DESC, latest.run_id DESC
+            LIMIT 1
+          ) AND r.status = 'failed'
+          INNER JOIN orchestration_v2_projection_turn_items item ON item.turn_item_id = (
+            SELECT error.turn_item_id FROM orchestration_v2_projection_turn_items error
+            WHERE error.thread_id = t.thread_id AND error.run_id = r.run_id
+              AND error.type = 'error' AND error.status = 'failed'
+              AND error.node_id IS json_extract(r.payload_json, '$.rootNodeId')
+            ORDER BY error.updated_at DESC, error.ordinal DESC, error.turn_item_id DESC
+            LIMIT 1
+          )
+          WHERE t.deleted_at IS NULL
+            -- Only recent transport failures qualify; this keeps the per-tick latest-run
+            -- lookup off threads that never lost their connection.
+            AND t.thread_id IN (
+              SELECT failure.thread_id FROM orchestration_v2_projection_turn_items failure
+              WHERE failure.type = 'error' AND failure.status = 'failed'
+                AND failure.updated_at >= ${sinceIso}
+                AND json_extract(failure.payload_json, '$.failure.class') = 'transport_error'
+            )
+            AND json_extract(item.payload_json, '$.failure.class') = 'transport_error'
+            AND julianday(r.completed_at) >= julianday(${sinceIso})
+            -- A delegated child is its parent's call: the parent may already have replaced it.
+            AND json_extract(t.payload_json, '$.lineage.relationshipToParent') IS NOT 'subagent'
+            AND json_extract(t.payload_json, '$.archivedAt') IS NULL
+            AND json_extract(t.payload_json, '$.settledOverride') IS NOT 'settled'
+            AND (
+              json_extract(t.payload_json, '$.snoozedUntil') IS NULL
+              OR julianday(json_extract(t.payload_json, '$.snoozedUntil')) <= julianday(${nowIso})
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_runtime_requests request
+              WHERE request.thread_id = t.thread_id AND request.status = 'pending'
+            )
+            -- A queued message starts on its own once the failed run ends.
+            AND NOT EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_runs queued
+              WHERE queued.thread_id = t.thread_id AND queued.status = 'queued'
+            )
+          ORDER BY r.completed_at, t.thread_id
+          LIMIT 50
+        `;
+        const candidates: Array<ProjectionNetworkRecoveryCandidate> = [];
+        for (const row of rows) {
+          candidates.push({
+            threadId: ThreadId.make(row.thread_id),
+            run: yield* decodeRunPayload(row.run_payload_json),
+            setupFailed: row.failure_code === ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+          });
+        }
+        return candidates;
+      },
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
     const getRecoveryThreadIds = Effect.fn("ProjectionStore.getRecoveryThreadIds")(
       function* (kind: ProjectionRecoveryKind) {
         const candidates = (() => {
@@ -7222,6 +7319,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getUsageLimitedProviderInstanceIds: readOnReader(getUsageLimitedProviderInstanceIds),
       getUsageLimitedProviderInstances: readOnReader(getUsageLimitedProviderInstances),
       getLimitRecoveryWakeAt: readOnReader(getLimitRecoveryWakeAt),
+      getNetworkRecoveryCandidates: readOnReader(getNetworkRecoveryCandidates),
       getRecoveryThreadIds: readOnReader(getRecoveryThreadIds),
       getUnreadableThreadIds: readOnReader(getUnreadableThreadIds),
       getThreadSnapshot: readOnReader(getThreadSnapshot),

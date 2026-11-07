@@ -21,6 +21,7 @@ import {
   MAX_PROVIDER_FAILURE_MESSAGE_LENGTH,
   ContextHandoffBudgetError,
   ContextHandoffBackgroundWorkError,
+  providerErrorClass,
 } from "./failure.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -275,3 +276,22 @@ it.effect("keys terminal failure items by provider turn across retries and fallb
     assert.equal(firstAttempt.ordinal, 101);
   }).pipe(Effect.provide(IdAllocator.layer)),
 );
+
+it.each([
+  ["getaddrinfo ENOTFOUND api.openai.com", "transport_error"],
+  ["Cannot connect to API: connect ECONNREFUSED 10.0.0.1:443", "transport_error"],
+  ["TypeError: fetch failed", "transport_error"],
+  ["read ECONNRESET", "transport_error"],
+  ["socket hang up", "transport_error"],
+  ["error sending request for url (https://api.x.ai/v1/responses)", "transport_error"],
+  ["connect ENETUNREACH 2606:4700::6810:1", "transport_error"],
+  ["socket timed out", "transport_error"],
+  ["Connection reset by peer", "transport_error"],
+  ["Command timed out after 120s", "provider_error"],
+  ["unable to get local issuer certificate", "provider_error"],
+  ["Proxy Authentication Required", "provider_error"],
+  ["The model is overloaded", "provider_error"],
+  [undefined, "provider_error"],
+] as const)("classifies %j as %s", (message, expected) => {
+  assert.equal(providerErrorClass(message), expected);
+});

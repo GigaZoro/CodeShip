@@ -2478,6 +2478,8 @@ const catalog: MessageCatalog = {
   "Automatically pull": "Автоматично виконувати pull",
   "Automatically resume interrupted threads after an update, crash, or machine restart on the selected environments.":
     "Автоматично відновлювати перервані чати після оновлення, збою або перезапуску комп’ютера у вибраних середовищах.",
+  "Automatically resume threads stopped by a lost internet connection once the connection is back.":
+    "Автоматично відновлювати чати, зупинені через втрату інтернет-з’єднання, коли з’єднання повернеться.",
   "Automatically resume threads when their usage limits reset. You can cancel auto-resume in each thread.":
     "Автоматично відновлювати чати, коли скидаються їхні ліміти використання. Автовідновлення можна скасувати в кожному чаті.",
   "Automatically use an available provider, or choose a model for new threads and new scheduled tasks.":
@@ -9331,8 +9333,11 @@ const catalog: MessageCatalog = {
   "Resume or snooze limited threads": "Відновлення або відкладення чатів на ліміті",
   "Resume queue": "Відновити чергу",
   "Resume thread": "Відновити чат",
+  "Resume threads stopped by a lost connection once it is back.":
+    "Відновлювати чати, зупинені через втрату з’єднання, коли воно повернеться.",
   Retry: "Повторити",
   "Retry {name}": "Повторити {name}",
+  "Retry after network errors": "Повторювати після збоїв мережі",
   "Retry and keep files": "Повторити, зберегти файли",
   "Retry and undo file changes": "Повторити й скасувати зміни файлів",
   "Retry audio": "Повторити аудіо",
@@ -9362,6 +9367,7 @@ const catalog: MessageCatalog = {
   "Retry stack refresh": "Повторити оновлення стека",
   "Retry this response": "Повторити цю відповідь",
   "Retry this response?": "Повторити цю відповідь?",
+  "Retry threads after network errors": "Повторювати чати після збоїв мережі",
   "Retry to bring in the repository.": "Повторіть, щоб додати репозиторій.",
   "Retry update": "Повторити оновлення",
   "Retry upload for {name}": "Повторити завантаження {name}",

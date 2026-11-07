@@ -935,7 +935,9 @@ const program = Effect.gen(function* () {
             stopReason: "error",
             ...(idleError === "details"
               ? { error: { code: -32000, message: "Missing Authentication header" } }
-              : {}),
+              : idleError === "offline"
+                ? { error: { code: -32603, message: "getaddrinfo ENOTFOUND api.example.test" } }
+                : {}),
           },
         });
         // The agent outlives the failed prompt, so its subagent finishes afterwards.

@@ -54,6 +54,7 @@ import {
 import {
   makeProviderFailure,
   makeProviderRetryTurnItem,
+  providerErrorClass,
 } from "@t3tools/provider-core/server/failure";
 import { turnScopedSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
 import {
@@ -1788,9 +1789,10 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             if (recordString(message, "role") !== "assistant") return;
             yield* completeOpenStreamItems(turn);
             if (recordString(message, "stopReason") === "error" && turn.failure === null) {
+              const errorMessage = recordString(message, "errorMessage");
               turn.failure = makeProviderFailure({
-                message: recordString(message, "errorMessage") ?? "Pi reported a model error.",
-                class: "provider_error",
+                message: errorMessage ?? "Pi reported a model error.",
+                class: providerErrorClass(errorMessage),
               });
             }
             return;
@@ -1916,9 +1918,10 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               turn.failure = null;
               return;
             }
+            const finalError = recordString(event, "finalError");
             const failure = makeProviderFailure({
-              message: recordString(event, "finalError") ?? "Pi auto-retry failed.",
-              class: "provider_error",
+              message: finalError ?? "Pi auto-retry failed.",
+              class: providerErrorClass(finalError),
               retryable: false,
             });
             const attempt = Math.max(1, Math.trunc(recordNumber(event, "attempt") ?? 1));

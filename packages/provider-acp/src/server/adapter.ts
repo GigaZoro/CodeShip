@@ -120,6 +120,7 @@ import {
 import {
   makeProviderFailure,
   makeProviderRetryTurnItem,
+  providerErrorClass,
 } from "@t3tools/provider-core/server/failure";
 import { acpSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
 import {
@@ -136,6 +137,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 export const ACP_PROTOCOL = "acp.ndjson-jsonrpc" as const;
 
 // Grok summaries can trail hydrated tools by over two seconds; shorter waits split the wake.
+const isAcpRequestError = Schema.is(EffectAcpErrors.AcpRequestError);
 const ACP_DEFERRED_FINALIZE_DEBOUNCE: Duration.Input = "3000 millis";
 
 /**
@@ -4613,7 +4615,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           makeProviderFailure({
             message: error?.message,
             code: error == null ? null : String(error.code),
-            class: "provider_error",
+            class: providerErrorClass(error?.message),
           });
 
         const settleIdleWork = Effect.fnUntraced(function* (
@@ -7989,7 +7991,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       flavor.promptFailure?.(failure) ??
                         makeProviderFailure({
                           cause: failure,
-                          class: "provider_error",
+                          // Only classifies; the provider's own text stays out of the message.
+                          class: providerErrorClass(
+                            isAcpRequestError(failure) ? failure.errorMessage : undefined,
+                          ),
                         }),
                     ).pipe(
                       Effect.andThen(

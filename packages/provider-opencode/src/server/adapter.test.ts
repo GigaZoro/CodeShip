@@ -318,7 +318,21 @@ describe("OpenCodeAdapterV2", () => {
     ),
   );
 
-  it.effect("classifies APIError 429 as a usage limit", () =>
+  it.effect.each([
+    {
+      name: "APIError 429 as a usage limit",
+      data: { message: "Provider rejected request", statusCode: 429, isRetryable: true },
+      failureClass: "usage_limit",
+    },
+    {
+      name: "a lost connection as a transport error",
+      data: {
+        message: "Cannot connect to API: getaddrinfo ENOTFOUND api.openai.com",
+        isRetryable: true,
+      },
+      failureClass: "transport_error",
+    },
+  ] as const)("classifies $name", ({ data, failureClass }) =>
     Effect.gen(function* () {
       const nativeEvents = asyncEventStream();
       const harness = yield* makeOpenCodeRuntimeHarness("usage-limit", "root", {
@@ -341,14 +355,7 @@ describe("OpenCodeAdapterV2", () => {
           type: "session.error",
           properties: {
             sessionID: "root",
-            error: {
-              name: "APIError",
-              data: {
-                message: "Provider rejected request",
-                statusCode: 429,
-                isRetryable: true,
-              },
-            },
+            error: { name: "APIError", data },
           },
         }),
       );
@@ -356,7 +363,7 @@ describe("OpenCodeAdapterV2", () => {
         (event) => event.type === "turn.terminal",
       );
       assert.equal(terminal?.status, "failed");
-      assert.equal(terminal?.failure?.class, "usage_limit");
+      assert.equal(terminal?.failure?.class, failureClass);
     }).pipe(
       Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
       Effect.scoped,

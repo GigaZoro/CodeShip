@@ -2295,6 +2295,24 @@ export function MaintenanceSettingsPanel() {
                 />
               }
             />
+            <SettingsRow
+              {...searchableSetting("retry-threads-after-network-errors")}
+              serverScoped
+              settingKeys={["retryThreadsAfterNetworkErrors"]}
+              description={t(
+                "Automatically resume threads stopped by a lost internet connection once the connection is back.",
+              )}
+              control={
+                <ScopedSwitch
+                  settingKeys={["retryThreadsAfterNetworkErrors"]}
+                  checked={settings.retryThreadsAfterNetworkErrors}
+                  onCheckedChange={(checked) =>
+                    updateSettings({ retryThreadsAfterNetworkErrors: Boolean(checked) })
+                  }
+                  aria-label={t("Retry threads after network errors")}
+                />
+              }
+            />
           </SettingsSection>
 
           <SettingsSection id="background" title={t("Background activity")}>

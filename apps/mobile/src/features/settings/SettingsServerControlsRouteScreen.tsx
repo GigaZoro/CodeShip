@@ -641,6 +641,19 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                         }
                       />
                     </View>
+                    <View className="border-t border-border-subtle">
+                      <SettingsSwitchRow
+                        icon="wifi"
+                        label={t("Retry after network errors")}
+                        subtitle={managedSubtitle(
+                          "retryThreadsAfterNetworkErrors",
+                          t("Resume threads stopped by a lost connection once it is back."),
+                        )}
+                        value={uniform("retryThreadsAfterNetworkErrors")}
+                        disabled={disabledFor("retryThreadsAfterNetworkErrors")}
+                        onValueChange={(value) => write({ retryThreadsAfterNetworkErrors: value })}
+                      />
+                    </View>
                   </SettingsSection>
                 </>
               ) : null}

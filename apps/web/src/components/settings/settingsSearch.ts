@@ -672,6 +672,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
+    id: "retry-threads-after-network-errors",
+    title: msg("Retry threads after network errors"),
+    to: "/settings/maintenance",
+    searchTerms: [
+      "resume continue failed work internet connection offline outage power cut wifi dns lost network automatically",
+    ],
+  },
+  {
     id: "background-activity",
     title: msg("Background activity"),
     to: "/settings/maintenance",

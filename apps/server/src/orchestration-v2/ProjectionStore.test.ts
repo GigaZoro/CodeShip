@@ -8,6 +8,7 @@ import {
   CheckpointScopeId,
   MessageId,
   type ModelSelection,
+  ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2TurnItem,
   type OrchestrationV2ThreadHistoryPage,
@@ -4832,6 +4833,101 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         },
       });
       assert.include(yield* projectionStore.getRecoveryThreadIds("runtime"), childThreadId);
+    }),
+  );
+
+  it.effect("lists threads whose latest run a lost connection stopped", () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const stop = Effect.fnUntraced(function* (
+        suffix: string,
+        failureClass: "transport_error" | "provider_error",
+        code = "api_error",
+      ) {
+        const threadId = yield* addRolledBackRecoveryCandidate(suffix);
+        const run = (yield* store.getThreadProjection(threadId)).runs[0]!;
+        yield* store.apply({
+          id: EventId.make(`event:${suffix}:error`),
+          type: "turn-item.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: TurnItemId.make(`${suffix}:error`),
+            threadId,
+            runId: run.id,
+            nodeId: run.rootNodeId,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 2,
+            status: "failed",
+            title: "Provider error",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "error",
+            failure: {
+              class: failureClass,
+              message:
+                "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)",
+              code,
+              retryable: null,
+            },
+          },
+        });
+        yield* store.apply({
+          id: EventId.make(`event:${suffix}:failed`),
+          type: "run.updated",
+          threadId,
+          occurredAt: now,
+          payload: { ...run, status: "failed", completedAt: now },
+        });
+        return { threadId, run };
+      });
+      const offline = yield* stop("network-offline", "transport_error");
+      yield* stop("network-rejected", "provider_error");
+      const setup = yield* stop(
+        "network-setup",
+        "transport_error",
+        ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+      );
+      const listed = (since: DateTime.Utc) =>
+        store
+          .getNetworkRecoveryCandidates({ now, since })
+          .pipe(
+            Effect.map((rows) => rows.map((row) => [row.threadId, row.run.id, row.setupFailed])),
+          );
+      const dayAgo = DateTime.add(now, { hours: -24 });
+      assert.deepEqual(yield* listed(dayAgo), [
+        [offline.threadId, offline.run.id, false],
+        [setup.threadId, setup.run.id, true],
+      ]);
+      assert.deepEqual(yield* listed(DateTime.add(now, { minutes: 1 })), []);
+      // A queued message starts on its own once the failed run ends.
+      const queuedRunId = RunId.make("run:network-offline:queued");
+      yield* store.apply({
+        id: EventId.make("event:network-offline:queued"),
+        type: "run.created",
+        threadId: offline.threadId,
+        runId: queuedRunId,
+        nodeId: NodeId.make("node:network-offline:queued"),
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...offline.run,
+          id: queuedRunId,
+          ordinal: offline.run.ordinal + 1,
+          rootNodeId: NodeId.make("node:network-offline:queued"),
+          userMessageId: MessageId.make("message:network-offline:queued"),
+          status: "queued",
+          startedAt: null,
+          completedAt: null,
+        },
+      });
+      assert.deepEqual(yield* listed(dayAgo), [[setup.threadId, setup.run.id, true]]);
     }),
   );
 

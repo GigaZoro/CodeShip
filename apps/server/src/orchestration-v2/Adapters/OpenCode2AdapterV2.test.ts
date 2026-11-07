@@ -495,17 +495,18 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
 
   // regression: #18315 OpenCode Go quota stops were not shown as usage limits
   it.effect.each([
-    ["provider.quota", "usage_limit"],
-    ["provider.rate-limit", "usage_limit"],
-    ["provider", "provider_error"],
-  ] as const)("classifies a %s execution failure as %s", ([code, failureClass]) =>
+    ["provider.quota", "Provider rejected the request", "usage_limit"],
+    ["provider.rate-limit", "Provider rejected the request", "usage_limit"],
+    ["provider", "Provider rejected the request", "provider_error"],
+    ["provider", "Cannot connect to API: getaddrinfo ENOTFOUND api.openai.com", "transport_error"],
+  ] as const)("classifies a %s execution failure (%s) as %s", ([code, message, failureClass]) =>
     Effect.gen(function* () {
       const { runtime, thread } = yield* resumed([
         out("session.prompt", { sessionID: SESSION, text: "<any>" }),
         promptAccepted,
         event("session.execution.failed", {
           sessionID: SESSION,
-          error: { type: code, message: "Provider rejected the request" },
+          error: { type: code, message },
         }),
       ]);
       const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
@@ -515,7 +516,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
       assert.deepEqual(ended?.failure, {
         class: failureClass,
         code,
-        message: "Provider rejected the request",
+        message,
         retryable: null,
       });
     }).pipe(Effect.scoped),

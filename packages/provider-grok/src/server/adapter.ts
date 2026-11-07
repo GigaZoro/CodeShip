@@ -1,4 +1,4 @@
-import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import { makeProviderFailure, providerErrorClass } from "@t3tools/provider-core/server/failure";
 import {
   XAiPromptFailureText,
   isXAiTaskCompletedWakeNotification,
@@ -301,20 +301,17 @@ export function makeGrokAcpAdapterFlavor(
     permissionDisposition: (policy, request) =>
       grokLaunchRuntimeMode(policy) === "auto" ? "ask" : acpPermissionDisposition(policy, request),
     approvalOptions: grokApprovalOptions,
-    promptFailure: (cause) =>
-      makeProviderFailure({
+    promptFailure: (cause) => {
+      if (!isAcpRequestError(cause)) return makeProviderFailure({ cause, class: "provider_error" });
+      const message =
+        cause.cause instanceof XAiPromptFailureText ? cause.cause.message : cause.errorMessage;
+      return makeProviderFailure({
         cause,
-        ...(isAcpRequestError(cause)
-          ? {
-              message:
-                cause.cause instanceof XAiPromptFailureText
-                  ? cause.cause.message
-                  : cause.errorMessage,
-              code: String(cause.code),
-              class: cause.code === xAiRateLimitedErrorCode ? "usage_limit" : "provider_error",
-            }
-          : { class: "provider_error" }),
-      }),
+        message,
+        code: String(cause.code),
+        class: cause.code === xAiRateLimitedErrorCode ? "usage_limit" : providerErrorClass(message),
+      });
+    },
     registerExtensions: registerGrokAcpExtensions,
     extractSubagentUpdate: extractXAiAcpSubagentUpdate,
     extractSubagentEndNotice: extractXAiAcpSubagentEndNotice,

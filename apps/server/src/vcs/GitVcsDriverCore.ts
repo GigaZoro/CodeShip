@@ -578,6 +578,10 @@ function isMissingWorktreeStderr(stderr: string): boolean {
   );
 }
 
+/** A fetch that could not resolve or connect to the remote host: the network, not the repository. */
+export const GIT_REMOTE_UNREACHABLE_DETAIL =
+  "Git could not reach the remote. Check the server's network connection and remote host, then retry.";
+
 // Fetch stderr can carry credentials; persist only fixed diagnoses or generic failures.
 function fetchFailureDetail(stderr: string): string | undefined {
   const lines = stderr.split(/\r?\n/).map((line) => line.trim());
@@ -597,7 +601,7 @@ function fetchFailureDetail(stderr: string): string | undefined {
       ),
     )
   ) {
-    return "Git could not reach the remote. Check the server's network connection and remote host, then retry.";
+    return GIT_REMOTE_UNREACHABLE_DETAIL;
   }
   if (
     lines.some((line) =>

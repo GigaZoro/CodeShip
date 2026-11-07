@@ -117,6 +117,15 @@ describe("GrokAdapterV2 capabilities", () => {
       flavor.promptFailure?.(new Error("Rate limit mentioned in an ordinary error")).class,
       "provider_error",
     );
+    assert.equal(
+      flavor.promptFailure?.(
+        new EffectAcpErrors.AcpRequestError({
+          code: -32603,
+          errorMessage: "error sending request for url (https://api.x.ai/v1/responses)",
+        }),
+      ).class,
+      "transport_error",
+    );
   });
 
   it("terminalizes only foreground tools under the actual Grok flavor", () => {

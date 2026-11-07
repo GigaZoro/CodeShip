@@ -5,6 +5,7 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
   type ChatAttachment,
+  GitCommandError,
   type MessageId,
   type ModelSelection,
   type OrchestrationV2Actor,
@@ -40,6 +41,7 @@ import {
 } from "@t3tools/shared/git";
 
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
+import { GIT_REMOTE_UNREACHABLE_DETAIL } from "../vcs/GitVcsDriverCore.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -191,6 +193,13 @@ export class ThreadLaunchService extends Context.Service<
 >()("t3/orchestration-v2/ThreadLaunchService") {}
 
 const isThreadLaunchError = Schema.is(ThreadLaunchError);
+const isGitCommandError = Schema.is(GitCommandError);
+
+// Git could not reach the remote, so the setup works again once the network is back.
+function lostConnection(error: unknown): boolean {
+  const cause = isThreadLaunchError(error) ? error.cause : error;
+  return isGitCommandError(cause) && cause.detail === GIT_REMOTE_UNREACHABLE_DETAIL;
+}
 
 function failureDetail(error: unknown): string {
   if (isThreadLaunchError(error)) {
@@ -731,7 +740,7 @@ const make = Effect.gen(function* () {
             failure: makeProviderFailure({
               cause,
               message: failureDetail(cause),
-              class: "validation_error",
+              class: lostConnection(cause) ? "transport_error" : "validation_error",
               retryable: false,
             }),
           })

@@ -55,7 +55,7 @@ import {
 import { t3OrchestrationPrompt } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import { makeProviderFailure, providerErrorClass } from "@t3tools/provider-core/server/failure";
 import { turnScopedSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
 import {
   isProviderNativeImageAttachment,
@@ -2509,7 +2509,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                                     message: result.error?.message,
                                     class: CursorAgentSdk.isCursorUsageLimitError(result.error)
                                       ? "usage_limit"
-                                      : "provider_error",
+                                      : providerErrorClass(result.error?.message),
                                   })
                                 : makeProviderFailure({
                                     cause: transportFailure,

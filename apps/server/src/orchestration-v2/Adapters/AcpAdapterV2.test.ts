@@ -1411,7 +1411,7 @@ describe("AcpAdapterV2", () => {
     }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
-  it.live.each(["details", "none"] as const)(
+  it.live.each(["details", "offline", "none"] as const)(
     "fails the turn on an ACP v2 idle error with %s, settles its open tool, and accepts the next prompt",
     (details) =>
       Effect.gen(function* () {
@@ -1516,12 +1516,19 @@ describe("AcpAdapterV2", () => {
                 code: "-32000",
                 retryable: null,
               }
-            : {
-                class: "provider_error",
-                message: "Provider turn failed.",
-                code: null,
-                retryable: null,
-              },
+            : details === "offline"
+              ? {
+                  class: "transport_error",
+                  message: "getaddrinfo ENOTFOUND api.example.test",
+                  code: "-32603",
+                  retryable: null,
+                }
+              : {
+                  class: "provider_error",
+                  message: "Provider turn failed.",
+                  code: null,
+                  retryable: null,
+                },
         );
         const toolItems = (nativeId: string) =>
           failedEvents.flatMap((event) =>

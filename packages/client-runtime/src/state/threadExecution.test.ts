@@ -1,4 +1,5 @@
 import {
+  ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   TurnItemId,
   NodeId,
   MessageId,
@@ -210,6 +211,29 @@ describe("thread execution presentation", () => {
       lastErrorClass: null,
     });
     expect(deriveResumableRunId(providerError, deriveThreadRuntime(providerError))).toBeNull();
+    // Unlike a usage limit, a lost connection does not hold the queue, so only a last run resumes.
+    const lostConnection = {
+      ...projection,
+      runs: [failed],
+      turnItems: [{ ...item, failure: { ...item.failure, class: "transport_error" as const } }],
+    };
+    expect(deriveResumableRunId(lostConnection, deriveThreadRuntime(lostConnection))).toBe(
+      failed.id,
+    );
+    const setupOffline = {
+      ...lostConnection,
+      turnItems: [
+        {
+          ...item,
+          failure: {
+            ...item.failure,
+            class: "transport_error" as const,
+            code: ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+          },
+        },
+      ],
+    };
+    expect(deriveResumableRunId(setupOffline, deriveThreadRuntime(setupOffline))).toBeNull();
   });
 
   it("keeps live activity attached to an executing run when a newer run is queued", () => {

@@ -3858,6 +3858,12 @@ function gatewayCooldownResetAt(
     : undefined;
 }
 
+// How the Claude CLI words a request that never got an HTTP response. SSL and proxy errors
+// ("Unable to connect to API: SSL ...", "Couldn't connect through your proxy") are left out:
+// waiting for the network does not fix them.
+const CONNECTION_FAILURE_RESULT =
+  /^API Error: (?:Connection dropped|Connection refused|Can't reach the API server|No internet route|Connection lost|Unable to connect to API(?:$|[.(\s])|Request timed out|Connection error\.)/;
+
 function providerFailureFromResult(
   message: SDKResultMessage,
   receivedAt: DateTime.Utc,
@@ -3889,7 +3895,11 @@ function providerFailureFromResult(
   const failureClass =
     (message.subtype === "success" && message.api_error_status === 429) || usageLimited
       ? "usage_limit"
-      : "provider_error";
+      : message.subtype === "success" &&
+          message.api_error_status == null &&
+          CONNECTION_FAILURE_RESULT.test(message.result.trim())
+        ? "transport_error"
+        : "provider_error";
   const listedError = resultUserFacingError(message);
   const apiErrorMessage =
     message.subtype === "success" &&

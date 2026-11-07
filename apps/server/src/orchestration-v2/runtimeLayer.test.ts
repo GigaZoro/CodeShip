@@ -1,5 +1,8 @@
 import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import {
+  ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+  SourceControlProviderKind,
+} from "@t3tools/contracts";
 import { limitFailoverCommand, limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -7886,7 +7889,7 @@ it.layer(layerSharedApplicationDataPlaneTest)("shared application data plane", (
 });
 
 it.layer(layerTest)("usage-limit recovery", (it) => {
-  it.effect.each(["interrupted", "usage_limit"] as const)(
+  it.effect.each(["interrupted", "usage_limit", "transport_error"] as const)(
     "manually resumes an %s run ahead of its queued message only once",
     (reason) =>
       Effect.gen(function* () {
@@ -7967,8 +7970,8 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
           ],
         });
         let scheduledResume: ReturnType<typeof limitRecoveryCommand> = null;
-        if (reason === "usage_limit") {
-          const resetAt = DateTime.formatIso(DateTime.add(now, { minutes: 1 }));
+        const resetAt = DateTime.formatIso(DateTime.add(now, { minutes: 1 }));
+        if (reason !== "interrupted") {
           yield* events.write({
             events: [
               {
@@ -7988,21 +7991,32 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
                   parentItemId: null,
                   ordinal: 2,
                   status: "failed",
-                  title: "Usage limit reached",
+                  title: reason === "usage_limit" ? "Usage limit reached" : "Provider error",
                   startedAt: now,
                   completedAt: now,
                   updatedAt: now,
-                  failure: {
-                    class: "usage_limit",
-                    message: "Plan limit reached.",
-                    code: "usageLimitExceeded",
-                    retryable: null,
-                    resetAt,
-                  },
+                  failure:
+                    reason === "usage_limit"
+                      ? {
+                          class: "usage_limit",
+                          message: "Plan limit reached.",
+                          code: "usageLimitExceeded",
+                          retryable: null,
+                          resetAt,
+                        }
+                      : {
+                          class: "transport_error",
+                          message:
+                            "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)",
+                          code: "api_error",
+                          retryable: null,
+                        },
                 },
               },
             ],
           });
+        }
+        if (reason === "usage_limit") {
           const shell = (yield* orchestrator.getShellSnapshot()).threads.find(
             (thread) => thread.id === threadId,
           )!;
@@ -8042,6 +8056,108 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         }
         assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 3);
       }),
+  );
+
+  it.effect("does not continue a run whose workspace setup lost its connection", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const events = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("setup-offline");
+      const projectId = ProjectId.make("setup-offline:project");
+      const now = yield* DateTime.now;
+      yield* seedProject({
+        projectId,
+        title: "Setup project",
+        workspaceRoot: process.cwd(),
+        defaultModelSelection: modelSelection,
+        createdAt: DateTime.formatIso(now),
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("setup-offline:create"),
+        threadId,
+        projectId,
+        title: "Offline setup",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("setup-offline:start"),
+        threadId,
+        messageId: MessageId.make("setup-offline:start"),
+        text: "Start work.",
+        attachments: [],
+        dispatchMode: { type: "defer_start" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const [source] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
+        OrchestrationV2Run,
+      ];
+      yield* events.write({
+        events: [
+          {
+            id: EventId.make("setup-offline:error"),
+            type: "turn-item.updated",
+            threadId,
+            occurredAt: now,
+            payload: {
+              id: TurnItemId.make("setup-offline:error"),
+              type: "error",
+              threadId,
+              runId: source.id,
+              nodeId: source.rootNodeId,
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 2,
+              status: "failed",
+              title: "Workspace preparation failed",
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+              failure: {
+                class: "transport_error",
+                message: "Workspace preparation failed: Git could not reach the remote.",
+                code: ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+                retryable: false,
+              },
+            },
+          },
+          {
+            id: EventId.make("setup-offline:failed"),
+            type: "run.updated",
+            threadId,
+            occurredAt: now,
+            payload: { ...source, status: "failed", completedAt: now },
+          },
+        ],
+      });
+      // The agent never saw the message, so continuing would drop it; the setup is retried instead.
+      const resumed = yield* orchestrator
+        .dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("setup-offline:resume"),
+          threadId,
+          messageId: MessageId.make("setup-offline:resume"),
+          manualContinuationOfRunId: source.id,
+          text: "Continue where you left off.",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        })
+        .pipe(Effect.exit);
+      assert.equal(resumed._tag, "Failure");
+      assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 1);
+    }),
   );
 
   it.effect("continues a usage-limited run on the next account of its driver", () =>

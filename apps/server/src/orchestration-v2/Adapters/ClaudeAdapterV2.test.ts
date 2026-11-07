@@ -69,7 +69,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { Tool } from "effect/ai";
+import { McpSchema, Tool } from "effect/ai";
 import { formatClaudeResumeCompactionQuestion } from "@t3tools/shared/claudeCompaction";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
@@ -89,6 +89,7 @@ import { ProjectToolkit } from "../../mcp/toolkits/project/tools.ts";
 import { WorktreeToolkit } from "../../mcp/toolkits/worktree/tools.ts";
 import { ThreadToolkit } from "../../mcp/toolkits/thread/tools.ts";
 import { OrchestratorToolkit } from "../../mcp/toolkits/orchestrator/tools.ts";
+import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import { ClaudeExecutableFileCheck } from "../../provider/Drivers/ClaudeExecutable.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -578,6 +579,12 @@ describe("ClaudeAdapterV2 MCP query overrides", () => {
       ...Object.values(HtmlToolkit.tools),
     ]
       .filter((tool) => Context.get(tool.annotations, Tool.Readonly))
+      // Agents never see a tool only peer links may call, so it needs no pre-approval.
+      .filter(
+        (tool) =>
+          Context.getOrUndefined(tool.annotations, McpSchema.EnabledWhen) !==
+          McpInvocationContext.visibleToPeerLinks,
+      )
       .map((tool) => `mcp__t3-code__${tool.name}`)
       .sort();
 
@@ -5765,6 +5772,29 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       expected:
         "Claude stopped: the prompt exceeds the model's context window. Run /compact or start a new thread.",
     },
+    {
+      name: "a lost connection",
+      isError: true,
+      result: "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)",
+      apiErrorStatus: null,
+      expected: "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)",
+      expectedClass: "transport_error" as const,
+    },
+    {
+      name: "a stream lost while the computer slept",
+      isError: true,
+      result: "API Error: Connection lost while your computer was asleep",
+      apiErrorStatus: null,
+      expected: "API Error: Connection lost while your computer was asleep",
+      expectedClass: "transport_error" as const,
+    },
+    {
+      name: "an SSL setup error that waiting does not fix",
+      isError: true,
+      result: "API Error: Unable to connect to API: SSL certificate has expired",
+      apiErrorStatus: null,
+      expected: "API Error: Unable to connect to API: SSL certificate has expired",
+    },
   ])("reports terminal API error text for $name", (input) =>
     Effect.gen(function* () {
       const harness = yield* makeWakeHarness;
@@ -5779,14 +5809,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           attachments: [],
         }),
       );
-      const apiErrorStatus = input.apiErrorStatus ?? 400;
+      // null: the request never got an HTTP response.
+      const apiErrorStatus = input.apiErrorStatus === null ? null : (input.apiErrorStatus ?? 400);
       yield* Queue.offer(
         harness.sdkMessages,
         makeResultFrame({
           uuid: "00000000-0000-4000-8000-000000000699",
           result: input.result,
           terminalReason: input.terminalReason ?? "api_error",
-          apiErrorStatus,
+          ...(apiErrorStatus === null ? {} : { apiErrorStatus }),
           isError: input.isError,
           ...(input.errors === undefined ? {} : { errors: input.errors }),
         }),
@@ -5796,10 +5827,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.equal(terminal.status, "failed");
       if (terminal.status !== "failed") return;
       assert.equal(terminal.failure.message, input.expected);
-      assert.equal(terminal.failure.code, `api_error_${apiErrorStatus}`);
+      assert.equal(
+        terminal.failure.code,
+        apiErrorStatus === null ? "api_error" : `api_error_${apiErrorStatus}`,
+      );
       assert.equal(
         terminal.failure.class,
-        apiErrorStatus === 429 ? "usage_limit" : "provider_error",
+        input.expectedClass ?? (apiErrorStatus === 429 ? "usage_limit" : "provider_error"),
       );
     }).pipe(
       Effect.provide(

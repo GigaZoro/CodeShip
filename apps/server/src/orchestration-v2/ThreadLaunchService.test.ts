@@ -62,6 +62,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { GIT_REMOTE_UNREACHABLE_DETAIL } from "../vcs/GitVcsDriverCore.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as ThreadTitleRegeneration from "./ThreadTitleRegenerationService.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
@@ -1147,54 +1148,68 @@ it.effect("fetches the origin base from the remote it already resolved", () => {
   }).pipe(Effect.provide(harness.layer));
 });
 
-it.effect("shows the fetch diagnosis when preparing a worktree from origin fails", () => {
-  const detail =
-    "Git could not authenticate with the remote. Check Git credentials or SSH access on the server, then retry.";
-  const harness = makeHarness({
-    fetchWorktreeBaseCommit: () =>
-      Effect.fail(
-        new GitCommandError({
-          operation: "GitVcsDriver.fetchRemote",
-          command: "git",
-          cwd: project.workspaceRoot,
-          detail,
-          exitCode: 128,
+it.effect.each([
+  {
+    name: "a remote that rejects its credentials",
+    detail:
+      "Git could not authenticate with the remote. Check Git credentials or SSH access on the server, then retry.",
+    failureClass: "validation_error",
+  },
+  // The network recovery worker retries these once the connection is back.
+  {
+    name: "a remote it cannot reach",
+    detail: GIT_REMOTE_UNREACHABLE_DETAIL,
+    failureClass: "transport_error",
+  },
+] as const)(
+  "shows the fetch diagnosis when preparing a worktree from origin fails at $name",
+  ({ detail, failureClass }) => {
+    const harness = makeHarness({
+      fetchWorktreeBaseCommit: () =>
+        Effect.fail(
+          new GitCommandError({
+            operation: "GitVcsDriver.fetchRemote",
+            command: "git",
+            cwd: project.workspaceRoot,
+            detail,
+            exitCode: 128,
+          }),
+        ),
+    });
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const launched = yield* launches.launch(
+        launchInput({
+          command: "command:launch:fetch-failure",
+          thread: "thread:launch:fetch-failure",
+          message: "Start from origin",
+          workspace: { type: "worktree", baseRef: "main", startFromOrigin: true },
         }),
-      ),
-  });
-  return Effect.gen(function* () {
-    const launches = yield* ThreadLaunch.ThreadLaunchService;
-    const threads = yield* ThreadManagement.ThreadManagementService;
-    const launched = yield* launches.launch(
-      launchInput({
-        command: "command:launch:fetch-failure",
-        thread: "thread:launch:fetch-failure",
-        message: "Start from origin",
-        workspace: { type: "worktree", baseRef: "main", startFromOrigin: true },
-      }),
-    );
-    yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
-      Stream.filter(
-        (stored) => stored.event.type === "run.updated" && stored.event.payload.status === "failed",
-      ),
-      Stream.runHead,
-    );
-    const projection = yield* threads.getThreadProjection(launched.threadId);
-    assert.equal(projection.messages[0]?.text, "Start from origin");
-    assert.equal(projection.runs[0]?.status, "failed");
-    assert.equal(projection.thread.worktreePath, null);
-    assert.equal(
-      projection.turnItems.find((item) => item.type === "command_execution")?.status,
-      "failed",
-    );
-    assert.include(
-      projection.turnItems.find((item) => item.type === "error")?.failure.message ?? "",
-      detail,
-    );
-    assert.equal(harness.createWorktree.mock.calls.length, 0);
-    assert.equal(harness.runSetup.mock.calls.length, 0);
-  }).pipe(Effect.provide(harness.layer));
-});
+      );
+      yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "run.updated" && stored.event.payload.status === "failed",
+        ),
+        Stream.runHead,
+      );
+      const projection = yield* threads.getThreadProjection(launched.threadId);
+      assert.equal(projection.messages[0]?.text, "Start from origin");
+      assert.equal(projection.runs[0]?.status, "failed");
+      assert.equal(projection.thread.worktreePath, null);
+      assert.equal(
+        projection.turnItems.find((item) => item.type === "command_execution")?.status,
+        "failed",
+      );
+      const failure = projection.turnItems.find((item) => item.type === "error")?.failure;
+      assert.include(failure?.message ?? "", detail);
+      assert.equal(failure?.class, failureClass);
+      assert.equal(harness.createWorktree.mock.calls.length, 0);
+      assert.equal(harness.runSetup.mock.calls.length, 0);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
 
 it.effect("rejects a preparation retry after the project disables its provider", () => {
   let fetchAttempts = 0;

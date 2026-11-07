@@ -67,7 +67,7 @@ import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeI
 import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
 import { readableProviderErrorMessage } from "./providerErrorMessage.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import { makeProviderFailure, providerErrorClass } from "@t3tools/provider-core/server/failure";
 import { turnScopedSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
 import { providerMessageTextWithAttachmentPaths } from "@t3tools/provider-core/server/attachmentPrompt";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -2655,10 +2655,11 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                     );
               const error = event.properties.error;
               const usageLimit = error?.name === "APIError" && error.data.statusCode === 429;
+              const message = openCodeErrorMessage(event);
               const failure = makeProviderFailure({
-                message: openCodeErrorMessage(event),
+                message,
                 code: error?.name ?? null,
-                class: usageLimit ? "usage_limit" : "provider_error",
+                class: usageLimit ? "usage_limit" : providerErrorClass(message),
               });
               if (
                 !isMessageAbortedError(event) &&

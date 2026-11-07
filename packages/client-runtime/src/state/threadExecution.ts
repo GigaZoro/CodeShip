@@ -1,4 +1,5 @@
 import {
+  isContinuableFailure,
   latestExecutedRun,
   latestRootProviderFailure,
   latestUnheldRun,
@@ -214,9 +215,8 @@ export function deriveResumableRunId(
 ): RunId | null {
   const run = latestExecutedRun(projection.runs);
   if (run?.status === "interrupted") return run.id;
-  return run?.status === "failed" &&
-    runtime?.lastErrorClass === "usage_limit" &&
-    latestRootProviderFailure(run, projection.turnItems)?.class === "usage_limit"
+  const failure = latestRootProviderFailure(run, projection.turnItems);
+  return run !== null && isContinuableFailure(failure) && runtime?.lastErrorClass === failure?.class
     ? run.id
     : null;
 }
