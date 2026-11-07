@@ -5,6 +5,7 @@ import {
   type ProviderMcpServerSettings,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
+import { mcpRedirect } from "@t3tools/shared/mcpAuthCallback";
 import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -25,12 +26,13 @@ import {
   Trash2Icon,
   type LucideIcon,
 } from "lucide-react";
-import { useId, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { readLocalApi } from "../../localApi";
 import { useEnvironmentQuery } from "../../state/query";
+import { runsOnAnotherComputer } from "../../state/loopbackEnvironment";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { failureMessage, reportFailure } from "../extensions/commandFailure";
@@ -714,25 +716,70 @@ function SignInFlow(props: {
   const state = signIn.data;
   const providerName = target.naming.title;
 
-  const submit = async (event: FormEvent) => {
+  const complete = async (flowId: string, address: string) => {
+    setSubmitting(true);
+    setCallbackError(null);
+    const result = await completeSignIn({
+      environmentId: target.environmentId,
+      input: { instanceId: target.provider.instanceId, flowId, callbackUrl: address },
+    });
+    setSubmitting(false);
+    if (result._tag !== "Success") setCallbackError(failureMessage(result, t(FAILURE_FALLBACK)));
+  };
+
+  const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!state || !callbackUrl.trim()) {
       setCallbackError(t("Paste the address from the browser's address bar."));
       return;
     }
-    setSubmitting(true);
-    setCallbackError(null);
-    const result = await completeSignIn({
-      environmentId: target.environmentId,
-      input: {
-        instanceId: target.provider.instanceId,
-        flowId: state.flowId,
-        callbackUrl: callbackUrl.trim(),
-      },
-    });
-    setSubmitting(false);
-    if (result._tag !== "Success") setCallbackError(failureMessage(result, t(FAILURE_FALLBACK)));
+    void complete(state.flowId, callbackUrl.trim());
   };
+
+  // The browser returns to a loopback address on this computer. For a provider on another
+  // computer, only the desktop app can catch it there; the paste field stays as the fallback.
+  const receiving = useRef<string | null>(null);
+  const openSignInPage = async (authorizationUrl: string, flowId: string) => {
+    const desktop = window.desktopBridge;
+    if (
+      !desktop ||
+      !mcpRedirect(authorizationUrl) ||
+      !runsOnAnotherComputer(target.environmentId) ||
+      receiving.current === authorizationUrl
+    ) {
+      openInBrowser(authorizationUrl);
+      return;
+    }
+    receiving.current = authorizationUrl;
+    setCallbackError(null);
+    let address: string;
+    try {
+      address = await desktop.receiveMcpAuthCallback(authorizationUrl);
+    } catch {
+      if (receiving.current === authorizationUrl) {
+        receiving.current = null;
+        setCallbackError(
+          t(
+            "Could not finish sign-in on this computer. After you approve, paste the address from the browser's address bar below.",
+          ),
+        );
+      }
+      return;
+    }
+    if (receiving.current !== authorizationUrl) return;
+    receiving.current = null;
+    await complete(flowId, address);
+  };
+  const pendingUrl = state?.authorizationUrl;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- stops the desktop callback listener when the authorization URL changes or the dialog unmounts
+  useEffect(() => {
+    if (!pendingUrl) return;
+    return () => {
+      if (receiving.current !== pendingUrl) return;
+      receiving.current = null;
+      void window.desktopBridge?.cancelMcpAuthCallback(pendingUrl).catch(() => undefined);
+    };
+  }, [pendingUrl]);
 
   if (signIn.error !== null) {
     return (
@@ -779,7 +826,7 @@ function SignInFlow(props: {
   }
   const authorizationUrl = state.authorizationUrl;
   return (
-    <form className="flex min-h-0 flex-col" onSubmit={(event) => void submit(event)}>
+    <form className="flex min-h-0 flex-col" onSubmit={submit}>
       <DialogPanel>
         <div className="flex flex-col gap-4">
           {authorizationUrl ? (
@@ -793,7 +840,7 @@ function SignInFlow(props: {
               <Button
                 type="button"
                 className="self-start"
-                onClick={() => openInBrowser(authorizationUrl)}
+                onClick={() => void openSignInPage(authorizationUrl, state.flowId)}
               >
                 {t("Open sign-in page")}
                 <ExternalLinkIcon />
@@ -821,7 +868,7 @@ function SignInFlow(props: {
             />
             <p id={`${id}-callback-hint`} className="text-muted-foreground text-xs">
               {t(
-                "Signing in on another device, or did the browser show a connection error after you approved? Paste the address from its address bar.",
+                "If the browser shows a connection error after you approve, paste the address from its address bar.",
               )}
             </p>
             {callbackError ? (

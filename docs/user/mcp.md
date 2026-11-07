@@ -48,10 +48,12 @@ Claude account you add in T3.CodeShip keeps a copy of those servers in its own f
 
 ## Sign in
 
-**Sign in** opens the server's sign-in page in your browser. After you approve access, the browser
-returns to the provider and the dialog finishes on its own. When T3.CodeShip runs on another machine,
-the browser shows a connection error after you approve instead. Copy the address from its address
-bar, paste it into the dialog, and choose **Finish sign-in**.
+**Sign in** opens the server's sign-in page in your browser. After you approve access, the dialog
+finishes on its own. In the desktop app this also works for a server on another machine: the app
+catches the browser's return on your computer and passes it on. From a web browser, or when the app
+says the sign-in port is busy on your computer, the browser shows a connection error after you
+approve instead. Copy the address from its address bar, paste it into the dialog, and choose
+**Finish sign-in**.
 
 **Sign out** removes the provider's saved sign-in for that server on this account only.
 

@@ -1,9 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off globalFetch:off - Tests exercise the real native loopback listener without an OpenAI account.
 import * as NodeHttp from "node:http";
+import * as NodeNet from "node:net";
 import { describe, expect, it } from "vite-plus/test";
 import { codexAuthDeliveryUrl, readCodexAuthDelivery } from "@t3tools/shared/codexAuthHandoff";
 import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 import { receiveCodexAuthCallback, cancelCodexAuthCallback } from "./CodexAuthCallback.ts";
+import { receiveMcpAuthCallback, cancelMcpAuthCallback } from "./McpAuthCallback.ts";
 
 async function freePort() {
   const server = NodeHttp.createServer();
@@ -108,5 +110,91 @@ describe("desktop Codex callback helper", () => {
       return true;
     });
     expect(await Promise.all([receiveA, receiveB])).toEqual([callback(a), callback(b)]);
+  });
+});
+
+const ipv6Loopback = await new Promise<boolean>((resolve) => {
+  const probe = NodeNet.createServer();
+  probe.once("error", () => resolve(false));
+  probe.listen(0, "::1", () => probe.close(() => resolve(true)));
+});
+
+function mcpRequest(redirectUri: string, state = "s7Ate") {
+  return `https://minions.example/oauth/authorize?${new URLSearchParams({
+    response_type: "code",
+    state,
+    redirect_uri: redirectUri,
+  }).toString()}`;
+}
+
+describe("desktop MCP callback helper", () => {
+  it("answers a localhost redirect over 127.0.0.1, rejects a wrong state or path, and keeps waiting", async () => {
+    const port = await freePort();
+    const authorizationUrl = mcpRequest(`http://localhost:${port}/callback`);
+    const expected = `http://localhost:${port}/callback?code=abc&state=s7Ate`;
+    const received = await receiveMcpAuthCallback(authorizationUrl, async () => {
+      expect((await fetch(`http://127.0.0.1:${port}/callback?code=abc&state=other`)).status).toBe(
+        400,
+      );
+      expect((await fetch(`http://127.0.0.1:${port}/elsewhere?code=abc&state=s7Ate`)).status).toBe(
+        400,
+      );
+      expect((await fetch(`http://127.0.0.1:${port}/callback?code=abc&state=s7Ate`)).status).toBe(
+        200,
+      );
+      return true;
+    });
+    expect(received).toBe(expected);
+  });
+  // IPv6 loopback is switched off on some CI hosts, so there is nothing to bind there.
+  it.skipIf(!ipv6Loopback)("also answers a localhost redirect over ::1", async () => {
+    const port = await freePort();
+    const received = await receiveMcpAuthCallback(
+      mcpRequest(`http://localhost:${port}/callback`),
+      async () => {
+        expect((await fetch(`http://[::1]:${port}/callback?code=abc&state=s7Ate`)).status).toBe(
+          200,
+        );
+        return true;
+      },
+    );
+    expect(received).toBe(`http://localhost:${port}/callback?code=abc&state=s7Ate`);
+  });
+  it("still opens the sign-in page, then rejects with the MCP message, when the port is busy", async () => {
+    const blocker = NodeHttp.createServer();
+    await new Promise<void>((resolve) => blocker.listen(0, "127.0.0.1", resolve));
+    const address = blocker.address();
+    if (!address || typeof address === "string") throw new Error("address");
+    const authorizationUrl = mcpRequest(`http://127.0.0.1:${address.port}/callback`);
+    const opened: string[] = [];
+    try {
+      await expect(
+        receiveMcpAuthCallback(authorizationUrl, async (url) => {
+          opened.push(url);
+          return true;
+        }),
+      ).rejects.toThrow("sign-in port is busy");
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    }
+    expect(opened).toEqual([authorizationUrl]);
+  });
+  it("cancels, and opens a sign-in that is not a loopback redirect without listening", async () => {
+    const authorizationUrl = mcpRequest(`http://localhost:${await freePort()}/callback`);
+    await expect(
+      receiveMcpAuthCallback(authorizationUrl, async () => {
+        cancelMcpAuthCallback(authorizationUrl);
+        return true;
+      }),
+    ).rejects.toThrow("cancelled");
+    const hosted = mcpRequest("https://evil.example/callback");
+    const opened: string[] = [];
+    await expect(
+      receiveMcpAuthCallback(hosted, async (url) => {
+        opened.push(url);
+        return true;
+      }),
+    ).rejects.toThrow("Invalid MCP sign-in request.");
+    expect(opened).toEqual([hosted]);
   });
 });

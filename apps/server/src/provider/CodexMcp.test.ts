@@ -6,13 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
-import {
-  codexConfiguredMcpServers,
-  codexMcpCallbackUrl,
-  codexMcpRedirect,
-  codexMcpServers,
-  makeCodexMcpManagement,
-} from "./CodexMcp.ts";
+import { codexConfiguredMcpServers, codexMcpServers, makeCodexMcpManagement } from "./CodexMcp.ts";
 
 type Status = CodexSchema.V2ListMcpServerStatusResponse["data"][number];
 
@@ -157,46 +151,6 @@ it("codexMcpServers reads config for what a server is and status for whether it 
 
 const authorizationUrl =
   "https://minions.example/oauth/authorize?response_type=code&state=s7Ate&redirect_uri=http%3A%2F%2F127.0.0.1%3A62974%2Fcallback%2Fk3y";
-
-it("codexMcpCallbackUrl only lets a pasted address reach this sign-in's loopback page", () => {
-  const redirect = codexMcpRedirect(authorizationUrl);
-  assert.isDefined(redirect);
-  if (!redirect) return;
-  const callback = "http://127.0.0.1:62974/callback/k3y?code=abc&state=s7Ate";
-
-  assert.equal(codexMcpCallbackUrl(callback, redirect), callback);
-  // Address bars can hide the scheme.
-  assert.equal(
-    codexMcpCallbackUrl("127.0.0.1:62974/callback/k3y?code=abc&state=s7Ate", redirect),
-    callback,
-  );
-  assert.isDefined(
-    codexMcpCallbackUrl(
-      "http://127.0.0.1:62974/callback/k3y?error=access_denied&state=s7Ate",
-      redirect,
-    ),
-  );
-  for (const rejected of [
-    "http://127.0.0.1:62974/callback/k3y?code=abc&state=other",
-    "http://127.0.0.1:62974/callback/k3y?code=abc",
-    "http://127.0.0.1:62974/callback/k3y?state=s7Ate",
-    "http://127.0.0.1:62974/callback/k3y?code=abc&error=x&state=s7Ate",
-    "http://127.0.0.1:62974/callback/k3y?code=abc&state=s7Ate&state=s7Ate",
-    "http://127.0.0.1:9999/callback/k3y?code=abc&state=s7Ate",
-    "http://127.0.0.1:62974/elsewhere?code=abc&state=s7Ate",
-    "http://evil.example:62974/callback/k3y?code=abc&state=s7Ate",
-    "http://me:pw@127.0.0.1:62974/callback/k3y?code=abc&state=s7Ate",
-    "not a url",
-  ]) {
-    assert.isUndefined(codexMcpCallbackUrl(rejected, redirect), rejected);
-  }
-
-  assert.isUndefined(
-    codexMcpRedirect(
-      "https://x.example/authorize?state=s&redirect_uri=https%3A%2F%2Fevil.example%2Fcallback",
-    ),
-  );
-});
 
 const makeClient = Effect.gen(function* () {
   const requests = yield* Ref.make<ReadonlyArray<readonly [string, unknown]>>([]);

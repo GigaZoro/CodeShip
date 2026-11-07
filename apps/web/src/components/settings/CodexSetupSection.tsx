@@ -1,5 +1,6 @@
 import { AuthProvidersManageScope, ProviderDriverKind } from "@t3tools/contracts";
-import { readPreparedConnection, useEnvironmentScope } from "../../state/session";
+import { isLoopbackEnvironment, isLoopbackUrl } from "../../state/loopbackEnvironment";
+import { useEnvironmentScope } from "../../state/session";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -59,8 +60,6 @@ const noop = () => undefined;
 
 const CODEX_NAME = "Codex";
 
-const isLoopbackUrl = (url: string | null) => url !== null && isLoopbackHost(new URL(url).hostname);
-
 // A loopback server can receive the provider's callback itself, unless the
 // desktop shell offers to catch it on the client.
 const prefersClientCallback = (local: boolean) => !local || window.desktopBridge !== undefined;
@@ -71,7 +70,7 @@ const prefersClientCallback = (local: boolean) => !local || window.desktopBridge
  * finishes), and the primary environment may have connected in between.
  */
 function readSignInRouting(environmentId: EnvironmentId) {
-  const local = isLoopbackUrl(readPreparedConnection(environmentId)?.httpBaseUrl ?? null);
+  const local = isLoopbackEnvironment(environmentId);
   const clientCallback = prefersClientCallback(local);
   const primaryEnvironmentId = appAtomRegistry.get(primaryEnvironmentIdAtom);
   const primaryAuthEnvironmentId =
@@ -79,7 +78,7 @@ function readSignInRouting(environmentId: EnvironmentId) {
     primaryEnvironmentId !== null &&
     appAtomRegistry.get(environmentPresentations.presentationAtom(primaryEnvironmentId))?.connection
       .phase === "connected" &&
-    isLoopbackUrl(readPreparedConnection(primaryEnvironmentId)?.httpBaseUrl ?? null) &&
+    isLoopbackEnvironment(primaryEnvironmentId) &&
     (window.desktopBridge !== undefined || isLoopbackHost(window.location.hostname))
       ? primaryEnvironmentId
       : null;

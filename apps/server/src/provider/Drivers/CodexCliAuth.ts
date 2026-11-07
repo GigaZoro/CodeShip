@@ -13,7 +13,7 @@ import * as Exit from "effect/Exit";
 import type * as Scope from "effect/Scope";
 import { HttpClient } from "effect/http";
 
-import { codexMcpCallbackUrl, codexMcpRedirect } from "../CodexMcp.ts";
+import { mcpCallbackUrl, mcpRedirect } from "@t3tools/shared/mcpAuthCallback";
 
 const REQUEST_TIMEOUT = "20 seconds";
 const CALLBACK_TIMEOUT = "15 seconds";
@@ -75,9 +75,9 @@ export const makeCodexCliAuth = Effect.fn("makeCodexCliAuth")(function* (options
     if (started.type !== "chatgpt")
       return yield* failure("start", "Codex did not offer a ChatGPT sign-in.");
     loginId = started.loginId;
-    const redirect = codexMcpRedirect(started.authUrl);
+    const redirect = mcpRedirect(started.authUrl);
     const forward = (pasted: string) => {
-      const callbackUrl = redirect ? codexMcpCallbackUrl(pasted, redirect) : undefined;
+      const callbackUrl = redirect ? mcpCallbackUrl(pasted, redirect) : undefined;
       if (callbackUrl === undefined)
         return Effect.fail(
           failure("complete", "This address does not belong to the current sign-in."),

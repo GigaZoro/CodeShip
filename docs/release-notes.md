@@ -1,3 +1,7 @@
+## 2026-11-08 — MCP sign-in finishes on its own for servers on another machine
+
+- In the desktop app, **Sign in** on an MCP server of a Claude or Codex provider running on another machine now finishes without copying anything. The app catches the browser's return to `localhost` on your computer and hands it to the provider, instead of leaving the browser on "can't connect to server". Pasting the address stays as the fallback, and is still how it works from a web browser, or when the sign-in port is busy on your computer.
+
 ## 2026-11-08 — Importing conversations says what it brought in
 
 - Turning on **Import conversations** for Claude Code and Codex now says how many conversations came in once the import finishes, such as "Imported 39 conversations · find them under Settled", instead of looking like nothing happened. Imported threads start settled, so on web and desktop **Show** opens the most recently active one and expands **Settled**. On mobile the same message appears as an alert.

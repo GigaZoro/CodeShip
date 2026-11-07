@@ -12,6 +12,7 @@ import {
   splitProviderPluginId,
 } from "@t3tools/contracts";
 import type { ProviderMcpManagement } from "@t3tools/provider-core/server/driver";
+import { mcpCallbackUrl, mcpRedirect, type McpRedirect } from "@t3tools/shared/mcpAuthCallback";
 import type * as CodexClient from "effect-codex-app-server/client";
 import type * as CodexErrors from "effect-codex-app-server/errors";
 import type * as CodexSchema from "effect-codex-app-server/schema";
@@ -34,7 +35,6 @@ const SIGN_IN_TIMEOUT_SECONDS = 300;
 const STATUS_PAGE_SIZE = 100;
 const STATUS_MAX_PAGES = 5;
 
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 const MANAGED_CONFIG_LAYERS = new Set([
   "enterpriseManaged",
   "mdm",
@@ -212,61 +212,6 @@ function codexMcpServerEntry(server: ProviderMcpServerConfig) {
   };
 }
 
-export interface CodexMcpRedirect {
-  readonly redirect: URL;
-  readonly state: string;
-}
-
-/** The loopback page Codex's sign-in returns to, read from the URL it hands the user. */
-export function codexMcpRedirect(authorizationUrl: string): CodexMcpRedirect | undefined {
-  try {
-    const url = new URL(authorizationUrl);
-    const redirectUri = url.searchParams.get("redirect_uri");
-    const state = url.searchParams.get("state");
-    if (!redirectUri || !state) return undefined;
-    const redirect = new URL(redirectUri);
-    if (redirect.protocol !== "http:" || !LOOPBACK_HOSTS.has(redirect.hostname)) return undefined;
-    return { redirect, state };
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Accepts only the callback for this sign-in, so a pasted address cannot send the server's
- * request anywhere but Codex's own loopback page.
- */
-export function codexMcpCallbackUrl(pasted: string, expected: CodexMcpRedirect) {
-  const value = pasted.trim();
-  let callback: URL;
-  try {
-    // Browsers can hide `http://` in the address bar.
-    callback = new URL(
-      /^[a-z][a-z\d+.-]*:\/\//iu.test(value) ? value : `${expected.redirect.protocol}//${value}`,
-    );
-  } catch {
-    return undefined;
-  }
-  const states = callback.searchParams.getAll("state");
-  const codes = callback.searchParams.getAll("code");
-  const errors = callback.searchParams.getAll("error");
-  const answered =
-    (codes.length === 1 && Boolean(codes[0]) && errors.length === 0) ||
-    (errors.length === 1 && Boolean(errors[0]) && codes.length === 0);
-  if (
-    callback.origin !== expected.redirect.origin ||
-    callback.pathname !== expected.redirect.pathname ||
-    callback.username ||
-    callback.password ||
-    states.length !== 1 ||
-    states[0] !== expected.state ||
-    !answered
-  ) {
-    return undefined;
-  }
-  return callback.toString();
-}
-
 /** Manages the MCP servers in a Codex home through its app server, which owns `config.toml`. */
 export const makeCodexMcpManagement = Effect.fn("makeCodexMcpManagement")(function* <
   OpenError,
@@ -363,8 +308,8 @@ export const makeCodexMcpManagement = Effect.fn("makeCodexMcpManagement")(functi
     return entry;
   });
 
-  const forwardCallback = (redirect: CodexMcpRedirect | undefined, pasted: string) => {
-    const callbackUrl = redirect ? codexMcpCallbackUrl(pasted, redirect) : undefined;
+  const forwardCallback = (redirect: McpRedirect | undefined, pasted: string) => {
+    const callbackUrl = redirect ? mcpCallbackUrl(pasted, redirect) : undefined;
     if (callbackUrl === undefined) {
       return Effect.fail(failure("signIn", "This address does not belong to the current sign-in."));
     }
@@ -473,7 +418,7 @@ export const makeCodexMcpManagement = Effect.fn("makeCodexMcpManagement")(functi
       const { authorizationUrl } = yield* client
         .request("mcpServer/oauth/login", { name, timeoutSecs: SIGN_IN_TIMEOUT_SECONDS })
         .pipe(Effect.timeout(CONFIG_TIMEOUT), Effect.mapError(failed("signIn")));
-      const redirect = codexMcpRedirect(authorizationUrl);
+      const redirect = mcpRedirect(authorizationUrl);
       return {
         authorizationUrl,
         completed: Deferred.await(completed),

@@ -3982,6 +3982,8 @@ const catalog: MessageCatalog = {
   "Could not finish disconnecting. Try again.":
     "Не вдалося завершити відключення. Повторіть спробу.",
   "Could not finish setup": "Не вдалося завершити налаштування",
+  "Could not finish sign-in on this computer. After you approve, paste the address from the browser's address bar below.":
+    "Не вдалося завершити вхід на цьому комп’ютері. Після підтвердження вставте нижче адресу з адресного рядка браузера.",
   "Could not finish sign-in on this computer. Try again or paste the redirect URL below.":
     "Не вдалося завершити вхід на цьому комп’ютері. Спробуйте ще раз або вставте нижче URL перенаправлення.",
   "Could not finish voice recording.": "Не вдалося завершити голосовий запис.",
@@ -4160,6 +4162,8 @@ const catalog: MessageCatalog = {
     "Не вдалося отримати вхід у ChatGPT через веб. Повторіть спробу або скористайтеся URL переспрямування у вебзастосунку.",
   "Could not receive the device stream. Reconnect to try again.":
     "Не вдалося отримати потік пристрою. Перепідключіться й спробуйте ще раз.",
+  "Could not receive the MCP sign-in on this computer. Try again or paste the redirect URL.":
+    "Не вдалося отримати вхід MCP на цьому комп’ютері. Повторіть спробу або вставте адресу перенаправлення.",
   "Could not reconnect environment": "Не вдалося перепідключити середовище",
   "Could not refresh guide": "Не вдалося оновити посібник",
   "Could not refresh models": "Не вдалося оновити моделі",
@@ -6024,6 +6028,8 @@ const catalog: MessageCatalog = {
     "Якщо вхід не повертає до T3.CodeShip, вставте URL з останньої сторінки localhost.",
   "If T3.CodeShip does not reopen after it restarts, open it again.":
     "Якщо T3.CodeShip не відкриється після перезапуску, відкрийте його знову.",
+  "If the browser shows a connection error after you approve, paste the address from its address bar.":
+    "Якщо після підтвердження браузер показує помилку з’єднання, вставте адресу з його адресного рядка.",
   "If the final localhost page does not load, paste its full URL here.":
     "Якщо кінцева сторінка localhost не завантажується, вставте сюди її повний URL.",
   "If the machine was off or asleep at the time, run once when it is back, unless the next run comes sooner.":
@@ -6285,6 +6291,7 @@ const catalog: MessageCatalog = {
   "Invalid interval": "Недійсний інтервал",
   "Invalid keybinding.": "Недійсне скорочення клавіш.",
   "Invalid keybindings configuration": "Недійсна конфігурація комбінацій клавіш",
+  "Invalid MCP sign-in request.": "Недійсний запит на вхід MCP.",
   "Invalid pairing token. Check the token and try again.":
     "Недійсний токен сполучення. Перевірте токен і спробуйте ще раз.",
   "Invalid provider headers": "Некоректні заголовки провайдера",
@@ -10430,8 +10437,6 @@ const catalog: MessageCatalog = {
   "Signed out": "Не ввійшли",
   "Signed out of {server}": "Вихід з {server} виконано",
   "Signed-in GitHub account": "Обліковий запис GitHub, у який виконано вхід",
-  "Signing in on another device, or did the browser show a connection error after you approved? Paste the address from its address bar.":
-    "Входите на іншому пристрої або браузер показав помилку з’єднання після схвалення? Вставте адресу з його адресного рядка.",
   "Signing in...": "Вхід...",
   "Signing secret is required": "Потрібен секрет підпису",
   "Simlock device hosts": "Хости пристроїв Simlock",
