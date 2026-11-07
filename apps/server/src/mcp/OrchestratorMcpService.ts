@@ -2894,29 +2894,48 @@ const make = Effect.gen(function* () {
       const parentTask = (yield* loadTasks(scope.thread.threadId, [input.taskId])).find(
         (task) => task.id === input.taskId && task.origin === "app_owned",
       );
-      const disposeCompletionDelivery =
-        parentTask?.completionDelivery?.state === "disposed"
-          ? Effect.void
-          : threadManagement
+      // Stopping the child also ends the follow-ups sent into it, each recorded as its own task
+      // that wakes this thread when it ends; the cancel already answers for all of them.
+      const disposeCompletionDelivery = Effect.gen(function* () {
+        const { subagents } = yield* threadManagement
+          .getThreadRecords(scope.thread.threadId, ["subagents"], {
+            omitSettledSubagents: { except: [input.taskId] },
+          })
+          .pipe(Effect.mapError(threadManagementFailure));
+        const tasks = subagents.filter(
+          (task) =>
+            task.origin === "app_owned" &&
+            (task.id === input.taskId || task.childThreadId === childThreadId) &&
+            task.completionDelivery?.state !== "disposed",
+        );
+        yield* Effect.forEach(
+          tasks,
+          (task) =>
+            threadManagement
               .dispatch({
                 type: "delegated_task.completion-delivery.dispose",
                 commandId: stableCommandId({
                   scope,
                   requestKey: key,
-                  operation: "cancel-task-completion-delivery",
+                  operation:
+                    task.id === input.taskId
+                      ? "cancel-task-completion-delivery"
+                      : `cancel-task-completion-delivery:${task.id}`,
                 }),
                 parentThreadId: scope.thread.threadId,
-                taskId: input.taskId,
+                taskId: task.id,
               })
               .pipe(
-                Effect.asVoid,
                 Effect.mapError((error) =>
                   failure(
                     "orchestration_error",
-                    `Unable to dispose delegated task ${input.taskId} completion delivery: ${errorMessage(error)}`,
+                    `Unable to dispose delegated task ${task.id} completion delivery: ${errorMessage(error)}`,
                   ),
                 ),
-              );
+              ),
+          { discard: true },
+        );
+      });
       const stopChild = Effect.gen(function* () {
         const commandId = stableCommandId({ scope, requestKey: key, operation: "cancel-task" });
         const reason = agentStopReason(input.reason);

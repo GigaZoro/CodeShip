@@ -687,6 +687,96 @@ describe("OrchestratorMcpService", () => {
     }),
   );
 
+  it.effect("disposes the wakes of follow-ups the cancel stops with their child", () =>
+    Effect.gen(function* () {
+      const parentThreadId = ThreadId.make("thread:mcp-cancel-follow-up-parent");
+      const childThreadId = ThreadId.make("thread:mcp-cancel-follow-up-child");
+      const taskId = NodeId.make("node:mcp-cancel-follow-up-task");
+      const followUpId = NodeId.make("node:mcp-cancel-follow-up");
+      const dispatched = yield* Ref.make<ReadonlyArray<OrchestrationV2ServerCommand>>([]);
+      const task = (id: NodeId, child: ThreadId, state: string, status: string) => ({
+        id,
+        threadId: parentThreadId,
+        origin: "app_owned",
+        childThreadId: child,
+        driver: "codex",
+        model: "gpt-5.6-terra",
+        status,
+        result: null,
+        completionDelivery: { state },
+      });
+      const parentProjection = {
+        thread: { id: parentThreadId },
+        runs: [],
+        contextTransfers: [],
+        subagents: [
+          task(taskId, childThreadId, "acknowledged", "completed"),
+          task(followUpId, childThreadId, "pending", "running"),
+          task(
+            NodeId.make("node:mcp-cancel-follow-up-other"),
+            ThreadId.make("thread:mcp-cancel-follow-up-other-child"),
+            "pending",
+            "running",
+          ),
+        ],
+      } as unknown as OrchestrationV2ThreadProjection;
+      const childProjection = {
+        thread: { id: childThreadId, title: "Child" },
+        runs: [{ id: RunId.make("run:mcp-cancel-follow-up"), status: "running" }],
+        contextTransfers: [],
+        messages: [],
+        subagents: [],
+        providerThreads: [],
+        runtimeRequests: [],
+      } as unknown as OrchestrationV2ThreadProjection;
+      const layerDependencies = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getThreadRecords: (threadId) =>
+            Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
+          getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
+          dispatch: (command) =>
+            Ref.update(dispatched, (commands) => [...commands, command]).pipe(
+              Effect.as({} as never),
+            ),
+          stopDelegatedTasks: () => Effect.void,
+        }),
+        ServerSettings.layerTest(),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () => Effect.succeed([]),
+        }),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+      const scope: McpInvocationScope = {
+        environmentId: EnvironmentId.make("environment:mcp-cancel-follow-up"),
+        requestNamespace: "provider-session:mcp-cancel-follow-up",
+        thread: {
+          threadId: parentThreadId,
+          providerSessionId: "provider-session:mcp-cancel-follow-up",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        },
+        client: undefined,
+        capabilities: new Set(["orchestration"]),
+        issuedAt: 1,
+      };
+
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        yield* service.cancelTask(scope, { taskId, clientRequestId: "cancel-follow-up" });
+        assert.deepEqual(
+          (yield* Ref.get(dispatched)).flatMap((command) =>
+            command.type === "delegated_task.completion-delivery.dispose" ? [command.taskId] : [],
+          ),
+          [taskId, followUpId],
+        );
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+    }),
+  );
+
   it.effect("returns cancel requested when post-stop disposal fails", () =>
     Effect.gen(function* () {
       const parentThreadId = ThreadId.make("thread:mcp-cancel-dispose-failed-parent");

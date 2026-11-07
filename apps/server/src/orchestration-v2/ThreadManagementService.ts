@@ -42,6 +42,7 @@ import {
   type TurnItemId,
 } from "@t3tools/contracts";
 import { delegatedTaskProgress } from "@t3tools/provider-core/server/subagentProjection";
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as Clock from "effect/Clock";
@@ -444,8 +445,9 @@ export interface ThreadManagementServiceShape {
   readonly waitForThread: (
     input: ThreadManagementWaitInput,
   ) => Effect.Effect<ThreadManagementWaitResult, ThreadManagementError>;
-  /** Waits for the agent's run to end before settling its thread and stopping the session.
-   * Other endings or settle refusals leave the thread active. */
+  /** Waits for the agent's run, and any notification or delegated result runs that follow it, to
+   * end before settling its thread and stopping the session. Other endings or settle refusals leave
+   * the thread active. */
   readonly settleAfterRun: (input: {
     readonly projectId: ProjectId;
     readonly threadId: ThreadId;
@@ -1093,15 +1095,53 @@ const make = Effect.gen(function* () {
   const settleAfterRun: ThreadManagementServiceShape["settleAfterRun"] = Effect.fn(
     "orchestrationV2.threadManagement.settleAfterRun",
   )(function* (input) {
-    const { run } = yield* waitForThread({ ...input, timeoutMs: SETTLE_AFTER_RUN_WAIT_MS });
-    if (run?.status !== "completed") return;
-    yield* dispatch({
-      type: "thread.settle",
-      commandId: CommandId.make(`server:settle-after-run:${input.runId}`),
-      threadId: input.threadId,
-      // Like auto-settles, stamp the completion: clients only silence settles stamped after it.
-      ...(run.completedAt === null ? {} : { settledAt: run.completedAt }),
+    // A notification or delegated result can start the next run as this one ends, which refuses
+    // the settle. That run continues the same work, so the settle waits for it instead.
+    const automaticActiveRun = Effect.fnUntraced(function* () {
+      const active = latestActiveRun(yield* getProjectThreadRecords(input, ["runs"]));
+      if (active === undefined) return undefined;
+      const { messages } = yield* getProjectThreadRecords(input, ["messages"], {
+        messageRoles: ["user"],
+        messageIds: [active.userMessageId],
+      });
+      const message = messages.find((candidate) => candidate.id === active.userMessageId);
+      return message?.notification !== undefined || message?.delegatedCompletion !== undefined
+        ? active
+        : undefined;
     });
+    let runId = input.runId;
+    for (;;) {
+      const { run } = yield* waitForThread({
+        ...input,
+        runId,
+        timeoutMs: SETTLE_AFTER_RUN_WAIT_MS,
+      });
+      if (run?.status !== "completed") return;
+      if (runId !== input.runId) {
+        // The agent did not see this work when it asked to settle, so its awaited work keeps the thread active.
+        const shell = yield* orchestrator.getThreadShell(input.threadId);
+        if (backgroundWorkHoldsCompletion(shell?.pendingBackgroundTasks ?? [])) return;
+      }
+      const next = yield* dispatch({
+        type: "thread.settle",
+        commandId: CommandId.make(`server:settle-after-run:${run.id}`),
+        threadId: input.threadId,
+        // Like auto-settles, stamp the completion: clients only silence settles stamped after it.
+        ...(run.completedAt === null ? {} : { settledAt: run.completedAt }),
+      }).pipe(
+        Effect.as(undefined),
+        Effect.catch((error) =>
+          automaticActiveRun().pipe(
+            Effect.filterOrFail(
+              (active): active is OrchestrationV2Run => active !== undefined,
+              () => error,
+            ),
+          ),
+        ),
+      );
+      if (next === undefined) return;
+      runId = next.id;
+    }
   });
 
   const settleThread: ThreadManagementServiceShape["settleThread"] = Effect.fn(

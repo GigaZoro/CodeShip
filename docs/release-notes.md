@@ -1,3 +1,8 @@
+## 2026-11-08 — Chats that settle themselves stay settled
+
+- When an agent settles its own chat at the end of its turn, the chat now settles even if a delegated task's result or a finished background command starts one more turn right as the first ends. The settle waits for that turn instead of being dropped. A message you send in the meantime still keeps the chat active.
+- Cancelling a delegated task with `task_cancel` no longer wakes the agent later with an "interrupted" notice for a follow-up that was running in that task's chat. Before, that notice could reopen a chat the agent had already settled.
+
 ## 2026-11-08 — MCP sign-in finishes on its own for servers on another machine
 
 - In the desktop app, **Sign in** on an MCP server of a Claude or Codex provider running on another machine now finishes without copying anything. The app catches the browser's return to `localhost` on your computer and hands it to the provider, instead of leaving the browser on "can't connect to server". Pasting the address stays as the fallback, and is still how it works from a web browser, or when the sign-in port is busy on your computer.
