@@ -1,3 +1,7 @@
+## 2026-11-07 — Needs you keeps to what only you can act on
+
+- Needs you lists a failed or usage-limited run only in a thread you started. Runs that failed in threads an agent started, scheduled task runs included, are left to agents to recover: they still show Failed in the thread list, but no longer wait in Needs you or count in its badges. On web, desktop and mobile.
+
 ## 2026-11-07 — Money questions reach Needs you
 
 - Agents ask you only about money: spending it, real funds, or money being lost now. Everything else they decide themselves and say what they chose.

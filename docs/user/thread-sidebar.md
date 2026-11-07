@@ -59,7 +59,9 @@ and worktree while you stay in the new thread composer. This requires a Git proj
 
 Threads waiting on you sit together under **Needs you** on web and desktop, in a box at the
 bottom of the thread's **Details** column: an approval, an answer to a question, a subagent's
-request, a guest's message, or a run that failed or hit a usage limit. The longest wait comes
+request, a guest's message, or a run that failed or hit a usage limit in a thread you started.
+Failed runs in threads an agent started, scheduled task runs included, are left to agents: they
+show Failed in the thread list but don't wait in Needs you. The longest wait comes
 first, and each row shows how long it has waited and what the thread asks. Approve or decline an
 approval, pick an answer to a question that offers choices, or settle a failed run, right in the
 box; select a row to open its thread. When the chat is too narrow for the Details column, on pages

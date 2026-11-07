@@ -74,12 +74,21 @@ function failureFromStatus(
 
 export type NeedsYouInput = FailureInput &
   ThreadSnoozeShell &
-  Pick<EnvironmentThreadShell, "settledOverride" | "updatedAt" | "laterAt"> &
+  Pick<EnvironmentThreadShell, "createdBy" | "settledOverride" | "updatedAt" | "laterAt"> &
   Partial<Pick<EnvironmentThreadShell, "limitRecovery">>;
 
 /**
- * Requests always need the user, settled or not. A failure does until the user settles,
- * snoozes, or retries it, or a usage-limited run is set to resume by itself.
+ * A failure is the user's to act on only in a thread they started. Agents recover the threads
+ * they started, scheduled task runs included, so those stay out of Needs you and only show
+ * Failed in the thread list.
+ */
+function failureWaitsOnUser(thread: Pick<NeedsYouInput, "createdBy" | "settledOverride">) {
+  return thread.createdBy === "user" && thread.settledOverride !== "settled";
+}
+
+/**
+ * Requests always need the user, settled or not. A failure in a thread the user started does
+ * until they settle, snooze, or retry it, or a usage-limited run is set to resume by itself.
  */
 export function threadNeedsYouReason(
   thread: NeedsYouInput,
@@ -88,7 +97,7 @@ export function threadNeedsYouReason(
   const status = resolveThreadStatus(thread);
   if (status === "approval" || status === "input" || status === "request") return status;
   const failure = failureFromStatus(status, thread);
-  if (failure === null || thread.settledOverride === "settled") return null;
+  if (failure === null || !failureWaitsOnUser(thread)) return null;
   if (effectiveSnoozed(thread, options)) return null;
   const recovery = thread.limitRecovery;
   if (
@@ -138,7 +147,7 @@ export function collectNeedsYouThreads<
     }
     if (
       thread.snoozedUntil != null &&
-      thread.settledOverride !== "settled" &&
+      failureWaitsOnUser(thread) &&
       threadFailureStatus(thread) !== null
     ) {
       const wakeAt = Date.parse(thread.snoozedUntil);

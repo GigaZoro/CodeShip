@@ -139,6 +139,8 @@ export interface EnvironmentThreadShell {
   readonly id: ThreadId;
   readonly projectId: ProjectId;
   readonly title: string;
+  /** Who started the thread: the user, an agent (including scheduled tasks), or CodeShip itself. */
+  readonly createdBy: OrchestrationV2ThreadShell["createdBy"];
   readonly providerInstanceId: ProviderInstanceId;
   readonly modelSelection: OrchestrationV2ThreadShell["modelSelection"];
   readonly runtimeMode: OrchestrationV2ThreadShell["runtimeMode"];
@@ -289,6 +291,7 @@ export function presentThreadShell(
       thread.lineage.relationshipToParent === "subagent"
         ? formatSubagentDisplayTitle(thread.title)
         : thread.title,
+    createdBy: thread.createdBy,
     providerInstanceId: thread.providerInstanceId,
     modelSelection: thread.modelSelection,
     runtimeMode: thread.runtimeMode,

@@ -17,6 +17,7 @@ function thread(id: string, working: boolean) {
   return {
     id: ThreadId.make(id),
     environmentId,
+    createdBy: "user" as "user" | "agent" | "system",
     createdAt: "2026-06-01T00:00:00.000Z",
     unsettledAt: null,
     latestRun: null,
@@ -326,6 +327,36 @@ describe("Needs you", () => {
         { now },
       ),
     ).toBe("approval");
+  });
+
+  it("leaves failures of agent-started and system threads to their agents", () => {
+    for (const createdBy of ["agent", "system"] as const) {
+      const failure = { ...failed(createdBy, "2026-06-01T10:00:00.000Z"), createdBy };
+      expect(threadNeedsYouReason(failure, { now })).toBeNull();
+      const limited = {
+        ...failed(`${createdBy}-limited`, "2026-06-01T10:00:00.000Z", null, "usage_limit"),
+        createdBy,
+      };
+      expect(threadNeedsYouReason(limited, { now })).toBeNull();
+      const snoozed = {
+        ...failed(`${createdBy}-snoozed`, "2026-06-01T10:00:00.000Z", {
+          snoozedAt: "2026-06-01T11:00:00.000Z",
+          snoozedUntil: "2026-06-01T13:00:00.000Z",
+        }),
+        createdBy,
+      };
+      const result = collectNeedsYouThreads([failure, limited, snoozed], { now });
+      expect([result.threads, result.later, result.nextChangeAt]).toEqual([[], [], null]);
+    }
+  });
+
+  it("still lists an agent-started thread that asks the user something", () => {
+    const asking = {
+      ...failed("agent-asking", "2026-06-01T10:00:00.000Z"),
+      createdBy: "agent" as const,
+      hasPendingUserInput: true,
+    };
+    expect(threadNeedsYouReason(asking, { now })).toBe("input");
   });
 
   it("orders the longest wait first and wakes when a failed thread's snooze ends", () => {
