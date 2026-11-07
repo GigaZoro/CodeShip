@@ -95,6 +95,11 @@ export interface Preferences {
   readonly pullRequestHideTestFiles?: boolean;
   readonly pullRequestMergeMethod?: PullRequestMergeMethod;
   readonly liveActivitiesEnabled?: boolean;
+  /** Which agent alerts the relay pushes to this device. Unset means on. */
+  readonly notifyOnApproval?: boolean;
+  readonly notifyOnInput?: boolean;
+  readonly notifyOnCompletion?: boolean;
+  readonly notifyOnFailure?: boolean;
   readonly themeId?: MobileThemeId;
   readonly lightThemeId?: MobileThemeId;
   readonly darkThemeId?: MobileThemeId;
@@ -183,6 +188,10 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     pullRequestHideTestFiles?: boolean;
     pullRequestMergeMethod?: PullRequestMergeMethod;
     liveActivitiesEnabled?: boolean;
+    notifyOnApproval?: boolean;
+    notifyOnInput?: boolean;
+    notifyOnCompletion?: boolean;
+    notifyOnFailure?: boolean;
     themeId?: MobileThemeId;
     lightThemeId?: MobileThemeId;
     darkThemeId?: MobileThemeId;
@@ -245,6 +254,14 @@ function sanitizePreferences(parsed: Preferences): Preferences {
 
   if (typeof parsed.liveActivitiesEnabled === "boolean") {
     preferences.liveActivitiesEnabled = parsed.liveActivitiesEnabled;
+  }
+  for (const key of [
+    "notifyOnApproval",
+    "notifyOnInput",
+    "notifyOnCompletion",
+    "notifyOnFailure",
+  ] as const) {
+    if (typeof parsed[key] === "boolean") preferences[key] = parsed[key];
   }
   if (
     typeof parsed.themeId === "string" &&

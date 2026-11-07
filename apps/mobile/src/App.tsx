@@ -51,7 +51,10 @@ import { subscribeComposerDraftModelReconciliation } from "./state/use-composer-
 import { environmentThreadShells } from "./state/threads";
 import { environmentShell } from "./state/shell";
 import { OverlayPortalHost } from "./components/ui/OverlayPortal";
-import { shouldHandleAppLink, restoreDraftLinkState } from "./lib/appLinking";
+import { isNeedsYouLinkPath, restoreDraftLinkState, shouldHandleAppLink } from "./lib/appLinking";
+import { onLanguageApplied } from "./lib/language";
+import { setAndroidAgentNotificationLanguage } from "./features/agent-awareness/androidNotifications";
+import { openWorkspaceTabFromLink } from "./features/workspace/WorkspaceTabsContext";
 import { hasCloudPublicConfig } from "./features/cloud/publicConfig";
 import { takeScheduledTaskNewLink } from "./features/settings/scheduled-task-editor-state";
 import {
@@ -110,6 +113,8 @@ const linkingConfig = {
 } as const;
 
 function getAppStateFromPath(path: string, options: Parameters<typeof getStateFromPath>[1]) {
+  // Needs you heads the chat list, so its link opens Home on the Chats tab.
+  if (isNeedsYouLinkPath(path)) openWorkspaceTabFromLink("threads");
   return pipe(
     getStateFromPath(path, options),
     (state) => restoreDraftLinkState(state, path),
@@ -190,6 +195,7 @@ const appServiceDisposers = [
   startIncomingShareInbox(),
   installAgentNotificationNavigation(linkToAppPath),
   installAppShortcuts(linkToAppPath),
+  onLanguageApplied(setAndroidAgentNotificationLanguage),
   installAppUpdateChecks(),
   installShowcaseCapture(rootPathnameFromState),
 ];

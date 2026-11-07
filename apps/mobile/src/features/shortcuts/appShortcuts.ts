@@ -3,12 +3,16 @@ import type { NavigationState } from "@react-navigation/native";
 import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
 
 import type { RecentThreadShortcut } from "../../persistence/imperative";
+import { NEEDS_YOU_LINK_PATH } from "../../lib/appLinking";
 import { t } from "../../lib/i18n";
 
-const MAX_RECENT_THREAD_SHORTCUTS = 3;
+// Most launchers show four shortcuts; two fixed ones leave room for two recent threads.
+const MAX_RECENT_THREAD_SHORTCUTS = 2;
 
 const NEW_TASK_SHORTCUT_ID = "new-task";
 const NEW_TASK_SHORTCUT_HREF = "/new";
+const NEEDS_YOU_SHORTCUT_ID = "needs-you";
+const NEEDS_YOU_SHORTCUT_HREF = `/${NEEDS_YOU_LINK_PATH}`;
 
 const SHORTCUT_ICON = "shortcut_icon";
 
@@ -67,7 +71,11 @@ export function shortcutHref(action: Action): string | null {
     return null;
   }
 
-  return href === NEW_TASK_SHORTCUT_HREF || THREAD_SHORTCUT_HREF_PATTERN.test(href) ? href : null;
+  return href === NEW_TASK_SHORTCUT_HREF ||
+    href === NEEDS_YOU_SHORTCUT_HREF ||
+    THREAD_SHORTCUT_HREF_PATTERN.test(href)
+    ? href
+    : null;
 }
 
 export function withRecentThreadShortcut(
@@ -89,14 +97,27 @@ export function withRecentThreadShortcut(
   ].slice(0, MAX_RECENT_THREAD_SHORTCUTS);
 }
 
-export function buildShortcutActions(recents: ReadonlyArray<RecentThreadShortcut>): Action[] {
+/** iOS has no recent threads, and takes SF Symbols where Android takes the app icon. */
+export function buildFixedShortcutActions(platform: "ios" | "android"): Action[] {
   return [
     {
       id: NEW_TASK_SHORTCUT_ID,
       title: t("New task"),
-      icon: SHORTCUT_ICON,
+      icon: platform === "ios" ? "symbol:square.and.pencil" : SHORTCUT_ICON,
       params: { href: NEW_TASK_SHORTCUT_HREF },
     },
+    {
+      id: NEEDS_YOU_SHORTCUT_ID,
+      title: t("Needs you"),
+      icon: platform === "ios" ? "symbol:bell.badge" : SHORTCUT_ICON,
+      params: { href: NEEDS_YOU_SHORTCUT_HREF },
+    },
+  ];
+}
+
+export function buildShortcutActions(recents: ReadonlyArray<RecentThreadShortcut>): Action[] {
+  return [
+    ...buildFixedShortcutActions("android"),
     ...recents.slice(0, MAX_RECENT_THREAD_SHORTCUTS).map((thread): Action => ({
       // URI-encoded hrefs avoid env/thread id collisions that plain hyphen joins allow.
       id: `thread:${threadShortcutHref(thread)}`,

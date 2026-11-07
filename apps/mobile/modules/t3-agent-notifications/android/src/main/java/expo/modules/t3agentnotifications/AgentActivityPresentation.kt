@@ -11,48 +11,53 @@ import androidx.core.content.ContextCompat
 
 internal data class ActivityRow(val status: String, val title: String, val project: String)
 
+/** `status` is the relay's row key; `label` and `chip` are what the user reads. */
 internal enum class ActivityPhase(
   val status: String,
-  val heading: String,
-  val chip: String,
-  val action: String,
+  val label: Int,
+  val chip: Int,
   val color: Int
 ) {
-  STARTING("Connecting", "Starting", "Working", "Open", R.color.agent_activity_working),
-  RUNNING("Working", "Working", "Working", "Open", R.color.agent_activity_working),
+  STARTING(
+    "Connecting",
+    R.string.agent_activity_status_connecting,
+    R.string.agent_activity_chip_working,
+    R.color.agent_activity_working
+  ),
+  RUNNING(
+    "Working",
+    R.string.agent_activity_status_working,
+    R.string.agent_activity_chip_working,
+    R.color.agent_activity_working
+  ),
   APPROVAL(
     "Approval",
-    "Approval needed",
-    "Approve",
-    "Approve",
+    R.string.agent_activity_status_approval,
+    R.string.agent_activity_chip_approve,
     R.color.agent_activity_attention
   ),
   INPUT(
     "Input",
-    "Question for you",
-    "Answer",
-    "Answer",
+    R.string.agent_activity_status_question,
+    R.string.agent_activity_chip_answer,
     R.color.agent_activity_input
   ),
   STALE(
     "Waiting",
-    "Waiting for an update",
-    "Waiting",
-    "Open",
+    R.string.agent_activity_status_waiting,
+    R.string.agent_activity_chip_waiting,
     R.color.agent_activity_waiting
   ),
   COMPLETED(
     "Done",
-    "Finished",
-    "Done",
-    "Open",
+    R.string.agent_activity_status_done,
+    R.string.agent_activity_chip_done,
     R.color.agent_activity_done
   ),
   FAILED(
     "Failed",
-    "Failed",
-    "Failed",
-    "Open",
+    R.string.agent_activity_status_failed,
+    R.string.agent_activity_chip_failed,
     R.color.agent_activity_failed
   );
 
@@ -86,7 +91,12 @@ internal fun activityPhase(data: Map<String, String>, rows: List<ActivityRow>): 
     else -> rows.firstOrNull()?.let { ActivityPhase.forStatus(it.status) }
   }
 
-internal class ActivityPresentation(data: Map<String, String>, private val active: Boolean) {
+/** `strings` is the context in the app's chosen language; colors and intents use the real one. */
+internal class ActivityPresentation(
+  data: Map<String, String>,
+  private val active: Boolean,
+  private val strings: Context
+) {
   private val rows = activityRows(data)
   private val hero = rows.firstOrNull()
   val phase = activityPhase(data, rows)
@@ -95,34 +105,41 @@ internal class ActivityPresentation(data: Map<String, String>, private val activ
   private val attentionCount = data["activity_attention_count"]?.toIntOrNull()?.coerceAtLeast(0)
     ?: rows.count { ActivityPhase.forStatus(it.status)?.needsUser == true }
   private val failedCount = rows.count { it.status == ActivityPhase.FAILED.status }
-  val threadCount =
+  private val threadCount =
     activeCount + rows.count { ActivityPhase.forStatus(it.status)?.finished == true }
   private val singleProject = rows.map { it.project }.distinct().size == 1
   private val legacyBody = (0..4).mapNotNull { data["activity_line_$it"]?.take(300) }
     .takeIf { it.isNotEmpty() }?.joinToString("\n")
     ?: data["activity_body"].orEmpty().take(240)
 
-  val summary = when {
+  val summary: String = when {
     hero == null -> data["activity_title"]?.takeIf { it.isNotBlank() }?.take(120)
-      ?: "Agent activity"
+      ?: strings.getString(R.string.agent_activity_title)
     rows.size == 1 -> hero.title
-    attentionCount == 1 -> "1 needs you"
-    attentionCount > 1 -> "$attentionCount need you"
-    activeCount > 0 && failedCount > 0 -> "$failedCount failed"
-    activeCount > 0 -> "$activeCount working"
-    failedCount > 0 -> "Finished, $failedCount failed"
-    else -> "All finished"
+    attentionCount > 0 -> plural(R.plurals.agent_activity_need_you, attentionCount)
+    activeCount > 0 && failedCount > 0 ->
+      strings.getString(R.string.agent_activity_failed_count, failedCount)
+    activeCount > 0 -> plural(R.plurals.agent_activity_working, activeCount)
+    failedCount > 0 -> strings.getString(R.string.agent_activity_finished_failed, failedCount)
+    else -> strings.getString(R.string.agent_activity_all_finished)
   }
 
-  val chip = when {
+  val chip: String? = when {
     !active -> null
-    phase == null -> data["activity_chip"]?.takeIf { it.isNotBlank() }?.take(7) ?: "Active"
+    phase == null -> data["activity_chip"]?.takeIf { it.isNotBlank() }?.take(7)
+      ?: strings.getString(R.string.agent_activity_chip_active)
     phase == ActivityPhase.RUNNING && activeCount > 1 ->
-      "${if (activeCount > 9) "9+" else activeCount} live"
-    else -> phase.chip
+      strings.getString(
+        R.string.agent_activity_chip_live,
+        if (activeCount > 9) "9+" else activeCount.toString()
+      )
+    else -> strings.getString(phase.chip)
   }
 
-  val action = if (active) phase?.action ?: "Open" else null
+  // Every action opens the thread; nothing here approves or answers from the notification.
+  val action: String? = if (active) strings.getString(R.string.agent_activity_open) else null
+
+  private fun plural(id: Int, count: Int) = strings.resources.getQuantityString(id, count, count)
 
   fun applyTo(builder: NotificationCompat.Builder, context: Context) {
     val tint = phase?.let { ContextCompat.getColor(context, it.color) }
@@ -137,7 +154,11 @@ internal class ActivityPresentation(data: Map<String, String>, private val activ
       builder.setSubText(
         listOfNotNull(
           hero!!.project.takeIf { singleProject && it.isNotBlank() },
-          if (activeCount > 0) "$activeCount active" else "$threadCount threads"
+          if (activeCount > 0) {
+            plural(R.plurals.agent_activity_active, activeCount)
+          } else {
+            plural(R.plurals.agent_activity_threads, threadCount)
+          }
         ).joinToString(" · ")
       )
     }
@@ -165,7 +186,7 @@ internal class ActivityPresentation(data: Map<String, String>, private val activ
     SpannableStringBuilder().apply {
       val status = ActivityPhase.forStatus(row.status)
       val color = ContextCompat.getColor(context, status?.color ?: R.color.agent_activity_waiting)
-      append(tinted(row.status, color, bold = true))
+      append(tinted(status?.let { strings.getString(it.label) } ?: row.status, color, bold = true))
       append(" ").append(row.title)
       // Promoted cards drop text color, so the separator has to do the work of the dimming.
       if (trailing.isNotBlank()) {

@@ -11,7 +11,11 @@ import { View } from "react-native";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { ComposerAttachmentButton } from "./ComposerAttachmentButton";
 import { ComposerAttachmentStrip } from "../../components/ComposerAttachmentStrip";
-import { pickComposerFiles, pickComposerMedia } from "../../lib/composerImages";
+import {
+  pickComposerFiles,
+  pickComposerMedia,
+  type ComposerMediaSource,
+} from "../../lib/composerImages";
 import { useThreadSelection } from "../../state/use-thread-selection";
 import { useNavigation } from "@react-navigation/native";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
@@ -126,7 +130,7 @@ export function QuestionAttachments(props: {
     props.question.id,
   );
   const attachments = drafts[key]?.attachments ?? [];
-  const pick = async (kind: "media" | "files") => {
+  const pick = async (kind: ComposerMediaSource | "files") => {
     const scope = pickerScope.current;
     changeQuestionAttachmentPreparation(key, 1);
     const picked = await settlePromise(async () => {
@@ -140,6 +144,7 @@ export function QuestionAttachments(props: {
           : await pickComposerMedia({
               existingCount,
               maxVideoBytes: capabilities?.fileAttachments?.maxUploadBytes,
+              source: kind,
             });
       const picked = "files" in result ? result.files : result.attachments;
       // Resolution on another client clears the reservation while the picker is open.
@@ -169,7 +174,7 @@ export function QuestionAttachments(props: {
         <ComposerAttachmentButton
           disabled={props.disabled}
           supportsFiles
-          onPickMedia={() => pick("media")}
+          onPickMedia={(source = "library") => pick(source)}
           onPickFiles={() => pick("files")}
         />
       ) : null}

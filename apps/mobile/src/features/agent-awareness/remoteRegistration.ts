@@ -756,6 +756,11 @@ function endLocalLiveActivities(context: string): void {
   }
 }
 
+/** Ends this device's Live Activities right away, for turning updates off without the relay. */
+export function endAgentAwarenessLiveActivities(): void {
+  endLocalLiveActivities("live activity cleanup after turning updates off failed");
+}
+
 export function refreshAgentAwarenessRegistration(): Effect.Effect<
   void,
   never,

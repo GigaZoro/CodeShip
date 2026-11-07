@@ -21,6 +21,7 @@ import { useResolveClassNames } from "uniwind";
 
 import { AppText as Text } from "./components/ui/AppText";
 import { androidWorkspaceDestinationAnimation } from "./lib/android-workspace-navigation";
+import { NEEDS_YOU_LINK_PATH } from "./lib/appLinking";
 import { getCompactBrandHeaderOptions } from "./components/CompactBrandTitle";
 import { WorkspaceConnectionStatusProvider } from "./features/home/WorkspaceConnectionTitle";
 import { WorkspaceRootScreen } from "./features/workspace/WorkspaceRootScreen";
@@ -111,6 +112,7 @@ import {
   SettingsScheduledTaskNewRouteScreen,
   SettingsScheduledTaskEditRouteScreen,
 } from "./features/settings/SettingsScheduledTasksRouteScreen";
+import { ScheduledTaskRunsRouteScreen } from "./features/settings/ScheduledTaskRunsRouteScreen";
 import {
   ScheduledTaskModelPickerRouteScreen,
   ScheduledTaskBranchPickerRouteScreen,
@@ -372,6 +374,10 @@ const SETTINGS_SCREENS = {
     screen: SettingsScheduledTaskEditRouteScreen,
     options: () => ({ ...SETTINGS_PAGE_OPTIONS, title: t("Edit scheduled task") }),
   }),
+  SettingsScheduledTaskRuns: createNativeStackScreen({
+    screen: ScheduledTaskRunsRouteScreen,
+    options: () => ({ ...SETTINGS_PAGE_OPTIONS, title: t("Run history") }),
+  }),
   SettingsScheduledTaskBranch: createNativeStackScreen({
     screen: ScheduledTaskBranchPickerRouteScreen,
     options: () => ({ ...SETTINGS_PAGE_OPTIONS, title: t("Base branch") }),
@@ -583,7 +589,7 @@ const RootStackConfig = createWorkspaceStackNavigator({
       : {}),
     Home: createNativeStackScreen({
       screen: WorkspaceRootScreen,
-      linking: "",
+      linking: { path: "", alias: [NEEDS_YOU_LINK_PATH] },
       listeners: {
         transitionStart: ({ data }) => recordHomeTransitionStart(data.closing),
         transitionEnd: ({ data }) => recordHomeTransitionEnd(data.closing),

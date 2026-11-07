@@ -108,6 +108,23 @@ export function workspaceTabsReducer(
   return { ...state, tabs: { ...state.tabs, [tab]: next } };
 }
 
+/** A tab a link or launcher shortcut opened; `id` grows with each one. */
+export interface LinkedWorkspaceTab {
+  readonly tab: WorkspaceTab;
+  readonly id: number;
+}
+
+/** Selects the linked tab until the user acts on the tabs after it (`handledId` reaches its id). */
+export function withLinkedWorkspaceTab(
+  state: WorkspaceTabsState,
+  linked: LinkedWorkspaceTab | null,
+  handledId: number,
+): WorkspaceTabsState {
+  return linked !== null && linked.id > handledId
+    ? workspaceTabsReducer(state, { type: "select", tab: linked.tab })
+    : state;
+}
+
 /**
  * iOS 27's integrated search X closes the field with only a blur, leaving `expanded`.
  * An empty one has nothing to restore, except where the caller keeps it open (the Duo).

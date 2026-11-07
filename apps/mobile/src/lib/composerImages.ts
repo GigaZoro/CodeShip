@@ -377,9 +377,12 @@ export async function pickComposerImages(input: { readonly existingCount: number
   };
 }
 
+export type ComposerMediaSource = "library" | "camera";
+
 export async function pickComposerMedia(input: {
   readonly existingCount: number;
   readonly maxVideoBytes?: number;
+  readonly source?: ComposerMediaSource;
 }): Promise<{
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
   readonly error: string | null;
@@ -405,23 +408,41 @@ export async function pickComposerMedia(input: {
     };
   }
 
+  const camera = input.source === "camera";
+  if (camera) {
+    const permission = await imagePicker.requestCameraPermissionsAsync().catch(() => null);
+    if (!permission?.granted) {
+      return {
+        attachments: [],
+        error: t("Camera access is off for T3.CodeShip. Turn it on in Settings to take photos."),
+      };
+    }
+  }
+
   // Android pickers report background state; guard against deferred restarts mid-pick.
   const endHandoff = beginForegroundHandoff();
   let result: Awaited<ReturnType<typeof imagePicker.launchImageLibraryAsync>>;
   try {
-    result = await imagePicker.launchImageLibraryAsync({
-      mediaTypes: input.maxVideoBytes === undefined ? ["images"] : ["images", "videos"],
-      allowsMultipleSelection: true,
-      selectionLimit: remainingSlots,
-      // Base64 makes iOS decode all full-size photos and stalls JS with large strings; read bytes only as needed.
-      base64: false,
-      quality: 1,
-      shouldDownloadFromNetwork: true,
-    });
+    result = camera
+      ? await imagePicker.launchCameraAsync({ mediaTypes: ["images"], base64: false, quality: 1 })
+      : await imagePicker.launchImageLibraryAsync({
+          mediaTypes: input.maxVideoBytes === undefined ? ["images"] : ["images", "videos"],
+          allowsMultipleSelection: true,
+          selectionLimit: remainingSlots,
+          // Base64 makes iOS decode all full-size photos and stalls JS with large strings; read bytes only as needed.
+          base64: false,
+          quality: 1,
+          shouldDownloadFromNetwork: true,
+        });
   } catch (error) {
     return {
       attachments: [],
-      error: error instanceof Error ? error.message : t("Could not open the photo library."),
+      error:
+        error instanceof Error
+          ? error.message
+          : camera
+            ? t("Could not open the camera.")
+            : t("Could not open the photo library."),
     };
   } finally {
     endHandoff();

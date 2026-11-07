@@ -1,5 +1,12 @@
 import type { NavigationState, PartialState } from "@react-navigation/native";
 
+/** Opens the chat list, where threads waiting on the user come first. */
+export const NEEDS_YOU_LINK_PATH = "needs-you";
+
+export function isNeedsYouLinkPath(path: string): boolean {
+  return path.split(/[?#]/)[0]?.replace(/^\/+|\/+$/g, "") === NEEDS_YOU_LINK_PATH;
+}
+
 /**
  * The Expo dev client launches the app via
  * <scheme>://expo-development-client/?url=<packager> — that URL addresses

@@ -75,7 +75,41 @@ describe("liveActivityPreferences", () => {
     vi.clearAllMocks();
   });
 
-  it.effect("restores relay preferences when an environment update fails", () => {
+  it.effect("restores relay preferences when turning updates on fails", () => {
+    vi.mocked(linkEnvironmentToCloudWithPreference).mockImplementationOnce(() =>
+      Effect.fail(new CloudEnvironmentLinkError({ message: "environment update failed" })),
+    );
+
+    return Effect.gen(function* () {
+      const exit = yield* Effect.exit(
+        setLiveActivityUpdatesEnabled({
+          enabled: true,
+          previousEnabled: false,
+          clerkToken: "clerk-token",
+          connections: [connection],
+          canConfigureEnvironment: () => true,
+        }),
+      );
+
+      expect(exit._tag).toBe("Failure");
+      expect(updateAgentAwarenessRegistrationPreferences).toHaveBeenNthCalledWith(1, {
+        liveActivitiesEnabled: true,
+      });
+      expect(updateAgentAwarenessRegistrationPreferences).toHaveBeenNthCalledWith(2, {
+        liveActivitiesEnabled: false,
+      });
+      expect(linkEnvironmentToCloudWithPreference).toHaveBeenNthCalledWith(2, {
+        clerkToken: "clerk-token",
+        connection,
+        liveActivitiesEnabled: false,
+      });
+    }).pipe(Effect.provide(layerTest));
+  });
+
+  it.effect("keeps updates off when the relay and environments cannot be reached", () => {
+    vi.mocked(updateAgentAwarenessRegistrationPreferences).mockImplementationOnce(() =>
+      Effect.fail(new CloudEnvironmentLinkError({ message: "relay unreachable" })),
+    );
     vi.mocked(linkEnvironmentToCloudWithPreference).mockImplementationOnce(() =>
       Effect.fail(new CloudEnvironmentLinkError({ message: "environment update failed" })),
     );
@@ -91,22 +125,14 @@ describe("liveActivityPreferences", () => {
         }),
       );
 
-      expect(exit._tag).toBe("Failure");
-      expect(updateAgentAwarenessRegistrationPreferences).toHaveBeenNthCalledWith(1, {
+      expect(exit._tag).toBe("Success");
+      expect(updateAgentAwarenessRegistrationPreferences).toHaveBeenCalledExactlyOnceWith({
         liveActivitiesEnabled: false,
       });
-      expect(updateAgentAwarenessRegistrationPreferences).toHaveBeenNthCalledWith(2, {
-        liveActivitiesEnabled: true,
-      });
-      expect(linkEnvironmentToCloudWithPreference).toHaveBeenNthCalledWith(1, {
+      expect(linkEnvironmentToCloudWithPreference).toHaveBeenCalledExactlyOnceWith({
         clerkToken: "clerk-token",
         connection,
         liveActivitiesEnabled: false,
-      });
-      expect(linkEnvironmentToCloudWithPreference).toHaveBeenNthCalledWith(2, {
-        clerkToken: "clerk-token",
-        connection,
-        liveActivitiesEnabled: true,
       });
     }).pipe(Effect.provide(layerTest));
   });

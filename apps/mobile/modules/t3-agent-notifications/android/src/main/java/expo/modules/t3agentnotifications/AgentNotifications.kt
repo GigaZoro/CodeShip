@@ -9,6 +9,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import androidx.core.app.NotificationCompat
@@ -17,6 +18,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.google.firebase.messaging.RemoteMessage
 import expo.modules.notifications.service.ExpoFirebaseMessagingService
+import java.util.Locale
 
 class AgentMessagingService : ExpoFirebaseMessagingService() {
   override fun onMessageReceived(remoteMessage: RemoteMessage) {
@@ -43,6 +45,9 @@ class AgentActivityExpiryReceiver : BroadcastReceiver() {
 /** Handles data pushes natively so delivery does not depend on a running JS bridge. */
 object AgentNotifications {
   private const val STORE = "t3-agent-notifications"
+  // Kept apart from STORE, which sign-out clears, so text stays in the chosen language.
+  private const val LANGUAGE_STORE = "t3-agent-notifications-language"
+  private const val NEEDS_YOU_PATH = "/needs-you"
   private const val ACTIVITY_CHANNEL = "agent-activity"
   private const val ALERT_CHANNEL = "agent-alerts"
   private const val ACTIVITY_TAG = "t3-agent-activity"
@@ -89,6 +94,23 @@ object AgentNotifications {
         it.tag?.startsWith("$ALERT_TAG-summary:") == true
     }
       .forEach { manager.cancel(it.tag, it.id) }
+  }
+
+  /** The app's chosen language, such as "uk", which can differ from the system locale. */
+  @Synchronized
+  fun setLanguage(context: Context, language: String?) {
+    context.getSharedPreferences(LANGUAGE_STORE, Context.MODE_PRIVATE).edit()
+      .putString("language", language?.takeIf { it.isNotBlank() }).apply()
+    // Channel names show in system Settings; recreating a channel only renames it.
+    channels(context)
+  }
+
+  private fun strings(context: Context): Context {
+    val language = context.getSharedPreferences(LANGUAGE_STORE, Context.MODE_PRIVATE)
+      .getString("language", null) ?: return context
+    val configuration = Configuration(context.resources.configuration)
+    configuration.setLocale(Locale.forLanguageTag(language))
+    return context.createConfigurationContext(configuration)
   }
 
   @Volatile private var threadOnScreen: String? = null
@@ -195,7 +217,8 @@ object AgentNotifications {
         .setGroupSummary(true)
         .setSilent(true)
         .setAutoCancel(true)
-        .setContentIntent(contentIntent(context, scheme, data["alert_path"], 0))
+        // A summary stands for several threads, so it opens the list rather than the newest one.
+        .setContentIntent(contentIntent(context, scheme, NEEDS_YOU_PATH, 0))
         .build()
       manager(context).notify("$ALERT_TAG-summary:$group", 0, summary)
     }
@@ -255,7 +278,8 @@ object AgentNotifications {
       Intent(context, AgentActivityDismissReceiver::class.java),
       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     )
-    val presentation = ActivityPresentation(data, active)
+    val strings = strings(context)
+    val presentation = ActivityPresentation(data, active, strings)
     val openThread = contentIntent(context, scheme, data["activity_path"], ACTIVITY_ID)
     val builder = base(context, ACTIVITY_CHANNEL)
       .setOngoing(active).setOnlyAlertOnce(true).setSilent(true)
@@ -270,7 +294,7 @@ object AgentNotifications {
     val action = presentation.action
     if (action != null) {
       if (openThread != null) builder.addAction(0, action, openThread)
-      builder.addAction(0, "Dismiss", dismissIntent)
+      builder.addAction(0, strings.getString(R.string.agent_activity_dismiss), dismissIntent)
     }
     manager(context).notify(ACTIVITY_TAG, ACTIVITY_ID, builder.build())
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
@@ -305,12 +329,17 @@ object AgentNotifications {
 
   private fun channels(context: Context) {
     if (Build.VERSION.SDK_INT >= 26) {
+      val strings = strings(context)
       manager(context).createNotificationChannels(
         listOf(
-          NotificationChannel(ALERT_CHANNEL, "Agent alerts", NotificationManager.IMPORTANCE_HIGH),
+          NotificationChannel(
+            ALERT_CHANNEL,
+            strings.getString(R.string.agent_activity_channel_alerts),
+            NotificationManager.IMPORTANCE_HIGH
+          ),
           NotificationChannel(
             ACTIVITY_CHANNEL,
-            "Ongoing agent activity",
+            strings.getString(R.string.agent_activity_channel_ongoing),
             NotificationManager.IMPORTANCE_LOW
           ),
         )
@@ -342,7 +371,7 @@ object AgentNotifications {
     path: String?,
     id: Int
   ): PendingIntent? {
-    val threadPath = path?.takeIf { it.startsWith("/threads/") }
+    val threadPath = path?.takeIf { it.startsWith("/threads/") || it == NEEDS_YOU_PATH }
     val route = threadPath?.takeUnless { it.contains('?') || it.contains('#') } ?: "/"
     val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
       ?: return null

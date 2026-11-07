@@ -35,14 +35,27 @@ describe("buildShortcutActions", () => {
     const actions = buildShortcutActions([
       { environmentId: "env 1", threadId: "thread/2", title: "Spaced out" },
     ]);
-    expect(actions[1]?.params?.href).toBe("/threads/env%201/thread%2F2");
-    expect(actions[1]?.title).toBe("Spaced out");
+    expect(actions[2]?.params?.href).toBe("/threads/env%201/thread%2F2");
+    expect(actions[2]?.title).toBe("Spaced out");
+  });
+
+  it("offers New task and Needs you before two recent threads, so launchers show all four", () => {
+    const actions = buildShortcutActions([thread("a"), thread("b"), thread("c")]);
+    expect(actions.map((action) => action.params?.href)).toEqual([
+      "/new",
+      "/needs-you",
+      "/threads/env-a/thread-a",
+      "/threads/env-b/thread-b",
+    ]);
   });
 });
 
 describe("shortcutHref", () => {
   it("accepts exactly the destinations shortcuts can produce", () => {
     expect(shortcutHref({ id: "x", title: "x", params: { href: "/new" } })).toBe("/new");
+    expect(shortcutHref({ id: "x", title: "x", params: { href: "/needs-you" } })).toBe(
+      "/needs-you",
+    );
     expect(shortcutHref({ id: "x", title: "x", params: { href: "/threads/env-1/thread-2" } })).toBe(
       "/threads/env-1/thread-2",
     );
@@ -93,6 +106,6 @@ describe("launcher shortcut ids", () => {
   it("cannot collide across different env/thread pairs", () => {
     const a = buildShortcutActions([{ environmentId: "a-b", threadId: "c", title: "x" }]);
     const b = buildShortcutActions([{ environmentId: "a", threadId: "b-c", title: "x" }]);
-    expect(a[1]?.id).not.toBe(b[1]?.id);
+    expect(a[2]?.id).not.toBe(b[2]?.id);
   });
 });

@@ -13,10 +13,12 @@ import type {
   EnvironmentId,
   ProjectId,
   ScheduledTask,
+  ScheduledTaskId,
   ScheduledTaskPlacement,
   ScheduledTaskUpsertInput,
 } from "@t3tools/contracts";
 import {
+  pinnedTaskRunThreadId,
   resolveScheduledTaskPlacement,
   scheduledTaskPlacementOptions,
 } from "@t3tools/client-runtime/scheduled-task-pins";
@@ -108,6 +110,7 @@ import {
 } from "./scheduledTaskDraft";
 import { settingsTargetsForProject } from "./settings-environment-filter.logic";
 import { useScheduledTaskEditor } from "./scheduled-task-editor";
+import { useOpenScheduledTaskThread } from "./ScheduledTaskRunsRouteScreen";
 import {
   discardScheduledTaskEditor,
   markScheduledTaskEditorSaved,
@@ -131,6 +134,11 @@ const FILTER_LIST_EXAMPLE = "opened, reopened";
 type ScheduledTaskRoutes = {
   SettingsScheduledTaskNew: undefined;
   SettingsScheduledTaskEdit: undefined;
+  SettingsScheduledTaskRuns: {
+    readonly environmentId: EnvironmentId;
+    readonly taskId: ScheduledTaskId;
+    readonly title: string;
+  };
   SettingsScheduledTaskModel: undefined;
   SettingsScheduledTaskBranch: undefined;
 };
@@ -479,6 +487,13 @@ function ScheduledTasksContent(props: { readonly workspace?: boolean }) {
                   });
                   navigation.navigate("SettingsScheduledTaskEdit");
                 }}
+                onOpenRuns={(task) =>
+                  navigation.navigate("SettingsScheduledTaskRuns", {
+                    environmentId: environment.environmentId,
+                    taskId: task.id,
+                    title: task.title,
+                  })
+                }
               />
             ))
           ) : (
@@ -1598,13 +1613,16 @@ function EnvironmentTasks({
   now,
   projectIds,
   onEdit,
+  onOpenRuns,
 }: {
   readonly environment: SettingsTarget;
   readonly now: number;
   readonly projectIds: readonly ProjectId[] | null;
   readonly onEdit: (task: ScheduledTask) => void;
+  readonly onOpenRuns: (task: ScheduledTask) => void;
 }) {
   const environmentId = environment.environmentId;
+  const openThread = useOpenScheduledTaskThread();
   const tasks = useEnvironmentQuery(
     serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
   );
@@ -1661,27 +1679,44 @@ function EnvironmentTasks({
       ],
     );
   };
-  const act = async (
-    task: ScheduledTask,
-    action: "run" | "toggle" | "delete" | ScheduledTaskPlacement,
-  ) => {
+  const runTaskNow = async (task: ScheduledTask) => {
+    if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
+    const result = await runNow({ environmentId, input: { id: task.id } });
+    if (result._tag === "Failure") {
+      failure(t("Could not run task"), result);
+      return;
+    }
+    const ran = result.value.task;
+    if (ran.lastRunStatus === "failed") {
+      Dialog.alert(t("Could not run task"), ran.lastRunError ?? task.title);
+      return;
+    }
+    const runThreadId = ran.lastRunThreadId ?? null;
+    Dialog.alert(
+      t("Task started"),
+      task.title,
+      runThreadId === null
+        ? undefined
+        : [
+            { text: t("OK"), style: "cancel" },
+            { text: t("Open run"), onPress: () => openThread(environmentId, runThreadId) },
+          ],
+    );
+  };
+  const act = async (task: ScheduledTask, action: "toggle" | "delete" | ScheduledTaskPlacement) => {
     if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
     const result =
-      action === "run"
-        ? await runNow({ environmentId, input: { id: task.id } })
-        : action === "toggle"
-          ? await setEnabled({ environmentId, input: { id: task.id, enabled: !task.enabled } })
-          : action === "delete"
-            ? await remove({ environmentId, input: { id: task.id } })
-            : await setPlacement({ environmentId, input: { ids: [task.id], placement: action } });
-    failure(
-      action === "run"
-        ? t("Could not run task")
+      action === "toggle"
+        ? await setEnabled({ environmentId, input: { id: task.id, enabled: !task.enabled } })
         : action === "delete"
-          ? t("Could not delete task")
-          : action === "toggle"
-            ? t("Could not update task")
-            : t("Could not move task"),
+          ? await remove({ environmentId, input: { id: task.id } })
+          : await setPlacement({ environmentId, input: { ids: [task.id], placement: action } });
+    failure(
+      action === "delete"
+        ? t("Could not delete task")
+        : action === "toggle"
+          ? t("Could not update task")
+          : t("Could not move task"),
       result,
     );
   };
@@ -1709,124 +1744,145 @@ function EnvironmentTasks({
         </Text>
       ) : (
         <>
-          {visibleTasks?.map((task, index) => (
-            <View
-              key={task.id}
-              className={
-                index === 0
-                  ? "flex-row items-start gap-1 px-4 py-3"
-                  : "flex-row items-start gap-1 border-t border-border-subtle px-4 py-3"
-              }
-            >
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`${t("Edit {title}", { title: task.title })}${task.shared ? (task.shared.runOn === "one" ? t(", runs on one machine") : t(", runs on every machine")) : ""}${task.modelUnavailableHere ? t(", runs the default model here") : ""}`}
-                onPress={() => {
-                  onEdit(task);
-                }}
-                className="min-w-0 flex-1 gap-1 active:opacity-70"
-              >
-                <Text textRole="body" className="text-foreground" numberOfLines={1}>
-                  {task.title}
-                </Text>
-                <Text className="text-sm text-foreground-muted" numberOfLines={2}>
-                  {describeSchedule(task)}
-                  {!task.enabled
-                    ? ` · ${t("Paused")}`
-                    : task.nextRunAt
-                      ? ` · ${formatNextScheduledTaskRun(task.nextRunAt, now)}`
-                      : ""}
-                  {task.modelUnavailableHere ? ` · ${t("Runs the default model here")}` : ""}
-                  {task.shared
-                    ? task.shared.runOn === "one"
-                      ? ` · ${t("One machine")}`
-                      : ` · ${t("Every machine")}`
-                    : ""}
-                </Text>
-                {task.blockedByPolicy ? (
-                  <Text className="text-sm text-foreground-muted" numberOfLines={2}>
-                    {task.blockedByPolicy}
-                  </Text>
-                ) : null}
-                {task.lastRunError ? (
-                  <Text className="text-sm text-danger-foreground" numberOfLines={2}>
-                    {t("Last run failed: {error}", { error: task.lastRunError })}
-                  </Text>
-                ) : null}
-              </Pressable>
-              <Menu
-                actions={[
-                  { id: "edit", title: t("Edit") },
-                  {
-                    id: "toggle",
-                    title: task.enabled ? t("Pause") : t("Resume"),
-                    attributes: { disabled: !canOperate },
-                  },
-                  ...(task.schedule.type === "webhook"
-                    ? []
-                    : [{ id: "run", title: t("Run now"), attributes: { disabled: !canOperate } }]),
-                  // Servers without placements leave placement out of the task.
-                  ...(task.placement === undefined
-                    ? []
-                    : [
-                        {
-                          id: "show-in",
-                          title: t("Show in"),
-                          attributes: { disabled: !canOperate },
-                          subactions: scheduledTaskPlacementOptions().map((option) => ({
-                            id: `placement:${option.value}`,
-                            title: option.label,
-                            state:
-                              option.value === resolveScheduledTaskPlacement(task)
-                                ? ("on" as const)
-                                : ("off" as const),
-                          })),
-                        },
-                      ]),
-                  {
-                    id: "delete",
-                    title: t("Delete"),
-                    attributes: { destructive: true, disabled: !canOperate },
-                  },
-                ]}
-                onPressAction={({ nativeEvent }) => {
-                  const action = nativeEvent.event;
-                  if (action === "edit") {
-                    onEdit(task);
-                  } else if (action === "delete") {
-                    Dialog.alert(t("Delete task?"), task.title, [
-                      { text: t("Cancel"), style: "cancel" },
-                      {
-                        text: t("Delete"),
-                        style: "destructive",
-                        onPress: () => void act(task, "delete"),
-                      },
-                    ]);
-                  } else if (action === "toggle" || action === "run") {
-                    void act(task, action);
-                  } else if (action.startsWith("placement:")) {
-                    const placement = scheduledTaskPlacementOptions().find(
-                      (option) => `placement:${option.value}` === action,
-                    )?.value;
-                    if (placement !== undefined) void act(task, placement);
-                  }
-                }}
+          {visibleTasks?.map((task, index) => {
+            const runThreadId = pinnedTaskRunThreadId(task);
+            return (
+              <View
+                key={task.id}
+                className={
+                  index === 0
+                    ? "flex-row items-start gap-1 px-4 py-3"
+                    : "flex-row items-start gap-1 border-t border-border-subtle px-4 py-3"
+                }
               >
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel={t("Actions for {title}", { title: task.title })}
-                  className="h-11 w-11 items-center justify-center"
+                  accessibilityLabel={`${task.title}${task.shared ? (task.shared.runOn === "one" ? t(", runs on one machine") : t(", runs on every machine")) : ""}${task.modelUnavailableHere ? t(", runs the default model here") : ""}`}
+                  accessibilityHint={
+                    runThreadId === null
+                      ? t("Opens the task editor.")
+                      : t("Opens the task's last run.")
+                  }
+                  onPress={() => {
+                    if (runThreadId === null) onEdit(task);
+                    else openThread(environmentId, runThreadId);
+                  }}
+                  className="min-w-0 flex-1 gap-1 active:opacity-70"
                 >
-                  <SymbolView
-                    name="ellipsis"
-                    size={18}
-                    tintColorClassName="accent-icon"
-                    type="monochrome"
-                  />
+                  <Text textRole="body" className="text-foreground" numberOfLines={1}>
+                    {task.title}
+                  </Text>
+                  <Text className="text-sm text-foreground-muted" numberOfLines={2}>
+                    {describeSchedule(task)}
+                    {!task.enabled
+                      ? ` · ${t("Paused")}`
+                      : task.nextRunAt
+                        ? ` · ${formatNextScheduledTaskRun(task.nextRunAt, now)}`
+                        : ""}
+                    {task.modelUnavailableHere ? ` · ${t("Runs the default model here")}` : ""}
+                    {task.shared
+                      ? task.shared.runOn === "one"
+                        ? ` · ${t("One machine")}`
+                        : ` · ${t("Every machine")}`
+                      : ""}
+                  </Text>
+                  {task.blockedByPolicy ? (
+                    <Text className="text-sm text-foreground-muted" numberOfLines={2}>
+                      {task.blockedByPolicy}
+                    </Text>
+                  ) : null}
+                  {task.lastRunError ? (
+                    <Text className="text-sm text-danger-foreground" numberOfLines={2}>
+                      {t("Last run failed: {error}", { error: task.lastRunError })}
+                    </Text>
+                  ) : null}
                 </Pressable>
-              </Menu>
-            </View>
-          ))}
+                <Menu
+                  actions={[
+                    ...(runThreadId === null
+                      ? []
+                      : [{ id: "open-run", title: t("Open last run"), image: "text.bubble" }]),
+                    { id: "edit", title: t("Edit"), image: "square.and.pencil" },
+                    { id: "runs", title: t("Run history"), image: "list.number" },
+                    {
+                      id: "toggle",
+                      title: task.enabled ? t("Pause") : t("Resume"),
+                      attributes: { disabled: !canOperate },
+                    },
+                    ...(task.schedule.type === "webhook"
+                      ? []
+                      : [
+                          { id: "run", title: t("Run now"), attributes: { disabled: !canOperate } },
+                        ]),
+                    // Servers without placements leave placement out of the task.
+                    ...(task.placement === undefined
+                      ? []
+                      : [
+                          {
+                            id: "show-in",
+                            title: t("Show in"),
+                            attributes: { disabled: !canOperate },
+                            subactions: scheduledTaskPlacementOptions().map((option) => ({
+                              id: `placement:${option.value}`,
+                              title: option.label,
+                              state:
+                                option.value === resolveScheduledTaskPlacement(task)
+                                  ? ("on" as const)
+                                  : ("off" as const),
+                            })),
+                          },
+                        ]),
+                    {
+                      id: "delete",
+                      title: t("Delete"),
+                      attributes: { destructive: true, disabled: !canOperate },
+                    },
+                  ]}
+                  onPressAction={({ nativeEvent }) => {
+                    const action = nativeEvent.event;
+                    if (action === "open-run") {
+                      if (runThreadId !== null) openThread(environmentId, runThreadId);
+                    } else if (action === "edit") {
+                      onEdit(task);
+                    } else if (action === "runs") {
+                      onOpenRuns(task);
+                    } else if (action === "delete") {
+                      Dialog.alert(t("Delete task?"), task.title, [
+                        { text: t("Cancel"), style: "cancel" },
+                        {
+                          text: t("Delete"),
+                          style: "destructive",
+                          onPress: () => void act(task, "delete"),
+                        },
+                      ]);
+                    } else if (action === "run") {
+                      void runTaskNow(task);
+                    } else if (action === "toggle") {
+                      void act(task, action);
+                    } else if (action.startsWith("placement:")) {
+                      const placement = scheduledTaskPlacementOptions().find(
+                        (option) => `placement:${option.value}` === action,
+                      )?.value;
+                      if (placement !== undefined) void act(task, placement);
+                    }
+                  }}
+                >
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={t("Actions for {title}", { title: task.title })}
+                    className="h-11 w-11 items-center justify-center"
+                  >
+                    <SymbolView
+                      name="ellipsis"
+                      size={18}
+                      tintColorClassName="accent-icon"
+                      type="monochrome"
+                    />
+                  </Pressable>
+                </Menu>
+              </View>
+            );
+          })}
           <Menu
             actions={scheduledTaskPlacementOptions().map((option) => ({
               id: option.value,

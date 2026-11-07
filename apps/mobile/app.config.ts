@@ -126,6 +126,10 @@ const dmSansFonts = {
   bold: "@expo-google-fonts/dm-sans/700Bold/DMSans_700Bold.ttf",
 } as const;
 
+// Both the QR scanner and the composer's Take Photo use the camera; iOS shows one purpose string.
+const CAMERA_PERMISSION =
+  "Allow T3.CodeShip to use your camera to scan pairing QR codes and take photos to attach.";
+
 const widgetsPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
   "expo-widgets",
   {
@@ -375,14 +379,20 @@ const config: ExpoConfig = {
     [
       "expo-camera",
       {
-        cameraPermission:
-          "Allow T3.CodeShip to access your camera so you can scan pairing QR codes.",
+        cameraPermission: CAMERA_PERMISSION,
         microphonePermission: false,
         barcodeScannerEnabled: true,
         recordAudioAndroid: false,
       },
     ],
-    ["expo-image-picker", { photosPermission: false, microphonePermission: false }],
+    [
+      "expo-image-picker",
+      {
+        photosPermission: false,
+        cameraPermission: CAMERA_PERMISSION,
+        microphonePermission: false,
+      },
+    ],
     [
       "expo-splash-screen",
       {

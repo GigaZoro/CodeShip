@@ -4,7 +4,6 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import type { SavedRemoteConnection } from "../../lib/connection";
 import { linkEnvironmentToCloudWithPreference } from "../cloud/linkEnvironment";
 import { updateAgentAwarenessRegistrationPreferences } from "./remoteRegistration";
-import { t } from "../../lib/i18n";
 
 export const setLiveActivityUpdatesEnabled = Effect.fn("setLiveActivityUpdatesEnabled")(
   function* (input: {
@@ -32,27 +31,26 @@ export const setLiveActivityUpdatesEnabled = Effect.fn("setLiveActivityUpdatesEn
       });
     });
 
-    const updateRelayPreference = Effect.fn("updateRelayPreference")(function* (enabled: boolean) {
-      yield* updateAgentAwarenessRegistrationPreferences({
-        liveActivitiesEnabled: enabled,
-      });
+    const enableEveryPreference = Effect.fn("enableEveryPreference")(function* () {
+      yield* updateAgentAwarenessRegistrationPreferences({ liveActivitiesEnabled: true });
 
       const clerkToken = input.clerkToken;
       if (!clerkToken) return;
 
       yield* Effect.forEach(
         linkedConnections,
-        (connection) => updateEnvironmentPreference(connection, enabled, clerkToken),
+        (connection) => updateEnvironmentPreference(connection, true, clerkToken),
         { concurrency: "unbounded" },
       );
     });
 
-    const restoreRelayPreference = Effect.fn("restoreRelayPreference")(function* () {
-      yield* updateAgentAwarenessRegistrationPreferences({
-        liveActivitiesEnabled: input.previousEnabled,
-      }).pipe(
+    // Each step only warns, so one unreachable relay or environment does not stop the rest.
+    const setEveryPreferenceBestEffort = Effect.fn("setEveryPreferenceBestEffort")(function* (
+      enabled: boolean,
+    ) {
+      yield* updateAgentAwarenessRegistrationPreferences({ liveActivitiesEnabled: enabled }).pipe(
         Effect.catchCause((cause) =>
-          Effect.logWarning(t("Could not restore Live Activity device preference."), cause),
+          Effect.logWarning("Could not update the Live Activity device preference.", cause),
         ),
       );
 
@@ -62,10 +60,10 @@ export const setLiveActivityUpdatesEnabled = Effect.fn("setLiveActivityUpdatesEn
       yield* Effect.forEach(
         linkedConnections,
         (connection) =>
-          updateEnvironmentPreference(connection, input.previousEnabled, clerkToken).pipe(
+          updateEnvironmentPreference(connection, enabled, clerkToken).pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning(
-                `Could not restore Live Activity preference for environment ${connection.environmentId}.`,
+                `Could not update the Live Activity preference for environment ${connection.environmentId}.`,
                 cause,
               ),
             ),
@@ -74,8 +72,14 @@ export const setLiveActivityUpdatesEnabled = Effect.fn("setLiveActivityUpdatesEn
       );
     });
 
-    yield* updateRelayPreference(input.enabled).pipe(
-      Effect.onError(() => restoreRelayPreference()),
+    // Off is already saved on the device, so a relay or environment that cannot be reached must
+    // not switch updates back on; the next registration sends the stored preference.
+    if (!input.enabled) {
+      yield* setEveryPreferenceBestEffort(false);
+      return;
+    }
+    yield* enableEveryPreference().pipe(
+      Effect.onError(() => setEveryPreferenceBestEffort(input.previousEnabled)),
     );
   },
 );

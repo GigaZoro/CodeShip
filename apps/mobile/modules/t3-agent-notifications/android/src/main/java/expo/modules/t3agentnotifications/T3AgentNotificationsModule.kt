@@ -30,6 +30,10 @@ class T3AgentNotificationsModule : Module() {
       appContext.reactContext?.let { AgentNotifications.showcase(it, scheme, data) }
     }
 
+    Function("setLanguage") { language: String? ->
+      appContext.reactContext?.let { AgentNotifications.setLanguage(it, language) }
+    }
+
     Function("setThreadOnScreen") { path: String? ->
       AgentNotifications.setThreadOnScreen(path)
     }

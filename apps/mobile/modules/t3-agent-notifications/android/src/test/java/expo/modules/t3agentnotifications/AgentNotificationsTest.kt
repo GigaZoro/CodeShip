@@ -169,6 +169,10 @@ class AgentNotificationsTest {
     assertEquals("thread-group", summary.notification.group)
     assertEquals(3, manager.activeNotifications.size)
     assertEquals(null, summary.notification.sound)
+    assertEquals(
+      "t3code-dev://needs-you",
+      shadowOf(summary.notification.contentIntent).savedIntent.dataString
+    )
 
     AgentNotifications.clear(context)
     assertTrue(manager.activeNotifications.isEmpty())
@@ -351,7 +355,7 @@ class AgentNotificationsTest {
       "Approval $title · Project",
       card.extras.getCharSequence(Notification.EXTRA_TEXT).toString()
     )
-    assertEquals(listOf("Approve", "Dismiss"), card.actions.map { it.title.toString() })
+    assertEquals(listOf("Open", "Dismiss"), card.actions.map { it.title.toString() })
     assertEquals(
       "t3code-dev://threads/environment/thread",
       shadowOf(card.actions[0].actionIntent).savedIntent.dataString
@@ -368,7 +372,7 @@ class AgentNotificationsTest {
     )
     val next = manager.activeNotifications.single().notification
     assertEquals("2 need you", next.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
-    assertEquals("Answer", next.actions[0].title.toString())
+    assertEquals("Open", next.actions[0].title.toString())
     assertEquals(
       "t3code-dev://threads/another-environment/another-thread",
       shadowOf(next.actions[0].actionIntent).savedIntent.dataString
@@ -449,6 +453,32 @@ class AgentNotificationsTest {
   }
 
   @Test
+  fun cardsFollowTheLanguageTheAppChoseAndKeepItAfterSignOut() {
+    lifecycle.currentState = Lifecycle.State.RESUMED
+    AgentNotifications.setLanguage(context, "uk")
+    AgentNotifications.clear(context)
+    AgentNotifications.configure(context, "device", "user", "t3code-dev", true)
+    AgentNotifications.receive(
+      context,
+      update("question", true) + mapOf(
+        "activity_line_0" to "Input\tChoose an icon\tProject",
+        "activity_line_1" to "Working\tBuild feature\tProject",
+        "activity_phase" to "waiting_for_input",
+        "activity_active_count" to "2",
+        "activity_attention_count" to "2",
+      )
+    )
+    val card = manager.activeNotifications.single().notification
+    assertEquals("2 потребують вас", card.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
+    assertEquals(
+      "Питання Choose an icon\nВиконується Build feature",
+      card.extras.getCharSequence(Notification.EXTRA_BIG_TEXT).toString()
+    )
+    assertEquals(listOf("Відкрити", "Закрити"), card.actions.map { it.title.toString() })
+    AgentNotifications.setLanguage(context, null)
+  }
+
+  @Test
   fun olderRelayRowsStillSelectTheNativeStateAndAction() {
     lifecycle.currentState = Lifecycle.State.RESUMED
     AgentNotifications.receive(
@@ -459,7 +489,8 @@ class AgentNotificationsTest {
     )
     val card = manager.activeNotifications.single().notification
     assertEquals("Choose an icon", card.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
-    assertEquals("Answer", card.actions.first().title.toString())
+    assertEquals("Open", card.actions.first().title.toString())
+    assertEquals("Answer", card.extras.getString(NotificationCompat.EXTRA_SHORT_CRITICAL_TEXT))
     assertEquals(2, card.actions.size)
     assertFalse(card.extras.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER))
   }

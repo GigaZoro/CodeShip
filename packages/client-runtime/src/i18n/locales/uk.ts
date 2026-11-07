@@ -1982,6 +1982,7 @@ const catalog: MessageCatalog = {
     "Випереджає темп: витрати швидші за плин вікна",
   "AI helpers": "Помічники ШІ",
   "AirPods, headsets, and cars not listed": "AirPods, гарнітури й автомобілі, яких немає в списку",
+  "Alert me about": "Сповіщати про",
   "Alert text": "Текст сповіщення",
   alerts: "сповіщення",
   "Alerts enabled for {alerts}.": "Сповіщення ввімкнено для: {alerts}.",
@@ -2188,6 +2189,7 @@ const catalog: MessageCatalog = {
   "Approval needed": "Потрібне схвалення",
   "Approval needed from {title}": "Потрібне схвалення від {title}",
   "Approval requested": "Запитано схвалення",
+  "Approval requests": "Запити на схвалення",
   approvals: "схвалення",
   Approve: "Схвалити",
   "Approve the app on GitHub to finish signing in.":
@@ -2636,6 +2638,8 @@ const catalog: MessageCatalog = {
   "Cached input": "Вхід із кешу",
   Calendar: "Календар",
   Camera: "Камера",
+  "Camera access is off for T3.CodeShip. Turn it on in Settings to take photos.":
+    "Доступ до камери для T3.CodeShip вимкнено. Увімкніть його в Налаштуваннях, щоб робити фото.",
   "Camera access needed": "Потрібен доступ до камери",
   "Camera access was denied for this app. Open Settings to enable it.":
     "Цьому застосунку заборонено доступ до камери. Відкрийте налаштування, щоб його ввімкнути.",
@@ -3030,6 +3034,8 @@ const catalog: MessageCatalog = {
   "Choose when to snooze {title}": "Виберіть, на скільки відкласти {title}",
   "Choose which {cli} login each {host} host uses, or turn a host off.":
     "Виберіть, який вхід {cli} використовує кожен хост {host}, або вимкніть хост.",
+  "Choose which agent events alert this device.":
+    "Виберіть, про які події агентів сповіщати на цьому пристрої.",
   "Choose which cookies to import for {environment}.":
     "Виберіть, які cookie імпортувати для {environment}.",
   "Choose your keys, then approve the permission prompt if asked.":
@@ -3725,6 +3731,7 @@ const catalog: MessageCatalog = {
   "Could not ask {login} for a review": "Не вдалося запросити рев’ю в {login}",
   "Could not attach file": "Не вдалося прикріпити файл",
   "Could not attach pasted text": "Не вдалося прикріпити вставлений текст",
+  "Could not attach photo": "Не вдалося прикріпити фото",
   "Could not attach photo or video": "Не вдалося прикріпити фото чи відео",
   "Could not bring back the side chat": "Не вдалося повернути бічний чат",
   "Could not cancel import": "Не вдалося скасувати імпорт",
@@ -3984,6 +3991,7 @@ const catalog: MessageCatalog = {
   "Could not open System Settings": "Не вдалося відкрити системні налаштування",
   "Could not open System Settings. Try Allow again.":
     "Не вдалося відкрити Системні налаштування. Спробуйте «Дозволити» ще раз.",
+  "Could not open the camera.": "Не вдалося відкрити камеру.",
   "Could not open the cited response": "Не вдалося відкрити цитовану відповідь",
   "Could not open the file picker.": "Не вдалося відкрити вибір файлів.",
   "Could not open the link": "Не вдалося відкрити посилання",
@@ -4070,8 +4078,6 @@ const catalog: MessageCatalog = {
   "Could not restart resource monitor": "Не вдалося перезапустити монітор ресурсів",
   "Could not restore attachment: {name}": "Не вдалося відновити вкладення: {name}",
   "Could not restore draft": "Не вдалося відновити чернетку",
-  "Could not restore Live Activity device preference.":
-    "Не вдалося відновити налаштування Live Activity для пристрою.",
   "Could not restore review drafts. Reopen this screen to retry.":
     "Не вдалося відновити чернетки рев’ю. Відкрийте цей екран знову, щоб повторити.",
   "Could not restore snooze": "Не вдалося відновити відкладення",
@@ -5250,6 +5256,7 @@ const catalog: MessageCatalog = {
   failed: "помилка",
   Failed: "Помилка",
   "Failed {program}": "Помилка {program}",
+  "Failed tasks": "Завдання з помилкою",
   "Failed to {action}": "Не вдалося {action}",
   "Failed to add backend.": "Не вдалося додати бекенд.",
   "Failed to add project": "Не вдалося додати проєкт",
@@ -5501,6 +5508,7 @@ const catalog: MessageCatalog = {
   "Finish tour": "Завершити тур",
   Finished: "Завершено",
   "Finished paragraphs": "Завершені абзаци",
+  "Finished tasks": "Завершені завдання",
   "Finished, not yet opened": "Завершено, ще не відкрито",
   "Finishing sign-in...": "Завершення входу...",
   Fire: "Вогонь",
@@ -7726,6 +7734,7 @@ const catalog: MessageCatalog = {
   "Open quote": "Відкрити цитату",
   "Open releases": "Відкрити випуски",
   "Open resolved discussion in {path}": "Відкрити вирішене обговорення в {path}",
+  "Open run": "Відкрити запуск",
   "Open scheduled task {title}": "Відкрити заплановане завдання {title}",
   "Open scheduled tasks": "Відкрити заплановані завдання",
   "Open separate preview window": "Відкрити окреме вікно перегляду",
@@ -7831,6 +7840,7 @@ const catalog: MessageCatalog = {
     "Відкриває розміщений застосунок, встановлення не потрібне",
   "Opens the project picker": "Відкриває вибір проєкту",
   "Opens the project website": "Відкриває сайт проєкту",
+  "Opens the task editor.": "Відкриває редактор завдання.",
   "Opens the task's last run.": "Відкриває останній запуск завдання.",
   "Opens the thread": "Відкриває чат",
   "Opens the thread. Swipe left for archive and snooze actions.":
@@ -7853,6 +7863,7 @@ const catalog: MessageCatalog = {
     "Відкриває чат цього агента. Натисніть і утримуйте, щоб скопіювати.",
   "Opens this message in the composer for editing":
     "Відкриває це повідомлення в полі повідомлення для редагування",
+  "Opens this run's thread.": "Відкриває чат цього запуску.",
   "Opens this turn's subagents": "Відкриває субагентів цього ходу",
   "OpenTelemetry export": "Експорт OpenTelemetry",
   "Operate tasks": "Керування завданнями",
@@ -8473,6 +8484,7 @@ const catalog: MessageCatalog = {
   Puzzle: "Пазл",
   Query: "Запит",
   Question: "Питання",
+  Questions: "Питання",
   "Questions to consider": "Питання для роздумів",
   queue: "поставити в чергу",
   Queue: "Черга",
@@ -10799,6 +10811,7 @@ const catalog: MessageCatalog = {
   "Tailscale IP": "IP Tailscale",
   "Take control": "Взяти керування",
   "Take control to respond.": "Візьміть керування, щоб відповісти.",
+  "Take Photo": "Зробити фото",
   "Tap someone to request a review. Tap a requested reviewer to remove the request.":
     "Торкніться людини, щоб запросити рев’ю. Торкніться запрошеного рецензента, щоб скасувати запит.",
   "Tap the first and last line to select a range.":
@@ -10809,6 +10822,7 @@ const catalog: MessageCatalog = {
   "Task enabled": "Завдання ввімкнено",
   "Task paused": "Завдання призупинено",
   "Task running": "Завдання виконується",
+  "Task started": "Завдання запущено",
   "task status {times}": "стан завдань {times}",
   "Task unavailable": "Завдання недоступне",
   Tasks: "Завдання",

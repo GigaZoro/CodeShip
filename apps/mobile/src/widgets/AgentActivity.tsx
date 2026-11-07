@@ -348,7 +348,7 @@ function AgentActivity(
         {attentionRow
           ? attentionRow.phase === "waiting_for_approval"
             ? "Approval"
-            : "Input"
+            : "Question"
           : failedRow
             ? "Failed"
             : activeLabel}

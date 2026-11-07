@@ -271,6 +271,25 @@ describe("makeRelayDeviceRegistrationRequest", () => {
     });
   });
 
+  it("sends the alert types the user turned off and keeps unset ones on", () => {
+    Constants.expoConfig!.extra = {};
+
+    expect(
+      makeRelayDeviceRegistrationRequest({
+        deviceId: "device-1",
+        label: "Julius's iPhone",
+        iosMajorVersion: 18,
+        notificationsEnabled: true,
+        preferences: { notifyOnCompletion: false, notifyOnInput: true },
+      }).preferences,
+    ).toMatchObject({
+      notifyOnApproval: true,
+      notifyOnInput: true,
+      notifyOnCompletion: false,
+      notifyOnFailure: true,
+    });
+  });
+
   it.effect("registers one push-token listener per Live Activity across wrappers", () => {
     const addPushTokenListener = vi.fn();
     // getInstances() returns a new wrapper for the same native activity each call.

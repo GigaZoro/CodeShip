@@ -6,6 +6,7 @@ interface AndroidAgentNotifications {
   configure(deviceId: string, userId: string, scheme: string, ongoingEnabled: boolean): void;
   clear(): void;
   setThreadOnScreen?(path: string | null): void;
+  setLanguage?(language: string | null): void;
   openLiveUpdateSettings?(): boolean;
   showShowcaseActivity?(scheme: string, data: Record<string, string>): void;
 }
@@ -40,6 +41,11 @@ export function showAndroidShowcaseAgentActivity(data: Record<string, string>): 
 
 export function clearAndroidAgentNotifications(): void {
   native?.clear?.();
+}
+
+/** Notifications are drawn natively, so they learn the app's language rather than the system's. */
+export function setAndroidAgentNotificationLanguage(language: string): void {
+  native?.setLanguage?.(language);
 }
 
 export function setAndroidThreadOnScreen(path: string | null): void {

@@ -9,10 +9,12 @@ import {
   saveRecentThreadShortcuts,
   type RecentThreadShortcut,
 } from "../../persistence/imperative";
+import { onLanguageApplied } from "../../lib/language";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentThreadShells } from "../../state/threads";
 import {
   activeThreadRef,
+  buildFixedShortcutActions,
   buildShortcutActions,
   shortcutHref,
   withRecentThreadShortcut,
@@ -130,12 +132,33 @@ export function installAppShortcuts(navigate: (href: string) => void): () => voi
     const href = shortcutHref(action);
     if (href !== null) navigate(href);
   });
-  if (Platform.OS !== "android") return () => subscription.remove();
+  const publishFailed = (error: unknown) => {
+    console.warn("[app-shortcuts] failed to update launcher shortcuts", error);
+  };
+  if (Platform.OS !== "android") {
+    if (Platform.OS !== "ios") return () => subscription.remove();
+    // Titles wait for the chosen language, and follow it when it changes.
+    const stopLanguage = onLanguageApplied(() => {
+      void QuickActions.setItems(buildFixedShortcutActions("ios")).catch(publishFailed);
+    });
+    return () => {
+      subscription.remove();
+      stopLanguage();
+    };
+  }
 
+  let published: ReadonlyArray<RecentThreadShortcut> | null = null;
   const recents = createRecentThreadShortcuts({
     load: loadRecentThreadShortcuts,
     save: saveRecentThreadShortcuts,
-    publish: (list) => QuickActions.setItems(buildShortcutActions(list)),
+    publish: (list) => {
+      published = list;
+      return QuickActions.setItems(buildShortcutActions(list));
+    },
+  });
+  const stopLanguage = onLanguageApplied(() => {
+    if (published === null) return;
+    void QuickActions.setItems(buildShortcutActions(published)).catch(publishFailed);
   });
   const unsubscribe = appAtomRegistry.subscribe(
     activeThreadShortcutAtom,
@@ -144,6 +167,7 @@ export function installAppShortcuts(navigate: (href: string) => void): () => voi
   );
   return () => {
     subscription.remove();
+    stopLanguage();
     unsubscribe();
   };
 }

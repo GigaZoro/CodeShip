@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="agent_activity_channel_alerts">Сповіщення агентів</string>
+  <string name="agent_activity_channel_ongoing">Поточна робота агентів</string>
+  <string name="agent_activity_title">Активність агента</string>
+  <string name="agent_activity_open">Відкрити</string>
+  <string name="agent_activity_dismiss">Закрити</string>
+
+  <string name="agent_activity_status_connecting">Підключення</string>
+  <string name="agent_activity_status_working">Виконується</string>
+  <string name="agent_activity_status_approval">Схвалення</string>
+  <string name="agent_activity_status_question">Питання</string>
+  <string name="agent_activity_status_waiting">Очікування</string>
+  <string name="agent_activity_status_done">Готово</string>
+  <string name="agent_activity_status_failed">Помилка</string>
+
+  <string name="agent_activity_chip_working">Працює</string>
+  <string name="agent_activity_chip_approve">Схвалити</string>
+  <string name="agent_activity_chip_answer">Відповісти</string>
+  <string name="agent_activity_chip_waiting">Чекає</string>
+  <string name="agent_activity_chip_done">Готово</string>
+  <string name="agent_activity_chip_failed">Помилка</string>
+  <string name="agent_activity_chip_active">Активно</string>
+  <string name="agent_activity_chip_live">%1$s діють</string>
+
+  <plurals name="agent_activity_need_you">
+    <item quantity="one">%d потребує вас</item>
+    <item quantity="few">%d потребують вас</item>
+    <item quantity="many">%d потребують вас</item>
+    <item quantity="other">%d потребують вас</item>
+  </plurals>
+  <plurals name="agent_activity_working">
+    <item quantity="one">%d працює</item>
+    <item quantity="few">%d працюють</item>
+    <item quantity="many">%d працюють</item>
+    <item quantity="other">%d працюють</item>
+  </plurals>
+  <plurals name="agent_activity_active">
+    <item quantity="one">%d активний</item>
+    <item quantity="few">%d активні</item>
+    <item quantity="many">%d активних</item>
+    <item quantity="other">%d активного</item>
+  </plurals>
+  <plurals name="agent_activity_threads">
+    <item quantity="one">%d чат</item>
+    <item quantity="few">%d чати</item>
+    <item quantity="many">%d чатів</item>
+    <item quantity="other">%d чату</item>
+  </plurals>
+  <string name="agent_activity_failed_count">%1$d з помилкою</string>
+  <string name="agent_activity_finished_failed">Завершено, %1$d з помилкою</string>
+  <string name="agent_activity_all_finished">Усе завершено</string>
+</resources>

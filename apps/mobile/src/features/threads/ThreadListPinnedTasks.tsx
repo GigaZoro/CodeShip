@@ -247,7 +247,7 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
           : null;
     if (result?._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       Dialog.alert(
-        action === "run" ? t("Could not update task") : t("Could not move task"),
+        action === "run" ? t("Could not run task") : t("Could not move task"),
         String(squashAtomCommandFailure(result)),
       );
     }

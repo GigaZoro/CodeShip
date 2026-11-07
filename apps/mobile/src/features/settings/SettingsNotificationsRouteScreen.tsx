@@ -1,4 +1,4 @@
-import { t } from "../../lib/i18n";
+import { msg, t } from "../../lib/i18n";
 import * as Dialog from "../../components/ui/Dialog";
 import { AuthRelayWriteScope, type EnvironmentId } from "@t3tools/contracts";
 import { managedCapabilityDenial } from "@t3tools/shared/managedPolicyMessages";
@@ -32,14 +32,18 @@ import {
 import { setLiveActivityUpdatesEnabled } from "../agent-awareness/liveActivityPreferences";
 import { requestAgentNotificationPermission } from "../agent-awareness/notificationPermissions";
 import {
+  endAgentAwarenessLiveActivities,
   getAgentAwarenessRegistrationStatus,
   refreshAgentAwarenessRegistration,
   subscribeAgentAwarenessRegistrationStatus,
+  updateAgentAwarenessRegistrationPreferences,
 } from "../agent-awareness/remoteRegistration";
 import { refreshManagedRelayEnvironments } from "../cloud/managedRelayState";
 import { hasCloudPublicConfig, resolveRelayClerkTokenOptions } from "../cloud/publicConfig";
 import { makePermissionStatusAtom } from "../../lib/permissionStatusAtom";
 import { runtime } from "../../lib/runtime";
+import type { AppSymbolName } from "../../components/ui/AppSymbol";
+import type { Preferences } from "../../persistence/mobile-preferences";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
 import { SettingsRow } from "./components/SettingsRow";
@@ -61,6 +65,17 @@ function canLinkEnvironmentToConnect(environmentId: EnvironmentId) {
     managedCapabilityDenial(policy, "connect") === undefined
   );
 }
+
+const ALERT_TYPES = [
+  { key: "notifyOnApproval", icon: "exclamationmark.shield", label: msg("Approval requests") },
+  { key: "notifyOnInput", icon: "questionmark.bubble", label: msg("Questions") },
+  { key: "notifyOnCompletion", icon: "checkmark.circle", label: msg("Finished tasks") },
+  { key: "notifyOnFailure", icon: "exclamationmark.triangle", label: msg("Failed tasks") },
+] as const satisfies ReadonlyArray<{
+  readonly key: keyof Preferences;
+  readonly icon: AppSymbolName;
+  readonly label: string;
+}>;
 
 type NotificationStatus = "checking" | "enabled" | "disabled" | "unsupported";
 type LiveActivityStatus = "checking" | "enabled" | "disabled" | "signed-out" | "linking";
@@ -158,6 +173,8 @@ function ConfiguredSettingsNotificationsRouteScreen() {
     setLiveActivityOverride({ status, basis: liveActivityBasis });
   const liveActivityWriteInFlight = useRef(false);
   const deviceRegistered = useDeviceRegistered();
+  const deviceNotificationsOn =
+    agentAwarenessPushAvailable && notificationStatus === "enabled" && deviceRegistered;
   const liveActivitiesPreferenceEnabled = AsyncResult.isSuccess(preferencesResult)
     ? preferencesResult.value.liveActivitiesEnabled !== false
     : true;
@@ -360,18 +377,22 @@ function ConfiguredSettingsNotificationsRouteScreen() {
     );
   };
 
+  // Off is saved here first, so it holds even when T3 Connect or the relay cannot be reached.
   async function disableLiveActivities() {
+    savePreferences({ liveActivitiesEnabled: false });
+    endAgentAwarenessLiveActivities();
+    setLiveActivityStatus(isSignedIn ? "disabled" : "signed-out");
+
     let token: string | null = null;
     if (isSignedIn) {
       const tokenResult = await settlePromise(() => getToken(resolveRelayClerkTokenOptions()));
       if (tokenResult._tag === "Failure") {
-        setLiveActivityStatus("enabled");
         reportAtomCommandResult(tokenResult, {
           label: "live activity disable token lookup",
         });
-        return;
+      } else {
+        token = tokenResult.value;
       }
-      token = tokenResult.value;
     }
 
     const updateResult = await settleAsyncResult(() =>
@@ -385,17 +406,18 @@ function ConfiguredSettingsNotificationsRouteScreen() {
         }),
       ),
     );
-    if (updateResult._tag === "Failure") {
-      setLiveActivityStatus(isSignedIn ? "enabled" : "signed-out");
-      reportAtomCommandResult(updateResult, {
-        label: "live activity disable",
-      });
-      return;
-    }
-    savePreferences({ liveActivitiesEnabled: false });
+    reportAtomCommandResult(updateResult, { label: "live activity disable" });
     refreshManagedRelayEnvironments();
-    setLiveActivityStatus("disabled");
   }
+
+  const handleAlertTypeChange = (key: (typeof ALERT_TYPES)[number]["key"], enabled: boolean) => {
+    savePreferences({ [key]: enabled });
+    // Unregistered devices send the saved choice when they next register.
+    if (!deviceRegistered) return;
+    void settleAsyncResult(() =>
+      runtime.runPromiseExit(updateAgentAwarenessRegistrationPreferences({ [key]: enabled })),
+    );
+  };
 
   // Both writers settle their own failures, so awaiting them never throws.
   const handleLiveActivitiesChange = async (enabled: boolean) => {
@@ -440,9 +462,7 @@ function ConfiguredSettingsNotificationsRouteScreen() {
               notificationStatus === "unsupported"
             }
             subtitle={agentAwarenessSubtitle}
-            value={
-              agentAwarenessPushAvailable && notificationStatus === "enabled" && deviceRegistered
-            }
+            value={deviceNotificationsOn}
             onValueChange={handleDeviceNotificationsChange}
           />
           <SettingsSwitchRow
@@ -492,6 +512,25 @@ function ConfiguredSettingsNotificationsRouteScreen() {
               }}
             />
           ) : null}
+        </SettingsSection>
+        <SettingsSection
+          title={t("Alert me about")}
+          footer={t("Choose which agent events alert this device.")}
+        >
+          {ALERT_TYPES.map((alert) => (
+            <SettingsSwitchRow
+              key={alert.key}
+              icon={alert.icon}
+              label={t(alert.label)}
+              disabled={!deviceNotificationsOn}
+              value={
+                AsyncResult.isSuccess(preferencesResult)
+                  ? preferencesResult.value[alert.key] !== false
+                  : true
+              }
+              onValueChange={(enabled) => handleAlertTypeChange(alert.key, enabled)}
+            />
+          ))}
         </SettingsSection>
       </ScrollView>
     </SettingsScreen>

@@ -10,6 +10,7 @@ import {
   pickComposerFiles,
   pickComposerMedia,
   removePersistedComposerAttachmentFile,
+  type ComposerMediaSource,
   type DraftComposerAttachment,
 } from "../lib/composerImages";
 import {
@@ -63,7 +64,7 @@ export function useComposerAttachmentActions(props: {
     ];
     if (problems.length) Dialog.alert(title, problems.join("\n\n"));
   };
-  const onPickDraftMedia = async () => {
+  const onPickDraftMedia = async (source: ComposerMediaSource = "library") => {
     const key = props.draftKey;
     if (!key || props.locked) return;
     const insertion = captureComposerDraftInsertion(key);
@@ -71,9 +72,10 @@ export function useComposerAttachmentActions(props: {
       const result = await pickComposerMedia({
         existingCount: countComposerDraftAttachmentsAfterSelection(key, insertion),
         maxVideoBytes: capabilities?.fileAttachments?.maxUploadBytes,
+        source,
       });
       report(
-        t("Could not attach photo or video"),
+        source === "camera" ? t("Could not attach photo") : t("Could not attach photo or video"),
         result.error,
         await append(key, signal, result.attachments, insertion),
       );

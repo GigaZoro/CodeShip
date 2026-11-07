@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { WorkspaceRootScreen } from "./WorkspaceRootScreen.android";
 import {
   initialWorkspaceTabsState,
+  withLinkedWorkspaceTab,
   workspaceTabsReducer,
   shouldRestoreNativeSearch,
   workspaceTabForNativeSlot,
@@ -160,6 +161,18 @@ describe("workspace root navigation", () => {
     expect(shouldRestoreNativeSearch(filtered.tabs.threads, false)).toBe(true);
     expect(shouldRestoreNativeSearch(opened.tabs.threads, false)).toBe(true);
     expect(shouldRestoreNativeSearch(initialWorkspaceTabsState().tabs.threads, true)).toBe(false);
+  });
+
+  it("shows the tab a link opened until the user picks another", () => {
+    const onTasks = workspaceTabsReducer(initialWorkspaceTabsState(), {
+      type: "select",
+      tab: "scheduledTasks",
+    });
+    const linked = { tab: "threads", id: 1 } as const;
+
+    expect(withLinkedWorkspaceTab(onTasks, linked, 0).selectedTab).toBe("threads");
+    expect(withLinkedWorkspaceTab(onTasks, linked, 1).selectedTab).toBe("scheduledTasks");
+    expect(withLinkedWorkspaceTab(onTasks, null, 0)).toBe(onTasks);
   });
 
   it("returns from Usage without losing list state", () => {
