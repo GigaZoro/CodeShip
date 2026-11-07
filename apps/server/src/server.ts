@@ -77,6 +77,7 @@ import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
 import * as PeerLinks from "./peer/PeerLinks.ts";
 import * as SharedTaskPeerCheck from "./scheduledTasks/SharedTaskPeerCheck.ts";
 import * as SharedTaskPull from "./scheduledTasks/SharedTaskPull.ts";
+import * as LinkedScheduledTasks from "./scheduledTasks/LinkedScheduledTasks.ts";
 import * as PeerMcpClient from "./peer/PeerMcpClient.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
@@ -869,6 +870,12 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(AccountRouting.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
   // Links agents ask for: shown in a thread from /mcp, answered over WebSocket.
   Layer.provide(PeerLinkRequests.layer),
+  // Linked machines' last task lists, kept up to date in the background while the server runs.
+  Layer.provide(
+    LinkedScheduledTasks.layer.pipe(
+      Layer.provide(PeerMcpClient.layer.pipe(Layer.provideMerge(PeerLinks.layer))),
+    ),
+  ),
   // Share the service so HTTP/WS clients single-flight reads and invalidate each other's cached patches.
   Layer.provide(layerPullRequestService),
   // The same activity instance RunExecutionService reports to, by layer memoization.

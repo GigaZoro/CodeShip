@@ -402,6 +402,8 @@ import {
   ScheduledTaskRunNowInput,
   ScheduledTaskListRunsInput,
   ScheduledTaskListRunsResult,
+  LinkedScheduledTasksInput,
+  LinkedScheduledTasksResult,
   ScheduledTaskRotateWebhookTokenInput,
   ScheduledTaskListWebhookDeliveriesInput,
   ScheduledTaskListWebhookDeliveriesResult,
@@ -599,6 +601,7 @@ export const WS_METHODS = {
   serverRefreshUsageRates: "server.refreshUsageRates",
 
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
+  scheduledTasksSubscribeLinked: "scheduledTasks.subscribeLinked",
   scheduledTasksUpsert: "scheduledTasks.upsert",
   scheduledTasksSetEnabled: "scheduledTasks.setEnabled",
   scheduledTasksSetPlacement: "scheduledTasks.setPlacement",
@@ -2078,6 +2081,14 @@ const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe
   stream: true,
 });
 
+/** The tasks of machines this one links to, as each last reported them. */
+const WsScheduledTasksSubscribeLinkedRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribeLinked, {
+  payload: LinkedScheduledTasksInput,
+  success: LinkedScheduledTasksResult,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
 const WsScheduledTasksUpsertRpc = Rpc.make(WS_METHODS.scheduledTasksUpsert, {
   payload: ScheduledTaskUpsertInput,
   success: ScheduledTaskMutationResult,
@@ -2267,6 +2278,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRefreshUsageRatesRpc,
   WsServerSignalProcessRpc,
   WsScheduledTasksSubscribeRpc,
+  WsScheduledTasksSubscribeLinkedRpc,
   WsScheduledTasksUpsertRpc,
   WsScheduledTasksSetEnabledRpc,
   WsScheduledTasksSetPlacementRpc,

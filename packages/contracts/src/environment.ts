@@ -122,6 +122,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   sharedScheduledTasks: Schema.optionalKey(Schema.Boolean),
   /** Serves `scheduledTasks.listRuns` and honors a task's `catchUpMissedRun`; hide both where absent. */
   scheduledTaskRunHistory: Schema.optionalKey(Schema.Boolean),
+  /** Serves `scheduledTasks.subscribeLinked`: the last task list of each machine it links to. */
+  linkedScheduledTasks: Schema.optionalKey(Schema.Boolean),
   /** Honors `delegatedTaskModelSelections`; hide that setting where it is absent. */
   delegatedTaskModels: Schema.optionalKey(Schema.Boolean),
   /** Runs Final review and honors the thread `finalReview` flag; hide its controls where absent. */

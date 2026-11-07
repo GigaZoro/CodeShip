@@ -11,6 +11,7 @@ import { managedCapabilityDenial } from "@t3tools/shared/managedPolicyMessages";
 import { readEnvironmentScope } from "../../state/session";
 import type {
   EnvironmentId,
+  LinkedScheduledTaskMachine,
   ProjectId,
   ScheduledTask,
   ScheduledTaskId,
@@ -19,6 +20,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   formatLastRunAgo,
+  formatTimeAgo,
   pinnedTaskRunThreadId,
   resolveScheduledTaskPlacement,
   scheduledTaskPlacementOptions,
@@ -75,6 +77,10 @@ import {
   visibleMachineOrder,
   type SharedScheduledTaskGroup,
 } from "@t3tools/client-runtime/scheduled-task-sharing";
+import {
+  linkedProjectName,
+  pickLinkedMachineTasks,
+} from "@t3tools/client-runtime/linked-scheduled-tasks";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useSharedScheduledTaskSnapshots } from "../../state/sharedScheduledTasks";
 import { webhookAddress } from "@t3tools/client-runtime/webhook-address";
@@ -149,6 +155,20 @@ const scheduledTaskListsAtom = Atom.family((key: string) =>
   ).pipe(Atom.withLabel(`mobile-scheduled-task-lists:${key}`)),
 );
 
+/** Keyed by environment ids: the task lists each one stored for the machines it links to. */
+const linkedScheduledTaskListsAtom = Atom.family((key: string) =>
+  Atom.make((get) =>
+    (key === "" ? [] : (key.split("\n") as EnvironmentId[])).map((environmentId) => ({
+      environmentId,
+      machines:
+        AsyncResult.getOrElse(
+          get(serverEnvironment.linkedScheduledTasksLive({ environmentId, input: {} })),
+          () => null,
+        )?.machines ?? [],
+    })),
+  ).pipe(Atom.withLabel(`mobile-linked-scheduled-task-lists:${key}`)),
+);
+
 /** Mobile can't send a webhook secret, and a task bound to a thread runs only in that thread. */
 function canDuplicateOnMobile(task: ScheduledTask) {
   return (
@@ -168,7 +188,7 @@ function nextRunText(task: ScheduledTask, now: number) {
   return task.nextRunAt ? formatNextScheduledTaskRun(task.nextRunAt, now) : t("Not scheduled");
 }
 
-function lastRunText(task: ScheduledTask, now: number) {
+function lastRunText(task: Pick<ScheduledTask, "lastRunStatus" | "lastRunAt">, now: number) {
   if (task.lastRunStatus === "running") return t("Running now");
   if (!task.lastRunAt) return null;
   const lastRun = formatLastRunAgo(task.lastRunAt, now);
@@ -480,6 +500,35 @@ function ScheduledTasksContent(props: { readonly workspace?: boolean }) {
   const labelOf = (environmentId: EnvironmentId) =>
     availableTargets.find((target) => target.environmentId === environmentId)?.label ??
     environmentId;
+  const projectNameOf = (environmentId: EnvironmentId, projectId: ProjectId) => {
+    for (const group of projectGroups) {
+      const member = group.members.find(
+        (candidate) =>
+          candidate.project.environmentId === environmentId && candidate.project.id === projectId,
+      );
+      if (member !== undefined) return member.project.isScratch ? t("No project") : group.label;
+    }
+    return null;
+  };
+  const linkedLists = useAtomValue(
+    linkedScheduledTaskListsAtom(
+      availableTargets
+        .flatMap((target) =>
+          target.serverConfig.environment.capabilities.linkedScheduledTasks === true
+            ? [target.environmentId]
+            : [],
+        )
+        .join("\n"),
+    ),
+  );
+  // Linked machines can't be picked in the filters, so they show only while nothing is filtered.
+  const linkedMachines =
+    selectedProjectKey === null && selectedTargets.length === availableTargets.length
+      ? pickLinkedMachineTasks({
+          lists: linkedLists,
+          readsLive: (id) => availableTargets.some((target) => target.environmentId === id),
+        })
+      : [];
   const editTask = (environmentId: EnvironmentId, task: ScheduledTask) => {
     startEditor({
       environmentId,
@@ -567,6 +616,7 @@ function ScheduledTasksContent(props: { readonly workspace?: boolean }) {
                 environment={environment}
                 now={now}
                 projectIds={projectIdsFor(environment.environmentId)}
+                projectNameOf={(projectId) => projectNameOf(environment.environmentId, projectId)}
                 sharedCopies={
                   sharedGroups.filter((group) =>
                     group.copies.some((copy) => copy.environmentId === environment.environmentId),
@@ -590,6 +640,14 @@ function ScheduledTasksContent(props: { readonly workspace?: boolean }) {
                 : t("No environments match these filters. Change the filter above.")}
             </Text>
           )}
+          {linkedMachines.map(({ machine, via }) => (
+            <LinkedMachineTasks
+              key={machine.environmentId}
+              machine={machine}
+              via={labelOf(via)}
+              now={now}
+            />
+          ))}
         </ScrollView>
       </SettingsScreen>
     </>
@@ -1945,10 +2003,90 @@ function SharedTaskRow({
   );
 }
 
+/**
+ * A machine a connected one links to, with the tasks it last reported. Read-only: this app has no
+ * connection to it, and while it is offline nothing can reach it.
+ */
+function LinkedMachineTasks({
+  machine,
+  via,
+  now,
+}: {
+  readonly machine: LinkedScheduledTaskMachine;
+  readonly via: string;
+  readonly now: number;
+}) {
+  const offline = machine.error !== null;
+  return (
+    <SettingsSection
+      title={machine.label}
+      titleIcon={
+        <EnvironmentMachineSymbol
+          kind={resolveEnvironmentMachineKind(null)}
+          size={16}
+          tintColorClassName={
+            Platform.OS === "android" ? "accent-primary" : "accent-foreground-muted"
+          }
+        />
+      }
+    >
+      <View className="gap-1 px-4 py-3">
+        <Text className="text-sm text-foreground">
+          {!offline
+            ? t("Online · checked {when}", { when: formatTimeAgo(machine.checkedAt, now) })
+            : machine.seenAt !== null
+              ? t("Offline · last seen {when}", { when: formatTimeAgo(machine.seenAt, now) })
+              : t("Offline · not reached yet")}
+        </Text>
+        <Text className="text-sm text-foreground-muted">
+          {t("Read-only: the tasks it last reported to {machine}.", { machine: via })}
+        </Text>
+      </View>
+      {machine.tasks.length === 0 ? (
+        <Text className="border-t border-border-subtle p-4 text-base text-foreground-muted">
+          {t("No scheduled tasks yet.")}
+        </Text>
+      ) : (
+        machine.tasks.map((task) => {
+          const project = linkedProjectName(task.projectTitle);
+          const lastRun = lastRunText(task, now);
+          return (
+            <View
+              key={task.id}
+              accessible
+              className="gap-1 border-t border-border-subtle px-4 py-3"
+            >
+              <Text textRole="body" className="text-foreground" numberOfLines={1}>
+                {task.title}
+              </Text>
+              <Text className="text-sm text-foreground-muted" numberOfLines={2}>
+                {[
+                  project,
+                  describeSchedule(task),
+                  // An offline machine runs nothing, so its reported next run would mislead.
+                  !task.enabled
+                    ? t("Paused")
+                    : !offline && task.nextRunAt !== null
+                      ? formatNextScheduledTaskRun(task.nextRunAt, now)
+                      : null,
+                  lastRun,
+                ]
+                  .filter((part) => part !== null && part !== "")
+                  .join(" · ")}
+              </Text>
+            </View>
+          );
+        })
+      )}
+    </SettingsSection>
+  );
+}
+
 function EnvironmentTasks({
   environment,
   now,
   projectIds,
+  projectNameOf,
   sharedCopies,
   onEdit,
   onOpenRuns,
@@ -1957,6 +2095,7 @@ function EnvironmentTasks({
   readonly environment: SettingsTarget;
   readonly now: number;
   readonly projectIds: readonly ProjectId[] | null;
+  readonly projectNameOf: (projectId: ProjectId) => string | null;
   /** Shared tasks this machine holds, listed once above every machine. */
   readonly sharedCopies: number;
   readonly onEdit: (task: ScheduledTask) => void;
@@ -2092,6 +2231,7 @@ function EnvironmentTasks({
         <>
           {visibleTasks?.map((task, index) => {
             const runThreadId = lastRunThreadId(task);
+            const project = projectNameOf(task.projectId);
             return (
               <View
                 key={task.id}
@@ -2103,7 +2243,7 @@ function EnvironmentTasks({
               >
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel={`${task.title}${task.shared ? (task.shared.runOn === "one" ? t(", runs on one machine") : t(", runs on every machine")) : ""}${task.modelUnavailableHere ? t(", runs the default model here") : ""}`}
+                  accessibilityLabel={`${task.title}${project === null ? "" : t(", in {project}", { project })}${task.shared ? (task.shared.runOn === "one" ? t(", runs on one machine") : t(", runs on every machine")) : ""}${task.modelUnavailableHere ? t(", runs the default model here") : ""}`}
                   accessibilityHint={
                     runThreadId === null
                       ? t("Opens the task editor.")
@@ -2119,6 +2259,7 @@ function EnvironmentTasks({
                     {task.title}
                   </Text>
                   <Text className="text-sm text-foreground-muted" numberOfLines={2}>
+                    {project === null ? "" : `${project} · `}
                     {describeSchedule(task)}
                     {!task.enabled
                       ? ` · ${t("Paused")}`

@@ -19,7 +19,6 @@ import { forkParked } from "../serverActivation.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
 
 const PULL_INTERVAL = Duration.minutes(5);
-const PEER_CALL_TIMEOUT = Duration.seconds(20);
 
 /** Copies shared tasks from linked machines in the background, so they sync with no app open. */
 export class SharedTaskPull extends Context.Service<
@@ -79,10 +78,10 @@ const make = Effect.gen(function* () {
         environmentId: link.environmentId,
         tool: "t3_shared_scheduled_tasks",
         arguments: { forEnvironmentId: hereId },
-        limits: { runtimeMode: "approval-required", interactionMode: "plan" },
+        limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
         success: OrchestratorMcpSharedScheduledTasksResult,
       })
-      .pipe(Effect.timeoutOption(PEER_CALL_TIMEOUT));
+      .pipe(Effect.timeoutOption(PeerMcpClient.PEER_READ_TIMEOUT));
     if (Option.isNone(answer)) {
       return yield* Effect.logWarning("A linked machine did not answer a shared task pull", {
         peer: link.environmentId,

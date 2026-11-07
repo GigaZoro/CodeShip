@@ -11,6 +11,7 @@ import {
   Clock3Icon,
   CopyIcon,
   CopyPlusIcon,
+  FolderIcon,
   HistoryIcon,
   InboxIcon,
   MoreHorizontalIcon,
@@ -24,6 +25,9 @@ import {
 import { type ReactNode, useContext, useRef, useState } from "react";
 import type {
   EnvironmentId,
+  EnvironmentMachineKind,
+  LinkedScheduledTask,
+  LinkedScheduledTaskMachine,
   ModelSelection,
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
   ProjectId,
@@ -104,6 +108,11 @@ import {
   visibleMachineOrder,
   type SharedScheduledTaskGroup,
 } from "@t3tools/client-runtime/scheduled-task-sharing";
+import {
+  linkedProjectName,
+  pickLinkedMachineTasks,
+  type LinkedMachineTasks,
+} from "@t3tools/client-runtime/linked-scheduled-tasks";
 import {
   sharedScheduledTaskSnapshotsAtom,
   supportsSharedScheduledTasks,
@@ -448,7 +457,11 @@ function UpcomingTime(props: { value: string }) {
 }
 
 /** What holds or comes next for a task on its machine. */
-function TaskNextRun({ task }: { readonly task: ScheduledTask }) {
+function TaskNextRun({
+  task,
+}: {
+  readonly task: Pick<ScheduledTask, "blockedByPolicy" | "enabled" | "schedule" | "nextRunAt">;
+}) {
   if (task.blockedByPolicy !== undefined) return task.blockedByPolicy;
   if (!task.enabled) return t("Paused");
   if (task.schedule.type === "webhook") return t("Listening");
@@ -483,7 +496,7 @@ function TaskLastRun({
   );
 }
 
-function RunStatusBadge({ task }: { readonly task: ScheduledTask }) {
+function RunStatusBadge({ task }: { readonly task: Pick<ScheduledTask, "lastRunStatus"> }) {
   if (task.lastRunStatus === "never") return null;
   return (
     <Badge variant={statusVariant(task.lastRunStatus)}>{runStatusLabel(task.lastRunStatus)}</Badge>
@@ -728,6 +741,7 @@ export function ScheduledTasksSettings(target: {
             ))}
           </div>
         )}
+        <LinkedMachineTaskSections />
       </SettingsPageContainer>
       {editor ? (
         <ScheduledTaskEditorDialog
@@ -866,6 +880,10 @@ function ScheduledTaskEnvironmentList({
   );
   const holdsShared = (id: EnvironmentId) =>
     sharedGroups.some((group) => group.copies.some((copy) => copy.environmentId === id));
+  // Their stored tasks show under Linked machines, which also says they are offline.
+  const shownAsLinked = new Set(
+    useLinkedMachineTasks().map(({ machine }) => machine.environmentId),
+  );
   const notConnectedLabel = t("Not connected:");
   const loadingLabel = t("Loading scheduled tasks on");
   const noTasksLabel = t("No tasks on");
@@ -878,6 +896,7 @@ function ScheduledTaskEnvironmentList({
   for (const { environment, connected, tasks, error } of states) {
     const label = settingsScopeEnvironmentLabel(environment, environments);
     if (!connected) {
+      if (shownAsLinked.has(environment.environmentId)) continue;
       summaries[notConnectedLabel]!.push(
         `${label} (${connectionStatusTitle(environment.connection)})`,
       );
@@ -1036,6 +1055,248 @@ function ScheduledTasksEmptyRow({
       }
     />
   );
+}
+
+const linkedScheduledTasksListAtom = environmentAtomList(
+  "web-linked-scheduled-tasks-list",
+  (environmentId) => serverEnvironment.linkedScheduledTasksLive({ environmentId, input: {} }),
+);
+
+/**
+ * Machines the connected ones link to that this app can't read live, each with the task list
+ * heard most recently. Those lists outlast the machine going offline.
+ */
+function useLinkedMachineTasks(): ReadonlyArray<LinkedMachineTasks> {
+  const { environments } = useEnvironments();
+  const live = environments.filter(
+    (entry) => entry.connection.phase === "connected" && entry.serverConfig !== null,
+  );
+  const servingIds = live.flatMap((entry) =>
+    entry.serverConfig?.environment.capabilities.linkedScheduledTasks === true
+      ? [entry.environmentId]
+      : [],
+  );
+  const queries = useAtomValue(linkedScheduledTasksListAtom(environmentIdsKey(servingIds)));
+  return pickLinkedMachineTasks({
+    lists: servingIds.map((environmentId, index) => ({
+      environmentId,
+      machines: AsyncResult.getOrElse(queries[index]!, () => null)?.machines ?? [],
+    })),
+    readsLive: (id) => live.some((entry) => entry.environmentId === id),
+  });
+}
+
+/**
+ * Machines the connected ones link to that this app can't read live, with the tasks each last
+ * reported. Read-only: changing a task needs a connection to its machine.
+ */
+function LinkedMachineTaskSections() {
+  const { scope } = useSettingsScope();
+  const { environments } = useEnvironments();
+  const linked = useLinkedMachineTasks().filter(
+    ({ machine }) =>
+      scope.kind === "all" ||
+      (scope.kind === "environment" && scope.environmentIds.includes(machine.environmentId)),
+  );
+  if (linked.length === 0) return null;
+  return (
+    <SettingsSection title={t("Linked machines")}>
+      {linked.map(({ machine, via }) => (
+        <LinkedMachineSection
+          key={machine.environmentId}
+          machine={machine}
+          via={environments.find((entry) => entry.environmentId === via)?.label ?? via}
+        />
+      ))}
+    </SettingsSection>
+  );
+}
+
+function LinkedMachineSection({
+  machine,
+  via,
+}: {
+  readonly machine: LinkedScheduledTaskMachine;
+  readonly via: string;
+}) {
+  // Present when this app has the machine saved but cannot reach it now.
+  const environment = useEnvironment(machine.environmentId);
+  const kind = resolveEnvironmentMachineKind(environment?.serverConfig ?? null);
+  const offline = machine.error !== null;
+  return (
+    <div className="divide-y divide-border/50">
+      <EnvironmentRow
+        kind={kind}
+        label={machine.label}
+        dimmed={offline}
+        subtitle={
+          <>
+            <span className="block">
+              {t("Read-only: the tasks it last reported to {machine}.", { machine: via })}
+            </span>
+            {offline ? <span className="block break-words">{machine.error}</span> : null}
+          </>
+        }
+      >
+        <ConnectionStatusDot
+          dotClassName={connectionPhaseDotClassName(offline ? "offline" : "connected")}
+          tooltipText={offline ? t("Offline") : t("Online")}
+        />
+        <span className="text-xs text-muted-foreground">
+          {!offline
+            ? tx("Online · checked {when}", {
+                when: <ScheduledRelativeLabel value={machine.checkedAt} />,
+              })
+            : machine.seenAt !== null
+              ? tx("Offline · last seen {when}", {
+                  when: <ScheduledRelativeLabel value={machine.seenAt} />,
+                })
+              : t("Offline · not reached yet")}
+        </span>
+        {environment === null ? (
+          <Button size="xs" variant="outline" render={<Link to="/settings/connections" />}>
+            {t("Add environment")}
+          </Button>
+        ) : null}
+      </EnvironmentRow>
+      {machine.tasks.length === 0 ? (
+        <SettingsRow title={t("No scheduled tasks")} />
+      ) : (
+        machine.tasks.map((task) => (
+          <LinkedScheduledTaskRow
+            key={task.id}
+            kind={kind}
+            machine={machine.label}
+            task={task}
+            offline={offline}
+          />
+        ))
+      )}
+    </div>
+  );
+}
+
+/** A task as its machine last reported it. Nothing here changes it. */
+function LinkedScheduledTaskRow({
+  kind,
+  machine,
+  task,
+  offline,
+}: {
+  readonly kind: EnvironmentMachineKind;
+  readonly machine: string;
+  readonly task: LinkedScheduledTask;
+  readonly offline: boolean;
+}) {
+  const schedule = scheduleLabel(task.schedule);
+  const project = linkedProjectName(task.projectTitle);
+  return (
+    <SettingsRow
+      title={task.title}
+      description={<span className="line-clamp-2">{task.prompt}</span>}
+      status={
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex min-w-0 max-w-full items-center gap-2">
+            <TaskMachineLabel kind={kind} label={machine} />
+            {project !== null ? <TaskProjectLabel name={project} /> : null}
+          </span>
+          <span>
+            {/* An offline machine runs nothing, so its reported next run would mislead. */}
+            {offline
+              ? task.enabled
+                ? schedule
+                : t("{schedule} · paused", { schedule })
+              : tx("{schedule} · {status}", { schedule, status: <TaskNextRun task={task} /> })}
+          </span>
+          <RunStatusBadge task={task} />
+          {task.lastRunAt !== null && task.lastRunStatus !== "running" ? (
+            <span>
+              {tx("Last run {when}", { when: <ScheduledRelativeLabel value={task.lastRunAt} /> })}
+            </span>
+          ) : null}
+        </div>
+      }
+      control={
+        <Switch
+          checked={task.enabled}
+          disabled
+          aria-label={t("Enable {name}", { name: task.title })}
+        />
+      }
+    />
+  );
+}
+
+function TaskMachineLabel({
+  kind,
+  label,
+}: {
+  readonly kind: EnvironmentMachineKind;
+  readonly label: string;
+}) {
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1 font-medium text-foreground">
+      <EnvironmentMachineIcon aria-hidden kind={kind} className="size-3.5 shrink-0" />
+      <span className="sr-only">{t("Runs on {machine}", { machine: label })}</span>
+      <span aria-hidden className="truncate">
+        {label}
+      </span>
+    </span>
+  );
+}
+
+function TaskProjectLabel({ name }: { readonly name: string }) {
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1">
+      <FolderIcon aria-hidden className="size-3.5 shrink-0" />
+      <span className="sr-only">{t("Project: {value}", { value: name })}</span>
+      <span aria-hidden className="truncate">
+        {name}
+      </span>
+    </span>
+  );
+}
+
+/** Where a task runs: its machine, then the project its threads start in. */
+function ScheduledTaskPlace({
+  environmentId,
+  projectId,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+}) {
+  const { environments } = useEnvironments();
+  const environment = environments.find((entry) => entry.environmentId === environmentId);
+  return (
+    <span className="inline-flex min-w-0 max-w-full items-center gap-2">
+      <TaskMachineLabel
+        kind={resolveEnvironmentMachineKind(environment?.serverConfig ?? null)}
+        label={
+          environment ? settingsScopeEnvironmentLabel(environment, environments) : environmentId
+        }
+      />
+      <ScheduledTaskProject environmentId={environmentId} projectId={projectId} />
+    </span>
+  );
+}
+
+/** The task's project, named as the "Showing tasks for" picker names it. */
+function ScheduledTaskProject({
+  environmentId,
+  projectId,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+}) {
+  const { groups } = useSettingsScope();
+  for (const group of groups) {
+    const member = group.memberProjects.find(
+      (candidate) => candidate.environmentId === environmentId && candidate.id === projectId,
+    );
+    if (member === undefined) continue;
+    return <TaskProjectLabel name={member.isScratch ? t("No project") : group.displayName} />;
+  }
+  return null;
 }
 
 function ScheduledTaskEnvironmentSubtitle({
@@ -1490,6 +1751,7 @@ function ScheduledTaskRow({
       description={<span className="line-clamp-2">{task.prompt}</span>}
       status={
         <div className="flex flex-wrap items-center gap-2">
+          <ScheduledTaskPlace environmentId={environmentId} projectId={task.projectId} />
           <span>
             {tx("{schedule} · {status}", {
               schedule: scheduleLabel(task.schedule),
@@ -1631,6 +1893,7 @@ function SharedTaskCopyLine({
         className="size-3.5 shrink-0"
       />
       <span className="font-medium text-foreground">{view.labelOf(environmentId)}</span>
+      <ScheduledTaskProject environmentId={environmentId} projectId={task.projectId} />
       <span>
         <TaskNextRun task={task} />
       </span>

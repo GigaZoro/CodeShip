@@ -1,3 +1,8 @@
+## 2026-11-07 — Scheduled tasks show where they run
+
+- Each scheduled task shows its machine and project, with their icons, so you can tell them apart without the machine headings.
+- Scheduled tasks lists the tasks of machines your computer links to under **Linked machines**, even while one is offline. Each shows the tasks it last reported, whether it's online or when it was last seen, and **Add environment** when the app isn't connected to it. Your computer checks them every 5 minutes and when you open the page.
+
 ## 2026-11-07 — Needs you button only when something waits
 
 - The **Needs you** button in the chat header shows only while a thread needs you.

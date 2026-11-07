@@ -4,7 +4,7 @@ import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { useEnvironmentsWithScope } from "../../state/session";
 import { mapAtomCommandResult, settlePromise } from "@t3tools/client-runtime/state/runtime";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { planProjectRemoval } from "@t3tools/client-runtime/state/projects";
+import { planProjectRemoval, SCRATCH_PROJECT_TITLE } from "@t3tools/client-runtime/state/projects";
 import { type EnvironmentId } from "@t3tools/contracts";
 import {
   checkProjectAccess,
@@ -50,7 +50,6 @@ import {
   defaultProjectIcon,
   hasDefaultProjectIcon,
   projectGroupTitleNeedsUpdate,
-  SCRATCH_PROJECT_TITLE,
 } from "./ProjectSettingsPanel.logic";
 import { useSettingsProjectGroups } from "./useSettingsProjectGroups";
 import { readUnloadedThreadCount } from "../../state/olderSettledShelf";

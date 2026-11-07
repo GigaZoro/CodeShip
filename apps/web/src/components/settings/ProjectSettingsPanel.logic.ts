@@ -2,8 +2,6 @@ import type { ProjectIconOverride } from "@t3tools/contracts";
 
 import type { Project } from "../../types";
 
-// oxlint-disable-next-line t3code/no-untranslated-text -- stored project title, compared by value to find the scratch project
-export const SCRATCH_PROJECT_TITLE = "No project";
 const SCRATCH_PROJECT_ICON = {
   kind: "lucide",
   name: "message-square-dashed",

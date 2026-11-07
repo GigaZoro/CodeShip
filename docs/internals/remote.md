@@ -176,6 +176,15 @@ one is working on or finished that occurrence. A machine that can't ask one
 runs the task and records it, so a missing or expired link causes a duplicate
 run, not a missed one. A late first machine asks the same way before it runs.
 
+Clients otherwise read a machine only through their own connection to it. The
+exception is a linked machine's task list, which its owner wants to see while that
+machine is offline and which no client can fetch then. Each machine stores the last
+`list_scheduled_tasks` answer from every link and serves it read-only as
+`scheduledTasks.subscribeLinked`
+([`LinkedScheduledTasks.ts`](../../apps/server/src/scheduledTasks/LinkedScheduledTasks.ts)).
+A failed ask keeps the stored list and records why, and removing a link drops its
+list. Clients show only machines they can't read live, and change nothing through it.
+
 ## Hosted web is a client
 
 The hosted web app stores its connection catalog in the browser and connects

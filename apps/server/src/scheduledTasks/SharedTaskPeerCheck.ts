@@ -6,15 +6,12 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
-
-const PEER_CALL_TIMEOUT = Duration.seconds(20);
 
 interface LinkStatus {
   readonly enabled: boolean;
@@ -106,11 +103,11 @@ const make = Effect.gen(function* () {
             environmentId,
             tool: "list_scheduled_tasks",
             arguments: {},
-            limits: { runtimeMode: "approval-required", interactionMode: "plan" },
+            limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
             success: OrchestratorMcpListScheduledTasksResult,
           })
           .pipe(
-            Effect.timeoutOption(PEER_CALL_TIMEOUT),
+            Effect.timeoutOption(PeerMcpClient.PEER_READ_TIMEOUT),
             Effect.map((answer) => {
               if (Option.isNone(answer)) {
                 return { environmentId, reason: "It did not answer in time.", has: false };

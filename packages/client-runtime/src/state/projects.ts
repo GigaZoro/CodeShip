@@ -135,6 +135,9 @@ export function findProjectByPath<T extends { workspaceRoot?: string; cwd?: stri
   });
 }
 
+/** The stored title of a machine's No project folder until someone renames it; compare, never show. */
+export const SCRATCH_PROJECT_TITLE = "No project";
+
 export function isScratchProject(
   project: { readonly workspaceRoot: string },
   scratchWorkspaceRoot: string | null | undefined,

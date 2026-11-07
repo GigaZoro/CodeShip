@@ -88,6 +88,7 @@ vi.mock(import("./SettingsScopeContext"), async (original) => {
           : [entry]
         : [],
       environment: entry,
+      groups: [],
       target: null,
       targets: [],
     };

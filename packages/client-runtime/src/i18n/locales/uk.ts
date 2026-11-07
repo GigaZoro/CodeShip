@@ -15,6 +15,7 @@ const catalog: MessageCatalog = {
   },
   "_No description provided._": "_Опису немає._",
   ", before the latest commits": ", до останніх комітів",
+  ", in {project}": ", у проєкті {project}",
   ", runs on every machine": ", запускається на кожному комп’ютері",
   ", runs on one machine": ", запускається на одному комп’ютері",
   ", runs the default model here": ", тут використовує модель за замовчуванням",
@@ -6575,6 +6576,7 @@ const catalog: MessageCatalog = {
     other: "Прив’язано з {count} чату",
   },
   "Linked from {name}": "Прив’язано з {name}",
+  "Linked machines": "Пов’язані комп’ютери",
   "Linked prompt ready": "Запит із посилання готовий",
   "Linked prompt ready. Replace draft?": "Запит із посилання готовий. Замінити чернетку?",
   "linked pull requests": "пов’язані пул-реквести",
@@ -7597,6 +7599,8 @@ const catalog: MessageCatalog = {
   Off: "Вимкнено",
   offline: "офлайн",
   Offline: "Не в мережі",
+  "Offline · last seen {when}": "Офлайн · востаннє в мережі {when}",
+  "Offline · not reached yet": "Офлайн · ще не вдалося зв’язатися",
   "Offline cache records will appear here after environments are used.":
     "Записи офлайн-кешу з’являться тут після використання середовищ.",
   "Offline for a while, so its T3 Connect tunnel was removed. Start T3.CodeShip on that computer and update it to the latest version to reconnect.":
@@ -7670,6 +7674,8 @@ const catalog: MessageCatalog = {
   "Ongoing activity enabled": "Поточну активність ввімкнено",
   "Ongoing activity unavailable": "Поточна активність недоступна",
   "Ongoing Agent Activity": "Поточна активність агента",
+  Online: "Онлайн",
+  "Online · checked {when}": "Онлайн · перевірено {when}",
   "Only {machine}": "Лише {machine}",
   "Only a locally paired bearer connection can be linked to the cloud.":
     "До хмари можна прив’язати лише локально сполучене bearer-з’єднання.",
@@ -8709,6 +8715,8 @@ const catalog: MessageCatalog = {
   "Read-only access": "Доступ лише для читання",
   "Read-only connection. Unsaved edits are kept until write access returns.":
     "З’єднання лише для читання. Незбережені зміни зберігаються, доки не повернеться доступ на запис.",
+  "Read-only: the tasks it last reported to {machine}.":
+    "Лише читання: завдання, які він востаннє передав на {machine}.",
   "Read-only. Up to 50 columns and 1,024 characters per cell. Blob contents are omitted.":
     "Лише читання. До 50 стовпців і 1024 символів у комірці. Вміст BLOB пропущено.",
   "Read/s": "Читання/с",

@@ -431,6 +431,45 @@ export const ScheduledTaskListResult = Schema.Struct({
 });
 export type ScheduledTaskListResult = typeof ScheduledTaskListResult.Type;
 
+/** A task on a machine this environment links to, as that machine last reported it. */
+export const LinkedScheduledTask = Schema.Struct({
+  id: ScheduledTaskId,
+  title: Schema.String,
+  prompt: Schema.String,
+  enabled: Schema.Boolean,
+  projectId: ProjectId,
+  /** Null when that machine did not list the project. */
+  projectTitle: Schema.NullOr(Schema.String),
+  schedule: ScheduledTaskSchedule,
+  nextRunAt: Schema.NullOr(IsoDateTime),
+  lastRunStatus: ScheduledTaskRunStatus,
+  lastRunAt: Schema.NullOr(IsoDateTime),
+  shared: Schema.Boolean,
+});
+export type LinkedScheduledTask = typeof LinkedScheduledTask.Type;
+
+/** The last task list this environment got from one machine it links to. */
+export const LinkedScheduledTaskMachine = Schema.Struct({
+  environmentId: EnvironmentId,
+  label: Schema.String,
+  /** When it last answered. Null until it first does. */
+  seenAt: Schema.NullOr(IsoDateTime),
+  /** When this environment last asked it. */
+  checkedAt: IsoDateTime,
+  /** Why the last ask failed. Null when it answered. */
+  error: Schema.NullOr(Schema.String),
+  tasks: ForwardCompatibleArray(LinkedScheduledTask),
+});
+export type LinkedScheduledTaskMachine = typeof LinkedScheduledTaskMachine.Type;
+
+export const LinkedScheduledTasksInput = Schema.Struct({});
+export type LinkedScheduledTasksInput = typeof LinkedScheduledTasksInput.Type;
+
+export const LinkedScheduledTasksResult = Schema.Struct({
+  machines: ForwardCompatibleArray(LinkedScheduledTaskMachine),
+});
+export type LinkedScheduledTasksResult = typeof LinkedScheduledTasksResult.Type;
+
 export const ScheduledTaskUpsertInput = Schema.Struct({
   id: Schema.optional(ScheduledTaskId),
   placement: Schema.optional(ScheduledTaskPlacement).annotate({

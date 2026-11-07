@@ -103,20 +103,24 @@ export function formatNextRunCountdown(nextRunAt: string, nowMs: number): string
   return t("next in {duration}", { duration });
 }
 
-export function formatLastRunAgo(lastRunAt: string, nowMs: number): string {
-  const elapsedMs = nowMs - Date.parse(lastRunAt);
+/** How long ago `at` was, such as "5m ago". Empty for an unreadable time. */
+export function formatTimeAgo(at: string, nowMs: number): string {
+  const elapsedMs = nowMs - Date.parse(at);
   if (Number.isNaN(elapsedMs)) return "";
   const minutes = Math.floor(elapsedMs / 60_000);
   const hours = Math.floor(minutes / 60);
-  const ago =
-    minutes < 1
-      ? t("just now")
-      : minutes < 60
-        ? t("{minutes}m ago", { minutes })
-        : hours < 24
-          ? t("{hours}h ago", { hours })
-          : t("{days}d ago", { days: Math.floor(hours / 24) });
-  return t("last run {ago}", { ago });
+  return minutes < 1
+    ? t("just now")
+    : minutes < 60
+      ? t("{minutes}m ago", { minutes })
+      : hours < 24
+        ? t("{hours}h ago", { hours })
+        : t("{days}d ago", { days: Math.floor(hours / 24) });
+}
+
+export function formatLastRunAgo(lastRunAt: string, nowMs: number): string {
+  const ago = formatTimeAgo(lastRunAt, nowMs);
+  return ago === "" ? "" : t("last run {ago}", { ago });
 }
 
 /** How far an interval task is through its wait for the next run, from 0 to 1. */

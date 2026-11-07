@@ -6,6 +6,7 @@ import {
   type RuntimeMode,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -25,6 +26,15 @@ export interface PeerCallLimits {
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
 }
+
+/** For the server's own background reads of a link: a supervised plan-mode caller. */
+export const READ_ONLY_PEER_LIMITS: PeerCallLimits = {
+  runtimeMode: "approval-required",
+  interactionMode: "plan",
+};
+
+/** How long a background read waits for a linked machine before treating it as unreachable. */
+export const PEER_READ_TIMEOUT = Duration.seconds(20);
 
 /**
  * Calls a linked environment's T3 MCP tools as this environment's outside

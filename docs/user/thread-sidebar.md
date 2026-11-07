@@ -94,6 +94,13 @@ Change a task's choice with **Show in** in its menu on the **Scheduled tasks** p
 **Show all in** at the top of the **Scheduled tasks** page moves every task shown there at once.
 The choice is saved on the environment, so every device connected to it shows the same place.
 
+The **Scheduled tasks** page lists tasks from every environment this app is connected to, and
+each task shows its machine and project. Machines your computer links to (see
+[Remote access](remote-access.md)) that the app can't reach directly appear under **Linked
+machines**, with the tasks each one last reported, even while it is offline. They are read-only
+there and refresh every few minutes. To change them, add the machine under
+**Settings → Machines & access**.
+
 **Show new scheduled tasks in** in **Settings → General** sets the place for tasks created from
 then on. Regular chat is the default. Changing it leaves existing tasks where they are, and
 editing or running a task does not move it.
