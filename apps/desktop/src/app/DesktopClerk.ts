@@ -21,6 +21,7 @@ import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/rela
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
+import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopClerkTokenFile from "./DesktopClerkTokenFile.ts";
 import * as DesktopUserData from "./DesktopUserData.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
@@ -64,6 +65,7 @@ export class DesktopClerk extends Context.Service<
       never,
       | ElectronApp.ElectronApp
       | ElectronWindow.ElectronWindow
+      | DesktopWindow.DesktopWindow
       | DesktopWebLinks.DesktopWebLinks
       | Scope.Scope
     >;
@@ -191,6 +193,7 @@ export const make = Effect.gen(function* () {
     configure: Effect.gen(function* () {
       const electronApp = yield* ElectronApp.ElectronApp;
       const electronWindow = yield* ElectronWindow.ElectronWindow;
+      const desktopWindow = yield* DesktopWindow.DesktopWindow;
       const webLinks = yield* DesktopWebLinks.DesktopWebLinks;
       const context = yield* Effect.context<ElectronWindow.ElectronWindow>();
       const runPromise = Effect.runPromiseWith(context);
@@ -272,11 +275,13 @@ export const make = Effect.gen(function* () {
           )
         )
           return;
+        // Brings back a window hidden in the tray, or opens one if none is left.
         void runPromise(
-          Effect.gen(function* () {
-            const mainWindow = yield* electronWindow.currentMainOrFirst;
-            if (Option.isSome(mainWindow)) yield* electronWindow.reveal(mainWindow.value);
-          }),
+          desktopWindow.activate.pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Could not show the window for a second launch", cause),
+            ),
+          ),
         );
       };
       for (const argv of pendingSecondInstances.splice(0)) handleSecondInstance(argv);

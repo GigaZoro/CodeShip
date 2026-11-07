@@ -113,7 +113,7 @@ describe("page reset", () => {
       Object.keys(
         restorableSettingsPatch(DEFAULT_UNIFIED_SETTINGS, "/settings/keybindings"),
       ).toSorted(),
-    ).toEqual(["confirmQuit", "sendShortcut"]);
+    ).toEqual(["closeWindowToTray", "confirmQuit", "sendShortcut"]);
   });
 
   it("under a project scope clears that project's overrides instead of pinning defaults", () => {
@@ -144,6 +144,7 @@ describe("page reset", () => {
     expect(keybindings.clearKeys).toEqual([]);
     expect(keybindings.labels).toEqual(["Send shortcut"]);
     expect(Object.keys(keybindings.devicePatch).toSorted()).toEqual([
+      "closeWindowToTray",
       "confirmQuit",
       "sendShortcut",
     ]);

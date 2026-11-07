@@ -35,6 +35,10 @@
       "types": "./src/textDirection.ts",
       "import": "./src/textDirection.ts"
     },
+    "./windowTitle": {
+      "types": "./src/windowTitle.ts",
+      "import": "./src/windowTitle.ts"
+    },
     "./projectFavicon": {
       "types": "./src/projectFavicon.ts",
       "import": "./src/projectFavicon.ts"

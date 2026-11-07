@@ -17,6 +17,8 @@ export class DesktopState extends Context.Service<
   {
     readonly backendReady: Ref.Ref<boolean>;
     readonly quitting: Ref.Ref<boolean>;
+    /** True while a tray icon keeps the app reachable, so closing the main window only hides it. */
+    readonly closeToTray: Ref.Ref<boolean>;
     readonly primaryBackendStartup: SubscriptionRef.SubscriptionRef<PrimaryBackendStartup>;
   }
 >()("@t3tools/desktop/app/DesktopState") {}
@@ -24,6 +26,7 @@ export class DesktopState extends Context.Service<
 const make = Effect.all({
   backendReady: Ref.make(false),
   quitting: Ref.make(false),
+  closeToTray: Ref.make(false),
   primaryBackendStartup: SubscriptionRef.make<PrimaryBackendStartup>({ _tag: "Starting" }),
 });
 

@@ -398,6 +398,7 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   restorable("/settings/general", msg("Delete confirmation"), ["confirmThreadDelete"]),
   restorable("/settings/keybindings", msg("Send shortcut"), ["sendShortcut"]),
   restorable("/settings/keybindings", msg("Quit shortcut"), ["confirmQuit"]),
+  restorable("/settings/keybindings", msg("Keep running in the tray"), ["closeWindowToTray"]),
   restorable("/settings/chat", msg("Default diff file state"), ["diffFilesCollapsed"]),
   restorable("/settings/chat", msg("Diff whitespace changes"), ["diffIgnoreWhitespace"]),
   restorable("/settings/chat", msg("Diff layout"), ["diffLayout"]),

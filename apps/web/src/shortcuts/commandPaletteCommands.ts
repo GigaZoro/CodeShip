@@ -1,6 +1,7 @@
 import type { AnyRouter } from "@tanstack/react-router";
 import { t } from "~/i18n";
 
+import { openCommandPalette } from "../commandPaletteBus";
 import {
   dispatchCommandPalette,
   isCommandPaletteMounted,
@@ -12,7 +13,12 @@ import { toggleThemeEditorForTheme } from "../components/settings/themeEditorSto
 import { toastManager } from "../components/ui/toast";
 import { getThemeSnapshot, setAppearanceMode } from "../hooks/useTheme";
 import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
-import { type CommandHandler, type CommandScopeOptions, registerCommands } from "./dispatcher";
+import {
+  type CommandHandler,
+  type CommandScopeOptions,
+  registerCommands,
+  registerMenuAction,
+} from "./dispatcher";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 
@@ -129,8 +135,11 @@ export function installCommandPaletteCommands(
     },
   );
 
+  const disposeMenuAction = registerMenuAction("commandPalette.open", () => openCommandPalette());
+
   return () => {
     disposeEscape();
     disposeCommands();
+    disposeMenuAction();
   };
 }

@@ -208,3 +208,11 @@ keyboard repeat; if repeat is disabled, use two presses or the application menu.
 Change **Settings → Keybindings → Other shortcuts → Quit shortcut** to **Direct** for a
 single press or **Double press** for two presses only. Choosing **Quit** from the
 application menu always quits immediately.
+
+## Closing the window on Windows
+
+On Windows, closing the window keeps T3.CodeShip running behind its icon in the notification
+area, so running agents and scheduled tasks continue. Click the icon, or open T3.CodeShip again,
+to bring the window back. Quit from the icon's menu, **File → Exit**, or the quit shortcut.
+To have closing the window quit instead, turn off
+**Settings → Keybindings → Other shortcuts → Keep running in the tray**.

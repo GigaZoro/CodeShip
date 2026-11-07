@@ -1,3 +1,10 @@
+## 2026-11-07 — Desktop tray, File menu and window titles
+
+- On Windows, closing the window keeps T3.CodeShip running in the notification area, so agents and scheduled tasks keep working. Click the tray icon or open the app again to bring the window back, and quit from the icon's menu or File → Exit. Turn this off in Settings → Keybindings → Keep running in the tray.
+- The desktop File menu has New Thread and Command Palette.
+- The window title, and the browser tab on the web, name the open thread and its project, so the taskbar and window switchers show which thread is which.
+- Opening the desktop app again while it runs now always shows a window, opening a new one if none is left.
+
 ## 2026-11-07 — Timeline and diff review
 
 - Expanded tool calls have Copy command, Copy output, Run in terminal and Add output to message buttons.

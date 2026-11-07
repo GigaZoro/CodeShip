@@ -30,6 +30,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import { useThreadActionMenu } from "~/hooks/useThreadActionMenu";
 import { readLocalApi } from "~/localApi";
+import { showInDocumentTitle } from "~/documentTitle";
 import { threadEnvironment } from "../../state/threads";
 import { canShareWithGuestAtom } from "./guestShareAvailability";
 import { useAtomValue } from "@effect/atom-react";
@@ -109,6 +110,12 @@ export const ChatHeader = memo(function ChatHeader({
   const activeProjectName = activeProject?.isScratch
     ? t("No project")
     : (activeProjectGroupLabel ?? activeProject?.title);
+  const documentProjectName = activeProject?.isScratch ? null : activeProjectName;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- names the open thread in document.title, which the desktop window and taskbar show
+  useEffect(
+    () => showInDocumentTitle([activeThreadTitle, documentProjectName]),
+    [activeThreadTitle, documentProjectName],
+  );
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const interfaceFont = useClientSettings((settings) => settings.fontFamilySans);
   const breadcrumbContainerRef = useRef<HTMLDivElement>(null);

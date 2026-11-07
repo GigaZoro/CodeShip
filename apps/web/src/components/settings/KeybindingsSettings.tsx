@@ -73,7 +73,7 @@ import {
 } from "./KeybindingsSettings.logic";
 import { SettingsGroup } from "./SettingsGroup";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
-import { QuitShortcutRow, SendShortcutRow } from "./SettingsPanels";
+import { CloseWindowToTrayRow, QuitShortcutRow, SendShortcutRow } from "./SettingsPanels";
 import { keybindingSearchAnchorId, searchableSetting } from "./settingsSearch";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -1562,6 +1562,7 @@ function OtherShortcutsSection() {
     <SettingsSection id="other-shortcuts" title={t("Other shortcuts")}>
       <SendShortcutRow />
       <QuitShortcutRow />
+      <CloseWindowToTrayRow />
       {isElectron ? (
         <SettingsRow
           title={t("Capture shortcut")}

@@ -9,6 +9,7 @@ import * as DesktopClientSettings from "../../settings/DesktopClientSettings.ts"
 import * as DesktopLanguage from "../../settings/DesktopLanguage.ts";
 import * as DesktopSnapShot from "../../snapShot/DesktopSnapShot.ts";
 import * as DesktopApplicationMenu from "../../window/DesktopApplicationMenu.ts";
+import * as DesktopTray from "../../window/DesktopTray.ts";
 import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
 
@@ -36,6 +37,7 @@ export const setClientSettings = DesktopIpc.makeIpcMethod({
     if (yield* DesktopLanguage.activateLanguagePreference(preference)) {
       yield* (yield* DesktopApplicationMenu.DesktopApplicationMenu).configure;
     }
+    yield* (yield* DesktopTray.DesktopTray).configure(settings.closeWindowToTray);
   }),
 });
 

@@ -49,6 +49,7 @@ message passes only when every word in it is listed here.
 | archive                                  | архівувати, архів                             |
 | pin / unpin                              | закріпити / відкріпити                        |
 | scheduled task                           | заплановане завдання                          |
+| tray / notification area (Windows)       | трей / область сповіщень                      |
 | skill                                    | навичка                                       |
 | usage / usage limits                     | використання / ліміти використання            |
 | token                                    | токен                                         |

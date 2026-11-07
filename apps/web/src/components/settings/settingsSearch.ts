@@ -727,6 +727,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     desktopOnly: true,
   },
   {
+    id: "close-window-to-tray",
+    title: msg("Keep running in the tray"),
+    to: "/settings/keybindings",
+    searchTerms: ["close window quit exit system tray notification area background agents"],
+    desktopOnly: true,
+    windowsOnly: true,
+  },
+  {
     id: "text-generation-model",
     title: msg("Text generation model"),
     to: "/settings/providers",

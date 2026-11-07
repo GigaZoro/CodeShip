@@ -12,6 +12,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Electron from "electron";
 
 import { type DesktopSnapShotEvent, DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts";
+import { resolveAppWindowTitle } from "@t3tools/shared/windowTitle";
 
 import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -701,16 +702,30 @@ export const make = Effect.gen(function* () {
       runFork(zoomWindow(window, direction));
     });
 
-    window.on("page-title-updated", (event) => {
+    window.on("page-title-updated", (event, title) => {
       event.preventDefault();
-      window.setTitle(environment.displayName);
+      window.setTitle(resolveAppWindowTitle(title, environment.displayName));
     });
     window.on("resize", scheduleBoundsPersist);
     window.on("move", scheduleBoundsPersist);
     window.on("maximize", scheduleBoundsPersist);
     window.on("unmaximize", scheduleBoundsPersist);
-    window.on("close", () => {
+    // Signing out or shutting down Windows closes windows without a quit.
+    let sessionEnding = false;
+    window.on("session-end", () => {
+      sessionEnding = true;
+    });
+    window.on("close", (event) => {
       runFork(flushBoundsPersist);
+      if (
+        sessionEnding ||
+        Ref.getUnsafe(desktopState.quitting) ||
+        !Ref.getUnsafe(desktopState.closeToTray)
+      ) {
+        return;
+      }
+      event.preventDefault();
+      window.hide();
     });
 
     if (environment.platform === "darwin") {
@@ -784,7 +799,9 @@ export const make = Effect.gen(function* () {
       }
       clearDevelopmentLoadRetry();
       developmentLoadRetryIndex = 0;
-      window.setTitle(environment.displayName);
+      window.setTitle(
+        resolveAppWindowTitle(window.webContents.getTitle(), environment.displayName),
+      );
       if (environment.platform === "darwin") syncMacosWindowButtons(window);
     });
     window.webContents.on(

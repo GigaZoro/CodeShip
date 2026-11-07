@@ -148,6 +148,13 @@ export const make = Effect.gen(function* () {
     const keybindingsClick = () => {
       runMenuEffect("open-keybindings", dispatchMenuAction("open-keybindings"));
     };
+    // No accelerators: keybindings are user-configurable, so a fixed label could name the wrong keys.
+    const newThreadClick = () => {
+      runMenuEffect("chat.new", dispatchMenuAction("chat.new"));
+    };
+    const commandPaletteClick = () => {
+      runMenuEffect("commandPalette.open", dispatchMenuAction("commandPalette.open"));
+    };
     // Chromium and the renderer already handle this chord; injecting another paste duplicates text.
     const pasteAsTextClick = (
       _item: Electron.MenuItem,
@@ -196,6 +203,9 @@ export const make = Effect.gen(function* () {
       {
         label: t("File"),
         submenu: [
+          { label: t("New Thread"), click: newThreadClick },
+          { label: t("Command Palette..."), click: commandPaletteClick },
+          { type: "separator" },
           ...(environment.platform === "darwin"
             ? []
             : [

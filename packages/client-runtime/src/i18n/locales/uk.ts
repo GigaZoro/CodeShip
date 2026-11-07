@@ -3232,6 +3232,8 @@ const catalog: MessageCatalog = {
     many: "Закрито {count} пул-реквестів",
     other: "Закрито {count} пул-реквесту",
   },
+  "Closing the window hides it in the notification area, so agents and scheduled tasks keep running. Quit from the tray icon or the File menu.":
+    "Закрите вікно ховається в область сповіщень, тож агенти й заплановані завдання продовжують працювати. Вийти можна через значок у треї або меню «Файл».",
   "Closing...": "Закриття...",
   Cloud: "Хмара",
   "Cloud VM": "Хмарна ВМ",
@@ -3320,6 +3322,7 @@ const catalog: MessageCatalog = {
   "Command approval": "Схвалення команди",
   "Command is required.": "Команда обов’язкова.",
   "Command palette": "Палітра команд",
+  "Command Palette...": "Палітра команд...",
   Commands: "Команди",
   "Commands that run in this project's checkout or its worktree, with optional shortcuts.":
     "Команди, що запускаються в робочій копії цього проєкту або його worktree, з необов’язковими скороченнями.",
@@ -6243,6 +6246,8 @@ const catalog: MessageCatalog = {
   "Keep editing": "Продовжити редагування",
   "Keep mine": "Залишити мою",
   "Keep monorepo paths separate.": "Розділяти шляхи монорепозиторію.",
+  "Keep running in the tray": "Працювати у треї",
+  "Keep running in the tray when the window closes": "Працювати у треї після закриття вікна",
   "Keep separate": "Не об’єднувати",
   "Keep source control requests on this environment.":
     "Залишати запити керування версіями в цьому середовищі.",
@@ -7013,6 +7018,7 @@ const catalog: MessageCatalog = {
   "New Terminal": "Новий термінал",
   "New Terminal ({shortcut})": "Новий термінал ({shortcut})",
   "New thread": "Новий чат",
+  "New Thread": "Новий чат",
   "New thread · {name}": "Новий чат · {name}",
   "New thread ({shortcut})": "Новий чат ({shortcut})",
   "New thread in {name}": "Новий чат у {name}",
@@ -12253,6 +12259,7 @@ const catalog: MessageCatalog = {
   "Traces endpoint": "Кінцева точка трас",
   Transcribing: "Розпізнавання мовлення",
   translation: "переклад",
+  "tray behavior": "поведінка трею",
   Triage: "Сортування",
   "Triage an issue": "Розібрати проблему",
   "Tried to {infinitive} {object}": "Спроба: {infinitive} {object}",

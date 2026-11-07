@@ -73,7 +73,7 @@ import {
 } from "../../modelSelection";
 import { providerInstanceEntriesFor } from "../../providerInstances";
 import { ensureLocalApi, readLocalApi } from "../../localApi";
-import { isMacPlatform } from "../../lib/utils";
+import { isMacPlatform, isWindowsPlatform } from "../../lib/utils";
 import { useEnvironmentProviders, useEnvironments } from "../../state/environments";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
 import { Button } from "../ui/button";
@@ -963,6 +963,37 @@ export function QuitShortcutRow() {
             ))}
           </SelectPopup>
         </Select>
+      }
+    />
+  );
+}
+
+export function CloseWindowToTrayRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  if (!isElectron || !isWindowsPlatform(navigator.platform)) return null;
+  return (
+    <SettingsRow
+      {...searchableSetting("close-window-to-tray")}
+      description={t(
+        "Closing the window hides it in the notification area, so agents and scheduled tasks keep running. Quit from the tray icon or the File menu.",
+      )}
+      resetAction={
+        settings.closeWindowToTray !== DEFAULT_UNIFIED_SETTINGS.closeWindowToTray ? (
+          <SettingResetButton
+            label={t("tray behavior")}
+            onClick={() =>
+              updateSettings({ closeWindowToTray: DEFAULT_UNIFIED_SETTINGS.closeWindowToTray })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={settings.closeWindowToTray}
+          onCheckedChange={(checked) => updateSettings({ closeWindowToTray: Boolean(checked) })}
+          aria-label={t("Keep running in the tray when the window closes")}
+        />
       }
     />
   );
