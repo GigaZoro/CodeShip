@@ -1,5 +1,6 @@
 import * as Schema from "effect/Schema";
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { clampedPositiveInt, OrchestratorMcpEnvironmentTarget } from "./orchestratorMcp.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 export const DEFAULT_TERMINAL_ID = "term-1";
@@ -118,8 +119,90 @@ export const TerminalSummary = Schema.Struct({
   hasRunningSubprocess: Schema.Boolean,
   label: Schema.String.check(Schema.isMaxLength(128)),
   updatedAt: Schema.String,
+  /** The last input came from an agent's `terminal_write`; absent from older servers. */
+  agentInput: Schema.optional(Schema.Boolean),
 });
 export type TerminalSummary = typeof TerminalSummary.Type;
+
+const TerminalCursor = Schema.String.check(Schema.isMaxLength(64));
+
+export const TERMINAL_TOOL_DEFAULT_LINES = 200;
+const TERMINAL_TOOL_MAX_LINES = 2_000;
+
+export const TerminalToolReadInput = Schema.Struct({
+  environmentId: OrchestratorMcpEnvironmentTarget,
+  threadId: Schema.optional(ThreadId),
+  terminalId: Schema.optional(
+    TerminalIdSchema.annotate({ description: "One terminal. Omit for all of them." }),
+  ),
+  lines: Schema.optional(clampedPositiveInt(TERMINAL_TOOL_MAX_LINES)).annotate({
+    description: `Last lines per terminal, 1 to ${TERMINAL_TOOL_MAX_LINES}. Default ${TERMINAL_TOOL_DEFAULT_LINES}.`,
+  }),
+  after: Schema.optional(
+    TerminalCursor.annotate({
+      description: "A terminal's `cursor` from an earlier result: only output since then.",
+    }),
+  ),
+});
+export type TerminalToolReadInput = typeof TerminalToolReadInput.Type;
+
+export const TerminalToolReadTerminal = Schema.Struct({
+  terminalId: Schema.String,
+  label: Schema.String,
+  cwd: Schema.String,
+  status: TerminalSessionStatus,
+  commandRunning: Schema.Boolean,
+  exitCode: Schema.NullOr(Schema.Int),
+  output: Schema.String,
+  /** Earlier output exists that `output` leaves out. */
+  truncated: Schema.Boolean,
+  cursor: TerminalCursor,
+});
+export type TerminalToolReadTerminal = typeof TerminalToolReadTerminal.Type;
+
+export const TerminalToolReadResult = Schema.Struct({
+  terminals: Schema.Array(TerminalToolReadTerminal),
+});
+export type TerminalToolReadResult = typeof TerminalToolReadResult.Type;
+
+export const TERMINAL_TOOL_DEFAULT_WAIT_SECONDS = 30;
+const TERMINAL_TOOL_MAX_WAIT_SECONDS = 120;
+
+export const TerminalToolWriteInput = Schema.Struct({
+  terminalId: Schema.optional(
+    TerminalIdSchema.annotate({ description: "Omit when the thread has one terminal." }),
+  ),
+  input: Schema.String.check(Schema.isNonEmpty())
+    .check(Schema.isMaxLength(16_384))
+    .annotate({ description: "Text to type, such as a command. \\u0003 is Ctrl+C." }),
+  enter: Schema.optional(Schema.Boolean).annotate({
+    description: "Press Enter after the input. Default true.",
+  }),
+  waitSeconds: Schema.optional(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).check(
+      Schema.isLessThanOrEqualTo(TERMINAL_TOOL_MAX_WAIT_SECONDS),
+    ),
+  ).annotate({
+    description: `Most seconds to wait for output, 0 to ${TERMINAL_TOOL_MAX_WAIT_SECONDS}. Default ${TERMINAL_TOOL_DEFAULT_WAIT_SECONDS}.`,
+  }),
+});
+export type TerminalToolWriteInput = typeof TerminalToolWriteInput.Type;
+
+export const TerminalToolWriteResult = Schema.Struct({
+  terminalId: Schema.String,
+  /** What the terminal printed after the input, as `terminal_read` returns it. */
+  output: Schema.String,
+  truncated: Schema.Boolean,
+  cursor: TerminalCursor,
+  waitEnded: Schema.Literals([
+    "command_finished",
+    "output_quiet",
+    "time_limit",
+    "terminal_exited",
+    "not_waited",
+  ]),
+});
+export type TerminalToolWriteResult = typeof TerminalToolWriteResult.Type;
 
 const TerminalMetadataSnapshotEvent = Schema.Struct({
   type: Schema.Literal("snapshot"),

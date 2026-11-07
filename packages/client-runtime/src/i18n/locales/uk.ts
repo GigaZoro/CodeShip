@@ -1196,6 +1196,7 @@ const catalog: MessageCatalog = {
   "{kind}, {label}": "{kind}, {label}",
   "{kind}, {label}, {title}": "{kind}, {label}, {title}",
   "{label} · {size}": "{label} · {size}",
+  "{label} · agent": "{label} · агент",
   "{label} ({count})": "{label} ({count})",
   "{label} {axis}": "{label} {axis}",
   "{label} {elapsed}": "{label} {elapsed}",
@@ -2020,6 +2021,7 @@ const catalog: MessageCatalog = {
   "Agent providers": "Провайдери агентів",
   "Agent session will restart": "Сеанс агента буде перезапущено",
   "Agent sign-in": "Вхід агента",
+  "Agent terminal access": "Доступ агентів до термінала",
   "Agent token": "Токен агента",
   "Agent token · {environment}": "Токен агента · {environment}",
   "Agent tools": "Інструменти агента",
@@ -2027,7 +2029,12 @@ const catalog: MessageCatalog = {
   "Agent work in progress": "Агент працює",
   "Agent:": "Агент:",
   Agents: "Агенти",
+  "Agents can also type commands into their threads' terminals, in threads with Full access.":
+    "Агенти також можуть вводити команди в термінали своїх чатів, якщо чат має повний доступ.",
+  "Agents can read the output of their threads' terminals.":
+    "Агенти можуть читати вивід терміналів своїх чатів.",
   "Agents can use devices": "Агенти можуть використовувати пристрої",
+  "Agents can't see their threads' terminals.": "Агенти не бачать терміналів своїх чатів.",
   "Agents here can then launch, message and wait on threads there. It appears in that environment's Connections, where it can be revoked.":
     "Після цього агенти звідси зможуть запускати чати там, писати в них і чекати на них. Зв’язок з’явиться в розділі «Підключення» того середовища, де його можна відкликати.",
   "Agents here can then launch, message and wait on threads there. It appears in that machine's Connections, where it can be revoked.":
@@ -4579,6 +4586,7 @@ const catalog: MessageCatalog = {
   "Default permissions for new threads. Projects can override them.":
     "Дозволи за замовчуванням для нових чатів. Проєкти можуть їх змінити.",
   "Default pull request merge method": "Спосіб злиття пул-реквестів за замовчуванням",
+  "default terminal access": "доступ до термінала за замовчуванням",
   "Default viewport height": "Типова висота вікна перегляду",
   "Default viewport width": "Типова ширина вікна перегляду",
   "default workspace": "робочий простір за замовчуванням",
@@ -6084,6 +6092,7 @@ const catalog: MessageCatalog = {
   "in {hours}h": "через {hours} год",
   "in {minutes}m": "через {minutes} хв",
   "In a separate worktree": "В окремому worktree",
+  "in a terminal {times}": "у терміналі {times}",
   "In each project, matches recent change descriptions and change request titles.":
     "У кожному проєкті враховує нещодавні описи змін і назви запитів на зміни.",
   "In messages": "У повідомленнях",
@@ -7229,6 +7238,7 @@ const catalog: MessageCatalog = {
   "Niri has no focused window to capture.": "У Niri немає вікна у фокусі для захоплення.",
   "No {channel} release was found.": "Реліз каналу {channel} не знайдено.",
   "No {provider} servers match.": "Немає відповідних серверів {provider}.",
+  "No access": "Без доступу",
   "No accessibility data": "Немає даних доступності",
   "No accounts reported.": "Облікових записів не повідомлено.",
   "No actions configured.": "Дії не налаштовано.",
@@ -8697,6 +8707,7 @@ const catalog: MessageCatalog = {
   "Read {path} +{count} more": "Прочитано {path}, ще +{count}",
   "Read {value}": "Читання {value}",
   "Read and act": "Читати й діяти",
+  "Read and run commands": "Читання й запуск команд",
   "Read existing terminal output and status.": "Читання наявного виводу й стану термінала.",
   "Read file": "Читання файлу",
   "Read file +{count} more": "Прочитано файл, ще +{count}",
@@ -8706,6 +8717,7 @@ const catalog: MessageCatalog = {
   "Read only": "Лише читання",
   "Read only. These subagents cannot take messages.":
     "Лише для читання. Ці субагенти не приймають повідомлень.",
+  "Read output": "Читання виводу",
   "Read process diagnostics, resource history, and usage totals.":
     "Читання діагностики процесів, історії ресурсів і підсумків використання.",
   "Read projects and threads. Cannot start, message or change anything.":
@@ -11016,6 +11028,7 @@ const catalog: MessageCatalog = {
   "terminal input": "ввід у терміналі",
   "Terminal options": "Параметри термінала",
   "Terminal output": "Вивід термінала",
+  "terminal output {times}": "вивід термінала {times}",
   "Terminal output, independent from code blocks and diffs.":
     "Вивід термінала, незалежно від блоків коду та змін.",
   "Terminal process running": "Процес термінала працює",
@@ -11518,6 +11531,8 @@ const catalog: MessageCatalog = {
     "Вибраний проєкт недоступний. Підключіться знову й спробуйте ще раз.",
   "The selected targets use different streaming modes.":
     "Вибрані цілі використовують різні режими потокового виведення.",
+  "The selected targets use different terminal access.":
+    "Вибрані цілі мають різний доступ до термінала.",
   "The selected text is still saved in your citation.":
     "Вибраний текст усе ще збережено у вашій цитаті.",
   "The server could not prepare it.": "Сервер не зміг це підготувати.",
@@ -12543,6 +12558,7 @@ const catalog: MessageCatalog = {
   "Turning it off keeps its settings.": "Вимкнення зберігає його налаштування.",
   "Two colors, rest derived": "Два кольори, решта похідні",
   "Two-line folder rows": "Дворядкові елементи папок",
+  type: "ввести",
   Type: "Тип",
   "Type a URL above, or run a dev script. Local servers this thread starts will show up here automatically.":
     "Введіть URL вище або запустіть dev-скрипт. Локальні сервери, які запускає цей чат, з’являться тут автоматично.",
@@ -12551,6 +12567,7 @@ const catalog: MessageCatalog = {
   "Type to search across your project.": "Введіть текст, щоб шукати в проєкті.",
   "Type your own answer, or leave this blank to use the selected option":
     "Введіть власну відповідь або залиште поле порожнім, щоб використати вибраний варіант",
+  Typed: "Введено",
   "Typeset LaTeX math, such as $x^2$ or \\[x^2\\], in messages and Markdown previews. The composer keeps TeX source editable.":
     "Відображати математику LaTeX, наприклад $x^2$ або \\[x^2\\], у повідомленнях і попередньому перегляді Markdown. Поле повідомлення зберігає TeX-код редагованим.",
   Typography: "Типографіка",

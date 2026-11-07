@@ -17,15 +17,14 @@ export function getTerminalLabel(terminalId: string): string {
   return terminalId;
 }
 
+/** Marks a terminal an agent typed into last, so the user sees who ran its command. */
 export function resolveTerminalSessionLabel(
   terminalId: string,
-  summary: Pick<TerminalSummary, "label"> | null | undefined,
+  summary: Pick<TerminalSummary, "label" | "agentInput"> | null | undefined,
 ): string {
   const trimmed = summary?.label?.trim();
-  if (trimmed && trimmed.length > 0) {
-    return trimmed;
-  }
-  return getTerminalLabel(terminalId);
+  const label = trimmed && trimmed.length > 0 ? trimmed : getTerminalLabel(terminalId);
+  return summary?.agentInput === true ? t("{label} · agent", { label }) : label;
 }
 
 /** Append a UUID when metadata is unavailable to avoid reusing unseen host sessions. */

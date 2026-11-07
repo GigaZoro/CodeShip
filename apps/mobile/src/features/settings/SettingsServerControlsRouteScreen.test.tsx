@@ -91,6 +91,9 @@ vi.mock("./components/SettingsEnvironmentFilterHeader", () => ({
   SettingsEnvironmentFilterHeader: () => null,
 }));
 vi.mock("./components/DatabaseStorageNotice", () => ({ DatabaseStorageNotice: () => null }));
+// @react-native-menu/menu and expo-symbols ship Flow syntax this test transform cannot parse.
+vi.mock("../../components/ui/Menu", () => ({ Menu: Children }));
+vi.mock("../../components/ui/ListRowLayout", () => ({ ListRowLayout: () => null }));
 vi.mock("./components/SettingsSection", () => ({ SettingsSection: Children }));
 vi.mock("../../components/ui/ListChoiceRow", () => ({ ListChoiceRow: () => null }));
 // The real icons and menu load native modules that only run on a device.

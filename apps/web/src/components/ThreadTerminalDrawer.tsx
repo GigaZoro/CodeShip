@@ -1205,6 +1205,8 @@ interface ThreadTerminalDrawerProps {
   onAddTerminalContext: (selection: TerminalContextSelection) => void;
   keybindings: ResolvedKeybindingsConfig;
   terminalLabelsById?: ReadonlyMap<string, string>;
+  /** Terminals an agent typed into last; a lone one names itself in the header. */
+  agentTerminalIds?: ReadonlySet<string>;
   terminalLaunchLocationsById?: ReadonlyMap<string, TerminalLaunchLocation>;
 }
 
@@ -1465,6 +1467,7 @@ export default function ThreadTerminalDrawer({
   onAddTerminalContext,
   keybindings,
   terminalLabelsById,
+  agentTerminalIds,
   terminalLaunchLocationsById,
 }: ThreadTerminalDrawerProps) {
   const canOperateTerminal = useEnvironmentScope(threadRef.environmentId, AuthTerminalOperateScope);
@@ -1865,6 +1868,11 @@ export default function ThreadTerminalDrawer({
             isPanel ? "h-[22px]" : "h-7 pt-1.5",
           )}
         >
+          {agentTerminalIds?.has(resolvedActiveTerminalId) ? (
+            <span className="mr-auto min-w-0 self-center truncate px-2 text-2xs text-muted-foreground">
+              {terminalLabelById.get(resolvedActiveTerminalId)}
+            </span>
+          ) : null}
           {terminalActions}
         </div>
       )}

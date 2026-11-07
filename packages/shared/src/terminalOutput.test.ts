@@ -33,6 +33,12 @@ describe("appendTerminalOutput", () => {
     expect(feed(frames).text).toBe("layer a: done\nlayer b: done\n");
   });
 
+  it("wraps at a given width, as zsh expects when it continues a full row", () => {
+    // zsh fills the row, then prints " \r" to move to the next one and clears it with ESC[K.
+    const typed = "$ 01234567 \r\u001b[K8\r89ab\r\r\nok\r\n";
+    expect(normalizeTerminalOutput(typed, undefined, 10).text).toBe("$ 01234567\n89ab\nok\n");
+  });
+
   it("treats CRLF as one newline even when the pair is split across chunks", () => {
     const state = feed(["one\r", "\ntwo\r\n"]);
     expect(state.text).toBe("one\ntwo\n");

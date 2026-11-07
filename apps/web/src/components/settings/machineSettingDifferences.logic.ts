@@ -59,6 +59,7 @@ const COMPARED_SETTINGS: ReadonlyArray<ComparedSetting> = [
   { id: "skill-availability", key: "skillAvailability" },
   { id: "agent-browser-access", key: "enableAgentBrowserAccess" },
   { id: "agent-device-access", key: "enableAgentDeviceAccess" },
+  { id: "agent-terminal-access", key: "agentTerminalAccess" },
   { id: "worktree-submodules", key: "worktreeSubmodules" },
   { id: "start-from-origin", key: "newWorktreesStartFromOrigin" },
   { id: "automatic-pull", key: "defaultAutoPull" },

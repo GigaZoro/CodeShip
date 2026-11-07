@@ -128,11 +128,13 @@ export const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerm
     knownTerminalSessions?.filter((session) => !panelTerminalIds.has(session.target.terminalId)) ??
     [];
   const terminalLabelsById = new Map<string, string>();
+  const agentTerminalIds = new Set<string>();
   for (const session of drawerTerminalSessions) {
     terminalLabelsById.set(
       session.target.terminalId,
       resolveTerminalSessionLabel(session.target.terminalId, session.state.summary),
     );
+    if (session.state.summary?.agentInput === true) agentTerminalIds.add(session.target.terminalId);
   }
   const terminalLaunchLocationsById = new Map<string, TerminalLaunchLocationWithEnv>();
   for (const session of drawerTerminalSessions) {
@@ -276,6 +278,7 @@ export const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerm
           onHeightChange={setTerminalHeight}
           onAddTerminalContext={handleAddTerminalContext}
           terminalLabelsById={terminalLabelsById}
+          agentTerminalIds={agentTerminalIds}
           terminalLaunchLocationsById={terminalLaunchLocationsById}
         />
       </div>
@@ -347,12 +350,14 @@ export const PersistentThreadTerminalPanel = memo(function PersistentThreadTermi
     ? projectScriptRuntimeEnv({ project: { cwd: project.workspaceRoot }, worktreePath })
     : {};
   const terminalLabelsById = new Map<string, string>();
+  const agentTerminalIds = new Set<string>();
   const terminalLaunchLocationsById = new Map<string, TerminalLaunchLocationWithEnv>();
   for (const terminalId of surface.terminalIds) {
     const summary =
       knownTerminalSessions?.find((session) => session.target.terminalId === terminalId)?.state
         .summary ?? null;
     terminalLabelsById.set(terminalId, resolveTerminalSessionLabel(terminalId, summary));
+    if (summary?.agentInput === true) agentTerminalIds.add(terminalId);
     if (!project) continue;
     const terminalWorktreePath = resolveTerminalWorktreePath({
       launchContext,
@@ -409,6 +414,7 @@ export const PersistentThreadTerminalPanel = memo(function PersistentThreadTermi
       onHeightChange={() => undefined}
       onAddTerminalContext={onAddTerminalContext}
       terminalLabelsById={terminalLabelsById}
+      agentTerminalIds={agentTerminalIds}
       terminalLaunchLocationsById={terminalLaunchLocationsById}
       keybindings={keybindings}
     />

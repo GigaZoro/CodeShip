@@ -576,6 +576,12 @@ export function summarizeT3ToolCalls(
     case "device":
       label = phrase(t("Used"), t("use"), t("device controls {times}", { times }));
       break;
+    case "terminal":
+      label = phrase(t("Read"), t("read"), t("terminal output {times}", { times }));
+      break;
+    case "terminal-write":
+      label = phrase(t("Typed"), t("type"), t("in a terminal {times}", { times }));
+      break;
     case "visual-studio":
       label = phrase(t("Used"), t("use"), t("the Visual Studio debugger {times}", { times }));
       break;

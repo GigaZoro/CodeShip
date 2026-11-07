@@ -1,9 +1,15 @@
 import { DeviceHostUpdates } from "../device/DeviceHostUpdates";
 import { DeviceToolVersions } from "../device/DeviceToolVersions";
-import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
+import {
+  useScopedSettings,
+  useScopedSettingsMixed,
+  useUpdateScopedSettings,
+} from "./useScopedSettings";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { DeviceSourcesSettings } from "./DeviceSourcesSettings";
 import {
+  type AgentTerminalAccess,
+  AgentTerminalAccess as AgentTerminalAccessSchema,
   AuthSettingsWriteScope,
   BrowserImportFailureReason,
   BROWSER_PROFILE_MAX_COUNT,
@@ -124,6 +130,7 @@ import {
 } from "./settingsLayout";
 import { SimlockHostsRow } from "./OptInFeatureRows";
 import { searchableSetting } from "./settingsSearch";
+import { AGENT_TERMINAL_ACCESS_LABELS } from "./settingValueFormat";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { BrowserImportWizard, type WizardTarget } from "./BrowserImportWizard";
@@ -1088,6 +1095,71 @@ function AgentBrowserAccessSetting() {
   );
 }
 
+const AGENT_TERMINAL_ACCESS_DESCRIPTIONS: Record<AgentTerminalAccess, Message> = {
+  none: msg("Agents can't see their threads' terminals."),
+  read: msg("Agents can read the output of their threads' terminals."),
+  "read-write": msg(
+    "Agents can also type commands into their threads' terminals, in threads with Full access.",
+  ),
+};
+
+function AgentTerminalAccessSetting() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const mixed = useScopedSettingsMixed(["agentTerminalAccess"]);
+
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["agentTerminalAccess"]}
+      {...searchableSetting("agent-terminal-access")}
+      description={
+        mixed
+          ? t("The selected targets use different terminal access.")
+          : t(AGENT_TERMINAL_ACCESS_DESCRIPTIONS[settings.agentTerminalAccess])
+      }
+      resetAction={
+        settings.agentTerminalAccess !== DEFAULT_SERVER_SETTINGS.agentTerminalAccess ? (
+          <SettingResetButton
+            label={t("default terminal access")}
+            onClick={() =>
+              updateSettings({ agentTerminalAccess: DEFAULT_SERVER_SETTINGS.agentTerminalAccess })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={mixed ? null : settings.agentTerminalAccess}
+          onValueChange={(value) => {
+            const next = AgentTerminalAccessSchema.literals.find((level) => level === value);
+            if (next !== undefined) updateSettings({ agentTerminalAccess: next });
+          }}
+        >
+          <SelectTrigger
+            size="sm"
+            className="w-full sm:w-56"
+            aria-label={t("Agent terminal access")}
+          >
+            <SelectValue>
+              {(value: AgentTerminalAccess | null) =>
+                value === null ? t("Mixed") : t(AGENT_TERMINAL_ACCESS_LABELS[value])
+              }
+            </SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            {AgentTerminalAccessSchema.literals.map((level) => (
+              <SelectItem hideIndicator key={level} value={level}>
+                {t(AGENT_TERMINAL_ACCESS_LABELS[level])}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
 function BrowserAutoShowFloatingPreviewSetting() {
   const autoShow = useClientSettings((settings) => settings.browserAutoShowFloatingPreview);
   const updateSettings = useUpdatePrimarySettings();
@@ -1728,6 +1800,7 @@ export function BrowserSettingsPanel() {
     <SettingsPageContainer>
       <SettingsSection id="browser-agent-access" title={t("Agent access")}>
         <AgentBrowserAccessSetting />
+        <AgentTerminalAccessSetting />
       </SettingsSection>
       <SettingsSection id="browser" title={t("Browsing")}>
         {/* The built-in browser runs in the desktop app; web clients only search from server-run tabs. */}

@@ -69,6 +69,8 @@ export type T3McpToolSummaryAction =
   | "device"
   | "html-preview"
   | "html-render"
+  | "terminal"
+  | "terminal-write"
   | "visual-studio";
 
 export interface T3McpToolDefinition {
@@ -287,6 +289,8 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "device",
   ),
   device_close: tool(["Close", "Closing", "Closed", "a device"], "device", "device"),
+  terminal_read: tool(["Read", "Reading", "Read", "terminal output"], "terminal"),
+  terminal_write: tool(["Type in", "Typing in", "Typed in", "a terminal"], "terminal-write"),
   visual_studio_status: tool(
     ["Check", "Checking", "Checked", "Visual Studio debugging"],
     "visual-studio",

@@ -954,6 +954,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["allow disable enable open drive preview tools sessions project override"],
   },
   {
+    id: "agent-terminal-access",
+    title: msg("Agent terminal access"),
+    to: "/settings/browser",
+    scope: "project-defaults",
+    searchTerms: [
+      "allow disable enable read run type commands terminal output shell dev server logs project override",
+    ],
+  },
+  {
     id: "device-sources",
     title: msg("Device sources"),
     to: "/settings/browser",

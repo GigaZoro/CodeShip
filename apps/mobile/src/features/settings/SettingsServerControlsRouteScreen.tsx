@@ -6,6 +6,7 @@ import { readEnvironmentScope, useEnvironmentsWithScope } from "../../state/sess
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { AppText as Text } from "../../components/ui/AppText";
 import {
+  type AgentTerminalAccess,
   type ResponseStreamingMode,
   type ServerSettings,
   type ServerSettingsPatch,
@@ -68,6 +69,7 @@ const PAGE_PROJECT_KEYS: Record<SettingsPage, readonly ProjectScopedServerSettin
     "defaultRuntimeMode",
     "responseStreamingMode",
     "enableAgentBrowserAccess",
+    "agentTerminalAccess",
     "importAgentConversations",
     "sidebarAutoSettleOnMerge",
     "sidebarAutoSettleAfterDays",
@@ -130,6 +132,30 @@ const WORKSPACE_CHOICES: ReadonlyArray<{
     mode: "worktree",
     label: msg("New worktree"),
     description: msg("Give each new thread a separate checkout."),
+  },
+];
+
+const TERMINAL_ACCESS_CHOICES: ReadonlyArray<{
+  readonly level: AgentTerminalAccess;
+  readonly label: Message;
+  readonly description: Message;
+}> = [
+  {
+    level: "none",
+    label: msg("No access"),
+    description: msg("Agents can't see their threads' terminals."),
+  },
+  {
+    level: "read",
+    label: msg("Read output"),
+    description: msg("Agents can read the output of their threads' terminals."),
+  },
+  {
+    level: "read-write",
+    label: msg("Read and run commands"),
+    description: msg(
+      "Agents can also type commands into their threads' terminals, in threads with Full access.",
+    ),
   },
 ];
 
@@ -437,6 +463,27 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       disabled={disabledFor("enableAgentBrowserAccess")}
                       onValueChange={(value) => write({ enableAgentBrowserAccess: value })}
                     />
+                  </SettingsSection>
+                  <SettingsSection
+                    title={t("Agent terminal access")}
+                    footer={managed("agentTerminalAccess")}
+                    trailing={
+                      pendingWrites === 0 && uniform("agentTerminalAccess") === null ? (
+                        <MixedValuesLabel projectSelected={projectSelected} />
+                      ) : null
+                    }
+                  >
+                    {TERMINAL_ACCESS_CHOICES.map((choice, index) => (
+                      <SettingsChoiceRow
+                        key={choice.level}
+                        label={t(choice.label)}
+                        description={t(choice.description)}
+                        selected={uniform("agentTerminalAccess") === choice.level}
+                        separated={index > 0}
+                        disabled={disabledFor("agentTerminalAccess")}
+                        onPress={() => write({ agentTerminalAccess: choice.level })}
+                      />
+                    ))}
                   </SettingsSection>
                   <SettingsSection
                     title={t("Claude Code and Codex")}

@@ -468,6 +468,7 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
     changedLabels: getChangedBrowserSettingLabels,
   },
   restorable("/settings/browser", msg("Agent browser access"), ["enableAgentBrowserAccess"]),
+  restorable("/settings/browser", msg("Agent terminal access"), ["agentTerminalAccess"]),
 ];
 
 /**

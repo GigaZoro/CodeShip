@@ -1,3 +1,10 @@
+## 2026-11-07 — Agents can read and use the terminal panel
+
+- Agents can read the recent output of their thread's terminals, such as a dev server you started in the terminal panel, instead of asking you to paste it.
+- **Agent terminal access** in **Settings → Browser & devices** sets what agents may do: **No access**, **Read output** (the default) or **Read and run commands**. With the last, agents in Full access threads can type into the thread's terminal, such as to restart your dev server, and get back what it printed. You can set it for one project, and changes apply to running agents right away.
+- After T3.CodeShip restarts, agents can read a terminal's saved output before you reopen the terminal panel.
+- Agents won't type into a terminal you're using or where you left a command unsent, and a terminal an agent typed into last shows "· agent" after its name, also when it's the only terminal.
+
 ## 2026-11-07 — Answer from the Needs you box
 
 - The **Needs you** box at the bottom of the chat always shows what waits on you, in compact rows that say what each thread asks. The header button and the option to move the box into the thread list are gone.

@@ -1,4 +1,4 @@
-import type { ServerSettings, WorktreeSubmodules } from "@t3tools/contracts";
+import type { AgentTerminalAccess, ServerSettings, WorktreeSubmodules } from "@t3tools/contracts";
 
 import { msg, t, tn, type Message } from "~/i18n";
 import { resolveEnvModeLabel, WORKTREE_SUBMODULES_LABELS } from "../BranchToolbar.logic";
@@ -15,6 +15,12 @@ const BACKGROUND_ACTIVITY_PROFILE_LABELS: Record<string, Message> = {
   performance: msg("Performance"),
   "battery-saver": msg("Battery saver"),
   custom: msg("Advanced"),
+};
+
+export const AGENT_TERMINAL_ACCESS_LABELS: Record<AgentTerminalAccess, Message> = {
+  none: msg("No access"),
+  read: msg("Read output"),
+  "read-write": msg("Read and run commands"),
 };
 
 function labelOrRaw(label: Message | undefined, raw: string): string {
@@ -46,6 +52,9 @@ export function formatSettingValue(key: keyof ServerSettings, value: unknown): s
   if (typeof value === "string") {
     if (key === "defaultThreadEnvMode" && (value === "local" || value === "worktree")) {
       return resolveEnvModeLabel(value);
+    }
+    if (key === "agentTerminalAccess" && value in AGENT_TERMINAL_ACCESS_LABELS) {
+      return t(AGENT_TERMINAL_ACCESS_LABELS[value as AgentTerminalAccess]);
     }
     if (key === "worktreeSubmodules" && value in WORKTREE_SUBMODULES_LABELS) {
       return t(WORKTREE_SUBMODULES_LABELS[value as WorktreeSubmodules]);

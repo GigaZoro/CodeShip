@@ -17,6 +17,32 @@ then copy. Cmd+A on macOS and Ctrl+Shift+A elsewhere select the same output.
 Ctrl+A still moves to the beginning of shell input on Windows and Linux.
 Jump to latest in the context menu returns to the current output.
 
+## Agent access
+
+Agents can read the recent output of their thread's terminals, such as a dev
+server you started or a command that failed, so you can ask about it instead of
+pasting it. They see plain text, as the terminal shows it.
+
+**Agent terminal access** in **Settings → Browser & devices** sets what they
+may do:
+
+- **No access**: agents can't see terminals.
+- **Read output** (the default): agents read output but can't type.
+- **Read and run commands**: agents can also type into a thread's terminal,
+  such as to restart your dev server, and see what it prints. You see what
+  they type. This works only in threads with Full access permissions, since a
+  command typed there skips approval. An agent won't type into a terminal you
+  typed in during the last few seconds, or where you left a command unsent;
+  it asks you instead. While an agent typed last, the terminal's name ends in
+  "· agent".
+
+After T3.CodeShip restarts, agents can read a terminal's saved output before
+you open the terminal panel again. Typing needs the terminal running again.
+
+Pick a project in the "Applying settings for …" sentence to change it for that
+project only. Changes apply right away, including to agents that are already
+running.
+
 ## fish
 
 T3.CodeShip starts fish with `no-query-term`, avoiding startup waits for terminal

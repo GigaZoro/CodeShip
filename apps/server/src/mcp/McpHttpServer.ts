@@ -80,6 +80,8 @@ import {
   DeviceStandardToolkit,
 } from "./toolkits/device/tools.ts";
 import * as HtmlHandlers from "./toolkits/html/handlers.ts";
+import * as TerminalHandlers from "./toolkits/terminal/handlers.ts";
+import { TerminalToolkit } from "./toolkits/terminal/tools.ts";
 import * as VisualStudioHandlers from "./toolkits/visualStudio/handlers.ts";
 import { VisualStudioToolkit } from "./toolkits/visualStudio/tools.ts";
 import { HtmlPreviewTool, HtmlPreviewToolkit, HtmlRenderToolkit } from "./toolkits/html/tools.ts";
@@ -1155,6 +1157,8 @@ export const layerDeviceToolkit = Layer.mergeAll(
   layerDeviceScreenshotRegistration,
 );
 
+const layerTerminalToolkit = toolkitRegistration(TerminalToolkit, TerminalHandlers.layer);
+
 const layerVisualStudioRegistration = toolkitRegistration(
   VisualStudioToolkit,
   VisualStudioHandlers.layer,
@@ -1189,6 +1193,7 @@ export const layerTools = Layer.mergeAll(
   layerPullRequestsToolkit,
   layerDeviceToolkit,
   layerHtmlToolkit,
+  layerTerminalToolkit,
   layerVisualStudioToolkit,
 );
 

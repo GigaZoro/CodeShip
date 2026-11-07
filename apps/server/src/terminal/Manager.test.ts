@@ -1587,6 +1587,54 @@ it.layer(
     }),
   );
 
+  it.effect("tells the user's typing apart from an agent's", () =>
+    Effect.gen(function* () {
+      const { manager } = yield* createManager();
+      yield* manager.open(openInput());
+      const state = Effect.map(manager.readThread("thread-1"), ([terminal]) => ({
+        lineDirty: terminal?.userInput?.lineDirty,
+        agentInput: terminal?.agentInput,
+      }));
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "git sta",
+      });
+      expect(yield* state).toEqual({ lineDirty: true, agentInput: false });
+      yield* manager.write(
+        { threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID, data: "\u0003" },
+        "agent",
+      );
+      expect(yield* state).toEqual({ lineDirty: true, agentInput: true });
+      yield* manager.write({ threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID, data: "\r" });
+      expect(yield* state).toEqual({ lineDirty: false, agentInput: false });
+    }),
+  );
+
+  it.effect("reads a thread's terminals, including ones saved before a restart", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { manager, ptyAdapter, logsDir } = yield* createManager();
+      yield* manager.open(openInput());
+      ptyAdapter.processes[0]!.emitData("live\n");
+      yield* fs.writeFileString(
+        path.join(
+          logsDir,
+          `terminal_${Base64Url.encode("thread-1")}_${Base64Url.encode("term-2")}.log`,
+        ),
+        "saved\n",
+      );
+      const terminals = yield* manager.readThread("thread-1");
+      expect(
+        terminals.map(({ terminalId, status, history }) => ({ terminalId, status, history })),
+      ).toEqual([
+        { terminalId: DEFAULT_TERMINAL_ID, status: "running", history: "live\n" },
+        { terminalId: "term-2", status: "exited", history: "saved\n" },
+      ]);
+    }),
+  );
+
   it.effect.each(["terminal", "thread"] as const)(
     "deletes compact and older encoded history when closing a %s",
     (scope) =>

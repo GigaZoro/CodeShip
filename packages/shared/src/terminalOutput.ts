@@ -1,4 +1,5 @@
-/** Server/client folds must agree: only the last LIVE_LINES are cursor-addressable, with no wrapping.
+/** Server/client folds must agree: only the last LIVE_LINES are cursor-addressable, with no wrapping
+ * unless a fold is given the screen's width.
  * SGR resets at line boundaries for safe tail cuts; unfinished escapes carry through pending. */
 export interface TerminalOutputState {
   /** Fixed lines followed by the live window; contains only SGR escapes. */
@@ -300,17 +301,35 @@ class Terminal {
   /** Output was discarded on purpose (scrollback cleared or window over budget). */
   dropped = false;
   readonly maxChars: number;
+  /** Wrap at this width, as the screen does; unset never wraps. */
+  readonly cols: number | undefined;
   /** Lines created during this feed, which it may extend in place. */
   private readonly owned = new WeakSet<Line>();
 
-  constructor(screen: TerminalScreen, maxChars: number) {
+  constructor(screen: TerminalScreen, maxChars: number, cols?: number) {
     this.maxChars = maxChars;
+    this.cols = cols;
     [this.settledHead, this.settledTail] = screen.settled;
     this.lines = screen.lines.slice();
     this.row = screen.row;
     this.col = screen.col;
     this.pen = screen.pen;
     this.saved = screen.saved;
+  }
+
+  print(text: string): void {
+    const cols = this.cols;
+    if (cols === undefined) return this.write(text);
+    let rest = text;
+    while (rest.length > 0) {
+      // A full line wraps only when the next character arrives, so a CR there stays on it.
+      if (this.col >= cols) this.newline();
+      let room = cols - this.col;
+      const last = rest.charCodeAt(room - 1);
+      if (room < rest.length && room > 1 && last >= 0xd800 && last <= 0xdbff) room -= 1;
+      this.write(rest.slice(0, room));
+      rest = rest.slice(room);
+    }
   }
 
   write(text: string): void {
@@ -389,7 +408,7 @@ class Terminal {
   moveTo(row: number, col: number): void {
     this.row = Math.max(0, Math.min(this.lines.length - 1, row));
     // A huge column (ESC[999999999C) would otherwise pad a line past any string limit.
-    this.col = Math.max(0, Math.min(TERMINAL_OUTPUT_TAIL_CHARS, col));
+    this.col = Math.max(0, Math.min(TERMINAL_OUTPUT_TAIL_CHARS, (this.cols ?? Infinity) - 1, col));
   }
 
   csi(params: string, final: string): void {
@@ -476,7 +495,7 @@ class Terminal {
   feed(input: string): string {
     let printable = 0;
     const flush = (end: number) => {
-      if (end > printable) this.write(input.slice(printable, end));
+      if (end > printable) this.print(input.slice(printable, end));
     };
     for (let index = 0; index < input.length; index += 1) {
       const code = input.charCodeAt(index);
@@ -578,10 +597,11 @@ export function appendTerminalOutput(
   state: TerminalOutputState,
   chunk: string,
   maxChars: number = TERMINAL_OUTPUT_TAIL_CHARS,
+  cols?: number,
 ): TerminalOutputState {
   const input = state.pending + chunk;
   if (input.length === 0) return state;
-  const terminal = new Terminal(state.screen, maxChars);
+  const terminal = new Terminal(state.screen, maxChars, cols);
   const pending = terminal.feed(input);
   let truncated = state.truncated;
   let windowChars = terminal.lines.reduce((total, line) => total + lineLength(line), 0);
@@ -658,11 +678,13 @@ export function terminalOutputResumeText(state: TerminalOutputState): string {
   return state.text + suffix + state.pending;
 }
 
+/** `cols` wraps long lines as a screen that wide does; omit it to keep each line whole. */
 export function normalizeTerminalOutput(
   text: string,
   maxChars: number = TERMINAL_OUTPUT_TAIL_CHARS,
+  cols?: number,
 ): { readonly text: string; readonly truncated: boolean } {
-  const state = appendTerminalOutput(EMPTY_TERMINAL_OUTPUT, text, maxChars);
+  const state = appendTerminalOutput(EMPTY_TERMINAL_OUTPUT, text, maxChars, cols);
   return { text: state.text, truncated: state.truncated };
 }
 

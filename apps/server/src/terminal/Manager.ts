@@ -45,6 +45,7 @@ import { acpRegistryManagedBinaryDirectories } from "@t3tools/provider-acp-regis
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -174,6 +175,12 @@ export class TerminalManager extends Context.Service<
 
     readonly getShell: (input: TerminalObserveInput) => Effect.Effect<string, TerminalError>;
 
+    /** Asks the OS now whether the shell runs a command; null when it cannot tell. */
+    readonly commandRunning: (input: TerminalObserveInput) => Effect.Effect<boolean | null>;
+
+    /** The thread's terminals with their retained raw output, for agents to read. */
+    readonly readThread: (threadId: string) => Effect.Effect<ReadonlyArray<TerminalThreadRead>>;
+
     /**
      * Attached viewers share one PTY sized to the smallest of them, so a narrow client
      * still sees the whole TUI. Streams and resizes with the same `viewerId` (one client
@@ -207,7 +214,11 @@ export class TerminalManager extends Context.Service<
       registerCleanup?: (stop: () => void) => void,
     ) => Effect.Effect<() => void, TerminalError>;
 
-    readonly write: (input: TerminalWriteInput) => Effect.Effect<void, TerminalError>;
+    /** `agent` input skips the user-activity marks agents check before typing. */
+    readonly write: (
+      input: TerminalWriteInput,
+      from?: "user" | "agent",
+    ) => Effect.Effect<void, TerminalError>;
 
     readonly resize: (
       input: TerminalResizeInput,
@@ -234,6 +245,15 @@ export class TerminalManager extends Context.Service<
     ) => Effect.Effect<() => void>;
   }
 >()("t3/terminal/Manager/TerminalManager") {}
+
+export interface TerminalThreadRead extends TerminalSummary {
+  readonly history: string;
+  /** Opaque end of `history`, unique to this server process. */
+  readonly cursor: string;
+  /** The screen width that wrapped `history`; null when no shell runs it. */
+  readonly cols: number | null;
+  readonly userInput: { readonly at: number; readonly lineDirty: boolean } | null;
+}
 
 interface TerminalSubprocessInspectResult {
   readonly hasRunningSubprocess: boolean;
@@ -295,6 +315,9 @@ interface TerminalSessionState {
   updatedAt: string;
   eventSequence: number;
   inputCount: number;
+  /** When the user last typed, and whether they left a line unsent. */
+  userInput: { readonly at: number; readonly lineDirty: boolean } | null;
+  inputByAgent: boolean;
   cols: number;
   rows: number;
   process: PtyAdapter.PtyProcess | null;
@@ -383,6 +406,15 @@ function terminalWireLabel(session: TerminalSessionState): string {
   return truncateTerminalWireLabel(getTerminalLabel(session.terminalId));
 }
 
+// Enter, Ctrl+C and Ctrl+U leave the shell's line empty; anything else typed after them fills it.
+const LINE_ENDING_INPUT = /[\r\n\u0003\u0015]/g;
+
+function lineDirtyAfter(data: string, previous: boolean): boolean {
+  let start = 0;
+  for (const match of data.matchAll(LINE_ENDING_INPUT)) start = match.index + 1;
+  return (start === 0 && previous) || /[^\u0000-\u001f\u007f]/.test(data.slice(start));
+}
+
 function snapshot(session: TerminalSessionState): TerminalSessionSnapshot {
   return {
     threadId: session.threadId,
@@ -415,6 +447,7 @@ function summary(session: TerminalSessionState): TerminalSummary {
     hasRunningSubprocess: session.hasRunningSubprocess,
     label: terminalWireLabel(session),
     updatedAt: session.updatedAt,
+    agentInput: session.inputByAgent,
   };
 }
 
@@ -1034,6 +1067,11 @@ export class BoundedTerminalHistory {
       this.start = 0;
       if (this.chunks.length === 0) this.lastCodeUnit = undefined;
     }
+  }
+
+  /** Where the output appended so far ends; a clear starts a new generation. */
+  end(): { readonly generation: number; readonly offset: number } {
+    return { generation: this.generation, offset: this.appendedLength };
   }
 
   clear(): void {
@@ -1700,6 +1738,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
   yield* fileSystem.makeDirectory(logsDir, { recursive: true }).pipe(Effect.orDie);
 
+  const historyEpoch = NodeCrypto.randomBytes(6).toString("base64url");
   const managerStateRef = yield* SynchronizedRef.make<TerminalManagerState>({
     sessions: new Map(),
     killFibers: new Map(),
@@ -2952,6 +2991,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         updatedAt: yield* nowIso,
         eventSequence: 0,
         inputCount: 0,
+        userInput: null,
+        inputByAgent: false,
         cols,
         rows,
         process: null,
@@ -3059,6 +3100,82 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       return yield* new TerminalNotRunningError(input);
     }
     return session.shell;
+  });
+
+  const historyCursor = (history: BoundedTerminalHistory) => {
+    const end = history.end();
+    return `${historyEpoch}.${end.generation}.${end.offset}`;
+  };
+
+  // History files name their terminal only when its id fits; hashed names cannot be listed back.
+  const savedTerminalIds = Effect.fn("terminal.savedTerminalIds")(function* (threadId: string) {
+    const threadPart = encodedHistoryThreadPart(threadId);
+    const entries = yield* fileSystem
+      .readDirectory(logsDir, { recursive: false })
+      .pipe(Effect.orElseSucceed(() => [] as Array<string>));
+    const ids = new Set<string>();
+    for (const name of entries) {
+      if (
+        name === `${threadPart}.log` ||
+        name === `${hashedHistoryThreadPart(threadId)}.log` ||
+        name === `${legacySafeThreadId(threadId)}.log`
+      ) {
+        ids.add(DEFAULT_TERMINAL_ID);
+      } else if (name.startsWith(`${threadPart}_`) && name.endsWith(".log")) {
+        const decoded = Base64Url.decodeString(name.slice(threadPart.length + 1, -".log".length));
+        if (Result.isSuccess(decoded)) ids.add(decoded.success);
+      }
+    }
+    return ids;
+  });
+
+  const readThread = Effect.fn("terminal.readThread")(function* (threadId: string) {
+    const sessions = yield* sessionsForThread(threadId);
+    const live = sessions.map((session): TerminalThreadRead => ({
+      ...summary(session),
+      history: session.history.value(),
+      cursor: historyCursor(session.history),
+      cols: session.cols,
+      userInput: session.userInput,
+    }));
+    // After a restart, terminals stay unknown until a client reattaches; their history is on disk.
+    const saved = yield* Effect.forEach(
+      [...(yield* savedTerminalIds(threadId))].filter(
+        (terminalId) =>
+          !sessions.some((session) => session.terminalId === terminalId) &&
+          !closedSessionKeys.has(toSessionKey(threadId, terminalId)),
+      ),
+      (terminalId) =>
+        readHistory(threadId, terminalId).pipe(
+          Effect.map((history): TerminalThreadRead => ({
+            threadId,
+            terminalId,
+            cwd: "",
+            worktreePath: null,
+            status: "exited",
+            pid: null,
+            exitCode: null,
+            exitSignal: null,
+            hasRunningSubprocess: false,
+            label: truncateTerminalWireLabel(getTerminalLabel(terminalId)),
+            updatedAt: "",
+            history: history.value(),
+            cursor: historyCursor(history),
+            cols: null,
+            userInput: null,
+          })),
+          Effect.catch((error) =>
+            Effect.logWarning("failed to read saved terminal history", {
+              threadId,
+              terminalId,
+              error,
+            }).pipe(Effect.as(null)),
+          ),
+        ),
+    );
+    return [...live, ...saved.filter((entry) => entry !== null)].sort((left, right) =>
+      left.terminalId.localeCompare(right.terminalId, undefined, { numeric: true }),
+    );
   });
 
   const openOrAttachForStream = Effect.fnUntraced(function* (requestedInput: TerminalAttachInput) {
@@ -3402,7 +3519,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     );
   };
 
-  const write: TerminalManager["Service"]["write"] = Effect.fn("terminal.write")(function* (input) {
+  const write: TerminalManager["Service"]["write"] = Effect.fn("terminal.write")(function* (
+    input,
+    from = "user",
+  ) {
     const terminalId = input.terminalId;
     const session = yield* requireSession(input.threadId, terminalId);
     const process = session.process;
@@ -3414,6 +3534,24 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       });
     }
     session.inputCount += 1;
+    if (from === "user") {
+      session.userInput = {
+        at: yield* Clock.currentTimeMillis,
+        lineDirty: lineDirtyAfter(input.data, session.userInput?.lineDirty ?? false),
+      };
+    }
+    if (session.inputByAgent !== (from === "agent")) {
+      session.inputByAgent = from === "agent";
+      const eventStamp = advanceEventSequence(session);
+      yield* publishEvent({
+        type: "activity",
+        threadId: session.threadId,
+        terminalId: session.terminalId,
+        sequence: eventStamp.sequence,
+        hasRunningSubprocess: session.hasRunningSubprocess,
+        label: terminalWireLabel(session),
+      });
+    }
     yield* Effect.try({
       try: () => process.write(input.data),
       catch: (cause) =>
@@ -3503,6 +3641,21 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       }),
     );
 
+  const commandRunning = Effect.fn("terminal.commandRunning")(function* (
+    input: TerminalObserveInput,
+  ) {
+    const session = Option.getOrUndefined(yield* getSession(input.threadId, input.terminalId));
+    if (session?.status !== "running" || session.pid === null) return null;
+    const { inspector } = yield* acquireSubprocessInspector(
+      platform === "win32" ? CLOSE_IDLE_QUERY_TIMEOUT.win32 : CLOSE_IDLE_QUERY_TIMEOUT.posix,
+    );
+    if (Result.isFailure(inspector)) return null;
+    return yield* inspector.success(session.pid).pipe(
+      Effect.map((result): boolean | null => result.hasRunningSubprocess),
+      Effect.orElseSucceed(() => null),
+    );
+  });
+
   const closeIdle: TerminalManager["Service"]["closeIdle"] = (input) =>
     withThreadLock(
       input.threadId,
@@ -3548,6 +3701,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   return TerminalManager.of({
     open,
     getShell,
+    commandRunning,
+    readThread,
     attachStream,
     attachOutputStream,
     observeStream,
