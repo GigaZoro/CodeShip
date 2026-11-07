@@ -259,6 +259,14 @@ picker, and a finished download is offered for you to save. Popups such as
 sign-in windows open as their own tabs. Downloads stay on the host until the
 tab closes. Audio does not play on your device.
 
+Some sites refuse to sign in from a host's browser, and retrying does not help.
+Google answers "This browser or app may not be secure" for browsers an app
+controls, so "Sign in with Google" fails there. Sites behind Cloudflare, such
+as OpenAI's login, often challenge a data-center server's address, and the login
+form then shows an error such as "Invalid content type: text/html". Use those
+accounts on your own computer instead, where the desktop app can
+[import the session](./browser-import.md) from the browser you already use.
+
 On a phone, tap the floating preview's corner dot to show its controls, then
 **Pop into separate window** to keep watching in picture-in-picture over other
 apps.
@@ -281,8 +289,8 @@ the background service, and restart it. Script preview URLs still appear.
 macOS, Windows, and Linux desktops run the browser as is. Some Linux hosts need
 one-time setup: Ubuntu 23.10 and later block the sandbox the browser runs in,
 and minimal images and containers lack libraries it loads. When that happens,
-the server says so at startup, and browser tabs and HTML previews show the
-command to run on the host:
+the server says so at startup, agents report it before they open a tab, and
+browser tabs and HTML previews show the command to run on the host:
 
 ```sh
 sudo t3 browser setup

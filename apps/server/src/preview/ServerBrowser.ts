@@ -45,6 +45,7 @@ import {
 } from "@t3tools/contracts";
 import { AgentScope, agentScopeLauncherScript } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import type * as FileSystem from "effect/FileSystem";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
 import { resolvePreviewViewport } from "@t3tools/shared/previewViewport";
 import * as NodeCrypto from "node:crypto";
@@ -468,10 +469,16 @@ const make = Effect.gen(function* () {
   const agentTurns = yield* (yield* PreviewAgentActivity.PreviewAgentActivity).changes;
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
-  const launchServices = yield* Effect.context<ChildProcessSpawner.ChildProcessSpawner>();
+  const hostServices = yield* Effect.context<
+    FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
+  >();
   const setupCommand = yield* resolveRootCliCommand(PreviewBrowserHost.SETUP_SUBCOMMAND);
   const agentScope = yield* AgentScope;
   const launchersDir = NodePath.join(config.stateDir, "server-browser", "launchers");
+
+  const hostSetupProblem = Effect.flatMap(previewBrowser.installed, (executable) =>
+    PreviewBrowserHost.hostSetupProblem({ executable, setupCommand }),
+  );
 
   const tabs = new Map<string, ServerTab>();
   const pendingTabs = new Map<
@@ -501,7 +508,7 @@ const make = Effect.gen(function* () {
     },
     // Playwright's launch error drops Chrome's own output; its sandbox note survives.
     diagnose: (executable, cause) =>
-      Effect.runPromiseWith(launchServices)(
+      Effect.runPromiseWith(hostServices)(
         PreviewBrowserHost.diagnoseLaunchFailure({
           executable,
           setupCommand,
@@ -1558,6 +1565,9 @@ const make = Effect.gen(function* () {
     agentSessionId?: string,
   ): Promise<PreviewAutomationStatus> => {
     if (!tab) {
+      // Any live tab proves this host can start the browser.
+      const problem =
+        tabs.size === 0 ? await Effect.runPromiseWith(hostServices)(hostSetupProblem) : undefined;
       return {
         available: false,
         visible: false,
@@ -1565,6 +1575,7 @@ const make = Effect.gen(function* () {
         url: null,
         title: null,
         loading: false,
+        ...(problem ? { hostSetup: problem.message } : {}),
         ...profileStatus(),
       };
     }
@@ -2672,14 +2683,11 @@ const make = Effect.gen(function* () {
   });
 
   yield* manager.events.pipe(Stream.runForEach(mirrorManagerEvent), Effect.forkScoped);
-  if (
-    !PreviewBrowserHost.sandboxDisabled(yield* HostProcess.Environment) &&
-    (yield* PreviewBrowserHost.sandboxBlocked)
-  ) {
-    yield* Effect.logWarning(
-      `This host blocks the sandbox T3.CodeShip's browser runs in, so browser tabs and HTML previews will not start. Run \`${setupCommand}\` once to allow it.`,
-    );
-  }
+  // Forked: the probe may spawn the browser to read its version, and startup must not wait for it.
+  yield* hostSetupProblem.pipe(
+    Effect.flatMap((problem) => (problem ? Effect.logWarning(problem.message) : Effect.void)),
+    Effect.forkScoped,
+  );
 
   yield* desktopChannel.detached.pipe(
     Stream.runForEach((key) =>

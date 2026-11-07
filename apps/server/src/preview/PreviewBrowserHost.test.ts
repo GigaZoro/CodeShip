@@ -1,6 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/process";
@@ -20,6 +22,9 @@ const LDD_IN_BARE_DEBIAN = `\tlinux-vdso.so.1 (0x00007ffd2d1f8000)
 
 const LOADER_ERROR =
   "chrome-headless-shell: error while loading shared libraries: libglib-2.0.so.0: cannot open shared object file: No such file or directory";
+
+const EXECUTABLE = "/home/me/.t3/tools/chrome-headless-shell/linux64/154/chrome-headless-shell";
+const STARTS = "Google Chrome for Testing 154.0.8037.92\n";
 
 const hostReporting = (output: { readonly version: string; readonly ldd: string }) => {
   const commands: Array<string> = [];
@@ -60,7 +65,7 @@ const diagnose = (input: {
     version: input.version ?? LOADER_ERROR,
   });
   return PreviewBrowserHost.diagnoseLaunchFailure({
-    executable: "/home/me/.t3/tools/chrome-headless-shell/linux64/154/chrome-headless-shell",
+    executable: EXECUTABLE,
     output: input.output,
     setupCommand: "sudo t3 browser setup",
   }).pipe(
@@ -124,9 +129,68 @@ describe("diagnoseLaunchFailure", () => {
         platform: "linux",
         output: "crashed",
         ldd: LDD_IN_BARE_DEBIAN,
-        version: "Google Chrome for Testing 154.0.8037.92\n",
+        version: STARTS,
       });
       expect(error).toBeUndefined();
+    }),
+  );
+});
+
+describe("hostSetupProblem", () => {
+  it.effect.each([
+    {
+      label: "names the libraries a launch would miss",
+      expected: "PreviewBrowserLibrariesError",
+      spawns: true,
+    },
+    {
+      label: "reports a root server before its libraries",
+      uid: 0,
+      expected: "PreviewBrowserRootError",
+      spawns: false,
+    },
+    {
+      label: "accepts a root server that disabled the sandbox",
+      uid: 0,
+      env: { T3CODE_SERVER_BROWSER_SANDBOX: "0" },
+      version: STARTS,
+      expected: undefined,
+      spawns: true,
+    },
+    {
+      label: "skips hosts that are not Linux",
+      platform: "darwin" as const,
+      uid: 0,
+      expected: undefined,
+      spawns: false,
+    },
+    {
+      label: "does not start a browser that is not installed",
+      installed: false,
+      expected: undefined,
+      spawns: false,
+    },
+  ])("$label", (input) =>
+    Effect.gen(function* () {
+      const { spawner, commands } = hostReporting({
+        ldd: LDD_IN_BARE_DEBIAN,
+        version: input.version ?? LOADER_ERROR,
+      });
+      const problem = yield* PreviewBrowserHost.hostSetupProblem({
+        executable: input.installed === false ? Option.none() : Option.some(EXECUTABLE),
+        setupCommand: "sudo t3 browser setup",
+      }).pipe(
+        Effect.provide(FileSystem.layerNoop({})),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(HostProcess.Platform, input.platform ?? "linux"),
+        Effect.provideService(HostProcess.UserId, input.uid ?? 1000),
+        Effect.provideService(HostProcess.Environment, input.env ?? {}),
+      );
+      expect(problem?._tag).toBe(input.expected);
+      expect(commands.length > 0).toBe(input.spawns);
+      if (problem?._tag === "PreviewBrowserLibrariesError") {
+        expect(problem.libraries).toEqual(["libglib-2.0.so.0", "libnss3.so", "libX11.so.6"]);
+      }
     }),
   );
 });

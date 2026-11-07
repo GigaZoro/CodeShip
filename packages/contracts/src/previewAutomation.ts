@@ -110,6 +110,8 @@ export const PreviewAutomationStatus = Schema.Struct({
       }),
     ),
   ),
+  /** Server hosts: why this host's browser cannot start, with the command that fixes it. */
+  hostSetup: Schema.optional(Schema.String),
   /** Server hosts: all thread tabs are readable; actions require ownedByCaller or an unclaimed tab without human control. */
   tabs: Schema.optional(
     Schema.Array(

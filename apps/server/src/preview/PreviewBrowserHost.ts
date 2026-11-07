@@ -1,6 +1,7 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
@@ -136,3 +137,21 @@ export const sandboxBlocked = Effect.gen(function* () {
   if (!restricted) return false;
   return !(yield* fs.exists(APPARMOR_PROFILE_PATH).pipe(Effect.orElseSucceed(() => false)));
 }).pipe(Effect.withSpan("PreviewBrowserHost.sandboxBlocked"));
+
+/** Predict the launch errors on this host without starting the browser. */
+export const hostSetupProblem = Effect.fn("PreviewBrowserHost.hostSetupProblem")(function* (input: {
+  readonly executable: Option.Option<string>;
+  readonly setupCommand: string;
+}) {
+  if ((yield* HostProcess.Platform) !== "linux") return undefined;
+  const { setupCommand } = input;
+  if (!sandboxDisabled(yield* HostProcess.Environment)) {
+    if ((yield* HostProcess.UserId) === 0) return new PreviewBrowserRootError();
+    if (yield* sandboxBlocked) return new PreviewBrowserSandboxError({ setupCommand });
+  }
+  if (Option.isNone(input.executable)) return undefined;
+  const libraries = yield* missingLibraries(input.executable.value);
+  return libraries.length === 0
+    ? undefined
+    : new PreviewBrowserLibrariesError({ setupCommand, libraries });
+});

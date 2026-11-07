@@ -1,3 +1,9 @@
+## 2026-11-08 — Agents learn early when a host's browser can't start
+
+- On a Linux host that lacks the browser's libraries, blocks its sandbox, or runs T3.CodeShip as root, agents now see why when they first check the browser, with the command that fixes it. Before, they only found out when a tab failed to open, sometimes long after.
+- At startup, the server now warns about missing libraries and a root server too, not only a blocked sandbox.
+- The remote browser guide now explains why Google and Cloudflare-protected logins such as OpenAI's refuse a server's browser, and where to sign in instead.
+
 ## 2026-11-08 — Manual steps: every step only you can do, from all machines
 
 - A new **Manual steps** list shows every step only you can do, from the pending lists agents keep for each machine in ThreadPage (**Work → Agent Maintenance → Machine inbox**): sign-ins, installs that need your password, and money decisions, which come first and are marked **Money**. Steps are grouped by machine and say how long ago they were last updated. Clicking one opens its ThreadPage thread, whose newest note says what to do.
