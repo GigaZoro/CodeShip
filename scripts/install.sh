@@ -13,7 +13,7 @@
 #   T3CODE_RELEASE_BASE_URL  mirror for releases/download (default: GitHub)
 #   T3CODE_RELEASE_REPOSITORY  GitHub owner/repo whose releases to install
 #                            (default: pingdotgg/t3code; a fork that publishes
-#                            its own CLI archives, such as GigaZoro/CodeShip)
+#                            its own CLI archives, such as GigaZoro/codeship-releases)
 #
 # The archive is unpacked into $T3CODE_HOME/runtime/versions/<version>, the
 # same layout `t3 service install` uses, so the service reuses this download

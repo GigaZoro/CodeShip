@@ -64,18 +64,26 @@ the version.
 `release.yml` only runs in `pingdotgg/t3code`. A fork ships its own installers with
 `.github/workflows/release-fork.yml` on every push to `main`, or by hand from `main` to set a
 version (**Actions → Release (fork) → Run workflow**). It packages macOS arm64 (DMG) and Windows
-x64 (NSIS) through the same `release-desktop.yml` on GitHub-hosted runners, then publishes a GitHub
-Release marked latest, with the updater manifests. A Linux x64 job also runs: the Windows app embeds
-its CLI archive as the WSL runtime, and the release publishes that archive with `SHA256SUMS` for
-Linux servers. Its Linux installers are not published. Desktop apps built by that workflow check the
-fork's releases, so the update button offers each new release. The server and desktop bundles read
-the same repository at build time (`T3CODE_DESKTOP_UPDATE_REPOSITORY`, else `GITHUB_REPOSITORY`), so
-`t3 update`, a server's update button and Desktop-managed SSH install the fork's CLI, not upstream's.
-To install it on a Linux server:
+x64 (NSIS) through the same `release-desktop.yml` on GitHub-hosted runners. A Linux x64 job also
+runs: the Windows app embeds its CLI archive as the WSL runtime, and the release publishes that
+archive with `SHA256SUMS` and `install.sh` for Linux servers. Its Linux installers are not
+published.
+
+The release goes to a separate public repository, `RELEASE_REPOSITORY` in the workflow
+(`GigaZoro/codeship-releases`), marked latest, with the updater manifests. Installed apps and
+servers read their updates from there without credentials, so the source repository can be
+private. The release repository holds no source: its tag names the release, and the same tag on
+the source repository marks the commit it was built from. The server, web and desktop bundles read
+the repository at build time (`T3CODE_DESKTOP_UPDATE_REPOSITORY`, else `GITHUB_REPOSITORY`), so the
+desktop update button, `t3 update`, a server's update button and Desktop-managed SSH all use it.
+The server also reports it to clients (`releaseRepository` in its environment descriptor), and the
+mobile app checks a server's updates there. While the source repository is public, each release is
+also published there, so apps built before the release repository existed update once and move to
+it. To install a Linux server:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/GigaZoro/CodeShip/main/scripts/install.sh \
-  | T3CODE_RELEASE_REPOSITORY=GigaZoro/CodeShip sh
+curl -fsSL https://github.com/GigaZoro/codeship-releases/releases/latest/download/install.sh \
+  | T3CODE_RELEASE_REPOSITORY=GigaZoro/codeship-releases sh
 t3 service install
 ```
 
@@ -86,7 +94,10 @@ up to twice while its commit is still the head of `main`.
 - **One-time setup.** Forks start with Actions disabled; enable them in the fork's Actions tab.
   Most other workflows ask for upstream's Blacksmith runners, which a fork does not have, so their
   jobs wait in the queue until GitHub cancels them. Disable the ones that run on push or pull
-  request (such as CI) in the Actions tab.
+  request (such as CI) in the Actions tab. Create the public release repository with one commit
+  (a README), set `RELEASE_REPOSITORY` to it, and add a token that can write its contents as the
+  `RELEASES_TOKEN` secret: a fine-grained token limited to that repository with **Contents: Read
+  and write**. The run's own token reaches only the source repository.
 - **Versions.** An empty `version` input releases `<year>.<MMDD>.<n>`, such as `2026.1030.1`. Clones
   of a fork also fetch upstream's `v0.x` tags, and a fork tag with the same name as one of them
   makes every later fetch fail with "would clobber existing tag". An explicit version must be

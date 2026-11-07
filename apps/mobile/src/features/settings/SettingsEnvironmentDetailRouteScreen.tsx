@@ -303,9 +303,9 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                       loading={pending === "check"}
                       onPress={() => {
                         if (disabled) return;
-                        const fromVersion = config.environment.serverVersion;
+                        const server = config.environment;
                         void run("check", async () => {
-                          const exit = await checkRelease(async () => fromVersion);
+                          const exit = await checkRelease(async () => server);
                           // `run` owns the error message, so a failed lookup rethrows to it.
                           if (Exit.isFailure(exit)) throw Cause.squash(exit.cause);
                         });

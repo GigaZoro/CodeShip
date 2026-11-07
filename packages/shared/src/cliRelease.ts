@@ -16,12 +16,16 @@ export function cliReleaseRepository(configured: string | undefined): string {
     : UPSTREAM_RELEASE_REPOSITORY;
 }
 
-const CLI_RELEASE_REPOSITORY = cliReleaseRepository(
+export const CLI_RELEASE_REPOSITORY = cliReleaseRepository(
   typeof __T3CODE_BUILD_UPDATE_REPOSITORY__ === "undefined"
     ? undefined
     : __T3CODE_BUILD_UPDATE_REPOSITORY__,
 );
-export const CLI_RELEASES_PAGE_URL = `https://github.com/${CLI_RELEASE_REPOSITORY}/releases`;
+
+export function cliReleasesPageUrl(repository: string = CLI_RELEASE_REPOSITORY): string {
+  return `https://github.com/${repository}/releases`;
+}
+export const CLI_RELEASES_PAGE_URL = cliReleasesPageUrl();
 
 /** The shell command that installs exactly this CLI version from this build's releases. */
 export function cliInstallCommand(
@@ -30,7 +34,7 @@ export function cliInstallCommand(
 ): string {
   return repository === UPSTREAM_RELEASE_REPOSITORY
     ? `curl -fsSL https://t3.codes/install.sh | T3CODE_VERSION=${version} sh`
-    : `curl -fsSL https://raw.githubusercontent.com/${repository}/main/scripts/install.sh | T3CODE_RELEASE_REPOSITORY=${repository} T3CODE_VERSION=${version} sh`;
+    : `curl -fsSL ${cliReleasesPageUrl(repository)}/download/v${version}/install.sh | T3CODE_RELEASE_REPOSITORY=${repository} T3CODE_VERSION=${version} sh`;
 }
 export const CLI_RELEASE_CHECKSUMS_FILE = "SHA256SUMS";
 export const CLI_RELEASE_BASE_URL_ENV = "T3CODE_RELEASE_BASE_URL";
@@ -127,8 +131,11 @@ export function acceptsTrackSwitchRelease(
 }
 
 /** Page until the channel matches; nightlies can push preview/stable releases past the first page. */
-export function cliReleaseIndexPageUrl(page: number): string {
-  return `https://api.github.com/repos/${CLI_RELEASE_REPOSITORY}/releases?per_page=100&page=${page}`;
+export function cliReleaseIndexPageUrl(
+  page: number,
+  repository: string = CLI_RELEASE_REPOSITORY,
+): string {
+  return `https://api.github.com/repos/${repository}/releases?per_page=100&page=${page}`;
 }
 
 /** Draft assets are not downloadable. */

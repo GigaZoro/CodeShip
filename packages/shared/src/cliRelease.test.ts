@@ -18,8 +18,8 @@ describe("cliRelease", () => {
     expect(cliInstallCommand("1.2.3", "pingdotgg/t3code")).toBe(
       "curl -fsSL https://t3.codes/install.sh | T3CODE_VERSION=1.2.3 sh",
     );
-    expect(cliInstallCommand("2026.1107.4", "GigaZoro/CodeShip")).toBe(
-      "curl -fsSL https://raw.githubusercontent.com/GigaZoro/CodeShip/main/scripts/install.sh | T3CODE_RELEASE_REPOSITORY=GigaZoro/CodeShip T3CODE_VERSION=2026.1107.4 sh",
+    expect(cliInstallCommand("2026.1107.4", "GigaZoro/codeship-releases")).toBe(
+      "curl -fsSL https://github.com/GigaZoro/codeship-releases/releases/download/v2026.1107.4/install.sh | T3CODE_RELEASE_REPOSITORY=GigaZoro/codeship-releases T3CODE_VERSION=2026.1107.4 sh",
     );
   });
 

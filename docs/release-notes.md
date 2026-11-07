@@ -1,3 +1,9 @@
+## 2026-11-08 — Updates come from a public releases repository
+
+- Desktop apps, `t3 update` and a server's update button now get new versions from the public [GigaZoro/codeship-releases](https://github.com/GigaZoro/codeship-releases) repository. Your app moves there with this update; nothing to do.
+- On mobile, **Check for updates** in an environment's settings looks for that server's own releases. Before, it checked upstream T3 Code's releases and never offered a T3.CodeShip update.
+- To install T3.CodeShip on a Linux server, use the `install.sh` attached to each release (see the releases repository's README).
+
 ## 2026-11-08 — No Keychain prompt after desktop updates
 
 - The Mac app no longer asks for "t3code Safe Storage" in your Keychain each time it starts after an update. T3.CodeShip's self-signed releases, which have no Apple Team ID, keep your saved connections in a file only your account can read, like the T3 account sign-in already was. The first start after this update asks one last time to move them out of the Keychain.
