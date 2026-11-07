@@ -26,11 +26,9 @@ export function useReconnectMachines(
     );
     if (targets.length === 0) return;
     setRefreshing(true);
-    try {
-      await Promise.all(targets.map((environment) => retry(environment.environmentId)));
-    } finally {
-      setRefreshing(false);
-    }
+    // Atom commands settle into results instead of throwing, so this always clears the spinner.
+    await Promise.all(targets.map((environment) => retry(environment.environmentId)));
+    setRefreshing(false);
   };
   return { refreshing, reconnect };
 }

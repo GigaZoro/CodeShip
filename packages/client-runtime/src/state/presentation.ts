@@ -103,7 +103,8 @@ export function createEnvironmentPresentationAtoms<E>(input: {
           connection.phase === "connected"
             ? null
             : previous?.connection.phase === "connected"
-              ? Date.now()
+              ? // @effect-diagnostics-next-line globalDate:off - atoms derive synchronously, outside any Effect clock
+                Date.now()
               : (previous?.lastSeenAt ?? null),
       } satisfies EnvironmentPresentation;
       return previous !== null &&
