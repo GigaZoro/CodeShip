@@ -65,9 +65,20 @@ the version.
 `.github/workflows/release-fork.yml` on every push to `main`, or by hand from `main` to set a
 version (**Actions → Release (fork) → Run workflow**). It packages macOS arm64 (DMG) and Windows
 x64 (NSIS) through the same `release-desktop.yml` on GitHub-hosted runners, then publishes a GitHub
-Release marked latest, with the updater manifests. A Linux x64 job also runs, because the Windows
-app embeds its CLI archive as the WSL runtime, but its installers are not published. Desktop apps
-built by that workflow check the fork's releases, so the update button offers each new release.
+Release marked latest, with the updater manifests. A Linux x64 job also runs: the Windows app embeds
+its CLI archive as the WSL runtime, and the release publishes that archive with `SHA256SUMS` for
+Linux servers. Its Linux installers are not published. Desktop apps built by that workflow check the
+fork's releases, so the update button offers each new release. The server and desktop bundles read
+the same repository at build time (`T3CODE_DESKTOP_UPDATE_REPOSITORY`, else `GITHUB_REPOSITORY`), so
+`t3 update`, a server's update button and Desktop-managed SSH install the fork's CLI, not upstream's.
+To install it on a Linux server:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/GigaZoro/CodeShip/main/scripts/install.sh \
+  | T3CODE_RELEASE_REPOSITORY=GigaZoro/CodeShip sh
+t3 service install
+```
+
 Builds use the public T3 Connect identifiers in `.env.example`. GitHub-hosted macOS arm64 runners
 sometimes never pick up a job, so `release-fork-retry.yml` reruns a failed release's failed jobs
 up to twice while its commit is still the head of `main`.

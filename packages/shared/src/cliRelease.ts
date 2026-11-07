@@ -3,8 +3,35 @@ import * as Schema from "effect/Schema";
 
 import { compareSemverVersions } from "./semver.ts";
 
-const CLI_RELEASE_REPOSITORY = "pingdotgg/t3code";
+// Builds define it from the repository that runs the release, so a fork's server and desktop
+// look up and download the fork's own releases. Unbundled code and local builds get upstream.
+declare const __T3CODE_BUILD_UPDATE_REPOSITORY__: string | undefined;
+
+const UPSTREAM_RELEASE_REPOSITORY = "pingdotgg/t3code";
+
+export function cliReleaseRepository(configured: string | undefined): string {
+  const repository = configured?.trim();
+  return repository && /^[\w.-]+\/[\w.-]+$/.test(repository)
+    ? repository
+    : UPSTREAM_RELEASE_REPOSITORY;
+}
+
+const CLI_RELEASE_REPOSITORY = cliReleaseRepository(
+  typeof __T3CODE_BUILD_UPDATE_REPOSITORY__ === "undefined"
+    ? undefined
+    : __T3CODE_BUILD_UPDATE_REPOSITORY__,
+);
 export const CLI_RELEASES_PAGE_URL = `https://github.com/${CLI_RELEASE_REPOSITORY}/releases`;
+
+/** The shell command that installs exactly this CLI version from this build's releases. */
+export function cliInstallCommand(
+  version: string,
+  repository: string = CLI_RELEASE_REPOSITORY,
+): string {
+  return repository === UPSTREAM_RELEASE_REPOSITORY
+    ? `curl -fsSL https://t3.codes/install.sh | T3CODE_VERSION=${version} sh`
+    : `curl -fsSL https://raw.githubusercontent.com/${repository}/main/scripts/install.sh | T3CODE_RELEASE_REPOSITORY=${repository} T3CODE_VERSION=${version} sh`;
+}
 export const CLI_RELEASE_CHECKSUMS_FILE = "SHA256SUMS";
 export const CLI_RELEASE_BASE_URL_ENV = "T3CODE_RELEASE_BASE_URL";
 

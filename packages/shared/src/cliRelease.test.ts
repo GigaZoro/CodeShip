@@ -1,8 +1,28 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { cliArchiveTarCommand, newestCliReleaseVersion, parseChecksums } from "./cliRelease.ts";
+import {
+  cliArchiveTarCommand,
+  cliInstallCommand,
+  cliReleaseRepository,
+  newestCliReleaseVersion,
+  parseChecksums,
+} from "./cliRelease.ts";
 
 describe("cliRelease", () => {
+  it("uses the build's repository for releases and falls back to upstream", () => {
+    expect(cliReleaseRepository("GigaZoro/CodeShip")).toBe("GigaZoro/CodeShip");
+    expect(cliReleaseRepository(" GigaZoro/CodeShip\n")).toBe("GigaZoro/CodeShip");
+    for (const unusable of [undefined, "", "not-a-repository", "a/b; rm -rf ~"]) {
+      expect(cliReleaseRepository(unusable)).toBe("pingdotgg/t3code");
+    }
+    expect(cliInstallCommand("1.2.3", "pingdotgg/t3code")).toBe(
+      "curl -fsSL https://t3.codes/install.sh | T3CODE_VERSION=1.2.3 sh",
+    );
+    expect(cliInstallCommand("2026.1107.4", "GigaZoro/CodeShip")).toBe(
+      "curl -fsSL https://raw.githubusercontent.com/GigaZoro/CodeShip/main/scripts/install.sh | T3CODE_RELEASE_REPOSITORY=GigaZoro/CodeShip T3CODE_VERSION=2026.1107.4 sh",
+    );
+  });
+
   it("parses sha256sum output including binary-mode markers", () => {
     const checksums = parseChecksums(
       [

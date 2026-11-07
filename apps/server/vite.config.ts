@@ -129,6 +129,12 @@ export default mergeConfig(
         __T3CODE_BUILD_RELAY_CLIENT_OTLP_TRACES_TOKEN__: JSON.stringify(
           repoEnv.T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN?.trim() ?? "",
         ),
+        // Same source as the desktop update feed: a fork's CLI releases come from the fork.
+        __T3CODE_BUILD_UPDATE_REPOSITORY__: JSON.stringify(
+          process.env.T3CODE_DESKTOP_UPDATE_REPOSITORY?.trim() ||
+            process.env.GITHUB_REPOSITORY?.trim() ||
+            "",
+        ),
       },
     },
     test: {

@@ -78,7 +78,7 @@ The most common defect in this repo is a change that works on the path you teste
 
 ## Dev servers
 
-- When asked to run the app, launch `/Applications/CodeShip (Dev).app`, which builds and runs this GitHub-connected checkout. Use another surface only when explicitly requested.
+- When asked to run the app, launch `/Applications/CodeShip (Dev).app`, which builds and runs this GitHub-connected checkout. Use another surface only when explicitly requested. On a Linux server, which has no desktop app, run the web app with `vp run dev` instead, as [test-t3-app](.agents/skills/test-t3-app/SKILL.md) describes.
 - `/Applications/CodeShip.app` is the separate production install built from committed `GigaZoro/CodeShip` code. Keep its data and browser profile separate from development.
 - `vp i` installs. Worktrees get this from the t3.json setup script; if module resolution looks broken, it probably did not run.
 - Setup runs in the background. While `.t3/setup-running` names a live PID, wait for it and do not run `vp i`. It ends with `.t3/setup-done` or `.t3/setup-failed` (with the error tail). With no marker at all, setup never ran here, so run `vp i` yourself.

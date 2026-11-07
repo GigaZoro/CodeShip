@@ -1,3 +1,9 @@
+## 2026-11-07 — The fork's server runs on Linux servers
+
+- Each release now includes the Linux x64 server (`t3`) and a `SHA256SUMS` file. Install it on a Linux server with `curl -fsSL https://raw.githubusercontent.com/GigaZoro/CodeShip/main/scripts/install.sh | T3CODE_RELEASE_REPOSITORY=GigaZoro/CodeShip sh`, then `t3 service install`.
+- `t3 update`, a server's update button and adding a machine over SSH from the desktop app now install this fork's server instead of upstream T3 Code's.
+- `install.sh` accepts `T3CODE_RELEASE_REPOSITORY` to install from another repository's releases.
+
 ## 2026-11-07 — Scheduled tasks show where they run
 
 - Each scheduled task shows its machine and project, with their icons, so you can tell them apart without the machine headings.

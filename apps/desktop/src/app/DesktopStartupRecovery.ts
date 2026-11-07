@@ -1,3 +1,4 @@
+import { CLI_RELEASES_PAGE_URL } from "@t3tools/shared/cliRelease";
 import { getActiveLanguage, t } from "@t3tools/shared/i18n";
 import type { DesktopUpdateState } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -19,13 +20,6 @@ import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopObservability from "./DesktopObservability.ts";
 import * as DesktopState from "./DesktopState.ts";
 
-declare const __T3CODE_BUILD_UPDATE_REPOSITORY__: string | undefined;
-
-const RELEASES_URL = `https://github.com/${
-  (typeof __T3CODE_BUILD_UPDATE_REPOSITORY__ === "undefined"
-    ? ""
-    : __T3CODE_BUILD_UPDATE_REPOSITORY__) || "pingdotgg/t3code"
-}/releases`;
 const LAST_STARTED_VERSION_FILE = "desktop-last-started-version";
 // Buttons are plain links to this host; will-navigate cancels them and runs the action.
 const ACTION_ORIGIN = "https://startup-recovery.invalid";
@@ -236,11 +230,11 @@ export const listen: Effect.Effect<
       }
       case "reinstall":
         if (current._tag === "Reinstall") {
-          yield* electronShell.openExternal(`${RELEASES_URL}/tag/v${current.version}`);
+          yield* electronShell.openExternal(`${CLI_RELEASES_PAGE_URL}/tag/v${current.version}`);
         }
         return;
       case "releases":
-        yield* electronShell.openExternal(RELEASES_URL);
+        yield* electronShell.openExternal(CLI_RELEASES_PAGE_URL);
         return;
       case "copy": {
         const failure = yield* Ref.get(failureRef);
