@@ -3,10 +3,8 @@ import * as NodeURL from "node:url";
 import { storage } from "@clerk/electron/storage";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
@@ -23,6 +21,7 @@ import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopClerkTokenFile from "./DesktopClerkTokenFile.ts";
+import * as DesktopKeychain from "./DesktopKeychain.ts";
 import * as DesktopUserData from "./DesktopUserData.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import { openClerkTokenStorage } from "./ClerkTokenStore.ts";
@@ -91,11 +90,6 @@ export const desktopClerkFrontendApiHostname = resolveDesktopClerkFrontendApiHos
     : __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__,
 );
 
-const AppPackageMetadata = Schema.Struct({
-  t3codeAppleTeamSigned: Schema.optional(Schema.Boolean),
-});
-const decodeAppPackageMetadata = Schema.decodeEffect(Schema.fromJsonString(AppPackageMetadata));
-
 function createDesktopClerkBridge(
   stateDir: string,
   isDevelopment: boolean,
@@ -146,18 +140,7 @@ export const make = Effect.gen(function* () {
     if (handleOpenUrl(url)) event.preventDefault();
   });
 
-  // The Keychain recognizes an app across updates only by its Apple Team ID. Without one, each
-  // update loses the key to the encrypted token and signs the user out on every launch.
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const keychainForgetsUpdates =
-    environment.platform === "darwin" && environment.isPackaged
-      ? yield* fileSystem.readFileString(path.join(environment.appRoot, "package.json")).pipe(
-          Effect.flatMap(decodeAppPackageMetadata),
-          Effect.map((metadata) => metadata.t3codeAppleTeamSigned === false),
-          Effect.orElseSucceed(() => false),
-        )
-      : false;
+  const keychainForgetsUpdates = yield* DesktopKeychain.forgetsUpdates;
 
   yield* Effect.acquireRelease(
     Effect.try({

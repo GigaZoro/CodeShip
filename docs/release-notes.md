@@ -1,3 +1,7 @@
+## 2026-11-08 — No Keychain prompt after desktop updates
+
+- The Mac app no longer asks for "t3code Safe Storage" in your Keychain each time it starts after an update. T3.CodeShip's self-signed releases, which have no Apple Team ID, keep your saved connections in a file only your account can read, like the T3 account sign-in already was. The first start after this update asks one last time to move them out of the Keychain.
+
 ## 2026-11-07 — Claude asks for Anthropic's updated terms at sign-in
 
 - When a Claude account hasn't reviewed Anthropic's updated Consumer Terms, Claude won't start for it. **Settings → Providers & models** now says so for that account instead of "Claude Agent CLI failed while checking account status", and a chat on it says the same instead of "Claude Code exited with code 1".

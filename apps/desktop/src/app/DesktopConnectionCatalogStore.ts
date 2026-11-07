@@ -25,20 +25,22 @@ import * as Schema from "effect/Schema";
 import * as ElectronSafeStorage from "../electron/ElectronSafeStorage.ts";
 import * as DesktopSavedEnvironments from "../settings/DesktopSavedEnvironments.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
+import * as DesktopKeychain from "./DesktopKeychain.ts";
 
-const EncryptedConnectionCatalogDocument = Schema.Struct({
-  version: Schema.Literal(1),
-  encryptedCatalog: Schema.String,
-});
-type EncryptedConnectionCatalogDocument = typeof EncryptedConnectionCatalogDocument.Type;
+const ConnectionCatalogFileDocument = Schema.Union([
+  Schema.Struct({ version: Schema.Literal(1), encryptedCatalog: Schema.String }),
+  Schema.Struct({ version: Schema.Literal(1), catalog: Schema.String }),
+]);
+type ConnectionCatalogFileDocument = typeof ConnectionCatalogFileDocument.Type;
 
-const EncryptedConnectionCatalogDocumentJson = fromLenientJson(EncryptedConnectionCatalogDocument);
-const decodeEncryptedConnectionCatalogDocumentJson = Schema.decodeEffect(
-  EncryptedConnectionCatalogDocumentJson,
+const ConnectionCatalogFileDocumentJson = fromLenientJson(ConnectionCatalogFileDocument);
+const decodeConnectionCatalogFileDocumentJson = Schema.decodeEffect(
+  ConnectionCatalogFileDocumentJson,
 );
-const encodeEncryptedConnectionCatalogDocumentJson = Schema.encodeEffect(
-  EncryptedConnectionCatalogDocumentJson,
+const encodeConnectionCatalogFileDocumentJson = Schema.encodeEffect(
+  ConnectionCatalogFileDocumentJson,
 );
+const CATALOG_FILE_MODE = 0o600;
 const RuntimeConnectionCatalogDocumentJson = Schema.fromJsonString(
   RuntimeConnectionCatalogDocument,
 );
@@ -186,7 +188,7 @@ const readDocument = (
   fileSystem: FileSystem.FileSystem,
   catalogPath: string,
 ): Effect.Effect<
-  Option.Option<EncryptedConnectionCatalogDocument>,
+  Option.Option<ConnectionCatalogFileDocument>,
   DesktopConnectionCatalogStoreReadError | DesktopConnectionCatalogStoreDocumentDecodeError
 > =>
   fileSystem.readFileString(catalogPath).pipe(
@@ -202,8 +204,8 @@ const readDocument = (
     ),
     Effect.flatMap((raw) =>
       raw === null
-        ? Effect.succeed(Option.none<EncryptedConnectionCatalogDocument>())
-        : decodeEncryptedConnectionCatalogDocumentJson(raw).pipe(
+        ? Effect.succeed(Option.none<ConnectionCatalogFileDocument>())
+        : decodeConnectionCatalogFileDocumentJson(raw).pipe(
             Effect.asSome,
             Effect.mapError(
               (cause) =>
@@ -220,12 +222,12 @@ const writeDocument = Effect.fn("desktop.connectionCatalogStore.writeDocument")(
   readonly fileSystem: FileSystem.FileSystem;
   readonly path: Path.Path;
   readonly catalogPath: string;
-  readonly document: EncryptedConnectionCatalogDocument;
+  readonly document: ConnectionCatalogFileDocument;
   readonly suffix: string;
 }): Effect.fn.Return<void, DesktopConnectionCatalogStoreWriteError> {
   const directory = input.path.dirname(input.catalogPath);
   const tempPath = `${input.catalogPath}.${process.pid}.${input.suffix}.tmp`;
-  const encoded = yield* encodeEncryptedConnectionCatalogDocumentJson(input.document).pipe(
+  const encoded = yield* encodeConnectionCatalogFileDocumentJson(input.document).pipe(
     Effect.mapError(
       (cause) =>
         new DesktopConnectionCatalogStoreWriteError({
@@ -246,16 +248,18 @@ const writeDocument = Effect.fn("desktop.connectionCatalogStore.writeDocument")(
     ),
   );
   yield* Effect.gen(function* () {
-    yield* input.fileSystem.writeFileString(tempPath, `${encoded}\n`).pipe(
-      Effect.mapError(
-        (cause) =>
-          new DesktopConnectionCatalogStoreWriteError({
-            operation: "write-temporary-file",
-            path: tempPath,
-            cause,
-          }),
-      ),
-    );
+    yield* input.fileSystem
+      .writeFileString(tempPath, `${encoded}\n`, { mode: CATALOG_FILE_MODE })
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new DesktopConnectionCatalogStoreWriteError({
+              operation: "write-temporary-file",
+              path: tempPath,
+              cause,
+            }),
+        ),
+      );
     yield* input.fileSystem.rename(tempPath, input.catalogPath).pipe(
       Effect.mapError(
         (cause) =>
@@ -384,6 +388,7 @@ export const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const savedEnvironments = yield* DesktopSavedEnvironments.DesktopSavedEnvironments;
   const catalogPath = path.join(environment.stateDir, "connection-catalog.json");
+  const keychainForgetsUpdates = yield* DesktopKeychain.forgetsUpdates;
   const encryptionAvailable = safeStorage.isEncryptionAvailable.pipe(
     Effect.mapError(
       (cause) =>
@@ -398,18 +403,23 @@ export const make = Effect.gen(function* () {
   const writeCatalog = Effect.fn("desktop.connectionCatalogStore.writeCatalog")(function* (
     catalog: string,
   ) {
-    const encryptedCatalog = Base64.encode(
-      yield* safeStorage.encryptString(catalog).pipe(
-        Effect.mapError(
-          (cause) =>
-            new DesktopConnectionCatalogStoreProtectionError({
-              operation: "encrypt-catalog",
-              catalogPath,
-              cause,
-            }),
-        ),
-      ),
-    );
+    const document: ConnectionCatalogFileDocument = keychainForgetsUpdates
+      ? { version: 1, catalog }
+      : {
+          version: 1,
+          encryptedCatalog: Base64.encode(
+            yield* safeStorage.encryptString(catalog).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new DesktopConnectionCatalogStoreProtectionError({
+                    operation: "encrypt-catalog",
+                    catalogPath,
+                    cause,
+                  }),
+              ),
+            ),
+          ),
+        };
     const suffix = (yield* crypto.randomUUIDv4().pipe(
       Effect.mapError(
         (cause) =>
@@ -420,17 +430,23 @@ export const make = Effect.gen(function* () {
           }),
       ),
     )).replace(/-/g, "");
-    yield* writeDocument({
-      fileSystem,
-      path,
-      catalogPath,
-      document: { version: 1, encryptedCatalog },
-      suffix,
-    });
+    yield* writeDocument({ fileSystem, path, catalogPath, document, suffix });
   });
 
+  // Rewrites a catalog stored the other way, so it never asks the Keychain again on builds
+  // without a Team ID and never stays unencrypted on builds with one.
+  const rewriteCatalog = (catalog: string) =>
+    writeCatalog(catalog).pipe(
+      Effect.catch((error) =>
+        Effect.logError("Could not rewrite the connection catalog for this build.", {
+          catalogPath,
+          error,
+        }),
+      ),
+    );
+
   const migrateLegacyCatalog = Effect.gen(function* () {
-    if (!(yield* encryptionAvailable)) {
+    if (!keychainForgetsUpdates && !(yield* encryptionAvailable)) {
       return Option.none<string>();
     }
     const records = yield* savedEnvironments.getRegistry.pipe(
@@ -476,6 +492,12 @@ export const make = Effect.gen(function* () {
       if (Option.isNone(document)) {
         return yield* migrateLegacyCatalog;
       }
+      if ("catalog" in document.value) {
+        if (!keychainForgetsUpdates) {
+          yield* rewriteCatalog(document.value.catalog);
+        }
+        return Option.some(document.value.catalog);
+      }
       if (!(yield* encryptionAvailable)) {
         return Option.none<string>();
       }
@@ -493,10 +515,13 @@ export const make = Effect.gen(function* () {
           ),
         ),
       );
+      if (keychainForgetsUpdates) {
+        yield* rewriteCatalog(decrypted);
+      }
       return Option.some(decrypted);
     }).pipe(Effect.withSpan("desktop.connectionCatalogStore.get")),
     set: Effect.fn("desktop.connectionCatalogStore.set")(function* (catalog) {
-      if (!(yield* encryptionAvailable)) {
+      if (!keychainForgetsUpdates && !(yield* encryptionAvailable)) {
         return false;
       }
       yield* writeCatalog(catalog);

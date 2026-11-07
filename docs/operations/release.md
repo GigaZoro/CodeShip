@@ -118,8 +118,9 @@ up to twice while its commit is still the head of `main`.
   blocks it: open it from **System Settings → Privacy & Security → Open Anyway**. A Mac running an
   ad hoc build installs the first self-signed one by hand; later releases update in place, and
   privacy permissions carry over between them. Keychain access does not, because macOS tracks it
-  by Apple Team ID, so builds without one save the T3 account sign-in unencrypted, in a file only
-  the user can read.
+  by Apple Team ID, so builds without one never use the Keychain: they save the T3 account sign-in
+  and the saved connections unencrypted, in files only the user can read
+  (`apps/desktop/src/app/DesktopKeychain.ts`).
 
 ### Release notes for every shipment
 

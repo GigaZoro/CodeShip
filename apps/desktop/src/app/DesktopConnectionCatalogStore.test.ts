@@ -27,12 +27,24 @@ const encodeLegacySavedEnvironments = Schema.encodeEffect(
     Schema.Struct({ version: Schema.Literal(1), records: Schema.Array(Schema.Unknown) }),
   ),
 );
-function layerSafeStorageFor(available: boolean, failDecrypt: Ref.Ref<boolean> | null = null) {
+function layerSafeStorageFor(
+  available: boolean,
+  failDecrypt: Ref.Ref<boolean> | null,
+  calls: string[],
+) {
   return Layer.succeed(ElectronSafeStorage.ElectronSafeStorage, {
-    isEncryptionAvailable: Effect.succeed(available),
-    encryptString: (value) => Effect.succeed(textEncoder.encode(`encrypted:${value}`)),
+    isEncryptionAvailable: Effect.sync(() => {
+      calls.push("isEncryptionAvailable");
+      return available;
+    }),
+    encryptString: (value) =>
+      Effect.sync(() => {
+        calls.push("encryptString");
+        return textEncoder.encode(`encrypted:${value}`);
+      }),
     decryptString: (value) => {
       return Effect.gen(function* () {
+        calls.push("decryptString");
         const decoded = textDecoder.decode(value);
         if (
           !decoded.startsWith("encrypted:") ||
@@ -51,9 +63,17 @@ function layerSafeStorageFor(available: boolean, failDecrypt: Ref.Ref<boolean> |
 
 function layerFor(
   baseDir: string,
-  encryptionAvailable = true,
-  failDecrypt: Ref.Ref<boolean> | null = null,
-  fileSystemLayer: Layer.Layer<FileSystem.FileSystem> = NodeServices.layer,
+  {
+    encryptionAvailable = true,
+    failDecrypt = null,
+    appPath = "/repo",
+    safeStorageCalls = [],
+  }: {
+    readonly encryptionAvailable?: boolean;
+    readonly failDecrypt?: Ref.Ref<boolean> | null;
+    readonly appPath?: string;
+    readonly safeStorageCalls?: string[];
+  } = {},
 ) {
   const layerEnvironment = DesktopEnvironment.layer({
     dirname: "/repo/apps/desktop/src",
@@ -61,7 +81,7 @@ function layerFor(
     platform: "darwin",
     processArch: "arm64",
     appVersion: "1.2.3",
-    appPath: "/repo",
+    appPath,
     isPackaged: true,
     resourcesPath: "/missing/resources",
     runningUnderArm64Translation: false,
@@ -70,13 +90,8 @@ function layerFor(
       Layer.mergeAll(NodeServices.layer, DesktopConfig.layerTest({ T3CODE_HOME: baseDir })),
     ),
   );
-  const layerSafeStorage = layerSafeStorageFor(encryptionAvailable, failDecrypt);
-  const layerDependencies = Layer.mergeAll(
-    layerEnvironment,
-    layerSafeStorage,
-    NodeServices.layer,
-    fileSystemLayer,
-  );
+  const layerSafeStorage = layerSafeStorageFor(encryptionAvailable, failDecrypt, safeStorageCalls);
+  const layerDependencies = Layer.mergeAll(layerEnvironment, layerSafeStorage, NodeServices.layer);
   const layerSavedEnvironments = DesktopSavedEnvironments.layer.pipe(
     Layer.provideMerge(layerDependencies),
   );
@@ -87,16 +102,37 @@ function layerFor(
   );
 }
 
+const makeBaseDir = Effect.gen(function* () {
+  const fileSystem = yield* FileSystem.FileSystem;
+  return yield* fileSystem.makeTempDirectoryScoped({
+    prefix: "t3-desktop-connection-catalog-test-",
+  });
+});
+
+const storeFor = (baseDir: string, options?: Parameters<typeof layerFor>[1]) =>
+  DesktopConnectionCatalogStore.DesktopConnectionCatalogStore.pipe(
+    Effect.provide(layerFor(baseDir, options)),
+  );
+
+const writeAppPackage = (directory: string, appleTeamSigned: boolean) =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* fileSystem.makeDirectory(directory, { recursive: true });
+    yield* fileSystem.writeFileString(
+      path.join(directory, "package.json"),
+      JSON.stringify({ t3codeAppleTeamSigned: appleTeamSigned }),
+    );
+    return directory;
+  });
+
 const withStore = <A, E, R>(
   effect: Effect.Effect<A, E, R | DesktopConnectionCatalogStore.DesktopConnectionCatalogStore>,
   encryptionAvailable = true,
 ) =>
   Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-      prefix: "t3-desktop-connection-catalog-test-",
-    });
-    return yield* effect.pipe(Effect.provide(layerFor(baseDir, encryptionAvailable)));
+    const baseDir = yield* makeBaseDir;
+    return yield* effect.pipe(Effect.provide(layerFor(baseDir, { encryptionAvailable })));
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped);
 
 describe("DesktopConnectionCatalogStore", () => {
@@ -240,6 +276,56 @@ describe("DesktopConnectionCatalogStore", () => {
     ),
   );
 
+  it.effect("keeps the catalog out of the Keychain on macOS builds without a Team ID", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* makeBaseDir;
+      const appPath = yield* writeAppPackage(path.join(baseDir, "app"), false);
+      const safeStorageCalls: string[] = [];
+      const store = yield* storeFor(baseDir, {
+        encryptionAvailable: false,
+        appPath,
+        safeStorageCalls,
+      });
+      const catalog = '{"schemaVersion":1,"targets":[]}';
+
+      assert.isTrue(yield* store.set(catalog));
+      assert.deepStrictEqual(yield* store.get, Option.some(catalog));
+      assert.deepEqual(safeStorageCalls, []);
+      const info = yield* fileSystem.stat(
+        path.join(baseDir, "userdata", "connection-catalog.json"),
+      );
+      assert.equal(info.mode & 0o777, 0o600);
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
+  it.effect("moves a stored catalog to the way its build keeps it", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* makeBaseDir;
+      const catalogPath = path.join(baseDir, "userdata", "connection-catalog.json");
+      const catalog = '{"schemaVersion":1,"targets":[]}';
+      const teamSigned = yield* storeFor(baseDir, {
+        appPath: yield* writeAppPackage(path.join(baseDir, "team"), true),
+      });
+      const selfSignedCalls: string[] = [];
+      const selfSigned = yield* storeFor(baseDir, {
+        appPath: yield* writeAppPackage(path.join(baseDir, "self-signed"), false),
+        safeStorageCalls: selfSignedCalls,
+      });
+
+      assert.isTrue(yield* teamSigned.set(catalog));
+      assert.deepStrictEqual(yield* selfSigned.get, Option.some(catalog));
+      assert.deepStrictEqual(yield* selfSigned.get, Option.some(catalog));
+      assert.deepEqual(selfSignedCalls, ["isEncryptionAvailable", "decryptString"]);
+
+      assert.deepStrictEqual(yield* teamSigned.get, Option.some(catalog));
+      assert.include(yield* fileSystem.readFileString(catalogPath), '"encryptedCatalog"');
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
   it.effect("surfaces malformed catalog documents without deleting them", () =>
     withStore(
       Effect.gen(function* () {
@@ -266,15 +352,9 @@ describe("DesktopConnectionCatalogStore", () => {
   it.effect("surfaces a catalog that can no longer be decrypted without deleting it", () =>
     Effect.gen(function* () {
       const path = yield* Path.Path;
-      const fileSystem = yield* FileSystem.FileSystem;
-      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-desktop-connection-catalog-test-",
-      });
+      const baseDir = yield* makeBaseDir;
       const failDecrypt = yield* Ref.make(false);
-      const layer = layerFor(baseDir, true, failDecrypt);
-      const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore.pipe(
-        Effect.provide(layer),
-      );
+      const store = yield* storeFor(baseDir, { failDecrypt });
 
       assert.isTrue(yield* store.set('{"schemaVersion":1,"targets":[]}'));
       yield* Ref.set(failDecrypt, true);
