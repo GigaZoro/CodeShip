@@ -292,6 +292,8 @@ export interface ThreadDetailScreenProps {
   readonly layoutVariant?: LayoutVariant;
   readonly usesAutomaticContentInsets?: boolean;
   readonly onHeaderMaterialVisibilityChange?: (visible: boolean) => void;
+  /** Absent without terminal access, so shell code blocks in replies are not tappable. */
+  readonly onRunShellCommand?: (command: string) => void;
   readonly onOpenConnectionEditor: () => void;
   readonly onChangeDraftMessage: (value: string) => void;
   readonly onPickDraftMedia: (source?: ComposerMediaSource) => Promise<void>;
@@ -1562,6 +1564,7 @@ function ThreadDetailBody(
               skills={selectedProviderSkills}
               onUseArtifactTemplate={handleUseArtifactTemplate}
               onCiteAssistantText={canCiteAssistantText ? handleCiteAssistantText : undefined}
+              onRunShellCommand={props.onRunShellCommand}
               rewindTargets={rewind.targets}
               rewindActions={rewind.actions}
               unseenWindow={unseenWindow}

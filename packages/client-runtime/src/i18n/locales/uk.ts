@@ -9511,6 +9511,7 @@ const catalog: MessageCatalog = {
   "Route not found": "Маршрут не знайдено",
   Routes: "Маршрути",
   "Routes to {environment}, preferred first": "Маршрути до {environment}, спершу бажаний",
+  Run: "Запустити",
   "Run {command} in this terminal.": "Виконайте {command} у цьому терміналі.",
   "Run {name}": "Запустити: {name}",
   "Run {title} now": "Запустити {title} зараз",
@@ -9536,6 +9537,7 @@ const catalog: MessageCatalog = {
   "Run history · {name}": "Історія запусків · {name}",
   "Run in": "Запускати в",
   "Run in terminal": "Запустити в терміналі",
+  "Run in terminal?": "Запустити в терміналі?",
   "Run in the thread's worktree when the thread settles":
     "Запускати у worktree чату, коли чат завершується",
   "Run interrupted": "Запуск перервано",

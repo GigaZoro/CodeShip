@@ -69,6 +69,8 @@ export interface SelectableMarkdownTextProps {
   readonly preserveSoftBreaks?: boolean;
   readonly onLinkPress?: (href: string) => void;
   readonly onCiteText?: (text: string) => void;
+  /** A tap on a single-line shell code block sends its command here. */
+  readonly onRunShellCommand?: (command: string) => void;
   readonly fileContextMenu?: (href: string) => MarkdownFileContextMenu | undefined;
   readonly onFileContextMenuAction?: (href: string, actionId: string) => void;
   readonly linkCustomization?: (href: string) => MarkdownLinkCustomization | undefined;

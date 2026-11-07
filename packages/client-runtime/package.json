@@ -103,6 +103,10 @@
       "types": "./src/markdownImages.ts",
       "default": "./src/markdownImages.ts"
     },
+    "./shell-code-block": {
+      "types": "./src/shellCodeBlock.ts",
+      "default": "./src/shellCodeBlock.ts"
+    },
     "./media-reference": {
       "types": "./src/mediaReference.ts",
       "default": "./src/mediaReference.ts"

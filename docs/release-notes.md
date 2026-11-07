@@ -1,3 +1,8 @@
+## 2026-11-07 — Commands to run come as code blocks
+
+- When an agent needs you to run a command, such as signing in with `gh auth login`, it gives the command in its own code block, so you can run it with **Run in terminal** on web and desktop instead of copying it.
+- On mobile, tap a one-line shell code block in a finished reply to run it in the thread's terminal. The app shows the command and asks first.
+
 ## 2026-11-07 — Threads resume after a lost connection
 
 - A thread whose turn stopped because the internet dropped now resumes on its own once the connection is back, on every machine and with every agent. It waits while the machine is offline instead of failing again, and gives up after three quick failures in a row. Turn it off with Retry threads after network errors in Settings → Maintenance & about, on web, desktop and mobile.

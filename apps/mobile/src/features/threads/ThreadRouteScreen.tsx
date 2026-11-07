@@ -773,7 +773,10 @@ function ThreadRouteContent(
     });
   };
 
-  const handleRunProjectScript = async (script: ProjectScript) => {
+  const runInThreadTerminal = (run: {
+    readonly input: string;
+    readonly projectScriptEnv: boolean;
+  }) => {
     if (
       !selectedThread ||
       !selectedThreadProject?.workspaceRoot ||
@@ -796,14 +799,10 @@ function ThreadRouteContent(
       threadShellWorktreePath: selectedThread.worktreePath ?? null,
       threadDetailWorktreePath: selectedThreadDetailWorktreePath,
     });
-    const cwd = projectScriptCwd({
+    const location = {
       project: { cwd: selectedThreadProject.workspaceRoot },
       worktreePath: preferredWorktreePath,
-    });
-    const env = projectScriptRuntimeEnv({
-      project: { cwd: selectedThreadProject.workspaceRoot },
-      worktreePath: preferredWorktreePath,
-    });
+    };
     stagePendingTerminalLaunch({
       target: {
         environmentId: selectedThread.environmentId,
@@ -811,10 +810,10 @@ function ThreadRouteContent(
         terminalId: targetTerminalId,
       },
       launch: {
-        cwd,
+        cwd: projectScriptCwd(location),
         worktreePath: preferredWorktreePath,
-        env,
-        initialInput: projectScriptTerminalInput(script.command),
+        ...(run.projectScriptEnv ? { env: projectScriptRuntimeEnv(location) } : {}),
+        initialInput: run.input,
       },
     });
 
@@ -824,6 +823,20 @@ function ThreadRouteContent(
       terminalId: targetTerminalId,
     });
   };
+  const handleRunProjectScript = async (script: ProjectScript) =>
+    runInThreadTerminal({
+      input: projectScriptTerminalInput(script.command),
+      projectScriptEnv: true,
+    });
+  // A tap starts it, and taps land while scrolling, so the command is shown first.
+  const handleRunShellCommand = (command: string) =>
+    Dialog.confirm({
+      title: t("Run in terminal?"),
+      message: command,
+      confirmText: t("Run"),
+      // Like web, a command from a reply stays in shell history.
+      onConfirm: () => runInThreadTerminal({ input: `${command}\r`, projectScriptEnv: false }),
+    });
   const threadGitControlProps = {
     environmentId: environmentIdRaw ?? "",
     threadId: threadId ?? "",
@@ -1107,6 +1120,11 @@ function ThreadRouteContent(
           dispatchingMessageId={composer.dispatchingQueuedMessageId}
           layoutVariant={layout.variant}
           usesAutomaticContentInsets={usesNativeHeaderGlass}
+          onRunShellCommand={
+            canOperateTerminal && selectedThreadProject?.workspaceRoot
+              ? handleRunShellCommand
+              : undefined
+          }
           onOpenConnectionEditor={handleOpenConnectionEditor}
           onChangeDraftMessage={composer.onChangeDraftMessage}
           onPickDraftMedia={composer.onPickDraftMedia}

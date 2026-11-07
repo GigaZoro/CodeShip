@@ -1,3 +1,4 @@
+import { hasShellCodeFence, runnableShellCommand } from "@t3tools/client-runtime/shell-code-block";
 import { decodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
 import {
   collectComposerContextReferences,
@@ -15,6 +16,7 @@ import { isValidElement, useMemo, useState, type ReactNode } from "react";
 import { Platform, Share, StyleSheet, useWindowDimensions, View } from "react-native";
 import {
   EnrichedMarkdownText,
+  type CodeBlockPressEvent,
   type MarkdownImageBlock,
   type MarkdownLinkOccurrence,
   type MarkdownStyle,
@@ -288,6 +290,15 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
       }
     : undefined;
   const resolveNativeImageSource = useRetryingImageSource(resolveImageSource);
+  const { onRunShellCommand } = props;
+  // Arming taps changes every code block's touch handling, so only messages that can use it do.
+  const onCodeBlockPress =
+    onRunShellCommand && hasShellCodeFence(props.markdown)
+      ? ({ code, language }: CodeBlockPressEvent) => {
+          const command = runnableShellCommand(code, language);
+          if (command !== null) onRunShellCommand(command);
+        }
+      : undefined;
   const renderMarkdown = (openAndroidMenu?: () => void) => {
     const onLinkLongPress =
       Platform.OS === "android" && props.fileContextMenu
@@ -351,6 +362,7 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
           }}
           enableTaskListItemToggle={false}
           enableCodeBlockWrapToggle
+          onCodeBlockPress={onCodeBlockPress}
           spoilerOverlay="solid"
           onLinkPress={
             props.onLinkPress || props.onImagePress ? ({ url }) => onLinkPress(url) : undefined

@@ -397,6 +397,7 @@ export interface ThreadFeedProps {
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill>;
   readonly onUseArtifactTemplate?: (template: CodexArtifactTemplate) => void;
   readonly onCiteAssistantText?: (citation: AssistantCitation) => void;
+  readonly onRunShellCommand?: (command: string) => void;
   readonly rewindTargets?: ThreadRewindTargets;
   readonly rewindActions?: ThreadFeedRewindActions | null;
   /** What the reader had not seen when the thread opened; a divider marks where it starts. */
@@ -1279,6 +1280,7 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
   readonly environmentId: EnvironmentId;
   readonly citationSource?: Pick<AssistantCitation, "threadId" | "messageId">;
   readonly onCiteAssistantText?: (citation: AssistantCitation) => void;
+  readonly onRunShellCommand?: ((command: string) => void) | undefined;
   readonly markdownStyles: MarkdownStyleSet;
   readonly linkHandlers: MarkdownLinkHandlers;
   readonly onUseArtifactTemplate?: ((template: CodexArtifactTemplate) => void) | undefined;
@@ -1299,6 +1301,7 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
       environmentId={props.environmentId}
       citationSource={props.citationSource}
       onCiteAssistantText={props.onCiteAssistantText}
+      onRunShellCommand={props.onRunShellCommand}
       markdownStyles={props.markdownStyles}
       linkHandlers={linkHandlers}
       onUseArtifactTemplate={props.onUseArtifactTemplate}
@@ -1314,6 +1317,7 @@ function AssistantMarkdownBlocks(props: {
   readonly environmentId: EnvironmentId;
   readonly citationSource?: Pick<AssistantCitation, "threadId" | "messageId"> | undefined;
   readonly onCiteAssistantText?: ((citation: AssistantCitation) => void) | undefined;
+  readonly onRunShellCommand?: ((command: string) => void) | undefined;
   readonly markdownStyles: MarkdownStyleSet;
   readonly linkHandlers: MarkdownLinkHandlers;
   readonly onUseArtifactTemplate?: ((template: CodexArtifactTemplate) => void) | undefined;
@@ -1388,6 +1392,7 @@ function AssistantMarkdownBlocks(props: {
                 }
               : undefined
           }
+          onRunShellCommand={props.onRunShellCommand}
           {...props.linkHandlers}
           renderImage={props.renderImage}
         />
@@ -1803,6 +1808,7 @@ function renderFeedEntry(
     | "environmentId"
     | "onUseArtifactTemplate"
     | "onCiteAssistantText"
+    | "onRunShellCommand"
     | "skills"
     | "dispatchingMessageId"
     | "onEditPendingMessage"
@@ -2433,6 +2439,7 @@ function renderFeedEntry(
               environmentId={props.environmentId}
               citationSource={{ threadId: props.threadId, messageId: message.id }}
               onCiteAssistantText={props.onCiteAssistantText}
+              onRunShellCommand={message.streaming ? undefined : props.onRunShellCommand}
               markdownStyles={styles}
               linkHandlers={props.markdownLinkHandlers}
               onUseArtifactTemplate={props.onUseArtifactTemplate}
@@ -3345,6 +3352,7 @@ export const ThreadFeed = memo(function ThreadFeed({
   // even when the final message update arrives before the turn settles.
   const listAppearanceData = {
     onCiteAssistantText: props.onCiteAssistantText,
+    onRunShellCommand: props.onRunShellCommand,
     worktreeSetup: props.worktreeSetup,
     setupWorkingStartedAt: props.setupWorkingStartedAt,
     dispatchingMessageId: props.dispatchingMessageId,
@@ -3837,6 +3845,7 @@ export const ThreadFeed = memo(function ThreadFeed({
             onEditPendingMessage: props.onEditPendingMessage,
             onUseArtifactTemplate: props.onUseArtifactTemplate,
             onCiteAssistantText: props.onCiteAssistantText,
+            onRunShellCommand: props.onRunShellCommand,
             threadId: props.threadId,
             copiedRowId,
             expandedWorkRows,

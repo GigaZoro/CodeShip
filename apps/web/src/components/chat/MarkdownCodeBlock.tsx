@@ -4,6 +4,8 @@ import { PlayIcon, WrapTextIcon } from "lucide-react";
 import { toHtml } from "hast-util-to-html";
 import React, { use, useEffect, useState, type ReactNode } from "react";
 
+import { runnableShellCommand } from "@t3tools/client-runtime/shell-code-block";
+
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { getClientSettings } from "../../hooks/useSettings";
 import type { DiffThemeName } from "../../lib/diffRendering";
@@ -170,17 +172,11 @@ export function MarkdownCodeBlock({
   const [wrapped, setWrapped] = useState(() => getClientSettings().wordWrap);
   const wrapLabel = wrapped ? t("Disable line wrap") : t("Wrap lines");
   const copyLabel = copied ? t("Copied") : t("Copy code");
-  const command = code.trim();
-  const canRun =
-    onRunShellCommand !== undefined &&
-    !isStreaming &&
-    /^(?:sh|bash|zsh|fish|shell|powershell|pwsh)$/.test(language) &&
-    code.endsWith("\n") &&
-    command.length > 0 &&
-    !command.endsWith("\\") &&
-    // Control and invisible format characters (bidi overrides, zero-width) can
-    // make the rendered command differ from what the terminal would receive.
-    !/[\p{Cc}\p{Cf}]/u.test(code.slice(0, -1));
+  // A closed fence's code ends with a newline; an open one may still be growing.
+  const command =
+    onRunShellCommand !== undefined && !isStreaming && code.endsWith("\n")
+      ? runnableShellCommand(code, language)
+      : null;
 
   const handleCopy = () => copyToClipboard(code);
 
@@ -247,7 +243,7 @@ export function MarkdownCodeBlock({
               <TooltipPopup side="top">{wrapLabel}</TooltipPopup>
             </Tooltip>
           ) : null}
-          {canRun ? (
+          {command !== null && onRunShellCommand ? (
             <Tooltip>
               <TooltipTrigger
                 render={
