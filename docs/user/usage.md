@@ -124,10 +124,12 @@ kept in the same column across windows. Accounts are ordered by their next 5-hou
 first. For an account with no weekly quota left, this is when its session becomes usable again.
 The first available window is used when no account reports a 5-hour limit. A gap means the
 account does not report that window. When the provider reports reset times, the card also says
-when the next reset lands and how much it hands back. The hatched
+when the window resets, or for several accounts when the next reset lands and how much of the
+pool it hands back. The hatched
 part of a segment is what that reset restores. Tap a segment or account row for the account's plan,
 where it is signed in, and its reset time. On web, you can hover too. Codex and Claude accounts
-with banked reset credits show a ticket count and the **Use reset** action in the account details.
+with banked reset credits get a row under the window cards with the count, when the next one
+expires, and **Use reset**; the account details offer it too.
 Claude resets are not available when the server runs on macOS, where Claude keeps its login in the
 Keychain. On narrow screens, numbered rows below
 the bar show each account's quota, countdown, and credits. Tap a row to open its details.
@@ -136,7 +138,8 @@ The same account signed in on more than one environment, or reported by a hub as
 Filter with the environment dropdown to see what a single machine has.
 
 Each provider says when its limits were last checked, going by its oldest reading; on web, hover
-it for the exact time. For a provider with two or more accounts, a line under its name says
+it for the exact time. An account read only on an environment that isn't connected keeps its last
+reading, and the provider names that environment and how old the reading is until it reconnects. For a provider with two or more accounts, a line under its name says
 whether **Switch accounts at usage limits** is on and which account a limited thread continues
 on, judged from the last reading. On web and desktop, its link opens that setting.
 
@@ -148,8 +151,9 @@ time has no refill estimate; refresh Limits for a new reading. Claude's model-sp
 allowances keep their reported values.
 
 Codex accounts you [connect with ChatGPT](./providers-codex.md#connect-with-chatgpt) have no bar,
-because ChatGPT tracks their limits. The **ChatGPT usage** card lists them; choose
-**Manage usage** to open ChatGPT, then sign in with the account you connected.
+because ChatGPT tracks their limits and doesn't share them. **Limits kept by ChatGPT** under Codex
+lists each of them once, with every environment it is signed in on; choose **Open ChatGPT usage**,
+then sign in with the account you connected.
 
 Opening Limits checks the selected connected environments automatically. Each client waits at
 least five minutes between automatic checks of an environment, including after a failed check.

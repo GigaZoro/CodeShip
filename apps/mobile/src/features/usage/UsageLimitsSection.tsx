@@ -240,8 +240,10 @@ export function ResetCredits(props: {
   readonly credits: ServerProviderResetCredits;
   readonly now: number;
   readonly dense?: boolean;
+  /** The environment holding the credit is not connected, so it cannot redeem one now. */
+  readonly offline?: boolean;
 }) {
-  const { environmentId, input, credits, now, dense = false } = props;
+  const { environmentId, input, credits, now, dense = false, offline = false } = props;
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
   const consume = useAtomCommand(serverEnvironment.consumeResetCredit, {
     reportFailure: false,
@@ -304,8 +306,8 @@ export function ResetCredits(props: {
       {credits.availableCount > 0 ? (
         <Pressable
           accessibilityRole="button"
-          accessibilityState={{ disabled: busy || !canManageProviders }}
-          disabled={busy || !canManageProviders}
+          accessibilityState={{ disabled: busy || !canManageProviders || offline }}
+          disabled={busy || !canManageProviders || offline}
           onPress={confirm}
           className={
             dense

@@ -19,9 +19,11 @@ import {
   collectLimitNotices,
   collectLimitPools,
   elapsedShare,
+  limitsFreshness,
   exhaustedUsageWindow,
   paceOf,
   paceRemainingPercent,
+  poolResetSummary,
   tightestLimitWindow,
   usesChatGptSharing,
   resolveNewThreadModelSelection,
@@ -357,6 +359,64 @@ describe("pools", () => {
       ],
     });
     expect(accounts[0]?.limits.windows[0]?.usedPercent).toBe(55);
+  });
+
+  it("keeps a disconnected environment's last reading apart from the live check time", () => {
+    const shared = provider({
+      driver: claude,
+      instanceId: ProviderInstanceId.make("claude"),
+      auth: { status: "authenticated", email: "shared@example.com" },
+      usageLimits: { checkedAt: "2026-09-03T11:30:00.000Z", windows: [window] },
+    });
+    const solo = provider({
+      driver: claude,
+      instanceId: ProviderInstanceId.make("claude_solo"),
+      auth: { status: "authenticated", email: "solo@example.com" },
+      usageLimits: { checkedAt: "2026-09-03T06:00:00.000Z", windows: [window] },
+    });
+    const stale = { ...shared, usageLimits: { ...shared.usageLimits!, checkedAt } };
+    const input = new Map([
+      [
+        EnvironmentId.make("env-a"),
+        { ...laptop, connection: { phase: "connected" }, serverConfig: { providers: [shared] } },
+      ],
+      [
+        EnvironmentId.make("env-b"),
+        {
+          entry: { target: { label: "Desktop" } },
+          connection: { phase: "reconnecting" },
+          serverConfig: {
+            providers: [stale, solo],
+            usageLimitSources: [
+              {
+                ...source,
+                accounts: [
+                  {
+                    id: "hub-only.json",
+                    driver: claude,
+                    email: "hub@example.com",
+                    usageLimits: { checkedAt: "2026-09-03T05:00:00.000Z", windows: [window] },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    ]);
+    const accounts = collectLimitAccounts(input);
+    expect(accounts.map((account) => [account.email, account.offline])).toEqual([
+      ["shared@example.com", false],
+      ["solo@example.com", true],
+      ["hub@example.com", true],
+    ]);
+    expect(limitsFreshness(accounts)).toEqual({
+      checkedAt: "2026-09-03T11:30:00.000Z",
+      offline: [
+        { label: "Desktop", checkedAt: "2026-09-03T06:00:00.000Z" },
+        { label: "Desktop · hub", checkedAt: "2026-09-03T05:00:00.000Z" },
+      ],
+    });
   });
 
   it("uses the freshest reported plan even when the newest quota has no plan", () => {
@@ -933,6 +993,7 @@ describe("pools", () => {
           accentColor: undefined,
           environments: [],
           sourceLabel: null,
+          offline: false,
           redeem: null,
           limits: {
             checkedAt,
@@ -978,6 +1039,7 @@ describe("pooled account columns", () => {
     accentColor: undefined,
     environments: [],
     sourceLabel: "Hub",
+    offline: false,
     redeem: null,
     limits: { checkedAt: "2026-09-03T11:00:00.000Z", windows },
   });
@@ -985,6 +1047,18 @@ describe("pooled account columns", () => {
     pool.windows.map((row) =>
       row.columns.map((member) => (member.window ? member.account.key : null)),
     );
+
+  it("names one account's own reset, and for several the next reset that hands quota back", () => {
+    const solo = account("solo", [window]);
+    const [alone] = collectLimitPools([solo], now)[0]!.windows;
+    expect(poolResetSummary(alone!, now)).toEqual({
+      text: "Resets in 2h 0m",
+      resetsAt: window.resetsAt,
+    });
+    const later = account("later", [{ ...window, resetsAt: "2026-09-03T16:00:00.000Z" }]);
+    const [shared] = collectLimitPools([later, solo], now)[0]!.windows;
+    expect(poolResetSummary(shared!, now)).toEqual({ text: "+20% back in 2h 0m", resetsAt: null });
+  });
 
   // regression: #20349 sessions stay visible while the weekly quota is exhausted
   it.each([
@@ -1539,8 +1613,9 @@ describe("sameUsageLimitCommandCoverage", () => {
 });
 
 describe("external usage settings", () => {
-  it("deduplicates destinations across accounts and environments without inventing quota pools", () => {
+  it("lists each login once with every environment it is on, without inventing quota pools", () => {
     const managed = provider({
+      auth: { status: "authenticated", email: "Work@example.com" },
       usageLimits: {
         checkedAt: "2026-09-03T11:00:00.000Z",
         windows: [],
@@ -1548,26 +1623,51 @@ describe("external usage settings", () => {
         externalUsage: { label: "ChatGPT usage", url: "https://chatgpt.com/#settings/Usage" },
       },
     });
+    const personal = {
+      ...managed,
+      instanceId: ProviderInstanceId.make("personal"),
+      auth: { status: "authenticated" as const },
+    };
     const presentations = new Map([
       [
         EnvironmentId.make("a"),
         {
           entry: { target: { label: "A" } },
-          serverConfig: {
-            providers: [managed, { ...managed, instanceId: ProviderInstanceId.make("personal") }],
-          },
+          serverConfig: { providers: [managed, personal] },
         },
       ],
       [
         EnvironmentId.make("b"),
-        { entry: { target: { label: "B" } }, serverConfig: { providers: [managed] } },
+        {
+          entry: { target: { label: "B" } },
+          serverConfig: {
+            providers: [
+              {
+                ...managed,
+                displayName: "Work",
+                auth: { ...managed.auth, email: "work@example.com" },
+              },
+              personal,
+            ],
+          },
+        },
       ],
     ]);
     expect(collectExternalUsageLinks(presentations)).toEqual([
       {
         ...managed.usageLimits!.externalUsage,
+        driver: managed.driver,
         message: "Track usage in ChatGPT.",
-        accounts: [`${managed.instanceId} on A`, "personal on A", `${managed.instanceId} on B`],
+        accounts: [
+          {
+            key: "codex:work@example.com",
+            names: [String(managed.instanceId), "Work"],
+            email: "Work@example.com",
+            environments: ["A", "B"],
+          },
+          { key: "a:personal", names: ["personal"], email: undefined, environments: ["A"] },
+          { key: "b:personal", names: ["personal"], email: undefined, environments: ["B"] },
+        ],
       },
     ]);
     expect(collectLimitAccounts(presentations)).toEqual([]);

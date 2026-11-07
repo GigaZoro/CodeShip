@@ -1,7 +1,11 @@
 import { resolveProviderInstanceDisplayName } from "@t3tools/client-runtime/state/provider-instance-display";
-import { type AccountFailoverEntry, describeAccountFailover } from "@t3tools/shared/usageLimits";
+import {
+  type AccountFailoverEntry,
+  describeAccountFailover,
+  type limitsFreshness,
+} from "@t3tools/shared/usageLimits";
 import { Link } from "@tanstack/react-router";
-import { ArrowRightLeftIcon } from "lucide-react";
+import { ArrowRightLeftIcon, CloudOffIcon } from "lucide-react";
 
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { useRelativeTimeState } from "../../hooks/useRelativeTimeState";
@@ -17,7 +21,7 @@ export function useCheckedAgo(checkedAt: string): string | null {
   return relative.suffix ? `${relative.value} ${relative.suffix}` : relative.value;
 }
 
-export function LimitsCheckedAt({ checkedAt }: { readonly checkedAt: string }) {
+function LimitsCheckedAt({ checkedAt }: { readonly checkedAt: string }) {
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const relative = useRelativeTimeState(checkedAt);
   if (relative.status !== "relative") return null;
@@ -36,6 +40,60 @@ export function LimitsCheckedAt({ checkedAt }: { readonly checkedAt: string }) {
         {t("Checked at {time}", { time: formatChatTimestampTooltip(checkedAt, timestampFormat) })}
       </TooltipPopup>
     </Tooltip>
+  );
+}
+
+function OfflineReading({
+  label,
+  checkedAt,
+}: {
+  readonly label: string;
+  readonly checkedAt: string;
+}) {
+  const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
+  const ago = useCheckedAgo(checkedAt);
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <time
+            dateTime={checkedAt}
+            className="inline-flex items-center gap-1.5 text-xs text-warning-foreground tabular-nums"
+          />
+        }
+      >
+        <CloudOffIcon aria-hidden className="size-3.5 shrink-0" />
+        {ago
+          ? t("{environment} not connected · read {time}", { environment: label, time: ago })
+          : t("{environment} not connected", { environment: label })}
+      </TooltipTrigger>
+      <TooltipPopup>
+        {t(
+          "{environment} isn't connected, so its limits are from {time}. They update when it reconnects.",
+          {
+            environment: label,
+            time: formatChatTimestampTooltip(checkedAt, timestampFormat),
+          },
+        )}
+      </TooltipPopup>
+    </Tooltip>
+  );
+}
+
+/** When the shown limits were read, naming each machine that cannot refresh its own right now. */
+export function LimitsFreshness({
+  freshness,
+}: {
+  readonly freshness: ReturnType<typeof limitsFreshness>;
+}) {
+  if (freshness.checkedAt === null && freshness.offline.length === 0) return null;
+  return (
+    <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+      {freshness.offline.map((entry) => (
+        <OfflineReading key={entry.label} label={entry.label} checkedAt={entry.checkedAt} />
+      ))}
+      {freshness.checkedAt ? <LimitsCheckedAt checkedAt={freshness.checkedAt} /> : null}
+    </span>
   );
 }
 

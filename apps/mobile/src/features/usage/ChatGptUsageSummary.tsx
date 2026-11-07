@@ -36,7 +36,7 @@ export function ChatGptUsageSummary({
       </View>
       <Text className="text-xs text-foreground-muted">
         {t("{accounts}. Open ChatGPT with the account you connected.", {
-          accounts: usage.accounts.join(", "),
+          accounts: usage.accounts.map((account) => account.names.join(" / ")).join(", "),
         })}
       </Text>
     </View>

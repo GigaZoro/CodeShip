@@ -1,3 +1,9 @@
+## 2026-11-07 — Clearer subscription limits
+
+- **Usage → Limits** says which machine isn't connected when a provider's limits come from its last reading, such as "Zoro-PC not connected · read 6h ago", instead of a bare "Checked 6h ago". The account's details say so too, and its **Use reset** waits until the machine is back.
+- Each window card shows when it resets ("Resets in 3d 11h" and the time) and whether you are ahead of or under pace, in words. Banked reset credits get their own row under the cards, with **Use reset** right there instead of only in the account popover.
+- Codex accounts you connect with ChatGPT are listed under Codex in **Limits kept by ChatGPT**, once per account with every machine it is signed in on, instead of in a separate card at the bottom. Their limits still show only in ChatGPT. On web, desktop and mobile.
+
 ## 2026-11-07 — Agents can read and use the terminal panel
 
 - Agents can read the recent output of their thread's terminals, such as a dev server you started in the terminal panel, instead of asking you to paste it.

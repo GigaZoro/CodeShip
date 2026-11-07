@@ -45,14 +45,19 @@ import { UsageLimitsPooled } from "./UsageLimitsPooled";
 import { PROVIDER_PRESENTATION } from "./usageProviders";
 import { msg, t, tn, type Message } from "~/i18n";
 
-const PACE: Record<LimitPace, { readonly label: Message; readonly icon: typeof GaugeIcon }> = {
+const PACE: Record<
+  LimitPace,
+  { readonly label: Message; readonly short: Message; readonly icon: typeof GaugeIcon }
+> = {
   ahead: {
     label: msg("Ahead of pace: spending faster than the window elapses"),
+    short: msg("Ahead of pace"),
     icon: TrendingUpIcon,
   },
-  on: { label: msg("On pace with the window"), icon: GaugeIcon },
+  on: { label: msg("On pace with the window"), short: msg("On pace"), icon: GaugeIcon },
   under: {
     label: msg("Under pace: headroom left for the rest of the window"),
+    short: msg("Under pace"),
     icon: TrendingDownIcon,
   },
 };
@@ -64,7 +69,13 @@ export function barColor(driver: ServerProvider["driver"]): string {
   return presentation?.color ?? "var(--foreground)";
 }
 
-export function PaceIcon({ pace }: { readonly pace: LimitPace }) {
+export function PaceIcon({
+  pace,
+  withLabel = false,
+}: {
+  readonly pace: LimitPace;
+  readonly withLabel?: boolean;
+}) {
   const Icon = PACE[pace].icon;
   return (
     <Tooltip>
@@ -73,11 +84,12 @@ export function PaceIcon({ pace }: { readonly pace: LimitPace }) {
           <span
             role="img"
             aria-label={t(PACE[pace].label)}
-            className="inline-flex text-muted-foreground"
+            className="inline-flex items-center gap-1 text-xs whitespace-nowrap text-muted-foreground"
           />
         }
       >
         <Icon className="size-3.5" aria-hidden />
+        {withLabel ? <span aria-hidden>{t(PACE[pace].short)}</span> : null}
       </TooltipTrigger>
       <TooltipPopup side="top">{t(PACE[pace].label)}</TooltipPopup>
     </Tooltip>

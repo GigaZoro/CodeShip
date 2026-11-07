@@ -36,7 +36,7 @@ function managedChatGpt(instanceId: string, displayName: string): ServerProvider
 }
 
 describe("UsageLimitsPooled ChatGPT usage card", () => {
-  it("names the managed connections it covers", async () => {
+  it("lists managed connections under Codex even when no account reports a bar", async () => {
     const presentations = new Map([
       [
         EnvironmentId.make("desk"),
@@ -55,11 +55,11 @@ describe("UsageLimitsPooled ChatGPT usage card", () => {
       <UsageLimitsPooled presentations={presentations} now={Date.parse(checkedAt)} />,
     );
 
+    await expect.element(screen.getByRole("heading", { name: "Codex" })).toBeVisible();
     await expect
-      .element(screen.getByText("ChatGPT Work on Desk, ChatGPT Personal on Desk"))
+      .element(screen.getByRole("heading", { name: "Limits kept by ChatGPT" }))
       .toBeVisible();
-    await expect
-      .element(screen.getByText("View usage in ChatGPT with your connected account."))
-      .toBeVisible();
+    await expect.element(screen.getByText("ChatGPT Work")).toBeVisible();
+    await expect.element(screen.getByText("ChatGPT Personal")).toBeVisible();
   });
 });

@@ -6,6 +6,7 @@ import {
   resolveProviderInstanceDisplayName,
 } from "@t3tools/client-runtime/state/provider-instance-display";
 import {
+  CHATGPT_USAGE_URL,
   collectAccountFailover,
   collectLimitAccounts,
   collectExternalUsageLinks,
@@ -14,11 +15,15 @@ import {
   cursorUsageWindowDetails,
   describeAccountFailover,
   displayLimitWindows,
+  type ExternalUsageLink,
   formatResetsIn,
-  oldestLimitsCheck,
+  limitAccountLocations,
+  limitsFreshness,
   paceRemainingPercent,
+  poolResetSummary,
   remainingPercent,
   type LimitAccount,
+  type LimitPool,
   type LimitPoolWindow,
 } from "@t3tools/shared/usageLimits";
 import { Fragment, type ReactNode, useId, useState } from "react";
@@ -52,6 +57,141 @@ const PACE_LABEL = {
 function checkedAgo(checkedAt: string, now: number) {
   const ago = relativeTime(checkedAt, now);
   return ago === "<1m" ? t("Checked just now") : t("Checked {time} ago", { time: ago });
+}
+
+function timeAgo(checkedAt: string, now: number) {
+  const ago = relativeTime(checkedAt, now);
+  return ago === "<1m" ? t("just now") : t("{time} ago", { time: ago });
+}
+
+function LimitsFreshness({
+  accounts,
+  now,
+}: {
+  readonly accounts: readonly LimitAccount[];
+  readonly now: number;
+}) {
+  const freshness = limitsFreshness(accounts);
+  return (
+    <View className="items-end">
+      {freshness.offline.map((entry) => (
+        <View key={entry.label} className="flex-row items-center gap-1">
+          <SymbolView name="wifi.slash" size={12} tintColorClassName="accent-warning-foreground" />
+          <Text className="text-xs tabular-nums text-warning-foreground">
+            {t("{environment} not connected · read {time}", {
+              environment: entry.label,
+              time: timeAgo(entry.checkedAt, now),
+            })}
+          </Text>
+        </View>
+      ))}
+      {freshness.checkedAt ? (
+        <Text className="text-xs tabular-nums text-foreground-tertiary">
+          {checkedAgo(freshness.checkedAt, now)}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function ResetLine({ pool, now }: { readonly pool: LimitPoolWindow; readonly now: number }) {
+  const summary = poolResetSummary(pool, now);
+  if (!summary) return null;
+  return (
+    <View className="flex-row flex-wrap items-center gap-x-1.5">
+      <SymbolView name="arrow.clockwise" size={12} tintColorClassName="accent-foreground-muted" />
+      <Text className="text-sm tabular-nums text-foreground">{summary.text}</Text>
+      {summary.resetsAt ? (
+        <Text className="text-xs tabular-nums text-foreground-muted">
+          {formatResetTime(summary.resetsAt)}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function PoolResetCredits({ pool, now }: { readonly pool: LimitPool; readonly now: number }) {
+  const accounts = pool.accounts.filter(
+    (account) => account.redeem && (account.limits.resetCredits?.availableCount ?? 0) > 0,
+  );
+  if (accounts.length === 0) return null;
+  return (
+    <View className="gap-3 rounded-[24px] border-continuous bg-grouped-card p-4">
+      {accounts.map((account) => (
+        <View key={account.key} className="gap-2">
+          <View className="flex-row items-center gap-2">
+            <SymbolView name="ticket" size={14} tintColorClassName="accent-icon" />
+            <Text
+              className="min-w-0 flex-1 text-sm font-t3-medium text-foreground"
+              numberOfLines={1}
+            >
+              {pool.accounts.length > 1
+                ? t("{account}: reset credits", { account: accountName(account) })
+                : t("Reset credits")}
+            </Text>
+          </View>
+          <ResetCredits
+            environmentId={account.redeem!.environmentId}
+            input={account.redeem!.input}
+            credits={account.limits.resetCredits!}
+            now={now}
+            offline={account.offline}
+          />
+          {account.offline ? (
+            <Text className="text-xs text-warning-foreground">
+              {t("Usable once {environment} reconnects", {
+                environment: limitAccountLocations(account).join(", "),
+              })}
+            </Text>
+          ) : null}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function ExternalUsageAccounts({ link }: { readonly link: ExternalUsageLink }) {
+  const chatGpt = link.url === CHATGPT_USAGE_URL;
+  return (
+    <View className="gap-3 rounded-[24px] border-continuous bg-grouped-card p-4">
+      <View className="gap-1">
+        <Text className="text-sm font-t3-medium text-foreground">
+          {chatGpt ? t("Limits kept by ChatGPT") : link.label}
+        </Text>
+        {chatGpt || link.message ? (
+          <Text className="text-xs text-foreground-muted">
+            {chatGpt
+              ? t(
+                  "These accounts use your ChatGPT plan, and ChatGPT doesn't share their limits with apps. Open ChatGPT signed in as the account to see them.",
+                )
+              : link.message}
+          </Text>
+        ) : null}
+      </View>
+      {link.accounts.map((account) => (
+        <View key={account.key} className="flex-row items-center gap-2">
+          {account.email ? <AccountChip email={account.email} /> : null}
+          <View className="min-w-0 flex-1">
+            <Text numberOfLines={1} className="text-sm font-t3-medium text-foreground">
+              {account.names.join(" / ")}
+            </Text>
+            <Text className="text-xs text-foreground-muted">
+              {account.environments.join(" · ")}
+            </Text>
+          </View>
+        </View>
+      ))}
+      <Pressable
+        accessibilityRole="link"
+        className="min-h-11 justify-center"
+        onPress={() => void Linking.openURL(link.url).catch(() => undefined)}
+      >
+        <Text className="text-sm font-t3-medium text-primary">
+          {chatGpt ? t("Open ChatGPT usage") : t("Manage usage")}
+        </Text>
+      </Pressable>
+    </View>
+  );
 }
 
 const formatResetTime = (isoDate: string) =>
@@ -229,7 +369,6 @@ function PoolWindowCard({
   const inlineLabels = wide && segmentWidth >= 96;
   const inlineReset = wide && segmentWidth >= 150;
   const inlineName = wide && segmentWidth >= 220;
-  const nextRefill = pool.resets.find((reset) => reset.restoresPercent > 0);
   const openAccount = (account: LimitAccount) =>
     navigation.navigate("SettingsUsageAccount", {
       accountKey: account.key,
@@ -255,11 +394,7 @@ function PoolWindowCard({
         ) : null}
       </View>
       {description ? <Text className="text-xs text-foreground-muted">{description}</Text> : null}
-      {nextRefill ? (
-        <Text className="text-xs tabular-nums text-foreground-muted">
-          ↻ +{nextRefill.restoresPercent}% {formatResetsIn(nextRefill.member.window, now, "after")}
-        </Text>
-      ) : null}
+      <ResetLine pool={pool} now={now} />
     </>
   );
   const bar = (
@@ -319,7 +454,7 @@ function PoolWindowCard({
                     {remainingPercent(window)}%
                   </Text>
                 </View>
-                {inlineReset && (resetsIn || credits) ? (
+                {inlineReset && pool.columns.length > 1 && (resetsIn || credits) ? (
                   <View className="shrink-0 flex-row items-center gap-1 rounded bg-grouped-card/85 px-1.5 py-0.5">
                     {resetsIn ? (
                       <>
@@ -474,10 +609,16 @@ export function UsageLimitsSection({
   const notices = collectLimitNotices(selected);
   const externalLinks = collectExternalUsageLinks(selected);
   const colors = useProviderColors();
+  const sections = [
+    ...pools.map((pool) => ({ driver: pool.driver, pool })),
+    ...[...new Set(externalLinks.map((link) => link.driver))]
+      .filter((driver) => !pools.some((pool) => pool.driver === driver))
+      .map((driver) => ({ driver, pool: null })),
+  ];
   const cursorPromptAt =
     Math.max(
-      pools.findIndex((pool) => pool.driver === "codex"),
-      pools.findIndex((pool) => pool.driver === "claudeAgent"),
+      sections.findIndex((section) => section.driver === "codex"),
+      sections.findIndex((section) => section.driver === "claudeAgent"),
     ) + 1;
   return (
     <View className="gap-6">
@@ -492,78 +633,62 @@ export function UsageLimitsSection({
             : t("No provider on the selected environments reports subscription limits.")}
         </Text>
       ) : null}
-      {pools.map((pool, index) => {
-        const windows = displayLimitWindows(pool);
-        const checkedAt = oldestLimitsCheck(pool.accounts);
-        return (
-          <Fragment key={pool.driver}>
-            {index === cursorPromptAt ? cursorPrompt : null}
-            <View className="gap-3">
-              <View className="gap-1 px-1">
-                <View className="flex-row items-center gap-2">
-                  <ProviderIcon provider={pool.driver} size={18} />
-                  <Text className="min-w-0 flex-1 text-base font-t3-medium text-foreground">
-                    {DRIVER_LABEL[pool.driver] ?? pool.driver}
-                  </Text>
-                  {checkedAt ? (
-                    <Text className="text-xs tabular-nums text-foreground-tertiary">
-                      {checkedAgo(checkedAt, now)}
-                    </Text>
-                  ) : null}
-                </View>
-                {failover
-                  .filter((entry) => entry.driver === pool.driver)
-                  .map((entry) => (
-                    <Text key={entry.environmentId} className="text-xs text-foreground-muted">
-                      {selected.size > 1
-                        ? t("{environment}: ", { environment: entry.environmentLabel })
-                        : null}
-                      {describeAccountFailover(entry.status, {
-                        accountName: resolveProviderInstanceDisplayName,
-                        time: formatResetTime,
-                      })}
-                    </Text>
-                  ))}
+      {sections.map(({ driver, pool }, index) => (
+        <Fragment key={driver}>
+          {index === cursorPromptAt ? cursorPrompt : null}
+          <View className="gap-3">
+            <View className="gap-1 px-1">
+              <View className="flex-row items-start gap-2">
+                <ProviderIcon provider={driver} size={18} />
+                <Text className="min-w-0 flex-1 text-base font-t3-medium text-foreground">
+                  {DRIVER_LABEL[driver] ?? driver}
+                </Text>
+                {pool ? <LimitsFreshness accounts={pool.accounts} now={now} /> : null}
               </View>
-              {windows.map((window) => {
-                const details =
-                  pool.driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;
-                return (
-                  <PoolWindowCard
-                    key={`${window.kind}:${window.id}`}
-                    pool={window}
-                    color={colors[usageProviderKind(pool.driver) ?? "codex"]}
-                    now={now}
-                    environmentIds={
-                      selectedEnvironmentIds === null ? null : [...selectedEnvironmentIds]
-                    }
-                    label={details?.label}
-                    description={details?.description}
-                    wide={wide}
-                  />
-                );
-              })}
+              {failover
+                .filter((entry) => entry.driver === driver)
+                .map((entry) => (
+                  <Text key={entry.environmentId} className="text-xs text-foreground-muted">
+                    {selected.size > 1
+                      ? t("{environment}: ", { environment: entry.environmentLabel })
+                      : null}
+                    {describeAccountFailover(entry.status, {
+                      accountName: resolveProviderInstanceDisplayName,
+                      time: formatResetTime,
+                    })}
+                  </Text>
+                ))}
             </View>
-          </Fragment>
-        );
-      })}
-      {cursorPromptAt === pools.length ? cursorPrompt : null}
-      {externalLinks.map((link) => (
-        <View key={link.url} className="gap-3 rounded-xl border border-border-subtle p-4">
-          <Text className="text-base font-t3-medium text-foreground">{link.label}</Text>
-          <Text className="text-xs text-foreground-muted">{link.accounts.join(", ")}</Text>
-          {link.message ? (
-            <Text className="text-sm text-foreground-muted">{link.message}</Text>
-          ) : null}
-          <Pressable
-            accessibilityRole="link"
-            className="min-h-11 justify-center"
-            onPress={() => void Linking.openURL(link.url).catch(() => undefined)}
-          >
-            <Text className="text-sm font-t3-medium text-primary">{t("Manage usage")}</Text>
-          </Pressable>
-        </View>
+            {pool
+              ? displayLimitWindows(pool).map((window) => {
+                  const details =
+                    driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;
+                  return (
+                    <PoolWindowCard
+                      key={`${window.kind}:${window.id}`}
+                      pool={window}
+                      color={colors[usageProviderKind(driver) ?? "codex"]}
+                      now={now}
+                      environmentIds={
+                        selectedEnvironmentIds === null ? null : [...selectedEnvironmentIds]
+                      }
+                      label={details?.label}
+                      description={details?.description}
+                      wide={wide}
+                    />
+                  );
+                })
+              : null}
+            {pool ? <PoolResetCredits pool={pool} now={now} /> : null}
+            {externalLinks
+              .filter((link) => link.driver === driver)
+              .map((link) => (
+                <ExternalUsageAccounts key={link.url} link={link} />
+              ))}
+          </View>
+        </Fragment>
       ))}
+      {cursorPromptAt === sections.length ? cursorPrompt : null}
       {notices.length > 0 || failedLabels.length > 0 ? (
         <View
           accessible

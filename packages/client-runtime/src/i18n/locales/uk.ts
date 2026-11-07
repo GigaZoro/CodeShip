@@ -86,6 +86,7 @@ const catalog: MessageCatalog = {
   "(guest)": "(гість)",
   "{account} is out of usage": "{account}: ліміт вичерпано",
   "{account} is out of usage · resets {time}": "{account}: ліміт вичерпано · оновиться {time}",
+  "{account}: reset credits": "{account}: кредити скидання",
   "{accounts} are at their limits, and the first resets {time}. Limited threads continue on {account}.":
     {
       one: "{accounts} досяг ліміту до {time}, тому чати на ліміті продовжуються на {account}.",
@@ -722,6 +723,12 @@ const catalog: MessageCatalog = {
     many: "{count} запитів очікують довше ніж {seconds} с.",
     other: "{count} запиту очікує довше ніж {seconds} с.",
   },
+  "{count} reset credits": {
+    one: "{count} кредит скидання",
+    few: "{count} кредити скидання",
+    many: "{count} кредитів скидання",
+    other: "{count} кредиту скидання",
+  },
   "{count} reset credits banked": {
     one: "{count} кредит скидання накопичено",
     few: "{count} кредити скидання накопичено",
@@ -1110,7 +1117,11 @@ const catalog: MessageCatalog = {
     "{environment} переходить на T3 Connect, коли інші маршрути недоступні.",
   "{environment} is not connected": "{environment} не підключено",
   "{environment} is not connected.": "{environment} не підключено.",
+  "{environment} isn't connected, so its limits are from {time}. They update when it reconnects.":
+    "{environment} не підключено, тому його ліміти станом на {time}. Вони оновляться після повторного підключення.",
   "{environment} load preference": "Уподобання навантаження для {environment}",
+  "{environment} not connected": "{environment} не підключено",
+  "{environment} not connected · read {time}": "{environment} не підключено · зчитано {time}",
   "{environment} now has another way to connect.":
     "{environment} тепер має ще один спосіб підключення.",
   "{environment} runs an older server version and is excluded from totals.":
@@ -1590,6 +1601,7 @@ const catalog: MessageCatalog = {
   "{theme} saved": "Тему {theme} збережено",
   "{theme} theme": "Тема: {theme}",
   "{theme} updated": "Тему {theme} оновлено",
+  "{time} ago": "{time} тому",
   "{time} observed CPU time": "{time} спостережуваного часу CPU",
   "{time}, {date}": "{time}, {date}",
   "{title} · Replaced by a newer version": "{title} · Замінено новішою версією",
@@ -1670,6 +1682,7 @@ const catalog: MessageCatalog = {
     many: "+ {count} файлів",
     other: "+ {count} файлу",
   },
+  "+{percent}% back {when}": "+{percent}% повернеться {when}",
   "+{percent}% of pool": "+{percent}% від пулу",
   "+15s": "+15 с",
   "<1m": "<1 хв",
@@ -6519,6 +6532,7 @@ const catalog: MessageCatalog = {
   "Limited to 500 rows and 50 columns.": "Обмежено 500 рядками та 50 стовпцями.",
   "Limited to this machine.": "Обмежено цим комп’ютером.",
   Limits: "Ліміти",
+  "Limits kept by ChatGPT": "Ліміти, які веде ChatGPT",
   "Line {line}": "Рядок {line}",
   "Line {line} needs a header name, then {separator} and its value.":
     "У рядку {line} потрібна назва заголовка, потім {separator} і його значення.",
@@ -7189,6 +7203,7 @@ const catalog: MessageCatalog = {
   "Next · {number} of {total}": "Далі · {number} із {total}",
   "Next {day}": "Наступне: {day}",
   "Next chapter": "Наступний розділ",
+  "next expires in {duration}": "наступний спливає через {duration}",
   "Next file": "Наступний файл",
   "next in {duration}": "наступний через {duration}",
   "Next match": "Наступний збіг",
@@ -7544,6 +7559,7 @@ const catalog: MessageCatalog = {
     "Не підключено, тому налаштування пропускає {labels}. Ви можете налаштувати його пізніше в Налаштуваннях.",
   "Not connected, so setup skips {labels}. You can set them up later from Settings.":
     "Не підключено, тому налаштування пропускає {labels}. Ви можете налаштувати їх пізніше в Налаштуваннях.",
+  "Not connected, so this is its last reading.": "Не підключено, тож це останнє зчитування.",
   "Not connected:": "Не підключено:",
   "Not connected: message not sent": "Немає підключення: повідомлення не надіслано",
   "Not found": "Не знайдено",
@@ -7774,6 +7790,7 @@ const catalog: MessageCatalog = {
   "Open browser, {title}": "Відкрити браузер, {title}",
   "Open chat": "Відкрити чат",
   "Open ChatGPT sign-in": "Відкрити вхід у ChatGPT",
+  "Open ChatGPT usage": "Відкрити використання в ChatGPT",
   "Open checks on provider": "Відкрити перевірки у провайдера",
   "Open checks: {summary}": "Відкрити перевірки: {summary}",
   "Open commit {sha}": "Відкрити коміт {sha}",
@@ -9237,7 +9254,7 @@ const catalog: MessageCatalog = {
   "Reset all settings": "Скинути всі налаштування",
   "Reset applied. Your windows have cleared.": "Скидання застосовано. Ваші вікна очищено.",
   "Reset automatic pull to off": "Скинути автоматичний pull на «вимк.»",
-  "Reset credits": "Скинути кредити",
+  "Reset credits": "Кредити скидання",
   "Reset filters": "Скинути фільтри",
   "Reset importing conversations to off": "Скинути імпорт розмов на вимкнений",
   "Reset it": "Скинути",
@@ -9259,9 +9276,11 @@ const catalog: MessageCatalog = {
   "Resets {date}": "Скидається {date}",
   "Resets {time}": "Оновиться {time}",
   "resets in {duration}": "скидання через {duration}",
+  "Resets in {duration}": "Скидається через {duration}",
   "Resets in {duration} · {time}": "Оновиться за {duration} · {time}",
   "Resets momentarily": "Скидається за мить",
   "resets now": "скидається зараз",
+  "Resets now": "Скидається зараз",
   "Resident memory": "Резидентна пам’ять",
   "Resize browser viewport from bottom edge":
     "Змінити розмір області перегляду браузера за нижній край",
@@ -11673,6 +11692,8 @@ const catalog: MessageCatalog = {
     "Для {environment} не було cookie для імпорту.",
   "There's no capture shortcut to remove.": "Немає комбінації клавіш захоплення для видалення.",
   Thermal: "Тепловий стан",
+  "These accounts use your ChatGPT plan, and ChatGPT doesn't share their limits with apps. Open ChatGPT signed in as the account to see them.":
+    "Ці облікові записи використовують ваш план ChatGPT, а ChatGPT не передає їхні ліміти застосункам. Щоб їх побачити, відкрийте ChatGPT, увійшовши в потрібний обліковий запис.",
   "These cells could not be drawn.": "Не вдалося відобразити ці комірки.",
   "These cells could not be drawn. Try scrolling to another area.":
     "Не вдалося відобразити ці комірки. Спробуйте прокрутити до іншої ділянки.",
@@ -12948,6 +12969,8 @@ const catalog: MessageCatalog = {
   upstream: "віддаленої гілки",
   URL: "URL",
   "URL copied": "URL скопійовано",
+  "Usable once {environment} reconnects":
+    "Можна використати, коли {environment} знову підключиться",
   Usage: "Використання",
   "Usage ({shortcut})": "Використання ({shortcut})",
   "Usage breadcrumb": "Навігація по використанню",
@@ -13234,8 +13257,6 @@ const catalog: MessageCatalog = {
   "View stack #{number}, layer {position} of {total}":
     "Переглянути стек #{number}, шар {position} із {total}",
   "View terminals": "Перегляд терміналів",
-  "View usage in ChatGPT with your connected account.":
-    "Переглядайте використання в ChatGPT за допомогою підключеного облікового запису.",
   viewed: "переглянуто",
   Viewed: "Переглянуто",
   "viewed in {app}": "переглянуто в {app}",

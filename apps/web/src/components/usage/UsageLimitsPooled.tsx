@@ -1,3 +1,4 @@
+import type { ProviderDriverKind } from "@t3tools/contracts";
 import {
   type AccountFailoverEntry,
   CHATGPT_USAGE_URL,
@@ -7,18 +8,28 @@ import {
   collectLimitPools,
   cursorUsageWindowDetails,
   displayLimitWindows,
+  type ExternalUsageLink,
+  formatDuration,
   formatResetsIn,
   type LimitAccount,
   type LimitPool,
   type LimitPoolMember,
   type LimitPoolWindow,
-  oldestLimitsCheck,
+  limitAccountLocations,
+  limitsFreshness,
   paceRemainingPercent,
+  poolResetSummary,
   remainingPercent,
 } from "@t3tools/shared/usageLimits";
 import type { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
-import { AlertTriangleIcon, ExternalLinkIcon, TicketIcon } from "lucide-react";
+import {
+  AlertTriangleIcon,
+  CloudOffIcon,
+  ExternalLinkIcon,
+  RotateCcwIcon,
+  TicketIcon,
+} from "lucide-react";
 import {
   createContext,
   Fragment,
@@ -49,7 +60,7 @@ import {
   resetCreditsSummary,
   useResetCredit,
 } from "./UsageLimits";
-import { AccountFailoverNotice, LimitsCheckedAt, useCheckedAgo } from "./UsageLimitsStatus";
+import { AccountFailoverNotice, LimitsFreshness, useCheckedAgo } from "./UsageLimitsStatus";
 import { t, tn } from "~/i18n";
 
 function accountInitials(email: string): string {
@@ -156,10 +167,7 @@ function SegmentPopover({
   const remaining = remainingPercent(window);
   const timeLeft = paceRemainingPercent(window, now);
   const resetsIn = formatResetsIn(window, now, "after");
-  const where =
-    account.environments.length > 0
-      ? account.environments.map((environment) => environment.label).join(", ")
-      : account.sourceLabel;
+  const where = limitAccountLocations(account).join(", ");
   const credits =
     redeem && account.limits.resetCredits?.availableCount ? account.limits.resetCredits : null;
   const checkedAgo = useCheckedAgo(account.limits.checkedAt);
@@ -191,6 +199,12 @@ function SegmentPopover({
           {formatDayAwareTimestamp(account.limits.checkedAt, timestampFormat, now)}
           {checkedAgo ? ` · ${checkedAgo}` : ""}
         </Row>
+        {account.offline ? (
+          <span className="flex items-start gap-1.5 text-warning-foreground">
+            <CloudOffIcon aria-hidden className="mt-px size-3.5 shrink-0" />
+            {t("Not connected, so this is its last reading.")}
+          </span>
+        ) : null}
       </div>
       <div className="flex flex-col gap-1 border-t border-border/60 pt-2.5">
         <Row label={t("Left")}>{remaining}%</Row>
@@ -216,7 +230,7 @@ function SegmentPopover({
             <Button
               size="xs"
               variant="outline"
-              disabled={redeem.busy || !redeem.canManageProviders}
+              disabled={redeem.busy || !redeem.canManageProviders || account.offline}
               className="ms-auto"
               onClick={onRedeem}
             >
@@ -386,6 +400,7 @@ function SegmentTriggers({
               ...(credits
                 ? [tn(credits, "{count} reset credit banked", "{count} reset credits banked")]
                 : []),
+              ...(account.offline ? [t("not connected")] : []),
             ].join(", ")}
             className="relative h-5 min-w-0 cursor-pointer rounded-md bg-muted text-start outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background data-[popup-open]:ring-1 data-[popup-open]:ring-inset data-[popup-open]:ring-border @2xl/pool:h-8"
           />
@@ -418,46 +433,51 @@ function SegmentTriggers({
             style={paceMark.tick}
           />
         ) : null}
-        <span
-          aria-hidden
-          className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-md text-3xs leading-none font-semibold text-foreground/80 tabular-nums @2xl/pool:hidden"
-        >
-          {index}
-        </span>
-        <div className="relative hidden h-full min-w-0 items-center gap-1.5 overflow-hidden rounded-md px-2 text-xs @2xl/pool:flex">
-          {showAccountName ? (
-            <AccountName
-              account={account}
-              className="min-w-0 truncate font-medium text-foreground"
-            />
-          ) : null}
-          {/* A single-account bar repeats the headline percentage. */}
-          {showAccountName ? (
-            <span className="shrink-0 font-semibold text-foreground tabular-nums">
-              {remaining}%
+        {/* One account's bar needs no labels: the headline, reset line, and credits row say it all. */}
+        {showAccountName ? (
+          <>
+            <span
+              aria-hidden
+              className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-md text-3xs leading-none font-semibold text-foreground/80 tabular-nums @2xl/pool:hidden"
+            >
+              {index}
             </span>
-          ) : null}
-          {resetsIn || credits ? (
-            <span className="ms-auto flex min-w-0 items-center gap-1.5 overflow-hidden rounded-sm bg-background/85 px-1.5 py-0.5 text-2xs whitespace-nowrap text-foreground tabular-nums">
-              {resetsIn ?? ""}
-              {credits ? (
-                <>
-                  {resetsIn ? (
-                    <span aria-hidden className="text-muted-foreground">
-                      ·
-                    </span>
-                  ) : null}
-                  <span aria-hidden className="inline-flex items-center gap-0.5 font-semibold">
-                    <TicketIcon className="size-3" aria-hidden />
-                    {credits}
-                  </span>
-                </>
+            <div className="relative hidden h-full min-w-0 items-center gap-1.5 overflow-hidden rounded-md px-2 text-xs @2xl/pool:flex">
+              <AccountName
+                account={account}
+                className="min-w-0 truncate font-medium text-foreground"
+              />
+              <span className="shrink-0 font-semibold text-foreground tabular-nums">
+                {remaining}%
+              </span>
+              {account.offline ? (
+                <CloudOffIcon aria-hidden className="size-3.5 shrink-0 text-warning-foreground" />
               ) : null}
-            </span>
-          ) : null}
-        </div>
+              {resetsIn || credits ? (
+                <span className="ms-auto flex min-w-0 items-center gap-1.5 overflow-hidden rounded-sm bg-background px-1.5 py-0.5 whitespace-nowrap text-foreground tabular-nums">
+                  {resetsIn ?? ""}
+                  {credits ? (
+                    <>
+                      {resetsIn ? (
+                        <span aria-hidden className="text-muted-foreground">
+                          ·
+                        </span>
+                      ) : null}
+                      <span aria-hidden className="inline-flex items-center gap-0.5 font-semibold">
+                        <TicketIcon className="size-3" aria-hidden />
+                        {credits}
+                      </span>
+                    </>
+                  ) : null}
+                </span>
+              ) : null}
+            </div>
+          </>
+        ) : null}
       </PopoverTrigger>
-      <LegendRow payload={payload} color={color} now={now} index={index} />
+      {showAccountName ? (
+        <LegendRow payload={payload} color={color} now={now} index={index} />
+      ) : null}
     </>
   );
 }
@@ -497,7 +517,13 @@ function LegendRow({
       </span>
       <AccountName account={account} className="min-w-0 truncate font-medium text-foreground" />
       <span className="shrink-0 font-semibold text-foreground tabular-nums">{remaining}%</span>
-      <span className="ms-auto flex shrink-0 items-center gap-1.5 text-2xs text-muted-foreground tabular-nums">
+      {account.offline ? (
+        <>
+          <CloudOffIcon aria-hidden className="size-3.5 shrink-0 text-warning-foreground" />
+          <span className="sr-only">{t("not connected")}</span>
+        </>
+      ) : null}
+      <span className="ms-auto flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
         {resetsIn ?? ""}
         {credits ? (
           <>
@@ -555,6 +581,23 @@ function PoolBar({
   );
 }
 
+function PoolResetLine({ pool, now }: { readonly pool: LimitPoolWindow; readonly now: number }) {
+  const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
+  const summary = poolResetSummary(pool, now);
+  if (!summary) return null;
+  return (
+    <span className="flex flex-wrap items-center gap-x-1.5 text-sm text-foreground tabular-nums">
+      <RotateCcwIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+      {summary.text}
+      {summary.resetsAt ? (
+        <span className="text-xs text-muted-foreground">
+          {formatUpcomingTimestamp(summary.resetsAt, timestampFormat, now)}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function PoolWindowCard({
   pool,
   color,
@@ -568,29 +611,18 @@ function PoolWindowCard({
   readonly label?: string | undefined;
   readonly description?: string | undefined;
 }) {
-  const nextRefill = pool.resets.find((reset) => reset.restoresPercent > 0);
-  const nextRefillIn = nextRefill
-    ? formatResetsIn(nextRefill.member.window, now, "after")
-    : undefined;
   return (
-    <div className="grid items-center gap-x-6 gap-y-3 rounded-lg border border-border/60 p-4 md:grid-cols-[11rem_minmax(0,1fr)]">
+    <div className="grid items-center gap-x-6 gap-y-3 rounded-lg border border-border/60 p-4 md:grid-cols-[12rem_minmax(0,1fr)]">
       <div className="flex flex-col gap-1">
         <span className="text-sm font-medium text-foreground">{label ?? pool.label}</span>
-        <span className="flex items-baseline gap-2">
+        <span className="flex flex-wrap items-baseline gap-x-2">
           <span className="text-3xl font-semibold text-foreground tabular-nums">
             {pool.remainingPercent}%
           </span>
-          <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-            <span>{t("left")}</span>
-            {pool.pace ? <PaceIcon pace={pool.pace} /> : null}
-          </span>
+          <span className="text-sm text-muted-foreground">{t("left")}</span>
+          {pool.pace ? <PaceIcon pace={pool.pace} withLabel /> : null}
         </span>
-        {nextRefill && pool.columns.length > 1 ? (
-          <span className="text-xs text-muted-foreground tabular-nums">
-            <span className="font-medium text-foreground">↻ +{nextRefill.restoresPercent}%</span>
-            {nextRefillIn ? ` ${nextRefillIn}` : null}
-          </span>
-        ) : null}
+        <PoolResetLine pool={pool} now={now} />
       </div>
       <PoolBar pool={pool} color={color} now={now} />
       {description ? (
@@ -600,28 +632,164 @@ function PoolWindowCard({
   );
 }
 
-function PoolSection({
+function AccountResetCredits({
+  account,
+  redeemAt,
+  named,
+  now,
+}: {
+  readonly account: LimitAccount;
+  readonly redeemAt: NonNullable<LimitAccount["redeem"]>;
+  readonly named: boolean;
+  readonly now: number;
+}) {
+  const redeem = useResetCredit(redeemAt.environmentId, redeemAt.input);
+  const credits = account.limits.resetCredits;
+  const count = credits?.availableCount ?? 0;
+  // Stay mounted after the last credit is spent so the outcome is still readable.
+  if (count === 0 && redeem.status === null && !redeem.busy) return null;
+  const expiresIn = credits?.nextExpiresAt
+    ? formatDuration(Date.parse(credits.nextExpiresAt) - now)
+    : null;
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 text-sm">
+      <TicketIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+      {named ? <AccountName account={account} className="font-medium text-foreground" /> : null}
+      <span className="font-medium text-foreground tabular-nums">
+        {tn(count, "{count} reset credit", "{count} reset credits")}
+      </span>
+      {expiresIn ? (
+        <span className="text-xs text-muted-foreground tabular-nums">
+          {t("next expires in {duration}", { duration: expiresIn })}
+        </span>
+      ) : null}
+      {account.offline && count > 0 ? (
+        <span className="text-xs text-warning-foreground">
+          {t("Usable once {environment} reconnects", {
+            environment: limitAccountLocations(account).join(", "),
+          })}
+        </span>
+      ) : null}
+      {redeem.busy || redeem.status ? (
+        <span role="status" className="text-xs text-foreground">
+          {redeem.busy ? t("Using reset credit…") : redeem.status}
+        </span>
+      ) : null}
+      {count > 0 ? (
+        <Button
+          size="xs"
+          variant="outline"
+          className="ms-auto"
+          disabled={redeem.busy || !redeem.canManageProviders || account.offline}
+          onClick={() => redeem.setConfirming(true)}
+        >
+          {redeem.busy ? t("Using…") : t("Use reset")}
+        </Button>
+      ) : null}
+      <ResetCreditDialog
+        open={redeem.confirming}
+        onOpenChange={redeem.setConfirming}
+        onConfirm={() => void redeem.redeem()}
+        disabled={!redeem.canManageProviders}
+      />
+    </div>
+  );
+}
+
+function PoolResetCredits({ pool, now }: { readonly pool: LimitPool; readonly now: number }) {
+  const accounts = pool.accounts.flatMap((account) =>
+    account.redeem && account.limits.resetCredits ? [{ account, redeemAt: account.redeem }] : [],
+  );
+  if (accounts.length === 0) return null;
+  return (
+    <div className="flex flex-col divide-y divide-border/60 rounded-lg border border-border/60 empty:hidden">
+      {accounts.map(({ account, redeemAt }) => (
+        <AccountResetCredits
+          key={account.key}
+          account={account}
+          redeemAt={redeemAt}
+          named={pool.accounts.length > 1}
+          now={now}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** Accounts whose limits another site keeps, so they have no bar here. */
+function ExternalUsageAccounts({ link }: { readonly link: ExternalUsageLink }) {
+  const chatGpt = link.url === CHATGPT_USAGE_URL;
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-border/60 p-4">
+      <div className="flex flex-col gap-1">
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+          <h3 className="flex min-w-0 items-center gap-2 text-sm font-medium text-foreground">
+            {chatGpt ? <OpenAI className="size-4 shrink-0" aria-hidden="true" /> : null}
+            {chatGpt ? t("Limits kept by ChatGPT") : link.label}
+          </h3>
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={() => void ensureLocalApi().shell.openExternal(link.url)}
+          >
+            {chatGpt ? t("Open ChatGPT usage") : t("Manage usage")}
+            <ExternalLinkIcon className="size-3.5" aria-hidden="true" />
+          </Button>
+        </div>
+        {chatGpt || link.message ? (
+          <p className="max-w-2xl text-xs text-muted-foreground">
+            {chatGpt
+              ? t(
+                  "These accounts use your ChatGPT plan, and ChatGPT doesn't share their limits with apps. Open ChatGPT signed in as the account to see them.",
+                )
+              : link.message}
+          </p>
+        ) : null}
+      </div>
+      <ul className="flex flex-col divide-y divide-border/60 border-t border-border/60">
+        {link.accounts.map((account) => (
+          <li
+            key={account.key}
+            className="flex flex-wrap items-center justify-between gap-x-4 gap-y-0.5 py-2 text-xs"
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              {account.email ? <AccountChip email={account.email} /> : null}
+              <span className="truncate font-medium text-foreground">
+                {account.names.join(" / ")}
+              </span>
+            </span>
+            <span className="text-muted-foreground">{account.environments.join(" · ")}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ProviderSection({
+  driver,
   pool,
+  external,
   now,
   failover,
   showEnvironment,
 }: {
-  readonly pool: LimitPool;
+  readonly driver: ProviderDriverKind;
+  readonly pool: LimitPool | null;
+  readonly external: readonly ExternalUsageLink[];
   readonly now: number;
   readonly failover: readonly AccountFailoverEntry[];
   readonly showEnvironment: boolean;
 }) {
-  const color = barColor(pool.driver);
-  const label = providerClients.get(pool.driver)?.label ?? String(pool.driver);
-  const windows = displayLimitWindows(pool);
-  const checkedAt = oldestLimitsCheck(pool.accounts);
+  const color = barColor(driver);
+  const label = providerClients.get(driver)?.label ?? String(driver);
   return (
     <section className="flex flex-col gap-3">
       <div className="flex flex-col gap-1">
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
           <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
             <ProviderInstanceIcon
-              driverKind={pool.driver}
+              driverKind={driver}
               displayName={label}
               indicatorBackground="var(--background)"
               className="size-5"
@@ -629,27 +797,33 @@ function PoolSection({
             />
             {label}
           </h2>
-          {checkedAt ? <LimitsCheckedAt checkedAt={checkedAt} /> : null}
+          {pool ? <LimitsFreshness freshness={limitsFreshness(pool.accounts)} /> : null}
         </div>
         <AccountFailoverNotice
-          entries={failover.filter((entry) => entry.driver === pool.driver)}
+          entries={failover.filter((entry) => entry.driver === driver)}
           now={now}
           showEnvironment={showEnvironment}
         />
       </div>
-      {windows.map((window) => {
-        const details = pool.driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;
-        return (
-          <PoolWindowCard
-            key={`${window.kind}:${window.id}`}
-            pool={window}
-            color={color}
-            now={now}
-            label={details?.label}
-            description={details?.description}
-          />
-        );
-      })}
+      {pool
+        ? displayLimitWindows(pool).map((window) => {
+            const details = driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;
+            return (
+              <PoolWindowCard
+                key={`${window.kind}:${window.id}`}
+                pool={window}
+                color={color}
+                now={now}
+                label={details?.label}
+                description={details?.description}
+              />
+            );
+          })
+        : null}
+      {pool ? <PoolResetCredits pool={pool} now={now} /> : null}
+      {external.map((link) => (
+        <ExternalUsageAccounts key={link.url} link={link} />
+      ))}
     </section>
   );
 }
@@ -673,10 +847,16 @@ export function UsageLimitsPooled({
   const pools = collectLimitPools(collectLimitAccounts(presentations), now);
   const notices = collectLimitNotices(presentations);
   const externalLinks = collectExternalUsageLinks(presentations);
+  const sections = [
+    ...pools.map((pool) => ({ driver: pool.driver, pool })),
+    ...[...new Set(externalLinks.map((link) => link.driver))]
+      .filter((driver) => !pools.some((pool) => pool.driver === driver))
+      .map((driver) => ({ driver, pool: null })),
+  ];
   const cursorPromptAt =
     Math.max(
-      pools.findIndex((pool) => pool.driver === "codex"),
-      pools.findIndex((pool) => pool.driver === "claudeAgent"),
+      sections.findIndex((section) => section.driver === "codex"),
+      sections.findIndex((section) => section.driver === "claudeAgent"),
     ) + 1;
   return (
     <div className="flex flex-col gap-8">
@@ -686,11 +866,13 @@ export function UsageLimitsPooled({
         </p>
       ) : null}
       <SegmentPopoverContext value={segmentPopover}>
-        {pools.map((pool, index) => (
-          <Fragment key={pool.driver}>
+        {sections.map((section, index) => (
+          <Fragment key={section.driver}>
             {index === cursorPromptAt ? cursorPrompt : null}
-            <PoolSection
-              pool={pool}
+            <ProviderSection
+              driver={section.driver}
+              pool={section.pool}
+              external={externalLinks.filter((link) => link.driver === section.driver)}
               now={now}
               failover={failover}
               showEnvironment={presentations.size > 1}
@@ -711,40 +893,7 @@ export function UsageLimitsPooled({
           ) : null
         }
       </Popover>
-      {cursorPromptAt === pools.length ? cursorPrompt : null}
-      {externalLinks.map((link) => (
-        <section
-          key={link.url}
-          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4"
-        >
-          <div className="flex min-w-0 flex-1 items-center gap-3">
-            {link.url === CHATGPT_USAGE_URL ? (
-              <OpenAI className="size-5 shrink-0" aria-hidden="true" />
-            ) : null}
-            <div className="min-w-0 space-y-1">
-              <h2 className="text-sm font-medium">{link.label}</h2>
-              <p className="text-xs break-words text-muted-foreground">
-                {link.accounts.join(", ")}
-              </p>
-              {link.url === CHATGPT_USAGE_URL ? (
-                <p className="text-xs text-muted-foreground">
-                  {t("View usage in ChatGPT with your connected account.")}
-                </p>
-              ) : link.message ? (
-                <p className="max-w-xl text-xs text-muted-foreground">{link.message}</p>
-              ) : null}
-            </div>
-          </div>
-          <Button
-            variant="ghost-muted"
-            size="xs"
-            onClick={() => void ensureLocalApi().shell.openExternal(link.url)}
-          >
-            {t("Manage usage")}
-            <ExternalLinkIcon className="size-3.5" aria-hidden="true" />
-          </Button>
-        </section>
-      ))}
+      {cursorPromptAt === sections.length ? cursorPrompt : null}
       <LimitNotices notices={notices} />
     </div>
   );

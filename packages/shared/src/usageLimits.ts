@@ -218,6 +218,8 @@ export type LimitPresentations = ReadonlyMap<
   EnvironmentId,
   {
     readonly entry: { readonly target: { readonly label: string } };
+    /** Without one, the environment counts as connected. */
+    readonly connection?: { readonly phase: string } | undefined;
     readonly serverConfig: {
       readonly providers: readonly ServerProvider[];
       readonly usageLimitSources?: UsageLimitSourceSnapshots | undefined;
@@ -225,30 +227,78 @@ export type LimitPresentations = ReadonlyMap<
   }
 >;
 
-export function collectExternalUsageLinks(presentations: LimitPresentations) {
+/** A connected environment can re-read its limits; any other keeps showing its last reading. */
+function isConnected(presentation: {
+  readonly connection?: { readonly phase: string } | undefined;
+}) {
+  return presentation.connection === undefined || presentation.connection.phase === "connected";
+}
+
+/** One login whose limits another site keeps, with every environment it is signed in on. */
+export interface ExternalUsageAccount {
+  readonly key: string;
+  readonly names: readonly string[];
+  readonly email: string | undefined;
+  readonly environments: readonly string[];
+}
+
+export interface ExternalUsageLink {
+  readonly driver: ProviderDriverKind;
+  readonly label: string;
+  readonly url: string;
+  readonly message: string | undefined;
+  readonly accounts: readonly ExternalUsageAccount[];
+}
+
+export function collectExternalUsageLinks(
+  presentations: LimitPresentations,
+): readonly ExternalUsageLink[] {
   const links = new Map<
     string,
     {
-      readonly label: string;
-      readonly url: string;
-      readonly message: string | undefined;
-      readonly accounts: readonly string[];
+      readonly link: Omit<ExternalUsageLink, "accounts">;
+      readonly accounts: Map<string, ExternalUsageAccount>;
     }
   >();
-  for (const presentation of presentations.values()) {
+  for (const [environmentId, presentation] of presentations) {
+    const environment = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
       const external = provider.usageLimits?.externalUsage;
-      if (external && provider.auth.status === "authenticated") {
-        const account = `${provider.displayName ?? provider.instanceId} on ${presentation.entry.target.label}`;
-        links.set(external.url, {
+      if (!external || provider.auth.status !== "authenticated") continue;
+      const linkKey = `${provider.driver}:${external.url}`;
+      const entry = links.get(linkKey) ?? {
+        link: {
           ...external,
+          driver: provider.driver,
           message: provider.usageLimits?.unavailable?.message,
-          accounts: [...new Set([...(links.get(external.url)?.accounts ?? []), account])],
-        });
-      }
+        },
+        accounts: new Map(),
+      };
+      links.set(linkKey, entry);
+      const login = accountKey(provider.driver, provider.auth.email);
+      const key = login
+        ? `${login}${provider.auth.workspaceId ? `:${provider.auth.workspaceId}` : ""}`
+        : `${environmentId}:${provider.instanceId}`;
+      const previous = entry.accounts.get(key);
+      entry.accounts.set(key, {
+        key,
+        names: [
+          ...new Set([
+            ...(previous?.names ?? []),
+            provider.displayName?.trim() || String(provider.instanceId),
+          ]),
+        ],
+        email: previous?.email ?? provider.auth.email,
+        environments: [...new Set([...(previous?.environments ?? []), environment])],
+      });
     }
   }
-  return [...links.values()];
+  return [...links.values()].map(({ link, accounts }) => ({
+    ...link,
+    accounts: [...accounts.values()].sort((left, right) =>
+      left.names[0]!.localeCompare(right.names[0]!),
+    ),
+  }));
 }
 
 function accountKey(
@@ -308,6 +358,8 @@ export interface LimitAccount {
     readonly label: string;
   }>;
   readonly sourceLabel: string | null;
+  /** No environment reporting this account is connected, so its reading cannot refresh now. */
+  readonly offline: boolean;
   readonly redeem: {
     readonly environmentId: EnvironmentId;
     readonly input: ProviderConsumeResetCreditInput;
@@ -368,6 +420,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
       accentColor: previous.accentColor ?? next.accentColor,
       environments,
       sourceLabel: environments.length > 0 ? null : (previous.sourceLabel ?? next.sourceLabel),
+      offline: previous.offline && next.offline,
       redeem:
         hubRedeems.get(key)?.redeem ??
         (creditSource ? creditSource.redeem : (winner.redeem ?? previous.redeem ?? next.redeem)),
@@ -400,6 +453,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         accentColor: provider.accentColor,
         environments: [{ environmentId, label }],
         sourceLabel: null,
+        offline: !isConnected(presentation),
         redeem: { environmentId, input: { instanceId: provider.instanceId } },
         limits: provider.usageLimits,
       });
@@ -423,6 +477,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
           accentColor: undefined,
           environments: [],
           sourceLabel,
+          offline: !isConnected(presentation),
           redeem: account.usageLimits.resetCredits?.nextCreditId
             ? {
                 environmentId,
@@ -441,15 +496,41 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
   return [...accounts.values()];
 }
 
-/** The stalest read among `accounts`, which is how old the shown limits can be. */
-export function oldestLimitsCheck(accounts: readonly LimitAccount[]): string | null {
-  return accounts.reduce<string | null>(
-    (oldest, account) =>
-      oldest === null || Date.parse(account.limits.checkedAt) < Date.parse(oldest)
-        ? account.limits.checkedAt
-        : oldest,
-    null,
-  );
+/** Where an account's limits are read: the environments it is signed in on, or its hub. */
+export function limitAccountLocations(account: LimitAccount): readonly string[] {
+  if (account.environments.length > 0) {
+    return account.environments.map((environment) => environment.label);
+  }
+  return account.sourceLabel === null ? [] : [account.sourceLabel];
+}
+
+const older = (left: string | null, right: string) =>
+  left === null || Date.parse(right) < Date.parse(left) ? right : left;
+
+/**
+ * How old the shown limits are: the stalest reading from a connected environment, and apart from
+ * it each disconnected environment or hub with the oldest reading it last sent.
+ */
+export function limitsFreshness(accounts: readonly LimitAccount[]): {
+  readonly checkedAt: string | null;
+  readonly offline: ReadonlyArray<{ readonly label: string; readonly checkedAt: string }>;
+} {
+  let checkedAt: string | null = null;
+  const offline = new Map<string, string>();
+  for (const account of accounts) {
+    if (!account.offline) {
+      checkedAt = older(checkedAt, account.limits.checkedAt);
+      continue;
+    }
+    const locations = limitAccountLocations(account);
+    for (const label of locations.length > 0 ? locations : [String(account.driver)]) {
+      offline.set(label, older(offline.get(label) ?? null, account.limits.checkedAt));
+    }
+  }
+  return {
+    checkedAt,
+    offline: [...offline].map(([label, at]) => ({ label, checkedAt: at })),
+  };
 }
 
 export function collectLimitNotices(presentations: LimitPresentations): readonly string[] {
@@ -757,10 +838,10 @@ export function formatDuration(ms: number): string {
 }
 
 /**
- * `full` reads "resets in 2h 5m", `after` reads "in 2h 5m", `arrow` reads "↻ 2h 5m", and
- * `duration` is just "2h 5m".
+ * `full` reads "resets in 2h 5m", `sentence` reads "Resets in 2h 5m", `after` reads "in 2h 5m",
+ * `arrow` reads "↻ 2h 5m", and `duration` is just "2h 5m".
  */
-export type ResetsInForm = "full" | "after" | "arrow" | "duration";
+export type ResetsInForm = "full" | "sentence" | "after" | "arrow" | "duration";
 
 export function formatResetsIn(
   window: ServerProviderUsageWindow,
@@ -769,7 +850,9 @@ export function formatResetsIn(
 ): string | null {
   const resetsAt = resetMillis(window);
   if (resetsAt === null) return null;
-  if (resetsAt <= now) return form === "after" ? t("now") : t("resets now");
+  if (resetsAt <= now) {
+    return form === "after" ? t("now") : form === "sentence" ? t("Resets now") : t("resets now");
+  }
   if (resetsAt - now < MINUTE) return t("Resets momentarily");
   const duration = formatDuration(resetsAt - now);
   switch (form) {
@@ -779,9 +862,34 @@ export function formatResetsIn(
       return t("↻ {duration}", { duration });
     case "after":
       return t("in {duration}", { duration });
+    case "sentence":
+      return t("Resets in {duration}", { duration });
     case "full":
       return t("resets in {duration}", { duration });
   }
+}
+
+/**
+ * What a window card says about its reset: one account's own reset time, or with several
+ * accounts the next reset that hands quota back to the pool.
+ */
+export function poolResetSummary(
+  pool: LimitPoolWindow,
+  now: number,
+): { readonly text: string; readonly resetsAt: string | null } | null {
+  if (pool.columns.length === 1) {
+    const window = pool.members[0]?.window;
+    const text = window ? formatResetsIn(window, now, "sentence") : null;
+    return window?.resetsAt && text ? { text, resetsAt: window.resetsAt } : null;
+  }
+  const next = pool.resets.find((reset) => reset.restoresPercent > 0);
+  const when = next ? formatResetsIn(next.member.window, now, "after") : null;
+  return next && when
+    ? {
+        text: t("+{percent}% back {when}", { percent: next.restoresPercent, when }),
+        resetsAt: null,
+      }
+    : null;
 }
 
 export const USAGE_LIMITS_COMMAND = {
