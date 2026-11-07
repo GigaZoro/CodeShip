@@ -1,5 +1,6 @@
 import { uuidv4 } from "../../lib/uuid";
 import * as Dialog from "../../components/ui/Dialog";
+import { appAtomRegistry } from "../../state/atom-registry";
 import { useNavigation } from "@react-navigation/native";
 import { AsyncResult } from "effect/reactivity";
 import * as Cause from "effect/Cause";
@@ -14,7 +15,7 @@ import { useEnvironmentQuery } from "../../state/query";
 import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { vcsActionManager, vcsEnvironment } from "../../state/vcs";
-import { useVcsActionState } from "../../state/use-vcs-action-state";
+import { showGitActionResult, useVcsActionState } from "../../state/use-vcs-action-state";
 import { ThreadHeader } from "./ThreadHeader";
 import { t } from "../../lib/i18n";
 
@@ -47,6 +48,17 @@ export function DraftThreadHeader(props: {
   };
   const requiresThread = () =>
     Dialog.alert(t("Available after the first message"), t("This action needs a saved thread."));
+  const showFailure = (cwd: string, cause: Cause.Cause<unknown>) => {
+    const error = Cause.squash(cause);
+    showGitActionResult(
+      { environmentId, cwd },
+      {
+        type: "error",
+        title: t("Git action failed"),
+        description: error instanceof Error ? error.message : t("Git action failed."),
+      },
+    );
+  };
   return (
     <ThreadHeader
       draft
@@ -81,22 +93,51 @@ export function DraftThreadHeader(props: {
           requiresThread();
         },
         onPull: async () => {
-          if (!canWriteGit || !props.cwd) return;
-          const result = await pull({ environmentId, input: { cwd: props.cwd } });
-          if (AsyncResult.isFailure(result))
-            Dialog.alert(t("Could not pull"), String(Cause.squash(result.cause)));
+          const cwd = props.cwd;
+          if (!canWriteGit || !cwd) return;
+          const result = await vcsActionManager.track(
+            appAtomRegistry,
+            { environmentId, cwd },
+            { operation: "pull", label: t("Pulling latest changes") },
+            () => pull({ environmentId, input: { cwd } }),
+          );
+          if (AsyncResult.isFailure(result)) {
+            showFailure(cwd, result.cause);
+            return;
+          }
+          showGitActionResult(
+            { environmentId, cwd },
+            {
+              type: "success",
+              title:
+                result.value.status === "skipped_up_to_date"
+                  ? t("Already up to date")
+                  : t("Pulled latest on {ref}", { ref: result.value.refName }),
+            },
+          );
         },
         onRunAction: async (input) => {
-          if (!canWriteGit || !props.cwd) return null;
+          const cwd = props.cwd;
+          if (!canWriteGit || !cwd) return null;
           const result = await runAction({
             ...input,
             projectId: props.project.id,
             actionId: uuidv4(),
           });
           if (AsyncResult.isFailure(result)) {
-            Dialog.alert(t("Git action failed"), String(Cause.squash(result.cause)));
+            showFailure(cwd, result.cause);
             return null;
           }
+          showGitActionResult(
+            { environmentId, cwd },
+            {
+              type: "success",
+              title: result.value.toast.title,
+              description: result.value.toast.description,
+              prUrl:
+                result.value.toast.cta.kind === "open_pr" ? result.value.toast.cta.url : undefined,
+            },
+          );
           return result.value;
         },
       }}

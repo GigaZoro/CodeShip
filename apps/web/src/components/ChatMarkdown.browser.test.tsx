@@ -389,6 +389,29 @@ describe("ChatMarkdown workspace file opens", () => {
   });
 });
 
+describe("ChatMarkdown file chip middle clicks", () => {
+  it("opens the file instead of this app's page for its path in a new tab", async () => {
+    setup();
+    const threadRef = {
+      environmentId: EnvironmentId.make("workspace"),
+      threadId: ThreadId.make("thread"),
+    };
+    await using screen = await renderText("[Other](/elsewhere/b.md:9)", { threadRef });
+    using openFile = vi
+      .spyOn(useRightPanelStore.getState(), "openFile")
+      .mockImplementation(() => {});
+    const chip = screen.container.querySelector("a")!;
+    let opensNewTab = true;
+    await act(() => {
+      opensNewTab = chip.dispatchEvent(
+        new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1 }),
+      );
+    });
+    expect(opensNewTab).toBe(false);
+    expect(openFile).toHaveBeenCalledExactlyOnceWith(threadRef, "/elsewhere/b.md", 9);
+  });
+});
+
 describe("ChatMarkdown skill chips", () => {
   it("shows the skill's details and opens its instructions", async () => {
     setup();
@@ -543,6 +566,8 @@ describe("ChatMarkdown Windows file links", () => {
       expect(container.innerHTML).not.toContain("javascript:");
       expect(container.innerHTML).not.toContain("d:alert");
       expect(fileHrefs(container)).toEqual([]);
+      expect(container.querySelector("a")).toBeNull();
+      expect(container.textContent).toBe("unsafe and unknown");
     }
   });
 });

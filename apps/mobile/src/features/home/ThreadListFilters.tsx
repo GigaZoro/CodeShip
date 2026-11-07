@@ -145,6 +145,7 @@ export function ThreadListFilters(
           accessibilityRole="button"
           accessibilityLabel={t("Reset thread filters")}
           className="h-8 w-8 items-center justify-center"
+          hitSlop={6}
           onPress={() => {
             props.onEnvironmentChange(null);
             props.onProjectChange(null);

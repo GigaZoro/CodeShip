@@ -56,10 +56,14 @@ export function setupProjectScript(scripts: readonly ProjectScript[]): ProjectSc
   return scripts.find((script) => script.runOnWorktreeCreate) ?? null;
 }
 
-export function projectScriptMenuLabel(script: ProjectScript): string {
+/** Clients pass translated role labels; this module has no translator. */
+export function projectScriptMenuLabel(
+  script: ProjectScript,
+  roleLabels: { readonly setup: string; readonly settle: string },
+): string {
   const roles = [
-    ...(script.runOnWorktreeCreate ? ["setup"] : []),
-    ...(script.runOnSettle ? ["on settle"] : []),
+    ...(script.runOnWorktreeCreate ? [roleLabels.setup] : []),
+    ...(script.runOnSettle ? [roleLabels.settle] : []),
   ];
   return roles.length === 0 ? script.name : `${script.name} (${roles.join(", ")})`;
 }

@@ -9,6 +9,5 @@ export function useThreadHeaderOptions(
     // Android renders header actions as children, not native item factories.
     optionsVersion: [],
     sidebar: true,
-    fallback: null,
   };
 }

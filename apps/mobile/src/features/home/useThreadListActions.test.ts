@@ -38,6 +38,7 @@ const state = vi.hoisted(() => ({
   }[],
   afterRequest: undefined as (() => void) | undefined,
   heldActions: new Map<string, Promise<void>>(),
+  screenReaderChanged: undefined as ((enabled: boolean) => void) | undefined,
 }));
 
 vi.mock("react", () => ({
@@ -45,6 +46,13 @@ vi.mock("react", () => ({
   useRef: (current: unknown) => ({ current }),
 }));
 vi.mock("react-native", () => ({
+  AccessibilityInfo: {
+    addEventListener: (_event: string, listener: (enabled: boolean) => void) => {
+      state.screenReaderChanged = listener;
+      return { remove: () => {} };
+    },
+    isScreenReaderEnabled: async () => false,
+  },
   Alert: {
     alert: (title: string, _message: string, buttons?: { text: string; onPress?: () => void }[]) =>
       state.alerts.push({ title, buttons }),
@@ -579,6 +587,22 @@ describe("thread action undo", () => {
     expect(readThreadUndoNotice()).toBeNull();
     await undo();
     expect(state.requests.map(({ action }) => action)).toEqual(["unpin"]);
+  });
+
+  it("keeps undo until it is used while a screen reader is on", async () => {
+    vi.useFakeTimers();
+    state.screenReaderChanged!(true);
+    try {
+      await useThreadListActions().unpinThread(makeThread());
+      vi.advanceTimersByTime(60_000);
+      expect(readThreadUndoNotice()?.action).toBe("Unpinned");
+
+      state.screenReaderChanged!(false);
+      vi.advanceTimersByTime(5_000);
+      expect(readThreadUndoNotice()).toBeNull();
+    } finally {
+      state.screenReaderChanged!(false);
+    }
   });
 
   // regression: #21401 restore archive and thread action undo

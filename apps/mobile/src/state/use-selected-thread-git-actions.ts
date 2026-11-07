@@ -202,14 +202,19 @@ export function useSelectedThreadGitActions() {
       const error = Cause.squash(result.cause);
       const message = error instanceof Error ? error.message : t("Git action failed.");
       setPendingConnectionError(message);
-      showGitActionResult({ type: "error", title: t("Git action failed"), description: message });
+      showGitActionResult(target, {
+        type: "error",
+        title: t("Git action failed"),
+        description: message,
+      });
       return null;
     }
     return result.value;
   };
 
   const refreshSelectedThreadBranches = async (): Promise<ReadonlyArray<VcsRef> | null> => {
-    if (branchTarget.environmentId === null || branchTarget.cwd === null) return null;
+    if (branchTarget.environmentId === null || branchTarget.cwd === null || !selectedThreadCwd)
+      return null;
     const result = await readRefs({
       environmentId: branchTarget.environmentId,
       input: { cwd: branchTarget.cwd, limit: 100, refresh: true },
@@ -218,7 +223,10 @@ export function useSelectedThreadGitActions() {
       const error = Cause.squash(result.cause);
       const message = error instanceof Error ? error.message : t("Failed to refresh branches.");
       setPendingConnectionError(message);
-      showGitActionResult({ type: "error", title: t("Git action failed"), description: message });
+      showGitActionResult(
+        { environmentId: branchTarget.environmentId, cwd: selectedThreadCwd },
+        { type: "error", title: t("Git action failed"), description: message },
+      );
       return null;
     }
     setPendingConnectionError(null);
@@ -345,13 +353,16 @@ export function useSelectedThreadGitActions() {
           return result;
         }
         await refreshSelectedThreadGitStatus({ quiet: true, cwd });
-        showGitActionResult({
-          type: "success",
-          title:
-            result.value.status === "skipped_up_to_date"
-              ? t("Already up to date")
-              : t("Pulled latest on {ref}", { ref: result.value.refName }),
-        });
+        showGitActionResult(
+          { environmentId: thread.environmentId, cwd },
+          {
+            type: "success",
+            title:
+              result.value.status === "skipped_up_to_date"
+                ? t("Already up to date")
+                : t("Pulled latest on {ref}", { ref: result.value.refName }),
+          },
+        );
         return result;
       },
     );
@@ -392,12 +403,16 @@ export function useSelectedThreadGitActions() {
         } else {
           await refreshSelectedThreadGitStatus({ quiet: true, cwd });
         }
-        showGitActionResult({
-          type: "success",
-          title: result.value.toast.title,
-          description: result.value.toast.description,
-          prUrl: result.value.toast.cta.kind === "open_pr" ? result.value.toast.cta.url : undefined,
-        });
+        showGitActionResult(
+          { environmentId: thread.environmentId, cwd },
+          {
+            type: "success",
+            title: result.value.toast.title,
+            description: result.value.toast.description,
+            prUrl:
+              result.value.toast.cta.kind === "open_pr" ? result.value.toast.cta.url : undefined,
+          },
+        );
         return result;
       },
       { managedExternally: true, changesThreadBranch: input.featureBranch === true },

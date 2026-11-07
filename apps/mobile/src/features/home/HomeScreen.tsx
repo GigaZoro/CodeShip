@@ -38,6 +38,7 @@ import {
   ANDROID_READING_MAX_WIDTH,
   deriveCenteredContentHorizontalPadding,
 } from "../../lib/layout";
+import { AppText as Text } from "../../components/ui/AppText";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { FloatingActionButton } from "../../components/ui/FloatingActionButton";
 import type { WorkspaceEnvironment, WorkspaceState } from "../../state/workspaceModel";
@@ -49,7 +50,6 @@ import {
   useNativeColumnLayoutMetrics,
   useNativeLayoutMetrics,
 } from "../../native/native-layout-metrics";
-import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { useNativeWorkspaceColumnsSupported } from "../../native/NativeWorkspaceColumns";
 import { useThreadSearch } from "../../state/queries";
 import { requestThreadMessageJump } from "../threads/threadMessageJump";
@@ -94,6 +94,7 @@ import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
 import {
   buildHomeProjectScopes,
   buildHomeThreadListGrouping,
+  deriveHomeEmptyState,
   findHomeProjectScope,
   homeFolderNewThreadTargets,
   sortHomeProjectScopes,
@@ -159,73 +160,6 @@ const ESTIMATED_THREAD_LIST_V2_ROW_HEIGHT = 72;
 // swipe-row-activation), so render further ahead: a fast fling then reaches
 // rows that are already built instead of rows still being rebuilt.
 const THREAD_LIST_V2_DRAW_DISTANCE = 1_000;
-
-function deriveEmptyState(props: {
-  readonly catalogState: WorkspaceState;
-  readonly projectCount: number;
-}): { readonly title: string; readonly detail: string; readonly loading: boolean } {
-  const { catalogState } = props;
-  if (catalogState.isLoadingConnections) {
-    return {
-      title: t("Loading environments"),
-      detail: t("Checking saved environments on this device."),
-      loading: true,
-    };
-  }
-
-  if (!catalogState.hasConnections) {
-    return {
-      title: t("No environments connected"),
-      detail: t("Add an environment to load projects and start coding sessions."),
-      loading: false,
-    };
-  }
-
-  if (
-    (catalogState.connectionState === "available" ||
-      catalogState.connectionState === "offline" ||
-      catalogState.connectionState === "error" ||
-      catalogState.connectionState === "unsupported") &&
-    !catalogState.hasLoadedShellSnapshot
-  ) {
-    return {
-      title:
-        catalogState.connectionState === "unsupported"
-          ? t("Client not supported")
-          : t("Environment unavailable"),
-      detail:
-        catalogState.connectionError ??
-        t("The saved environment is offline. Check the URL or start the environment, then retry."),
-      loading: false,
-    };
-  }
-
-  if (
-    catalogState.hasConnectingEnvironment &&
-    !catalogState.hasLoadedShellSnapshot &&
-    catalogState.connectionError === null
-  ) {
-    return {
-      title: t("Connecting to environment"),
-      detail: t("Loading projects and threads from the saved environment."),
-      loading: true,
-    };
-  }
-
-  if (props.projectCount === 0 && catalogState.hasLoadedShellSnapshot) {
-    return {
-      title: t("No projects found"),
-      detail: t("The connected environment did not report any projects."),
-      loading: false,
-    };
-  }
-
-  return {
-    title: t("No threads yet"),
-    detail: t("Create a task to start a new coding runtime in one of your connected projects."),
-    loading: false,
-  };
-}
 
 function HomeTopContentSpacer() {
   return <View className="h-4" />;
@@ -763,65 +697,23 @@ export function HomeScreen(props: HomeScreenProps) {
       ? null
       : (props.savedConnectionsById[props.selectedEnvironmentId]?.environmentLabel ??
         t("this environment"));
-  const emptyState = deriveEmptyState({
-    catalogState: props.catalogState,
-    projectCount: props.projects.length,
-  });
-
-  if (!hasAnyThreads) {
-    return (
-      <View className={containerClassName}>
-        <View
-          className={cn(
-            "flex-1 items-center justify-center px-8",
-            contentBackground,
-            Platform.OS === "android" && "overflow-hidden rounded-t-[28px]",
-          )}
-          style={{
-            paddingBottom: Platform.OS === "ios" ? iosBottomClearance : Math.max(insets.bottom, 24),
-            paddingTop: NATIVE_LIQUID_GLASS_SUPPORTED ? insets.top + 72 : 0,
-            paddingLeft: 32 + (contentSideInsets?.left ?? 0),
-            paddingRight: 32 + (contentSideInsets?.right ?? 0),
-          }}
-        >
-          <View className="w-full max-w-[430px]">
-            <EmptyState
-              title={emptyState.title}
-              detail={emptyState.detail}
-              actionLabel={
-                !props.catalogState.hasReadyEnvironment ? t("Add environment") : undefined
-              }
-              onAction={!props.catalogState.hasReadyEnvironment ? props.onAddConnection : undefined}
-              action={
-                Platform.OS === "android" && !props.catalogState.hasReadyEnvironment ? (
-                  <FloatingActionButton
-                    label={t("Add environment")}
-                    icon="plus"
-                    variant="extended"
-                    tone="primary"
-                    onPress={props.onAddConnection}
-                  />
-                ) : undefined
-              }
-              variant="plain"
-            />
-            {emptyState.loading ? (
-              <View className="mt-4 items-center">
-                <AppActivityIndicator colorClassName="accent-icon-muted" />
-              </View>
-            ) : null}
-          </View>
-        </View>
-      </View>
-    );
-  }
-
-  const listHeader = Platform.OS === "ios" ? undefined : <HomeTopContentSpacer />;
+  const resetFilters = () => {
+    props.onEnvironmentChange(null);
+    props.onProjectChange(null);
+  };
+  const emptyState = hasAnyThreads
+    ? null
+    : deriveHomeEmptyState({
+        catalogState: props.catalogState,
+        projectCount: props.projects.length,
+      });
+  const plainEmpty = Platform.OS === "android" ? "plain" : undefined;
 
   const v2ListHeader = (
     <>
-      {listHeader}
-      {Platform.OS === "ios" && workspace ? (
+      {Platform.OS === "ios" ? null : <HomeTopContentSpacer />}
+      {/* The chips are iPhone's only touch way into Archived and Artifacts. */}
+      {Platform.OS === "ios" && workspace && props.catalogState.hasConnections ? (
         <ThreadListFilters
           gutter={primaryColumn ? 8 : 0}
           environments={props.environments}
@@ -854,45 +746,81 @@ export function HomeScreen(props: HomeScreenProps) {
     </>
   );
 
-  const v2ListEmpty =
-    hasSearchQuery && threadSearch.isPending ? undefined : hasSearchQuery ? (
-      <EmptyState
-        title={t("No results")}
-        detail={t('No threads matching "{query}".', { query: props.searchQuery })}
-        variant={Platform.OS === "android" ? "plain" : undefined}
-      />
-    ) : v2ScopedProjectGroup !== null ? (
-      <EmptyState
-        title={t("No threads in {name}", { name: v2ScopedProjectGroup.title })}
-        detail={t("Choose another project or create a new task.")}
-        variant={Platform.OS === "android" ? "plain" : undefined}
-      />
-    ) : selectedEnvironmentLabel ? (
-      <EmptyState
-        title={t("No threads in {name}", { name: selectedEnvironmentLabel })}
-        detail={t("Choose another environment or create a new task.")}
-        variant={Platform.OS === "android" ? "plain" : undefined}
-      />
-    ) : (
-      <EmptyState
-        title={t("No threads yet")}
-        detail={t("Create a task to start a new coding session.")}
-        variant={Platform.OS === "android" ? "plain" : undefined}
-      />
-    );
-
-  if (Platform.OS === "android" && threadListV2Items.length === 0) {
-    return (
-      <View className="flex-1 bg-header">
-        <View
-          className="flex-1 items-center justify-center overflow-hidden rounded-t-[28px] bg-screen px-4"
-          style={{ paddingBottom: insets.bottom }}
-        >
-          {v2ListEmpty}
-        </View>
+  const v2ListEmpty = emptyState ? (
+    <View className="flex-1 items-center justify-center px-8">
+      <View className="w-full max-w-[430px]">
+        <EmptyState
+          title={emptyState.title}
+          detail={emptyState.detail}
+          {...(emptyState.action === "retry"
+            ? {
+                actionLabel: t("Retry"),
+                onAction: () => void machineReconnect.reconnect(),
+              }
+            : emptyState.action === "add-environment"
+              ? Platform.OS === "android"
+                ? {
+                    action: (
+                      <FloatingActionButton
+                        label={t("Add environment")}
+                        icon="plus"
+                        variant="extended"
+                        tone="primary"
+                        onPress={props.onAddConnection}
+                      />
+                    ),
+                  }
+                : { actionLabel: t("Add environment"), onAction: props.onAddConnection }
+              : {})}
+          variant="plain"
+        />
+        {emptyState.loading || machineReconnect.refreshing ? (
+          <View className="mt-4 items-center">
+            <AppActivityIndicator colorClassName="accent-icon-muted" />
+          </View>
+        ) : null}
       </View>
-    );
-  }
+    </View>
+  ) : (
+    <View className={Platform.OS === "android" ? "flex-1 justify-center px-4" : undefined}>
+      {hasSearchQuery && threadSearch.isPending ? (
+        <View className="items-center gap-3 px-8 py-8">
+          <AppActivityIndicator colorClassName="accent-icon-muted" />
+          <Text className="text-center text-sm text-foreground-muted">
+            {t("Searching thread messages…")}
+          </Text>
+        </View>
+      ) : hasSearchQuery ? (
+        <EmptyState
+          title={t("No results")}
+          detail={t('No threads matching "{query}".', { query: props.searchQuery })}
+          variant={plainEmpty}
+        />
+      ) : v2ScopedProjectGroup !== null ? (
+        <EmptyState
+          title={t("No threads in {name}", { name: v2ScopedProjectGroup.title })}
+          detail={t("Choose another project or create a new task.")}
+          actionLabel={t("Show all threads")}
+          onAction={resetFilters}
+          variant={plainEmpty}
+        />
+      ) : selectedEnvironmentLabel ? (
+        <EmptyState
+          title={t("No threads in {name}", { name: selectedEnvironmentLabel })}
+          detail={t("Choose another environment or create a new task.")}
+          actionLabel={t("Show all threads")}
+          onAction={resetFilters}
+          variant={plainEmpty}
+        />
+      ) : (
+        <EmptyState
+          title={t("No threads yet")}
+          detail={t("Create a task to start a new coding session.")}
+          variant={plainEmpty}
+        />
+      )}
+    </View>
+  );
 
   return (
     <View className={containerClassName}>
@@ -961,6 +889,8 @@ export function HomeScreen(props: HomeScreenProps) {
               {...scrollGateHandlers}
               scrollEventThrottle={16}
               contentContainerStyle={{
+                // Lets an empty state fill the screen and centre itself.
+                flexGrow: threadListV2Items.length === 0 ? 1 : undefined,
                 paddingLeft:
                   (contentSideInsets?.left ?? 0) + (primaryColumn ? 8 : 0) + androidListGutter,
                 paddingRight:

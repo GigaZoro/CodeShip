@@ -12,6 +12,9 @@ import {
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
+import { parseKeybindingShortcut } from "@t3tools/shared/keybindings";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/reactivity";
 import {
   BugIcon,
   FlaskConicalIcon,
@@ -26,7 +29,13 @@ import {
   keybindingValueForCommand,
   decodeProjectScriptKeybindingRule,
 } from "~/lib/projectScriptKeybindings";
-import { keybindingFromKeyboardEvent } from "~/components/settings/KeybindingsSettings.logic";
+import {
+  buildKeybindingRows,
+  keybindingConflictLabels,
+  keybindingFromKeyboardEvent,
+} from "~/components/settings/KeybindingsSettings.logic";
+import { formatShortcutLabel } from "~/keybindings";
+import { isMacPlatform } from "~/lib/utils";
 import { commandForProjectScript, nextProjectScriptId } from "~/projectScripts";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { useComposerMenuState } from "./chat/useComposerMenuState";
@@ -94,6 +103,31 @@ export interface NewProjectScriptInput {
 
 export type ProjectScriptActionResult = AtomCommandResult<void, unknown>;
 
+/** The action itself was saved, so saving again must edit it rather than add a copy. */
+export class ProjectScriptShortcutError extends Error {
+  readonly scriptId: string;
+
+  constructor(scriptId: string, reason: string) {
+    super(t("The action was saved, but its shortcut was not: {reason}", { reason }));
+    this.scriptId = scriptId;
+  }
+}
+
+export function projectScriptShortcutFailure(
+  scriptId: string,
+  failure: { readonly cause: Cause.Cause<unknown> },
+): ProjectScriptActionResult {
+  const error = squashAtomCommandFailure(failure);
+  return AsyncResult.failure(
+    Cause.fail(
+      new ProjectScriptShortcutError(
+        scriptId,
+        error instanceof Error ? error.message : t("An unexpected error occurred."),
+      ),
+    ),
+  );
+}
+
 export const EMPTY_PROJECT_SCRIPT_INPUT: NewProjectScriptInput = {
   name: "",
   command: "",
@@ -110,6 +144,16 @@ export interface ProjectScriptEditorRequest {
   scriptId: string | null;
   initial: NewProjectScriptInput;
   error?: string;
+}
+
+interface EditorError {
+  readonly message: string;
+  readonly field: "name" | "command" | "keybinding" | null;
+}
+
+interface SavedScript {
+  readonly id: string;
+  readonly name: string;
 }
 
 export function editorRequestForScript(
@@ -137,6 +181,7 @@ export function ProjectScriptEditorDialog({
   editScope = AuthOrchestrationOperateScope,
   request,
   scripts,
+  keybindings,
   onSubmit,
   onDelete,
   onClose,
@@ -145,6 +190,7 @@ export function ProjectScriptEditorDialog({
   editScope?: typeof AuthOrchestrationOperateScope | typeof AuthSettingsWriteScope;
   request: ProjectScriptEditorRequest | null;
   scripts: ReadonlyArray<ProjectScript>;
+  keybindings: ResolvedKeybindingsConfig;
   onSubmit: (
     scriptId: string | null,
     input: NewProjectScriptInput,
@@ -153,20 +199,24 @@ export function ProjectScriptEditorDialog({
   onClose: () => void;
 }) {
   const canEditActions = useEnvironmentScope(environmentId, editScope);
-  // Scope errors by request so late saves cannot overwrite a newer request's error.
+  // Scope errors and saves by request so a late save cannot touch a newer request.
   const [errorState, setErrorState] = useState<{
     readonly request: ProjectScriptEditorRequest;
-    readonly message: string | null;
+    readonly error: EditorError | null;
   } | null>(null);
-  const validationError =
+  const validationError: EditorError | null =
     request === null
       ? null
       : errorState?.request === request
-        ? errorState.message
-        : (request.error ?? null);
-  const setValidationError = (message: string | null) => {
-    if (request !== null) setErrorState({ request, message });
+        ? errorState.error
+        : request.error
+          ? { message: request.error, field: null }
+          : null;
+  const setValidationError = (error: EditorError | null) => {
+    if (request !== null) setErrorState({ request, error });
   };
+  const [savingRequest, setSavingRequest] = useState<ProjectScriptEditorRequest | null>(null);
+  const isSaving = request !== null && savingRequest === request;
   // The last opened request stays shown while the dialog animates closed. Each
   // new request mounts a fresh form, which drops the previous request's save.
   const [shown, setShown] = useState<{
@@ -177,14 +227,15 @@ export function ProjectScriptEditorDialog({
     setShown({ request, key: (shown?.key ?? 0) + 1 });
   }
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useComposerMenuState(!canEditActions);
-  const [deleteName, setDeleteName] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<SavedScript | null>(null);
 
   return (
     <>
       <Dialog
         open={request !== null}
+        disablePointerDismissal
         onOpenChange={(open) => {
-          if (!open) onClose();
+          if (!open && !isSaving) onClose();
         }}
       >
         {/* The form owns its fields so a keystroke re-renders it, not the dialog chrome. */}
@@ -196,11 +247,18 @@ export function ProjectScriptEditorDialog({
               editScope={editScope}
               request={shown.request}
               scripts={scripts}
+              keybindings={keybindings}
+              isSaving={savingRequest === shown.request}
               validationError={validationError}
               onValidationError={setValidationError}
+              onSavingChange={(target, saving) =>
+                setSavingRequest((current) =>
+                  saving ? target : current === target ? null : current,
+                )
+              }
               onSubmit={onSubmit}
-              onRequestDelete={(name) => {
-                setDeleteName(name);
+              onRequestDelete={(script) => {
+                setDeleteTarget(script);
                 setDeleteConfirmOpen(true);
               }}
               onClose={onClose}
@@ -213,7 +271,7 @@ export function ProjectScriptEditorDialog({
         <AlertDialogPopup>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {t('Delete action "{name}"?', { name: deleteName })}
+              {t('Delete action "{name}"?', { name: deleteTarget?.name ?? "" })}
             </AlertDialogTitle>
             <AlertDialogDescription>{t("This action cannot be undone.")}</AlertDialogDescription>
           </AlertDialogHeader>
@@ -223,14 +281,17 @@ export function ProjectScriptEditorDialog({
               variant="destructive"
               disabled={!canEditActions}
               onClick={() => {
-                if (!request?.scriptId) return;
+                if (!deleteTarget) return;
                 if (!readEnvironmentScope(environmentId, editScope)) {
-                  setValidationError(t("This connection cannot change project actions."));
+                  setValidationError({
+                    message: t("This connection cannot change project actions."),
+                    field: null,
+                  });
                   return;
                 }
                 setDeleteConfirmOpen(false);
                 onClose();
-                onDelete(request.scriptId);
+                onDelete(deleteTarget.id);
               }}
             >
               {t("Delete action")}
@@ -242,13 +303,32 @@ export function ProjectScriptEditorDialog({
   );
 }
 
+function FieldError({ id, error }: { id: string; error: EditorError | null }) {
+  if (!error) return null;
+  return (
+    <p id={id} role="alert" className="text-sm text-destructive-foreground">
+      {error.message}
+    </p>
+  );
+}
+
+function conflictMessage(labels: ReadonlyArray<string>): string | null {
+  if (labels.length === 0) return null;
+  return labels.length > 3
+    ? t("Conflicts with {commands}, and more.", { commands: labels.slice(0, 3).join(", ") })
+    : t("Conflicts with {commands}.", { commands: labels.join(", ") });
+}
+
 function ProjectScriptEditorForm({
   environmentId,
   editScope,
   request,
   scripts,
+  keybindings,
+  isSaving,
   validationError,
   onValidationError: setValidationError,
+  onSavingChange,
   onSubmit,
   onRequestDelete,
   onClose,
@@ -257,18 +337,24 @@ function ProjectScriptEditorForm({
   editScope: typeof AuthOrchestrationOperateScope | typeof AuthSettingsWriteScope;
   request: ProjectScriptEditorRequest;
   scripts: ReadonlyArray<ProjectScript>;
-  validationError: string | null;
-  onValidationError: (error: string | null) => void;
+  keybindings: ResolvedKeybindingsConfig;
+  isSaving: boolean;
+  validationError: EditorError | null;
+  onValidationError: (error: EditorError | null) => void;
+  onSavingChange: (request: ProjectScriptEditorRequest, saving: boolean) => void;
   onSubmit: (
     scriptId: string | null,
     input: NewProjectScriptInput,
   ) => Promise<ProjectScriptActionResult>;
-  onRequestDelete: (name: string) => void;
+  onRequestDelete: (script: SavedScript) => void;
   onClose: () => void;
 }) {
   const canEditActions = useEnvironmentScope(environmentId, editScope);
   const canWriteSettings = useEnvironmentScope(environmentId, AuthSettingsWriteScope);
   const formId = React.useId();
+  const [savedScript, setSavedScript] = useState<SavedScript | null>(
+    request.scriptId === null ? null : { id: request.scriptId, name: request.initial.name },
+  );
   const [name, setName] = useState(request.initial.name);
   const [command, setCommand] = useState(request.initial.command);
   const [icon, setIcon] = useState<ProjectScriptIcon>(request.initial.icon);
@@ -281,7 +367,6 @@ function ProjectScriptEditorForm({
   const [keybinding, setKeybinding] = useState(request.initial.keybinding ?? "");
   const [previewUrl, setPreviewUrl] = useState(request.initial.previewUrl ?? "");
   const [autoOpenPreview, setAutoOpenPreview] = useState(request.initial.autoOpenPreview);
-  const [isSaving, setIsSaving] = useState(false);
   const pendingSubmissionRef = useRef<object | null>(null);
   // A save that settles after this form is replaced must not close or error
   // the request that replaced it.
@@ -293,66 +378,127 @@ function ProjectScriptEditorForm({
     [],
   );
 
-  const isEditing = request.scriptId != null;
+  const scriptId = savedScript?.id ?? null;
+  const isEditing = scriptId !== null;
+  const changesKeybinding =
+    (keybinding.trim() || null) !== (request.initial.keybinding?.trim() || null);
+  const ownCommand = scriptId === null ? null : commandForProjectScript(scriptId);
+  const keybindingRows = buildKeybindingRows(keybindings);
+  const keybindingConflict = changesKeybinding
+    ? conflictMessage(
+        keybindingConflictLabels(
+          keybindingRows.filter((row) => row.command !== ownCommand),
+          { rowId: "", key: keybinding, when: "" },
+        ),
+      )
+    : null;
+  const keybindingError: EditorError | null = keybindingConflict
+    ? { message: keybindingConflict, field: "keybinding" }
+    : validationError?.field === "keybinding"
+      ? validationError
+      : null;
+  const fieldError = (field: EditorError["field"]) =>
+    validationError?.field === field ? validationError : null;
+  const keybindingShortcut = keybinding ? parseKeybindingShortcut(keybinding) : null;
+  const setupHolder = scripts.find(
+    (script) => script.id !== scriptId && script.runOnWorktreeCreate,
+  );
+  const settleHolder = scripts.find((script) => script.id !== scriptId && script.runOnSettle);
+  const errorId = (field: string) => `${formId}-${field}-error`;
+
+  const clearError = (field: EditorError["field"]) => {
+    if (validationError?.field === field) setValidationError(null);
+  };
 
   const close = () => {
     pendingSubmissionRef.current = null;
-    setIsSaving(false);
+    onSavingChange(request, false);
     setIconPickerOpen(false);
     onClose();
   };
 
   const captureKeybinding = (event: KeyboardEvent<HTMLInputElement>) => {
+    const hasModifier = event.metaKey || event.ctrlKey || event.altKey;
+    // Tab moves focus, Escape closes the dialog and Enter saves, as in every other field.
+    if (event.key === "Tab" || event.key === "Escape") return;
+    if (event.key === "Enter" && !hasModifier && !event.shiftKey) return;
+    event.preventDefault();
     if (!readEnvironmentScope(environmentId, editScope)) return;
     if (!readEnvironmentScope(environmentId, AuthSettingsWriteScope)) return;
-    if (event.key === "Tab") return;
-    event.preventDefault();
-    if (event.key === "Backspace" || event.key === "Delete") {
+    if (!hasModifier && (event.key === "Backspace" || event.key === "Delete")) {
       setKeybinding("");
+      clearError("keybinding");
       return;
     }
     const next = keybindingFromKeyboardEvent(event, navigator.platform);
     if (!next) return;
+    if (!hasModifier && !/^F\d{1,2}$/.test(event.key)) {
+      setValidationError({
+        message: t("Add a modifier key, such as {modifier} or Alt.", {
+          modifier: isMacPlatform(navigator.platform) ? "⌘" : "Ctrl",
+        }),
+        field: "keybinding",
+      });
+      return;
+    }
     setKeybinding(next);
+    clearError("keybinding");
   };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (pendingSubmissionRef.current !== null) return;
     if (!readEnvironmentScope(environmentId, editScope)) {
-      setValidationError(t("This connection cannot change project actions."));
+      setValidationError({
+        message: t("This connection cannot change project actions."),
+        field: null,
+      });
       return;
     }
-    const changesKeybinding =
-      (keybinding.trim() || null) !== (request.initial.keybinding?.trim() || null);
     const canChangeKeybinding = readEnvironmentScope(environmentId, AuthSettingsWriteScope);
     if (changesKeybinding && !canChangeKeybinding) {
-      setValidationError(t("This connection cannot change keyboard shortcuts."));
+      setValidationError({
+        message: t("This connection cannot change keyboard shortcuts."),
+        field: "keybinding",
+      });
       return;
     }
     const trimmedName = name.trim();
     const trimmedCommand = command.trim();
     if (trimmedName.length === 0) {
-      setValidationError(t("Name is required."));
+      setValidationError({ message: t("Name is required."), field: "name" });
+      return;
+    }
+    if (
+      scripts.some(
+        (script) =>
+          script.id !== scriptId && script.name.trim().toLowerCase() === trimmedName.toLowerCase(),
+      )
+    ) {
+      setValidationError({
+        message: t('An action named "{name}" already exists.', { name: trimmedName }),
+        field: "name",
+      });
       return;
     }
     if (trimmedCommand.length === 0) {
-      setValidationError(t("Command is required."));
+      setValidationError({ message: t("Command is required."), field: "command" });
       return;
     }
+    if (keybindingConflict) return;
 
     setValidationError(null);
     let payload: NewProjectScriptInput;
     try {
-      const scriptIdForValidation =
-        request.scriptId ??
-        nextProjectScriptId(
-          trimmedName,
-          scripts.map((script) => script.id),
-        );
       const keybindingRule = decodeProjectScriptKeybindingRule({
         keybinding,
-        command: commandForProjectScript(scriptIdForValidation),
+        command: commandForProjectScript(
+          scriptId ??
+            nextProjectScriptId(
+              trimmedName,
+              scripts.map((script) => script.id),
+            ),
+        ),
       });
       const trimmedPreviewUrl = previewUrl.trim();
       payload = {
@@ -362,30 +508,37 @@ function ProjectScriptEditorForm({
         runOnWorktreeCreate,
         waitForSetup: runOnWorktreeCreate && waitForSetup,
         runOnSettle,
-        ...((request.scriptId === null && canChangeKeybinding) || changesKeybinding
+        ...((scriptId === null && canChangeKeybinding) || changesKeybinding
           ? { keybinding: keybindingRule?.key ?? null }
           : {}),
         previewUrl: trimmedPreviewUrl.length > 0 ? trimmedPreviewUrl : null,
         autoOpenPreview: trimmedPreviewUrl.length > 0 ? autoOpenPreview : false,
       } satisfies NewProjectScriptInput;
     } catch (error) {
-      setValidationError(error instanceof Error ? error.message : t("Failed to save action."));
+      setValidationError({
+        message: error instanceof Error ? error.message : t("Failed to save action."),
+        field: "keybinding",
+      });
       return;
     }
 
     const submission = {};
     pendingSubmissionRef.current = submission;
-    setIsSaving(true);
+    onSavingChange(request, true);
     setIconPickerOpen(false);
     try {
-      const result = await onSubmit(request.scriptId, payload);
+      const result = await onSubmit(scriptId, payload);
       if (pendingSubmissionRef.current === submission) {
         if (result._tag === "Failure") {
           if (!isAtomCommandInterrupted(result)) {
             const error = squashAtomCommandFailure(result);
-            setValidationError(
-              error instanceof Error ? error.message : t("Failed to save action."),
-            );
+            if (error instanceof ProjectScriptShortcutError) {
+              setSavedScript({ id: error.scriptId, name: payload.name });
+            }
+            setValidationError({
+              message: error instanceof Error ? error.message : t("Failed to save action."),
+              field: error instanceof ProjectScriptShortcutError ? "keybinding" : null,
+            });
           }
         } else {
           close();
@@ -393,24 +546,34 @@ function ProjectScriptEditorForm({
       }
     } catch (error) {
       if (pendingSubmissionRef.current === submission) {
-        setValidationError(error instanceof Error ? error.message : t("Failed to save action."));
+        setValidationError({
+          message: error instanceof Error ? error.message : t("Failed to save action."),
+          field: null,
+        });
       }
     }
     if (pendingSubmissionRef.current === submission) {
       pendingSubmissionRef.current = null;
-      setIsSaving(false);
+      onSavingChange(request, false);
     }
   };
 
   return (
     <>
       <DialogHeader>
-        <DialogTitle>{isEditing ? t("Edit Action") : t("Add Action")}</DialogTitle>
+        <DialogTitle>{isEditing ? t("Edit action") : t("Add action")}</DialogTitle>
         <DialogDescription>
-          {t("Actions are project-scoped commands you can run from the top bar or keybindings.")}
+          {t(
+            "Commands that run in this project's checkout or its worktree, with optional shortcuts.",
+          )}
         </DialogDescription>
       </DialogHeader>
       <DialogPanel>
+        {!canEditActions && (
+          <p className="mb-4 text-sm text-muted-foreground">
+            {t("This connection cannot change project actions.")}
+          </p>
+        )}
         <form id={formId} onSubmit={submit}>
           <fieldset className="space-y-4" disabled={isSaving || !canEditActions}>
             <div className="space-y-1.5">
@@ -460,9 +623,15 @@ function ProjectScriptEditorForm({
                   autoFocus
                   placeholder={t("Test")}
                   value={name}
-                  onChange={(event) => setName(event.target.value)}
+                  aria-invalid={fieldError("name") ? true : undefined}
+                  aria-describedby={fieldError("name") ? errorId("name") : undefined}
+                  onChange={(event) => {
+                    setName(event.target.value);
+                    clearError("name");
+                  }}
                 />
               </div>
+              <FieldError id={errorId("name")} error={fieldError("name")} />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="script-keybinding">{t("Keybinding")}</Label>
@@ -470,15 +639,20 @@ function ProjectScriptEditorForm({
                 disabled={!canWriteSettings}
                 id="script-keybinding"
                 placeholder={t("Press shortcut")}
-                value={keybinding}
+                value={keybindingShortcut ? formatShortcutLabel(keybindingShortcut) : keybinding}
                 readOnly
+                aria-invalid={keybindingError ? true : undefined}
+                aria-describedby={`${formId}-keybinding-hint${keybindingError ? ` ${errorId("keybinding")}` : ""}`}
                 onKeyDown={captureKeybinding}
               />
-              <p className="text-xs text-muted-foreground">
-                {tx(
-                  "Press a shortcut. Use {key} to clear. Shortcuts are environment-wide. Projects using the same action share its shortcut.",
-                  { key: <code>{"Backspace"}</code> },
-                )}
+              <FieldError id={errorId("keybinding")} error={keybindingError} />
+              <p id={`${formId}-keybinding-hint`} className="text-xs text-muted-foreground">
+                {canWriteSettings
+                  ? tx(
+                      "Press a shortcut. Use {key} to clear. Shortcuts are environment-wide. Projects using the same action share its shortcut.",
+                      { key: <code>{"Backspace"}</code> },
+                    )
+                  : t("This connection cannot change keyboard shortcuts.")}
               </p>
             </div>
             <div className="space-y-1.5">
@@ -487,8 +661,14 @@ function ProjectScriptEditorForm({
                 id="script-command"
                 placeholder={"bun test"}
                 value={command}
-                onChange={(event) => setCommand(event.target.value)}
+                aria-invalid={fieldError("command") ? true : undefined}
+                aria-describedby={fieldError("command") ? errorId("command") : undefined}
+                onChange={(event) => {
+                  setCommand(event.target.value);
+                  clearError("command");
+                }}
               />
+              <FieldError id={errorId("command")} error={fieldError("command")} />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="script-preview-url">{t("Preview URL (optional)")}</Label>
@@ -499,11 +679,20 @@ function ProjectScriptEditorForm({
                 onChange={(event) => setPreviewUrl(event.target.value)}
               />
               <p className="text-xs text-muted-foreground">
-                {t("Open this URL in the in-app preview when this action runs.")}
+                {t(
+                  "Open this URL in the in-app preview when this action runs. The preview is only in the desktop app.",
+                )}
               </p>
             </div>
             <label className="flex items-center justify-between gap-3 rounded-md border border-border/70 px-3 py-2 text-sm dark:border-transparent dark:bg-white/[0.035]">
-              <span>{t("Run automatically on worktree creation")}</span>
+              <span className="flex min-w-0 flex-col">
+                <span>{t("Run automatically on worktree creation")}</span>
+                {runOnWorktreeCreate && setupHolder ? (
+                  <span className="text-xs text-muted-foreground">
+                    {t("Replaces {name}", { name: setupHolder.name })}
+                  </span>
+                ) : null}
+              </span>
               <Switch
                 checked={runOnWorktreeCreate}
                 onCheckedChange={(checked) => setRunOnWorktreeCreate(Boolean(checked))}
@@ -522,7 +711,14 @@ function ProjectScriptEditorForm({
               />
             </label>
             <label className="flex items-center justify-between gap-3 rounded-md border border-border/70 px-3 py-2 text-sm dark:border-transparent dark:bg-white/[0.035]">
-              <span>{t("Run in the thread's worktree when the thread settles")}</span>
+              <span className="flex min-w-0 flex-col">
+                <span>{t("Run in the thread's worktree when the thread settles")}</span>
+                {runOnSettle && settleHolder ? (
+                  <span className="text-xs text-muted-foreground">
+                    {t("Replaces {name}", { name: settleHolder.name })}
+                  </span>
+                ) : null}
+              </span>
               <Switch
                 checked={runOnSettle}
                 onCheckedChange={(checked) => setRunOnSettle(Boolean(checked))}
@@ -540,25 +736,23 @@ function ProjectScriptEditorForm({
                 onCheckedChange={(checked) => setAutoOpenPreview(Boolean(checked))}
               />
             </label>
-            {validationError && (
-              <p className="text-sm text-destructive-foreground">{validationError}</p>
-            )}
+            <FieldError id={errorId("form")} error={fieldError(null)} />
           </fieldset>
         </form>
       </DialogPanel>
       <DialogFooter variant="bare">
-        {isEditing && (
+        {savedScript && (
           <Button
             type="button"
             variant="destructive-outline"
-            className="mr-auto"
+            className="sm:mr-auto"
             disabled={isSaving || !canEditActions}
-            onClick={() => onRequestDelete(name)}
+            onClick={() => onRequestDelete(savedScript)}
           >
             {t("Delete")}
           </Button>
         )}
-        <Button type="button" variant="outline" onClick={close}>
+        <Button type="button" variant="outline" disabled={isSaving} onClick={close}>
           {t("Cancel")}
         </Button>
         <Button form={formId} type="submit" disabled={isSaving || !canEditActions}>

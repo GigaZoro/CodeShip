@@ -8,7 +8,7 @@ import { useNativeWorkspaceColumnsSupported } from "../../native/NativeWorkspace
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
 import {
-  ThreadGitControls,
+  type ThreadGitControlsProps,
   useThreadGitCenterHeaderItems,
   useThreadGitRightHeaderItems,
 } from "./ThreadGitControls";
@@ -21,7 +21,7 @@ export function useThreadHeaderOptions(props: {
   readonly subtitle: string;
   readonly headerColor: string;
   readonly usesNativeHeaderGlass: boolean;
-  readonly gitControls: Parameters<typeof ThreadGitControls>[0];
+  readonly gitControls: ThreadGitControlsProps;
   readonly onReturnToThread?: () => void;
   readonly draft?: boolean;
 }) {
@@ -111,9 +111,5 @@ export function useThreadHeaderOptions(props: {
       gitStatus?.pr?.url,
     ],
     sidebar: false,
-    fallback:
-      !layout.usesSplitView && !props.usesNativeHeaderGlass ? (
-        <ThreadGitControls {...props.gitControls} showActionControls />
-      ) : null,
   };
 }

@@ -153,6 +153,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, { FadeIn, FadeInDown, type SharedValue } from "react-native-reanimated";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { IOS_NAV_BAR_HEIGHT } from "../../lib/layoutMetrics";
+import { minimumTouchSlop } from "../../lib/designTokens";
 import { FONT_FAMILIES } from "../../lib/fontFamilies";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
@@ -419,6 +420,13 @@ export interface ThreadFeedRewindActions {
   readonly onRequest: (request: ThreadRewindRequest) => void;
 }
 
+const USER_MESSAGE_ACTION_SIZE = 28;
+
+// Neighbouring targets grown by their slop would otherwise overlap and steal each other's taps.
+function replyActionGap(buttonSize: number): number {
+  return Math.max(4, 2 * minimumTouchSlop(buttonSize));
+}
+
 // Actions change with the screen; reading them here keeps every row from re-rendering with them.
 const ThreadFeedRewindContext = createContext<ThreadFeedRewindActions | null>(null);
 
@@ -443,7 +451,7 @@ function UserMessageCopyButton(props: {
       text={props.text}
       onCopy={props.onCopy}
       tintColor={props.tintColor}
-      buttonSize={28}
+      buttonSize={USER_MESSAGE_ACTION_SIZE}
       iconSize={13}
     />
   );
@@ -524,12 +532,9 @@ function AssistantForkButton(props: {
           })
           .finally(() => setBusy(false));
       }}
-      className="h-7 w-7 items-center justify-center disabled:opacity-40"
-      style={
-        Platform.OS === "android"
-          ? { width: props.buttonSize, height: props.buttonSize }
-          : undefined
-      }
+      hitSlop={minimumTouchSlop(props.buttonSize)}
+      className="items-center justify-center disabled:opacity-40"
+      style={{ width: props.buttonSize, height: props.buttonSize }}
     >
       {busy ? (
         <AppActivityIndicator size="small" />
@@ -577,12 +582,9 @@ function RewindButton(props: {
           retry: props.retry,
         })
       }
-      className={cn("h-7 w-7 items-center justify-center", blocked && !busy && "opacity-40")}
-      style={
-        Platform.OS === "android"
-          ? { width: props.buttonSize, height: props.buttonSize }
-          : undefined
-      }
+      hitSlop={minimumTouchSlop(props.buttonSize)}
+      className={cn("items-center justify-center", blocked && !busy && "opacity-40")}
+      style={{ width: props.buttonSize, height: props.buttonSize }}
     >
       {busy ? (
         <AppActivityIndicator size="small" />
@@ -2055,6 +2057,12 @@ function renderFeedEntry(
       isUser && !entry.pendingMessage
         ? props.rewindTargets.turnCountByUserMessageId.get(message.id)
         : undefined;
+    const canEditPendingMessage =
+      props.onEditPendingMessage !== null &&
+      entry.pendingMessage !== undefined &&
+      !entry.acknowledged &&
+      !entry.pendingMessage.creation &&
+      entry.pendingMessage.messageId !== props.dispatchingMessageId;
 
     if (isUser && props.workflowOpening?.messageId === message.id) {
       return (
@@ -2366,50 +2374,59 @@ function renderFeedEntry(
               <Text className="font-t3-medium text-xs tabular-nums text-foreground-secondary">
                 {entry.pendingMessage && !entry.acknowledged ? t("Pending") : timestampLabel}
               </Text>
-              {props.onEditPendingMessage !== null &&
-              entry.pendingMessage &&
-              !entry.acknowledged &&
-              !entry.pendingMessage.creation &&
-              entry.pendingMessage.messageId !== props.dispatchingMessageId ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={t("Edit pending message")}
-                  hitSlop={8}
-                  className="size-7 items-center justify-center"
-                  onPress={() => {
-                    if (entry.pendingMessage && props.onEditPendingMessage) {
-                      props.onEditPendingMessage(entry.pendingMessage);
-                    }
-                  }}
+              {canEditPendingMessage ||
+              editTurnCount !== undefined ||
+              presentation.text.trim().length > 0 ? (
+                <View
+                  className="flex-row items-center"
+                  style={{ gap: replyActionGap(USER_MESSAGE_ACTION_SIZE) }}
                 >
-                  <SymbolView name="pencil" size={14} tintColor={iconSubtleColor} />
-                </Pressable>
-              ) : null}
-              {editTurnCount !== undefined ? (
-                <RewindButton
-                  messageId={message.id}
-                  turnCount={editTurnCount}
-                  retry={false}
-                  iconColor={iconSubtleColor}
-                  buttonSize={28}
-                  iconSize={13}
-                />
-              ) : null}
-              {presentation.text.trim().length > 0 ? (
-                <UserMessageCopyButton
-                  text={presentation.text}
-                  onCopy={
-                    message.context && presentation.attribution !== "guest"
-                      ? () =>
-                          writeComposerContextClipboard(message.text, {
-                            version: 1,
-                            source: { environmentId: props.environmentId, messageId: message.id },
-                            records: message.context!.records,
-                          })
-                      : undefined
-                  }
-                  tintColor={iconSubtleColor}
-                />
+                  {canEditPendingMessage ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={t("Edit pending message")}
+                      hitSlop={minimumTouchSlop(USER_MESSAGE_ACTION_SIZE)}
+                      className="items-center justify-center"
+                      style={{ width: USER_MESSAGE_ACTION_SIZE, height: USER_MESSAGE_ACTION_SIZE }}
+                      onPress={() => {
+                        if (entry.pendingMessage && props.onEditPendingMessage) {
+                          props.onEditPendingMessage(entry.pendingMessage);
+                        }
+                      }}
+                    >
+                      <SymbolView name="pencil" size={14} tintColor={iconSubtleColor} />
+                    </Pressable>
+                  ) : null}
+                  {editTurnCount !== undefined ? (
+                    <RewindButton
+                      messageId={message.id}
+                      turnCount={editTurnCount}
+                      retry={false}
+                      iconColor={iconSubtleColor}
+                      buttonSize={USER_MESSAGE_ACTION_SIZE}
+                      iconSize={13}
+                    />
+                  ) : null}
+                  {presentation.text.trim().length > 0 ? (
+                    <UserMessageCopyButton
+                      text={presentation.text}
+                      onCopy={
+                        message.context && presentation.attribution !== "guest"
+                          ? () =>
+                              writeComposerContextClipboard(message.text, {
+                                version: 1,
+                                source: {
+                                  environmentId: props.environmentId,
+                                  messageId: message.id,
+                                },
+                                records: message.context!.records,
+                              })
+                          : undefined
+                      }
+                      tintColor={iconSubtleColor}
+                    />
+                  ) : null}
+                </View>
               ) : null}
             </View>
           ) : null}
@@ -2462,33 +2479,38 @@ function renderFeedEntry(
         ) : null}
         {showAssistantMeta ? (
           <View className="mt-1 flex-row items-center gap-1">
-            <CopyTextButton
-              accessibilityLabel={t("Copy message")}
-              text={renderedText}
-              tintColor={iconSubtleColor}
-              buttonSize={props.replyActionSize.button}
-              iconSize={props.replyActionSize.icon}
-            />
-            {message.projectedItem ? (
-              <AssistantForkButton
-                environmentId={props.environmentId}
-                iconColor={iconSubtleColor}
-                buttonSize={props.replyActionSize.button}
-                iconSize={props.replyActionSize.icon}
-                projectedItem={message.projectedItem}
-                sourceTitle={props.threadTitle}
-              />
-            ) : null}
-            {retryTarget?.assistantMessageId === message.id ? (
-              <RewindButton
-                messageId={retryTarget.userMessageId}
-                turnCount={retryTarget.turnCount}
-                retry
-                iconColor={iconSubtleColor}
+            <View
+              className="flex-row items-center"
+              style={{ gap: replyActionGap(props.replyActionSize.button) }}
+            >
+              <CopyTextButton
+                accessibilityLabel={t("Copy message")}
+                text={renderedText}
+                tintColor={iconSubtleColor}
                 buttonSize={props.replyActionSize.button}
                 iconSize={props.replyActionSize.icon}
               />
-            ) : null}
+              {message.projectedItem ? (
+                <AssistantForkButton
+                  environmentId={props.environmentId}
+                  iconColor={iconSubtleColor}
+                  buttonSize={props.replyActionSize.button}
+                  iconSize={props.replyActionSize.icon}
+                  projectedItem={message.projectedItem}
+                  sourceTitle={props.threadTitle}
+                />
+              ) : null}
+              {retryTarget?.assistantMessageId === message.id ? (
+                <RewindButton
+                  messageId={retryTarget.userMessageId}
+                  turnCount={retryTarget.turnCount}
+                  retry
+                  iconColor={iconSubtleColor}
+                  buttonSize={props.replyActionSize.button}
+                  iconSize={props.replyActionSize.icon}
+                />
+              ) : null}
+            </View>
             <Text className="font-t3-medium text-xs tabular-nums text-foreground-secondary">
               {timestampLabel}
             </Text>

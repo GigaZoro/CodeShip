@@ -7,7 +7,10 @@ import {
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
 
-import type { EnvironmentOption } from "../components/BranchToolbar.logic";
+import {
+  type EnvironmentOption,
+  resolveEnvironmentOptionLabel,
+} from "../components/BranchToolbar.logic";
 import {
   deriveLogicalProjectKeyFromSettings,
   selectProjectGroupingSettings,
@@ -32,12 +35,18 @@ export function useLogicalProjectEnvironments(
   const envs: EnvironmentOption[] = [];
   const pushEnvironment = (environmentId: EnvironmentId, projectId: ProjectId | null) => {
     const environment = environmentById.get(environmentId) ?? null;
+    const isPrimary = environmentId === primaryEnvironmentId;
     envs.push({
       environmentId,
       projectId,
-      label: environment?.label ?? environmentId,
-      isPrimary: environmentId === primaryEnvironmentId,
+      label: resolveEnvironmentOptionLabel({
+        isPrimary,
+        environmentId,
+        runtimeLabel: environment?.label ?? null,
+      }),
+      isPrimary,
       machine: resolveEnvironmentMachineKind(environment?.serverConfig ?? null),
+      connectionPhase: environment?.connection.phase ?? "offline",
     });
   };
   if (scratchDraft) {

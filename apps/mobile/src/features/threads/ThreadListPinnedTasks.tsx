@@ -26,6 +26,7 @@ import {
   type ScheduledTask,
   type ScopedProjectRef,
 } from "@t3tools/contracts";
+import { useNavigation } from "@react-navigation/native";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { memo } from "react";
 import { View } from "react-native";
@@ -43,6 +44,8 @@ import { useSavedRemoteConnections } from "../../state/use-remote-environment-re
 import { serverEnvironment } from "../../state/server";
 import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { startScheduledTaskEditor } from "../settings/scheduled-task-editor-state";
+import { editDraft } from "../settings/scheduledTaskDraft";
 import { describeSchedule } from "../settings/scheduledTaskPresentation";
 import { useOpenScheduledTasks } from "../workspace/useOpenScheduledTasks";
 import {
@@ -130,6 +133,7 @@ function IntervalWaitBar(props: { readonly task: ScheduledTask }) {
 const PinnedTaskRow = memo(function PinnedTaskRow(props: {
   readonly environmentId: EnvironmentId;
   readonly task: ScheduledTask;
+  readonly environmentLabel: string;
   readonly machineLabel: string | null;
   readonly pane: "screen" | "sidebar";
   readonly selectedThreadKey: string | null;
@@ -137,6 +141,7 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
 }) {
   const { environmentId, task } = props;
   const openScheduledTasks = useOpenScheduledTasks();
+  const navigation = useNavigation();
   const theme = useUniwindTheme();
   const sidebarPane = props.pane === "sidebar";
   const runThreadId = pinnedTaskRunThreadId(task);
@@ -205,7 +210,14 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
   ];
   const handleAction = async (action: string) => {
     if (action === "open-run") return openRun();
-    if (action === "edit") return openScheduledTasks();
+    if (action === "edit") {
+      startScheduledTaskEditor({
+        environmentId,
+        environmentLabel: props.environmentLabel,
+        draft: editDraft(task),
+      });
+      return navigation.navigate("SettingsScheduledTaskEdit");
+    }
     if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
     const placement = scheduledTaskPlacementOptions().find(
       (option) => `placement:${option.value}` === action,
@@ -353,6 +365,7 @@ export function ThreadListPinnedTasks(props: {
           key={`${environmentId}:${task.id}`}
           environmentId={environmentId}
           task={task}
+          environmentLabel={savedConnectionsById[environmentId]?.environmentLabel ?? environmentId}
           machineLabel={
             showMachine ? (savedConnectionsById[environmentId]?.environmentLabel ?? null) : null
           }

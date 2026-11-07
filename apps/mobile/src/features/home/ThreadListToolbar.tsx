@@ -18,6 +18,7 @@ import { useHardwareKeyboardCommand } from "../keyboard/hardwareKeyboardCommands
 import { WorkspaceListToolbarRow } from "../workspace/WorkspaceListToolbarRow";
 import { useWorkspaceConnectionState } from "../../state/workspace";
 import { useToolbarLayout } from "../../components/ui/useToolbarLayout";
+import { threadListFilterButtonLabel } from "./home-list-filter-menu";
 import { t } from "../../lib/i18n";
 
 export function ThreadListToolbar(props: {
@@ -93,7 +94,7 @@ export function ThreadListToolbar(props: {
     <AndroidAnchoredMenu actions={props.filterActions} onPressAction={props.onFilterAction}>
       {(open) => (
         <AndroidHeaderIconButton
-          accessibilityLabel={t("Filter threads")}
+          accessibilityLabel={threadListFilterButtonLabel(props.filterCustomized)}
           icon={filterIcon}
           onPress={open}
         />

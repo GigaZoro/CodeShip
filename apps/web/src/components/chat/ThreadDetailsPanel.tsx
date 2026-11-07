@@ -90,7 +90,8 @@ interface ThreadDetailsPanelProps extends Pick<
   onCheckoutPullRequestRequest?: (reference: string) => void;
   onComposerFocusRequest: () => void;
   onOpenChanges?: () => void;
-  onRunProjectScript: (script: ProjectScript) => void;
+  /** Omitted when this client cannot run terminal commands. */
+  onRunProjectScript?: ((script: ProjectScript) => void) | undefined;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<ProjectScriptActionResult>;
   onUpdateProjectScript: (
     scriptId: string,
@@ -265,7 +266,6 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                     {show.scripts && props.activeProjectScripts ? (
                       <ProjectScriptsControl
                         environmentId={props.environmentId}
-                        displayMode="panel"
                         scripts={props.activeProjectScripts}
                         fileScripts={fileScripts}
                         preferredScriptId={props.preferredScriptId}

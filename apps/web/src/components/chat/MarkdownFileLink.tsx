@@ -6,7 +6,7 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
-import { memo, type MouseEvent as ReactMouseEvent } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 
 import { readLocalApi } from "../../localApi";
 import { cn } from "../../lib/utils";
@@ -49,7 +49,7 @@ interface MarkdownFileLinkProps {
 
 const MARKDOWN_FILE_LINK_CLASS_NAME = "chat-markdown-file-link";
 
-export const MarkdownFileLink = memo(function MarkdownFileLink({
+export function MarkdownFileLink({
   environmentId,
   href,
   targetPath,
@@ -327,6 +327,19 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
     canOpenInPanel,
   });
   const chipKind = documentChipKindForFileName(iconPath) ?? "mention";
+  const handlePrimaryClick = (event: ReactMouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (onOpen && shouldOpenMarkdownFileLinkInEditor(event)) {
+      handleOpenInEditor();
+      return;
+    }
+    if (useBrowserPrimaryAction) {
+      handleOpenInBrowser();
+      return;
+    }
+    handleOpenInFilePreview();
+  };
 
   return (
     <Tooltip>
@@ -339,18 +352,10 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
               render={<a href={href} />}
               className={MARKDOWN_FILE_LINK_CLASS_NAME}
               data-markdown-copy={copyMarkdown}
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                if (onOpen && shouldOpenMarkdownFileLinkInEditor(event)) {
-                  handleOpenInEditor();
-                  return;
-                }
-                if (useBrowserPrimaryAction) {
-                  handleOpenInBrowser();
-                  return;
-                }
-                handleOpenInFilePreview();
+              onClick={handlePrimaryClick}
+              // A middle click would open the path as a page of this app in a new tab.
+              onAuxClick={(event) => {
+                if (event.button === 1) handlePrimaryClick(event);
               }}
               onContextMenu={handleContextMenu}
             >
@@ -389,32 +394,5 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
         </div>
       </TooltipPopup>
     </Tooltip>
-  );
-}, areMarkdownFileLinkPropsEqual);
-
-function areMarkdownFileLinkPropsEqual(
-  previous: Readonly<MarkdownFileLinkProps>,
-  next: Readonly<MarkdownFileLinkProps>,
-): boolean {
-  return (
-    previous.href === next.href &&
-    previous.targetPath === next.targetPath &&
-    previous.iconPath === next.iconPath &&
-    previous.environmentId === next.environmentId &&
-    previous.workspaceRelativePath === next.workspaceRelativePath &&
-    previous.panelPath === next.panelPath &&
-    previous.line === next.line &&
-    previous.label === next.label &&
-    previous.copyMarkdown === next.copyMarkdown &&
-    previous.theme === next.theme &&
-    previous.threadRef === next.threadRef &&
-    previous.onOpen === next.onOpen &&
-    previous.onOpenInPanel === next.onOpenInPanel &&
-    previous.openInEditorMenuLabel === next.openInEditorMenuLabel &&
-    previous.onOpenInBrowser === next.onOpenInBrowser &&
-    previous.onOpenMedia === next.onOpenMedia &&
-    previous.onReveal === next.onReveal &&
-    previous.resolveCopyPaths === next.resolveCopyPaths &&
-    previous.revealLabel === next.revealLabel
   );
 }

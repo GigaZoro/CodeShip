@@ -13,7 +13,7 @@ import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import { Atom, AtomRegistry } from "effect/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
 import {
   createEnvironmentRpcCommand,
@@ -41,6 +41,9 @@ const VCS_REFS_RETRY_SCHEDULE = Schedule.exponential("1 second").pipe(
     Effect.succeed(Duration.min(duration, Duration.seconds(30))),
   ),
 );
+
+const requestVcsRefs = (input: VcsListRefsInput) => request(WS_METHODS.vcsListRefs, input);
+type VcsRefsRequestError = Effect.Error<ReturnType<typeof requestVcsRefs>>;
 
 function canUseVcsRefsCache(input: VcsListRefsInput): boolean {
   return (
@@ -115,13 +118,15 @@ export const commitVcsRefsRefresh = Effect.fn("CachedVcsRefsState.commitRefresh"
 /**
  * Filtered or paginated lists intentionally stay live-only: treating a
  * partial result as a complete offline list would make branch selection
- * misleading.
+ * misleading. A failed refresh is retried with backoff and reported through
+ * `onRefreshFailure`, so readers can show why the list is not arriving.
  */
 export const makeCachedVcsRefsChanges = Effect.fn("CachedVcsRefsState.makeChanges")(function* (
   input: VcsListRefsInput,
   expectedRevision?: number,
   registry?: AtomRegistry.AtomRegistry,
   persistedCacheReadable = true,
+  onRefreshFailure?: (error: VcsRefsRequestError) => Effect.Effect<void>,
 ) {
   const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
   const cache = yield* Persistence.EnvironmentCacheStore;
@@ -143,7 +148,7 @@ export const makeCachedVcsRefsChanges = Effect.fn("CachedVcsRefsState.makeChange
         )
       : Option.none<VcsListRefsResult>();
   const refresh = Effect.fn("CachedVcsRefsState.refresh")(function* () {
-    const refs = yield* request(WS_METHODS.vcsListRefs, input).pipe(
+    const refs = yield* requestVcsRefs(input).pipe(
       Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
     );
     const persist = cache.saveVcsRefs(environmentId, input.cwd, refs).pipe(
@@ -196,6 +201,7 @@ export const makeCachedVcsRefsChanges = Effect.fn("CachedVcsRefsState.makeChange
                     cwd: input.cwd,
                     ...safeErrorLogAttributes(error),
                   }),
+                  Effect.andThen(onRefreshFailure?.(error) ?? Effect.void),
                 ),
               ),
             ),
@@ -219,6 +225,7 @@ function cachedVcsRefsChanges(
   input: VcsListRefsInput,
   expectedRevision: number,
   persistedCacheReadable: boolean,
+  onRefreshFailure: (error: VcsRefsRequestError) => Effect.Effect<void>,
 ) {
   return followStreamInEnvironment(
     environmentId,
@@ -230,6 +237,7 @@ function cachedVcsRefsChanges(
           expectedRevision,
           registry,
           persistedCacheReadable,
+          onRefreshFailure,
         );
       }),
     ),
@@ -249,11 +257,20 @@ export function createVcsEnvironmentAtoms<R, E>(
     return runtime
       .atom((get) => {
         const state = get(vcsRefsCacheStateAtom({ environmentId }));
+        // Retries keep the stream open, so a failure is shown here until the next answer.
         return cachedVcsRefsChanges(
           environmentId,
           input,
           state.revision,
           state.persistedCacheReadable,
+          (error) =>
+            Effect.sync(() =>
+              get.setSelf(
+                AsyncResult.failWithPrevious(error, {
+                  previous: get.self<AsyncResult.AsyncResult<VcsListRefsResult, typeof error>>(),
+                }),
+              ),
+            ),
         );
       })
       .pipe(

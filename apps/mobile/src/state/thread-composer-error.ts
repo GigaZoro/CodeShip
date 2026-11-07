@@ -1,3 +1,8 @@
+import {
+  type AtomCommandResult,
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry } from "./atom-registry";
@@ -21,6 +26,17 @@ export function setThreadComposerError(
     ...appAtomRegistry.get(threadComposerErrorsAtom),
     [threadKey]: { message, messageId },
   });
+}
+
+/** An interrupted command was cancelled on purpose, so only a real failure reaches the composer. */
+export function reportThreadCommandFailure(
+  threadKey: string,
+  result: AtomCommandResult<unknown, unknown>,
+  fallbackMessage: string,
+): void {
+  if (result._tag === "Success" || isAtomCommandInterrupted(result)) return;
+  const error = squashAtomCommandFailure(result);
+  setThreadComposerError(threadKey, error instanceof Error ? error.message : fallbackMessage);
 }
 
 export function clearThreadComposerError(threadKey: string, messageId?: string): void {

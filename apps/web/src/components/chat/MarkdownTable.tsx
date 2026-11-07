@@ -11,6 +11,7 @@ import { MorphIcon } from "../MorphIcon";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { ScrollArea } from "../ui/scroll-area";
+import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { reportMarkdownActionFailure } from "./markdownActionFailure";
 
@@ -18,8 +19,16 @@ export function MarkdownTable({ children, ...props }: ComponentProps<"table">) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const { copyToClipboard, isCopied: copied } = useCopyToClipboard<"markdown" | "csv">({
     timeout: 1200,
-    onError: (cause, format) =>
-      reportMarkdownActionFailure({ operation: "copy-table", format }, cause),
+    onError: (cause, format) => {
+      reportMarkdownActionFailure({ operation: "copy-table", format }, cause);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: t("Could not copy table"),
+          description: cause.message,
+        }),
+      );
+    },
   });
   const copyLabel = copied ? t("Copied") : t("Copy table");
 

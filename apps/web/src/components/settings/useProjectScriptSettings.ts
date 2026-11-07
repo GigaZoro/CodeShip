@@ -28,12 +28,13 @@ import {
   buildProjectScript,
   commandForProjectScript,
   nextProjectScriptId,
+  projectScriptIdsInUse,
   releaseClaimedRoles,
 } from "../../projectScripts";
 import { useProjects } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
-import type { NewProjectScriptInput } from "../projectScriptEditor";
+import { projectScriptShortcutFailure, type NewProjectScriptInput } from "../projectScriptEditor";
 import { toastManager } from "../ui/toast";
 
 function reportScriptFailure(result: AtomCommandResult<unknown, unknown>) {
@@ -174,33 +175,42 @@ export function useProjectScriptSettings(
           : previous && !retainedElsewhere
             ? await removeKeybinding({ environmentId, input: previous })
             : null;
-        if (bindingResult?._tag === "Failure") return reportScriptFailure(bindingResult);
+        if (bindingResult?._tag === "Failure") {
+          return reportScriptFailure(
+            effectiveScripts.some((script) => script.id === id)
+              ? projectScriptShortcutFailure(id, bindingResult)
+              : bindingResult,
+          );
+        }
       }
     }
     return AsyncResult.success(undefined);
   }
 
   function submit(scriptId: string | null, input: NewProjectScriptInput) {
-    const existingIds = [
-      ...projects.flatMap((project) => project.scripts.map((script) => script.id)),
-      ...targets.flatMap(({ settings, project }) =>
-        [
-          ...settings.defaultProjectScripts,
-          ...Object.values(settings.projectSettingsOverrides).flatMap(
-            (entry) => entry.defaultProjectScripts ?? [],
-          ),
-          ...(project?.scripts ?? []),
-        ].map((script) => script.id),
-      ),
-    ];
-    const id = scriptId ?? nextProjectScriptId(input.name, existingIds);
+    const id =
+      scriptId ??
+      nextProjectScriptId(
+        input.name,
+        targets.flatMap(({ environmentId, settings, keybindings, project }) => [
+          ...projectScriptIdsInUse({
+            settings,
+            projects: [
+              ...projects.filter((other) => other.environmentId === environmentId),
+              ...(project ? [project] : []),
+            ],
+            keybindings,
+          }),
+        ]),
+      );
     const next = buildProjectScript(id, input);
+    // Upsert, so saving again after a shortcut failure edits the action that was already written.
     return persist(
       (current) => {
         const updated = current.map((script) =>
           script.id === id ? next : releaseClaimedRoles(script, input),
         );
-        return scriptId === null ? [...updated, next] : updated;
+        return current.some((script) => script.id === id) ? updated : [...updated, next];
       },
       id,
       input.keybinding,

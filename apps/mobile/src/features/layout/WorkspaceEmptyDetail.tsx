@@ -62,9 +62,7 @@ export function WorkspaceEmptyDetail(props: {
               ? t("Choose a page from the sidebar.")
               : pullRequests
                 ? t("Choose a pull request from the sidebar to review it.")
-                : Platform.OS === "android"
-                  ? t("Choose a thread from the sidebar or start a new thread.")
-                  : t("Choose a thread from the sidebar or start a new task.")}
+                : t("Choose a thread from the sidebar or start a new thread.")}
           </Text>
           {props.onStartNewTask && !pullRequests && !settings ? (
             Platform.OS === "android" ? (

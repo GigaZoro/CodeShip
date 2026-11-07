@@ -4079,7 +4079,7 @@ export default function ChatView(props: ChatViewProps) {
                   {...(isServerThread && isGitRepo
                     ? { onOpenChanges: openChangesFromThreadPanelStable }
                     : {})}
-                  onRunProjectScript={runProjectScriptStable}
+                  {...(canOperateTerminal ? { onRunProjectScript: runProjectScriptStable } : {})}
                   onAddProjectScript={saveProjectScriptStable}
                   onUpdateProjectScript={updateProjectScriptStable}
                   onDeleteProjectScript={deleteProjectScriptStable}

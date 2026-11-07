@@ -2,8 +2,11 @@ import { canCreateProjectInEnvironment } from "@t3tools/client-runtime/operation
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { AuthSourceControlWriteScope, resolveEnvironmentMachineKind } from "@t3tools/contracts";
 
-import type { EnvironmentOption } from "../components/BranchToolbar.logic";
-import { useEnvironments } from "../state/environments";
+import {
+  type EnvironmentOption,
+  resolveEnvironmentOptionLabel,
+} from "../components/BranchToolbar.logic";
+import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useEnvironmentsWithScope } from "../state/session";
 
 export type AddProjectTarget = Pick<EnvironmentOption, "environmentId" | "label" | "machine">;
@@ -18,6 +21,7 @@ export function useAddProjectTargets(
   projectEnvironments: readonly Pick<EnvironmentOption, "environmentId">[] | undefined,
 ): readonly AddProjectTarget[] {
   const { environments } = useEnvironments();
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
   const canClone = useEnvironmentsWithScope(environments, AuthSourceControlWriteScope);
   if (!project?.repositoryIdentity?.locator.remoteUrl) return [];
   const hasProject = new Set([
@@ -34,7 +38,11 @@ export function useAddProjectTargets(
     )
     .map((environment) => ({
       environmentId: environment.environmentId,
-      label: environment.label,
+      label: resolveEnvironmentOptionLabel({
+        isPrimary: environment.environmentId === primaryEnvironmentId,
+        environmentId: environment.environmentId,
+        runtimeLabel: environment.label,
+      }),
       machine: resolveEnvironmentMachineKind(environment.serverConfig),
     }))
     .toSorted((a, b) => a.label.localeCompare(b.label));

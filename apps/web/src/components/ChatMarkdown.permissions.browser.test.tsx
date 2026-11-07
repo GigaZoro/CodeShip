@@ -12,6 +12,7 @@ import { expect, it, vi } from "vite-plus/test";
 
 import { act, render } from "../../test/render";
 import { useRightPanelStore } from "../rightPanelStore";
+import { toastManager } from "./ui/toast";
 
 const state = vi.hoisted(() => ({
   allowed: true,
@@ -278,3 +279,22 @@ it.each(["link-to-thread", "unlink-from-thread"])(
     );
   },
 );
+
+it.each([
+  ["copy-link", "Could not copy the link"],
+  ["open-external", "Unable to open link"],
+])("tells the user when %s from a link's menu fails", async (action, title) => {
+  using _setup = setup();
+  state.copy.mockRejectedValue(new Error("Denied"));
+  state.openExternal.mockRejectedValue(new Error("Unable to open link."));
+  state.choose.mockResolvedValue(action);
+  await using screen = await renderMarkdown("[Docs](https://example.com/docs)");
+  using _error = vi.spyOn(console, "error").mockImplementation(() => {});
+  using toast = vi.spyOn(toastManager, "add");
+  await screen.openContextMenu();
+  await vi.waitFor(() =>
+    expect(toast).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ type: "error", title }),
+    ),
+  );
+});

@@ -16,6 +16,7 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { resolveProjectScripts } from "@t3tools/shared/projectScripts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
+import { useRef } from "react";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import {
   decodeProjectScriptKeybindingRule,
@@ -26,6 +27,7 @@ import {
   commandForProjectScript,
   nextProjectScriptId,
   projectScriptIdFromCommand,
+  projectScriptIdsInUse,
   releaseClaimedRoles,
 } from "../../projectScripts";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
@@ -33,9 +35,17 @@ import { serverEnvironment } from "../../state/server";
 import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useProjects } from "../../state/entities";
-import { type NewProjectScriptInput } from "../ProjectScriptsControl";
+import { projectScriptShortcutFailure, type NewProjectScriptInput } from "../projectScriptEditor";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { t } from "~/i18n";
+
+interface ProjectScriptsWrite {
+  readonly projectId: ProjectId;
+  readonly previousScripts: ReadonlyArray<ProjectScript>;
+  readonly nextScripts: ReadonlyArray<ProjectScript>;
+  readonly keybinding: NewProjectScriptInput["keybinding"];
+  readonly keybindingCommand: KeybindingCommand | null;
+}
 
 /** Write script settings before reconciling shortcuts in environment keybindings. */
 export function useProjectScriptEditing(input: {
@@ -46,6 +56,8 @@ export function useProjectScriptEditing(input: {
 }) {
   const { environmentId, project, scripts, settings } = input;
   const allProjects = useProjects();
+  // Each write sends the whole list, so a second write started from the same list would drop the first.
+  const savingRef = useRef(false);
   const updateProjectScriptSettings = useAtomCommand(serverEnvironment.updateSettings, {
     reportFailure: false,
   });
@@ -55,14 +67,9 @@ export function useProjectScriptEditing(input: {
   const removeKeybinding = useAtomCommand(serverEnvironment.removeKeybinding, {
     reportFailure: false,
   });
-  const persistProjectScripts = async (input: {
-    projectId: ProjectId;
-    projectCwd: string;
-    previousScripts: ReadonlyArray<ProjectScript>;
-    nextScripts: ReadonlyArray<ProjectScript>;
-    keybinding: NewProjectScriptInput["keybinding"];
-    keybindingCommand: KeybindingCommand | null;
-  }): Promise<AtomCommandResult<void, unknown>> => {
+  const writeProjectScripts = async (
+    input: ProjectScriptsWrite,
+  ): Promise<AtomCommandResult<void, unknown>> => {
     const serverConfig = appAtomRegistry.get(serverEnvironment.configValueAtom(environmentId));
     const previousKeybinding = keybindingValueForCommand(
       serverConfig?.keybindings ?? [],
@@ -114,11 +121,22 @@ export function useProjectScriptEditing(input: {
       }),
       () => undefined,
     );
-    if (updateResult._tag === "Failure") {
-      return updateResult;
-    }
+    if (updateResult._tag === "Failure" || !changesKeybinding) return updateResult;
 
-    if (!changesKeybinding) return updateResult;
+    const scriptId = input.keybindingCommand
+      ? projectScriptIdFromCommand(input.keybindingCommand)
+      : null;
+    const shortcutResult = await syncShortcut(input, keybindingRule, isDeletingScript, scriptId);
+    return shortcutResult._tag === "Failure" && !isDeletingScript && scriptId !== null
+      ? projectScriptShortcutFailure(scriptId, shortcutResult)
+      : shortcutResult;
+  };
+  const syncShortcut = async (
+    input: ProjectScriptsWrite,
+    keybindingRule: ReturnType<typeof decodeProjectScriptKeybindingRule>,
+    isDeletingScript: boolean,
+    scriptId: string | null,
+  ): Promise<AtomCommandResult<void, unknown>> => {
     if (!readEnvironmentScope(environmentId, AuthSettingsWriteScope)) {
       return AsyncResult.failure(
         Cause.fail(
@@ -126,21 +144,16 @@ export function useProjectScriptEditing(input: {
             requiredScope: AuthSettingsWriteScope,
             message: isDeletingScript
               ? t(
-                  "The script was deleted, but its keyboard shortcut could not be removed because permission changed.",
+                  "The action was deleted, but its keyboard shortcut could not be removed because permission changed.",
                 )
-              : t(
-                  "The script was saved, but this connection can no longer change keyboard shortcuts.",
-                ),
+              : t("This connection can no longer change keyboard shortcuts."),
           }),
         ),
       );
     }
 
-    const scriptId = input.keybindingCommand
-      ? projectScriptIdFromCommand(input.keybindingCommand)
-      : null;
     if (!keybindingRule && !input.previousScripts.some((script) => script.id === scriptId)) {
-      return updateResult;
+      return AsyncResult.success(undefined);
     }
     const retainedElsewhere =
       !input.nextScripts.some((script) => script.id === scriptId) &&
@@ -156,8 +169,9 @@ export function useProjectScriptEditing(input: {
             other.id !== input.projectId &&
             resolveProjectScripts(settings, other).some((script) => script.id === scriptId),
         ));
-    if (!keybindingRule && retainedElsewhere) return updateResult;
+    if (!keybindingRule && retainedElsewhere) return AsyncResult.success(undefined);
 
+    const serverConfig = appAtomRegistry.get(serverEnvironment.configValueAtom(environmentId));
     const previousRules = (serverConfig?.keybindings ?? []).flatMap((binding) => {
       if (binding.command !== input.keybindingCommand || binding.whenAst) return [];
       const previous = decodeProjectScriptKeybindingRule({
@@ -182,7 +196,20 @@ export function useProjectScriptEditing(input: {
           }),
           () => undefined,
         )
-      : updateResult;
+      : AsyncResult.success(undefined);
+  };
+  const persistProjectScripts = (
+    input: ProjectScriptsWrite,
+  ): Promise<AtomCommandResult<void, unknown>> => {
+    if (savingRef.current) {
+      return Promise.resolve(
+        AsyncResult.failure(Cause.fail(new Error(t("Another action change is still saving.")))),
+      );
+    }
+    savingRef.current = true;
+    return writeProjectScripts(input).finally(() => {
+      savingRef.current = false;
+    });
   };
   const saveProjectScript = async (
     input: NewProjectScriptInput,
@@ -192,7 +219,15 @@ export function useProjectScriptEditing(input: {
     }
     const nextId = nextProjectScriptId(
       input.name,
-      scripts.map((script) => script.id),
+      projectScriptIdsInUse({
+        settings,
+        projects: [
+          ...allProjects.filter((other) => other.environmentId === environmentId),
+          { id: project.id, scripts },
+        ],
+        keybindings:
+          appAtomRegistry.get(serverEnvironment.configValueAtom(environmentId))?.keybindings ?? [],
+      }),
     );
     const nextScript = buildProjectScript(nextId, input);
     const nextScripts = [
@@ -202,7 +237,6 @@ export function useProjectScriptEditing(input: {
 
     return persistProjectScripts({
       projectId: project.id,
-      projectCwd: project.workspaceRoot,
       previousScripts: scripts,
       nextScripts,
       keybinding: input.keybinding,
@@ -218,7 +252,7 @@ export function useProjectScriptEditing(input: {
     }
     const existingScript = scripts.find((script) => script.id === scriptId);
     if (!existingScript) {
-      return AsyncResult.failure(Cause.fail(new Error(t("Script not found."))));
+      return AsyncResult.failure(Cause.fail(new Error(t("Action not found."))));
     }
 
     const updatedScript = buildProjectScript(existingScript.id, input);
@@ -228,7 +262,6 @@ export function useProjectScriptEditing(input: {
 
     return persistProjectScripts({
       projectId: project.id,
-      projectCwd: project.workspaceRoot,
       previousScripts: scripts,
       nextScripts,
       keybinding: input.keybinding,
@@ -247,7 +280,6 @@ export function useProjectScriptEditing(input: {
 
     const result = await persistProjectScripts({
       projectId: project.id,
-      projectCwd: project.workspaceRoot,
       previousScripts: scripts,
       nextScripts,
       keybinding: null,

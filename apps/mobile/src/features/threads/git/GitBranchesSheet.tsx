@@ -195,7 +195,7 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
             ) : null}
             {!branchesLoading && availableBranches.length === 0 ? (
               <Text className="text-foreground-secondary text-sm font-medium android:px-4">
-                {t("No local branches found.")}
+                {gitState.selectedThreadBranchesError ?? t("No local branches found.")}
               </Text>
             ) : null}
             {availableBranches.map((branch) => {

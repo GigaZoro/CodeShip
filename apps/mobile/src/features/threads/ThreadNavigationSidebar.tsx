@@ -62,11 +62,14 @@ import { useHomeListOptions } from "../home/home-list-options";
 import {
   ARCHIVED_THREADS_EVENT,
   ARTIFACTS_EVENT,
+  SHOW_ALL_THREADS_EVENT,
   archivedThreadsMenuItem,
   artifactsMenuItem,
   buildGroupByMenuActions,
   buildHomeListFilterMenu,
   handleGroupByMenuEvent,
+  showAllThreadsMenuItems,
+  threadListFilterButtonLabel,
 } from "../home/home-list-filter-menu";
 import {
   buildHomeProjectScopes,
@@ -426,7 +429,9 @@ function ThreadNavigationSidebarPane(
           },
         ]
       : threadListV2Items;
+  const filterCustomized = options.selectedEnvironmentId !== null || selectedProjectKey !== null;
   const listMenuActions = [
+    ...showAllThreadsMenuItems(filterCustomized),
     {
       id: "environment",
       title: t("Environment"),
@@ -478,6 +483,11 @@ function ThreadNavigationSidebarPane(
     readonly nativeEvent: { readonly event: string };
   }) => {
     const event = nativeEvent.event;
+    if (event === SHOW_ALL_THREADS_EVENT) {
+      setSelectedEnvironmentId(null);
+      setSelectedProjectKey(null);
+      return;
+    }
     if (event === ARCHIVED_THREADS_EVENT) {
       openArchivedThreads();
       return;
@@ -813,7 +823,6 @@ function ThreadNavigationSidebarPane(
         );
     }
   };
-  const filterCustomized = options.selectedEnvironmentId !== null || selectedProjectKey !== null;
   const filterIcon = filterCustomized
     ? "line.3.horizontal.decrease.circle.fill"
     : "line.3.horizontal.decrease.circle";
@@ -832,6 +841,7 @@ function ThreadNavigationSidebarPane(
   });
   const nativeHeaderItems = createSidebarHeaderItems({
     filterIcon,
+    filterAccessibilityLabel: threadListFilterButtonLabel(filterCustomized),
     filterMenu,
     onOpenSettings: props.onOpenSettings,
   });
@@ -958,52 +968,55 @@ function ThreadNavigationSidebarPane(
             : { paddingBottom: insets.bottom }
         }
       >
-        {Platform.OS === "android" && listItems.length === 0 ? (
-          <View className="flex-1 items-center justify-center">{listEmpty}</View>
-        ) : (
-          <SwipeableScrollGateProvider enabled={swipeEnabled}>
-            <GestureDetector gesture={sidebarScrollGesture}>
-              {/* oxlint-disable-next-line t3code/require-registered-list-scroll -- Only the non-native workspace layout (Android and the fallback) renders this sidebar, which has no native header to register with. */}
-              <AnimatedLegendList
-                itemLayoutAnimation={THREAD_SIDEBAR_ROW_LAYOUT}
-                data={listItems}
-                drawDistance={500}
-                estimatedItemSize={64}
-                extraData={listExtraData}
-                getItemType={(item) => item.type}
-                itemsAreEqual={sidebarItemsAreEqual}
-                keyExtractor={(item) => item.key}
-                renderItem={renderListItem}
-                refreshing={machineReconnect.refreshing}
-                onRefresh={() => void machineReconnect.reconnect()}
-                contentContainerStyle={[
-                  styles.threadListContent,
-                  Platform.OS === "android" ? { paddingHorizontal: 0 } : null,
-                  {
-                    paddingBottom:
-                      Platform.OS === "android"
-                        ? floatingTabsEnabled
-                          ? FLOATING_TABS.bottom +
-                            FLOATING_TABS.edge +
-                            Math.max(floatingTabs.height, floatingTabs.fabOffset + fabSize)
-                          : Math.max(insets.bottom, 16) + fabClearance - insets.bottom
-                        : 16 + insets.bottom,
-                    paddingTop: Platform.OS === "android" ? 6 : topListInset,
-                  },
-                ]}
-                keyboardDismissMode="on-drag"
-                keyboardShouldPersistTaps="handled"
-                {...scrollGateHandlers}
-                recycleItems
-                scrollEventThrottle={16}
-                showsVerticalScrollIndicator={false}
-                style={styles.threadList}
-                ListHeaderComponent={pinnedTasksHeader}
-                ListEmptyComponent={listEmpty}
-              />
-            </GestureDetector>
-          </SwipeableScrollGateProvider>
-        )}
+        <SwipeableScrollGateProvider enabled={swipeEnabled}>
+          <GestureDetector gesture={sidebarScrollGesture}>
+            {/* oxlint-disable-next-line t3code/require-registered-list-scroll -- Only the non-native workspace layout (Android and the fallback) renders this sidebar, which has no native header to register with. */}
+            <AnimatedLegendList
+              itemLayoutAnimation={THREAD_SIDEBAR_ROW_LAYOUT}
+              data={listItems}
+              drawDistance={500}
+              estimatedItemSize={64}
+              extraData={listExtraData}
+              getItemType={(item) => item.type}
+              itemsAreEqual={sidebarItemsAreEqual}
+              keyExtractor={(item) => item.key}
+              renderItem={renderListItem}
+              refreshing={machineReconnect.refreshing}
+              onRefresh={() => void machineReconnect.reconnect()}
+              contentContainerStyle={[
+                styles.threadListContent,
+                Platform.OS === "android" ? { paddingHorizontal: 0 } : null,
+                {
+                  paddingBottom:
+                    Platform.OS === "android"
+                      ? floatingTabsEnabled
+                        ? FLOATING_TABS.bottom +
+                          FLOATING_TABS.edge +
+                          Math.max(floatingTabs.height, floatingTabs.fabOffset + fabSize)
+                        : Math.max(insets.bottom, 16) + fabClearance - insets.bottom
+                      : 16 + insets.bottom,
+                  paddingTop: Platform.OS === "android" ? 6 : topListInset,
+                },
+                listItems.length === 0 ? { flexGrow: 1 } : null,
+              ]}
+              keyboardDismissMode="on-drag"
+              keyboardShouldPersistTaps="handled"
+              {...scrollGateHandlers}
+              recycleItems
+              scrollEventThrottle={16}
+              showsVerticalScrollIndicator={false}
+              style={styles.threadList}
+              ListHeaderComponent={pinnedTasksHeader}
+              ListEmptyComponent={
+                Platform.OS === "android" ? (
+                  <View className="flex-1 items-center justify-center">{listEmpty}</View>
+                ) : (
+                  listEmpty
+                )
+              }
+            />
+          </GestureDetector>
+        </SwipeableScrollGateProvider>
       </View>
 
       {Platform.OS === "android" ? (
@@ -1039,7 +1052,10 @@ function ThreadNavigationSidebarPane(
             />
             <View className="flex-row items-center gap-2.5">
               <Menu actions={listMenuActions} onPressAction={handleListMenuAction}>
-                <SidebarFilterButton accessibilityLabel={t("Filter threads")} icon={filterIcon} />
+                <SidebarFilterButton
+                  accessibilityLabel={threadListFilterButtonLabel(filterCustomized)}
+                  icon={filterIcon}
+                />
               </Menu>
               <SidebarHeaderActions onOpenSettings={props.onOpenSettings} />
             </View>

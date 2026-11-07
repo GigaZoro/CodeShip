@@ -1,5 +1,6 @@
 import * as ThreadUndo from "@t3tools/client-runtime/state/thread-undo";
 import { useSyncExternalStore } from "react";
+import { AccessibilityInfo } from "react-native";
 
 type UndoNotice = {
   readonly action: "Settled" | "Snoozed" | "Unpinned";
@@ -7,9 +8,29 @@ type UndoNotice = {
   readonly undo: () => Promise<void>;
 };
 
+const UNDO_NOTICE_MS = 5_000;
+
 let notice: UndoNotice | null = null;
 let expiry: ReturnType<typeof setTimeout> | undefined;
+let screenReaderEnabled = false;
 const listeners = new Set<() => void>();
+
+// A screen reader user needs longer than a timer allows to reach Undo (WCAG 2.2.1), so the
+// notice then stays until it is used, dismissed, or replaced.
+function armExpiry() {
+  clearTimeout(expiry);
+  if (notice !== null && !screenReaderEnabled)
+    expiry = setTimeout(dismissThreadUndoNotice, UNDO_NOTICE_MS);
+}
+
+function setScreenReaderEnabled(enabled: boolean) {
+  if (screenReaderEnabled === enabled) return;
+  screenReaderEnabled = enabled;
+  armExpiry();
+}
+
+AccessibilityInfo.addEventListener("screenReaderChanged", setScreenReaderEnabled);
+void AccessibilityInfo.isScreenReaderEnabled().then(setScreenReaderEnabled);
 
 function notify() {
   for (const listener of listeners) listener();
@@ -43,7 +64,7 @@ export function showThreadUndoNotice(options: UndoNotice) {
     },
   };
   notify();
-  expiry = setTimeout(dismissThreadUndoNotice, 5_000);
+  armExpiry();
 }
 
 export function useThreadUndoNotice() {

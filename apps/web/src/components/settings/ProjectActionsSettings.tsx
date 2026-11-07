@@ -203,6 +203,7 @@ export function ProjectActionsSettings() {
           editScope={AuthSettingsWriteScope}
           request={request}
           scripts={scripts}
+          keybindings={keybindings}
           onSubmit={submit}
           onDelete={(id) =>
             void persist((current) => current.filter((script) => script.id !== id), id, null)

@@ -33,6 +33,8 @@ describe("splitMarkdownBlocks", () => {
     "Setext\n===\n\nnext\n---\n\n- [ ] task\n- [x] done",
     "- a\n\n  ```\n  x\n\n```\n\nb",
     "- a\n\n  ```\n  x\n\ny\n\n  ```\n\nb",
+    "```html\n<div>\n\n[a]: b\n:::\n$$\n</div>\n```\n\nafter",
+    "Match `[^a-z]` once.\n\nlast",
   ])("renders each block as the whole text renders it, at every streamed prefix: %j", (text) => {
     for (let end = 0; end <= text.length; end++) {
       const source = text.slice(0, end);
@@ -52,6 +54,7 @@ describe("splitMarkdownBlocks", () => {
 
   it.each([
     "[ref]\n\n[ref]: /later",
+    "[ref]\n\n> [ref]: /later",
     "a[^x]\n\n[^x]: note",
     "<details>\n\nbody\n\n</details>",
     ":::note\n\ncontent\n\n:::",

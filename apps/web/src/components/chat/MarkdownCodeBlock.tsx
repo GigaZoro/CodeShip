@@ -22,6 +22,7 @@ import {
 } from "../../pierre-icons";
 import { MorphIcon } from "../MorphIcon";
 import { Button } from "../ui/button";
+import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { HighlightedCodeLines } from "./HighlightedCodeLines";
 import {
@@ -159,7 +160,7 @@ export function MarkdownCodeBlock({
 }) {
   const { copyToClipboard, isCopied: copied } = useCopyToClipboard({
     timeout: 1200,
-    onError: (cause) =>
+    onError: (cause) => {
       reportMarkdownActionFailure(
         {
           operation: "copy-code-block",
@@ -167,7 +168,15 @@ export function MarkdownCodeBlock({
           ...(fenceTitle ? { fenceTitle } : {}),
         },
         cause,
-      ),
+      );
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: t("Could not copy code"),
+          description: cause.message,
+        }),
+      );
+    },
   });
   const [wrapped, setWrapped] = useState(() => getClientSettings().wordWrap);
   const wrapLabel = wrapped ? t("Disable line wrap") : t("Wrap lines");
@@ -178,7 +187,8 @@ export function MarkdownCodeBlock({
       ? runnableShellCommand(code, language)
       : null;
 
-  const handleCopy = () => copyToClipboard(code);
+  // Markdown ends a fence's code with a newline, which would run a pasted command at once.
+  const handleCopy = () => copyToClipboard(code.endsWith("\n") ? code.slice(0, -1) : code);
 
   const copyButton = (
     <Tooltip>

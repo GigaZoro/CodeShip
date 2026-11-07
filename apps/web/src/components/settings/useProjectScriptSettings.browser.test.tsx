@@ -6,10 +6,11 @@ import {
   type ProjectScript,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import type { NewProjectScriptInput } from "../projectScriptEditor";
+import { ProjectScriptShortcutError, type NewProjectScriptInput } from "../projectScriptEditor";
 
 const commands = vi.hoisted(() => ({
   updateSettings: vi.fn(),
@@ -159,4 +160,18 @@ describe("useProjectScriptSettings", () => {
       expect(commands.upsertKeybinding).not.toHaveBeenCalled();
     },
   );
+
+  it("reports a shortcut failure after the action was saved as an edit of that action", async () => {
+    setup();
+    commands.upsertKeybinding.mockResolvedValueOnce(
+      AsyncResult.failure(Cause.fail(new Error("Offline."))),
+    );
+    await using screen = await renderSettings([]);
+
+    const result = await submitInAct(screen.settings.submit, { keybinding: "mod+j" });
+
+    const error = result._tag === "Failure" ? Cause.squash(result.cause) : null;
+    expect(error).toBeInstanceOf(ProjectScriptShortcutError);
+    expect(error).toMatchObject({ scriptId: lint.id });
+  });
 });

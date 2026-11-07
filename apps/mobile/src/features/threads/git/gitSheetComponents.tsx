@@ -1,4 +1,5 @@
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
+import type { GitActionIconName } from "@t3tools/client-runtime/state/vcs";
 import { SymbolView } from "../../../components/ui/AppSymbol";
 import type { ComponentProps } from "react";
 import { View } from "react-native";
@@ -20,10 +21,11 @@ export function SheetActionButton(props: {
 }
 
 export function menuItemIconName(
-  icon: "commit" | "push" | "pr",
+  icon: GitActionIconName,
 ): ComponentProps<typeof SymbolView>["name"] {
   if (icon === "commit") return "checkmark.circle";
   if (icon === "push") return "arrow.up.circle";
+  if (icon === "pull") return "arrow.down.circle";
   return "arrow.up.right.circle";
 }
 

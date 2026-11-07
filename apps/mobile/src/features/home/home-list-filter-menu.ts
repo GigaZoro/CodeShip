@@ -13,6 +13,18 @@ export function threadListGroupingLabel(grouping: SidebarGrouping): string {
   return t("Group");
 }
 
+/** The filter button marks a filter only by filling its icon, so its label says it too. */
+export function threadListFilterButtonLabel(filtered: boolean): string {
+  return filtered ? t("Filter threads, filtered") : t("Filter threads");
+}
+
+export const SHOW_ALL_THREADS_EVENT = "show-all-threads";
+
+/** Clears the environment and project filters; offered only while one is set. */
+export function showAllThreadsMenuItems(filtered: boolean): MenuAction[] {
+  return filtered ? [{ id: SHOW_ALL_THREADS_EVENT, title: t("Show all threads") }] : [];
+}
+
 export const ARCHIVED_THREADS_EVENT = "archived-threads";
 
 /** Opens the archived threads screen from the thread list's native menus. */
@@ -127,6 +139,17 @@ export function buildHomeListFilterMenu(
   } & ThreadListGroupingHandlers,
 ): HomeListFilterMenu {
   const items: Array<HomeListFilterMenuAction | HomeListFilterMenuSubmenu> = [];
+
+  if (props.selectedEnvironmentId !== null || props.selectedProjectKey !== null) {
+    items.push({
+      type: "action",
+      title: t("Show all threads"),
+      onPress: () => {
+        props.onEnvironmentChange(null);
+        props.onProjectChange(null);
+      },
+    });
+  }
 
   items.push({
     type: "submenu",

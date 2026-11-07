@@ -1826,11 +1826,10 @@ const catalog: MessageCatalog = {
   "Across environments": "У всіх середовищах",
   Action: "Дія",
   "Action failed": "Дія не вдалася",
+  "Action not found.": "Дію не знайдено.",
   "Action required": "Потрібна дія",
   "Action unavailable": "Дія недоступна",
   Actions: "Дії",
-  "Actions are project-scoped commands you can run from the top bar or keybindings.":
-    "Дії – це команди проєкту, які можна запускати з верхньої панелі або за допомогою сполучень клавіш.",
   "Actions for {command}": "Дії для {command}",
   "Actions for {name}": "Дії для {name}",
   "Actions for {title}": "Дії для {title}",
@@ -1868,6 +1867,8 @@ const catalog: MessageCatalog = {
   "Add a letter, number, or function key to your shortcut.":
     "Додайте до скорочення літеру, цифру або функціональну клавішу.",
   "Add a message": "Додайте повідомлення",
+  "Add a modifier key, such as {modifier} or Alt.":
+    "Додайте клавішу-модифікатор, наприклад {modifier} або Alt.",
   "Add a name and a request to show this button.": "Додайте назву й запит, щоб показати цю кнопку.",
   "Add a name, prompt, project, model, valid schedule, and checkout path if needed.":
     "Додайте назву, запит, проєкт, модель, коректний розклад і шлях до робочої копії, якщо потрібно.",
@@ -1889,15 +1890,12 @@ const catalog: MessageCatalog = {
   "Add a theme": "Додати тему",
   "Add accent color for {name}": "Додати акцентний колір для {name}",
   "Add action": "Додати дію",
-  "Add Action": "Додати дію",
   "Add actions declared by this checkout without editing them first.":
     "Додати дії, оголошені в цій робочій копії, без попереднього редагування.",
-  'Add an "origin" remote before creating {shortLabelWithArticle}.':
-    "Додайте віддалений репозиторій «origin» перед створенням: {shortLabelWithArticle}.",
   'Add an "origin" remote before creating a {kind}.':
     "Додайте віддалений репозиторій «origin» перед створенням {kind}.",
-  'Add an "origin" remote before pushing or creating {shortLabelWithArticle}.':
-    "Додайте віддалений репозиторій «origin» перед надсиланням або створенням: {shortLabelWithArticle}.",
+  'Add an "origin" remote before pushing or creating a {kind}.':
+    "Додайте віддалений репозиторій «origin», перш ніж виконувати push або створювати {kind}.",
   'Add an "origin" remote before pushing.':
     "Додайте віддалений репозиторій «origin» перед надсиланням.",
   "Add an account or configure a provider on {environment}.":
@@ -1953,10 +1951,8 @@ const catalog: MessageCatalog = {
   "Add panel surface": "Додати вкладку панелі",
   "Add profile": "Додати профіль",
   "Add project": "Додати проєкт",
-  "Add project action…": "Додати дію проєкту…",
   "add project base directory": "базовий каталог додавання проєкту",
   "Add project base directory": "Додати базовий каталог проєктів",
-  "Add project script": "Додати скрипт проєкту",
   "Add project starts in": "Додавання проєкту починається в",
   "Add provider": "Додати провайдера",
   "Add review comment": "Додати коментар до рев’ю",
@@ -2153,6 +2149,7 @@ const catalog: MessageCatalog = {
   Amber: "Бурштиновий",
   Amount: "Кількість",
   "An accessibility call": "Рішення щодо доступності",
+  'An action named "{name}" already exists.': "Дія з назвою «{name}» уже існує.",
   "An agent here never gets more there than its own mode here either. Threads it starts there cannot change that environment's own threads, projects or settings.":
     "Агент тут ніколи не матиме там більше прав, ніж його власний режим тут. Чати, які він там запускає, не можуть змінювати чати, проєкти чи налаштування цього середовища.",
   "An agent investigates a T3.CodeShip problem and helps file an issue":
@@ -2193,6 +2190,7 @@ const catalog: MessageCatalog = {
   "Annotate preview": "Анотувати перегляд",
   "Annotated preview crop": "Фрагмент попереднього перегляду з анотаціями",
   "Annotation attached to draft": "Анотацію додано до чернетки",
+  "Another action change is still saving.": "Інша зміна дії ще зберігається.",
   "Another address…": "Інша адреса…",
   "Another approval arrived, so your message wasn't sent.":
     "Надійшло ще одне схвалення, тому ваше повідомлення не надіслано.",
@@ -2585,8 +2583,6 @@ const catalog: MessageCatalog = {
   "Before the cache expires (beta)": "Перед завершенням терміну дії кешу (бета)",
   Behavior: "Поведінка",
   "Behind {branch}": "Позаду {branch}",
-  "Behind upstream. Pull/rebase first.":
-    "Відстає від віддаленої. Спершу отримайте зміни або виконайте rebase.",
   "Best rated": "Найвищий рейтинг",
   beta: "бета",
   "Beta: Linked environments": "Бета: пов’язані середовища",
@@ -2620,8 +2616,6 @@ const catalog: MessageCatalog = {
   "Branch deleted": "Гілку видалено",
   "Branch has diverged from upstream. Rebase/merge first.":
     "Гілка розійшлася з віддаленою. Спершу виконайте rebase або злиття.",
-  "Branch is behind upstream. Pull/rebase before creating {shortLabelWithArticle}.":
-    "Гілка відстає від upstream. Виконайте pull/rebase перед створенням: {shortLabelWithArticle}.",
   "Branch is behind upstream. Pull/rebase before creating a {kind}.":
     "Гілка відстає від віддаленої. Отримайте зміни або виконайте rebase перед створенням {kind}.",
   "Branch is behind upstream. Pull/rebase before pushing.":
@@ -2640,6 +2634,8 @@ const catalog: MessageCatalog = {
   "Branch: {value}": "Гілка: {value}",
   Branches: "Гілки",
   "Branches & worktrees": "Гілки й worktree",
+  "Branches can't change while the agent is working.":
+    "Гілки не можна змінювати, поки агент працює.",
   "Brand & content": "Бренд і вміст",
   "Brave Search": "Brave Search",
   Breakdown: "Розбивка",
@@ -2739,6 +2735,7 @@ const catalog: MessageCatalog = {
   "can't be used: {reason}": "неможливо використати: {reason}",
   "Can't connect": "Не вдається підключитися",
   "Can't connect to {name}": "Не вдається підключитися до {name}",
+  "Can't connect to this machine.": "Не вдається підключитися до цього комп’ютера.",
   "Can't find a setting? Keep this project picked above and hop to any other settings page.":
     "Не знаходите налаштування? Залиште вибраним цей проєкт угорі й перейдіть на будь-яку іншу сторінку налаштувань.",
   cancel: "скасувати",
@@ -2859,6 +2856,7 @@ const catalog: MessageCatalog = {
   Chart: "Діаграма",
   Chat: "Чат",
   "Chat & diffs": "Чат і зміни",
+  "Chat code block": "Блок коду з чату",
   "chat width": "ширина чату",
   "Chat width": "Ширина чату",
   "ChatGPT account": "Обліковий запис ChatGPT",
@@ -2958,11 +2956,13 @@ const catalog: MessageCatalog = {
     "Час перевірки оновлень вичерпано. Спробуйте ще раз.",
   "Checking for updates…": "Перевірка оновлень…",
   "Checking Full Disk Access.": "Перевірка повного доступу до диска.",
+  "Checking git status...": "Перевірка статусу Git...",
   "Checking machine resources": "Перевірка ресурсів комп’ютера",
   "Checking machines…": "Перевірка комп’ютерів…",
   "Checking out...": "Перехід...",
   "Checking permissions…": "Перевірка дозволів…",
   "Checking provider status": "Перевірка стану провайдера",
+  "Checking providers...": "Перевірка провайдерів...",
   "Checking relay status": "Перевірка стану ретранслятора",
   "Checking releases…": "Перевірка випусків…",
   "Checking saved environments on this device.":
@@ -3060,8 +3060,6 @@ const catalog: MessageCatalog = {
     "Виберіть пул-реквест на бічній панелі, щоб переглянути його.",
   "Choose a text config file.": "Виберіть текстовий файл конфігурації.",
   "Choose a thread": "Виберіть чат",
-  "Choose a thread from the sidebar or start a new task.":
-    "Виберіть чат на бічній панелі або почніть нове завдання.",
   "Choose a thread from the sidebar or start a new thread.":
     "Виберіть чат на бічній панелі або почніть новий чат.",
   "Choose a valid date and time in the future.": "Виберіть дійсні дату й час у майбутньому.",
@@ -3087,8 +3085,7 @@ const catalog: MessageCatalog = {
   "Choose date": "Виберіть дату",
   "Choose days": "Виберіть дні",
   "Choose editor": "Вибрати редактор",
-  "Choose environment, {label}, Connected": "Виберіть середовище, {label}, підключено",
-  "Choose environment, {label}, Offline": "Виберіть середовище, {label}, офлайн",
+  "Choose environment, {label}, {status}": "Виберіть середовище, {label}, {status}",
   "Choose environments you trust to share PR data and use each other's source control access. Enable both environments. This applies only to this client.":
     "Виберіть середовища, яким ви довіряєте ділитися даними PR і користуватися доступом одне одного до керування версіями. Увімкніть обидва середовища. Це стосується лише цього клієнта.",
   "Choose file": "Вибрати файл",
@@ -3451,25 +3448,17 @@ const catalog: MessageCatalog = {
   "Commit & open PR": "Закомітити й відкрити PR",
   "Commit & push": "Закомітити й надіслати",
   "Commit & push to {branch}": "Закомітити й надіслати в {branch}",
-  "Commit & push to default branch?": "Закомітити й надіслати в типову гілку?",
   "Commit & push to default ref?": "Закомітити й надіслати в типове посилання?",
   "Commit changes": "Закомітити зміни",
-  "Commit is currently unavailable.": "Коміт зараз недоступний.",
   "Commit message": "Повідомлення коміту",
   "Commit message (optional)": "Повідомлення коміту (необов’язково)",
   "Commit on a new branch": "Закомітити в нову гілку",
   "Commit on new branch": "Коміт у новій гілці",
-  "Commit or stash local changes before pushing.":
-    "Закомітьте або відкладіть локальні зміни перед надсиланням.",
   "Commit, files, branches": "Коміт, файли, гілки",
   "Commit, push & {kind}": "Закомітити, надіслати й створити {kind}",
-  "Commit, push & {shortLabel}": "Коміт, надсилання та {shortLabel}",
   "Commit, push & create {kind}": "Закомітити, надіслати й створити {kind}",
   "Commit, push & create {kind} from default ref?":
     "Закомітити, надіслати й створити {kind} з типового посилання?",
-  "Commit, push & create {shortLabel}": "Закомітити, надіслати й створити {shortLabel}",
-  "Commit, push & create {shortLabel} from default branch?":
-    "Закомітити, надіслати й створити {shortLabel} із типової гілки?",
   "Commit, push, manage branches and repositories, and change pull requests.":
     "Коміт, надсилання, керування гілками та репозиторіями й зміна пул-реквестів.",
   Commits: "Коміти",
@@ -3844,6 +3833,7 @@ const catalog: MessageCatalog = {
   "Could not attach photo or video": "Не вдалося прикріпити фото чи відео",
   "Could not bring back the side chat": "Не вдалося повернути бічний чат",
   "Could not cancel import": "Не вдалося скасувати імпорт",
+  "Could not cancel worktree setup.": "Не вдалося скасувати налаштування worktree.",
   "Could not capture a test snapshot.": "Не вдалося захопити тестовий знімок.",
   "Could not capture a test snapshot. {failure}": "Не вдалося захопити тестовий знімок. {failure}",
   'Could not capture a test snapshot. {failure} macOS grants Screen Recording and Accessibility to each app separately. In System Settings, open Privacy & Security and check that "{appName}" is allowed for both.':
@@ -3909,6 +3899,7 @@ const catalog: MessageCatalog = {
     "Не вдалося скопіювати команду оновлення {providerName}",
   "Could not copy {skill}": "Не вдалося скопіювати {skill}",
   "Could not copy checkout command": "Не вдалося скопіювати команду переходу",
+  "Could not copy code": "Не вдалося скопіювати код",
   "Could not copy context": "Не вдалося скопіювати контекст",
   "Could not copy diagnostics": "Не вдалося скопіювати діагностику",
   "Could not copy file": "Не вдалося скопіювати файл",
@@ -3920,6 +3911,7 @@ const catalog: MessageCatalog = {
   "Could not copy pairing URL": "Не вдалося скопіювати URL сполучення",
   "Could not copy plan": "Не вдалося скопіювати план",
   "Could not copy relative path": "Не вдалося скопіювати відносний шлях",
+  "Could not copy table": "Не вдалося скопіювати таблицю",
   "Could not copy the link": "Не вдалося скопіювати посилання",
   "Could not copy the prompt link": "Не вдалося скопіювати посилання на запит",
   "Could not copy the request": "Не вдалося скопіювати запит",
@@ -4136,7 +4128,6 @@ const catalog: MessageCatalog = {
   "Could not prepare the SSH environment: {error}":
     "Не вдалося підготувати середовище SSH: {error}",
   "Could not prepare voice transcription.": "Не вдалося підготувати голосову транскрипцію.",
-  "Could not pull": "Не вдалося виконати pull",
   "Could not put {name} on": "Не вдалося додати мітку {name}",
   "Could not queue task": "Не вдалося поставити завдання в чергу",
   "Could not reach the machine that reads ThreadPage.":
@@ -4280,6 +4271,7 @@ const catalog: MessageCatalog = {
     "Не вдалося запустити кінцеву точку захоплення Niri. Можливо, її використовує інший екземпляр T3.CodeShip.",
   "Could not start the review guide.": "Не вдалося запустити посібник із рев’ю.",
   "Could not start the sign-in": "Не вдалося почати вхід",
+  "Could not start the thread locally.": "Не вдалося запустити чат локально.",
   "Could not start the update": "Не вдалося почати оновлення",
   "Could not start thread": "Не вдалося запустити чат",
   "Could not start triage": "Не вдалося почати сортування",
@@ -4447,9 +4439,6 @@ const catalog: MessageCatalog = {
   Create: "Створити",
   "Create ({shortcut})": "Створити ({shortcut})",
   "Create {kind}": "Створити {kind}",
-  "Create {kind} is currently unavailable.": "Створення {kind} зараз недоступне.",
-  "Create {shortLabel}": "Створити {shortLabel}",
-  "Create {shortLabel} is currently unavailable.": "Створення {shortLabel} зараз недоступне.",
   "Create & Add": "Створити й додати",
   "Create & checkout": "Створити й перейти",
   "Create & Clone": "Створити й клонувати",
@@ -4462,13 +4451,9 @@ const catalog: MessageCatalog = {
     "Створіть нове посилання, щоб поділитися з цього клієнта.",
   "Create a new worktree": "Створити новий worktree",
   "Create a task": "Створити завдання",
-  "Create a task to start a new coding runtime in one of your connected projects.":
-    "Створіть завдання, щоб запустити нове середовище виконання коду в одному з підключених проєктів.",
   "Create a task to start a new coding session.":
     "Створіть завдання, щоб почати новий сеанс кодування.",
   "Create a token": "Створити токен",
-  "Create and checkout a branch before pushing or opening {shortLabelWithArticle}.":
-    "Створіть гілку й перемкніться на неї перед надсиланням або відкриттям: {shortLabelWithArticle}.",
   "Create and checkout a ref before pushing or opening a {kind}.":
     "Створіть посилання та перейдіть на нього, перш ніж надсилати або відкривати {kind}.",
   "Create labels on the provider to use them here.":
@@ -4518,6 +4503,7 @@ const catalog: MessageCatalog = {
   cron: "cron",
   "Ctrl-C": "Ctrl-C",
   "Ctrl-click": "Ctrl-клік",
+  current: "поточне",
   Current: "Поточна",
   "Current checkout": "Поточна копія",
   "Current CPU": "Поточне навантаження CPU",
@@ -4733,12 +4719,6 @@ const catalog: MessageCatalog = {
     "Відокремлений HEAD: перейдіть на гілку перед створенням {kind}.",
   "Detached HEAD: check out a branch before pushing.":
     "Відокремлений HEAD: перейдіть на гілку перед надсиланням.",
-  "Detached HEAD: checkout a branch before creating {shortLabelWithArticle}.":
-    "Detached HEAD: перемкніться на гілку перед створенням: {shortLabelWithArticle}.",
-  "Detached HEAD: checkout a branch before pushing.":
-    "Detached HEAD: перемкніться на гілку перед надсиланням.",
-  "Detached HEAD: create and check out a branch to enable push and {kind} actions.":
-    "Відокремлений HEAD: створіть гілку та перейдіть на неї, щоб увімкнути надсилання та дії з {kind}.",
   Details: "Подробиці",
   "Details may include local file paths and names. Check before sharing.":
     "Відомості можуть містити локальні шляхи та імена файлів. Перевірте перед тим, як ділитися.",
@@ -5068,7 +5048,7 @@ const catalog: MessageCatalog = {
   "Edit {title}": "Редагувати {title}",
   "Edit {title}, runs on every machine": "Редагувати {title}, запускається на всіх комп’ютерах",
   "Edit {title}, runs on one machine": "Редагувати {title}, запускається на одному комп’ютері",
-  "Edit Action": "Редагувати дію",
+  "Edit action": "Редагувати дію",
   "Edit and keep files": "Редагувати, зберегти файли",
   "Edit and undo file changes": "Редагувати й скасувати зміни файлів",
   "Edit citation comment": "Редагувати коментар до цитати",
@@ -5503,6 +5483,7 @@ const catalog: MessageCatalog = {
   "Failed to revoke client access.": "Не вдалося відкликати доступ клієнта.",
   "Failed to revoke other clients.": "Не вдалося відкликати інших клієнтів.",
   "Failed to revoke pairing link.": "Не вдалося відкликати посилання сполучення.",
+  'Failed to run "{name}".': "Не вдалося запустити «{name}».",
   "Failed to save action.": "Не вдалося зберегти дію.",
   "Failed to save project actions": "Не вдалося зберегти дії проєкту",
   "Failed to save the queued message.": "Не вдалося зберегти повідомлення в черзі.",
@@ -5627,6 +5608,7 @@ const catalog: MessageCatalog = {
   "Filter threads": "Фільтр чатів",
   "Filter threads by environment": "Фільтрувати чати за середовищем",
   "Filter threads by project": "Фільтрувати чати за проєктом",
+  "Filter threads, filtered": "Фільтрувати чати, фільтр увімкнено",
   "Filter threads: {scope}": "Фільтр чатів: {scope}",
   "Filter usage environments": "Фільтрувати середовища використання",
   Filtered: "Відфільтровано",
@@ -5806,7 +5788,7 @@ const catalog: MessageCatalog = {
   "git fetch interval": "інтервал git fetch",
   "Git fetch interval": "Інтервал Git fetch",
   "Git initialization failed": "Не вдалося ініціалізувати Git",
-  "Git status is unavailable.": "Статус Git недоступний.",
+  "Git status unavailable": "Статус Git недоступний",
   "Git unavailable": "Git недоступний",
   "Git URL": "URL Git",
   "Give {app} access to {owner}": "Надайте {app} доступ до {owner}",
@@ -6154,6 +6136,8 @@ const catalog: MessageCatalog = {
   "Inactivity does not settle threads with a pull request. Merge and close still do.":
     "Бездіяльність не завершує чати з пул-реквестом. Злиття та закриття завершують.",
   "incl. {tokens} reasoning": "зокрема міркування: {tokens}",
+  "Include {file}": "Включити {file}",
+  "Include all files": "Включити всі файли",
   "Include app text": "Включати текст застосунку",
   "Include app text in snapshots": "Включати текст застосунку в знімки",
   "Include text and controls from the captured app.":
@@ -6770,6 +6754,7 @@ const catalog: MessageCatalog = {
   "Loading the rest of the file…": "Завантаження решти файлу…",
   "Loading this thread.": "Завантаження цього чату.",
   "Loading thread context…": "Завантаження контексту чату…",
+  "Loading threads": "Завантаження чатів",
   "Loading threads...": "Завантаження чатів...",
   "Loading threads…": "Завантаження чатів…",
   "Loading timeline": "Завантаження хронології",
@@ -6981,6 +6966,7 @@ const catalog: MessageCatalog = {
   "Merge this conversation back into its source": "Злити цю розмову назад до її джерела",
   "Merge unavailable": "Злиття недоступне",
   Merged: "Злито",
+  "Merging back…": "Злиття назад…",
   "Merging stack...": "Злиття стека...",
   "Merging...": "Злиття...",
   "Mermaid diagram": "Діаграма Mermaid",
@@ -7093,6 +7079,7 @@ const catalog: MessageCatalog = {
   "More info": "Докладніше",
   "More matches available. Refine your search.": "Є ще збіги. Уточніть пошук.",
   "More options if it keeps failing": "Інші варіанти, якщо помилка повторюється",
+  "More project actions": "Інші дії проєкту",
   "More providers": "Більше провайдерів",
   "More replies": "Більше відповідей",
   "More search results available. Refine your search to see them.":
@@ -7229,6 +7216,7 @@ const catalog: MessageCatalog = {
   "New threads start on the model you last picked on this device, Auto included. Until you pick one, they use the model above. Scheduled tasks are not affected.":
     "Нові чати починаються з моделі, яку ви вибирали останньою на цьому пристрої, зокрема Auto. Доки ви не виберете жодної, використовується модель вище. Заплановані завдання не зачіпаються.",
   "New worktree": "Новий worktree",
+  "New worktree per model": "Новий worktree для кожної моделі",
   "New worktrees": "Нові worktree",
   "new worktrees start from remote": "нові worktree починаються з віддаленої гілки",
   "New worktrees start from remote": "Нові worktree починаються з віддаленої гілки",
@@ -7408,8 +7396,6 @@ const catalog: MessageCatalog = {
   "No linked pull requests available.": "Немає прив’язаних пул-реквестів.",
   "No live descendant processes found.": "Живих дочірніх процесів не знайдено.",
   "No local branches found.": "Локальних гілок не знайдено.",
-  "No local commits to include in {shortLabelWithArticle}.":
-    "Немає локальних комітів для включення: {shortLabelWithArticle}.",
   "No local commits to include in a {kind}.": "Немає локальних комітів для {kind}.",
   "No local commits to push.": "Немає локальних комітів для надсилання.",
   "No machine available": "Немає доступного комп’ютера",
@@ -7757,6 +7743,8 @@ const catalog: MessageCatalog = {
     "До хмари можна прив’язати лише локально сполучене bearer-з’єднання.",
   "Only a session that manages access here can answer this.":
     "Відповісти може лише сесія, яка керує доступом тут.",
+  "Only actions that commit can move to a new feature branch. Create a branch yourself or continue on {branch}.":
+    "Перейти на нову гілку функції можуть лише дії з комітом. Створіть гілку самі або продовжте в {branch}.",
   "Only available in the desktop app.": "Доступно лише в десктопному застосунку.",
   "Only built-in themes show artwork, so this theme shows the version pill.":
     "Ілюстрацію показують лише вбудовані теми, тому ця тема показує мітку версії.",
@@ -7785,8 +7773,8 @@ const catalog: MessageCatalog = {
     "В архіві можна відкривати лише текст UTF-8 та зображення.",
   Open: "Відкрити",
   "Open {file} in editor": "Відкрити {file} у редакторі",
-  "Open {kind}": "Відкрити: {kind}",
   "Open {kind} {label}: {title}": "Відкрити {kind} {label}: {title}",
+  "Open {kind} #{number}": "Відкрити {kind} #{number}",
   "Open {label}": "Відкрити {label}",
   "Open {login}'s profile": "Відкрити профіль: {login}",
   "Open {name}": "Відкрити {name}",
@@ -7935,7 +7923,12 @@ const catalog: MessageCatalog = {
   "Open pull requests in T3.CodeShip": "Відкривати пул-реквести в T3.CodeShip",
   "Open question": "Відкрити запитання",
   "Open question from {title}": "Відкрити запитання з {title}",
-  "Open queue, {count} messages": "Відкрити чергу, повідомлень: {count}",
+  "Open queue, {count} messages": {
+    one: "Відкрити чергу, {count} повідомлення",
+    few: "Відкрити чергу, {count} повідомлення",
+    many: "Відкрити чергу, {count} повідомлень",
+    other: "Відкрити чергу, {count} повідомлення",
+  },
   "Open quote": "Відкрити цитату",
   "Open releases": "Відкрити випуски",
   "Open resolved discussion in {path}": "Відкрити вирішене обговорення в {path}",
@@ -7981,8 +7974,8 @@ const catalog: MessageCatalog = {
     "Відкрийте це посилання знову, коли клонування завершиться.",
   "Open this prompt": "Відкрити цей запит",
   "Open this pull request to merge its stack.": "Відкрийте цей пул-реквест, щоб злити його стек.",
-  "Open this URL in the in-app preview when this action runs.":
-    "Відкривати цей URL у вбудованому попередньому перегляді під час запуску дії.",
+  "Open this URL in the in-app preview when this action runs. The preview is only in the desktop app.":
+    "Відкривати цей URL у попередньому перегляді в застосунку, коли запускається ця дія. Попередній перегляд є лише в настільному застосунку.",
   "Open thread": "Відкрити чат",
   "Open ThreadPage": "Відкрити ThreadPage",
   "Open ThreadPage connections": "Відкрити підключення ThreadPage",
@@ -8041,8 +8034,7 @@ const catalog: MessageCatalog = {
   "Opens the archived thread to read it": "Відкриває архівний чат для читання",
   "Opens the browser tab full screen": "Відкриває вкладку браузера на весь екран",
   "Opens the current phase": "Відкриває поточну фазу",
-  "Opens the draft in the new task composer. Swipe left to discard.":
-    "Відкриває чернетку в полі нового завдання. Проведіть пальцем вліво, щоб відкинути.",
+  "Opens the draft in the new task composer.": "Відкриває чернетку в полі нового завдання.",
   "Opens the hosted app, no install needed":
     "Відкриває розміщений застосунок, встановлення не потрібне",
   "Opens the project picker": "Відкриває вибір проєкту",
@@ -8051,21 +8043,6 @@ const catalog: MessageCatalog = {
   "Opens the task editor.": "Відкриває редактор завдання.",
   "Opens the task's last run.": "Відкриває останній запуск завдання.",
   "Opens the thread": "Відкриває чат",
-  "Opens the thread. Swipe left for archive and snooze actions.":
-    "Відкриває чат. Проведіть пальцем вліво для дій «Архівувати» та «Відкласти».",
-  "Opens the thread. Swipe left for settle and snooze actions.":
-    "Відкриває чат. Проведіть пальцем вліво для дій «Завершити» та «Відкласти».",
-  "Opens the thread. Swipe left for un-settle and snooze actions.":
-    "Відкриває чат. Проведіть пальцем вліво для дій «Скасувати завершення» та «Відкласти».",
-  "Opens the thread. Swipe left for wake and snooze actions.":
-    "Відкриває чат. Проведіть пальцем вліво для дій «Розбудити» та «Відкласти».",
-  "Opens the thread. Swipe left to archive.":
-    "Відкриває чат. Проведіть пальцем вліво, щоб архівувати.",
-  "Opens the thread. Swipe left to settle.":
-    "Відкриває чат. Проведіть пальцем вліво, щоб завершити.",
-  "Opens the thread. Swipe left to un-settle.":
-    "Відкриває чат. Проведіть пальцем вліво, щоб скасувати завершення.",
-  "Opens the thread. Swipe left to wake.": "Відкриває чат. Проведіть пальцем вліво, щоб розбудити.",
   "Opens this agent's thread": "Відкриває чат цього агента",
   "Opens this agent's thread. Long press to copy.":
     "Відкриває чат цього агента. Натисніть і утримуйте, щоб скопіювати.",
@@ -8314,6 +8291,7 @@ const catalog: MessageCatalog = {
   "Pin project": "Закріпити проєкт",
   "Pin thread": "Закріпити чат",
   Pink: "Рожевий",
+  pinned: "закріплено",
   Pinned: "Закріплені",
   "Pinned projects come first in project pickers.":
     "Закріплені проєкти йдуть першими у виборі проєктів.",
@@ -8628,7 +8606,6 @@ const catalog: MessageCatalog = {
   "Publishing...": "Публікація…",
   Pull: "Отримати",
   "Pull failed": "Не вдалося отримати зміни",
-  "Pull latest": "Отримати останні зміни",
   "Pull request": "Пул-реквест",
   "Pull request {owner}/{name}#{number}": "Пул-реквест {owner}/{name}#{number}",
   "Pull request #{number} could not be loaded, so this task starts from your default branch.":
@@ -8673,17 +8650,12 @@ const catalog: MessageCatalog = {
   Push: "Надіслати",
   "Push & create {kind}": "Надіслати й створити {kind}",
   "Push & create {kind} from default ref?": "Надіслати й створити {kind} з типового посилання?",
-  "Push & create {shortLabel}": "Надіслати й створити {shortLabel}",
-  "Push & create {shortLabel} from default branch?":
-    "Надіслати й створити {shortLabel} із типової гілки?",
-  "Push is currently unavailable.": "Надсилання зараз недоступне.",
   "Push notification": "Push-сповіщення",
   "Push notifications": "Push-сповіщення",
   "Push notifications are disabled on this device.": "Push-сповіщення вимкнено на цьому пристрої.",
   "Push notifications are enabled, but no alert types are selected.":
     "Push-сповіщення ввімкнено, але жодного типу сповіщень не вибрано.",
   "Push to {branch}": "Надіслати в {branch}",
-  "Push to default branch?": "Надіслати в типову гілку?",
   "Push to default ref?": "Надіслати в типове посилання?",
   "Put active threads in a folder for each machine. Grouped by project too, each machine's folder holds its project folders.":
     "Розкладайте активні чати в теку для кожного комп’ютера. Якщо ще й групувати за проєктом, тека кожного комп’ютера містить теки його проєктів.",
@@ -9242,6 +9214,7 @@ const catalog: MessageCatalog = {
   Replace: "Замінити",
   "Replace draft": "Замінити чернетку",
   "Replace it with this version?": "Замінити її цією версією?",
+  "Replaces {name}": "Замінює {name}",
   "Replay panel animation preview": "Попередній перегляд анімації панелі Replay",
   Reply: "Відповісти",
   "Reply could not be posted": "Не вдалося опублікувати відповідь",
@@ -9825,8 +9798,6 @@ const catalog: MessageCatalog = {
   "Screenshot capture failed. Try again.": "Не вдалося зробити знімок екрана. Спробуйте ще раз.",
   "Screenshot saved": "Знімок екрана збережено",
   "Screenshot unavailable": "Знімок екрана недоступний",
-  "Script actions": "Дії скриптів",
-  "Script not found.": "Скрипт не знайдено.",
   "Scroll display equation": "Прокрутити окреме рівняння",
   "Scroll inline equation": "Прокрутити рядкове рівняння",
   "Scroll panel tabs": "Прокрутити вкладки панелі",
@@ -10053,8 +10024,8 @@ const catalog: MessageCatalog = {
   "Sending...": "Надсилання...",
   "Sending…": "Надсилання…",
   "Sends on reconnect": "Надсилається після перепідключення",
-  "Sends when the environment reconnects. Opens the task for editing. Swipe left to delete.":
-    "Надсилається, коли середовище перепідключиться. Відкриває завдання для редагування. Проведіть пальцем вліво, щоб видалити.",
+  "Sends when the environment reconnects. Opens the task for editing.":
+    "Надішлеться, коли середовище знову підключиться. Відкриває завдання для редагування.",
   "Sends: “{preview}”": "Надсилає: «{preview}»",
   "Sensitive values are stored separately and never returned to the app.":
     "Конфіденційні значення зберігаються окремо й ніколи не повертаються в застосунок.",
@@ -10270,6 +10241,7 @@ const catalog: MessageCatalog = {
   "Show all in…": "Показувати всі у…",
   "Show all projects": "Показати всі проєкти",
   "Show all providers": "Показати всіх провайдерів",
+  "Show all threads": "Показати всі чати",
   "Show app": "Показати застосунок",
   "Show Borders": "Показувати межі",
   "Show changed files": "Показати змінені файли",
@@ -10540,6 +10512,7 @@ const catalog: MessageCatalog = {
   "Snooze until": "Відкласти до",
   "Snooze until limits reset": "Відкласти до скидання лімітів",
   "Snooze until reset": "Відкласти до скидання",
+  "Snooze: {label}, {when}": "Відкласти: {label}, {when}",
   "Snooze: {when}": "Відкласти: {when}",
   "Snooze: Custom…": "Відкласти: власний час…",
   Snoozed: "Відкладені",
@@ -10896,6 +10869,8 @@ const catalog: MessageCatalog = {
   "Switch to {channel}": "Перейти на {channel}",
   "Switch to {channel}?": "Перейти на {channel}?",
   "Switch to {mode}": "Перейти в режим {mode}",
+  "Switch to a feature branch to create a {kind}.":
+    "Перейдіть на гілку функції, щоб створити {kind}.",
   "Switch to Tailscale or deregister an environment you no longer use (sorry!)":
     "Перейдіть на Tailscale або скасуйте реєстрацію середовища, яким більше не користуєтеся (вибачте!)",
   "Switch to Tailscale or get more tunnels by linking your T3 Chat sub (sorry!)":
@@ -10920,7 +10895,6 @@ const catalog: MessageCatalog = {
   "Switching branch": "Перемикання гілки",
   "Switching branch...": "Перемикання гілки...",
   "Switching to WebRTC.": "Перехід на WebRTC.",
-  "Sync branch": "Синхронізувати гілку",
   "Sync ref": "Синхронізувати посилання",
   "Syncing messages...": "Синхронізація повідомлень…",
   "Syncing threads...": "Синхронізація чатів...",
@@ -11223,6 +11197,10 @@ const catalog: MessageCatalog = {
   "The ACP could not be prepared.": "Не вдалося підготувати ACP.",
   "The ACP operation failed.": "Операція ACP не вдалася.",
   "The action could not be completed. Try again.": "Не вдалося виконати дію. Спробуйте ще раз.",
+  "The action was deleted, but its keyboard shortcut could not be removed because permission changed.":
+    "Дію видалено, але її комбінацію клавіш не вдалося прибрати, бо змінилися дозволи.",
+  "The action was saved, but its shortcut was not: {reason}":
+    "Дію збережено, але комбінацію клавіш ні: {reason}",
   "The active window is not available for capture.": "Активне вікно недоступне для захоплення.",
   "The agent is actively controlling these browsers. Closing them may interrupt the current browser actions.":
     "Агент активно керує цими браузерами. Закриття може перервати поточні дії в браузерах.",
@@ -11594,10 +11572,6 @@ const catalog: MessageCatalog = {
   "The saved bearer credential is unavailable.": "Збережений bearer-токен недоступний.",
   "The saved environment is offline. Check the URL or start the environment, then retry.":
     "Збережене середовище офлайн. Перевірте URL або запустіть середовище, потім повторіть спробу.",
-  "The script was deleted, but its keyboard shortcut could not be removed because permission changed.":
-    "Скрипт видалено, але його комбінацію клавіш не вдалося прибрати, бо дозвіл змінився.",
-  "The script was saved, but this connection can no longer change keyboard shortcuts.":
-    "Скрипт збережено, але це підключення більше не може змінювати комбінації клавіш.",
   "The selected cells could not be copied.": "Не вдалося скопіювати вибрані комірки.",
   "the selected environment": "вибране середовище",
   "The selected environment is not connected.": "Вибране середовище не підключене.",
@@ -11780,20 +11754,12 @@ const catalog: MessageCatalog = {
   "This action isn't available for this {term}.": "Ця дія недоступна для цього {term}.",
   "This action needs a saved thread.": "Для цієї дії потрібен збережений чат.",
   "This action requires your confirmation.": "Ця дія потребує вашого підтвердження.",
-  'This action will commit and push changes on "{branch}". You can continue on this branch or create a feature branch and run the same action there.':
-    "Ця дія закомітить і надішле зміни в «{branch}». Можна продовжити в цій гілці або створити гілку функції й виконати ту саму дію там.",
   'This action will commit and push changes on "{branch}". You can continue on this ref or create a feature ref and run the same action there.':
     "Ця дія закомітить і надішле зміни в «{branch}». Можна продовжити з цим посиланням або створити окреме посилання для функції та виконати дію там.",
-  'This action will commit, push, and create {shortLabelWithArticle} on "{branch}". You can continue on this branch or create a feature branch and run the same action there.':
-    "Ця дія закомітить, надішле й створить {shortLabelWithArticle} у «{branch}». Можна продовжити в цій гілці або створити гілку функції й виконати ту саму дію там.",
   'This action will commit, push, and create a {kind} on "{branch}". You can continue on this ref or create a feature ref and run the same action there.':
     "Ця дія закомітить, надішле та створить {kind} для «{branch}». Можна продовжити з цим посиланням або створити окреме посилання для функції та виконати дію там.",
-  'This action will push local commits and create {shortLabelWithArticle} on "{branch}". You can continue on this branch or create a feature branch and run the same action there.':
-    "Ця дія надішле локальні коміти й створить {shortLabelWithArticle} у «{branch}». Можна продовжити в цій гілці або створити гілку функції й виконати ту саму дію там.",
   'This action will push local commits and create a {kind} on "{branch}". You can continue on this ref or create a feature ref and run the same action there.':
     "Ця дія надішле локальні коміти та створить {kind} для «{branch}». Можна продовжити з цим посиланням або створити окреме посилання для функції та виконати дію там.",
-  'This action will push local commits on "{branch}". You can continue on this branch or create a feature branch and run the same action there.':
-    "Ця дія надішле локальні коміти в «{branch}». Можна продовжити в цій гілці або створити гілку функції й виконати ту саму дію там.",
   'This action will push local commits on "{branch}". You can continue on this ref or create a feature ref and run the same action there.':
     "Ця дія надішле локальні коміти з «{branch}». Можна продовжити з цим посиланням або створити окреме посилання для функції та виконати дію там.",
   "This afternoon": "Сьогодні вдень",
@@ -11877,6 +11843,8 @@ const catalog: MessageCatalog = {
   "This connection can create access links but cannot view authorized clients.":
     "Це підключення може створювати посилання доступу, але не може переглядати авторизованих клієнтів.",
   "This connection can no longer change it.": "Це підключення більше не може його змінювати.",
+  "This connection can no longer change keyboard shortcuts.":
+    "Це підключення більше не може змінювати комбінації клавіш.",
   "This connection can no longer remove worktrees.":
     "Це з’єднання більше не може видаляти worktree.",
   "This connection can view keybindings but cannot change them.":
@@ -12155,6 +12123,10 @@ const catalog: MessageCatalog = {
     "Цей комп’ютер не може клонувати за посиланням. Оновіть на ньому T3.CodeShip або клонуйте репозиторій із палітри команд.",
   "This machine cannot start threads without a project.":
     "Цей комп’ютер не може починати чати без проєкту.",
+  "This machine is offline. Refs load when it reconnects.":
+    "Цей комп’ютер офлайн. Посилання завантажаться, коли він знову підключиться.",
+  "This machine is offline. Showing the last known refs.":
+    "Цей комп’ютер офлайн. Показано останні відомі посилання.",
   "This machine is on your T3 Connect account. Use it as a fallback route.":
     "Цей комп’ютер є у вашому обліковому записі T3 Connect. Використайте його як резервний маршрут.",
   "This machine was off or asleep at that time, and catching up is off.":
@@ -12494,7 +12466,6 @@ const catalog: MessageCatalog = {
   "Toggle account label visibility": "Показати або сховати мітку облікового запису",
   "Toggle account visibility": "Перемкнути видимість облікового запису",
   "Toggle Developer Tools": "Перемкнути інструменти розробника",
-  "Toggle inspector": "Перемкнути інспектор",
   "Toggle main sidebar": "Перемкнути головну бічну панель",
   "Toggle main sidebar ({shortcut})": "Перемкнути головну бічну панель ({shortcut})",
   "Toggle right panel": "Показати або сховати праву панель",
@@ -12701,6 +12672,7 @@ const catalog: MessageCatalog = {
   "Unable to open preview": "Не вдалося відкрити попередній перегляд",
   "Unable to open pull request link": "Не вдалося відкрити посилання на пул-реквест",
   "Unable to open release notes": "Не вдалося відкрити примітки до випуску",
+  "Unable to open repository": "Не вдалося відкрити репозиторій",
   "Unable to open System Settings.": "Не вдалося відкрити системні налаштування.",
   "Unable to open the terminal context menu": "Не вдалося відкрити контекстне меню термінала",
   "Unable to pop out preview": "Не вдалося винести перегляд",
@@ -13291,7 +13263,6 @@ const catalog: MessageCatalog = {
   "View {count} browser tabs": "Переглянути вкладки браузера: {count}",
   "View {count} devices": "Переглянути пристрої: {count}",
   "View {shortLabel}": "Переглянути {shortLabel}",
-  "View {shortLabel} is currently unavailable.": "Перегляд {shortLabel} зараз недоступний.",
   "View access": "Перегляд доступу",
   "View accessibility data": "Переглянути дані доступності",
   "View archived": "Переглянути архів",

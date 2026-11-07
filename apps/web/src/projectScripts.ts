@@ -2,7 +2,9 @@ import {
   MAX_SCRIPT_ID_LENGTH,
   SCRIPT_RUN_COMMAND_PATTERN,
   type KeybindingCommand,
+  type ProjectId,
   type ProjectScript,
+  type ServerSettings,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 const isScriptRunCommand = Schema.is(SCRIPT_RUN_COMMAND_PATTERN);
@@ -98,6 +100,35 @@ export function nextProjectScriptId(name: string, existingIds: Iterable<string>)
   }
 
   return `${baseId}-${Date.now()}`.slice(0, MAX_SCRIPT_ID_LENGTH);
+}
+
+/** Shortcuts are keyed by action id across an environment, so a new action needs an id unused anywhere in it. */
+export function projectScriptIdsInUse(environment: {
+  readonly settings: Pick<
+    ServerSettings,
+    "defaultProjectScripts" | "projectScriptOverrides" | "projectSettingsOverrides"
+  >;
+  readonly projects: Iterable<{
+    readonly id: ProjectId;
+    readonly scripts: readonly ProjectScript[];
+  }>;
+  readonly keybindings: ReadonlyArray<{ readonly command: string }>;
+}): Set<string> {
+  const ids = new Set<string>();
+  const add = (scripts: readonly ProjectScript[] | null | undefined) => {
+    for (const script of scripts ?? []) ids.add(script.id);
+  };
+  add(environment.settings.defaultProjectScripts);
+  for (const entry of Object.values(environment.settings.projectSettingsOverrides)) {
+    add(entry.defaultProjectScripts);
+  }
+  for (const scripts of Object.values(environment.settings.projectScriptOverrides)) add(scripts);
+  for (const project of environment.projects) add(project.scripts);
+  for (const binding of environment.keybindings) {
+    const id = projectScriptIdFromCommand(binding.command);
+    if (id !== null) ids.add(id);
+  }
+  return ids;
 }
 
 export function primaryProjectScript(scripts: ReadonlyArray<ProjectScript>): ProjectScript | null {

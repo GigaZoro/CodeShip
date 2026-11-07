@@ -8,11 +8,13 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildHomeProjectScopes,
   buildHomeThreadListGrouping,
+  deriveHomeEmptyState,
   findHomeProjectScope,
   homeFolderNewThreadTargets,
   sortHomeProjectScopes,
   type HomeProjectScope,
 } from "./homeThreadList";
+import type { WorkspaceState } from "../../state/workspaceModel";
 import { makeThreadShellFixture } from "../../test-fixtures";
 import { buildThreadListV2Items } from "../threads/threadListV2";
 
@@ -409,5 +411,74 @@ describe("home thread list grouping", () => {
         }),
       ),
     ).toBe(grouping?.inner?.foldersByKey.get("machine:vps")?.[0]?.key);
+  });
+});
+
+describe("home empty state", () => {
+  const connected: WorkspaceState = {
+    isLoadingConnections: false,
+    hasConnections: true,
+    hasLoadedShellSnapshot: true,
+    hasPendingShellSnapshot: false,
+    hasSyncingConnectedEnvironment: false,
+    hasReadyEnvironment: true,
+    hasConnectingEnvironment: false,
+    connectingEnvironments: [],
+    unreachableEnvironments: [],
+    connectionState: "connected",
+    connectionError: null,
+    shellSnapshotError: null,
+    networkStatus: "online",
+  };
+
+  it.each<
+    [string, Partial<WorkspaceState>, { title: string; loading: boolean; action: string | null }]
+  >([
+    [
+      "loads while a connected machine sends its first threads",
+      {
+        hasLoadedShellSnapshot: false,
+        hasPendingShellSnapshot: true,
+        hasSyncingConnectedEnvironment: true,
+      },
+      { title: "Loading threads", loading: true, action: null },
+    ],
+    [
+      "offers Retry for a machine that never synced",
+      {
+        hasLoadedShellSnapshot: false,
+        hasReadyEnvironment: false,
+        connectionState: "offline",
+        connectionError: "Could not reach Zoro-PC",
+      },
+      { title: "Environment unavailable", loading: false, action: "retry" },
+    ],
+    [
+      "offers Retry when the machine went offline after it synced",
+      { hasReadyEnvironment: false, connectionState: "error" },
+      { title: "No threads yet", loading: false, action: "retry" },
+    ],
+    [
+      "offers a new environment while none is saved",
+      { hasConnections: false, hasReadyEnvironment: false, connectionState: "available" },
+      { title: "No environments connected", loading: false, action: "add-environment" },
+    ],
+  ])("%s", (_name, state, expected) => {
+    expect(
+      deriveHomeEmptyState({ catalogState: { ...connected, ...state }, projectCount: 1 }),
+    ).toMatchObject(expected);
+  });
+
+  it("says why a connected machine's threads have not loaded", () => {
+    expect(
+      deriveHomeEmptyState({
+        catalogState: {
+          ...connected,
+          hasLoadedShellSnapshot: false,
+          shellSnapshotError: "Could not synchronize environment data.",
+        },
+        projectCount: 0,
+      }),
+    ).toMatchObject({ detail: "Could not synchronize environment data.", loading: true });
   });
 });

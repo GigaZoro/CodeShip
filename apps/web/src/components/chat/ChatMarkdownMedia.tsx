@@ -73,12 +73,16 @@ const CHAT_MARKDOWN_WORKSPACE_IMAGE_CLASS_NAME = cn(
 );
 export const MarkdownLinkContext = createContext(false);
 
+export function markdownMediaName(alt: string, kind: "image" | "video"): string {
+  return alt.trim() || (kind === "video" ? t("Video") : t("Image"));
+}
+
 function expandableMarkdownImageProps(
   onImageExpand: ((preview: ExpandedImagePreview) => void) | undefined,
   alt: string,
 ) {
   if (!onImageExpand) return {};
-  const previewName = alt.trim() || "image";
+  const previewName = markdownMediaName(alt, "image");
   const expand = (event: ReactMouseEvent | ReactKeyboardEvent) => {
     if (event.currentTarget.closest("a")) return;
     event.preventDefault();
@@ -179,7 +183,7 @@ export function ChatMarkdownImage(props: {
     if (image.complete && image.naturalWidth > 0) setLoadedSrc(image.currentSrc || image.src);
     markdownImageItems.set(image, {
       src,
-      name: props.alt.trim() || "image",
+      name: markdownMediaName(props.alt, "image"),
       actionsSource: props.actionsSource,
       ...(props.originalUrl ? { originalUrl: props.originalUrl } : {}),
     });
@@ -248,9 +252,7 @@ export function ChatMarkdownImage(props: {
           "relative",
         )}
         style={props.style}
-        {...(failed
-          ? { role: "alert" as const }
-          : { role: "status" as const, "aria-label": t("Loading image") })}
+        {...(failed ? {} : { role: "status" as const, "aria-label": t("Loading image") })}
       >
         {failed ? (
           <span className="flex size-full items-center justify-center p-2 text-center text-xs text-muted-foreground">
@@ -380,7 +382,7 @@ export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props
         : undefined);
   const actionsSource: MediaActionSource = {
     kind: props.kind ?? "image",
-    name: props.alt || (props.kind ?? "image"),
+    name: markdownMediaName(props.alt, props.kind ?? "image"),
     src,
     ...(fallbackSrc === undefined
       ? { asset: { environmentId: props.environmentId, resource } }

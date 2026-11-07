@@ -6,10 +6,12 @@ import { useOpenArtifacts } from "../artifacts/useOpenArtifacts";
 import {
   ARCHIVED_THREADS_EVENT,
   ARTIFACTS_EVENT,
+  SHOW_ALL_THREADS_EVENT,
   archivedThreadsMenuItem,
   artifactsMenuItem,
   buildGroupByMenuActions,
   handleGroupByMenuEvent,
+  showAllThreadsMenuItems,
 } from "./home-list-filter-menu";
 import type { HomeHeaderProps } from "./HomeHeader.types";
 import { t } from "../../lib/i18n";
@@ -26,6 +28,7 @@ export function HomeHeader(props: HomeHeaderProps) {
   const hasCustomListOptions =
     props.selectedEnvironmentId !== null || props.selectedProjectKey !== null;
   const menuActions: MenuAction[] = [
+    ...showAllThreadsMenuItems(hasCustomListOptions),
     {
       id: "environment",
       title: t("Environment"),
@@ -68,6 +71,11 @@ export function HomeHeader(props: HomeHeaderProps) {
   ];
   const handleMenuAction = (event: { nativeEvent: { event: string } }) => {
     const id = event.nativeEvent.event;
+    if (id === SHOW_ALL_THREADS_EVENT) {
+      props.onEnvironmentChange(null);
+      props.onProjectChange(null);
+      return;
+    }
     if (id === ARCHIVED_THREADS_EVENT) {
       openArchivedThreads();
       return;

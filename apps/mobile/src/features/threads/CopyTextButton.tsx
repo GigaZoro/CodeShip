@@ -4,6 +4,7 @@ import { memo, useState } from "react";
 import { Pressable, type ColorValue } from "react-native";
 
 import { useDeadlinePassed } from "../../lib/clock";
+import { minimumTouchSlop } from "../../lib/designTokens";
 import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { t } from "../../lib/i18n";
 
@@ -27,13 +28,14 @@ export const CopyTextButton = memo(function CopyTextButton(props: {
     copiedAtMs === null ? null : copiedAtMs + COPY_FEEDBACK_DURATION_MS,
   );
   const copied = copiedAtMs !== null && !feedbackEnded;
+  const buttonSize = props.buttonSize ?? 30;
 
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={copied ? t("Copied") : props.accessibilityLabel}
       disabled={props.text.length === 0}
-      hitSlop={8}
+      hitSlop={minimumTouchSlop(buttonSize)}
       onLongPress={props.onLongPress}
       onPress={async () => {
         try {
@@ -49,8 +51,8 @@ export const CopyTextButton = memo(function CopyTextButton(props: {
         setCopiedAtMs(Date.now());
       }}
       style={({ pressed }) => ({
-        width: props.buttonSize ?? 30,
-        height: props.buttonSize ?? 30,
+        width: buttonSize,
+        height: buttonSize,
         alignItems: "center",
         justifyContent: "center",
         borderRadius: 9,

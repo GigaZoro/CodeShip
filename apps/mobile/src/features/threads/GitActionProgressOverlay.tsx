@@ -49,7 +49,9 @@ export function GitActionProgressOverlay(props: {
       onAccessibilityEscape={onDismiss}
     >
       <Toast
-        singleLine
+        // Failures carry Git's own explanation, which needs every line and stays until dismissed.
+        singleLine={progress.phase !== "error"}
+        onDismiss={progress.phase === "error" ? onDismiss : undefined}
         message={progress.label ?? t("Source control")}
         description={progress.description ?? undefined}
         tone={

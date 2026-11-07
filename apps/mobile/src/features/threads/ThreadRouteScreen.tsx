@@ -38,6 +38,7 @@ import { useEnvironmentShellReadiness } from "../../state/shell";
 import { restoredNewTaskDraftKey } from "../../state/new-task-draft-key";
 import { clearPendingThreadCreationOutcome } from "../../state/pending-thread-creation";
 import { recoverFailedThreadDraft } from "../../state/recover-failed-thread-draft";
+import { reportThreadCommandFailure } from "../../state/thread-composer-error";
 import { useEnvironmentQuery } from "../../state/query";
 import { dismissGitActionResult, useGitActionProgress } from "../../state/use-vcs-action-state";
 import { vcsEnvironment } from "../../state/vcs";
@@ -386,7 +387,10 @@ function ThreadRouteContent(
   const gitState = useSelectedThreadGitState();
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
-  const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, "thread interrupt");
+  const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
+    label: "thread interrupt",
+    reportFailure: false,
+  });
   const resumeThreadQueue = useAtomCommand(threadEnvironment.resumeThreadQueue, {
     label: "resume queue",
     reportFailure: false,
@@ -432,21 +436,24 @@ function ThreadRouteContent(
   const navigation = useNavigation();
   const selectDetail = useSelectWorkspaceDetail();
   const openPullRequest = useOpenPullRequest();
-  const mergeBack = useAtomCommand(threadEnvironment.mergeBack, "merge thread back");
+  const mergeBack = useAtomCommand(threadEnvironment.mergeBack, {
+    label: "merge thread back",
+    reportFailure: false,
+  });
   const mergeBackTargetThreadId = resolveMergeBackTargetThreadId(selectedThreadDetail);
   const mergeBackRun =
     selectedThreadDetail === null ? null : resolveLatestMergeBackRun(selectedThreadDetail);
-  const mergeBackBusyRef = useRef(false);
+  const [mergingBack, setMergingBack] = useState(false);
   const handleMergeBack = async () => {
     if (
-      mergeBackBusyRef.current ||
+      mergingBack ||
       !selectedThread ||
       mergeBackTargetThreadId === null ||
       mergeBackRun === null
     ) {
       return;
     }
-    mergeBackBusyRef.current = true;
+    setMergingBack(true);
     const result = await mergeBack({
       environmentId: selectedThread.environmentId,
       input: {
@@ -456,8 +463,16 @@ function ThreadRouteContent(
         creationSource: "mobile",
       },
     });
-    mergeBackBusyRef.current = false;
-    if (result._tag !== "Success") return;
+    setMergingBack(false);
+    if (result._tag === "Failure") {
+      if (isAtomCommandInterrupted(result)) return;
+      const error = squashAtomCommandFailure(result);
+      Dialog.alert(
+        t("Could not merge back"),
+        error instanceof Error ? error.message : t("Try again."),
+      );
+      return;
+    }
     selectDetail({
       name: "Thread",
       params: { environmentId: selectedThread.environmentId, threadId: mergeBackTargetThreadId },
@@ -693,7 +708,7 @@ function ThreadRouteContent(
   const handleOpenConnectionEditor = () => {
     void navigation.navigate("Connections");
   };
-  const handleStopThread = () => {
+  const handleStopThread = async () => {
     if (
       !selectedThread ||
       !readEnvironmentScope(selectedThread.environmentId, AuthOrchestrationOperateScope) ||
@@ -701,13 +716,18 @@ function ThreadRouteContent(
     ) {
       return;
     }
-    return interruptThreadTurn({
+    const result = await interruptThreadTurn({
       environmentId: selectedThread.environmentId,
       input: {
         threadId: selectedThread.id,
         runId: composer.interruptibleRunId,
       },
     });
+    reportThreadCommandFailure(
+      scopedThreadKey(selectedThread.environmentId, selectedThread.id),
+      result,
+      t("Failed to interrupt the current turn."),
+    );
   };
 
   const handleResumeQueue = async () => {
@@ -840,13 +860,6 @@ function ThreadRouteContent(
   const threadGitControlProps = {
     environmentId: environmentIdRaw ?? "",
     threadId: threadId ?? "",
-    auxiliaryPaneControl:
-      !layout.usesSplitView && fileInspector.supported && selectedThreadCwd !== null
-        ? {
-            accessibilityLabel: t("Toggle inspector"),
-            onPress: handleToggleInspector,
-          }
-        : undefined,
     onOpenFilesInspector:
       fileInspector.supported && selectedThreadCwd !== null ? handleOpenFilesInspector : undefined,
     onOpenGitInspector: fileInspector.supported ? handleOpenGitInspector : undefined,
@@ -854,6 +867,7 @@ function ThreadRouteContent(
       mergeBackTargetThreadId !== null && mergeBackRun !== null
         ? () => void handleMergeBack()
         : undefined,
+    mergingBack,
     currentBranch: selectedThread?.branch ?? null,
     gitStatus: gitStatus.data,
     gitOperationLabel: gitState.gitOperationLabel,
@@ -868,7 +882,6 @@ function ThreadRouteContent(
         )
       : [],
     terminalSessions: terminalMenuSessions,
-    showDirectFileControl: layout.usesSplitView,
     onOpenTerminal: handleOpenTerminal,
     onOpenNewTerminal: handleOpenNewTerminal,
     onRunProjectScript: handleRunProjectScript,
@@ -924,27 +937,39 @@ function ThreadRouteContent(
     worktreeSetup !== null
       ? worktreeSetup.phase === "running" && !worktreeSetupAgentStarted(worktreeSetup)
       : (selectedThreadDetail?.runs.some((run) => run.status === "preparing") ?? false);
-  const cancelWorktreeSetup = useAtomCommand(vcsEnvironment.cancelWorktreeSetup);
-  const handleCancelWorktreeSetup = () => {
+  const cancelWorktreeSetup = useAtomCommand(vcsEnvironment.cancelWorktreeSetup, {
+    reportFailure: false,
+  });
+  const handleCancelWorktreeSetup = async () => {
     if (!selectedThread) return;
-    void cancelWorktreeSetup({
+    const result = await cancelWorktreeSetup({
       environmentId: selectedThread.environmentId,
       input: { threadId: selectedThread.id },
     });
+    reportThreadCommandFailure(
+      scopedThreadKey(selectedThread.environmentId, selectedThread.id),
+      result,
+      t("Could not cancel worktree setup."),
+    );
   };
-  const startLocalThread = useAtomCommand(threadEnvironment.startTurn, "work locally");
+  const startLocalThread = useAtomCommand(threadEnvironment.startTurn, {
+    label: "work locally",
+    reportFailure: false,
+  });
   const localResendBusy = useRef(false);
   const setupMessage = selectedThreadDetail?.messages.find((message) => message.role === "user");
   const handleWorkLocally = async () => {
     if (!selectedThread || !selectedThreadProject || !setupMessage || localResendBusy.current)
       return;
     localResendBusy.current = true;
+    const threadKey = scopedThreadKey(selectedThread.environmentId, selectedThread.id);
     const result = await cancelWorktreeSetup({
       environmentId: selectedThread.environmentId,
       input: { threadId: selectedThread.id },
     });
     if (result._tag !== "Success" || !result.value.cancelled) {
       localResendBusy.current = false;
+      reportThreadCommandFailure(threadKey, result, t("Could not cancel worktree setup."));
       return;
     }
     // V2 accepts launch before setup; cancellation cannot reject that delivery, so reuse server-owned prompt and uploads.
@@ -970,7 +995,10 @@ function ThreadRouteContent(
       }),
     });
     localResendBusy.current = false;
-    if (launched._tag !== "Success") return;
+    if (launched._tag !== "Success") {
+      reportThreadCommandFailure(threadKey, launched, t("Could not start the thread locally."));
+      return;
+    }
     navigation.dispatch(
       StackActions.replace("Thread", {
         environmentId: String(selectedThread.environmentId),
@@ -1020,7 +1048,7 @@ function ThreadRouteContent(
     <>
       <GitActionProgressOverlay
         progress={gitActionProgress}
-        onDismiss={dismissGitActionResult}
+        onDismiss={() => dismissGitActionResult(gitActionProgressTarget)}
         onOpenPullRequest={openPullRequest}
       />
 

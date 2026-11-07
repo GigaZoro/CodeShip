@@ -7,6 +7,12 @@ import type {
   WorktreeSubmodules,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import {
+  type EnvironmentConnectionPhase,
+  machineAvailability,
+  machineAvailabilityLabel,
+  machineShowsLastKnownState,
+} from "@t3tools/client-runtime/connection";
 import { sanitizeNewRefName } from "@t3tools/shared/git";
 import { toSortableTimestamp } from "@t3tools/client-runtime/state/thread-sort";
 export { deriveLocalBranchNameFromRemoteRef, sanitizeNewRefName } from "@t3tools/shared/git";
@@ -17,11 +23,12 @@ export interface EnvironmentOption {
   label: string;
   isPrimary: boolean;
   machine: EnvironmentMachineKind;
+  connectionPhase: EnvironmentConnectionPhase;
 }
 
 /** "Add to another machine" stays muted until hovered: easy to find, quieter than the machines. */
 export const ADD_TO_MACHINE_LABEL_CLASS =
-  "flex min-w-0 items-center gap-1.5 opacity-55 in-data-highlighted:opacity-100 in-data-popup-open:opacity-100";
+  "flex min-w-0 items-center gap-1.5 text-muted-foreground in-data-highlighted:text-foreground in-data-popup-open:text-foreground";
 
 export const EnvMode = Schema.Literals(["local", "worktree"]);
 export type EnvMode = typeof EnvMode.Type;
@@ -53,6 +60,12 @@ export function resolveEnvironmentOptionLabel(input: {
   return runtimeLabel ?? savedLabel ?? input.environmentId;
 }
 
+/** Why a machine in the "Run on" list cannot run work now, or null when it can. */
+export function resolveEnvironmentOptionStatus(phase: EnvironmentConnectionPhase): string | null {
+  const availability = machineAvailability(phase);
+  return machineShowsLastKnownState(availability) ? machineAvailabilityLabel(availability) : null;
+}
+
 export function shouldShowEnvironmentIndicator(input: {
   activeEnvironment: Pick<EnvironmentOption, "isPrimary"> | null;
   canPickEnvironment: boolean;
@@ -76,6 +89,21 @@ export function resolveContextStripLabelsCompact(input: {
 
 export function resolveEnvModeLabel(mode: EnvMode): string {
   return mode === "worktree" ? t("New worktree") : t("Current checkout");
+}
+
+export function resolveForcedWorktreeLabel(): string {
+  return t("New worktree per model");
+}
+
+export type WorkspaceChoice = EnvMode | "current-worktree" | "previous-worktree";
+
+export function resolveWorkspaceChoice(input: {
+  activeWorktreePath: string | null;
+  effectiveEnvMode: EnvMode;
+}): WorkspaceChoice {
+  return input.activeWorktreePath && input.effectiveEnvMode === "local"
+    ? "current-worktree"
+    : input.effectiveEnvMode;
 }
 
 export const WORKTREE_SUBMODULES_LABELS: Record<WorktreeSubmodules, Message> = {
@@ -260,6 +288,23 @@ export function resolveBranchSelectionTarget(input: {
     nextWorktreePath,
     reuseExistingWorktree: false,
   };
+}
+
+/**
+ * The create row needs the server's answer for exactly what was typed: until then an existing
+ * ref with that name may be missing from the list, and creating it would fail.
+ */
+export function shouldOfferCreateRef(input: {
+  newRefName: string;
+  searchedQuery: string;
+  searchedRefNames: ReadonlySet<string> | null;
+}): boolean {
+  return (
+    input.newRefName.length > 0 &&
+    input.searchedQuery === input.newRefName &&
+    input.searchedRefNames !== null &&
+    !input.searchedRefNames.has(input.newRefName)
+  );
 }
 
 export function shouldIncludeBranchPickerItem(input: {

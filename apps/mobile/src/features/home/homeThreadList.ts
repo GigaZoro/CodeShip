@@ -21,8 +21,10 @@ import type { SidebarGrouping } from "@t3tools/contracts/settings";
 import * as Arr from "effect/Array";
 import * as Order from "effect/Order";
 
+import { t } from "../../lib/i18n";
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
+import type { WorkspaceState } from "../../state/workspaceModel";
 import type { ThreadListV2Folder, ThreadListV2Grouping } from "../threads/threadListV2";
 
 export interface HomeProjectScope {
@@ -297,4 +299,94 @@ export function homeFolderNewThreadTargets(
 /** Shares the folder state map with project folders, outside their key space. */
 function homeMachineFolderKey(environmentId: EnvironmentId): string {
   return `machine:${environmentId}`;
+}
+
+export interface HomeEmptyState {
+  readonly title: string;
+  readonly detail: string;
+  readonly loading: boolean;
+  readonly action: "add-environment" | "retry" | null;
+}
+
+/** What Home shows while no machine has an active thread or pending task to list. */
+export function deriveHomeEmptyState(input: {
+  readonly catalogState: WorkspaceState;
+  readonly projectCount: number;
+}): HomeEmptyState {
+  const state = input.catalogState;
+  if (state.isLoadingConnections) {
+    return {
+      title: t("Loading environments"),
+      detail: t("Checking saved environments on this device."),
+      loading: true,
+      action: null,
+    };
+  }
+  if (!state.hasConnections) {
+    return {
+      title: t("No environments connected"),
+      detail: t("Add an environment to load projects and start coding sessions."),
+      loading: false,
+      action: "add-environment",
+    };
+  }
+  // Pull-to-refresh and Retry reach only these machines; see useReconnectMachines.
+  const retryable = state.connectionState === "offline" || state.connectionState === "error";
+  if (!state.hasLoadedShellSnapshot) {
+    const offlineDetail = t(
+      "The saved environment is offline. Check the URL or start the environment, then retry.",
+    );
+    switch (state.connectionState) {
+      case "connected":
+        // The shell stream retries a failed sync by itself.
+        return {
+          title: t("Loading threads"),
+          detail:
+            state.shellSnapshotError ??
+            t("Loading projects and threads from the saved environment."),
+          loading: true,
+          action: null,
+        };
+      case "connecting":
+      case "reconnecting":
+        return {
+          title: t("Connecting to environment"),
+          detail:
+            state.connectionError ?? t("Loading projects and threads from the saved environment."),
+          loading: true,
+          action: null,
+        };
+      case "unsupported":
+        return {
+          title: t("Client not supported"),
+          detail: state.connectionError ?? offlineDetail,
+          loading: false,
+          action: "add-environment",
+        };
+      case "available":
+      case "offline":
+      case "error":
+        return {
+          title: t("Environment unavailable"),
+          detail: state.connectionError ?? state.shellSnapshotError ?? offlineDetail,
+          loading: false,
+          action: retryable ? "retry" : "add-environment",
+        };
+    }
+  }
+  const action = retryable ? "retry" : null;
+  if (input.projectCount === 0) {
+    return {
+      title: t("No projects found"),
+      detail: t("The connected environment did not report any projects."),
+      loading: false,
+      action,
+    };
+  }
+  return {
+    title: t("No threads yet"),
+    detail: t("Create a task to start a new coding session."),
+    loading: false,
+    action,
+  };
 }

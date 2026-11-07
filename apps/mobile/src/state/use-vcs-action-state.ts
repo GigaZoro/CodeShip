@@ -1,6 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
 import { secondTick } from "@t3tools/client-runtime/clock";
-import { type VcsActionState, type VcsActionTarget } from "@t3tools/client-runtime/state/vcs";
+import {
+  type ResolvedVcsActionTarget,
+  type VcsActionState,
+  type VcsActionTarget,
+} from "@t3tools/client-runtime/state/vcs";
 import { Atom } from "effect/reactivity";
 import * as Haptics from "expo-haptics";
 import { useSyncExternalStore } from "react";
@@ -22,43 +26,63 @@ export interface GitActionResultNotification {
 
 const RESULT_DISMISS_MS = 5_000;
 
-const gitActionResultAtom = Atom.make<GitActionResultNotification | null>(null).pipe(
-  Atom.keepAlive,
-  Atom.withLabel("mobile:git-action-result"),
+// A result belongs to the checkout it ran in, so another thread's screen never shows it.
+const gitActionResultAtom = Atom.family((key: string) =>
+  Atom.make<GitActionResultNotification | null>(null).pipe(
+    Atom.keepAlive,
+    Atom.withLabel(`mobile:git-action-result:${key}`),
+  ),
 );
-let dismissTimer: ReturnType<typeof setTimeout> | null = null;
+const NO_TARGET_RESULT_ATOM = Atom.make<GitActionResultNotification | null>(null).pipe(
+  Atom.withLabel("mobile:git-action-result:none"),
+);
+const dismissTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-function broadcast(result: GitActionResultNotification | null): void {
-  appAtomRegistry.set(gitActionResultAtom, result);
+function resultKey(target: VcsActionTarget): string | null {
+  return target.environmentId === null || target.cwd === null
+    ? null
+    : JSON.stringify([target.environmentId, target.cwd]);
 }
 
-export function showGitActionResult(result: GitActionResultNotification): void {
+export function gitActionResultAtomFor(target: VcsActionTarget) {
+  const key = resultKey(target);
+  return key === null ? NO_TARGET_RESULT_ATOM : gitActionResultAtom(key);
+}
+
+function clearDismissTimer(key: string): void {
+  const timer = dismissTimers.get(key);
+  if (timer === undefined) return;
+  clearTimeout(timer);
+  dismissTimers.delete(key);
+}
+
+export function showGitActionResult(
+  target: ResolvedVcsActionTarget,
+  result: GitActionResultNotification,
+): void {
   // Best effort: devices without a haptics engine reject.
   Haptics.notificationAsync(
     result.type === "success"
       ? Haptics.NotificationFeedbackType.Success
       : Haptics.NotificationFeedbackType.Error,
   ).catch(() => undefined);
-  if (dismissTimer) clearTimeout(dismissTimer);
-  broadcast(result);
-  dismissTimer = setTimeout(() => {
-    dismissTimer = null;
-    broadcast(null);
-  }, RESULT_DISMISS_MS);
+  const key = JSON.stringify([target.environmentId, target.cwd]);
+  clearDismissTimer(key);
+  appAtomRegistry.set(gitActionResultAtom(key), result);
+  // A failure stays until dismissed so its output can be read.
+  if (result.type === "success") {
+    dismissTimers.set(
+      key,
+      setTimeout(() => dismissGitActionResult(target), RESULT_DISMISS_MS),
+    );
+  }
 }
 
-export function dismissGitActionResult(): void {
-  if (dismissTimer) clearTimeout(dismissTimer);
-  dismissTimer = null;
-  broadcast(null);
-}
-
-function useGitActionResultNotification(): {
-  readonly result: GitActionResultNotification | null;
-  readonly dismiss: () => void;
-} {
-  const result = useAtomValue(gitActionResultAtom);
-  return { result, dismiss: dismissGitActionResult };
+export function dismissGitActionResult(target: VcsActionTarget): void {
+  const key = resultKey(target);
+  if (key === null) return;
+  clearDismissTimer(key);
+  appAtomRegistry.set(gitActionResultAtom(key), null);
 }
 
 export type GitActionProgressPhase = "idle" | "running" | "success" | "error";
@@ -87,7 +111,7 @@ function formatElapsedSeconds(ms: number | null, nowMs: number): string | null {
 
 export function useGitActionProgress(target: VcsActionTarget): GitActionProgress {
   const actionState = useVcsActionState(target);
-  const { result } = useGitActionResultNotification();
+  const result = useAtomValue(gitActionResultAtomFor(target));
 
   // Only a running action shows elapsed time, so only it subscribes to the second tick.
   const nowMs = useSyncExternalStore(

@@ -4,12 +4,15 @@ import { dedupeRemoteBranchesWithLocalMatches } from "@t3tools/shared/git";
 import {
   deriveLocalBranchNameFromRemoteRef,
   resolveBranchSelectionTarget,
+  resolveBranchTriggerLabel,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
   resolveBranchToolbarPrBranch,
   resolveLocalCheckoutBranchMismatch,
+  resolvePreviousWorktreeSeed,
   sanitizeNewRefName,
   shouldIncludeBranchPickerItem,
+  shouldOfferCreateRef,
 } from "./BranchToolbar.logic";
 
 describe("resolveDraftEnvModeAfterBranchChange", () => {
@@ -232,6 +235,82 @@ describe("shouldIncludeBranchPickerItem", () => {
         checkoutPullRequestItemValue: null,
       }),
     ).toBe(true);
+  });
+});
+
+describe("shouldOfferCreateRef", () => {
+  it("waits for the list to answer exactly what was typed before offering a new ref", () => {
+    const answered = new Set(["main", "feature/main-ui"]);
+    expect(
+      shouldOfferCreateRef({ newRefName: "main", searchedQuery: "main", searchedRefNames: null }),
+    ).toBe(false);
+    expect(
+      shouldOfferCreateRef({
+        newRefName: "main",
+        searchedQuery: "mai",
+        searchedRefNames: answered,
+      }),
+    ).toBe(false);
+    expect(
+      shouldOfferCreateRef({
+        newRefName: "main",
+        searchedQuery: "main",
+        searchedRefNames: answered,
+      }),
+    ).toBe(false);
+    expect(
+      shouldOfferCreateRef({ newRefName: "mai", searchedQuery: "mai", searchedRefNames: answered }),
+    ).toBe(true);
+  });
+});
+
+describe("resolveBranchTriggerLabel", () => {
+  it("marks a local base branch as starting from its remote only for new worktrees", () => {
+    const base = {
+      activeWorktreePath: null,
+      effectiveEnvMode: "worktree" as const,
+      resolvedActiveBranch: "main",
+      startFromOrigin: true,
+    };
+    expect(resolveBranchTriggerLabel({ ...base, resolvedActiveBranchIsRemote: false })).toBe(
+      "From main (remote)",
+    );
+    expect(resolveBranchTriggerLabel({ ...base, resolvedActiveBranchIsRemote: true })).toBe(
+      "From main",
+    );
+    expect(resolveBranchTriggerLabel({ ...base, resolvedActiveBranchIsRemote: null })).toBe(
+      "From main",
+    );
+    expect(
+      resolveBranchTriggerLabel({
+        ...base,
+        activeWorktreePath: "/repo/.t3/worktrees/main",
+        resolvedActiveBranchIsRemote: false,
+      }),
+    ).toBe("main");
+  });
+});
+
+describe("resolvePreviousWorktreeSeed", () => {
+  it("picks the latest unarchived worktree other than the current one", () => {
+    expect(
+      resolvePreviousWorktreeSeed({
+        currentWorktreePath: "/wt/current",
+        threads: [
+          { branch: "a", worktreePath: "/wt/a", updatedAt: "2026-01-02T00:00:00.000Z" },
+          {
+            branch: "archived",
+            worktreePath: "/wt/archived",
+            updatedAt: "2026-01-05T00:00:00.000Z",
+            archivedAt: "2026-01-06T00:00:00.000Z",
+          },
+          { branch: "bad", worktreePath: "/wt/bad", updatedAt: "not a date" },
+          { branch: "current", worktreePath: "/wt/current", updatedAt: "2026-01-09T00:00:00.000Z" },
+          { branch: "b", worktreePath: "/wt/b", updatedAt: "2026-01-03T00:00:00.000Z" },
+          { branch: "local", worktreePath: null, updatedAt: "2026-01-08T00:00:00.000Z" },
+        ],
+      }),
+    ).toEqual({ branch: "b", worktreePath: "/wt/b" });
   });
 });
 

@@ -1,4 +1,4 @@
-import { t } from "~/i18n";
+import { msg, t } from "~/i18n";
 import type { VcsRef } from "@t3tools/contracts";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { useId, useRef, useState, type ComponentProps, type ReactNode } from "react";
@@ -7,6 +7,7 @@ import { MiddleTruncate } from "./ui/middle-truncate";
 import { observeResize } from "../lib/observeResize";
 import { cn } from "../lib/utils";
 import { shouldLoadNextBranchPageAfterScroll } from "../state/paginatedBranches";
+import { Button } from "./ui/button";
 import { RefreshIcon } from "./ui/refresh-icon";
 import { Switch } from "./ui/switch";
 import { getVirtualizedScrollFadeClassName } from "./ui/scroll-area";
@@ -34,6 +35,8 @@ export function BranchPicker({
   isFetchingNextPage,
   onLoadNext,
   statusText,
+  statusAction,
+  settled = true,
   originControl,
   popupProps,
   renderItem,
@@ -52,6 +55,9 @@ export function BranchPicker({
   isFetchingNextPage: boolean;
   onLoadNext: () => void;
   statusText: string | null;
+  statusAction?: { label: string; onAction: () => void } | undefined;
+  /** False until the list answers the current query, so an empty list is not reported as no refs. */
+  settled?: boolean;
   originControl?: { checked: boolean; onCheckedChange: (checked: boolean) => void } | undefined;
   popupProps: Omit<ComponentProps<typeof ComboboxPopup>, "children">;
   renderItem: (value: string, index: number) => ReactNode;
@@ -174,7 +180,7 @@ export function BranchPicker({
           }}
         />
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <ComboboxEmpty>{t("No refs found.")}</ComboboxEmpty>
+          {settled ? <ComboboxEmpty>{t("No refs found.")}</ComboboxEmpty> : null}
           <div className="relative flex min-h-0 w-full max-h-56 flex-1 flex-col overflow-hidden">
             <ComboboxListVirtualized className="flex size-full min-h-0 min-w-0 flex-col">
               <LegendList<string>
@@ -233,12 +239,33 @@ export function BranchPicker({
               </TooltipPopup>
             </Tooltip>
           ) : null}
-          {statusText ? <ComboboxStatus>{statusText}</ComboboxStatus> : null}
+          {statusText ? (
+            <div className="flex items-center gap-2">
+              <ComboboxStatus className="min-w-0 flex-1">{statusText}</ComboboxStatus>
+              {statusAction ? (
+                <Button
+                  variant="outline"
+                  size="micro"
+                  className="me-3 shrink-0"
+                  onClick={statusAction.onAction}
+                >
+                  {statusAction.label}
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </ComboboxPopup>
     </Combobox>
   );
 }
+
+const REF_BADGE_LABELS = {
+  current: msg("current"),
+  worktree: msg("worktree"),
+  remote: msg("remote"),
+  default: msg("default"),
+} as const;
 
 export function BranchPickerRefItem({
   branch: refName,
@@ -281,7 +308,11 @@ export function BranchPickerRefItem({
     >
       <div className="flex w-full min-w-0 items-center justify-between gap-2">
         <MiddleTruncate value={itemValue} className="flex-1" />
-        {badge && <span className="shrink-0 text-3xs text-muted-foreground/45">{badge}</span>}
+        {badge && (
+          <span className="shrink-0 text-3xs text-muted-foreground">
+            {t(REF_BADGE_LABELS[badge])}
+          </span>
+        )}
       </div>
     </ComboboxItem>
   );

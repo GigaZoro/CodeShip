@@ -22,6 +22,8 @@ export function ListFilterMenu(props: {
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={props.accessibilityLabel}
+        // The label names the filter; the chip's text is its value.
+        accessibilityValue={props.icon ? undefined : { text: props.label }}
         accessibilityState={{ selected: Boolean(props.active) }}
         hitSlop={6}
       >

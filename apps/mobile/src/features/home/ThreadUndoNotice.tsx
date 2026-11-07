@@ -10,7 +10,9 @@ import {
   useNativeLayoutMetrics,
   useNativeColumnLayoutMetrics,
 } from "../../native/native-layout-metrics";
+import { useAndroidControlSizing } from "../../components/ui/useAndroidControlSizing";
 import { workspaceSearchBottomClearance } from "../workspace/workspace-tabs-state";
+import { androidHomeFabPosition } from "./AndroidHomeFab.shared";
 import { useWorkspaceTabs } from "../workspace/WorkspaceTabsContext";
 import {
   dismissThreadUndoNotice,
@@ -19,8 +21,13 @@ import {
 } from "./thread-undo-notice";
 import { t } from "../../lib/i18n";
 
-export function ThreadUndoNotice(props: { readonly visible: boolean }) {
+export function ThreadUndoNotice(props: {
+  readonly visible: boolean;
+  /** Android's New thread button sits at the bottom edge; the notice rises above it. */
+  readonly aboveHomeFab?: boolean;
+}) {
   const floatingTabsEnabled = useAndroidFloatingTabs();
+  const { fabSize } = useAndroidControlSizing();
   const notice = useThreadUndoNotice();
   const insets = useSafeAreaInsets();
   const columnMetrics = useNativeColumnLayoutMetrics();
@@ -69,7 +76,9 @@ export function ThreadUndoNotice(props: { readonly visible: boolean }) {
             ) + 8
       : floatingTabsEnabled && keyboardHeight === 0
         ? Math.max(insets.bottom + 12, workspace?.bottomClearance ?? 0)
-        : insets.bottom + 12;
+        : props.aboveHomeFab && !floatingTabsEnabled
+          ? androidHomeFabPosition(insets.bottom, false).bottom + fabSize + 12
+          : insets.bottom + 12;
   return (
     <View
       key={instance.key}

@@ -6,6 +6,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { SymbolView } from "../../components/ui/AppSymbol";
 
 import { ConnectionStatusDot } from "../connection/ConnectionStatusDot";
+import { connectionTone } from "../connection/connectionTone";
 import { t } from "../../lib/i18n";
 
 export function DraftEnvironmentControl(props: {
@@ -15,18 +16,18 @@ export function DraftEnvironmentControl(props: {
   readonly disabled: boolean;
   readonly onChooseEnvironment: () => void;
 }) {
-  const disconnected = props.connectionState !== "connected";
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={
-        disconnected
-          ? t("Choose environment, {label}, Offline", { label: props.label })
-          : t("Choose environment, {label}, Connected", { label: props.label })
-      }
+      accessibilityLabel={t("Choose environment, {label}, {status}", {
+        label: props.label,
+        status: connectionTone(props.connectionState).label,
+      })}
+      accessibilityState={{ disabled: props.disabled }}
       disabled={props.disabled}
       onPress={props.onChooseEnvironment}
-      className="flex-row items-center gap-1.5 rounded-xl px-3 py-2 active:opacity-65"
+      className="h-[44px] flex-row items-center gap-1.5 rounded-xl px-3 active:opacity-65"
+      style={props.disabled ? { opacity: 0.45 } : undefined}
     >
       <EnvironmentMachineSymbol
         kind={props.machineKind}
@@ -37,7 +38,9 @@ export function DraftEnvironmentControl(props: {
         {t("on {label}", { label: props.label })}
       </Text>
       <SymbolView name="chevron.right" size={11} tintColorClassName="accent-icon-muted" />
-      {disconnected ? <ConnectionStatusDot state="error" pulse={false} size={6} /> : null}
+      {props.connectionState !== "connected" ? (
+        <ConnectionStatusDot state={props.connectionState} pulse={false} size={6} />
+      ) : null}
     </Pressable>
   );
 }

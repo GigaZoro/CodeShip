@@ -34,6 +34,7 @@ function toNativeHeaderMenuItems(items: HomeListFilterMenu["items"]): NativeHead
 
 export function createSidebarHeaderItems(input: {
   readonly filterIcon: string;
+  readonly filterAccessibilityLabel: string;
   readonly filterMenu: HomeListFilterMenu;
   readonly onOpenSettings: () => void;
 }): NativeStackHeaderItem[] {
@@ -42,7 +43,7 @@ export function createSidebarHeaderItems(input: {
       type: "menu",
       axisBehavior: "horizontalOnly",
       label: "",
-      accessibilityLabel: t("Filter threads"),
+      accessibilityLabel: input.filterAccessibilityLabel,
       icon: sfSymbolIcon(input.filterIcon),
       menu: {
         title: input.filterMenu.title,

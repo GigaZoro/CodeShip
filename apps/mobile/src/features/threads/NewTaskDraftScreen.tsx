@@ -1,6 +1,9 @@
 import { DraftEnvironmentControl } from "./DraftEnvironmentControl";
 import { NativeScrollEdgeEffectsContext } from "../../native/NativeScrollViewMarker";
 import { DraftThreadHeader } from "./DraftThreadHeader";
+import { GitActionProgressOverlay } from "./GitActionProgressOverlay";
+import { useOpenPullRequest } from "../../native/useOpenPullRequest";
+import { dismissGitActionResult, useGitActionProgress } from "../../state/use-vcs-action-state";
 import { threadHeaderAppearance } from "./thread-header-appearance";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { useComposerAttachmentActions } from "../../state/use-composer-attachment-actions";
@@ -364,6 +367,12 @@ export function NewTaskDraftScreen(props: {
     (flow.workspaceMode === "worktree"
       ? selectedProject?.workspaceRoot
       : (flow.selectedWorktreePath ?? selectedProject?.workspaceRoot)) || null;
+  const gitActionTarget = {
+    environmentId: selectedProject?.environmentId ?? null,
+    cwd: composerWorkspaceCwd,
+  };
+  const gitActionProgress = useGitActionProgress(gitActionTarget);
+  const openPullRequest = useOpenPullRequest();
   const preventRemove =
     (isIncomingShareHoldingRoute && !isProjectPickerReturnActive) || flow.submitting;
   usePreventRemove(preventRemove, () => undefined);
@@ -912,6 +921,11 @@ export function NewTaskDraftScreen(props: {
   });
   return (
     <>
+      <GitActionProgressOverlay
+        progress={gitActionProgress}
+        onDismiss={() => dismissGitActionResult(gitActionTarget)}
+        onOpenPullRequest={openPullRequest}
+      />
       <ThreadScreenBinding
         environmentId={selectedProject.environmentId}
         header={

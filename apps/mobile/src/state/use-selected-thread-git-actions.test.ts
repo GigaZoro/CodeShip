@@ -20,6 +20,7 @@ const state = vi.hoisted(() => ({
   pushes: 0,
   metadataRequests: [] as { environmentId: string; branch: string }[],
   results: [] as { type: string; description?: string }[],
+  resultTargets: [] as unknown[],
   afterGitAction: undefined as (() => void) | undefined,
   statusRefreshes: 0,
   readRefs: vi.fn(),
@@ -59,8 +60,10 @@ vi.mock("./use-remote-environment-registry", () => ({
   setPendingConnectionError: () => {},
 }));
 vi.mock("./use-vcs-action-state", () => ({
-  showGitActionResult: (result: { type: string; description?: string }) =>
-    state.results.push(result),
+  showGitActionResult: (target: unknown, result: { type: string; description?: string }) => {
+    state.resultTargets.push(target);
+    state.results.push(result);
+  },
 }));
 vi.mock("../lib/uuid", () => ({ uuidv4: () => "action" }));
 vi.mock("./threads", () => ({
@@ -138,6 +141,7 @@ describe("thread Git mutation permissions", () => {
     state.pushes = 0;
     state.metadataRequests = [];
     state.results = [];
+    state.resultTargets = [];
     state.afterGitAction = undefined;
     state.statusRefreshes = 0;
   });
@@ -168,6 +172,10 @@ describe("thread Git mutation permissions", () => {
     expect(state.pushes).toBe(1);
     expect(state.thread.branch).toBe("main");
     expect(state.metadataRequests).toEqual([]);
+    expect(state.resultTargets).toEqual([
+      { environmentId: "environment", cwd: "/repo" },
+      { environmentId: "environment", cwd: "/repo" },
+    ]);
   });
 
   it.each(["create", "checkout", "worktree", "commit"] as const)(

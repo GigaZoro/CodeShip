@@ -1,3 +1,4 @@
+import { DEFAULT_SERVER_SETTINGS, ProjectId, type ProjectScript } from "@t3tools/contracts";
 import { shortcutLabelForCommand } from "./keybindings";
 import { describe, expect, it } from "vite-plus/test";
 import { settleProjectScript, setupProjectScript } from "@t3tools/shared/projectScripts";
@@ -6,6 +7,7 @@ import {
   commandForProjectScript,
   nextProjectScriptId,
   primaryProjectScript,
+  projectScriptIdsInUse,
   releaseClaimedRoles,
 } from "./projectScripts";
 
@@ -27,6 +29,28 @@ describe("projectScripts helpers", () => {
     expect(nextProjectScriptId("Run Tests", [])).toBe("run-tests");
     expect(nextProjectScriptId("Run Tests", ["run-tests"])).toBe("run-tests-2");
     expect(nextProjectScriptId("!!!", [])).toBe("script");
+
+    // Shortcuts are keyed by id environment-wide, so ids used by other projects or bound to a
+    // shortcut are taken too.
+    const script = (id: string): ProjectScript => ({
+      id,
+      name: id,
+      command: id,
+      icon: "play",
+      runOnWorktreeCreate: false,
+    });
+    const idsInUse = projectScriptIdsInUse({
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        projectSettingsOverrides: {
+          [ProjectId.make("other")]: { defaultProjectScripts: [script("build")] },
+        },
+      },
+      projects: [{ id: ProjectId.make("current"), scripts: [] }],
+      keybindings: [{ command: "script.lint.run" }],
+    });
+    expect(nextProjectScriptId("Build", idsInUse)).toBe("build-2");
+    expect(nextProjectScriptId("Lint", idsInUse)).toBe("lint-2");
   });
 
   it("resolves primary, setup, and settle scripts", () => {

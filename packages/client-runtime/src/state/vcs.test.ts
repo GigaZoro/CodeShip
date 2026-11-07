@@ -5,9 +5,9 @@ import {
   WS_METHODS,
   VcsProcessExitError,
   type VcsListRefsResult,
-  type VcsStatusResult,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -38,7 +38,6 @@ import {
   commitVcsRefsRefresh,
   createVcsEnvironmentAtoms,
   makeCachedVcsRefsChanges,
-  resolveQuickAction,
 } from "./vcs.ts";
 import {
   invalidateCachedVcsRefs,
@@ -571,6 +570,75 @@ describe("cached VCS refs", () => {
     ),
   );
 
+  it.effect("shows a failed refresh on the refs list until the next answer", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const failing = yield* Ref.make(true);
+        const failure = new VcsProcessExitError({
+          operation: "listRefs",
+          command: "git",
+          cwd: "/repo",
+          exitCode: 128,
+          detail: "Could not read refs.",
+        });
+        const client = {
+          [WS_METHODS.vcsListRefs]: () =>
+            Ref.get(failing).pipe(
+              Effect.flatMap((fail) => (fail ? Effect.fail(failure) : Effect.succeed(LIVE_REFS))),
+            ),
+        } as unknown as WsRpcProtocolClient;
+        const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+          target: TARGET,
+          state: yield* SubscriptionRef.make(CONNECTED_CONNECTION_STATE),
+          session: yield* SubscriptionRef.make(Option.some(session(client))),
+          prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+          connect: Effect.void,
+          disconnect: Effect.void,
+          retryNow: Effect.void,
+        } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
+        const environmentRegistry = {
+          followStream: (_environmentId, stream) =>
+            Stream.provideService(stream, EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        } as EnvironmentRegistry.EnvironmentRegistry["Service"];
+        const runtime = Atom.runtime(
+          Layer.merge(
+            Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
+            Layer.succeed(
+              Persistence.EnvironmentCacheStore,
+              cacheWithRefs(Option.some(CACHED_REFS)),
+            ),
+          ),
+        );
+        const registry = yield* Effect.acquireRelease(Effect.sync(AtomRegistry.make), (registry) =>
+          Effect.sync(() => registry.dispose()),
+        );
+        const refs = createVcsEnvironmentAtoms(runtime).listRefs({
+          environmentId: TARGET.environmentId,
+          input: { cwd: "/repo", limit: 100 },
+        });
+        yield* AtomRegistry.mount(registry, refs);
+
+        const failed = yield* AtomRegistry.toStream(registry, refs).pipe(
+          Stream.filter(AsyncResult.isFailure),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        expect(Cause.squash(failed.cause)).toBe(failure);
+        expect(failed.waiting).toBe(false);
+        expect(AsyncResult.getOrElse(failed, () => null)).toEqual(CACHED_REFS);
+
+        yield* Ref.set(failing, false);
+        registry.refresh(refs);
+        const answered = yield* AtomRegistry.toStream(registry, refs).pipe(
+          Stream.filter((result) => AsyncResult.getOrElse(result, () => null) === LIVE_REFS),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        expect(AsyncResult.isSuccess(answered)).toBe(true);
+      }),
+    ),
+  );
+
   it.effect("emits persisted refs before a live refresh", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -620,47 +688,3 @@ const grantedSessions = Atom.family((_id: EnvironmentId) =>
     }),
   ),
 );
-
-function status(overrides: Partial<VcsStatusResult> = {}): VcsStatusResult {
-  return {
-    isRepo: true,
-    hasPrimaryRemote: true,
-    isDefaultRef: false,
-    refName: "feature/test",
-    hasWorkingTreeChanges: false,
-    workingTree: {
-      files: [],
-      insertions: 0,
-      deletions: 0,
-    },
-    hasUpstream: true,
-    aheadCount: 0,
-    behindCount: 0,
-    pr: null,
-    ...overrides,
-  };
-}
-
-describe("resolveQuickAction", () => {
-  it("commits local changes without pushing when the branch is behind upstream", () => {
-    const behind = status({ hasWorkingTreeChanges: true, behindCount: 2 });
-    const commit = { label: "Commit", disabled: false, kind: "run_action", action: "commit" };
-    expect(resolveQuickAction(behind, false)).toEqual(commit);
-    expect(
-      resolveQuickAction(
-        {
-          ...behind,
-          pr: {
-            number: 13,
-            title: "Open PR",
-            url: "https://example.com/pr/13",
-            baseRef: "main",
-            headRef: "feature/test",
-            state: "open",
-          },
-        },
-        false,
-      ),
-    ).toEqual(commit);
-  });
-});

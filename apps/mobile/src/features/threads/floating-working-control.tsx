@@ -32,7 +32,7 @@ import { DevicePreviewButton } from "../devices/device-preview-button";
 import type { FloatingWorkingStatus } from "./floating-working-status";
 import { ShimmeringWorkContent } from "./thread-work-log";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
-import { t } from "../../lib/i18n";
+import { t, tn } from "../../lib/i18n";
 
 const CONTROL_HEIGHT = 38.5;
 const CONTROL_GAP = 8;
@@ -249,7 +249,11 @@ export function FloatingWorkingControl(props: {
       {hasQueue ? (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={t("Open queue, {count} messages", { count: props.queuedCount })}
+          accessibilityLabel={tn(
+            props.queuedCount,
+            "Open queue, {count} message",
+            "Open queue, {count} messages",
+          )}
           accessibilityHint={t("Opens queued messages to send now, edit, or remove")}
           onPress={props.onOpenQueue}
           onLayout={(event) => setQueueWidth(settleWidth(event.nativeEvent.layout.width))}

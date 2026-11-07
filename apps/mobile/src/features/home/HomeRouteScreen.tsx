@@ -297,7 +297,7 @@ export function HomeRouteScreen() {
           selectedProjectKey={selectedProjectKey}
           threads={threads}
         />
-        <ThreadUndoNotice visible={visible} />
+        <ThreadUndoNotice visible={visible} aboveHomeFab />
       </>
     </AndroidHomeFabLayout>
   );
