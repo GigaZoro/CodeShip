@@ -4,9 +4,8 @@ name: Release (fork)
 # run: it needs the upstream Blacksmith runners, relay state, and npm and
 # signing credentials. This builds macOS arm64 and Windows x64 on GitHub-hosted
 # runners through the same release-desktop.yml, and publishes a GitHub Release
-# with the updater manifests to the public RELEASE_REPOSITORY, so installed
-# apps offer it through their update button even when this repository is
-# private. It also publishes the Linux x64 CLI archive, SHA256SUMS and
+# with the updater manifests, so installed apps offer it through their update
+# button. It also publishes the Linux x64 CLI archive, SHA256SUMS and
 # install.sh, so a Linux server can install and update the fork's t3. Every
 # push to main releases; a manual run can pick the version. See "Releasing
 # from a fork" in docs/operations/release.md.
@@ -27,8 +26,11 @@ concurrency:
   group: release-fork
   cancel-in-progress: false
 
+# Builds from 2026.1107.19 until releases moved back here read their updates
+# from this repository, so each release goes there too until those installs
+# have updated past them.
 env:
-  RELEASE_REPOSITORY: GigaZoro/codeship-releases
+  BRIDGE_RELEASE_REPOSITORY: GigaZoro/codeship-releases
 
 permissions:
   # The Windows job reads this run's artifact list to wait for the Linux CLI
@@ -44,7 +46,6 @@ jobs:
     timeout-minutes: 5
     outputs:
       version: ${{ steps.version.outputs.version }}
-      release_repository: ${{ env.RELEASE_REPOSITORY }}
       clerk_publishable_key: ${{ steps.public_config.outputs.clerk_publishable_key }}
       clerk_jwt_template: ${{ steps.public_config.outputs.clerk_jwt_template }}
       clerk_cli_oauth_client_id: ${{ steps.public_config.outputs.clerk_cli_oauth_client_id }}
@@ -96,8 +97,8 @@ jobs:
 
       # Calendar versions (YEAR.MMDD.N) stay clear of upstream's 0.x tags, which
       # clones of a fork also fetch: a fork tag with an upstream tag's name makes
-      # every later fetch fail with "would clobber existing tag". Each release
-      # tags its source commit here and its release there, so both are checked.
+      # every later fetch fail with "would clobber existing tag". The bridge
+      # repository gets the same tags, so both are checked.
       - id: version
         name: Resolve release version
         env:
@@ -105,7 +106,7 @@ jobs:
           REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          repositories=("$GITHUB_REPOSITORY" "$RELEASE_REPOSITORY")
+          repositories=("$GITHUB_REPOSITORY" "$BRIDGE_RELEASE_REPOSITORY")
           version="${REQUESTED_VERSION#v}"
           if [[ -z "$version" ]]; then
             prefix="$(date -u +%Y).$((10#$(date -u +%m%d)))"
@@ -159,8 +160,6 @@ jobs:
       T3CODE_CLERK_JWT_TEMPLATE: ${{ needs.preflight.outputs.clerk_jwt_template }}
       T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: ${{ needs.preflight.outputs.clerk_cli_oauth_client_id }}
       T3CODE_RELAY_URL: ${{ needs.preflight.outputs.relay_url }}
-      # The server, web client and Electron main link to and update from it.
-      T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ needs.preflight.outputs.release_repository }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -214,7 +213,6 @@ jobs:
       clerk_jwt_template: ${{ needs.preflight.outputs.clerk_jwt_template }}
       clerk_cli_oauth_client_id: ${{ needs.preflight.outputs.clerk_cli_oauth_client_id }}
       relay_url: ${{ needs.preflight.outputs.relay_url }}
-      update_repository: ${{ needs.preflight.outputs.release_repository }}
       label: Linux x64
       runner: ubuntu-24.04
       platform: linux
@@ -239,7 +237,6 @@ jobs:
       clerk_jwt_template: ${{ needs.preflight.outputs.clerk_jwt_template }}
       clerk_cli_oauth_client_id: ${{ needs.preflight.outputs.clerk_cli_oauth_client_id }}
       relay_url: ${{ needs.preflight.outputs.relay_url }}
-      update_repository: ${{ needs.preflight.outputs.release_repository }}
       label: Windows x64
       runner: ubuntu-24.04
       verify_runner: windows-2025
@@ -264,7 +261,6 @@ jobs:
       clerk_jwt_template: ${{ needs.preflight.outputs.clerk_jwt_template }}
       clerk_cli_oauth_client_id: ${{ needs.preflight.outputs.clerk_cli_oauth_client_id }}
       relay_url: ${{ needs.preflight.outputs.relay_url }}
-      update_repository: ${{ needs.preflight.outputs.release_repository }}
       label: macOS arm64
       runner: macos-15
       platform: mac
@@ -293,19 +289,12 @@ jobs:
             /scripts/install.sh
           sparse-checkout-cone-mode: false
 
-      # The notes cover every shipment since the last published release, whose
-      # tag is on its source commit here. Releases before the release
-      # repository existed are only in this repository.
       - name: Prepare release notes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          previous=""
-          for repository in "$RELEASE_REPOSITORY" "$GITHUB_REPOSITORY"; do
-            previous=$(gh api "repos/$repository/releases?per_page=100" --jq '[.[] | select(.draft == false and .prerelease == false)][0].tag_name // empty')
-            if [[ -n "$previous" ]]; then break; fi
-          done
+          previous=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '[.[] | select(.draft == false and .prerelease == false)][0].tag_name // empty')
           if [[ -n "$previous" ]]; then
             node .github/scripts/release-notes.cjs render "$previous" > release-notes.md
           else
@@ -360,48 +349,7 @@ jobs:
           cp scripts/install.sh release-assets/install.sh
           ls -la release-assets
 
-      # The release repository holds no source, so its tag names the release
-      # and this one names the commit it was built from.
-      - name: Tag the source commit
-        env:
-          TAG: v${{ needs.preflight.outputs.version }}
-        run: |
-          set -euo pipefail
-          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            git tag "$TAG" "$GITHUB_SHA"
-          fi
-          if [[ "$(git rev-list -n 1 "$TAG")" != "$GITHUB_SHA" ]]; then
-            echo "::error::$TAG already names another commit."
-            exit 1
-          fi
-          git push origin "refs/tags/$TAG"
-
       - name: Publish release
-        uses: softprops/action-gh-release@v3
-        with:
-          repository: ${{ env.RELEASE_REPOSITORY }}
-          tag_name: v${{ needs.preflight.outputs.version }}
-          name: T3.CodeShip v${{ needs.preflight.outputs.version }}
-          body_path: release-notes.md
-          make_latest: true
-          files: |
-            release-assets/*.exe
-            release-assets/*.dmg
-            release-assets/*.zip
-            release-assets/*.blockmap
-            release-assets/*.yml
-            release-assets/t3-*.tar.gz
-            release-assets/SHA256SUMS
-            release-assets/install.sh
-          fail_on_unmatched_files: true
-          # Contents write on RELEASE_REPOSITORY; this run's token reaches only this repository.
-          token: ${{ secrets.RELEASES_TOKEN }}
-
-      # Apps built before the release repository existed update from this
-      # repository. While it is public, they get each release here too, and
-      # that build moves them to the release repository.
-      - name: Publish release for older installs
-        if: ${{ !github.event.repository.private }}
         uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ needs.preflight.outputs.version }}
@@ -420,3 +368,26 @@ jobs:
             release-assets/install.sh
           fail_on_unmatched_files: true
           token: ${{ github.token }}
+
+      # Installs that read the bridge repository take this build from there,
+      # and it moves them back to this repository.
+      - name: Publish release to the bridge repository
+        uses: softprops/action-gh-release@v3
+        with:
+          repository: ${{ env.BRIDGE_RELEASE_REPOSITORY }}
+          tag_name: v${{ needs.preflight.outputs.version }}
+          name: T3.CodeShip v${{ needs.preflight.outputs.version }}
+          body_path: release-notes.md
+          make_latest: true
+          files: |
+            release-assets/*.exe
+            release-assets/*.dmg
+            release-assets/*.zip
+            release-assets/*.blockmap
+            release-assets/*.yml
+            release-assets/t3-*.tar.gz
+            release-assets/SHA256SUMS
+            release-assets/install.sh
+          fail_on_unmatched_files: true
+          # Contents write on the bridge repository; this run's token reaches only this one.
+          token: ${{ secrets.RELEASES_TOKEN }}

@@ -1,3 +1,8 @@
+## 2026-11-08 — Updates come from GigaZoro/CodeShip again
+
+- Desktop apps, `t3 update` and a server's update button get new versions from [GigaZoro/CodeShip](https://github.com/GigaZoro/CodeShip/releases) again. The repository stays public, so the separate releases repository is no longer needed. Your app moves back with this update; nothing to do.
+- To install T3.CodeShip on a Linux server, use the `install.sh` attached to each release in GigaZoro/CodeShip.
+
 ## 2026-11-08 — Codex accounts connected with ChatGPT show their limits
 
 - A Codex account you connected with ChatGPT now gets a limits bar on **Usage → Limits**, with its reset credits and **Use reset**, when a connected machine has a Codex CLI login for the same account. ChatGPT shares the limits only with the CLI login, and both spend the same allowance. If that CLI login is signed out, **Limits** now says so instead of a bare JSON-RPC error. Before, such an account only linked to ChatGPT, and its bar could be another machine's reading from hours ago.
