@@ -452,6 +452,12 @@ const catalog: MessageCatalog = {
     many: "{count} комп’ютерів ще працюють",
     other: "{count} комп’ютера ще працюють",
   },
+  "{count} machines unreachable": {
+    one: "{count} комп’ютер недоступний",
+    few: "{count} комп’ютери недоступні",
+    many: "{count} комп’ютерів недоступні",
+    other: "{count} комп’ютера недоступні",
+  },
   "{count} malformed or inconsistent usage record(s) were skipped; usage may be incomplete.":
     "Кілька записів використання ({count}) пропущено через помилки чи неузгодженість; дані про використання можуть бути неповними.",
   "{count} merges loaded": {
@@ -465,6 +471,12 @@ const catalog: MessageCatalog = {
     few: "{count} повідомлення",
     many: "{count} повідомлень",
     other: "{count} повідомлення",
+  },
+  "{count} messages wait for {name} to reconnect": {
+    one: "{count} повідомлення чекає, доки {name} підключиться",
+    few: "{count} повідомлення чекають, доки {name} підключиться",
+    many: "{count} повідомлень чекають, доки {name} підключиться",
+    other: "{count} повідомлення чекають, доки {name} підключиться",
   },
   "{count} milliseconds": {
     one: "{count} мілісекунда",
@@ -980,6 +992,12 @@ const catalog: MessageCatalog = {
     many: "{count} неслитих комітів",
     other: "{count} неслитого коміта",
   },
+  "{count} unreachable": {
+    one: "{count} недоступний",
+    few: "{count} недоступні",
+    many: "{count} недоступних",
+    other: "{count} недоступного",
+  },
   "{count} uses": {
     one: "{count} використання",
     few: "{count} використання",
@@ -1048,6 +1066,7 @@ const catalog: MessageCatalog = {
   "{count}ms": "{count} мс",
   "{count}s": "{count} с",
   "{counts} · synced {time}": "{counts} · синхронізовано {time}",
+  "{counts} (last known)": "{counts} (за останніми даними)",
   "{counts} on every machine": "{counts} на кожному комп’ютері",
   "{credits} · next expires in {duration}": "{credits} · найближчі спливуть через {duration}",
   "{current} / {total} pages": "{current} / {total} стор.",
@@ -1224,11 +1243,13 @@ const catalog: MessageCatalog = {
   "{label}. Use arrow keys to resize.": "{label}. Змінюйте розмір клавішами зі стрілками.",
   "{left}% left": "Залишилось {left}%",
   "{login} · Team": "{login} · Команда",
+  "{machine} · {status}": "{machine} · {status}",
   "{machine} is offline. Its MCP servers show up once it reconnects.":
     "{machine} не в мережі. Її MCP-сервери з’являться після повторного підключення.",
   "{machine} pull request routing": "Маршрутизація пул-реквестів для {machine}",
   "{machine} ran it.": "Його виконав {machine}.",
   "{machine} server": "Сервер {machine}",
+  "{machine}, last known status: {status}": "{machine}, останній відомий стан: {status}",
   "{machines} read and act": "{machines}: читати й діяти",
   "{machines} read PRs": "{machines}: читати PR",
   "{mark}  {label} · Failed": "{mark}  {label} · Помилка",
@@ -1262,6 +1283,7 @@ const catalog: MessageCatalog = {
     other: "{name} ({count} рядка)",
   },
   "{name} (guest)": "{name} (гість)",
+  "{name} {state}": "{name}: {state}",
   "{name} account options": "Параметри облікового запису {name}",
   "{name} added": "{name} додано",
   "{name} enablement": "Увімкнення {name}",
@@ -1337,6 +1359,7 @@ const catalog: MessageCatalog = {
   "{policy} Nightly builds are not available; switch to Stable to keep getting updates.":
     "{policy} Нічні збірки недоступні; перемкніться на Стабільну, щоб і далі отримувати оновлення.",
   "{policy} Nightly builds are not available.": "{policy} Нічні збірки недоступні.",
+  "{pool} {window}: {percent}% left": "{pool} {window}: залишилося {percent}%",
   "{position} of {size}": "{position} з {size}",
   "{preset} ({when})": "{preset} ({when})",
   "{preview}, tool call failed": "{preview}, виклик інструмента не вдався",
@@ -1685,6 +1708,7 @@ const catalog: MessageCatalog = {
   "a project": "проєкт",
   "a prompt": "запит",
   "A queued message cannot be left empty.": "Повідомлення в черзі не може бути порожнім.",
+  "A queued message was not sent": "Повідомлення з черги не надіслано",
   "A risk to judge": "Ризик, який варто оцінити",
   "A secret provider with this name exists.": "Провайдер секретів із такою назвою вже існує.",
   "a selected environment": "вибране середовище",
@@ -1995,6 +2019,7 @@ const catalog: MessageCatalog = {
   "All checks have passed": "Усі перевірки пройдено",
   "All checks passed": "Усі перевірки пройдено",
   "All commits": "Усі коміти",
+  "All connected": "Усі підключені",
   "All connected environments": "Усі підключені середовища",
   "All drafts": "Усі чернетки",
   "All environments": "Усі середовища",
@@ -2645,6 +2670,7 @@ const catalog: MessageCatalog = {
     "Цьому застосунку заборонено доступ до камери. Відкрийте налаштування, щоб його ввімкнути.",
   "can't be used: {reason}": "неможливо використати: {reason}",
   "Can't connect": "Не вдається підключитися",
+  "Can't connect to {name}": "Не вдається підключитися до {name}",
   "Can't find a setting? Keep this project picked above and hop to any other settings page.":
     "Не знаходите налаштування? Залиште вибраним цей проєкт угорі й перейдіть на будь-яку іншу сторінку налаштувань.",
   cancel: "скасувати",
@@ -6332,6 +6358,7 @@ const catalog: MessageCatalog = {
   "Last run here at {time}": "Останній запуск тут: {time}",
   "Last run succeeded": "Останній запуск успішний",
   "Last Seen": "Востаннє",
+  "last seen {time}": "востаннє в мережі {time}",
   "Last selected": "Останній вибраний",
   "Last user message": "Останнє повідомлення користувача",
   Later: "Пізніше",
@@ -6669,6 +6696,7 @@ const catalog: MessageCatalog = {
   "Machines & access": "Комп’ютери й доступ",
   "Machines you trust here can read PR data through each other's source control access. Enable both machines. Read and act may use broader permissions than the machine that owns them. This applies only to this device.":
     "Комп’ютери, яким ви тут довіряєте, можуть читати дані PR через доступ одне одного до системи керування версіями. Увімкніть обидва комп’ютери. «Читати й діяти» може використовувати ширші дозволи, ніж комп’ютер, якому вони належать. Діє лише на цьому пристрої.",
+  "Machines: {states}": "Комп’ютери: {states}",
   "MagicDNS hostname. Configure Tailscale Serve for HTTPS access.":
     "Ім’я хоста MagicDNS. Налаштуйте Tailscale Serve для доступу через HTTPS.",
   "Maintain environment": "Обслуговування середовища",
@@ -6824,6 +6852,7 @@ const catalog: MessageCatalog = {
   "Messages loading": "Завантаження повідомлень",
   "Messages not cached": "Повідомлення не кешовано",
   "messages queued to send": "повідомлень у черзі на надсилання",
+  "Messages queued to send": "Повідомлення в черзі на надсилання",
   "messages to {threads}": "повідомлення до {threads}",
   "Messages, labels, and headings scale with this size.":
     "Повідомлення, підписи й заголовки масштабуються за цим розміром.",
@@ -7430,6 +7459,7 @@ const catalog: MessageCatalog = {
   "Not saved · {error}": "Не збережено · {error}",
   "Not scheduled": "Не заплановано",
   "Not sent": "Не надіслано",
+  "Not sent: {reason}": "Не надіслано: {reason}",
   "Not set": "Не задано",
   "Not set up": "Не налаштовано",
   "Not set up on this machine.": "Не налаштовано на цьому комп’ютері.",
@@ -7563,6 +7593,8 @@ const catalog: MessageCatalog = {
   "Only folders added as projects are imported, plus Codex app chats without a project, which go to No project.":
     "Імпортуються лише папки, додані як проєкти, а також чати застосунку Codex без проєкту, які потрапляють до «Без проєкту».",
   "Only invited people": "Лише запрошені особи",
+  "Only plain text can wait for the machine to reconnect. Send attachments and context once it is connected.":
+    "Чекати на підключення комп’ютера може лише звичайний текст. Вкладення й контекст надішліть, коли він підключиться.",
   "Only saved bearer environments can be edited.":
     "Редагувати можна лише збережені середовища з bearer-токеном.",
   "Only skills another machine lacks": "Лише навички, яких бракує іншому комп’ютеру",
@@ -8492,6 +8524,7 @@ const catalog: MessageCatalog = {
     "Ставте наступні повідомлення в чергу, поки агент працює, або скеровуйте поточний запуск.",
   "Queue message": "Поставити повідомлення в чергу",
   "Queue paused": "Чергу призупинено",
+  "Queue until {name} reconnects": "У чергу, доки {name} не підключиться",
   "Queue: Edit Last Queued Message": "Черга: редагувати останнє повідомлення в черзі",
   "Queue: Send First Queued Message": "Черга: надіслати перше повідомлення в черзі",
   queued: "у черзі",
@@ -8688,8 +8721,6 @@ const catalog: MessageCatalog = {
   "Reconnecting to {environment}...": "Повторне підключення до {environment}...",
   "Reconnecting to {name}": "Повторне підключення до {name}",
   "Reconnecting to {name}...": "Повторне підключення до {name}...",
-  "Reconnecting to the environment. Try again once it is connected.":
-    "Повторне підключення до середовища. Спробуйте ще раз, коли воно підключиться.",
   "Reconnecting to this thread's machine.": "Повторне підключення до комп’ютера цього чату.",
   "Reconnecting: {error}": "Повторне підключення: {error}",
   "Reconnecting...": "Перепідключення...",
@@ -11223,6 +11254,7 @@ const catalog: MessageCatalog = {
   "The local file is unavailable.": "Локальний файл недоступний.",
   "The local file is unavailable. Attach it again.":
     "Локальний файл недоступний. Прикріпіть його ще раз.",
+  "The machine did not accept the message.": "Комп’ютер не прийняв повідомлення.",
   "the machine that runs it": "комп’ютері, на якому виконується завдання",
   "The main thread gets this side chat with your next message there.":
     "Основний чат отримає цей бічний чат разом із вашим наступним повідомленням у ньому.",
@@ -11385,6 +11417,8 @@ const catalog: MessageCatalog = {
     "Середовище SSH не видало облікових даних для сполучення.",
   "The stash holds {max} prompts; the oldest was removed to make room.":
     "Сховище вміщує {max} запитів; найстаріший видалено, щоб звільнити місце.",
+  "The status is the last one seen. Actions wait until {name} reconnects.":
+    "Це останній відомий стан. Дії чекатимуть, доки {name} підключиться.",
   "The system already uses this shortcut.": "Система вже використовує це скорочення.",
   "The system could not register this shortcut.": "Система не змогла зареєструвати це скорочення.",
   "The system keyring could not be accessed. Make sure your desktop keyring is running and unlocked, then retry.":
@@ -11421,6 +11455,7 @@ const catalog: MessageCatalog = {
   "The thread could not be woken.": "Не вдалося повернути чат.",
   "The thread has changed. Select a message to rewind again.":
     "Чат змінився. Виберіть повідомлення, щоб перемотати ще раз.",
+  "The thread no longer exists on its machine.": "Цього чату більше немає на його комп’ютері.",
   "The thread title could not be regenerated.": "Не вдалося перегенерувати назву чату.",
   "The title could not be saved": "Не вдалося зберегти назву",
   "The unsent message could not be restored.": "Не вдалося відновити ненадіслане повідомлення.",

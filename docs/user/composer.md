@@ -81,12 +81,19 @@ running the send button shows which action it will take. Long-press it to use th
 other action for a single message, or hold `Cmd` while sending from a hardware
 keyboard. The button only offers Steer when the running agent supports it.
 
-## Queue messages offline on mobile
+## Queue messages for an offline machine
 
 Mobile keeps local copies of draft attachments, so you can preview them and queue
 messages while disconnected. Uploads resume when you reconnect. Drafts and queued
 messages survive app restarts. Signing out of T3 Connect keeps that work on your
 device until you sign back into the same account.
+
+On web and desktop, a plain-text message to an existing thread whose machine is
+offline waits in that browser or app: the send button reads **Queue until … reconnects**.
+The waiting messages show above the composer, where **Edit** puts one back in the
+composer and **Cancel** drops it. They send in order once the machine is back, behind
+a run that is still going, and a message the machine refuses stays there with the
+reason. Attachments and context still need the machine connected.
 
 ## Custom models
 

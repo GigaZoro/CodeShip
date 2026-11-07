@@ -214,7 +214,9 @@ machine, so with them on, this mostly decides the filter and the project picker,
 thread can switch to another machine that has the project.
 
 Click or tap a folder to open or close it. A closed folder shows how many threads it holds; a
-thread that needs you is listed under **Needs you** instead. A machine that is offline shows **Offline** and starts closed.
+thread that needs you is listed under **Needs you** instead. A machine you cannot reach shows
+**Reconnecting**, **Offline** or **Can't connect**, with how long ago it was last seen, and starts
+closed. On web and desktop, right-click its folder and choose **Reconnect** to try again now.
 When two machines share a name, their folders add the address. While threads are grouped, active
 threads are ordered by their latest message, so you cannot move them by hand.
 
@@ -243,7 +245,7 @@ it starts on that machine. The pen button on a machine folder lists that machine
 start in. On web and desktop, you can also right-click a project folder. **New thread** and its
 shortcut start in the current project when folders are by project, and otherwise ask which project
 unless only one project is open. In project folders, threads on another machine show that
-machine's icon. You can drag a grouped thread onto the composer to mention it, but not within the
+machine's initial on its own colour, so two machines with the same name still look different. You can drag a grouped thread onto the composer to mention it, but not within the
 sidebar.
 
 The same menu filters the sidebar. Click a machine or project to show only its threads, or
@@ -251,6 +253,19 @@ shift-click to add more. Machines appear when you have more than one. Choosing b
 and a project shows that project's threads on that machine. Archived projects are not listed. A
 project or machine you filter to keeps its folder even with no active threads, so you can start
 one there.
+
+## When a machine is offline
+
+When a machine sleeps or loses its connection, its threads stay in the list with the last status
+it reported, dimmed, for example **Offline · Working**. That status cannot change until the machine
+is back, so the time stops counting and Settle and Snooze wait too; hover a thread to see when the
+machine was last seen.
+
+With more than one machine, the bottom of the web and desktop sidebar lists them by initial. Click
+it to see each machine's connection, when it was last seen, how many threads are working or need
+you, its tightest usage limit, and **Reconnect**. On mobile, the title at the top names a machine
+you cannot reach; pull down on the thread list to reconnect. Notifications name the project and the
+machine when you have more than one of each.
 
 ## See every project
 
