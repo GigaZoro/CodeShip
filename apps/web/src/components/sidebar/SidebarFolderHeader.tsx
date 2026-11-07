@@ -120,15 +120,25 @@ export const SidebarMachineFolderHeader = memo(function SidebarMachineFolderHead
       label={machine.label}
       status={
         machine.disconnected ? (
-          <span className="shrink-0 text-xs text-sidebar-muted-foreground">
-            {machineAvailabilityLabel(machine.availability)}
+          // The last-seen time sits in the tooltip, so the state never squeezes out the name.
+          <Tooltip>
+            <TooltipTrigger
+              render={<span className="shrink-0 text-xs text-sidebar-muted-foreground" />}
+            >
+              {machineAvailabilityLabel(machine.availability)}
+              {machine.lastSeenAt !== null ? (
+                <span className="sr-only">
+                  {", "}
+                  <MachineLastSeen lastSeenAt={machine.lastSeenAt} />
+                </span>
+              ) : null}
+            </TooltipTrigger>
             {machine.lastSeenAt !== null ? (
-              <>
-                {" · "}
-                <MachineLastSeen lastSeenAt={machine.lastSeenAt} compact />
-              </>
+              <TooltipPopup>
+                <MachineLastSeen lastSeenAt={machine.lastSeenAt} />
+              </TooltipPopup>
             ) : null}
-          </span>
+          </Tooltip>
         ) : null
       }
       collapsed={props.collapsed}

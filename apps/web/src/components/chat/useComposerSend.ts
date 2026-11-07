@@ -442,7 +442,7 @@ export function useComposerSend(input: ComposerSendInput) {
       (isSendBusy && !sendQueuesBehindSetup) ||
       isRevertingCheckpoint ||
       !clientSettingsHydrated ||
-      threadDetailLoading ||
+      (threadDetailLoading && !activeEnvironmentUnavailable) ||
       readPendingEnvironmentChange() !== null ||
       sendInFlightRef.current ||
       feedbackUploadsInFlightRef.current.has(routeThreadKey)
@@ -473,6 +473,7 @@ export function useComposerSend(input: ComposerSendInput) {
         isServerThread &&
         !directAnnotation &&
         !queueCtx.answeringPendingUserInput &&
+        pendingApprovalsRef.current.length === 0 &&
         queueCtx.multipleModelSelections === null &&
         !draftHasNonPromptContent(composerDraftTarget) &&
         promptAtSend.trim().length > 0

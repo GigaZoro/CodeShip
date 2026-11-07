@@ -3757,7 +3757,9 @@ export default function ChatView(props: ChatViewProps) {
                                       ? t("Rewinding conversation")
                                       : feedbackUploading
                                         ? t("Sending feedback")
-                                        : threadDetailLoading
+                                        : // An unreachable machine's messages load only once it is back; its
+                                          // composer can still queue text for it meanwhile.
+                                          threadDetailLoading && !activeEnvironmentUnavailable
                                           ? t("Messages loading")
                                           : worktreeSetupBlocksSend
                                             ? t("Preparing worktree")

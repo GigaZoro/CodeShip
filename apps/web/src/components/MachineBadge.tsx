@@ -27,17 +27,16 @@ export function MachineBadge(props: {
   );
 }
 
-/** "5m ago" since the machine was last connected, ticking each minute; null when unknown. */
-function useLastSeenAge(lastSeenAt: number | null): string | null {
+/** "last seen 5m ago", ticking each minute, or nothing when this client has not seen it connected. */
+export function MachineLastSeen(props: { lastSeenAt: number | null }) {
   const nowMinute = useNowMinute();
-  if (lastSeenAt === null) return null;
-  const nowMs = Math.max(Date.parse(`${nowMinute}:00.000Z`), lastSeenAt);
-  return formatRelativeTimeLabel(new Date(lastSeenAt).toISOString(), nowMs);
-}
-
-/** "last seen 5m ago", or nothing when this client has not seen the machine connected. */
-export function MachineLastSeen(props: { lastSeenAt: number | null; compact?: boolean }) {
-  const age = useLastSeenAge(props.lastSeenAt);
-  if (age === null) return null;
-  return <>{props.compact ? age : t("last seen {time}", { time: age })}</>;
+  if (props.lastSeenAt === null) return null;
+  const nowMs = Math.max(Date.parse(`${nowMinute}:00.000Z`), props.lastSeenAt);
+  return (
+    <>
+      {t("last seen {time}", {
+        time: formatRelativeTimeLabel(new Date(props.lastSeenAt).toISOString(), nowMs),
+      })}
+    </>
+  );
 }

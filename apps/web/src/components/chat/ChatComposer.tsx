@@ -945,8 +945,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         (multipleModelSelections === null ? providerSendBlockReason : null)));
   const isSendDisabled = sendDisabledReason !== null;
   // Plain text to a thread the machine already has waits in this browser for it to reconnect.
+  // An answer or an approval's redirect only means something to the run waiting for it now.
   const offlineQueueMachine =
-    environmentUnavailable !== null && routeKind === "server" && !activePendingProgress
+    environmentUnavailable !== null &&
+    routeKind === "server" &&
+    !activePendingProgress &&
+    pendingApprovals.length === 0
       ? environmentUnavailable.label
       : null;
   const selectedProviderStatus = selectedProviderEntry?.snapshot ?? null;
