@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  DEFAULT_SERVER_SETTINGS,
   EventId,
   MessageId,
   type ModelSelection,
@@ -15,6 +16,7 @@ import {
   ProviderThreadId,
   ProviderTurnId,
   type RunId,
+  type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -29,10 +31,16 @@ import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import { limitFailoverCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import {
+  makeProviderFailure,
+  makeProviderRetryTurnItem,
+} from "@t3tools/provider-core/server/failure";
 
 const driver = ProviderDriverKind.make("codex");
 const providerInstanceId = ProviderInstanceId.make("codex-restart-test");
@@ -86,6 +94,8 @@ function makeRestartAdapter(
   state: Ref.Ref<RestartAdapterState>,
   sessionCapabilities: OrchestrationV2ProviderCapabilities = pooledCapabilities,
   providerInstanceId = initialSelection.instanceId,
+  // Running turns report a 429 retry held until this reset, as Claude's retry watchdog does.
+  heldUntil?: DateTime.Utc,
 ): ProviderAdapter.ProviderAdapterV2["Service"] {
   return {
     instanceId: providerInstanceId,
@@ -252,6 +262,32 @@ function makeRestartAdapter(
                     completedAt: null,
                   },
                 });
+                if (heldUntil !== undefined) {
+                  yield* Queue.offer(events, {
+                    type: "turn_item.updated",
+                    driver,
+                    turnItem: makeProviderRetryTurnItem({
+                      driver,
+                      threadId: input.threadId,
+                      runId: input.runId,
+                      nodeId: input.rootNodeId,
+                      providerThreadId: input.providerThread.id,
+                      providerTurnId: active.providerTurnId,
+                      itemOrdinal: 1,
+                      failure: makeProviderFailure({
+                        class: "usage_limit",
+                        message: "Claude API rate limit.",
+                        code: "api_error_429",
+                        retryable: true,
+                        resetAt: DateTime.formatIso(heldUntil),
+                      }),
+                      retry: { attempt: 1, maxAttempts: 10, retryDelayMs: 300_000 },
+                      status: "running",
+                      startedAt: occurredAt,
+                      updatedAt: occurredAt,
+                    }),
+                  });
+                }
                 return;
               }
               yield* publishTerminal(active, "completed");
@@ -896,4 +932,155 @@ it.live.each(["active", "idle", "selection-command", "pooled", "separate-home"] 
         }).pipe(Effect.provide(ProviderReplayHarness.layerWithRegistry({ name }, layerRegistry)));
       }),
     ),
+);
+
+it.live("moves a turn its provider holds for a usage limit to an account with room", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const name = "held-limit-failover";
+      const cwd = yield* checkpointWorkspace(name);
+      const threadId = ThreadId.make(`thread:${name}`);
+      const targetId = ProviderInstanceId.make("codex-account-with-room");
+      const state = yield* Ref.make<RestartAdapterState>({
+        activeTurn: null,
+        opened: [],
+        started: [],
+        closedSessionCount: 0,
+        failedReplacementOpen: true,
+      });
+      const now = yield* DateTime.now;
+      const adapters = [
+        makeRestartAdapter(
+          state,
+          exclusiveCapabilities,
+          providerInstanceId,
+          DateTime.add(now, { hours: 2 }),
+        ),
+        makeRestartAdapter(state, exclusiveCapabilities, targetId),
+      ];
+      const layerRegistry = Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistryV2, {
+        get: (instanceId) =>
+          Effect.succeed(adapters.find((adapter) => adapter.instanceId === instanceId)!),
+        list: () => Effect.succeed([providerInstanceId, targetId]),
+        getMetadata: () =>
+          Effect.succeed({
+            driver,
+            continuationKey: "codex:home:/shared",
+            enabled: true,
+            capabilities: exclusiveCapabilities,
+          }),
+      });
+      const providers = [providerInstanceId, targetId].map((instanceId): ServerProvider => ({
+        instanceId,
+        driver,
+        enabled: true,
+        installed: true,
+        version: null,
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: DateTime.formatIso(now),
+        models: [
+          { slug: initialSelection.model, name: "Model A", isCustom: false, capabilities: null },
+        ],
+        slashCommands: [],
+        skills: [],
+      }));
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const runningTurn = Stream.filter(
+          orchestrator.streamDomainEvents,
+          (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
+        ).pipe(Stream.take(1), Stream.runDrain);
+        const held = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "turn-item.updated" &&
+              event.payload.type === "error" &&
+              event.payload.status === "running",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped({ startImmediately: true }),
+        );
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`${name}:create`),
+          threadId,
+          projectId: ProjectId.make(`project:${name}`),
+          title: name,
+          modelSelection: initialSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: cwd,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${name}:first`),
+          threadId,
+          messageId: MessageId.make(`${name}:first`),
+          text: "first",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* worker.drain();
+        yield* Fiber.join(held);
+
+        const candidates = (failover: boolean) =>
+          projections
+            .getLimitRecoveryCandidates({ now, autoResume: true, snooze: true, failover })
+            .pipe(Effect.map((rows) => rows.find((row) => row.id === threadId)));
+        // Without account switching, the held turn waits for its reset as before.
+        assert.isUndefined(yield* candidates(false));
+        const candidate = yield* candidates(true);
+        assert.equal(candidate?.status, "running");
+        const limitedInstanceIds = yield* projections.getUsageLimitedProviderInstanceIds(now);
+        assert.isTrue(limitedInstanceIds.has(providerInstanceId));
+        const failover =
+          candidate === undefined
+            ? null
+            : limitFailoverCommand({
+                thread: candidate,
+                settings: {
+                  ...DEFAULT_SERVER_SETTINGS,
+                  providerInstances: { [targetId]: { driver } },
+                },
+                providers,
+                limitedInstanceIds,
+                nowMs: DateTime.toEpochMillis(now),
+              });
+        assert.isNotNull(failover);
+        const restarted = yield* runningTurn.pipe(Effect.forkScoped({ startImmediately: true }));
+        yield* orchestrator.dispatch(failover!);
+        yield* worker.drain();
+        yield* Fiber.join(restarted);
+
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(projection.thread.providerInstanceId, targetId);
+        assert.deepEqual(
+          projection.runs.map((run) => [run.providerInstanceId, run.status]),
+          [[targetId, "running"]],
+        );
+        assert.deepEqual(
+          projection.messages.map((message) => message.text),
+          ["first", "Continue where you left off."],
+        );
+        assert.deepEqual(
+          (yield* Ref.get(state)).started.map((turn) => turn.model),
+          [initialSelection.model, initialSelection.model],
+        );
+        // The account that held the turn stays skipped until its reset.
+        assert.isUndefined(yield* candidates(true));
+        const stillLimited = yield* projections.getUsageLimitedProviderInstanceIds(now);
+        assert.isTrue(stillLimited.has(providerInstanceId));
+        assert.isFalse(stillLimited.has(targetId));
+      }).pipe(Effect.provide(ProviderReplayHarness.layerWithRegistry({ name }, layerRegistry)));
+    }),
+  ),
 );

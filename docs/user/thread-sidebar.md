@@ -437,10 +437,11 @@ retry and the normal snooze choices.
 
 With two or more accounts for one provider, turn on **Switch accounts at usage
 limits** in **Settings → Providers & models** and arrange the account order there. When
-an account stops a turn on a limit with a reset time, the thread continues on
-the first other signed-in account of that provider, in that order, that still
-has usage left. An account that hit a limit is skipped until it resets. If none
-is free, the thread waits as above. Each provider is one account: a provider
+an account stops a turn on a limit with a reset time, or Claude holds the turn
+open until that reset, the thread continues on the first other signed-in account
+of that provider, in that order, that still has usage left. A reset less than
+five minutes away is waited out instead. An account that hit a limit is skipped
+until it resets. If none is free, the thread waits as above. Each provider is one account: a provider
 signed in to an account another provider already uses is unavailable until you
 sign it in to a different account. Some providers' terms forbid using extra
 accounts to get around limits. With this on, a scheduled task whose account has hit

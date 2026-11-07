@@ -44,7 +44,6 @@ import type {
   GuestShareId,
   ProviderThreadId,
   ProviderTurnId,
-  RunAttemptId,
 } from "@t3tools/contracts";
 import {
   IDLE_COMPACTION_TEXT,
@@ -66,6 +65,7 @@ import {
   OrchestrationV2SubagentJson as OrchestrationV2SubagentJsonSchema,
   OrchestrationV2TurnItemJson as OrchestrationV2TurnItemJsonSchema,
   orchestrationV2RunWorkStartedAt,
+  RunAttemptId,
   RunId,
   MessageId,
   RuntimeRequestId,
@@ -191,6 +191,11 @@ export type ProjectionLimitRecoveryCandidate = Pick<
 > & {
   /** The account the limited run used; the thread may point elsewhere since. */
   readonly latestRunProviderInstanceId?: ProviderInstanceId | null;
+  /**
+   * Set when the provider holds the running attempt until the usage limit resets, instead of
+   * stopping it. The thread then reads as running.
+   */
+  readonly heldAttemptId?: RunAttemptId;
 };
 
 /** The latest run of a thread that a lost connection stopped, as network recovery reads it. */
@@ -529,13 +534,14 @@ export interface ProjectionStoreV2Shape {
   readonly getThread: (
     threadId: ThreadId,
   ) => Effect.Effect<OrchestrationV2AppThread, ProjectionStoreV2Error>;
+  /** With `failover`, also running turns the provider holds until a reset still ahead. */
   readonly getLimitRecoveryCandidates: (options: {
     readonly now: DateTime.Utc;
     readonly autoResume: boolean;
     readonly snooze: boolean;
     readonly failover?: boolean;
   }) => Effect.Effect<ReadonlyArray<ProjectionLimitRecoveryCandidate>, ProjectionStoreV2Error>;
-  /** Accounts with a usage-limit failure whose reported reset is still ahead. */
+  /** Accounts that stopped or hold a turn on a usage limit whose reported reset is still ahead. */
   readonly getUsageLimitedProviderInstanceIds: (
     now: DateTime.Utc,
   ) => Effect.Effect<ReadonlySet<ProviderInstanceId>, ProjectionStoreV2Error>;
@@ -3987,6 +3993,26 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           ORDER BY t.thread_id
         `;
         const candidates: Array<ProjectionLimitRecoveryCandidate> = [];
+        const threadFields = (
+          thread: OrchestrationV2AppThread,
+          row: { readonly run_id: string; readonly provider_instance_id: string | null },
+        ) => ({
+          id: thread.id,
+          projectId: thread.projectId,
+          providerInstanceId: thread.providerInstanceId,
+          modelSelection: thread.modelSelection,
+          latestRunProviderInstanceId:
+            row.provider_instance_id === null
+              ? null
+              : ProviderInstanceId.make(row.provider_instance_id),
+          latestRunId: RunId.make(row.run_id),
+          updatedAt: thread.updatedAt,
+          archivedAt: thread.archivedAt,
+          settledOverride: thread.settledOverride,
+          pendingRuntimeRequest: null,
+          limitRecovery: thread.limitRecovery ?? null,
+          snoozedUntil: thread.snoozedUntil ?? null,
+        });
         for (const row of rows) {
           const thread = yield* decodeThreadPayload(row.payload_json);
           const item = yield* decodeTurnItemPayload(row.failure_payload_json);
@@ -3996,26 +4022,58 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           );
           if (summary.lastErrorClass !== "usage_limit") continue;
           candidates.push({
-            id: thread.id,
-            projectId: thread.projectId,
-            providerInstanceId: thread.providerInstanceId,
-            modelSelection: thread.modelSelection,
-            latestRunProviderInstanceId:
-              row.provider_instance_id === null
-                ? null
-                : ProviderInstanceId.make(row.provider_instance_id),
+            ...threadFields(thread, row),
             status: "failed",
             lastErrorClass: summary.lastErrorClass,
             usageLimitResetAt: summary.usageLimitResetAt,
-            latestRunId: RunId.make(row.run_id),
             latestRunCompletedAt:
               row.completed_at === null ? null : DateTime.makeUnsafe(row.completed_at),
-            updatedAt: thread.updatedAt,
-            archivedAt: thread.archivedAt,
-            settledOverride: thread.settledOverride,
-            pendingRuntimeRequest: null,
-            limitRecovery: thread.limitRecovery ?? null,
-            snoozedUntil: thread.snoozedUntil ?? null,
+          });
+        }
+        if (options.failover !== true) return candidates;
+        // Only account switching acts on a held turn; the provider resumes it at the reset itself.
+        const heldRows = yield* sql<{
+          readonly payload_json: string;
+          readonly run_id: string;
+          readonly attempt_id: string;
+          readonly provider_instance_id: string | null;
+          readonly held_payload_json: string;
+        }>`
+          SELECT t.payload_json, r.run_id, r.provider_instance_id,
+            json_extract(r.payload_json, '$.activeAttemptId') AS attempt_id,
+            held.payload_json AS held_payload_json
+          FROM orchestration_v2_projection_turn_items held
+          INNER JOIN orchestration_v2_projection_runs r ON r.run_id = held.run_id
+          INNER JOIN orchestration_v2_projection_threads t ON t.thread_id = held.thread_id
+          -- The first status term matches the live-item partial index.
+          WHERE held.status IN ('pending', 'running', 'waiting')
+            AND held.status = 'running'
+            AND held.type = 'error'
+            AND json_extract(held.payload_json, '$.failure.class') = 'usage_limit'
+            AND julianday(json_extract(held.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(options.now)})
+            AND r.status = 'running'
+            AND json_extract(r.payload_json, '$.activeAttemptId') IS NOT NULL
+            AND held.node_id IS json_extract(r.payload_json, '$.rootNodeId')
+            AND t.deleted_at IS NULL
+            AND json_extract(t.payload_json, '$.archivedAt') IS NULL
+            AND json_extract(t.payload_json, '$.settledOverride') IS NOT 'settled'
+            AND NOT EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_runtime_requests request
+              WHERE request.thread_id = t.thread_id AND request.status = 'pending'
+            )
+          ORDER BY t.thread_id
+        `;
+        for (const row of heldRows) {
+          const thread = yield* decodeThreadPayload(row.payload_json);
+          const item = yield* decodeTurnItemPayload(row.held_payload_json);
+          if (item.type !== "error" || item.failure.resetAt === undefined) continue;
+          candidates.push({
+            ...threadFields(thread, row),
+            heldAttemptId: RunAttemptId.make(row.attempt_id),
+            status: "running",
+            lastErrorClass: "usage_limit",
+            usageLimitResetAt: item.failure.resetAt,
+            latestRunCompletedAt: null,
           });
         }
         return candidates;
@@ -4030,24 +4088,47 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         // Every failure counts, so an account that refused one thread is skipped for all of them.
         // A run on that account started after the refusal and completed lifts it early,
         // as when the account's sign-in changed.
+        const nowIso = DateTime.formatIso(now);
         const rows = yield* sql<{
           readonly provider_instance_id: string;
           readonly reset_at: string;
         }>`
-          SELECT r.provider_instance_id,
-            json_extract(failure.payload_json, '$.failure.resetAt') AS reset_at
-          FROM orchestration_v2_projection_turn_items failure
-          INNER JOIN orchestration_v2_projection_runs r ON r.run_id = failure.run_id
-          WHERE failure.type = 'error' AND failure.status = 'failed'
-            AND r.provider_instance_id IS NOT NULL
-            AND json_extract(failure.payload_json, '$.failure.class') = 'usage_limit'
-            AND julianday(json_extract(failure.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(now)})
+          WITH refusals AS (
+            SELECT failure.thread_id, failure.run_id, failure.node_id, failure.payload_json
+            FROM orchestration_v2_projection_turn_items failure
+            WHERE failure.type = 'error' AND failure.status = 'failed'
+              AND json_extract(failure.payload_json, '$.failure.class') = 'usage_limit'
+            UNION ALL
+            -- A turn the provider holds until the reset; the first status term matches the
+            -- live-item partial index.
+            SELECT held.thread_id, held.run_id, held.node_id, held.payload_json
+            FROM orchestration_v2_projection_turn_items held
+            WHERE held.status IN ('pending', 'running', 'waiting')
+              AND held.status = 'running'
+              AND held.type = 'error'
+              AND json_extract(held.payload_json, '$.failure.class') = 'usage_limit'
+          ),
+          limited AS (
+            -- A restart moves its run to the new account; the attempt keeps the one it ran on.
+            SELECT COALESCE(attempt.provider_instance_id, r.provider_instance_id) AS provider_instance_id,
+              json_extract(refusal.payload_json, '$.failure.resetAt') AS reset_at,
+              json_extract(refusal.payload_json, '$.updatedAt') AS refused_at
+            FROM refusals refusal
+            INNER JOIN orchestration_v2_projection_runs r ON r.run_id = refusal.run_id
+            LEFT JOIN orchestration_v2_projection_run_attempts attempt
+              ON attempt.thread_id = refusal.thread_id
+              AND attempt.run_id = refusal.run_id
+              AND attempt.root_node_id = refusal.node_id
+            WHERE julianday(json_extract(refusal.payload_json, '$.failure.resetAt')) > julianday(${nowIso})
+          )
+          SELECT provider_instance_id, reset_at FROM limited
+          WHERE provider_instance_id IS NOT NULL
             AND NOT EXISTS (
               SELECT 1 FROM orchestration_v2_projection_runs later
-              WHERE later.provider_instance_id = r.provider_instance_id
+              WHERE later.provider_instance_id = limited.provider_instance_id
                 AND later.status = 'completed'
                 AND julianday(json_extract(later.payload_json, '$.startedAt'))
-                  > julianday(json_extract(failure.payload_json, '$.updatedAt'))
+                  > julianday(limited.refused_at)
             )
         `;
         const limited = new Map<ProviderInstanceId, string>();

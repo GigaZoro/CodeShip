@@ -91,8 +91,9 @@ limit was reached and the remaining wait when Claude provides a reset time.
 Claude Code holds the turn until that window reopens, so it can keep showing as
 working. Wait for the reset, or stop the turn and continue later. The warning's
 timestamp shows when the displayed wait started. With a second Claude account,
-[account switching](./thread-sidebar.md#inspect-agent-work) moves
-threads that Claude stops on a limit; a turn it is still holding stays put.
+[account switching](./thread-sidebar.md#inspect-agent-work) stops a held turn
+and continues it on an account with usage left, unless the reset is less than
+five minutes away.
 
 ## Skills
 

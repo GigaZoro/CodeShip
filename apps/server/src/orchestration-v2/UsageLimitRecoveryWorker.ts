@@ -87,7 +87,10 @@ export function limitRecoveryCommand(
   };
 }
 
-/** Moves a thread stopped by a usage limit to the first account of its driver with room left. */
+/**
+ * Moves a thread stopped by a usage limit, or held by its provider until the reset, to the first
+ * account of its driver with room left.
+ */
 export function limitFailoverCommand(
   input: AccountRoutingContext & {
     readonly thread: ProjectionStore.ProjectionLimitRecoveryCandidate;
@@ -95,8 +98,9 @@ export function limitFailoverCommand(
 ): Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> | null {
   const { thread, nowMs } = input;
   const resetMs = Date.parse(thread.usageLimitResetAt ?? "");
+  const heldAttemptId = thread.status === "running" ? thread.heldAttemptId : undefined;
   if (
-    thread.status !== "failed" ||
+    (thread.status !== "failed" && heldAttemptId === undefined) ||
     thread.lastErrorClass !== "usage_limit" ||
     !thread.latestRunId ||
     // Limited accounts are skipped only until their reported reset, so a stop without one
@@ -123,14 +127,16 @@ export function limitFailoverCommand(
   }).find((account) => account.instanceId !== current.instanceId);
   if (target === undefined) return null;
   // The target is part of the id so a refused switch does not block trying another account.
-  const identity = `${thread.id}:${thread.latestRunId}:${target.instanceId}`;
+  // A held run keeps its id across restarts, so its attempt tells each hold apart.
+  const hold = heldAttemptId === undefined ? "" : `${heldAttemptId}:`;
+  const identity = `${thread.id}:${thread.latestRunId}:${hold}${target.instanceId}`;
   return {
     type: "message.dispatch",
     commandId: CommandId.make(`limit-failover:${identity}`),
     messageId: MessageId.make(`limit-failover:${identity}`),
     threadId: thread.id,
-    // Reuses the manual resume guard: the limited run must still be the thread's latest.
-    manualContinuationOfRunId: thread.latestRunId,
+    // A stopped run reuses the manual resume guard: it must still be the thread's latest.
+    ...(heldAttemptId === undefined ? { manualContinuationOfRunId: thread.latestRunId } : {}),
     modelSelection: {
       ...thread.modelSelection,
       instanceId: target.instanceId,
@@ -138,7 +144,10 @@ export function limitFailoverCommand(
     },
     text: "Continue where you left off.",
     attachments: [],
-    dispatchMode: { type: "start_immediately" },
+    dispatchMode:
+      heldAttemptId === undefined
+        ? { type: "start_immediately" }
+        : { type: "restart_active", targetRunId: thread.latestRunId },
     createdBy: "user",
     creationSource: "server",
   };

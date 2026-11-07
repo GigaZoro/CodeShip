@@ -3945,7 +3945,10 @@ function providerFailureFromResult(
   });
 }
 
-function providerFailureFromApiRetry(message: SDKAPIRetryMessage): OrchestrationV2ProviderFailure {
+function providerFailureFromApiRetry(
+  message: SDKAPIRetryMessage,
+  usageLimitResetAt: string | null,
+): OrchestrationV2ProviderFailure {
   const errorName = message.error.replaceAll("_", " ");
   return makeProviderFailure({
     message: `Claude API ${errorName}.`,
@@ -3960,6 +3963,43 @@ function providerFailureFromApiRetry(message: SDKAPIRetryMessage): Orchestration
           ? "transport_error"
           : "provider_error",
     retryable: true,
+    resetAt: usageLimitResetAt,
+  });
+}
+
+/** When every window blocking the turn reopens, or null while one has no reported reset. */
+function blockedUsageLimitResetAt(
+  context: Pick<ActiveClaudeTurnContext, "rateLimitResetTimes" | "latestAssistantRateLimit">,
+): string | null {
+  const resetTimes = Array.from(context.rateLimitResetTimes.values());
+  const assistantLimit = context.latestAssistantRateLimit;
+  if (assistantLimit?.type != null && !context.rateLimitResetTimes.has(assistantLimit.type)) {
+    resetTimes.push(assistantLimit.resetAt);
+  }
+  return resetTimes.length > 0 && resetTimes.every((time) => time !== null)
+    ? resetTimes.reduce((latest, time) => (time! > latest ? time! : latest), "")
+    : null;
+}
+
+function claudeRetryTurnItem(
+  context: ActiveClaudeTurnContext,
+  state: ActiveClaudeProviderRetry,
+  status: Parameters<typeof makeProviderRetryTurnItem>[0]["status"],
+  updatedAt: DateTime.Utc,
+) {
+  return makeProviderRetryTurnItem({
+    driver: CLAUDE_PROVIDER,
+    threadId: context.input.threadId,
+    runId: context.input.runId,
+    nodeId: context.input.rootNodeId,
+    providerThreadId: context.input.providerThread.id,
+    providerTurnId: context.providerTurnId,
+    itemOrdinal: state.itemOrdinal,
+    failure: state.failure,
+    retry: state.retry,
+    status,
+    startedAt: state.startedAt,
+    updatedAt,
   });
 }
 
@@ -5224,22 +5264,39 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           yield* emitProviderEvent({
             type: "turn_item.updated",
             driver: CLAUDE_PROVIDER,
-            turnItem: makeProviderRetryTurnItem({
-              driver: CLAUDE_PROVIDER,
-              threadId: context.input.threadId,
-              runId: context.input.runId,
-              nodeId: context.input.rootNodeId,
-              providerThreadId: context.input.providerThread.id,
-              providerTurnId: context.providerTurnId,
-              itemOrdinal: providerRetry.itemOrdinal,
-              failure: providerRetry.failure,
-              retry: providerRetry.retry,
-              status: "completed",
-              startedAt: providerRetry.startedAt,
-              updatedAt,
-            }),
+            turnItem: claudeRetryTurnItem(context, providerRetry, "completed", updatedAt),
           }).pipe(Effect.withSpan("ClaudeAdapterV2.completeProviderRetry"));
         });
+
+        // Claude reports the window that blocks a usage-limit retry apart from the retry, in
+        // either order; the retry row carries its reset so the hold reads as usage-limited.
+        const refreshUsageLimitRetry = Effect.fn("ClaudeAdapterV2.refreshUsageLimitRetry")(
+          function* (context: ActiveClaudeTurnContext, updatedAt: DateTime.Utc) {
+            const resetAt = blockedUsageLimitResetAt(context);
+            const providerRetry = yield* Ref.modify(providerRetries, (current) => {
+              const retry = current.get(context.providerTurnId);
+              if (
+                retry === undefined ||
+                retry.failure.class !== "usage_limit" ||
+                (retry.failure.resetAt ?? null) === resetAt
+              ) {
+                return [undefined, current] as const;
+              }
+              const { resetAt: _previous, ...failure } = retry.failure;
+              const refreshed: ActiveClaudeProviderRetry = {
+                ...retry,
+                failure: resetAt === null ? failure : { ...failure, resetAt },
+              };
+              return [refreshed, new Map(current).set(context.providerTurnId, refreshed)] as const;
+            });
+            if (providerRetry === undefined) return;
+            yield* emitProviderEvent({
+              type: "turn_item.updated",
+              driver: CLAUDE_PROVIDER,
+              turnItem: claudeRetryTurnItem(context, providerRetry, "running", updatedAt),
+            });
+          },
+        );
 
         const rememberProviderThread =
           /* Provider events include streaming deltas; avoid a span for each update. */
@@ -7650,23 +7707,21 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             return [retry, updated] as const;
           });
           if (providerRetry !== undefined && input.status !== "failed") {
+            // A turn stopped while Claude held it until a usage-limit reset stopped on that limit,
+            // so its account stays skipped until the reset.
+            const stoppedOnLimit =
+              input.status !== "completed" &&
+              providerRetry.failure.class === "usage_limit" &&
+              providerRetry.failure.resetAt !== undefined;
             yield* emitProviderEvent({
               type: "turn_item.updated",
               driver: CLAUDE_PROVIDER,
-              turnItem: makeProviderRetryTurnItem({
-                driver: CLAUDE_PROVIDER,
-                threadId: input.context.input.threadId,
-                runId: input.context.input.runId,
-                nodeId: input.context.input.rootNodeId,
-                providerThreadId: input.context.input.providerThread.id,
-                providerTurnId: input.context.providerTurnId,
-                itemOrdinal: providerRetry.itemOrdinal,
-                failure: providerRetry.failure,
-                retry: providerRetry.retry,
-                status: input.status,
-                startedAt: providerRetry.startedAt,
-                updatedAt: input.completedAt,
-              }),
+              turnItem: claudeRetryTurnItem(
+                input.context,
+                providerRetry,
+                stoppedOnLimit ? "failed" : input.status,
+                input.completedAt,
+              ),
             });
           }
 
@@ -8453,6 +8508,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               context.rejectedRateLimitTypes.delete(limitType);
               context.rateLimitResetTimes.delete(limitType);
             }
+            yield* refreshUsageLimitRetry(context, now);
             if (blocked) {
               const limitKey = `${limitType}:${rateLimitInfo.resetsAt ?? "unknown"}`;
               if (!context.announcedUsageLimits.has(limitKey)) {
@@ -8926,7 +8982,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               maxAttempts: Math.max(1, Math.trunc(message.max_retries)),
               retryDelayMs: Math.max(0, Math.trunc(message.retry_delay_ms)),
             };
-            const failure = providerFailureFromApiRetry(message);
+            const failure = providerFailureFromApiRetry(message, blockedUsageLimitResetAt(context));
             const itemOrdinal =
               previous?.itemOrdinal ??
               (yield* resolveItemOrdinal(context, `terminal-failure:${context.providerTurnId}`));
@@ -8944,20 +9000,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             yield* emitProviderEvent({
               type: "turn_item.updated",
               driver: CLAUDE_PROVIDER,
-              turnItem: makeProviderRetryTurnItem({
-                driver: CLAUDE_PROVIDER,
-                threadId: context.input.threadId,
-                runId: context.input.runId,
-                nodeId: context.input.rootNodeId,
-                providerThreadId: context.input.providerThread.id,
-                providerTurnId: context.providerTurnId,
-                itemOrdinal,
-                failure,
-                retry,
-                status: "running",
-                startedAt: state.startedAt,
-                updatedAt,
-              }),
+              turnItem: claudeRetryTurnItem(context, state, "running", updatedAt),
             });
             return;
           }
@@ -9624,18 +9667,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               usageLimited && message.subtype === "success" && message.local_command === "compact"
                 ? context.compactionFailure
                 : null;
-            const resetTimes = Array.from(context.rateLimitResetTimes.values());
-            const assistantLimit = context.latestAssistantRateLimit;
-            if (
-              assistantLimit?.type != null &&
-              !context.rateLimitResetTimes.has(assistantLimit.type)
-            ) {
-              resetTimes.push(assistantLimit.resetAt);
-            }
-            const resetAt =
-              resetTimes.length > 0 && resetTimes.every((time) => time !== null)
-                ? resetTimes.reduce((latest, time) => (time! > latest ? time! : latest), "")
-                : null;
+            const resetAt = blockedUsageLimitResetAt(context);
             const resultFailure = interrupted
               ? null
               : limitedCompaction !== null

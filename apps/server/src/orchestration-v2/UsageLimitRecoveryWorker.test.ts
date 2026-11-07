@@ -7,6 +7,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RunAttemptId,
   RunId,
   type ServerProvider,
   ThreadId,
@@ -78,6 +79,15 @@ const thread: ProjectionStore.ProjectionLimitRecoveryCandidate = {
   updatedAt: DateTime.makeUnsafe(now - 1_000),
   limitRecovery: null,
   snoozedUntil: null,
+};
+
+const heldAttemptId = RunAttemptId.make("attempt:held");
+// Claude holds this turn open until the reset instead of stopping it.
+const heldThread: ProjectionStore.ProjectionLimitRecoveryCandidate = {
+  ...thread,
+  status: "running",
+  heldAttemptId,
+  latestRunCompletedAt: null,
 };
 
 const providers = [
@@ -170,8 +180,26 @@ describe("limitFailoverCommand", () => {
     ],
     ["the limit resets within minutes", { usageLimitResetAt: "2026-10-29T12:04:00.000Z" }],
     ["the thread is snoozed", { snoozedUntil: DateTime.makeUnsafe(Date.parse(resetAt)) }],
+    [
+      "a held turn resets within minutes",
+      { ...heldThread, usageLimitResetAt: "2026-10-29T12:04:00.000Z" },
+    ],
+    ["a held turn is snoozed", { ...heldThread, snoozedUntil: DateTime.makeUnsafe(now + 60_000) }],
+    ["a running turn is not held", { status: "running", latestRunCompletedAt: null }],
   ] as const)("keeps the thread in place when %s", (_, overrides) => {
     assert.isNull(failover({ thread: { ...thread, ...overrides } }));
+  });
+
+  it("restarts a held turn on the first account that can still run", () => {
+    const command = failover({ thread: heldThread });
+    assert.deepEqual(command?.dispatchMode, { type: "restart_active", targetRunId: runId });
+    assert.equal(command?.modelSelection?.instanceId, ProviderInstanceId.make("claude_first"));
+    assert.isUndefined(command?.manualContinuationOfRunId);
+    // Each hold of the same run is its own switch, so a later hold is not taken as a repeat.
+    assert.equal(
+      command?.commandId,
+      CommandId.make("limit-failover:thread:failover:run:failover:attempt:held:claude_first"),
+    );
   });
 
   it.each(["apiKey", "bedrock"])("never continues on a %s account", (type) => {
@@ -186,9 +214,13 @@ describe("limitFailoverCommand", () => {
     );
   });
 
-  it("keeps the thread in place when every other account is out", () => {
+  it.each([
+    ["stopped", thread],
+    ["held", heldThread],
+  ] as const)("keeps a %s thread in place when every other account is out", (_, candidate) => {
     assert.isNull(
       failover({
+        thread: candidate,
         limitedInstanceIds: new Set(
           ["claude_limited", "claude_second", "claude_first"].map((instanceId) =>
             ProviderInstanceId.make(instanceId),

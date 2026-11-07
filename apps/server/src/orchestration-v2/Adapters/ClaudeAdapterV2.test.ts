@@ -8538,6 +8538,106 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect.each(["limit first", "retry first"] as const)(
+    "a turn Claude holds for a usage limit reads as limited until its reset (%s)",
+    (order) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          let acknowledgeStop = Effect.void;
+          const harness = yield* makeWakeHarnessWithOptions({
+            interrupt: Effect.suspend(() => acknowledgeStop),
+            close: (messages) => Queue.shutdown(messages),
+          });
+          acknowledgeStop = harness.offerAndWait(
+            makeResultFrame({
+              uuid: "00000000-0000-4000-8000-000000000206",
+              result: "",
+              subtype: "error_during_execution",
+              errors: ["Error: Request was aborted."],
+              terminalReason: "aborted_streaming",
+            }),
+          );
+          const now = yield* DateTime.now;
+          const attemptId = RunAttemptId.make(
+            `attempt-claude-held-limit-${order.replace(" ", "-")}`,
+          );
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId,
+              text: "Continue.",
+              attachments: [],
+            }),
+          );
+          const resetsAt = Math.floor(DateTime.toEpochMillis(now) / 1000) + 7_200;
+          const limit = claudeSdkFrame({
+            type: "rate_limit_event",
+            rate_limit_info: { status: "rejected", rateLimitType: "five_hour", resetsAt },
+            uuid: "00000000-0000-4000-8000-000000000204",
+            session_id: WAKE_NATIVE_SESSION,
+          });
+          // The CLI's retry watchdog waits for the reset and reports each wait as a 429 retry.
+          const retry = claudeSdkFrame({
+            type: "system",
+            subtype: "api_retry",
+            attempt: 1,
+            max_retries: 10,
+            retry_delay_ms: 300_000,
+            error_status: 429,
+            error: "rate_limit",
+            uuid: "00000000-0000-4000-8000-000000000205",
+            session_id: WAKE_NATIVE_SESSION,
+          });
+          const retryItems = () =>
+            harness.events.flatMap((event) =>
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "error" &&
+              event.turnItem.retry !== undefined
+                ? [event.turnItem]
+                : [],
+            );
+          yield* Queue.offerAll(
+            harness.sdkMessages,
+            order === "limit first" ? [limit, retry] : [retry, limit],
+          );
+          // The pause notice follows the limit's effect on the retry row.
+          yield* harness.until(
+            () =>
+              retryItems().length > 0 &&
+              harness.events.some(
+                (event) =>
+                  event.type === "turn_item.updated" && event.turnItem.type === "system_notice",
+              ),
+          );
+          const held = retryItems().at(-1);
+          assert.equal(held?.status, "running");
+          assert.equal(held?.failure.class, "usage_limit");
+          assert.equal(
+            held?.failure.resetAt,
+            DateTime.formatIso(DateTime.makeUnsafe(resetsAt * 1000)),
+          );
+
+          // Stopping the held turn, as moving it to another account does, keeps the limit on record.
+          if (held === undefined || held.providerTurnId === null) return;
+          yield* harness.runtime.interruptTurn({
+            providerThread: harness.providerThread,
+            providerTurnId: held.providerTurnId,
+          });
+          assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "interrupted");
+          const stopped = retryItems().at(-1);
+          assert.equal(stopped?.id, held?.id);
+          assert.equal(stopped?.status, "failed");
+          assert.equal(stopped?.failure.resetAt, held?.failure.resetAt);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
   it.effect.each(["api_error", "overloaded_status"] as const)(
     "fails a success-shaped Claude result with %s",
     (terminalReason) =>

@@ -1,3 +1,8 @@
+## 2026-11-08 — Account switching moves Claude turns held at a usage limit
+
+- With **Switch accounts at usage limits** on, a Claude turn that Claude holds open until its usage limit resets now continues on another account of the same provider that has usage left, instead of waiting for the reset. A reset less than five minutes away is still waited out, and with switching off or no account with room the turn keeps waiting as before.
+- The account the turn was held on is skipped until its reset, also after the turn moves or you stop it, and a stopped held turn now says "Usage limit reached" with the reset time.
+
 ## 2026-11-08 — Updates come from GigaZoro/CodeShip again
 
 - Desktop apps, `t3 update` and a server's update button get new versions from [GigaZoro/CodeShip](https://github.com/GigaZoro/CodeShip/releases) again. The repository stays public, so the separate releases repository is no longer needed. Your app moves back with this update; nothing to do.
