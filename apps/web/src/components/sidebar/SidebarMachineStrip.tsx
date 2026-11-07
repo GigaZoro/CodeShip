@@ -21,6 +21,12 @@ import type { SidebarMachine } from "./SidebarFolderHeader";
 import { useSidebarMachines } from "./useSidebarMachines";
 import { t, tn } from "~/i18n";
 
+const LIMIT_TONE_CLASS_NAME = {
+  default: "text-muted-foreground",
+  warning: "text-warning-foreground",
+  error: "text-destructive-foreground",
+} as const;
+
 function machineStateLabel(machine: SidebarMachine): string {
   return machine.enabled ? machineAvailabilityLabel(machine.availability) : t("Switched off");
 }
@@ -143,15 +149,7 @@ function MachineStripRow(props: { machine: SidebarMachine }) {
           </div>
         ) : null}
         {tightest ? (
-          <div
-            className={cn(
-              limitTone(tightest.window.remainingPercent) === "default"
-                ? "text-muted-foreground"
-                : limitTone(tightest.window.remainingPercent) === "warning"
-                  ? "text-warning-foreground"
-                  : "text-destructive-foreground",
-            )}
-          >
+          <div className={LIMIT_TONE_CLASS_NAME[limitTone(tightest.window.remainingPercent)]}>
             {t("{pool} {window}: {percent}% left", {
               pool: limitPoolLabel(tightest.pool),
               window: limitWindowLabel(tightest.pool, tightest.window),
