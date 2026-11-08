@@ -16,6 +16,7 @@ import {
   ProjectScriptEditorDialog,
   ScriptIcon,
   type NewProjectScriptInput,
+  type ProjectScriptActionResult,
   type ProjectScriptEditorRequest,
 } from "../projectScriptEditor";
 import { Button } from "../ui/button";
@@ -28,11 +29,24 @@ import {
   MenuSeparator,
   MenuTrigger,
 } from "../ui/menu";
+import { toastManager } from "../ui/toast";
+import { useSaveProjectScripts, type ProjectScriptChange } from "../useSaveProjectScripts";
 import { ProjectActionsList } from "./ProjectActionsList";
-import { useProjectScriptSettings } from "./useProjectScriptSettings";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { t } from "~/i18n";
+
+function reportScriptFailure(result: ProjectScriptActionResult) {
+  if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+    const error = squashAtomCommandFailure(result);
+    toastManager.add({
+      type: "error",
+      title: t("Failed to save project actions"),
+      description: error instanceof Error ? error.message : t("An error occurred."),
+    });
+  }
+  return result;
+}
 
 export function ProjectActionsSettings() {
   const { scope, targets, target } = useSettingsScope();
@@ -53,23 +67,19 @@ export function ProjectActionsSettings() {
   const memberById = new Map(
     isProjectScope ? scope.members.map((member) => [member.id, member]) : [],
   );
-  const { saving, persist, submit } = useProjectScriptSettings(
-    targets.flatMap((candidate) => {
-      const environment = environments.find(
-        (entry) => entry.environmentId === candidate.environmentId,
-      );
-      if (!environment?.serverConfig) return [];
-      const member = candidate.projectId ? memberById.get(candidate.projectId) : undefined;
-      return [
-        {
-          environmentId: candidate.environmentId,
-          settings: environment.serverConfig.settings,
-          keybindings: environment.serverConfig.keybindings,
-          ...(member ? { project: member } : {}),
-        },
-      ];
-    }),
-  );
+  const saveProjectScripts = useSaveProjectScripts();
+  const lists = targets.flatMap((candidate) => {
+    const environment = environments.find(
+      (entry) => entry.environmentId === candidate.environmentId,
+    );
+    if (!environment?.serverConfig) return [];
+    const member = candidate.projectId ? memberById.get(candidate.projectId) : undefined;
+    return [{ environmentId: candidate.environmentId, projectId: member?.id ?? null }];
+  });
+  const save = (change: ProjectScriptChange) =>
+    saveProjectScripts(lists, change).then(reportScriptFailure);
+  const submit = (scriptId: string | null, input: NewProjectScriptInput) =>
+    save({ kind: "save", scriptId, input });
 
   const representativeMember = target?.projectId ? memberById.get(target.projectId) : undefined;
   const t3File = useT3ProjectFileState(
@@ -117,7 +127,7 @@ export function ProjectActionsSettings() {
         description={t(
           "Commands that run in this project's checkout or its worktree, with optional shortcuts.",
         )}
-        onResetOverride={() => void persist(() => null)}
+        onResetOverride={() => void save({ kind: "reset" })}
         control={
           <div className="flex flex-wrap items-center gap-1.5">
             {importableScripts.length > 0 ? (
@@ -128,7 +138,7 @@ export function ProjectActionsSettings() {
                       id="import-scripts"
                       size="xs"
                       variant="ghost"
-                      disabled={saving || !canWriteSettings}
+                      disabled={!canWriteSettings}
                       type="button"
                     />
                   }
@@ -164,7 +174,7 @@ export function ProjectActionsSettings() {
             <Button
               size="xs"
               variant="outline"
-              disabled={saving || !canWriteSettings || targets.length === 0}
+              disabled={!canWriteSettings || targets.length === 0}
               onClick={() => setRequest({ scriptId: null, initial: EMPTY_PROJECT_SCRIPT_INPUT })}
             >
               <PlusIcon className="size-3.5" />
@@ -184,7 +194,7 @@ export function ProjectActionsSettings() {
         <ProjectActionsList
           scripts={scripts}
           keybindings={keybindings}
-          disabled={saving || !canWriteSettings}
+          disabled={!canWriteSettings}
           onEdit={(script) => setRequest(editorRequestForScript(script, keybindings))}
         />
       )}
@@ -205,9 +215,7 @@ export function ProjectActionsSettings() {
           scripts={scripts}
           keybindings={keybindings}
           onSubmit={submit}
-          onDelete={(id) =>
-            void persist((current) => current.filter((script) => script.id !== id), id, null)
-          }
+          onDelete={(scriptId) => void save({ kind: "delete", scriptId })}
           onClose={() => setRequest(null)}
         />
       )}

@@ -1895,6 +1895,49 @@ export const ServerSettingsPatch = Schema.Struct({
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
+const ProjectScriptListTarget = {
+  /** Null changes the environment's default actions. */
+  projectId: Schema.NullOr(ProjectId),
+};
+
+/**
+ * One change to an action list, applied to the list the server holds when it runs, so saves from
+ * another client or a list that has not re-rendered yet cannot drop each other's actions. A script
+ * that takes the setup or settle role takes it from the action holding it.
+ */
+export const ProjectScriptMutation = Schema.Union([
+  /** Fails with ProjectScriptExistsError when an action in this environment already has the id. */
+  Schema.Struct({
+    operation: Schema.Literal("add"),
+    ...ProjectScriptListTarget,
+    script: ProjectScript,
+  }),
+  /** Replaces the action with the same id, or adds it when the list has none. */
+  Schema.Struct({
+    operation: Schema.Literal("upsert"),
+    ...ProjectScriptListTarget,
+    script: ProjectScript,
+  }),
+  Schema.Struct({
+    operation: Schema.Literal("remove"),
+    ...ProjectScriptListTarget,
+    scriptId: ProjectScript.fields.id,
+  }),
+  /** A project inherits the environment's actions again; the environment's own list empties. */
+  Schema.Struct({ operation: Schema.Literal("reset"), ...ProjectScriptListTarget }),
+]);
+export type ProjectScriptMutation = typeof ProjectScriptMutation.Type;
+
+/** Shortcuts are keyed by action id across an environment, so a new action needs an unused one. */
+export class ProjectScriptExistsError extends Schema.TaggedError<ProjectScriptExistsError>()(
+  "ProjectScriptExistsError",
+  { scriptId: Schema.String },
+) {
+  override get message(): string {
+    return `An action with id ${this.scriptId} already exists in this environment.`;
+  }
+}
+
 export function requiredScopesForServerSettingsPatch(
   patch: ServerSettingsPatch,
 ): ReadonlyArray<AuthEnvironmentScope> {

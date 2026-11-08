@@ -1,3 +1,8 @@
+## 2026-11-08 — Project action saves no longer undo each other
+
+- Adding, editing or deleting a project action now changes only that action, on the list the machine holds at that moment. Importing two actions from t3.json in quick succession, or editing actions from two devices at once, keeps every change. Before, the later save could drop the earlier one, and saving or resetting a project's actions could revert another of its settings changed elsewhere meanwhile. If another device adds an action with the same name first, you're asked to save again.
+- A machine on an older server version asks you to update it before its actions can be changed.
+
 ## 2026-11-08 — A reply keeps its code blocks, selection and videos when it finishes
 
 - When a reply finishes streaming, everything below its first paragraph now stays as it was: a code block's **Wrap lines** choice, text you selected, a playing video and a Mermaid diagram no longer reset or jump. A Markdown file preview now redraws only the part of the file that changed.

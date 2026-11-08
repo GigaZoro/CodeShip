@@ -392,6 +392,8 @@ import { ManualStepsListError, ManualStepsListResult } from "./manualSteps.ts";
 import {
   StorageCleanupReport,
   DatabaseStorageStatus,
+  ProjectScriptExistsError,
+  ProjectScriptMutation,
   ServerSettings,
   ServerSettingsError,
   ServerSettingsPatch,
@@ -583,6 +585,7 @@ export const WS_METHODS = {
   peerLinksUnlink: "peerLinks.unlink",
   peerLinksAnswerRequest: "peerLinks.answerRequest",
   serverUpdateSettings: "server.updateSettings",
+  serverUpdateProjectScripts: "server.updateProjectScripts",
   serverDiscoverSourceControl: "server.discoverSourceControl",
   serverSearchAcpRegistry: "server.searchAcpRegistry",
   serverPrepareAcpRegistryAgent: "server.prepareAcpRegistryAgent",
@@ -1017,6 +1020,16 @@ const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSettings, {
   }),
   success: ServerSettings,
   error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
+});
+
+const WsServerUpdateProjectScriptsRpc = Rpc.make(WS_METHODS.serverUpdateProjectScripts, {
+  payload: ProjectScriptMutation,
+  success: ServerSettings,
+  error: Schema.Union([
+    ProjectScriptExistsError,
+    ServerSettingsError,
+    EnvironmentAuthorizationError,
+  ]),
 });
 
 const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {
@@ -2278,6 +2291,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetDatabaseStorageRpc,
   WsServerWatchRestartHoldRpc,
   WsServerUpdateSettingsRpc,
+  WsServerUpdateProjectScriptsRpc,
   WsManualStepsListRpc,
   WsPeerLinksListRpc,
   WsPeerLinksLinkRpc,

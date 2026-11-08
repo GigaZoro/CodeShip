@@ -1,14 +1,17 @@
 import { DEFAULT_SERVER_SETTINGS, ProjectId, type ProjectScript } from "@t3tools/contracts";
 import { shortcutLabelForCommand } from "./keybindings";
 import { describe, expect, it } from "vite-plus/test";
-import { settleProjectScript, setupProjectScript } from "@t3tools/shared/projectScripts";
+import {
+  applyProjectScriptChange,
+  settleProjectScript,
+  setupProjectScript,
+} from "@t3tools/shared/projectScripts";
 
 import {
   commandForProjectScript,
   nextProjectScriptId,
   primaryProjectScript,
   projectScriptIdsInUse,
-  releaseClaimedRoles,
 } from "./projectScripts";
 
 describe("projectScripts helpers", () => {
@@ -86,14 +89,6 @@ describe("projectScripts helpers", () => {
   });
 
   it("moves the setup and settle roles to the script that claims them", () => {
-    const input = {
-      name: "Next",
-      command: "true",
-      icon: "play",
-      waitForSetup: false,
-      previewUrl: null,
-      autoOpenPreview: false,
-    } as const;
     const holder = {
       id: "holder",
       name: "Holder",
@@ -102,15 +97,21 @@ describe("projectScripts helpers", () => {
       runOnWorktreeCreate: true,
       runOnSettle: true,
     };
+    const saved = (roles: { runOnWorktreeCreate: boolean; runOnSettle: boolean }) =>
+      applyProjectScriptChange([holder], {
+        operation: "add",
+        projectId: null,
+        script: { id: "next", name: "Next", command: "true", icon: "play", ...roles },
+      })[0];
 
-    expect(
-      releaseClaimedRoles(holder, { ...input, runOnWorktreeCreate: false, runOnSettle: true }),
-    ).toMatchObject({ runOnWorktreeCreate: true, runOnSettle: false });
-    expect(
-      releaseClaimedRoles(holder, { ...input, runOnWorktreeCreate: true, runOnSettle: false }),
-    ).toMatchObject({ runOnWorktreeCreate: false, runOnSettle: true });
-    expect(
-      releaseClaimedRoles(holder, { ...input, runOnWorktreeCreate: false, runOnSettle: false }),
-    ).toBe(holder);
+    expect(saved({ runOnWorktreeCreate: false, runOnSettle: true })).toMatchObject({
+      runOnWorktreeCreate: true,
+      runOnSettle: false,
+    });
+    expect(saved({ runOnWorktreeCreate: true, runOnSettle: false })).toMatchObject({
+      runOnWorktreeCreate: false,
+      runOnSettle: true,
+    });
+    expect(saved({ runOnWorktreeCreate: false, runOnSettle: false })).toBe(holder);
   });
 });

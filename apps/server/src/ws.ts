@@ -2632,6 +2632,10 @@ export const layerWsRpc = (
               : serverSettings.updateProviderInstance(providerInstanceMutation, nextPatch);
             return ServerSettings.redactServerSettingsForClient(settings);
           }),
+        [WS_METHODS.serverUpdateProjectScripts]: (mutation) =>
+          serverSettings
+            .updateProjectScripts(mutation)
+            .pipe(Effect.map(ServerSettings.redactServerSettingsForClient)),
         [WS_METHODS.serverDiscoverSourceControl]: (_input) => sourceControlDiscovery.discover,
         [WS_METHODS.serverGetTraceDiagnostics]: (_input) =>
           TraceDiagnostics.readTraceDiagnostics({

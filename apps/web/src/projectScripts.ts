@@ -6,6 +6,7 @@ import {
   type ProjectScript,
   type ServerSettings,
 } from "@t3tools/contracts";
+import { projectScriptIdsInSettings } from "@t3tools/shared/projectScripts";
 import * as Schema from "effect/Schema";
 const isScriptRunCommand = Schema.is(SCRIPT_RUN_COMMAND_PATTERN);
 
@@ -35,20 +36,6 @@ export function buildProjectScript(id: string, input: ProjectScriptInput): Proje
           previewUrl: input.previewUrl,
           autoOpenPreview: input.autoOpenPreview,
         }),
-  };
-}
-
-export function releaseClaimedRoles(
-  script: ProjectScript,
-  saved: ProjectScriptInput,
-): ProjectScript {
-  const releaseSetup = saved.runOnWorktreeCreate && script.runOnWorktreeCreate;
-  const releaseSettle = saved.runOnSettle && script.runOnSettle === true;
-  if (!releaseSetup && !releaseSettle) return script;
-  return {
-    ...script,
-    ...(releaseSetup ? { runOnWorktreeCreate: false } : {}),
-    ...(releaseSettle ? { runOnSettle: false } : {}),
   };
 }
 
@@ -114,16 +101,10 @@ export function projectScriptIdsInUse(environment: {
   }>;
   readonly keybindings: ReadonlyArray<{ readonly command: string }>;
 }): Set<string> {
-  const ids = new Set<string>();
-  const add = (scripts: readonly ProjectScript[] | null | undefined) => {
-    for (const script of scripts ?? []) ids.add(script.id);
-  };
-  add(environment.settings.defaultProjectScripts);
-  for (const entry of Object.values(environment.settings.projectSettingsOverrides)) {
-    add(entry.defaultProjectScripts);
+  const ids = projectScriptIdsInSettings(environment.settings);
+  for (const project of environment.projects) {
+    for (const script of project.scripts) ids.add(script.id);
   }
-  for (const scripts of Object.values(environment.settings.projectScriptOverrides)) add(scripts);
-  for (const project of environment.projects) add(project.scripts);
   for (const binding of environment.keybindings) {
     const id = projectScriptIdFromCommand(binding.command);
     if (id !== null) ids.add(id);

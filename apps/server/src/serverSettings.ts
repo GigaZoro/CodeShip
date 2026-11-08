@@ -3,6 +3,8 @@ import {
   ModelSelection,
   ProjectId,
   ProjectScript,
+  ProjectScriptExistsError,
+  type ProjectScriptMutation,
   keepUnknownOverrideKeys,
   ProjectSettingsOverrides,
   type ProviderInstanceConfig,
@@ -52,6 +54,10 @@ import {
   fallbackTextGenerationModelSelection,
   isModelSelectionProviderEnabled,
 } from "@t3tools/shared/serverSettings";
+import {
+  projectScriptIdsInSettings,
+  projectScriptMutationPatch,
+} from "@t3tools/shared/projectScripts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as ManagedPolicy from "./policy/ManagedPolicy.ts";
 import { secretProviderDefinitions } from "./secrets/secretProviderDefinitions.ts";
@@ -241,6 +247,10 @@ export class ServerSettingsService extends Context.Service<
       patch?: ServerSettingsPatch,
     ) => Effect.Effect<ServerSettings, ServerSettingsError>;
 
+    readonly updateProjectScripts: (
+      mutation: ProjectScriptMutation,
+    ) => Effect.Effect<ServerSettings, ServerSettingsError | ProjectScriptExistsError>;
+
     readonly withSettingsSnapshot: <A, E, R>(
       use: (settings: ServerSettings) => Effect.Effect<A, E, R>,
     ) => Effect.Effect<A, E | ServerSettingsError, R>;
@@ -256,6 +266,24 @@ export class ServerSettingsService extends Context.Service<
     managedPolicy?: ManagedPolicySummary,
   ) => layerTest(overrides, managedPolicy);
 }
+
+interface SettingsWrite {
+  /** What the write asks for, which the managed policy vets alongside the result. */
+  readonly patch: ServerSettingsPatch;
+  readonly settings: ServerSettings;
+}
+
+/** `current` is the list as it stands under the write lock, not as the client last saw it. */
+const projectScriptWrite = (
+  current: ServerSettings,
+  mutation: ProjectScriptMutation,
+): Effect.Effect<SettingsWrite, ProjectScriptExistsError> => {
+  if (mutation.operation === "add" && projectScriptIdsInSettings(current).has(mutation.script.id)) {
+    return Effect.fail(new ProjectScriptExistsError({ scriptId: mutation.script.id }));
+  }
+  const patch = projectScriptMutationPatch(current, mutation);
+  return Effect.succeed({ patch, settings: applyServerSettingsPatch(current, patch) });
+};
 
 const makeTest = Effect.fn("serverSettings.makeTest")(function* (
   overrides: DeepPartial<ServerSettings> = {},
@@ -277,9 +305,9 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
   const writeSemaphore = yield* Semaphore.make(1);
   const getSettings = Ref.get(currentSettingsRef).pipe(Effect.map(resolveTextGenerationProvider));
 
-  const updateTestSettings = (
-    update: (current: ServerSettings) => Effect.Effect<ServerSettings, ServerSettingsError>,
-  ): Effect.Effect<ServerSettings, ServerSettingsError> =>
+  const updateTestSettings = <E>(
+    update: (current: ServerSettings) => Effect.Effect<ServerSettings, E>,
+  ): Effect.Effect<ServerSettings, E | ServerSettingsError> =>
     writeSemaphore.withPermits(1)(
       Ref.get(currentSettingsRef).pipe(
         Effect.flatMap(update),
@@ -305,6 +333,10 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
           const patched = applyServerSettingsPatch(currentSettings, patch);
           return applyProviderInstanceMutation(patched, mutation);
         }),
+      ),
+    updateProjectScripts: (mutation) =>
+      updateTestSettings((currentSettings) =>
+        projectScriptWrite(currentSettings, mutation).pipe(Effect.map((write) => write.settings)),
       ),
     withSettingsSnapshot: (use) =>
       writeSemaphore.withPermits(1)(getSettings.pipe(Effect.flatMap(use))),
@@ -1128,10 +1160,9 @@ const make = Effect.gen(function* () {
     );
   };
 
-  const updateAndPersistSettings = (
-    patch: ServerSettingsPatch,
-    update: (current: ServerSettings) => Effect.Effect<ServerSettings, ServerSettingsError>,
-  ): Effect.Effect<ServerSettings, ServerSettingsError> =>
+  const updateAndPersistSettings = <E>(
+    update: (current: ServerSettings) => Effect.Effect<SettingsWrite, E>,
+  ): Effect.Effect<ServerSettings, E | ServerSettingsError> =>
     writeSemaphore.withPermits(1)(
       Effect.gen(function* () {
         const { settings: current, parseFailure } = yield* reloadSettings;
@@ -1142,7 +1173,7 @@ const make = Effect.gen(function* () {
             cause: parseFailure.value,
           });
         }
-        const updated = yield* update(current);
+        const { patch, settings: updated } = yield* update(current);
         // Vet before secrets: a variable the policy hides from clients is not one they removed.
         const vetted = managed.vetWrite(current, yield* normalizeServerSettings(updated), patch);
         if (vetted._tag === "Locked") {
@@ -1307,20 +1338,22 @@ const make = Effect.gen(function* () {
     ready: Deferred.await(startedDeferred),
     getSettings: getMaterializedSettings,
     updateSettings: (patch) =>
-      updateAndPersistSettings(patch, (current) =>
+      updateAndPersistSettings((current) =>
         ensureSecretProviderWritesAllowed(patch, settingsPath).pipe(
-          Effect.as(applyServerSettingsPatch(current, patch)),
+          Effect.as({ patch, settings: applyServerSettingsPatch(current, patch) }),
         ),
       ),
     updateProviderInstance: (mutation, patch = {}) =>
-      updateAndPersistSettings(patch, (current) =>
+      updateAndPersistSettings((current) =>
         Effect.gen(function* () {
           yield* ensureSecretProviderWritesAllowed(patch, settingsPath);
           yield* ensureProviderInstanceMutationAllowed(current, mutation, settingsPath);
           const patched = applyServerSettingsPatch(current, patch);
-          return applyProviderInstanceMutation(patched, mutation);
+          return { patch, settings: applyProviderInstanceMutation(patched, mutation) };
         }),
       ),
+    updateProjectScripts: (mutation) =>
+      updateAndPersistSettings((current) => projectScriptWrite(current, mutation)),
     withSettingsSnapshot,
     get streamChanges() {
       return materializeChanges(Stream.fromPubSub(changesPubSub));

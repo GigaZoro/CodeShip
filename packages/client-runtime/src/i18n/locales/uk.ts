@@ -1826,7 +1826,6 @@ const catalog: MessageCatalog = {
   "Across environments": "У всіх середовищах",
   Action: "Дія",
   "Action failed": "Дія не вдалася",
-  "Action not found.": "Дію не знайдено.",
   "Action required": "Потрібна дія",
   "Action unavailable": "Дія недоступна",
   Actions: "Дії",
@@ -1837,7 +1836,6 @@ const catalog: MessageCatalog = {
   "Actions for queued message {number}": "Дії для повідомлення в черзі {number}",
   "Actions may use broader source control permissions than the original environment.":
     "Дії можуть використовувати ширші дозволи керування версіями, ніж початкове середовище.",
-  "Actions not saved": "Дії не збережено",
   "Activating installation": "Активація встановлення",
   Active: "Активні",
   "Active {cli} account": "Активний обліковий запис {cli}",
@@ -2190,7 +2188,8 @@ const catalog: MessageCatalog = {
   "Annotate preview": "Анотувати перегляд",
   "Annotated preview crop": "Фрагмент попереднього перегляду з анотаціями",
   "Annotation attached to draft": "Анотацію додано до чернетки",
-  "Another action change is still saving.": "Інша зміна дії ще зберігається.",
+  "Another action with this name was just added. Save again to add yours.":
+    "Щойно додано іншу дію з такою назвою. Збережіть ще раз, щоб додати свою.",
   "Another address…": "Інша адреса…",
   "Another approval arrived, so your message wasn't sent.":
     "Надійшло ще одне схвалення, тому ваше повідомлення не надіслано.",
@@ -7305,8 +7304,6 @@ const catalog: MessageCatalog = {
   "No artifacts match “{query}”.": "Немає артефактів за запитом «{query}».",
   "No artifacts yet": "Артефактів ще немає",
   "No authors found": "Авторів не знайдено",
-  "No available machine, or another action change is saving.":
-    "Немає доступного комп’ютера, або зберігається інша зміна дій.",
   "No available models": "Немає доступних моделей",
   "No branches available": "Немає доступних гілок",
   "No cached data": "Немає кешованих даних",
@@ -7402,6 +7399,7 @@ const catalog: MessageCatalog = {
   "No machine available": "Немає доступного комп’ютера",
   "No machine can read every attached thread. Choose a machine in the composer or remove the threads.":
     "Жоден комп’ютер не може прочитати всі прикріплені чати. Виберіть комп’ютер у полі повідомлення або видаліть чати.",
+  "No machine is available.": "Немає доступного комп’ютера.",
   "No matches found.": "Збігів не знайдено.",
   "No matches.": "Збігів немає.",
   "No matching actions.": "Немає відповідних дій.",
@@ -11199,8 +11197,6 @@ const catalog: MessageCatalog = {
   "The ACP could not be prepared.": "Не вдалося підготувати ACP.",
   "The ACP operation failed.": "Операція ACP не вдалася.",
   "The action could not be completed. Try again.": "Не вдалося виконати дію. Спробуйте ще раз.",
-  "The action was deleted, but its keyboard shortcut could not be removed because permission changed.":
-    "Дію видалено, але її комбінацію клавіш не вдалося прибрати, бо змінилися дозволи.",
   "The action was saved, but its shortcut was not: {reason}":
     "Дію збережено, але комбінацію клавіш ні: {reason}",
   "The active window is not available for capture.": "Активне вікно недоступне для захоплення.",
@@ -11847,8 +11843,6 @@ const catalog: MessageCatalog = {
   "This connection can create access links but cannot view authorized clients.":
     "Це підключення може створювати посилання доступу, але не може переглядати авторизованих клієнтів.",
   "This connection can no longer change it.": "Це підключення більше не може його змінювати.",
-  "This connection can no longer change keyboard shortcuts.":
-    "Це підключення більше не може змінювати комбінації клавіш.",
   "This connection can no longer remove worktrees.":
     "Це з’єднання більше не може видаляти worktree.",
   "This connection can view keybindings but cannot change them.":
@@ -11860,8 +11854,6 @@ const catalog: MessageCatalog = {
   "This connection cannot add projects.": "Це підключення не може додавати проєкти.",
   "This connection cannot browse host folders.": "Це підключення не може переглядати папки хоста.",
   "This connection cannot change attachments.": "Це з’єднання не може змінювати вкладення.",
-  "This connection cannot change environment settings.":
-    "Це з’єднання не може змінювати налаштування середовища.",
   "This connection cannot change keyboard shortcuts.":
     "Це підключення не може змінювати комбінації клавіш.",
   "This connection cannot change one or more selected threads.":
@@ -12923,6 +12915,8 @@ const catalog: MessageCatalog = {
   "Update theme": "Оновити тему",
   "Update this environment to manage Antigravity.":
     "Оновіть це середовище, щоб керувати Antigravity.",
+  "Update this environment's server to change its actions.":
+    "Оновіть сервер цього середовища, щоб змінювати його дії.",
   "Update this environment's server to reorder active threads.":
     "Оновіть сервер цього середовища, щоб змінювати порядок активних чатів.",
   "Update this environment's T3.CodeShip server to browse pull requests.":

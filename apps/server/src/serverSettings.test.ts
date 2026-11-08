@@ -6,6 +6,7 @@ import {
   ModelSelection,
   ProjectId,
   ProjectScript,
+  ProjectScriptExistsError,
   ProviderDriverKind,
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
@@ -518,6 +519,48 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           (yield* serverSettings.getSettings).providerInstances[instanceId]?.displayName ?? "",
         ),
       );
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect("keeps both actions when two clients add them to a project at once", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const projectId = ProjectId.make("project-a");
+      const script = (id: string): ProjectScript => ({
+        id,
+        name: id,
+        command: `vp run ${id}`,
+        icon: "play",
+        runOnWorktreeCreate: false,
+      });
+      yield* fs.writeFileString(
+        config.settingsPath,
+        JSON.stringify({
+          defaultProjectScripts: [script("lint")],
+          projectSettingsOverrides: { [projectId]: { defaultAutoPull: true } },
+        }),
+      );
+
+      yield* Effect.forEach(
+        ["dev", "test"],
+        (id) =>
+          serverSettings.updateProjectScripts({ operation: "add", projectId, script: script(id) }),
+        { concurrency: "unbounded" },
+      );
+      const stale = yield* serverSettings
+        .updateProjectScripts({ operation: "add", projectId, script: script("dev") })
+        .pipe(Effect.flip);
+
+      assert.instanceOf(stale, ProjectScriptExistsError);
+      const override = (yield* serverSettings.getSettings).projectSettingsOverrides[projectId];
+      assert.isTrue(override?.defaultAutoPull);
+      assert.deepEqual(override?.defaultProjectScripts?.map((entry) => entry.id).toSorted(), [
+        "dev",
+        "lint",
+        "test",
+      ]);
     }).pipe(Effect.provide(layerServerSettings())),
   );
 

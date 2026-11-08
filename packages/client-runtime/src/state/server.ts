@@ -1704,6 +1704,12 @@ export function createServerEnvironmentAtoms<R, E>(
     }),
     updateSettings,
     mutateProviderInstance: updateSettings,
+    updateProjectScripts: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:update-project-scripts",
+      tag: WS_METHODS.serverUpdateProjectScripts,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
     prepareAcpRegistryAgent: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:acp-registry:prepare",
       tag: WS_METHODS.serverPrepareAcpRegistryAgent,
