@@ -1,3 +1,9 @@
+## 2026-11-08 — Scheduled tasks take less room in the thread list
+
+- Each task in the **Scheduled** section is now one line, the height of a settled thread, with its run status or the time to its next run (such as "in 2h 30m") at the end. Six tasks take about 220px instead of 360px.
+- Hover a task to see its schedule, next and last run, project and machine. With more than one machine connected, a small machine badge shows which one runs it.
+- On web and desktop.
+
 ## 2026-11-08 — A found update stays on offer when GitHub stops answering
 
 - When the desktop app had found a new version and a later automatic check failed, because GitHub timed out or dropped the connection, the update button disappeared until a check succeeded again. During a GitHub outage that could be hours. The update now stays on offer, with its release notes, until a check that does answer says otherwise.

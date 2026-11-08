@@ -85,22 +85,36 @@ export function scheduledTasksForThread(
 }
 
 /** Seconds matter for short intervals, so under an hour reads as a m:ss countdown. */
-export function formatNextRunCountdown(nextRunAt: string, nowMs: number): string {
+function formatCountdown(
+  nextRunAt: string,
+  nowMs: number,
+  phrase: (duration: string) => string,
+): string {
   const remainingMs = Date.parse(nextRunAt) - nowMs;
   if (Number.isNaN(remainingMs)) return "";
   if (remainingMs <= 0) return t("due now");
   const totalSeconds = Math.ceil(remainingMs / 1000);
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const duration =
+  return phrase(
     hours === 0
       ? `${minutes}:${String(totalSeconds % 60).padStart(2, "0")}`
       : hours >= 24
         ? t("{days}d", { days: Math.round(hours / 24) })
         : minutes === 0
           ? t("{hours}h", { hours })
-          : t("{hours}h {minutes}m", { hours, minutes });
-  return t("next in {duration}", { duration });
+          : t("{hours}h {minutes}m", { hours, minutes }),
+  );
+}
+
+/** "next in 2h 30m", "due now", or empty for an unreadable time. */
+export function formatNextRunCountdown(nextRunAt: string, nowMs: number): string {
+  return formatCountdown(nextRunAt, nowMs, (duration) => t("next in {duration}", { duration }));
+}
+
+/** The short form for a one-line row: "in 2h 30m". */
+export function formatNextRunIn(nextRunAt: string, nowMs: number): string {
+  return formatCountdown(nextRunAt, nowMs, (duration) => t("in {duration}", { duration }));
 }
 
 /** How long ago `at` was, such as "5m ago". Empty for an unreadable time. */

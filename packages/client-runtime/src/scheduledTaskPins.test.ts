@@ -7,6 +7,7 @@ import {
   failedScheduledTaskCount,
   formatLastRunAgo,
   formatNextRunCountdown,
+  formatNextRunIn,
   holdPinOrder,
   intervalWaitProgress,
   pinnedTaskKey,
@@ -84,17 +85,18 @@ describe("resolvePinnedTaskStatus", () => {
   });
 });
 
-describe("formatNextRunCountdown", () => {
+describe("formatNextRunCountdown and formatNextRunIn", () => {
   const now = Date.parse("2026-11-02T10:00:00.000Z");
   it.each([
-    { at: "2026-11-02T09:59:00.000Z", expected: "due now" },
-    { at: "2026-11-02T10:00:00.400Z", expected: "next in 0:01" },
-    { at: "2026-11-02T10:04:05.000Z", expected: "next in 4:05" },
-    { at: "2026-11-02T11:00:00.000Z", expected: "next in 1h" },
-    { at: "2026-11-02T12:30:00.000Z", expected: "next in 2h 30m" },
-    { at: "2026-11-05T10:00:00.000Z", expected: "next in 3d" },
-  ])("$at reads $expected", ({ at, expected }) => {
-    expect(formatNextRunCountdown(at, now)).toBe(expected);
+    { at: "2026-11-02T09:59:00.000Z", expected: "due now", short: "due now" },
+    { at: "2026-11-02T10:00:00.400Z", expected: "next in 0:01", short: "in 0:01" },
+    { at: "2026-11-02T10:04:05.000Z", expected: "next in 4:05", short: "in 4:05" },
+    { at: "2026-11-02T11:00:00.000Z", expected: "next in 1h", short: "in 1h" },
+    { at: "2026-11-02T12:30:00.000Z", expected: "next in 2h 30m", short: "in 2h 30m" },
+    { at: "2026-11-05T10:00:00.000Z", expected: "next in 3d", short: "in 3d" },
+    { at: "not a date", expected: "", short: "" },
+  ])("$at reads $expected", ({ at, expected, short }) => {
+    expect([formatNextRunCountdown(at, now), formatNextRunIn(at, now)]).toEqual([expected, short]);
   });
 });
 

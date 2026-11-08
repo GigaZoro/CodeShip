@@ -26,6 +26,8 @@ import {
   collectPinnedTasks,
   formatLastRunAgo,
   formatNextRunCountdown,
+  formatNextRunIn,
+  formatTimeAgo,
   holdPinOrder,
   intervalWaitProgress,
   pinnedTaskKey,
@@ -58,10 +60,13 @@ import {
   CalendarClockIcon,
   CircleAlertIcon,
   CircleDashedIcon,
+  FolderIcon,
+  HistoryIcon,
   MessageCircleQuestionIcon,
   PauseIcon,
   PinOffIcon,
   ShieldQuestionIcon,
+  TimerIcon,
   UserRoundIcon,
 } from "lucide-react";
 import {
@@ -69,6 +74,7 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react";
 
 import { useNowSecond } from "../../hooks/useNowSecond";
@@ -88,6 +94,8 @@ import { ScheduledTaskRunsDialog } from "../settings/ScheduledTaskRunsDialog";
 import { scheduleLabel } from "../settings/ScheduledTasksSettings";
 import { resolveSidebarRowAccessibility, resolveWorkingStartedAt } from "../Sidebar.logic";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
+import { MachineBadge } from "../MachineBadge";
+import { ThreadHoverCard, ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { CollapsibleSectionHeader } from "../ui/collapsible-section-header";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -170,8 +178,26 @@ function NextRunCountdown(props: { nextRunAt: string }) {
   );
 }
 
+function NextRunIn(props: { nextRunAt: string }) {
+  return <>{formatNextRunIn(props.nextRunAt, useNowSecond())}</>;
+}
+
 function LastRunAgo(props: { lastRunAt: string }) {
   return <>{formatLastRunAgo(props.lastRunAt, useNowSecond())}</>;
+}
+
+function TimeAgo(props: { at: string }) {
+  return <>{formatTimeAgo(props.at, useNowSecond())}</>;
+}
+
+function PinnedTaskDetail(props: { icon: typeof CalendarClockIcon; children: ReactNode }) {
+  const Icon = props.icon;
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <Icon aria-hidden className="size-3 shrink-0 stroke-muted-foreground" />
+      <div className="min-w-0 truncate text-foreground/75">{props.children}</div>
+    </div>
+  );
 }
 
 function IntervalWaitBar(props: { task: ScheduledTask }) {
@@ -375,53 +401,76 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
   };
 
   const StatusIcon = display?.icon;
+  const runTiming =
+    display !== null && StatusIcon !== undefined ? (
+      <span className={cn("inline-flex items-center gap-1 text-xs font-medium", display.className)}>
+        <StatusIcon aria-hidden className="size-3 shrink-0" />
+        {t(display.label)}
+        {status === "working" && runThread !== null ? (
+          <span aria-hidden className="font-normal">
+            <WorkingDuration startedAt={resolveWorkingStartedAt(runThread)} />
+          </span>
+        ) : null}
+      </span>
+    ) : task.enabled && task.nextRunAt !== null ? (
+      <span className="text-xs">
+        <NextRunIn nextRunAt={task.nextRunAt} />
+      </span>
+    ) : task.lastRunAt !== null ? (
+      <span className="text-xs">
+        <TimeAgo at={task.lastRunAt} />
+      </span>
+    ) : null;
   const row = (
     <li
       ref={setNodeRef}
       style={{ transform: CSS.Translate.toString(transform), transition }}
       {...listeners}
-      className={cn("list-none py-0.5", isDragging && "relative z-20")}
+      className={cn("list-none", isDragging && "relative z-20")}
     >
-      <div
-        role="treeitem"
-        tabIndex={-1}
-        data-sidebar-row={`task:${environmentId}:${task.id}`}
-        data-sidebar-parent="shelf:scheduled"
-        aria-label={accessibility.label}
-        aria-current={accessibility.current}
-        data-testid="sidebar-pinned-task-row"
-        className={cn(
-          "group/sidebar-row relative w-full cursor-pointer overflow-hidden rounded-md text-left text-sidebar-foreground outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-          isActive ? "bg-sidebar-row-active" : "hover:bg-sidebar-row-hover",
-          isDragging &&
-            "bg-sidebar bg-linear-to-b from-sidebar-row-active to-sidebar-row-active shadow-lg",
-        )}
-        onClick={openRun}
-        onContextMenu={handleContextMenu}
-        onKeyDown={handleKeyDown}
-      >
-        <div className="relative px-(--sidebar-row-content-inset) pt-(--sidebar-content-inset) pb-2.5">
-          <div className="flex h-5 min-w-0 items-center gap-1.5">
-            <CalendarClockIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
-            <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground/90">
-              {task.title}
+      <Tooltip disabled={isDragging}>
+        <TooltipTrigger
+          render={
+            <div
+              role="treeitem"
+              tabIndex={-1}
+              data-sidebar-row={`task:${environmentId}:${task.id}`}
+              data-sidebar-parent="shelf:scheduled"
+              aria-label={accessibility.label}
+              aria-current={accessibility.current}
+              data-testid="sidebar-pinned-task-row"
+              className={cn(
+                "group/sidebar-row relative flex h-9 w-full cursor-pointer items-center gap-2.5 overflow-hidden rounded-md px-(--sidebar-row-content-inset) text-left text-sidebar-foreground outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                isActive ? "bg-sidebar-row-active" : "hover:bg-sidebar-row-hover",
+                isDragging &&
+                  "bg-sidebar bg-linear-to-b from-sidebar-row-active to-sidebar-row-active shadow-lg",
+              )}
+              onClick={openRun}
+              onContextMenu={handleContextMenu}
+              onKeyDown={handleKeyDown}
+            />
+          }
+        >
+          <CalendarClockIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground/90">
+            {task.title}
+          </span>
+          {props.machineLabel !== null ? (
+            <MachineBadge
+              environmentId={environmentId}
+              label={props.machineLabel}
+              className="size-3.5 text-4xs"
+            />
+          ) : null}
+          <span className="relative flex h-6 min-w-6 shrink-0 items-center justify-end">
+            <span
+              className={cn(
+                "inline-flex justify-end text-secondary-label tabular-nums transition-opacity motion-reduce:transition-none",
+                canMove && "group-any-hover/sidebar-row:opacity-0",
+              )}
+            >
+              {runTiming}
             </span>
-            {display !== null && StatusIcon !== undefined ? (
-              <span
-                className={cn(
-                  "inline-flex shrink-0 items-center gap-1 text-xs font-medium",
-                  display.className,
-                )}
-              >
-                <StatusIcon aria-hidden className="size-3.5 shrink-0" />
-                {t(display.label)}
-                {status === "working" && runThread !== null ? (
-                  <span aria-hidden>
-                    <WorkingDuration startedAt={resolveWorkingStartedAt(runThread)} />
-                  </span>
-                ) : null}
-              </span>
-            ) : null}
             {canMove ? (
               <Tooltip>
                 <TooltipTrigger
@@ -431,7 +480,7 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
                       aria-label={t("Unpin {title} from sidebar", { title: task.title })}
                       disabled={!canOperate}
                       onClick={handleUnpin}
-                      className="pointer-events-none inline-flex shrink-0 cursor-pointer items-center rounded-md bg-transparent px-1 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-any-hover/sidebar-row:pointer-events-auto group-any-hover/sidebar-row:opacity-100 motion-reduce:transition-none"
+                      className="pointer-events-none absolute inset-y-0 right-0 inline-flex cursor-pointer items-center rounded-md bg-transparent px-1 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-any-hover/sidebar-row:pointer-events-auto group-any-hover/sidebar-row:opacity-100 motion-reduce:transition-none"
                     >
                       <PinOffIcon className="size-3.5" />
                     </button>
@@ -440,35 +489,39 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
                 <TooltipPopup side="top">{t("Unpin from sidebar")}</TooltipPopup>
               </Tooltip>
             ) : null}
-          </div>
-          <div className="mt-0.5 flex min-w-0 items-center gap-2 pl-5 text-xs text-muted-foreground">
-            <span className="min-w-0 flex-1 truncate">
+          </span>
+          {status === "idle" || status === "failed" ? <IntervalWaitBar task={task} /> : null}
+        </TooltipTrigger>
+        <ThreadHoverCardPopup side="right" align="start" sideOffset={4}>
+          <ThreadHoverCard title={task.title}>
+            <PinnedTaskDetail icon={CalendarClockIcon}>
               {scheduleLabel(task.schedule)}
-              {task.enabled && task.nextRunAt !== null ? (
-                <>
-                  {" · "}
-                  <NextRunCountdown nextRunAt={task.nextRunAt} />
-                </>
-              ) : task.lastRunAt !== null ? (
-                <>
-                  {" · "}
-                  <LastRunAgo lastRunAt={task.lastRunAt} />
-                </>
-              ) : null}
-            </span>
+            </PinnedTaskDetail>
+            {task.enabled && task.nextRunAt !== null ? (
+              <PinnedTaskDetail icon={TimerIcon}>
+                <NextRunCountdown nextRunAt={task.nextRunAt} />
+              </PinnedTaskDetail>
+            ) : null}
+            {task.lastRunAt !== null ? (
+              <PinnedTaskDetail icon={HistoryIcon}>
+                <LastRunAgo lastRunAt={task.lastRunAt} />
+              </PinnedTaskDetail>
+            ) : null}
+            {props.projectDisplayName !== null ? (
+              <PinnedTaskDetail icon={FolderIcon}>{props.projectDisplayName}</PinnedTaskDetail>
+            ) : null}
             {props.machineLabel !== null ? (
-              <span className="inline-flex max-w-[45%] shrink-0 items-center gap-1">
+              <div className="flex min-w-0 items-center gap-2">
                 <EnvironmentMachineIcon
                   kind={props.machineKind}
                   className="size-3 shrink-0 stroke-muted-foreground"
                 />
-                <span className="truncate">{props.machineLabel}</span>
-              </span>
+                <div className="min-w-0 truncate text-foreground/75">{props.machineLabel}</div>
+              </div>
             ) : null}
-          </div>
-        </div>
-        {status === "idle" || status === "failed" ? <IntervalWaitBar task={task} /> : null}
-      </div>
+          </ThreadHoverCard>
+        </ThreadHoverCardPopup>
+      </Tooltip>
     </li>
   );
   if (!runsOpen) return row;
