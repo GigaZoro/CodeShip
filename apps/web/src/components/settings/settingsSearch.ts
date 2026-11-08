@@ -476,6 +476,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["hide fold running monitoring threads inbox sidebar shelf"],
   },
   {
+    id: "manual-steps-sidebar",
+    title: msg("Manual steps"),
+    to: "/settings/general",
+    searchTerms: ["hide show manual steps hands-on threadpage pending sidebar box details column"],
+  },
+  {
     id: "sidebar-grouping",
     title: msg("Group threads"),
     to: "/settings/general",

@@ -54,6 +54,7 @@ import {
 } from "../rpc/client.ts";
 import type { RpcSession } from "../rpc/session.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
+import { recordProviderMcpProblems } from "./providerMcpProblems.ts";
 import {
   applyServerConfigProjection,
   reuseUnchanged,
@@ -1472,6 +1473,7 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.providerMcpList,
       staleTimeMs: 30_000,
       idleTtlMs: 30 * 60_000,
+      onAnswer: recordProviderMcpProblems,
     }),
     refreshProviderMcpServers: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:provider:mcp:refresh",

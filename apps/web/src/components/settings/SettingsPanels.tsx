@@ -883,6 +883,34 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+        <SettingsRow
+          {...searchableSetting("manual-steps-sidebar")}
+          description={t(
+            "Show the steps only you can do under Needs you. The Manual steps page in the sidebar rail always lists them.",
+          )}
+          resetAction={
+            settings.sidebarManualStepsEnabled !==
+            DEFAULT_UNIFIED_SETTINGS.sidebarManualStepsEnabled ? (
+              <SettingResetButton
+                label={t("manual steps")}
+                onClick={() =>
+                  updateSettings({
+                    sidebarManualStepsEnabled: DEFAULT_UNIFIED_SETTINGS.sidebarManualStepsEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.sidebarManualStepsEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ sidebarManualStepsEnabled: Boolean(checked) })
+              }
+              aria-label={t("Manual steps")}
+            />
+          }
+        />
         <BoringSidebarMultilineRow />
       </SettingsSection>
 

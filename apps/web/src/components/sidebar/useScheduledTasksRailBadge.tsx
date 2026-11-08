@@ -6,6 +6,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { tn, t } from "~/i18n";
 import { useServerConfigs } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
+import { RailCountBadge } from "./SidebarNavRailBadge";
 
 /** Keyed like the sidebar's task atoms, so the rail reads the same live lists. */
 const failedScheduledTaskCountAtom = Atom.family((environmentIdsKey: string) =>
@@ -22,7 +23,7 @@ const failedScheduledTaskCountAtom = Atom.family((environmentIdsKey: string) =>
   ).pipe(Atom.withLabel(`web:scheduled-task-failures:${environmentIdsKey}`)),
 );
 
-/** The Scheduled tasks rail item's label, and a dot while any task's latest run failed. */
+/** The Scheduled tasks rail item's label, and a count of tasks whose latest run failed. */
 export function useScheduledTasksRailBadge() {
   const serverConfigs = useServerConfigs();
   const failed = useAtomValue(
@@ -35,11 +36,6 @@ export function useScheduledTasksRailBadge() {
       "Scheduled tasks: {count} task's last run failed",
       "Scheduled tasks: {count} tasks' last runs failed",
     ),
-    badge: (
-      <span
-        aria-hidden
-        className="pointer-events-none absolute top-1 right-1 size-2 rounded-full bg-destructive ring-2 ring-sidebar"
-      />
-    ),
+    badge: <RailCountBadge count={failed} tone="problem" />,
   };
 }

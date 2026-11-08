@@ -151,6 +151,12 @@ const catalog: MessageCatalog = {
     other: "{count} додавання",
   },
   "{count} ahead": "Попереду: {count}",
+  "{count} approvals": {
+    one: "{count} погодження",
+    few: "{count} погодження",
+    many: "{count} погоджень",
+    other: "{count} погодження",
+  },
   "{count} approved": "Схвалили: {count}",
   "{count} attachment uploads": {
     one: "{count} вивантаження вкладення",
@@ -206,6 +212,7 @@ const catalog: MessageCatalog = {
     many: "{count} змінених файлів",
     other: "{count} зміненого файлу",
   },
+  "{count} changes requested": "{count}: запрошено зміни",
   "{count} checkouts": {
     one: "{count} робоча копія",
     few: "{count} робочі копії",
@@ -280,6 +287,12 @@ const catalog: MessageCatalog = {
     other: "Знайдено {count} сумісного агента.",
   },
   "{count} completed": "Завершено: {count}",
+  "{count} conflicts": {
+    one: "{count} конфлікт",
+    few: "{count} конфлікти",
+    many: "{count} конфліктів",
+    other: "{count} конфлікту",
+  },
   "{count} connections": {
     one: "{count} підключення",
     few: "{count} підключення",
@@ -360,6 +373,12 @@ const catalog: MessageCatalog = {
     other: "{count} середовища",
   },
   "{count} failed": "{count} з помилкою",
+  "{count} failing checks": {
+    one: "{count} невдала перевірка",
+    few: "{count} невдалі перевірки",
+    many: "{count} невдалих перевірок",
+    other: "{count} невдалої перевірки",
+  },
   "{count} favorites": {
     one: "{count} вибрана",
     few: "{count} вибрані",
@@ -514,6 +533,12 @@ const catalog: MessageCatalog = {
     few: "{count} моделі",
     many: "{count} моделей",
     other: "{count} моделі",
+  },
+  "{count} money decisions": {
+    one: "{count} рішення про гроші",
+    few: "{count} рішення про гроші",
+    many: "{count} рішень про гроші",
+    other: "{count} рішення про гроші",
   },
   "{count} monitors": {
     one: "{count} монітор",
@@ -717,6 +742,12 @@ const catalog: MessageCatalog = {
     other: "{count} репозиторію",
   },
   "{count} requested": "Запрошено: {count}",
+  "{count} requests": {
+    one: "{count} запит",
+    few: "{count} запити",
+    many: "{count} запитів",
+    other: "{count} запиту",
+  },
   "{count} requests waiting longer than {seconds}s.": {
     one: "{count} запит очікує довше ніж {seconds} с.",
     few: "{count} запити очікують довше ніж {seconds} с.",
@@ -1022,6 +1053,12 @@ const catalog: MessageCatalog = {
     few: "{count} недоступні",
     many: "{count} недоступних",
     other: "{count} недоступного",
+  },
+  "{count} usage limits": {
+    one: "{count} ліміт використання",
+    few: "{count} ліміти використання",
+    many: "{count} лімітів використання",
+    other: "{count} ліміту використання",
   },
   "{count} uses": {
     one: "{count} використання",
@@ -1351,6 +1388,7 @@ const catalog: MessageCatalog = {
     "{name}: встановлено {installed}; потрібно {required}; запущено {running}.",
   "{name}: installed {installed}; required {required}.":
     "{name}: встановлено {installed}; потрібно {required}.",
+  "{names} +{count}": "{names} +{count}",
   "{names} are still restarting.": {
     one: "{names} ще перезапускається.",
     few: "{names} ще перезапускаються.",
@@ -5394,6 +5432,13 @@ const catalog: MessageCatalog = {
   extensions: "розширення",
   Extensions: "Розширення",
   "Extensions breadcrumb": "Шлях розширень",
+  "Extensions: {count} MCP servers need sign-in or failed when last checked: {names}": {
+    one: "Розширення: {count} MCP-сервер потребує входу або не працював під час останньої перевірки: {names}",
+    few: "Розширення: {count} MCP-сервери потребують входу або не працювали під час останньої перевірки: {names}",
+    many: "Розширення: {count} MCP-серверів потребують входу або не працювали під час останньої перевірки: {names}",
+    other:
+      "Розширення: {count} MCP-сервера потребують входу або не працювали під час останньої перевірки: {names}",
+  },
   "External power": "Зовнішнє живлення",
   "Extra large": "Дуже великий",
   "Extracting Antigravity.": "Розпакування Antigravity.",
@@ -5928,6 +5973,7 @@ const catalog: MessageCatalog = {
   "Hide file tree": "Сховати дерево файлів",
   "Hide inspector": "Сховати інспектор",
   "Hide location of {name}": "Приховати розташування {name}",
+  "Hide Manual steps": "Сховати ручні кроки",
   "Hide model: {provider}, {model}": "Сховати модель: {provider}, {model}",
   "Hide requests": "Приховати запити",
   "Hide routes": "Сховати маршрути",
@@ -6895,9 +6941,15 @@ const catalog: MessageCatalog = {
     "Лише ручне захоплення. Щоразу ви обиратимете вікно",
   "Manual only": "Лише вручну",
   "Manual setup": "Налаштування вручну",
+  "manual steps": "ручні кроки",
   "Manual steps": "Ручні кроки",
   "Manual steps ({count})": "Ручні кроки ({count})",
   "Manual steps breadcrumb": "Навігація ручних кроків",
+  "Manual steps hidden": "Ручні кроки сховано",
+  "Manual steps under Needs you": "Ручні кроки під «Потрібні ви»",
+  "Manual steps: {count}": "Ручні кроки: {count}",
+  "Manual steps: {count}, {money}": "Ручні кроки: {count}, {money}",
+  "Manual steps: {reason}": "Ручні кроки: {reason}",
   "Manual update required": "Потрібне ручне оновлення",
   "Map {model} to model": "Зіставити {model} з моделлю",
   "Map to": "Зіставити з",
@@ -8666,6 +8718,7 @@ const catalog: MessageCatalog = {
   "Pull requests the agent opens from this thread land here. Link one yourself from a URL or a number.":
     "Пул-реквести, які агент відкриває з цього чату, з’являються тут. Прив’яжіть власний за URL або номером.",
   "Pull requests unavailable": "Пул-реквести недоступні",
+  "Pull requests: {parts}": "Пул-реквести: {parts}",
   Pulled: "Зміни отримано",
   "Pulling latest changes": "Отримання останніх змін",
   "Pulling latest changes...": "Отримання останніх змін…",
@@ -10134,6 +10187,12 @@ const catalog: MessageCatalog = {
   "Settings sections": "Розділи налаштувань",
   "Settings that belong to one machine, such as paths and accounts, are not compared.":
     "Налаштування окремого комп’ютера, як-от шляхи й облікові записи, не порівнюються.",
+  "Settings: {count} providers need attention: {names}": {
+    one: "Налаштування: {count} провайдер потребує уваги: {names}",
+    few: "Налаштування: {count} провайдери потребують уваги: {names}",
+    many: "Налаштування: {count} провайдерів потребують уваги: {names}",
+    other: "Налаштування: {count} провайдера потребують уваги: {names}",
+  },
   "Settings...": "Налаштування...",
   settle: "завершити",
   Settle: "Завершити",
@@ -10364,6 +10423,8 @@ const catalog: MessageCatalog = {
     "Показувати той самий репозиторій як один проєкт у фільтрах і засобі вибору проєкту та дозволяти новим чатам перемикатися між його комп’ютерами. У теках комп’ютерів він усе одно показується для кожного комп’ютера.",
   "Show the same repository on different machines or paths as one project, in folders, filters, and the project picker.":
     "Показувати той самий репозиторій на різних комп’ютерах або шляхах як один проєкт у теках, фільтрах і засобі вибору проєкту.",
+  "Show the steps only you can do under Needs you. The Manual steps page in the sidebar rail always lists them.":
+    "Показувати кроки, які можете виконати лише ви, під «Потрібні ви». Сторінка «Ручні кроки» в бічній панелі завжди їх показує.",
   "Show thread sidebar": "Показати бічну панель чатів",
   "Show threads": "Показати чати",
   "Show threads from every environment": "Показати чати з усіх середовищ",
@@ -11778,6 +11839,8 @@ const catalog: MessageCatalog = {
   "These ticks are kept here, not on the host": "Ці позначки зберігаються тут, а не на хості",
   "These worktrees may have changes that are not merged yet:":
     "У цих worktree можуть бути ще не злиті зміни:",
+  "They stay on the Manual steps page in the sidebar rail. Show them here again from Details → Choose what to show.":
+    "Вони залишаються на сторінці «Ручні кроки» в бічній панелі. Знову показати їх тут можна в Подробиці → Виберіть, що показувати.",
   Thinking: "Міркує",
   "Third-party notices": "Повідомлення про сторонні компоненти",
   "This {term} has been merged.": "Цей {term} злито.",
@@ -12451,11 +12514,11 @@ const catalog: MessageCatalog = {
   "Threads you archive will appear here.": "Тут з’являться чати, які ви архівуєте.",
   "Threads you archived, with restore and delete.":
     "Заархівовані чати з можливістю відновлення та видалення.",
-  "Threads, {count} need you": {
-    one: "Чати, {count} потребує вашої уваги",
-    few: "Чати, {count} потребують вашої уваги",
-    many: "Чати, {count} потребують вашої уваги",
-    other: "Чати, {count} потребують вашої уваги",
+  "Threads, {count} need you: {parts}": {
+    one: "Чати, {count} потребує вашої уваги: {parts}",
+    few: "Чати, {count} потребують вашої уваги: {parts}",
+    many: "Чати, {count} потребують вашої уваги: {parts}",
+    other: "Чати, {count} потребують вашої уваги: {parts}",
   },
   "through {count} files": {
     one: "через {count} файл",

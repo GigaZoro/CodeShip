@@ -4,13 +4,16 @@ import {
   type ManualStepsState,
   type ManualStepsView,
 } from "@t3tools/client-runtime/state/manualSteps";
-import type { ManualStep } from "@t3tools/contracts";
+import { settlePromise } from "@t3tools/client-runtime/state/runtime";
+import type { ContextMenuItem, ManualStep } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { CircleDollarSignIcon, HandIcon } from "lucide-react";
 import type { KeyboardEvent, MouseEvent } from "react";
 
+import { updateClientSettings, useClientSettings } from "../../hooks/useSettings";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
+import { readLocalApi } from "../../localApi";
 import { attachSidebarTree } from "../../lib/sidebarTree";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import { cn } from "../../lib/utils";
@@ -20,8 +23,10 @@ import { WaitingSinceLabel } from "../sidebar/SidebarThreadRow";
 import { openInSystemBrowser, useOpenThreadPageLink } from "../threadPage/threadPageLinks";
 import { Button, InlineButton } from "../ui/button";
 import { CollapsibleSectionHeader } from "../ui/collapsible-section-header";
+import { MenuCheckboxItem, MenuSeparator } from "../ui/menu";
 import { RefreshIcon } from "../ui/refresh-icon";
 import { Skeleton } from "../ui/skeleton";
+import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { t } from "~/i18n";
 
@@ -220,11 +225,66 @@ function shownInPlace(state: ManualStepsState | null): state is ManualStepsState
 const countAccessory = (view: ManualStepsView) =>
   view.status === "listed" ? <span className="font-normal tabular-nums">{view.count}</span> : null;
 
+/** Hiding only removes these placements; the Manual steps page keeps the list. */
+const showMenu = async (position: { x: number; y: number }) => {
+  const api = readLocalApi();
+  if (!api) return;
+  const items: ContextMenuItem<"hide">[] = [{ id: "hide", label: t("Hide Manual steps") }];
+  const clicked = await settlePromise(() => api.contextMenu.show(items, position));
+  if (clicked._tag === "Failure" || clicked.value !== "hide") return;
+  void updateClientSettings({ sidebarManualStepsEnabled: false });
+  toastManager.add({
+    type: "info",
+    title: t("Manual steps hidden"),
+    description: t(
+      "They stay on the Manual steps page in the sidebar rail. Show them here again from Details → Choose what to show.",
+    ),
+    actionProps: {
+      children: t("Undo"),
+      onClick: () => void updateClientSettings({ sidebarManualStepsEnabled: true }),
+    },
+  });
+};
+const onContextMenu = (event: MouseEvent) => {
+  event.preventDefault();
+  void showMenu({ x: event.clientX, y: event.clientY });
+};
+const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+  if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const rect = event.currentTarget.getBoundingClientRect();
+  void showMenu({ x: rect.left, y: rect.bottom });
+};
+
+const hideManualStepsMenu = { onContextMenu, onKeyDown };
+
+/** Turns the list under Needs you on and off from the thread details menu, while there is one. */
+export function ManualStepsMenuItems() {
+  const { state } = useManualSteps();
+  const enabled = useClientSettings((s) => s.sidebarManualStepsEnabled);
+  if (!shownInPlace(state)) return null;
+  return (
+    <>
+      <MenuSeparator />
+      <MenuCheckboxItem
+        checked={enabled}
+        onCheckedChange={(checked) =>
+          void updateClientSettings({ sidebarManualStepsEnabled: checked })
+        }
+      >
+        {t("Manual steps under Needs you")}
+      </MenuCheckboxItem>
+    </>
+  );
+}
+
 /** Beside Needs you at the foot of the chat's details column. */
 export function ManualStepsBox() {
   const { state, refresh } = useManualSteps();
   const [expanded, setExpanded] = useManualStepsExpanded();
-  if (!shownInPlace(state)) return null;
+  const enabled = useClientSettings((s) => s.sidebarManualStepsEnabled);
+  if (!enabled || !shownInPlace(state)) return null;
   return (
     <section
       {...workspaceAreaProps("manual-steps", 7, t("Manual steps"))}
@@ -233,6 +293,7 @@ export function ManualStepsBox() {
       <div className="flex shrink-0 items-center gap-1">
         <CollapsibleSectionHeader
           variant="panel"
+          {...hideManualStepsMenu}
           expanded={expanded}
           onClick={() => setExpanded((value) => !value)}
           accessory={countAccessory(state.view)}
@@ -261,7 +322,8 @@ export function ManualStepsSidebarSection() {
   const { state, refresh } = useManualSteps();
   const openStep = useOpenManualStep();
   const [expanded, setExpanded] = useManualStepsExpanded();
-  if (!shownInPlace(state)) return null;
+  const enabled = useClientSettings((s) => s.sidebarManualStepsEnabled);
+  if (!enabled || !shownInPlace(state)) return null;
   if (state.view.status === "listed" && state.view.count === 0) return null;
   return (
     <>
@@ -270,6 +332,7 @@ export function ManualStepsSidebarSection() {
           role="treeitem"
           tabIndex={-1}
           data-sidebar-row={MANUAL_STEPS_ROW_ID}
+          {...hideManualStepsMenu}
           expanded={expanded}
           onClick={() => setExpanded((value) => !value)}
           accessory={countAccessory(state.view)}

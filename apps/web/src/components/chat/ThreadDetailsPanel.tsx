@@ -37,6 +37,7 @@ import {
   type ThreadDetailsUsageInput,
 } from "./ThreadDetailsUsage";
 import { ThreadDetailsItemsMenuItems } from "./ThreadDetailsItemsMenu";
+import { ManualStepsMenuItems } from "../manualSteps/ManualSteps";
 import { resolveThreadDetailsVisibility, THREAD_DETAILS_ITEMS } from "./threadDetailsItems";
 import { useClientSettings } from "../../hooks/useSettings";
 import { useBrowserAssistants } from "../../browser/browserAssistants";
@@ -392,7 +393,9 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 align="start"
                 side="bottom"
               >
-                <ThreadDetailsItemsMenuItems />
+                <ThreadDetailsItemsMenuItems>
+                  <ManualStepsMenuItems />
+                </ThreadDetailsItemsMenuItems>
               </MenuPopup>
             </Menu>
           </>

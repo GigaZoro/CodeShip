@@ -1,3 +1,19 @@
+## 2026-11-08 — Counters on the sidebar rail
+
+- **Threads** keeps its Needs you count, and hovering it now lists failed chats, usage limits, approvals and questions separately.
+- **Pull requests** counts open pull requests linked to your threads that have failing checks, conflicts or requested changes.
+- **Scheduled tasks** shows how many tasks' latest run failed, instead of a dot.
+- **Extensions** counts MCP servers that failed or need sign-in when last checked. It reads the last list you opened, so it never starts a provider.
+- **Manual steps** shows how many steps wait, highlighted when one is a money decision, and a red dot when ThreadPage cannot be read.
+- **Settings** counts installed providers with an error or signed out.
+- On web and desktop.
+
+## 2026-11-08 — Hide Manual steps beside your threads
+
+- Right-click the **Manual steps** header under Needs you or in the thread list and choose **Hide Manual steps**. The toast has **Undo**.
+- **Manual steps under Needs you** in the thread details' **Choose what to show** menu (or right-click the details card) turns it off and back on, as does **Settings → General → Manual steps**. The Manual steps page in the sidebar rail and the command palette still list every step.
+- On web and desktop.
+
 ## 2026-11-08 — Auto chooses models for each piece of work
 
 - Auto lists usable Claude and Codex models so the coordinator can pick the best fit for each piece of work and review the result. Its own model and effort remain the choices in Settings.

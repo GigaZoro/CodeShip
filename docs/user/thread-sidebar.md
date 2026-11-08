@@ -91,6 +91,13 @@ waiting thread in turn. On mobile, the **N more need you** button above the comp
 The count also shows on the **Threads** icon in the side rail, the desktop dock or taskbar icon,
 and the mobile app icon.
 
+On web and desktop, other rail icons carry a count too: **Pull requests** (open pull requests with
+failing checks, conflicts or requested changes), **Scheduled tasks** (latest run failed),
+**Extensions** (MCP servers that failed or need sign-in when last checked), **Manual steps** (steps
+waiting on you, highlighted when one is a money decision, or a red dot when ThreadPage cannot be
+read) and **Settings** (installed providers with an error or signed out). Hover an icon to see what
+its number means.
+
 ## Choose where scheduled tasks show
 
 Each scheduled task has a place in the app:

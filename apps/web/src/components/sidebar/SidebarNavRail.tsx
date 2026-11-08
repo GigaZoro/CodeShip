@@ -18,11 +18,9 @@ import { isElectron } from "../../env";
 import { shortcutLabelForCommand } from "../../keybindings";
 import { primaryServerKeybindingsAtom } from "../../state/server";
 import { usePullRequestsSupported } from "../../state/environments";
-import { environmentThreadShells } from "../../state/threads";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPreferences";
 import { THREAD_SIDEBAR_NAV_RAIL_WIDTH } from "../threadSidebarWidth";
-import { Badge } from "../ui/badge";
 import { ProgressRing } from "../ui/progress-ring";
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -36,8 +34,15 @@ import {
 import { isSettingsPage, isSidebarSectionPage, useNavigateToMainApp } from "./mainAppLocation";
 import { SidebarUpdatePill } from "./SidebarUpdatePill";
 import { useScheduledTasksRailBadge } from "./useScheduledTasksRailBadge";
+import {
+  useExtensionsRailBadge,
+  useManualStepsRailBadge,
+  usePullRequestsRailBadge,
+  useSettingsRailBadge,
+  useThreadsRailBadge,
+} from "./useSidebarNavRailBadges";
 
-import { t, tn } from "~/i18n";
+import { t } from "~/i18n";
 type SidebarNavDestination =
   | "threads"
   | "projects"
@@ -154,33 +159,6 @@ function SidebarNavRailUsageItem({
   );
 }
 
-/** Threads, counting what needs the user, as the dock badge does. */
-function SidebarNavRailThreadsItem(props: { isActive: boolean; onClick: () => void }) {
-  const count = useAtomValue(environmentThreadShells.needsYouThreadsAtom).threads.length;
-  return (
-    <SidebarNavRailItem
-      icon={<MessagesSquareIcon />}
-      label={
-        count > 0
-          ? tn(count, "Threads, {count} needs you", "Threads, {count} need you")
-          : t("Threads")
-      }
-      badge={
-        count > 0 ? (
-          // Beside the button, which clips its children.
-          <span aria-hidden className="pointer-events-none absolute -top-1 -right-1">
-            <Badge variant="attention" size="sm">
-              {count > 99 ? "99+" : count}
-            </Badge>
-          </span>
-        ) : null
-      }
-      isActive={props.isActive}
-      onClick={props.onClick}
-    />
-  );
-}
-
 /** The app's top-level places, beside the thread list. */
 export const SidebarNavRail = memo(function SidebarNavRail() {
   const navigate = useNavigate();
@@ -188,7 +166,12 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
   const { isMobile, setOpenMobile } = useSidebar();
   const active = useLocation({ select: (location) => resolveActiveDestination(location.pathname) });
   const pullRequestsSupported = usePullRequestsSupported();
+  const threads = useThreadsRailBadge();
+  const pullRequests = usePullRequestsRailBadge();
   const scheduledTasks = useScheduledTasksRailBadge();
+  const extensions = useExtensionsRailBadge();
+  const manualSteps = useManualStepsRailBadge();
+  const settings = useSettingsRailBadge();
   const go = (destination: () => unknown) => () => {
     if (isMobile) setOpenMobile(false);
     void destination();
@@ -201,7 +184,10 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
       style={{ width: THREAD_SIDEBAR_NAV_RAIL_WIDTH }}
     >
       <SidebarMenu className="items-center">
-        <SidebarNavRailThreadsItem
+        <SidebarNavRailItem
+          icon={<MessagesSquareIcon />}
+          label={threads.label}
+          badge={threads.badge}
           isActive={active === "threads"}
           onClick={go(navigateToMainApp)}
         />
@@ -214,7 +200,8 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
         {pullRequestsSupported ? (
           <SidebarNavRailItem
             icon={<PullRequestGlyph.pullRequest />}
-            label={t("Pull requests")}
+            label={pullRequests.label}
+            badge={pullRequests.badge}
             isActive={active === "pull-requests"}
             onClick={go(() =>
               navigate({ to: "/pull-requests", search: readPullRequestListPreferences() }),
@@ -230,7 +217,8 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
         />
         <SidebarNavRailItem
           icon={<PuzzleIcon />}
-          label={t("Extensions")}
+          label={extensions.label}
+          badge={extensions.badge}
           isActive={active === "extensions"}
           onClick={go(() => navigate({ to: "/extensions" }))}
         />
@@ -242,7 +230,8 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
         />
         <SidebarNavRailItem
           icon={<HandIcon />}
-          label={t("Manual steps")}
+          label={manualSteps.label}
+          badge={manualSteps.badge}
           isActive={active === "manual-steps"}
           onClick={go(() => navigate({ to: "/manual-steps" }))}
         />
@@ -264,7 +253,8 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
         />
         <SidebarNavRailItem
           icon={<SettingsIcon />}
-          label={t("Settings")}
+          label={settings.label}
+          badge={settings.badge}
           isActive={active === "settings"}
           onClick={go(() => navigate({ to: "/settings" }))}
         />

@@ -539,6 +539,7 @@ export const ClientSettingsSchema = Schema.Struct({
   // Opt-in for the removed legacy sidebar, also read as project grouping.
   legacySidebarEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   sidebarWorkingShelfEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  sidebarManualStepsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   // Shown after the built-in Ask the agent requests.
   customAgentActions: CustomAgentActions.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   sidebarProjectGroupingMode: SidebarProjectGroupingMode.pipe(
@@ -2035,6 +2036,7 @@ export const ClientSettingsPatch = Schema.Struct({
   threadDetailsUsageEnabled: Schema.optionalKey(Schema.Boolean),
   threadDetailsItems: Schema.optionalKey(Schema.Record(Schema.String, Schema.Boolean)),
   sidebarWorkingShelfEnabled: Schema.optionalKey(Schema.Boolean),
+  sidebarManualStepsEnabled: Schema.optionalKey(Schema.Boolean),
   customAgentActions: Schema.optionalKey(CustomAgentActions),
   sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
   sidebarProjectGroupingOverrides: Schema.optionalKey(

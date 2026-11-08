@@ -405,6 +405,7 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   restorable("/settings/general", msg("Project grouping"), ["sidebarProjectGroupingMode"]),
   restorable("/settings/general", msg("Project order"), ["sidebarProjectSortOrder"]),
   restorable("/settings/general", msg("Working section"), ["sidebarWorkingShelfEnabled"]),
+  restorable("/settings/general", msg("Manual steps"), ["sidebarManualStepsEnabled"]),
   restorable("/settings/general", msg("Unpin confirmation"), ["confirmThreadUnpin"]),
   restorable("/settings/general", msg("Archive confirmation"), ["confirmThreadArchive"]),
   restorable("/settings/general", msg("Delete confirmation"), ["confirmThreadDelete"]),
