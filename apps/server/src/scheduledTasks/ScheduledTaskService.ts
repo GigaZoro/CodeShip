@@ -346,7 +346,9 @@ interface WebhookDeliveryRow {
 export class ScheduledTaskService extends Context.Service<
   ScheduledTaskService,
   {
-    readonly list: () => Effect.Effect<ScheduledTaskListResult, ScheduledTaskError>;
+    readonly list: (options?: {
+      readonly resolveModels?: boolean;
+    }) => Effect.Effect<ScheduledTaskListResult, ScheduledTaskError>;
     readonly subscribeList: () => Stream.Stream<ScheduledTaskListResult, ScheduledTaskError>;
     readonly upsert: (
       input: ScheduledTaskUpsertInput,
@@ -892,13 +894,18 @@ export const layer = Layer.effect(
       ORDER BY created_at DESC, task_id ASC
     `.pipe(NodeSqliteClient.readOnly);
 
-    const listRows = Effect.fn("ScheduledTaskService.listRows")(function* () {
+    const listRows = Effect.fn("ScheduledTaskService.listRows")(function* (resolveModels = true) {
       const rows = yield* selectAllRows();
       const origin = yield* readWebhookOrigin;
       const resolveModel = withDefaultModel(yield* readSettings);
       return yield* Effect.forEach(
         rows,
-        (row) => decodeRow(row, origin).pipe(Effect.map((task) => resolveModel(withPolicy(task)))),
+        (row) =>
+          decodeRow(row, origin).pipe(
+            Effect.map((task) =>
+              resolveModels ? resolveModel(withPolicy(task)) : withPolicy(task),
+            ),
+          ),
         { concurrency: 1 },
       );
     });
@@ -2231,9 +2238,9 @@ export const layer = Layer.effect(
       ),
     );
 
-    const list: ScheduledTaskService["Service"]["list"] = () =>
+    const list: ScheduledTaskService["Service"]["list"] = (options) =>
       Effect.all({
-        tasks: listRows(),
+        tasks: listRows(options?.resolveModels),
         sharedDeletions: readSharedDeletions,
         peerLinks: peerCheck.linkStatus,
         projectMachineOrders: readMachineOrders,

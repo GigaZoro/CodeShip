@@ -52,6 +52,10 @@ Then choose what the agent may do:
 - **Supervised** through **Full access** also let it start, message and stop
   threads in every project. A thread it starts or steers cannot run with more
   permissions than the mode you chose.
+- **Full access** also lets an agent change the environment's default models for
+  new threads, scheduled tasks, delegated tasks by role, and Auto. This works on linked machines paired
+  with Full access too. Ask for a model on one scheduled task to override its
+  default, or ask to restore the default while keeping its own choice.
 
 ## Claude Code
 

@@ -1,3 +1,9 @@
+## 2026-11-08 — Auto chooses models for each piece of work
+
+- Auto lists usable Claude and Codex models so the coordinator can pick the best fit for each piece of work and review the result. Its own model and effort remain the choices in Settings.
+- Agents can choose a scheduled task's model, restore its default, and update default, scheduled-task, delegated-task and Auto models, including on linked machines paired with full access.
+- An explicit model and effort in an agent's new-thread request now stay as requested, even when copied from an Auto thread.
+
 ## 2026-11-08 — Eval check for worktree launches without a base branch
 
 - The MCP tool-use eval now confirms today's `t3_thread_launch` fix: told to launch with `workspaceStrategy {type: "worktree"}` and no `baseRef`, GPT-6 Luna and GPT-6 Astra had their launch refused on every try before the fix and launched it on every try after. A refused launch no longer counts as a launch, and a launch now answers with the new thread the way T3 does, so an agent that checks its launch no longer starts it a second time.

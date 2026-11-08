@@ -37,17 +37,74 @@ const AUTO_COORDINATOR_SUBAGENT_TOOLS: ReadonlyMap<string, string> = new Map([
 ]);
 
 const MAX_AUTO_COORDINATOR_MODELS = 8;
+const AUTO_MODEL_HINTS = [
+  ["opus", "hardest design, subtle bugs, reviews"],
+  ["fable", "frontier: the hardest problems"],
+  ["sonnet", "features, fixes and tests"],
+  ["haiku", "fast and cheap: searches, mechanical edits, test runs"],
+  ["astra", "frontier: the most demanding work"],
+  ["sol", "coding and everyday work"],
+  ["terra", "straightforward work"],
+  ["luna", "fast and cheap: easier tasks"],
+] as const;
+
+const autoProviderName = (driver: ProviderDriverKind) =>
+  driver === "claudeAgent" ? "Claude" : "Codex";
 
 /** The brief for one Auto turn, or null where the provider's subagents cannot pick a model. */
 export function autoCoordinatorInstructions(input: {
   readonly driver: ProviderDriverKind;
   readonly model: string;
+  readonly otherProvider?: {
+    readonly providerInstanceId: string;
+    readonly displayName: string;
+    readonly driver: ProviderDriverKind;
+    readonly models: ReadonlyArray<{
+      readonly slug: string;
+      readonly name: string;
+      readonly effort?: { readonly id: string; readonly values: ReadonlyArray<string> };
+    }>;
+  };
   /** The account's models in catalog order; empty when unknown. */
   readonly models: ReadonlyArray<{ readonly slug: string; readonly name: string }>;
 }): string | null {
   const tool = AUTO_COORDINATOR_SUBAGENT_TOOLS.get(input.driver);
   if (tool === undefined || !supportsAutoCoordinator(input.driver)) return null;
   const own = input.models.find((model) => model.slug === input.model)?.name ?? input.model;
+  const other = input.otherProvider;
+  if (other !== undefined) {
+    const describeModel = (
+      model: { readonly slug: string; readonly name: string },
+      own: boolean,
+    ) => {
+      const hint = AUTO_MODEL_HINTS.find(([family]) =>
+        model.slug.toLowerCase().includes(family),
+      )?.[1];
+      return `${model.name} (\`${model.slug}\`${own && model.slug === input.model ? ", you" : ""})${hint === undefined ? "" : `: ${hint}`}`;
+    };
+    const ownModels = input.models
+      .slice(0, MAX_AUTO_COORDINATOR_MODELS)
+      .map((model) => describeModel(model, true))
+      .join("; ");
+    const otherModels = other.models
+      .slice(0, 6)
+      .map((model) => describeModel(model, false))
+      .join("; ");
+    const effort = other.models[0]?.effort;
+    const target = JSON.stringify({
+      providerInstanceId: other.providerInstanceId,
+      model: "<id>",
+      ...(effort === undefined ? {} : { options: { [effort.id]: "<effort>" } }),
+    });
+    return `<t3_auto_mode>
+You coordinate this request in T3.CodeShip Auto mode, as ${own}. Spend your own model on judgment and review, and the best-fitting model below on the rest.
+- Size the request first. Do a tiny one yourself: a question, an explanation, a one-line edit.
+- Otherwise split the work and give each piece (implementation, research, tests, mechanical edits) to the cheapest model below that can do it well, from either provider. Keep your own model for design, subtle bugs, and work another model got wrong. Brief each with the goal, the files, the constraints, and how to check the result.
+- ${autoProviderName(input.driver)} models, as a native subagent (${tool}): ${ownModels}.
+- ${autoProviderName(other.driver)} models on ${other.displayName}, with \`delegate_task\` and target \`${target}\`${effort === undefined ? "" : `, effort one of ${effort.values.join(", ")}`}: ${otherModels}.
+- Check every result before you reply: read the diff, run the relevant checks, and compare it with the request. Fix small problems yourself; send bigger ones back with your findings, or take the work over.
+</t3_auto_mode>`;
+  }
   const models = input.models
     .slice(0, MAX_AUTO_COORDINATOR_MODELS)
     .map((model) => `${model.name} (\`${model.slug}\`${model.slug === input.model ? ", you" : ""})`)

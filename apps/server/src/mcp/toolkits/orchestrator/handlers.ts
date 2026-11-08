@@ -111,6 +111,8 @@ const handlers = {
         shared,
         oneMachine,
         placement,
+        modelSelection,
+        followsDefaultModel,
       }) =>
         Effect.gen(function* () {
           if (scheduledTaskId === undefined) return yield* Effect.die("unreachable");
@@ -126,6 +128,8 @@ const handlers = {
             shared,
             oneMachine,
             placement,
+            modelSelection,
+            followsDefaultModel,
           });
         }),
     ),

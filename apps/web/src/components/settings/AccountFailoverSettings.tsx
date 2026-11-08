@@ -179,8 +179,7 @@ export function AccountFailoverSettings({
           const storedAutoModel = settings.autoModeModels[driver];
           const runsModel = supportsAutoCoordinator(driver)
             ? t(
-                "Auto's coordinator: it does small requests itself, hands routine work to cheaper {provider} models, and checks the result.",
-                { provider: name },
+                "Auto's coordinator: it does small requests itself, chooses models from either provider for larger work, and checks the result.",
               )
             : t("Auto runs this model.");
           return (

@@ -2,10 +2,12 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
 import {
+  OrchestratorMcpScheduledTask,
   OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpDelegateTaskResult,
 } from "./orchestratorMcp.ts";
 
+const decodeScheduledTask = Schema.decodeUnknownSync(OrchestratorMcpScheduledTask);
 const decodeDelegateTaskInput = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
 const decodeDelegateTaskResult = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskResult);
 
@@ -66,4 +68,23 @@ describe("orchestrator MCP contracts", () => {
       }),
     ).toThrow();
   });
+});
+
+it.each([
+  {},
+  { modelSelection: { instanceId: "codex", model: "astra" }, followsDefaultModel: false },
+])("decodes scheduled tasks from old and current linked machines: %j", (modelFields) => {
+  const task = {
+    scheduledTaskId: "task-1",
+    title: "Review",
+    prompt: "Review changes",
+    enabled: true,
+    projectId: "project-1",
+    boundThreadId: null,
+    schedule: { type: "interval", everyMs: 1800000 },
+    nextRunAt: null,
+    lastRunStatus: "never",
+    ...modelFields,
+  };
+  expect(decodeScheduledTask(task)).toEqual(task);
 });

@@ -1,9 +1,10 @@
+import { providerConstraints } from "../provider/providerConstraints.ts";
 import {
   CommandId,
   type RunId,
-  isProviderAvailable,
   MessageId,
   type ModelSelection,
+  type ServerSettingsPatch,
   NodeId,
   ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
   TurnItemId,
@@ -285,6 +286,8 @@ function scheduledTaskSummary(
   lastRun: OrchestratorMcpScheduledTask["lastRun"],
 ): OrchestratorMcpScheduledTask {
   return {
+    modelSelection: task.modelSelection,
+    followsDefaultModel: task.followsDefaultModel ?? false,
     scheduledTaskId: task.id,
     title: task.title,
     prompt: task.prompt,
@@ -377,12 +380,15 @@ function capabilityModelOption(descriptor: ProviderOptionDescriptor): Orchestrat
 }
 
 /** Yields the model a slug or alias names; a provider that lists no models accepts any slug. */
-export const requireAdvertisedModel = (provider: ServerProvider, model: string) => {
-  const advertised = provider.models.find(
+const findAdvertisedModel = (provider: ServerProvider, model: string) =>
+  provider.models.find(
     (candidate) =>
       candidate.slug === model ||
       candidate.aliases?.some((alias) => alias.toLowerCase() === model.toLowerCase()),
   );
+
+export const requireAdvertisedModel = (provider: ServerProvider, model: string) => {
+  const advertised = findAdvertisedModel(provider, model);
   return provider.models.length > 0 && advertised === undefined
     ? Effect.fail(
         failure(
@@ -430,33 +436,6 @@ export const requireAccountWithRoom = Effect.fn("OrchestratorMcpService.requireA
   },
 );
 
-function providerConstraints(
-  provider: ServerProvider | undefined,
-  supportsOrchestrationV2: boolean,
-): ReadonlyArray<string> {
-  const constraints: Array<string> = [];
-  if (!supportsOrchestrationV2) {
-    constraints.push("No V2 provider adapter is registered.");
-  }
-  if (provider === undefined) return constraints;
-  if (!isProviderAvailable(provider)) {
-    constraints.push(provider.unavailableReason ?? "Provider driver is unavailable.");
-  }
-  if (!provider.enabled) {
-    constraints.push("Provider instance is disabled.");
-    // Disabled snapshots contain placeholders for installation, health, and auth.
-    return constraints;
-  }
-  if (!provider.installed) constraints.push("Provider executable is not installed.");
-  if (provider.status === "error" || provider.status === "disabled") {
-    constraints.push(provider.message ?? `Provider status is ${provider.status}.`);
-  }
-  if (provider.auth.status === "unauthenticated") {
-    constraints.push("Provider is not authenticated.");
-  }
-  return constraints;
-}
-
 /** t3_thread_launch keeps a selection as given, so it can hold options its model does not have. */
 function knownOptions(
   options: ReadonlyArray<ProviderOptionSelection> | undefined,
@@ -500,6 +479,58 @@ function invalidOptionSelections(
   }
   return problems;
 }
+
+const requireModelSelection = Effect.fn("OrchestratorMcpService.requireModelSelection")(function* (
+  provider: ServerProvider,
+  selection: ModelSelection,
+) {
+  const model = yield* requireAdvertisedModel(provider, selection.model);
+  const invalid = invalidOptionSelections(
+    selection.options ?? [],
+    model?.capabilities?.optionDescriptors,
+  );
+  if (invalid.length > 0)
+    return yield* failure(
+      "invalid_request",
+      `Model ${selection.model} on provider ${provider.instanceId} rejected options: ${invalid.join(" ")}`,
+    );
+});
+
+export const requireModelPreferences = Effect.fn("OrchestratorMcpService.requireModelPreferences")(
+  function* (providers: ReadonlyArray<ServerProvider>, patch: ServerSettingsPatch) {
+    for (const selection of [
+      patch.defaultModelSelection,
+      patch.scheduledTaskModelSelection,
+      ...Object.values(patch.delegatedTaskModelSelections ?? {}),
+    ]) {
+      if (selection == null) continue;
+      const provider = providers.find((candidate) => candidate.instanceId === selection.instanceId);
+      if (provider === undefined || provider.models.length === 0)
+        return yield* new OrchestratorMcpFailure({
+          code: "model_unavailable",
+          message: `Model ${selection.model} is not advertised by provider ${selection.instanceId}.`,
+        });
+      yield* requireModelSelection(provider, selection);
+    }
+    for (const [driver, selection] of Object.entries(patch.autoModeModels ?? {})) {
+      if (selection === null) continue;
+      const provider = providers.find(
+        (candidate) =>
+          candidate.driver === driver &&
+          findAdvertisedModel(candidate, selection.model) !== undefined,
+      );
+      if (provider === undefined)
+        return yield* new OrchestratorMcpFailure({
+          code: "model_unavailable",
+          message: `Model ${selection.model} is not advertised by provider ${driver}.`,
+        });
+      yield* requireModelSelection(provider, {
+        ...selection,
+        instanceId: provider.instanceId,
+      });
+    }
+  },
+);
 
 function taskStatusForRun(
   run: Pick<OrchestrationV2Run, "status" | "restartCancelledBackgroundWork"> | undefined,
@@ -1981,9 +2012,29 @@ const make = Effect.gen(function* () {
     return yield* defaultWorktreeStrategy(gitDriver, workspaceRoot);
   });
 
+  const requireScheduledTaskModel = Effect.fn("OrchestratorMcpService.requireScheduledTaskModel")(
+    function* (selection: ModelSelection, boundToThread: boolean) {
+      if (boundToThread)
+        return yield* failure(
+          "invalid_request",
+          "A task bound to a thread always runs that thread's model; omit modelSelection.",
+        );
+      const provider = (yield* loadProviders).find(
+        (candidate) => candidate.instanceId === selection.instanceId,
+      );
+      if (provider !== undefined) yield* requireModelSelection(provider, selection);
+    },
+  );
+
   const scheduledTaskRunModes = Effect.fn("OrchestratorMcpService.scheduledTaskRunModes")(
     function* (task: ScheduledTask) {
-      const modes = [{ runtimeMode: task.runtimeMode, interactionMode: task.interactionMode }];
+      const modes = [
+        {
+          runtimeMode: task.runtimeMode,
+          interactionMode: task.interactionMode,
+          modelSelection: task.modelSelection,
+        },
+      ];
       if (task.threadId === null) return modes;
       const bound = yield* threadManagement
         .getThreadShell(task.threadId)
@@ -2061,7 +2112,9 @@ const make = Effect.gen(function* () {
           : Exit.isSuccess(yield* Effect.exit(assertLiveCaller(scope, caller.parent)));
       const modes = yield* scheduledTaskRunModes(task).pipe(Effect.option);
       return scheduledTaskSummary(
-        task,
+        Option.isNone(modes)
+          ? task
+          : { ...task, modelSelection: modes.value.at(-1)?.modelSelection ?? task.modelSelection },
         live &&
           Option.isSome(modes) &&
           modes.value.every((mode) => withinLimits(caller.limits, mode)),
@@ -2083,7 +2136,7 @@ const make = Effect.gen(function* () {
     },
   ): Effect.fn.Return<ScheduledTask, OrchestratorMcpFailure> {
     const { tasks } = yield* scheduledTasks
-      .list()
+      .list({ resolveModels: false })
       .pipe(
         Effect.mapError((error) =>
           failure("orchestration_error", `Could not load scheduled task: ${error.message}`),
@@ -2138,8 +2191,10 @@ const make = Effect.gen(function* () {
             : "bindToCurrentThread binds to this thread, which belongs to a different project.",
         );
       }
-      // Runs follow the scheduled tasks default; this is the model kept for when none is set.
+      if (input.modelSelection !== undefined)
+        yield* requireScheduledTaskModel(input.modelSelection, bindToCurrentThread);
       const modelSelection =
+        input.modelSelection ??
         parent?.thread.modelSelection ??
         resolveScheduledTaskDefaultModelSelection(yield* readSettings, projectId, project) ??
         (yield* projectDefaultModelSelection(project));
@@ -2182,7 +2237,7 @@ const make = Effect.gen(function* () {
         threadId: bindToCurrentThread && parent !== undefined ? parent.thread.id : null,
         workspaceStrategy: yield* scheduledTaskWorkspaceStrategy(bindToCurrentThread, projectId),
         modelSelection,
-        followsDefaultModel: true,
+        followsDefaultModel: input.followsDefaultModel ?? input.modelSelection === undefined,
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
         createdBy: "agent",
@@ -2271,6 +2326,8 @@ const make = Effect.gen(function* () {
             : input.bindToCurrentThread && parent !== undefined
               ? parent.thread.id
               : null;
+        if (input.modelSelection !== undefined)
+          yield* requireScheduledTaskModel(input.modelSelection, threadId !== null);
         // Update workspace strategy on rebinding so unbound root tasks cannot run in the shared checkout.
         const workspaceStrategy =
           input.bindToCurrentThread === undefined
@@ -2285,7 +2342,10 @@ const make = Effect.gen(function* () {
           projectId: existing.projectId,
           threadId,
           workspaceStrategy,
-          modelSelection: existing.modelSelection,
+          modelSelection: input.modelSelection ?? existing.modelSelection,
+          followsDefaultModel:
+            input.followsDefaultModel ??
+            (input.modelSelection === undefined ? (existing.followsDefaultModel ?? false) : false),
           runtimeMode: existing.runtimeMode,
           interactionMode: existing.interactionMode,
           createdBy: existing.createdBy,

@@ -1,3 +1,5 @@
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
+import { requireModelPreferences } from "../../OrchestratorMcpService.ts";
 import { OrchestratorMcpFailure, type ServerSettings } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Environment from "../../../environment/ServerEnvironment.ts";
@@ -10,6 +12,10 @@ import { EnvironmentToolkit } from "./tools.ts";
 
 export function preferences(settings: ServerSettings) {
   const {
+    defaultModelSelection,
+    scheduledTaskModelSelection,
+    delegatedTaskModelSelections,
+    autoModeModels,
     defaultThreadEnvMode,
     newWorktreesStartFromOrigin,
     enableProviderUpdateChecks,
@@ -18,6 +24,10 @@ export function preferences(settings: ServerSettings) {
   } = settings;
   const characters = Array.from(sourceControlWritingStyle.customInstructions);
   return {
+    defaultModelSelection,
+    scheduledTaskModelSelection,
+    delegatedTaskModelSelections,
+    autoModeModels,
     defaultThreadEnvMode,
     newWorktreesStartFromOrigin,
     enableProviderUpdateChecks,
@@ -62,6 +72,10 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
         // The turn may have ended, or the thread's modes changed, while this waited for the lock.
         yield* check;
         const { settings } = yield* access;
+        yield* requireModelPreferences(
+          yield* (yield* ProviderRegistry.ProviderRegistry).getProviders,
+          patch,
+        );
         return preferences(
           yield* settings.updateSettings(patch).pipe(Effect.mapError(unavailable)),
         );

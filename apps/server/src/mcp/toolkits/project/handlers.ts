@@ -252,7 +252,8 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             : null) ??
           undefined;
         const modelSelection =
-          input.auto === false && startingSelection !== undefined
+          (input.auto === false || input.modelSelection !== undefined) &&
+          startingSelection !== undefined
             ? withAutoAccount(startingSelection, false)
             : startingSelection;
         if (modelSelection === undefined)

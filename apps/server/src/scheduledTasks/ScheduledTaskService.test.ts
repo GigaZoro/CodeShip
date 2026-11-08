@@ -707,6 +707,15 @@ it.effect("a task that follows the default runs the scheduled tasks model and ke
       const { task } = yield* upsert(true);
       // With no scheduled tasks model, it runs the new-thread default.
       assert.equal(task.modelSelection.model, "gpt-new");
+      const stored = (yield* service.list({ resolveModels: false })).tasks.find(
+        (candidate) => candidate.id === task.id,
+      )!;
+      assert.deepEqual(stored.modelSelection, ownModel);
+      yield* service.upsert({ ...stored, title: "Renamed" });
+      assert.deepEqual(
+        (yield* service.list({ resolveModels: false })).tasks[0]?.modelSelection,
+        ownModel,
+      );
       const listedModel = () =>
         service
           .list()

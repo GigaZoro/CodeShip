@@ -45,6 +45,7 @@ import {
   OrchestrationV2RunStatus,
   OrchestrationV2TurnItemStatus,
 } from "./orchestrationV2.ts";
+import { ModelSelection } from "./modelSelection.ts";
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 
@@ -660,7 +661,19 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
 });
 export type OrchestratorMcpCapabilitiesResult = typeof OrchestratorMcpCapabilitiesResult.Type;
 
+const scheduledTaskModelFields = {
+  modelSelection: Schema.optional(ModelSelection).annotate({
+    description:
+      "Own model for new-thread runs; autoAccount:true selects Auto. Not for a bound task.",
+  }),
+  followsDefaultModel: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Use the environment's scheduled tasks model; defaults true unless modelSelection is given.",
+  }),
+};
+
 export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
+  ...scheduledTaskModelFields,
   environmentId: OrchestratorMcpEnvironmentTarget,
   projectId: OrchestratorMcpProjectTarget,
   prompt: OrchestratorMcpPrompt,
@@ -703,6 +716,8 @@ export type OrchestratorMcpSaveScheduledTaskInput =
   typeof OrchestratorMcpSaveScheduledTaskInput.Type;
 
 export const OrchestratorMcpScheduledTask = Schema.Struct({
+  modelSelection: Schema.optional(ModelSelection),
+  followsDefaultModel: Schema.optional(Schema.Boolean),
   scheduledTaskId: ScheduledTaskId,
   title: Schema.String,
   prompt: Schema.String,
@@ -774,6 +789,7 @@ export type OrchestratorMcpSharedScheduledTasksResult =
   typeof OrchestratorMcpSharedScheduledTasksResult.Type;
 
 export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
+  ...scheduledTaskModelFields,
   environmentId: OrchestratorMcpEnvironmentTarget,
   scheduledTaskId: ScheduledTaskId,
   prompt: Schema.optional(OrchestratorMcpPrompt),

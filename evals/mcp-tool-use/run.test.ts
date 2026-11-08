@@ -3382,3 +3382,64 @@ it.each([
     [],
   );
 });
+
+it("builds Auto model-choice and control cases from the current coordinator brief", () => {
+  const cases = NodeFS.readFileSync(new URL("./cases/auto-mode.ndjson", import.meta.url), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => decodeDeviceCase(line));
+  const base = buildBase(template, { model: "claude-opus-5-5", keepUserInstructions: false });
+  for (const id of [
+    "auto-coordinator-hands-off-routine-edit",
+    "auto-coordinator-picks-model-per-piece",
+    "auto-coordinator-answers-small-question",
+  ]) {
+    const testCase = cases.find((candidate) => candidate.id === id)!;
+    const messages = buildMessages(makeSample(testCase, base));
+    const prompt =
+      messages
+        .at(-1)
+        ?.content.map((part) => part.text)
+        .join("\n") ?? "";
+    assert.include(prompt, "<t3_auto_mode>");
+    if (testCase.setup.otherAutoProvider) {
+      assert.include(
+        prompt,
+        '{"providerInstanceId":"codex","model":"<id>","options":{"reasoningEffort":"<effort>"}}',
+      );
+      assert.include(prompt, "Otherwise split the work and give each piece");
+      assert.include(prompt, "Claude models, as a native subagent");
+      assert.include(prompt, "Codex models on Codex");
+    } else {
+      assert.include(prompt, "Otherwise run the work as a native subagent");
+      assert.notInclude(prompt, "Otherwise split the work");
+    }
+  }
+});
+
+it.each([
+  { tool: "Agent", input: { model: "sonnet" }, passes: true },
+  { tool: "Agent", input: { model: "claude-haiku-5-5" }, passes: true },
+  {
+    tool: "delegate_task",
+    input: { target: { providerInstanceId: "codex", model: "gpt-6-luna" } },
+    passes: true,
+  },
+  { tool: "Agent", input: { model: "opus" }, passes: false },
+  { tool: "Agent", input: { model: "claude-fable-5-1" }, passes: false },
+  { tool: "Agent", input: {}, passes: false },
+  {
+    tool: "delegate_task",
+    input: { target: { providerInstanceId: "claudeAgent" } },
+    passes: false,
+  },
+  { tool: "Edit", input: {}, passes: false },
+])("grades the Auto routine-edit model choice: %j", ({ tool, input, passes }) => {
+  const testCase = NodeFS.readFileSync(new URL("./cases/auto-mode.ndjson", import.meta.url), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => decodeDeviceCase(line))
+    .find((candidate) => candidate.id === "auto-coordinator-picks-model-per-piece")!;
+  const run: SampleRun = { calls: [{ step: 0, tool, input }], text: "", stopReason: "end_turn" };
+  assert.equal(failed(testCase.expect, run).length === 0, passes);
+});

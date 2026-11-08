@@ -171,6 +171,8 @@ type McpToolUseCall = typeof McpToolUseCall.Type;
 const McpToolUseExpect = Schema.Struct({
   /** Each entry needs one matching call. */
   calls: Schema.optional(Schema.Array(McpToolUseCall)),
+  /** At least one of these calls must match, with its own arguments. */
+  callsAnyOf: Schema.optional(Schema.Array(McpToolUseCall)),
   /** No call may match any entry. */
   callsMustNot: Schema.optional(Schema.Array(McpToolUseCall)),
   notCalls: Schema.optional(Schema.Array(Schema.String)),
@@ -286,6 +288,22 @@ export const McpToolUseCase = Schema.Struct({
     ),
     /** The turn runs in Auto mode: T3 puts the coordinator brief ahead of `prompt`. */
     autoMode: Schema.optional(Schema.Boolean),
+    otherAutoProvider: Schema.optional(
+      Schema.Struct({
+        providerInstanceId: Schema.String,
+        displayName: Schema.String,
+        driver: ProviderDriverKind,
+        models: Schema.Array(
+          Schema.Struct({
+            slug: Schema.String,
+            name: Schema.String,
+            effort: Schema.optionalKey(
+              Schema.Struct({ id: Schema.String, values: Schema.Array(Schema.String) }),
+            ),
+          }),
+        ),
+      }),
+    ),
   }),
   prompt: Schema.String,
   promptSkills: Schema.optional(Schema.Array(SharedSkillInstructions)),
@@ -951,6 +969,9 @@ export const buildMessages = (sample: Sample) => {
     ? autoCoordinatorInstructions({
         driver: ProviderDriverKind.make(driver),
         model: base.model,
+        ...(testCase.setup.otherAutoProvider === undefined
+          ? {}
+          : { otherProvider: testCase.setup.otherAutoProvider }),
         models: (
           PROVIDERS.find((provider) => provider.providerInstanceId === driver)?.models ?? []
         ).map((model) => ({ slug: model.id, name: model.id })),
@@ -1547,6 +1568,8 @@ export const gradeSample = (expect: McpToolUseCase["expect"], run: SampleRun) =>
   const label = ({ tool, args, succeeded }: McpToolUseCall) =>
     [tool, ...(args ? [valueText(args)] : []), ...(succeeded ? ["succeeded"] : [])].join(" ");
   for (const call of expect.calls ?? []) add(`calls ${label(call)}`, found(call));
+  if (expect.callsAnyOf !== undefined)
+    add(`callsAnyOf ${expect.callsAnyOf.map(label).join(" or ")}`, expect.callsAnyOf.some(found));
   for (const call of expect.callsMustNot ?? []) add(`callsMustNot ${label(call)}`, !found(call));
   for (const tool of expect.notCalls ?? []) add(`notCalls ${tool}`, count(tool) === 0);
   if (expect.order !== undefined) {

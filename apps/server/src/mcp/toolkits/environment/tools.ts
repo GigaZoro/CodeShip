@@ -1,3 +1,4 @@
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import {
   BackgroundActivityProfile,
   BackgroundActivityProfileSelection,
@@ -16,6 +17,10 @@ import * as Settings from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const PreferenceFields = {
+  defaultModelSelection: ServerSettings.fields.defaultModelSelection,
+  scheduledTaskModelSelection: ServerSettings.fields.scheduledTaskModelSelection,
+  delegatedTaskModelSelections: ServerSettings.fields.delegatedTaskModelSelections,
+  autoModeModels: ServerSettings.fields.autoModeModels,
   defaultThreadEnvMode: ServerSettings.fields.defaultThreadEnvMode,
   newWorktreesStartFromOrigin: ServerSettings.fields.newWorktreesStartFromOrigin,
   enableProviderUpdateChecks: ServerSettings.fields.enableProviderUpdateChecks,
@@ -35,13 +40,14 @@ const shared = {
     ThreadManagementService.ThreadManagementService,
     ServerEnvironment.ServerEnvironment,
     Settings.ServerSettingsService,
+    ProviderRegistry.ProviderRegistry,
     ThreadCommandExecutor.ThreadCommandExecutor,
   ],
 };
 const EnvironmentReadTool = Tool.make("t3_environment_read", {
   ...shared,
   description:
-    "Read this server's identity and preferences. Providers and models: `orchestrator_capabilities`.",
+    "Read this server's identity, preferences, and model defaults. Providers and models: `orchestrator_capabilities`.",
   parameters: Schema.Struct({ environmentId: OrchestratorMcpEnvironmentTarget }),
   success: Schema.Struct({
     environmentId: ExecutionEnvironmentDescriptor.fields.environmentId,
@@ -56,9 +62,13 @@ const EnvironmentReadTool = Tool.make("t3_environment_read", {
 const EnvironmentPreferencesTool = Tool.make("t3_environment_preferences_update", {
   ...shared,
   description:
-    "Update environment-wide preferences. Live full-access or default caller thread only. Omitted fields are unchanged; `customInstructions: ''` clears it.",
+    "Update environment-wide preferences and model defaults, including on a full-access linked machine. Live full-access or default caller thread only. Omitted fields are unchanged; null clears a delegated-task role; `customInstructions: ''` clears it.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
+    defaultModelSelection: ServerSettingsPatch.fields.defaultModelSelection,
+    scheduledTaskModelSelection: ServerSettingsPatch.fields.scheduledTaskModelSelection,
+    delegatedTaskModelSelections: ServerSettingsPatch.fields.delegatedTaskModelSelections,
+    autoModeModels: ServerSettingsPatch.fields.autoModeModels,
     defaultThreadEnvMode: ServerSettingsPatch.fields.defaultThreadEnvMode,
     newWorktreesStartFromOrigin: ServerSettingsPatch.fields.newWorktreesStartFromOrigin,
     enableProviderUpdateChecks: ServerSettingsPatch.fields.enableProviderUpdateChecks,

@@ -451,8 +451,8 @@ account a limited thread continues on right now.
 
 **Auto** picks the model and the account for you. Set it up in **Settings →
 Providers** on web or desktop: pick a primary provider under **Auto mode**, and
-choose the coordinator model and effort for each provider, such as Claude Opus at
-Max. Then pick **Auto** at the top of the model picker, or turn on **Auto** under
+choose the coordinator model and effort for each provider. Auto keeps these choices
+for the coordinator. Then pick **Auto** at the top of the model picker, or turn on **Auto** under
 the default model in settings for new threads. A scheduled task's model can be Auto
 too, and an agent you ask to start a thread in Auto, or `t3 thread start --auto`,
 starts it there. A new thread starts on the primary provider's first account in its
@@ -465,10 +465,12 @@ already ran stays with its provider and runs that provider's coordinator. Changi
 a coordinator model moves Auto threads to it on their next message. Picking a model
 in the picker turns Auto off for that thread.
 
-On Claude and Codex, the coordinator does small requests itself and hands larger
-work to a subagent on a cheaper model of the same provider, such as Sonnet or
-Haiku, within the same turn. It checks the subagent's result before it replies, so
-Opus is not spent on routine edits.
+On Claude and Codex, the coordinator does small requests itself. For larger requests,
+it sees usable models from both providers and chooses the cheapest model that can
+do each piece well, then reviews every result. The other provider's models come from
+its first usable account in failover order, skipping accounts at their usage limit.
+When the other provider cannot run, it delegates routine work to cheaper models of
+its own provider.
 
 To run delegated work on other models, set **Delegated tasks** in **Settings →
 Providers** on web or desktop. Each role, such as implementation or review, can

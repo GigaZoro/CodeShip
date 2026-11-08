@@ -423,7 +423,7 @@ it.effect(
       const launchWith = Effect.fn("test.launchWith")(function* (
         autoModeProvider: ProviderDriverKind | undefined,
         params: {
-          readonly auto: boolean;
+          readonly auto?: boolean;
           readonly modelSelection?: ModelSelection;
           readonly overrideModel?: ModelSelection;
         },
@@ -467,6 +467,16 @@ it.effect(
         expect(refused.result).toMatchObject({ code: "invalid_request" });
         expect(refused.selections).toEqual([]);
       }
+
+      const explicit = {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-opus",
+        options: [{ id: "effort", value: "high" }],
+        autoAccount: true,
+      };
+      expect((yield* launchWith(claude, { modelSelection: explicit })).selections).toEqual([
+        { instanceId: explicit.instanceId, model: explicit.model, options: explicit.options },
+      ]);
 
       // auto:false runs the Auto default it would inherit as the model it names.
       const autoDefault = {

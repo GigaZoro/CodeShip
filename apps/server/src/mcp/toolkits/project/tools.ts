@@ -145,11 +145,13 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
       }),
     ),
     title: TrimmedNonEmptyString,
-    modelSelection: Schema.optional(ModelSelection),
+    modelSelection: Schema.optional(ModelSelection).annotate({
+      description: "Explicit model and options; autoAccount is ignored.",
+    }),
     auto: Schema.optional(
       Schema.Boolean.annotate({
         description:
-          "true: Auto mode, on the model and account Settings pick. Not with `modelSelection`. Omit to inherit.",
+          "true: Auto mode, on the model and account Settings pick. Not with `modelSelection`. Omit both to inherit.",
       }),
     ),
     runtimeMode: Schema.optional(RuntimeMode),

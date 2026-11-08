@@ -2476,8 +2476,8 @@ const catalog: MessageCatalog = {
   "auto-settle on merge": "автозавершення після злиття",
   "auto-show floating preview": "автопоказ плаваючого перегляду",
   "Auto-show floating preview": "Автопоказ плаваючого перегляду",
-  "Auto's coordinator: it does small requests itself, hands routine work to cheaper {provider} models, and checks the result.":
-    "Координатор Auto: виконує малі запити сам, передає рутинну роботу дешевшим моделям {provider} і перевіряє результат.",
+  "Auto's coordinator: it does small requests itself, chooses models from either provider for larger work, and checks the result.":
+    "Координатор Auto: сам виконує невеликі запити, вибирає моделі обох провайдерів для більшої роботи й перевіряє результат.",
   Automatic: "Автоматично",
   "Automatic (mixed)": "Автоматично (різні)",
   "Automatic capture isn't available": "Автоматичне захоплення недоступне",

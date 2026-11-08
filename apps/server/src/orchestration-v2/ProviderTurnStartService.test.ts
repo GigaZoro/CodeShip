@@ -1,3 +1,6 @@
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import * as AccountRouting from "./AccountRouting.ts";
 import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
 import * as ProviderSkills from "../provider/ProviderSkills.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -316,6 +319,7 @@ function makeLocalCommandHarness(input: {
   /** Opens a session and starts an ordinary provider turn, like a prompt. */
   readonly nativeTurn?: boolean;
   readonly autoAccount?: boolean;
+  readonly otherAutoProvider?: boolean;
   /** The thread is a delegated task's child. */
   readonly delegatedChild?: boolean;
 }) {
@@ -931,6 +935,58 @@ function makeLocalCommandHarness(input: {
         }),
         IdAllocator.layer,
         layerWorktreeLocation(input.worktreesDir, input.skillFailure),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed(
+            input.otherAutoProvider
+              ? [
+                  {
+                    instanceId: ProviderInstanceId.make("claude_work"),
+                    driver: ProviderDriverKind.make("claudeAgent"),
+                    displayName: "Work Claude",
+                    enabled: true,
+                    installed: true,
+                    version: null,
+                    status: "ready",
+                    auth: { status: "authenticated" },
+                    checkedAt: "2026-11-08T00:00:00.000Z",
+                    models: [
+                      {
+                        slug: "legacy",
+                        name: "Legacy",
+                        isLegacy: true,
+                        isCustom: false,
+                        capabilities: null,
+                      },
+                      {
+                        slug: "claude-opus-5-5",
+                        name: "Opus",
+                        capabilities: {
+                          optionDescriptors: [
+                            {
+                              id: "effort",
+                              label: "Effort",
+                              type: "select",
+                              options: [
+                                { id: "high", label: "High" },
+                                { id: "max", label: "Max" },
+                              ],
+                            },
+                          ],
+                        },
+                        isCustom: false,
+                      },
+                    ],
+                    slashCommands: [],
+                    skills: [],
+                  },
+                ]
+              : [],
+          ),
+        }),
+        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () => Effect.succeed([ProviderInstanceId.make("claude_work")]),
+        }),
+        Layer.mock(AccountRouting.AccountRouting)({ limitedAccounts: Effect.succeed(new Map()) }),
         input.fileSystem === undefined
           ? FileSystem.layerNoop({ exists: () => Effect.succeed(true) })
           : Layer.succeed(FileSystem.FileSystem, input.fileSystem),
@@ -1289,7 +1345,18 @@ effectIt.effect.each([
 
 effectIt.effect.each([
   { autoAccount: true, text: "Add a retry to the upload client", briefed: true },
-  { autoAccount: false, text: "Add a retry to the upload client", briefed: false },
+  {
+    autoAccount: true,
+    otherAutoProvider: true,
+    text: "Add a retry to the upload client",
+    briefed: true,
+  },
+  {
+    autoAccount: false,
+    otherAutoProvider: true,
+    text: "Add a retry to the upload client",
+    briefed: false,
+  },
   { autoAccount: true, delegatedChild: true, text: "Add a retry", briefed: false },
 ] as const)(
   "briefs Auto's coordinator only on a top-level Auto prompt: %j",
@@ -1301,6 +1368,18 @@ effectIt.effect.each([
 
       const sent = harness.startTurn.mock.calls[0]?.[0].message.text ?? "";
       expect(sent.includes("<t3_auto_mode>")).toBe(briefed);
+      if (briefed && "otherAutoProvider" in turn) {
+        expect(sent).toContain("Claude models on Work Claude, with `delegate_task`");
+        expect(sent).toContain(
+          '{"providerInstanceId":"claude_work","model":"<id>","options":{"effort":"<effort>"}}',
+        );
+        expect(sent).toContain(
+          "effort one of high, max: Opus (`claude-opus-5-5`): hardest design, subtle bugs, reviews.",
+        );
+        expect(sent).not.toContain("Legacy");
+      } else {
+        expect(sent).not.toContain("delegate_task");
+      }
       expect(sent.endsWith(turn.text)).toBe(true);
     }),
 );
