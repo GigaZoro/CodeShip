@@ -87,9 +87,12 @@ Builds from 2026.1107.19 until releases moved back read their updates from
 `GigaZoro/codeship-releases`, so each release is also published there (`BRIDGE_RELEASE_REPOSITORY`,
 written with the `RELEASES_TOKEN` secret) until those installs have updated past them.
 
-Builds use the public T3 Connect identifiers in `.env.example`. GitHub-hosted macOS arm64 runners
-sometimes never pick up a job, so `release-fork-retry.yml` reruns a failed release's failed jobs
-up to twice while its commit is still the head of `main`.
+Builds use the public T3 Connect identifiers in `.env.example`. Releases also fail for reasons
+outside the build: GitHub-hosted macOS arm64 runners sometimes never pick up a job, and GitHub
+outages make downloads such as Electron's time out for hours. `release-fork-retry.yml` reruns a
+failed release's failed jobs twice right away, then every half hour (up to 24 attempts) while its
+commit is still the head of `main`, and starts a release when the head of `main` has no run at
+all. Past 24 attempts it fails the scheduled run; rerun the release by hand or push a fix.
 
 - **One-time setup.** Forks start with Actions disabled; enable them in the fork's Actions tab.
   Most other workflows ask for upstream's Blacksmith runners, which a fork does not have, so their
