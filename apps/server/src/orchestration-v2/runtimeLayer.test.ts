@@ -4762,72 +4762,95 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
-  it.effect("settles a thread its own agent settled once the turn completes", () =>
-    Effect.gen(function* () {
-      const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const eventSink = yield* EventSink.EventSinkV2;
-      const threadManagement = yield* ThreadManagementService.ThreadManagementService;
-      const projectId = ProjectId.make("runtime-layer-settle-after-run-project");
-      const threadId = ThreadId.make("runtime-layer-settle-after-run-thread");
+  it.effect.each(["settle", "archive"] as const)(
+    "applies a %s its own agent asked for once the turn completes",
+    (action) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+        const projectId = ProjectId.make(`runtime-layer-${action}-after-run-project`);
+        const threadId = ThreadId.make(`runtime-layer-${action}-after-run-thread`);
 
-      yield* orchestrator.dispatch({
-        type: "thread.create",
-        createdBy: "user",
-        creationSource: "web",
-        commandId: CommandId.make("runtime-layer-settle-after-run-create"),
-        threadId,
-        projectId,
-        title: "Settle after run",
-        modelSelection,
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        branch: null,
-        worktreePath: "/tmp/runtime-layer-settle-after-run",
-      });
-      yield* orchestrator.dispatch({
-        type: "message.dispatch",
-        createdBy: "user",
-        creationSource: "web",
-        commandId: CommandId.make("runtime-layer-settle-after-run-message"),
-        threadId,
-        messageId: MessageId.make("runtime-layer-settle-after-run-message"),
-        text: "Fix it and then settle this thread.",
-        attachments: [],
-        modelSelection,
-        dispatchMode: { type: "start_immediately" },
-      });
-      const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0];
-      if (run === undefined) return yield* Effect.die(new Error("Run missing."));
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`runtime-layer-${action}-after-run-create`),
+          threadId,
+          projectId,
+          title: "Organize after run",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: `/tmp/runtime-layer-${action}-after-run`,
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`runtime-layer-${action}-after-run-message`),
+          threadId,
+          messageId: MessageId.make(`runtime-layer-${action}-after-run-message`),
+          text: `Fix it and then ${action} this thread.`,
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: "start_immediately" },
+        });
+        const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0];
+        if (run === undefined) return yield* Effect.die(new Error("Run missing."));
 
-      const settled = yield* orchestrator
-        .streamStoredEventsFrom({ threadId, afterSequence: 0, eventType: "thread.settled" })
-        .pipe(Stream.runHead, Effect.forkChild);
-      const result = yield* threadManagement.settleThread({
-        threadId,
-        commandId: CommandId.make("runtime-layer-settle-after-run-settle"),
-        byOwnAgent: true,
-      });
-      assert.deepEqual(result, { settlesWhenTurnEnds: true });
-      assert.isNull((yield* orchestrator.getThreadProjection(threadId)).thread.settledOverride);
-      const now = yield* DateTime.now;
-      yield* eventSink.write({
-        commandId: CommandId.make("runtime-layer-settle-after-run-completed"),
-        events: [
-          {
-            id: EventId.make("runtime-layer-settle-after-run-completed"),
-            type: "run.updated",
+        const applied = yield* orchestrator
+          .streamStoredEventsFrom({
             threadId,
-            runId: run.id,
-            occurredAt: now,
-            payload: { ...run, status: "completed", startedAt: now, completedAt: now },
-          },
-        ],
-      });
-      yield* Fiber.join(settled);
+            afterSequence: 0,
+            eventType: action === "settle" ? "thread.settled" : "thread.archived",
+          })
+          .pipe(Stream.runHead, Effect.forkChild);
+        const result = yield* threadManagement.organizeThread({
+          threadId,
+          commandId: CommandId.make(`runtime-layer-${action}-after-run-${action}`),
+          action,
+          byOwnAgent: true,
+        });
+        assert.deepEqual(
+          result,
+          action === "settle" ? { settlesWhenTurnEnds: true } : { archivesWhenTurnEnds: true },
+        );
+        const during = yield* orchestrator.getThreadProjection(threadId);
+        assert.isNull(during.thread.settledOverride);
+        assert.isNull(during.thread.archivedAt);
+        // Stopping the session mid-turn would end the turn as failed, so the command refuses.
+        const refused = yield* orchestrator
+          .dispatch({
+            type: `thread.${action}`,
+            commandId: CommandId.make(`runtime-layer-${action}-after-run-direct`),
+            threadId,
+          })
+          .pipe(Effect.flip);
+        assert.include(String(refused.cause), "is still running");
+        const now = yield* DateTime.now;
+        yield* eventSink.write({
+          commandId: CommandId.make(`runtime-layer-${action}-after-run-completed`),
+          events: [
+            {
+              id: EventId.make(`runtime-layer-${action}-after-run-completed`),
+              type: "run.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: { ...run, status: "completed", startedAt: now, completedAt: now },
+            },
+          ],
+        });
+        yield* Fiber.join(applied);
 
-      const projection = yield* orchestrator.getThreadProjection(threadId);
-      assert.equal(projection.thread.settledOverride, "settled");
-    }),
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(projection.runs[0]?.status, "completed");
+        if (action === "settle") assert.equal(projection.thread.settledOverride, "settled");
+        else assert.isNotNull(projection.thread.archivedAt);
+      }),
   );
 
   it.effect("settles past held automatic runs but not held user messages", () =>
@@ -4953,6 +4976,19 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       assert.equal(
         error.cause,
         `Thread ${threadId} has a queued message. Send it or remove it from the queue before settling.`,
+      );
+      // An agent's archive at turn end must not cancel the message either.
+      const archiveError = yield* orchestrator
+        .dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make("settle-automatic-archive"),
+          threadId,
+          onlyIfNoQueuedMessage: true,
+        })
+        .pipe(Effect.flip);
+      assert.equal(
+        archiveError.cause,
+        `Thread ${threadId} has a queued message. Send it or remove it from the queue before archiving.`,
       );
     }),
   );

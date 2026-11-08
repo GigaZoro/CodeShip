@@ -2977,6 +2977,8 @@ export const OrchestrationV2Command = Schema.Union([
     type: Schema.Literal("thread.archive"),
     commandId: CommandId,
     threadId: ThreadId,
+    /** Refuse while a message someone sent waits in the queue, as settle does, instead of cancelling it. */
+    onlyIfNoQueuedMessage: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.guest-share.close"),

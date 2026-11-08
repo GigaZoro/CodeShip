@@ -635,13 +635,13 @@ it.effect("runs any tool that takes a linked environment there", () =>
         threadId: boxThread,
       });
       expect(there.structuredContent).toMatchObject({ threadId: boxThread, runtimeMode: "auto" });
-      const archived = yield* a.call("thread:laptop-full", "t3_thread_organize", {
+      const pinned = yield* a.call("thread:laptop-full", "t3_thread_organize", {
         environmentId: box.environmentId,
         threadId: boxThread,
-        action: "archive",
+        action: "pin",
       });
-      expect(archived.isError).toBe(false);
-      expect((yield* Ref.get(seen)).stops).toEqual([`thread.archive ${boxThread}`]);
+      expect(pinned.isError).toBe(false);
+      expect((yield* Ref.get(seen)).stops).toEqual([`thread.pin ${boxThread}`]);
 
       // This environment's own id keeps the call here.
       const own = yield* a.call("thread:laptop-full", "t3_thread_configure", {

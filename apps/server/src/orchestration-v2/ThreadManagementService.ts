@@ -185,6 +185,14 @@ export interface ThreadManagementWaitResult {
   readonly resultRun?: OrchestrationV2Run;
 }
 
+/** Its own agent's settle or archive mid-turn applies when the turn ends. */
+export interface ThreadManagementOrganizeInput {
+  readonly threadId: ThreadId;
+  readonly commandId: CommandId;
+  readonly action: "settle" | "archive";
+  readonly byOwnAgent: boolean;
+}
+
 export interface ThreadManagementInterruptInput {
   readonly projectId: ProjectId;
   readonly commandId: CommandId;
@@ -446,19 +454,20 @@ export interface ThreadManagementServiceShape {
     input: ThreadManagementWaitInput,
   ) => Effect.Effect<ThreadManagementWaitResult, ThreadManagementError>;
   /** Waits for the agent's run, and any notification or delegated result runs that follow it, to
-   * end before settling its thread and stopping the session. Other endings or settle refusals leave
-   * the thread active. */
-  readonly settleAfterRun: (input: {
+   * end before settling or archiving its thread and stopping the session. Other endings or refusals
+   * leave the thread active. */
+  readonly organizeAfterRun: (input: {
     readonly projectId: ProjectId;
     readonly threadId: ThreadId;
     readonly runId: RunId;
+    readonly action: "settle" | "archive";
   }) => Effect.Effect<void, ThreadManagementFailure>;
-  readonly settleThread: (input: {
-    readonly threadId: ThreadId;
-    readonly commandId: CommandId;
-    readonly byOwnAgent: boolean;
-  }) => Effect.Effect<
-    { readonly sequence: number } | { readonly settlesWhenTurnEnds: true },
+  readonly organizeThread: (
+    input: ThreadManagementOrganizeInput,
+  ) => Effect.Effect<
+    | { readonly sequence: number }
+    | { readonly settlesWhenTurnEnds: true }
+    | { readonly archivesWhenTurnEnds: true },
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
   >;
   readonly interruptThread: (
@@ -1097,11 +1106,11 @@ const make = Effect.gen(function* () {
     return settledResult(yield* evaluate((yield* getProjectThreadRecords(input, ["runs"])).runs));
   });
 
-  const settleAfterRun: ThreadManagementServiceShape["settleAfterRun"] = Effect.fn(
-    "orchestrationV2.threadManagement.settleAfterRun",
+  const organizeAfterRun: ThreadManagementServiceShape["organizeAfterRun"] = Effect.fn(
+    "orchestrationV2.threadManagement.organizeAfterRun",
   )(function* (input) {
     // A notification or delegated result can start the next run as this one ends, which refuses
-    // the settle. That run continues the same work, so the settle waits for it instead.
+    // the command. That run continues the same work, so the command waits for it instead.
     const automaticActiveRun = Effect.fnUntraced(function* () {
       const active = latestActiveRun(yield* getProjectThreadRecords(input, ["runs"]));
       if (active === undefined) return undefined;
@@ -1127,13 +1136,22 @@ const make = Effect.gen(function* () {
         const shell = yield* orchestrator.getThreadShell(input.threadId);
         if (backgroundWorkHoldsCompletion(shell?.pendingBackgroundTasks ?? [])) return;
       }
-      const next = yield* dispatch({
-        type: "thread.settle",
-        commandId: CommandId.make(`server:settle-after-run:${run.id}`),
-        threadId: input.threadId,
-        // Like auto-settles, stamp the completion: clients only silence settles stamped after it.
-        ...(run.completedAt === null ? {} : { settledAt: run.completedAt }),
-      }).pipe(
+      const next = yield* dispatch(
+        input.action === "settle"
+          ? {
+              type: "thread.settle",
+              commandId: CommandId.make(`server:settle-after-run:${run.id}`),
+              threadId: input.threadId,
+              // Like auto-settles, stamp the completion: clients only silence settles stamped after it.
+              ...(run.completedAt === null ? {} : { settledAt: run.completedAt }),
+            }
+          : {
+              type: "thread.archive",
+              commandId: CommandId.make(`server:archive-after-run:${run.id}`),
+              threadId: input.threadId,
+              onlyIfNoQueuedMessage: true,
+            },
+      ).pipe(
         Effect.as(undefined),
         Effect.catch((error) =>
           automaticActiveRun().pipe(
@@ -1149,20 +1167,24 @@ const make = Effect.gen(function* () {
     }
   });
 
-  const settleThread: ThreadManagementServiceShape["settleThread"] = Effect.fn(
-    "orchestrationV2.threadManagement.settleThread",
+  const organizeThread: ThreadManagementServiceShape["organizeThread"] = Effect.fn(
+    "orchestrationV2.threadManagement.organizeThread",
   )(function* (input) {
+    // Applying it now would stop the session serving the agent's own turn.
     const shell = input.byOwnAgent ? yield* orchestrator.getThreadShell(input.threadId) : null;
     if (shell != null && shell.activeRunId !== null) {
-      yield* settleAfterRun({
+      yield* organizeAfterRun({
         projectId: shell.projectId,
         threadId: shell.id,
         runId: shell.activeRunId,
+        action: input.action,
       }).pipe(Effect.ignoreCause({ log: true }), Effect.forkIn(layerScope));
-      return { settlesWhenTurnEnds: true } as const;
+      return input.action === "settle"
+        ? ({ settlesWhenTurnEnds: true } as const)
+        : ({ archivesWhenTurnEnds: true } as const);
     }
     const result = yield* dispatch({
-      type: "thread.settle",
+      type: `thread.${input.action}`,
       commandId: input.commandId,
       threadId: input.threadId,
     });
@@ -1641,8 +1663,8 @@ const make = Effect.gen(function* () {
     isProviderInstanceEnabledForProject,
     hasReceipt,
     waitForThread,
-    settleAfterRun,
-    settleThread,
+    organizeAfterRun,
+    organizeThread,
     interruptThread,
     stopDelegatedTasks,
     stopWorkflow,

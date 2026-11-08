@@ -1,3 +1,8 @@
+## 2026-11-08 — A chat that archives itself ends completed
+
+- When an agent archives its own chat during its turn, for example as the last step of a scheduled run, the chat is now archived when the turn ends and the run counts as completed. Before, archiving stopped the agent mid-turn, so the run ended failed with "The provider event stream closed unexpectedly". As with settling, a failed turn or a message someone queued leaves the chat unarchived.
+- An agent can no longer archive another chat while its turn is running, the same as web, desktop and mobile already refuse. It gets an error asking it to stop the turn first, instead of ending that turn as failed.
+
 ## 2026-11-08 — More agents hear a finished background task after their session ended
 
 - When background work finishes after the Grok, OpenCode, Pi, Muse or ACP registry agent session that started it has ended, for example because the agent process exited or the server restarted, the agent now gets the finish notice as a message and carries on. Before, that turn finished empty and the agent never heard the work had finished. Claude got the same fix earlier today.

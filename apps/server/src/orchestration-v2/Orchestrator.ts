@@ -3206,6 +3206,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Thread ${command.threadId} is already archived.`,
       });
     }
+    if (command.type === "thread.archive") {
+      // Archiving detaches the provider session, which would end a live turn as failed.
+      const { runs } = yield* loadProjectionForCommand(command, ["runs"], { turnItemTypes: [] });
+      const blocker = runs.some((run) => run.status === "starting" || run.status === "running")
+        ? "is still running. Stop it before archiving."
+        : command.onlyIfNoQueuedMessage === true &&
+            (yield* partitionQueuedRuns(command, runs)).sent.length > 0
+          ? "has a queued message. Send it or remove it from the queue before archiving."
+          : null;
+      if (blocker !== null) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Thread ${command.threadId} ${blocker}`,
+        });
+      }
+    }
     if (command.type === "thread.unarchive" && thread.archivedAt === null) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -3287,28 +3304,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
     if (command.type === "thread.settle") {
-      const projection = yield* loadProjectionForCommand(
-        command,
-        ["runs", "runtimeRequests", "messages"],
-        { turnItemTypes: [], messageRoles: ["user"] },
-      );
-      const automaticMessageIds = new Set(
-        projection.messages
-          .filter(
-            (message) =>
-              message.notification !== undefined || message.delegatedCompletion !== undefined,
-          )
-          .map((message) => message.id),
-      );
-      const automaticQueuedRuns = projection.runs.filter(
-        (run) => run.status === "queued" && automaticMessageIds.has(run.userMessageId),
-      );
+      const projection = yield* loadProjectionForCommand(command, ["runs", "runtimeRequests"], {
+        turnItemTypes: [],
+      });
+      const queued = yield* partitionQueuedRuns(command, projection.runs);
+      const automaticQueuedRuns = queued.automatic;
       const runningRunExists = projection.runs.some((run) =>
         ["preparing", "starting", "running", "waiting"].includes(run.status),
       );
-      const queuedMessageExists = projection.runs.some(
-        (run) => run.status === "queued" && !automaticQueuedRuns.includes(run),
-      );
+      const queuedMessageExists = queued.sent.length > 0;
       const pendingRequests = projection.runtimeRequests.filter(
         (request) => request.status === "pending",
       );
@@ -3454,22 +3458,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Thread ${command.threadId} has a pending approval or user-input request and cannot be snoozed.`,
         });
       }
-      const queuedRuns = projection.runs.filter((run) => run.status === "queued");
-      const queuedMessages =
-        queuedRuns.length === 0
-          ? []
-          : (yield* loadProjectionForCommand(command, ["messages"], {
-              messageIds: queuedRuns.map((run) => run.userMessageId),
-            })).messages;
-      const automaticMessageIds = new Set(
-        queuedMessages
-          .filter(
-            (message) =>
-              message.notification !== undefined || message.delegatedCompletion !== undefined,
-          )
-          .map((message) => message.id),
-      );
-      if (queuedRuns.some((run) => !automaticMessageIds.has(run.userMessageId))) {
+      if ((yield* partitionQueuedRuns(command, projection.runs)).sent.length > 0) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
@@ -10072,6 +10061,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           (cause) => new OrchestratorProjectionError({ threadId: commandThreadId(command), cause }),
         ),
       );
+
+  /** Splits queued runs into automatic ones (notifications, delegated results) and messages someone sent. */
+  const partitionQueuedRuns = Effect.fn("orchestrationV2.partitionQueuedRuns")(function* (
+    command: OrchestrationV2Command,
+    runs: ReadonlyArray<OrchestrationV2Run>,
+  ) {
+    const queued = runs.filter((run) => run.status === "queued");
+    const { messages } =
+      queued.length === 0
+        ? { messages: [] }
+        : yield* loadProjectionForCommand(command, ["messages"], {
+            messageIds: queued.map((run) => run.userMessageId),
+          });
+    const automaticMessageIds = new Set(
+      messages
+        .filter(
+          (message) =>
+            message.notification !== undefined || message.delegatedCompletion !== undefined,
+        )
+        .map((message) => message.id),
+    );
+    return {
+      automatic: queued.filter((run) => automaticMessageIds.has(run.userMessageId)),
+      sent: queued.filter((run) => !automaticMessageIds.has(run.userMessageId)),
+    };
+  });
 
   const preparedRunState = (
     command: Extract<
