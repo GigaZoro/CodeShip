@@ -6,6 +6,7 @@ import type {
   OrchestrationV2RunAttempt,
   OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
+import { waitsOnAnotherThread } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { latestRootProviderFailure, runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 
 type Work = OrchestrationV2RestartCancelledBackgroundWork;
@@ -27,11 +28,16 @@ function labelWithId(name: unknown, fallback: string, suffix: string): string {
   return `${compactLabel(name, budget) ?? compactLabel(fallback, budget)}${suffix}`;
 }
 
-/** resumeId overrides the item id for native resume, such as Codex's child provider-thread id. */
+/**
+ * resumeId overrides the item id for native resume, such as Codex's child provider-thread id.
+ * A wait on another thread loses nothing in a restart: that thread resumes on its own, as does a
+ * turn cut while waiting.
+ */
 export function cancelledTurnItemWork(
   item: OrchestrationV2TurnItem,
   resumeId?: string,
 ): Work | undefined {
+  if (waitsOnAnotherThread(item)) return undefined;
   switch (item.type) {
     case "subagent": {
       const nativeId =

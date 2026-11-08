@@ -11775,8 +11775,8 @@ const catalog: MessageCatalog = {
     "Не вдалося завантажити оновлення. Спробуйте «Завантажити оновлення» ще раз.",
   "The update install failed. Try Restart to update again.":
     "Не вдалося встановити оновлення. Спробуйте «Перезапустити для оновлення» ще раз.",
-  "The update installs when this finishes. Restarting now stops it.":
-    "Оновлення встановиться, коли це завершиться. Перезапуск зараз зупинить ці завдання.",
+  "The update installs when this work finishes, even if chats have started more by then. Restarting now stops it.":
+    "Оновлення встановиться, коли ці завдання завершаться, навіть якщо чати тим часом почнуть нові. Перезапуск зараз зупинить їх.",
   "The update track did not change.": "Канал оновлень не змінився.",
   "The upload was refused.": "Завантаження було відхилено.",
   "The URL appears after you save.": "URL з’явиться після збереження.",

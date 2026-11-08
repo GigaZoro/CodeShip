@@ -1,3 +1,9 @@
+## 2026-11-08 — Updates no longer wait for hours on busy chats
+
+- **Update when it finishes** now installs once the background work listed when you chose it is done. Before, every new command or subagent a chat started kept the update waiting, so a chat working in rounds could hold it for hours. Work started later stops in the restart, and its chat restarts it when it resumes.
+- A chat that is only waiting for another chat or a delegated task no longer holds an update. It resumes after the restart and waits again; the other chat's own work still holds the update when it runs on the same machine.
+- The Safe update confirmation says this, and a waiting update counts only the listed work still running. On web, desktop and mobile.
+
 ## 2026-11-08 — Auto respects account limits and reviews on your primary models
 
 - Auto and delegated work skip exhausted subscription accounts, respect project account settings, and keep models available when only another model's allowance is exhausted. Auto considers all eligible accounts and shows each model's own effort choices.

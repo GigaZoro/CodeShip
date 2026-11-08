@@ -50,10 +50,15 @@ setting instead.
 
 A restart stops background work: a command, task or subagent a chat started and
 is waiting on, such as a test run. When chats are waiting on such work, the Safe
-update lists it, and **Update when it finishes** installs the update once that
-work is done, so the chats still get its results. While it waits, the update
-button shows how many tasks it is waiting for; open it to **Update now** or
-**Stop waiting**. A dev server or watcher left running does not hold the update.
+update lists it, and **Update when it finishes** installs the update once the
+listed work is done, so the chats still get its results. Work the chats start
+after you choose this does not delay the update: the restart stops it, and the
+chats restart it when they resume. While it waits, the update button shows how
+many of the listed tasks are still running; open it to **Update now** or **Stop
+waiting**. A dev server or watcher left running does not hold the update, and
+neither does a chat that is only waiting for another chat or a delegated task:
+it resumes after the restart and waits again, while the other chat's own work
+holds the update if it runs on this server.
 
 Updating a server on another machine waits the same way for the work its chats
 are waiting on, and shows **Waiting for background work** with **Update now**

@@ -7,6 +7,7 @@ import {
   type ProviderSetupInput,
   ServerObservability,
   EnvironmentThemeId,
+  ThreadId,
   UsageLimitSourceId,
   type ServerConfig,
   type ServerConfigStreamEvent,
@@ -64,6 +65,7 @@ import {
   waitForNextEnvironmentReconnect,
   waitForDesktopUpdateTarget,
   runDesktopCommitWithReconnectObserver,
+  untilListedRestartHoldWorkEnds,
 } from "./server.ts";
 import { applyServerConfigProjection } from "./serverConfigProjection.ts";
 
@@ -102,6 +104,44 @@ function session(client: WsRpcProtocolClient): RpcSession {
     closed: Effect.never,
   };
 }
+
+describe("update waits for background work", () => {
+  it.effect("goes once the work listed at the start ends, even with newer work running", () =>
+    Effect.gen(function* () {
+      const work = (id: string | undefined, label: string) => ({
+        threadId: ThreadId.make("thread-1"),
+        threadTitle: "Coordinator",
+        kind: "subagent" as const,
+        label,
+        ...(id === undefined ? {} : { id }),
+      });
+      const waitedOn: Array<ReadonlyArray<string>> = [];
+      const outcome = yield* untilListedRestartHoldWorkEnds(
+        Stream.make(
+          { work: [work("a", "Review A"), work(undefined, "Legacy C")] },
+          // A relabel keeps its id; B started after the wait did.
+          {
+            work: [
+              work("a", "Review A, round 2"),
+              work("b", "Review B"),
+              work(undefined, "Legacy C"),
+            ],
+          },
+          { work: [work("b", "Review B"), work(undefined, "Legacy C")] },
+          { work: [work("b", "Review B")] },
+          { work: [work("b", "Review B")] },
+        ),
+        (remaining) => Effect.sync(() => waitedOn.push(remaining.map((entry) => entry.label))),
+      ).pipe(Stream.runHead);
+      expect(Option.getOrNull(outcome)).toBe("clear");
+      expect(waitedOn).toEqual([
+        ["Review A", "Legacy C"],
+        ["Review A, round 2", "Legacy C"],
+        ["Legacy C"],
+      ]);
+    }),
+  );
+});
 
 describe("update restart reconnect nudges", () => {
   it.effect("retries a desktop commit that was lost before delivery", () =>

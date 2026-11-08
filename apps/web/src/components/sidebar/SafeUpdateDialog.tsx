@@ -123,7 +123,9 @@ function SafeUpdateDialogContent({
         <div className="flex flex-col gap-4 px-6 pb-4 text-sm">
           <BackgroundWorkGroup
             title={t("Waits for background work")}
-            note={t("The update installs when this finishes. Restarting now stops it.")}
+            note={t(
+              "The update installs when this work finishes, even if chats have started more by then. Restarting now stops it.",
+            )}
             work={work}
           />
           <ThreadGroup title={t("Resume after the restart")} threads={resuming} />

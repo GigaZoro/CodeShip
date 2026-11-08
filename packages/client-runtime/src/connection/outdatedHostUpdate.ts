@@ -27,6 +27,7 @@ import {
   isLegacyUpdateHandoffLoss,
   type RestartHoldDecision,
   resolveServerUpdateProgressResult,
+  untilListedRestartHoldWorkEnds,
 } from "../state/server.ts";
 import * as RelayEnvironmentDiscovery from "../relay/discovery.ts";
 import * as ConnectionResolver from "./resolver.ts";
@@ -150,12 +151,8 @@ export const updateOutdatedHost = Effect.fn("clientRuntime.connection.updateOutd
         const client = yield* makeWsRpcProtocolClient.pipe(Effect.provide(protocolContext));
         if (capabilities.restartHold === true) {
           const decision = yield* Stream.merge(
-            client[WS_METHODS.serverWatchRestartHold]({}).pipe(
-              Stream.tap((hold) =>
-                hold.work.length === 0 ? Effect.void : onStage("waiting", hold.work),
-              ),
-              Stream.filter((hold) => hold.work.length === 0),
-              Stream.as("clear" as const),
+            untilListedRestartHoldWorkEnds(client[WS_METHODS.serverWatchRestartHold]({}), (work) =>
+              onStage("waiting", work),
             ),
             restartHoldDecisions,
           ).pipe(Stream.runHead);

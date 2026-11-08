@@ -1650,6 +1650,7 @@ it.effect(
         threadTitle: "AB#975 one-sided book",
         kind: "shell" as const,
         label: "Replay CI validation (id baavq1vr7)",
+        id: "baavq1vr7",
       };
       // The dev server stops too, but nobody waits on it, so it does not hold the update.
       assert.deepEqual(yield* recovery.restartHold, { work: [expected] });
@@ -1735,5 +1736,40 @@ it.effect("keeps the agent's wait on a background command whose turn item still 
         },
       }),
     ),
+  );
+});
+
+it.effect("does not hold an update for a wait on another chat or a delegated task", () => {
+  const fixture = restartHoldFixture();
+  const waitItem = (id: string, toolName: string, input: unknown) => ({
+    id: TurnItemId.make(id),
+    runId: fixture.runId,
+    nodeId: null,
+    providerThreadId: fixture.providerThreadId,
+    type: "dynamic_tool",
+    status: "running",
+    title: null,
+    toolName,
+    input,
+    nativeItemRef: { nativeId: id },
+  });
+  // Both waits outlived their turn, so a restart would otherwise record them as lost work.
+  const waits = [
+    waitItem("turn-item:thread-wait", "mcp__t3-code__t3_thread_wait", { threadId: "other" }),
+    waitItem("turn-item:delegate-wait", "t3-code.delegate_task", { task: "x", mode: "wait" }),
+  ];
+  let projection = fixture.projectionWith([], waits);
+  return Effect.gen(function* () {
+    const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+    assert.deepEqual(yield* recovery.restartHold, { work: [] });
+
+    // Work the chat itself runs still holds the update.
+    projection = fixture.projectionWith([fixture.verify], waits);
+    assert.deepEqual(
+      (yield* recovery.restartHold).work.map((entry) => entry.id),
+      ["baavq1vr7"],
+    );
+  }).pipe(
+    Effect.provide(restartHoldLayer({ threadId: fixture.threadId, projection: () => projection })),
   );
 });

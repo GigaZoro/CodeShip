@@ -1,5 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
-import { decideRestartHold, type RestartHoldDecision } from "@t3tools/client-runtime/state/server";
+import {
+  decideRestartHold,
+  type RestartHoldDecision,
+  serverRestartHoldWaitingOnAtom,
+} from "@t3tools/client-runtime/state/server";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -54,6 +58,15 @@ const restartHoldWorkAtom = Atom.family((environmentIds: string) =>
   }).pipe(Atom.withLabel(`restart-hold-work:${environmentIds}`)),
 );
 
+/** Keyed by `environmentIdsKey`; the work a pending install still waits on there. */
+const waitingOnWorkAtom = Atom.family((environmentIds: string) =>
+  Atom.make((get): ReadonlyArray<OrchestrationV2RestartHoldWork> => {
+    const ids = environmentIds.split("\n").filter((id) => id !== "");
+    if (ids.length === 0) return EMPTY_WORK;
+    return ids.flatMap((id) => get(serverRestartHoldWaitingOnAtom(EnvironmentId.make(id))));
+  }).pipe(Atom.withLabel(`restart-hold-waiting-on:${environmentIds}`)),
+);
+
 const restartHoldWorkCountAtom = Atom.family((environmentIds: string) =>
   Atom.make((get) => get(restartHoldWorkAtom(environmentIds)).length).pipe(
     Atom.withLabel(`restart-hold-work-count:${environmentIds}`),
@@ -76,10 +89,10 @@ export function useRestartHoldWorkCount(environmentIds: string) {
   return useAtomValue(restartHoldWorkCountAtom(environmentIds));
 }
 
-/** The work a pending install waits on; empty when none is pending. */
+/** The work listed when a pending install began that is still running; later work is left out. */
 export function usePendingLocalInstallWork() {
   const pending = usePendingLocalInstall();
-  return useRestartHoldWork(useHostedRestartHoldKey(pending !== null));
+  return useAtomValue(waitingOnWorkAtom(useHostedRestartHoldKey(pending !== null)));
 }
 
 function readHostedRestartHoldEnvironmentIds(): ReadonlyArray<EnvironmentId> {
@@ -103,7 +116,7 @@ export type HostedWorkWait =
   | { readonly status: "cancelled" }
   | { readonly status: "failed"; readonly error: unknown };
 
-/** Resolves when no server this app hosts has background work, or the user decides first. */
+/** Resolves when the work listed on this app's servers has ended, or the user decides first. */
 export async function waitForHostedBackgroundWork(): Promise<HostedWorkWait> {
   const environmentIds = readHostedRestartHoldEnvironmentIds();
   const results = await Promise.all(

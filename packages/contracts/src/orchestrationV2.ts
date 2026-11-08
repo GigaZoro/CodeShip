@@ -658,6 +658,8 @@ export const OrchestrationV2RestartHoldWork = Schema.Struct({
   threadTitle: Schema.String,
   kind: OrchestrationV2RestartCancelledBackgroundWork.fields.kind,
   label: TrimmedNonEmptyString,
+  /** The same while this work runs, so a wait can tell the work it started on from later work. */
+  id: Schema.optional(TrimmedNonEmptyString),
 });
 export type OrchestrationV2RestartHoldWork = typeof OrchestrationV2RestartHoldWork.Type;
 

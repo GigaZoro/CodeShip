@@ -202,6 +202,12 @@ function pendingRequestRecovery(projection: RecoveryProjection) {
   return { questions, messageRequestNodeIds, requests };
 }
 
+interface RestartCancelledEntry {
+  readonly work: OrchestrationV2RestartCancelledBackgroundWork;
+  /** The provider's id where it has one, which its turn item and its roster entry share. */
+  readonly holdId: string;
+}
+
 /**
  * The background work a restart cancels, keyed by the provider thread that waits on it. Shutdown
  * records it for the restart note; an update waits on the awaited part of it before restarting.
@@ -210,11 +216,8 @@ function restartCancelledBackgroundWork(
   projection: RecoveryProjection,
   cutRuns: ReadonlyArray<RecoveryRun>,
   messageRequestNodeIds: ReadonlySet<string>,
-): ReadonlyMap<ProviderThreadId, ReadonlyArray<OrchestrationV2RestartCancelledBackgroundWork>> {
-  const cancelled = new Map<
-    ProviderThreadId,
-    Array<OrchestrationV2RestartCancelledBackgroundWork>
-  >();
+): ReadonlyMap<ProviderThreadId, ReadonlyArray<RestartCancelledEntry>> {
+  const cancelled = new Map<ProviderThreadId, Array<RestartCancelledEntry>>();
   const recordedNativeIds = new Set<string>();
   // The roster carries the agent's t3_background_wait mark, which its turn item lacks.
   const awaitedNativeIds = new Set(
@@ -226,12 +229,12 @@ function restartCancelledBackgroundWork(
   );
   const record = (
     providerThreadId: ProviderThreadId | null | undefined,
-    work: OrchestrationV2RestartCancelledBackgroundWork,
+    entry: RestartCancelledEntry,
   ) => {
     if (providerThreadId == null) return;
     const existing = cancelled.get(providerThreadId);
-    if (existing === undefined) cancelled.set(providerThreadId, [work]);
-    else existing.push(work);
+    if (existing === undefined) cancelled.set(providerThreadId, [entry]);
+    else existing.push(entry);
   };
   const recordItem = (item: OrchestrationV2ThreadProjection["turnItems"][number]) => {
     if (!isBackgroundCapableTurnItemType(item.type)) return;
@@ -248,10 +251,10 @@ function restartCancelledBackgroundWork(
     );
     if (work === undefined) return;
     const nativeId = item.nativeItemRef?.nativeId;
-    record(
-      awaitingId,
-      nativeId != null && awaitedNativeIds.has(nativeId) ? { ...work, awaited: true } : work,
-    );
+    record(awaitingId, {
+      work: nativeId != null && awaitedNativeIds.has(nativeId) ? { ...work, awaited: true } : work,
+      holdId: nativeId ?? item.id,
+    });
     if (nativeId != null) recordedNativeIds.add(nativeId);
   };
   for (const run of cutRuns) {
@@ -293,7 +296,8 @@ function restartCancelledBackgroundWork(
       )
         continue;
       recordedNativeIds.add(task.taskId);
-      record(providerThread.id, cancelledRosterTaskWork(task));
+      const work = cancelledRosterTaskWork(task);
+      record(providerThread.id, { work, holdId: work.id ?? task.taskId });
     }
   }
   return cancelled;
@@ -325,7 +329,8 @@ function sameRestartHold(left: OrchestrationV2RestartHold, right: OrchestrationV
         entry.threadId === other.threadId &&
         entry.threadTitle === other.threadTitle &&
         entry.kind === other.kind &&
-        entry.label === other.label
+        entry.label === other.label &&
+        entry.id === other.id
       );
     })
   );
@@ -777,7 +782,7 @@ export const make = Effect.gen(function* () {
           payload: { ...session, status: "stopped", updatedAt: now, lastError: null },
         });
       }
-      for (const [providerThreadId, work] of cancelledBackgroundWork) {
+      for (const [providerThreadId, entries] of cancelledBackgroundWork) {
         const noteRun = latestStartedRun(projection, providerThreadId);
         if (noteRun === undefined) continue;
         // Use a separate event; stale run snapshots can overwrite intervening lifecycle changes.
@@ -792,7 +797,7 @@ export const make = Effect.gen(function* () {
             runId: noteRun.id,
             restartCancelledBackgroundWork: mergeRestartCancelledBackgroundWork(
               noteRun.restartCancelledBackgroundWork ?? [],
-              work,
+              entries.map((entry) => entry.work),
             ),
           },
         });
@@ -996,13 +1001,14 @@ export const make = Effect.gen(function* () {
         pendingRequestRecovery(projection).messageRequestNodeIds,
       );
       for (const entries of cancelled.values()) {
-        for (const entry of entries) {
+        for (const { work: entry, holdId } of entries) {
           if (!isAwaitedWork(entry)) continue;
           work.push({
             threadId,
             threadTitle: projection.thread.title,
             kind: entry.kind,
             label: entry.label,
+            id: holdId,
           });
         }
       }

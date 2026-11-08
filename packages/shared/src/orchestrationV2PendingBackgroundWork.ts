@@ -53,6 +53,21 @@ export function turnItemUpdateCanEndBackgroundWork(
   return BACKGROUND_TURN_ITEM_TYPES.has(item.type) && !isOrchestrationV2WorkActive(item.status);
 }
 
+/**
+ * A `t3_thread_wait`, or a `delegate_task` that blocks until its child finishes. The awaited
+ * thread runs its own turns, so this call only waits; it is not work of its own.
+ */
+export function waitsOnAnotherThread(item: OrchestrationV2TurnItem): boolean {
+  if (item.type !== "dynamic_tool") return false;
+  const tool = resolveT3McpToolId(item.toolName);
+  return (
+    tool === "t3_thread_wait" ||
+    (tool === "delegate_task" &&
+      Predicate.isObject(item.input) &&
+      Reflect.get(item.input, "mode") === "wait")
+  );
+}
+
 export function deriveBlockedOnThreadWait(input: {
   readonly activeRun: Pick<OrchestrationV2Run, "id" | "status"> | null;
   readonly turnItems: ReadonlyArray<OrchestrationV2TurnItem>;
@@ -69,18 +84,7 @@ export function deriveBlockedOnThreadWait(input: {
     ) {
       continue;
     }
-    if (item.type !== "dynamic_tool") return false;
-    const tool = resolveT3McpToolId(item.toolName);
-    if (
-      tool !== "t3_thread_wait" &&
-      !(
-        tool === "delegate_task" &&
-        Predicate.isObject(item.input) &&
-        Reflect.get(item.input, "mode") === "wait"
-      )
-    ) {
-      return false;
-    }
+    if (!waitsOnAnotherThread(item)) return false;
     hasWait = true;
   }
   return hasWait;

@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  type OrchestrationV2RestartHold,
   type OrchestrationV2RestartHoldWork,
   type ProviderInstanceId,
   type ServerConfig,
@@ -118,6 +119,40 @@ export function decideRestartHold(
   // A fresh object, so a repeated decision still reaches the wait.
   atomRegistry.set(serverRestartHoldDecisionAtom(environmentId), { decision });
 }
+
+// Servers that predate hold ids name the work by its kind and label.
+const restartHoldWorkKey = (work: OrchestrationV2RestartHoldWork): string =>
+  `${work.threadId}\u0000${work.id ?? `${work.kind}\u0000${work.label}`}`;
+
+/**
+ * "clear" once the work in the first hold has ended. Work that starts later does not extend the
+ * wait; the restart stops it, and its chat restarts it. `onWaiting` gets the listed work left.
+ */
+export function untilListedRestartHoldWorkEnds<E, R>(
+  holds: Stream.Stream<OrchestrationV2RestartHold, E, R>,
+  onWaiting: (work: ReadonlyArray<OrchestrationV2RestartHoldWork>) => Effect.Effect<void>,
+): Stream.Stream<"clear", E, R> {
+  return holds.pipe(
+    Stream.mapAccum(
+      (): ReadonlySet<string> | null => null,
+      (listed, hold) => {
+        const keys = listed ?? new Set(hold.work.map(restartHoldWorkKey));
+        return [keys, [hold.work.filter((work) => keys.has(restartHoldWorkKey(work)))]] as const;
+      },
+    ),
+    Stream.tap((work) => (work.length === 0 ? Effect.void : onWaiting(work))),
+    Stream.filter((work) => work.length === 0),
+    Stream.as("clear" as const),
+  );
+}
+
+/** What an update of this server still waits on; empty while it waits on nothing. */
+export const serverRestartHoldWaitingOnAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.make<ReadonlyArray<OrchestrationV2RestartHoldWork>>([]).pipe(
+    Atom.keepAlive,
+    Atom.withLabel(`environment-data:server:restart-hold-waiting-on:${environmentId}`),
+  ),
+);
 
 /** Decisions made after this call; the wait that reads them ignores earlier ones. */
 export function restartHoldDecisions(
@@ -870,7 +905,7 @@ export function createServerEnvironmentAtoms<R, E>(
   );
   const updateStateAtom = (environmentId: EnvironmentId | null) =>
     environmentId === null ? EMPTY_SERVER_UPDATE_STATE_ATOM : updateStateValueAtom(environmentId);
-  /** Ends when no chat there waits on background work, or when the user decides first. */
+  /** Ends when the work chats there waited on has ended, or when the user decides first. */
   const awaitRestartHoldClear = Effect.fn("ServerUpdate.awaitRestartHoldClear")(function* (
     environmentId: EnvironmentId,
     atomRegistry: AtomRegistry.AtomRegistry,
@@ -878,16 +913,22 @@ export function createServerEnvironmentAtoms<R, E>(
   ) {
     const environmentRegistry = yield* EnvironmentRegistry.EnvironmentRegistry;
     const decisions = restartHoldDecisions(atomRegistry, environmentId);
-    const cleared = environmentRegistry
-      .followStream(environmentId, subscribe(WS_METHODS.serverWatchRestartHold, {}))
-      .pipe(
-        Stream.tap((hold) =>
-          hold.work.length === 0 ? Effect.void : Effect.sync(() => onWaiting(hold.work)),
-        ),
-        Stream.filter((hold) => hold.work.length === 0),
-        Stream.as("clear" as const),
-      );
-    const outcome = yield* Stream.merge(cleared, decisions).pipe(Stream.runHead);
+    const waitingOnAtom = serverRestartHoldWaitingOnAtom(environmentId);
+    const cleared = untilListedRestartHoldWorkEnds(
+      environmentRegistry.followStream(
+        environmentId,
+        subscribe(WS_METHODS.serverWatchRestartHold, {}),
+      ),
+      (work) =>
+        Effect.sync(() => {
+          atomRegistry.set(waitingOnAtom, work);
+          onWaiting(work);
+        }),
+    );
+    const outcome = yield* Stream.merge(cleared, decisions).pipe(
+      Stream.runHead,
+      Effect.ensuring(Effect.sync(() => atomRegistry.set(waitingOnAtom, []))),
+    );
     return Option.getOrElse(outcome, (): "clear" | RestartHoldDecision => "clear");
   });
   const awaitRestartHold = createRuntimeCommand<
