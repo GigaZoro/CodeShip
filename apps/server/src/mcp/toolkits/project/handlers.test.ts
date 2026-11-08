@@ -85,7 +85,7 @@ const clientLaunchHarness = (input: {
   readonly refusedByCeiling?: true;
   readonly autoModeProvider?: ProviderDriverKind;
   /** Accounts a usage limit stopped, with their resets. */
-  readonly limited?: ReadonlyMap<ProviderInstanceId, string>;
+  readonly limited?: ReadonlyMap<ProviderInstanceId, ProjectionStore.RecordedUsageLimit>;
   readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
   /** A thread calls instead of a client: the first shell, whose parents follow it. */
   readonly callerThreads?: ReadonlyArray<{
@@ -468,15 +468,24 @@ it.effect(
         expect(refused.selections).toEqual([]);
       }
 
-      const explicit = {
-        instanceId: ProviderInstanceId.make("claudeAgent"),
-        model: "claude-opus",
-        options: [{ id: "effort", value: "high" }],
-        autoAccount: true,
-      };
-      expect((yield* launchWith(claude, { modelSelection: explicit })).selections).toEqual([
-        { instanceId: explicit.instanceId, model: explicit.model, options: explicit.options },
-      ]);
+      for (const explicit of [
+        {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-settings",
+          options: [{ id: "reasoningEffort", value: "high" }],
+          autoAccount: true,
+        },
+        {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-opus",
+          options: [{ id: "effort", value: "high" }],
+          autoAccount: true,
+        },
+      ]) {
+        expect((yield* launchWith(claude, { modelSelection: explicit })).selections).toEqual([
+          { instanceId: explicit.instanceId, model: explicit.model, options: explicit.options },
+        ]);
+      }
 
       // auto:false runs the Auto default it would inherit as the model it names.
       const autoDefault = {
@@ -604,7 +613,7 @@ it.effect("a launch onto a usage-limited account fails before any thread exists"
         runtimeModeCeiling: "full-access",
         launched,
         providers,
-        limited: new Map([[claude, resetAt]]),
+        limited: new Map([[claude, { resetAt, refusedAt: "2026-11-03T00:00:00Z" }]]),
         autoModeProvider: ProviderDriverKind.make("claudeAgent"),
         settings: {
           providerInstances: {

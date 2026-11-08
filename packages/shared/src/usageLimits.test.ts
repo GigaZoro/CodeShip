@@ -278,6 +278,30 @@ describe("new thread model fallback", () => {
   });
 });
 
+it.each([
+  ["claudeAgent", ["seven_day_opus"], false],
+  ["claudeAgent", ["seven_day"], true],
+  ["codex", ["5h"], true],
+  ["cursor", ["apiPercentUsed"], false],
+  ["cursor", ["apiPercentUsed", "autoPercentUsed"], true],
+  ["antigravity", ["gemini-weekly"], false],
+  ["opencode", ["go_weekly"], false],
+] as const)("reports only account-wide exhaustion for %s pools %s", (driver, ids, limited) => {
+  expect(
+    exhaustedUsageWindow(
+      provider({
+        driver: ProviderDriverKind.make(driver),
+        usageLimits: {
+          checkedAt: "2026-09-03T11:00:00Z",
+          windows: ids.map((id) => ({ ...window, id, usedPercent: 100 })),
+        },
+      }),
+      now,
+      null,
+    ) !== undefined,
+  ).toBe(limited);
+});
+
 describe("pace", () => {
   it("places the clock three fifths through a five-hour window with two hours left", () => {
     expect(elapsedShare(window, now)).toBeCloseTo(0.6);

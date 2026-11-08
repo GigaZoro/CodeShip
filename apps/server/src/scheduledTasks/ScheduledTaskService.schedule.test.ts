@@ -412,6 +412,7 @@ it.effect("starts a new thread on another account when the task's account is out
           Effect.as({ threadId: ThreadId.make("thread-spare"), resumed: false } as never),
         ),
       Layer.succeed(AccountRouting.AccountRouting, {
+        accountsWithRoom: () => Effect.succeed([]),
         route: (input) => Effect.succeed(input.selection),
         failoverLaunch: (input) => Effect.succeed({ ...input.selection, instanceId: spare }),
         limitedAccounts: Effect.succeed(new Map()),

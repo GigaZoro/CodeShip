@@ -237,6 +237,7 @@ it.effect(
       {
         autoAccount: true,
         accountRouting: Layer.succeed(AccountRouting.AccountRouting, {
+          accountsWithRoom: () => Effect.succeed([]),
           route: (input) =>
             Effect.sync(() => {
               routeInputs.push(input);
@@ -295,6 +296,7 @@ it.effect("a buffered provider wake-up stays on its account when routing would m
     {
       autoAccount: true,
       accountRouting: Layer.succeed(AccountRouting.AccountRouting, {
+        accountsWithRoom: () => Effect.succeed([]),
         route: (input) =>
           Effect.sync(() => {
             routeInputs.push(input);

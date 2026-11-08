@@ -2981,6 +2981,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly nativeSessionId?: string;
     readonly settings?: ClaudeSettings;
     readonly freshQueueOnReopen?: boolean;
+    readonly startupError?: unknown;
+    readonly streamError?: unknown;
     readonly forkSession?: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape["forkSession"];
     readonly allocateSessionId?: Effect.Effect<string>;
   }) =>
@@ -3062,11 +3064,26 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           open: (input) =>
             Effect.gen(function* () {
               openedOptions = input.options;
+              if (options?.startupError !== undefined)
+                return yield* new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                  method: "query",
+                  cause: options.startupError,
+                });
               const processMessages =
                 options?.freshQueueOnReopen === true && processQueues.length > 0
                   ? yield* Queue.unbounded<SDKMessage>()
                   : sdkMessages;
               const messages = Stream.fromQueue(processMessages).pipe(
+                Stream.mapEffect((message) =>
+                  options?.streamError === undefined
+                    ? Effect.succeed(message)
+                    : Effect.fail(
+                        new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                          method: "query",
+                          cause: options.streamError,
+                        }),
+                      ),
+                ),
                 Stream.flatMap((message) =>
                   Stream.make(message).pipe(
                     Stream.concat(
@@ -5667,6 +5684,73 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
       ),
     ),
+  );
+
+  it.effect.each([
+    {
+      stage: "open",
+      error: {
+        status: 429,
+        error: { type: "rate_limit_error" },
+        rate_limit_info: { resetsAt: 1791804000 },
+      },
+      resetAt: "2026-10-12T11:20:00.000Z",
+    },
+    {
+      stage: "open",
+      error: new Error("API Error: 429 Rate limit reached (reset after 4m 6s)."),
+      resetAt: "1970-01-01T00:04:06.000Z",
+    },
+    { stage: "open", error: { status: 429 }, resetAt: undefined },
+    {
+      stage: "stream",
+      error: { status: 429, rate_limit_info: { resetsAt: 1791804000 } },
+      resetAt: "2026-10-12T11:20:00.000Z",
+    },
+    { stage: "open-resume", error: { status: 429 }, resetAt: undefined },
+    {
+      stage: "open-resume",
+      error: { status: 429, rate_limit_info: { resetsAt: 1791804000 } },
+      resetAt: "2026-10-12T11:20:00.000Z",
+    },
+    { stage: "open", error: { status: 401 }, resetAt: undefined, limited: false },
+  ])(
+    "classifies a Claude startup refusal at $stage with reset $resetAt",
+    ({ stage, error, resetAt, ...row }) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions(
+          stage !== "stream" ? { startupError: error } : { streamError: error },
+        );
+        if (stage === "open-resume")
+          yield* harness.runtime.resumeThread({ providerThread: harness.providerThread });
+        const start = harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-startup-refusal"),
+            text: "Implement.",
+            attachments: [],
+          }),
+        );
+        const failure =
+          stage !== "stream"
+            ? makeProviderFailure({ cause: yield* Effect.flip(start) })
+            : yield* Effect.gen(function* () {
+                yield* start;
+                yield* Queue.offer(harness.sdkMessages, wakeTurnInit);
+                const terminal = yield* Queue.take(harness.terminalReceipts);
+                assert.equal(terminal.status, "failed");
+                if (terminal.status !== "failed") return yield* Effect.die("Expected failure");
+                return terminal.failure;
+              });
+        assert.equal(failure.class, "limited" in row ? "unknown" : "usage_limit");
+        assert.equal(failure.resetAt, resetAt);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
   );
 
   it.effect("keeps a later future-window event-supplied Claude reset over the embedded reset", () =>

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off
+import { autoModeModelFor } from "@t3tools/shared/serverSettings";
 /**
  * Replays small fake threads on a Claude or Codex model to check T3's MCP tool use. A trimmed
  * harness capture supplies the prompt and native tools; a cheap model plays the shell. See
@@ -13,6 +14,7 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { formatSharedSkillPrompt, SharedSkillInstructions } from "@t3tools/shared/providerSkills";
 import {
+  AutoModeModel,
   ComposerContextRecord,
   DeviceOperationError,
   DeviceSummary,
@@ -288,21 +290,24 @@ export const McpToolUseCase = Schema.Struct({
     ),
     /** The turn runs in Auto mode: T3 puts the coordinator brief ahead of `prompt`. */
     autoMode: Schema.optional(Schema.Boolean),
-    otherAutoProvider: Schema.optional(
-      Schema.Struct({
-        providerInstanceId: Schema.String,
-        displayName: Schema.String,
-        driver: ProviderDriverKind,
-        models: Schema.Array(
-          Schema.Struct({
-            slug: Schema.String,
-            name: Schema.String,
-            effort: Schema.optionalKey(
-              Schema.Struct({ id: Schema.String, values: Schema.Array(Schema.String) }),
-            ),
-          }),
-        ),
-      }),
+    autoModeModels: Schema.optional(Schema.Record(Schema.String, AutoModeModel)),
+    otherAutoProviders: Schema.optional(
+      Schema.Array(
+        Schema.Struct({
+          providerInstanceId: Schema.String,
+          displayName: Schema.String,
+          driver: ProviderDriverKind,
+          models: Schema.Array(
+            Schema.Struct({
+              slug: Schema.String,
+              name: Schema.String,
+              effort: Schema.optionalKey(
+                Schema.Struct({ id: Schema.String, values: Schema.Array(Schema.String) }),
+              ),
+            }),
+          ),
+        }),
+      ),
     ),
   }),
   prompt: Schema.String,
@@ -965,13 +970,42 @@ export const buildMessages = (sample: Sample) => {
       : projectComposerContextForProvider({ text: expandedPrompt, ...testCase.promptContext });
   const sideChat = testCase.setup.sideChat;
   const driver = base.codex ? "codex" : "claudeAgent";
+  const autoSettings = { autoModeModels: testCase.setup.autoModeModels ?? {} };
+  const otherProviders = (testCase.setup.otherAutoProviders ?? []).map((provider) => ({
+    ...provider,
+    models: provider.models.map(({ effort, ...model }) => ({
+      ...model,
+      capabilities: {
+        optionDescriptors:
+          effort === undefined
+            ? []
+            : [
+                {
+                  id: effort.id,
+                  label: "Effort",
+                  type: "select" as const,
+                  options: effort.values.map((id) => ({ id, label: id })),
+                },
+              ],
+      },
+    })),
+  }));
+  const otherPrimary = autoModeModelFor(
+    autoSettings,
+    ProviderDriverKind.make(driver === "codex" ? "claudeAgent" : "codex"),
+  );
+  const reviewer = otherProviders.find((provider) =>
+    provider.models.some((model) => model.slug === otherPrimary?.model),
+  );
   const autoBrief = testCase.setup.autoMode
     ? autoCoordinatorInstructions({
         driver: ProviderDriverKind.make(driver),
         model: base.model,
-        ...(testCase.setup.otherAutoProvider === undefined
+        primary: autoModeModelFor(autoSettings, ProviderDriverKind.make(driver)),
+        otherProviders,
+        ...(reviewer === undefined || otherPrimary === null
           ? {}
-          : { otherProvider: testCase.setup.otherAutoProvider }),
+          : { otherPrimary: { ...otherPrimary, providerInstanceId: reviewer.providerInstanceId } }),
         models: (
           PROVIDERS.find((provider) => provider.providerInstanceId === driver)?.models ?? []
         ).map((model) => ({ slug: model.id, name: model.id })),

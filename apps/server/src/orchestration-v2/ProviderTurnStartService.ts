@@ -1,12 +1,10 @@
-import * as AccountRouting from "./AccountRouting.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
-import { autoCoordinatorAccount } from "./autoCoordinatorAccount.ts";
+import { autoCoordinatorBriefInput } from "./autoCoordinatorAccount.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   CommandId,
-  REASONING_EFFORT_OPTION_IDS,
   latestProviderTurnForAttempt,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ContextHandoff,
@@ -176,7 +174,6 @@ export const layer: Layer.Layer<
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
     const providerRegistry = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
-    const accountRouting = yield* Effect.serviceOption(AccountRouting.AccountRouting);
     const providerAdapters = yield* Effect.serviceOption(
       ProviderAdapterRegistry.ProviderAdapterRegistryV2,
     );
@@ -1651,59 +1648,23 @@ export const layer: Layer.Layer<
           const selection = turnInput.modelSelection;
           let autoBrief: string | null = null;
           if (autoBriefed && !compact) {
-            const providers = Option.isNone(providerRegistry)
-              ? []
-              : yield* providerRegistry.value.getProviders;
-            const settings = yield* serverSettings.getSettings;
-            const other = autoCoordinatorAccount({
-              driver: session.driver,
-              providers,
-              settings,
-              orchestrationCapableInstanceIds: new Set(
-                Option.isNone(providerAdapters) ? [] : yield* providerAdapters.value.list(),
-              ),
-              limitedAccounts: Option.isNone(accountRouting)
-                ? new Map()
-                : yield* accountRouting.value.limitedAccounts,
-            });
-            autoBrief = autoCoordinatorInstructions({
-              driver: session.driver,
-              model: selection.model,
-              models:
-                providers
-                  .find((provider) => provider.instanceId === selection.instanceId)
-                  ?.models.filter((model) => model.isLegacy !== true) ?? [],
-              ...(other === undefined
-                ? {}
-                : {
-                    otherProvider: {
-                      providerInstanceId: other.instanceId,
-                      displayName: other.displayName ?? other.instanceId,
-                      driver: other.driver,
-                      models: other.models
-                        .filter((model) => model.isLegacy !== true)
-                        .map((model) => {
-                          const effort = model.capabilities?.optionDescriptors?.find(
-                            (option) =>
-                              option.type === "select" &&
-                              REASONING_EFFORT_OPTION_IDS.includes(option.id),
-                          );
-                          return {
-                            slug: model.slug,
-                            name: model.name,
-                            ...(effort?.type === "select"
-                              ? {
-                                  effort: {
-                                    id: effort.id,
-                                    values: effort.options.map((option) => option.id),
-                                  },
-                                }
-                              : {}),
-                          };
-                        }),
-                    },
-                  }),
-            });
+            const now = yield* DateTime.now;
+            autoBrief = autoCoordinatorInstructions(
+              autoCoordinatorBriefInput({
+                providers: Option.isNone(providerRegistry)
+                  ? []
+                  : yield* providerRegistry.value.getProviders,
+                settings: yield* serverSettings.getSettings,
+                recordedLimits: yield* projectionStore.getUsageLimitedProviderInstances(now),
+                projectId: projection.thread.projectId,
+                orchestrationCapableInstanceIds: new Set(
+                  Option.isNone(providerAdapters) ? [] : yield* providerAdapters.value.list(),
+                ),
+                nowMs: DateTime.toEpochMillis(now),
+                driver: session.driver,
+                selection,
+              }),
+            );
           }
           const context = [delivery.context, sideChatContext, restartNote, autoBrief ?? ""]
             .filter((part) => part !== "")

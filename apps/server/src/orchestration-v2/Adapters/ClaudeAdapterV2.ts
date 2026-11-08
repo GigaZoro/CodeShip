@@ -3860,6 +3860,43 @@ function gatewayCooldownResetAt(
     : undefined;
 }
 
+function claudeStartupUsageFailure(cause: unknown, receivedAt: DateTime.Utc) {
+  for (let depth = 0; depth < 16 && cause !== null && typeof cause === "object"; depth++) {
+    if (Cause.isCause(cause)) {
+      cause = Cause.squash(cause);
+      continue;
+    }
+    const error = cause as Record<string, unknown>;
+    const message = typeof error.message === "string" ? error.message : "";
+    if (
+      error.status === 429 ||
+      error.type === "rate_limit_error" ||
+      /^API Error: 429\b/.test(message)
+    ) {
+      const info = error.rate_limit_info;
+      const resetAt =
+        info !== null && typeof info === "object" && "resetsAt" in info
+          ? claudeUsageLimitResetAt(info.resetsAt)
+          : null;
+      return makeProviderFailure({
+        class: "usage_limit",
+        code: "api_error_429",
+        message: "Claude usage limit reached. Try again when usage is available.",
+        retryable: true,
+        resetAt:
+          resetAt ??
+          gatewayCooldownResetAt(
+            /\(reset after (?:(\d+)h ?)?(?:(\d+)m ?)?(?:(\d+)s)?\)/.exec(message),
+            receivedAt,
+          ) ??
+          null,
+      });
+    }
+    cause = error.cause ?? error.error;
+  }
+  return undefined;
+}
+
 // How the Claude CLI words a request that never got an HTTP response. SSL and proxy errors
 // ("Unable to connect to API: SSL ...", "Couldn't connect through your proxy") are left out:
 // waiting for the network does not fix them.
@@ -7956,10 +7993,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ...(interrupted
                 ? {}
                 : {
-                    failure: makeProviderFailure({
-                      cause: cause === undefined ? undefined : Cause.squash(cause),
-                      class: "transport_error",
-                    }),
+                    failure:
+                      claudeStartupUsageFailure(cause, yield* DateTime.now) ??
+                      makeProviderFailure({
+                        cause: cause === undefined ? undefined : Cause.squash(cause),
+                        class: "transport_error",
+                      }),
                   }),
             });
           } else {
@@ -10614,6 +10653,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               options: queryOptions,
             })
             .pipe(
+              Effect.catch((cause) =>
+                Effect.gen(function* () {
+                  const failure = claudeStartupUsageFailure(cause, yield* DateTime.now);
+                  return yield* failure === undefined
+                    ? cause
+                    : new ProviderAdapter.ProviderAdapterOpenSessionError({
+                        driver: CLAUDE_PROVIDER,
+                        providerSessionId: input.providerSessionId,
+                        cause,
+                        failure,
+                      });
+                }),
+              ),
               Effect.onError(() =>
                 closedExistingNativeThreadId === nativeThreadId
                   ? Effect.gen(function* () {

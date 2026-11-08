@@ -35,13 +35,51 @@ export interface AccountRoutingContext {
     | "autoModeModels"
   >;
   readonly providers: ReadonlyArray<ServerProvider>;
-  /** Accounts that stopped a run on a usage limit whose reset is still ahead. */
-  readonly limitedInstanceIds: ReadonlySet<ProviderInstanceId>;
+  /** Accounts with an uncleared usage refusal, including unknown resets. */
+  readonly recordedLimits: ReadonlyMap<ProviderInstanceId, ProjectionStore.RecordedUsageLimit>;
   readonly nowMs: number;
 }
 
+function accountLimit(
+  provider: ServerProvider,
+  recorded: AccountRoutingContext["recordedLimits"],
+  nowMs: number,
+  model?: string,
+  explicitLaunch = false,
+): LaunchLimit | null {
+  if (!isSubscriptionAccount(provider)) return null;
+  const canonicalModel =
+    model === undefined
+      ? null
+      : (resolveSelectableModel(provider.driver, model, provider.models) ?? model);
+  const window = exhaustedUsageWindow(provider, nowMs, canonicalModel);
+  const refusal = recorded.get(provider.instanceId);
+  const snapshot = provider.usageLimits;
+  const clearedBySnapshot =
+    snapshot !== undefined &&
+    snapshot.unavailable === undefined &&
+    refusal !== undefined &&
+    Date.parse(snapshot.checkedAt) > Date.parse(refusal.refusedAt) &&
+    window === undefined;
+  if (
+    refusal !== undefined &&
+    (refusal.resetAt !== null
+      ? Date.parse(refusal.resetAt) > nowMs
+      : !clearedBySnapshot && !explicitLaunch)
+  ) {
+    return { instanceId: provider.instanceId, limitedUntil: refusal.resetAt };
+  }
+  return window === undefined
+    ? null
+    : {
+        instanceId: provider.instanceId,
+        limitedUntil:
+          window.resetsAt && Number.isFinite(Date.parse(window.resetsAt)) ? window.resetsAt : null,
+      };
+}
+
 /** The model this subscription account would run for `model` now, or null when it cannot take the turn. */
-function modelWithRoom(
+export function modelWithRoom(
   provider: ServerProvider,
   input: AccountRoutingContext & { readonly projectId: ProjectId; readonly model: string },
 ): string | null {
@@ -52,12 +90,13 @@ function modelWithRoom(
     provider.auth.status === "unauthenticated" ||
     !isSubscriptionAccount(provider) ||
     !isProviderAvailable(provider) ||
-    input.limitedInstanceIds.has(provider.instanceId) ||
     !resolveProjectProviderInstanceEnabled(input.settings, input.projectId, provider.instanceId)
   )
     return null;
   const model = resolveSelectableModel(provider.driver, input.model, provider.models);
-  return model === null || exhaustedUsageWindow(provider, input.nowMs, model) ? null : model;
+  return model === null || accountLimit(provider, input.recordedLimits, input.nowMs, model) !== null
+    ? null
+    : model;
 }
 
 /** Accounts of `driver` that can run `model` now, highest in the saved account order first. */
@@ -146,8 +185,7 @@ export function failoverLimitedLaunch(
   );
   if (
     current === undefined ||
-    (!input.limitedInstanceIds.has(current.instanceId) &&
-      exhaustedUsageWindow(current, input.nowMs, input.selection.model) === undefined)
+    accountLimit(current, input.recordedLimits, input.nowMs, input.selection.model) === null
   ) {
     return input.selection;
   }
@@ -163,8 +201,8 @@ export function failoverLimitedLaunch(
 
 export interface LaunchLimit {
   readonly instanceId: ProviderInstanceId;
-  /** The account's latest reported reset, as an ISO time. */
-  readonly limitedUntil: string;
+  /** The account's reported reset as an ISO time, or null when unknown. */
+  readonly limitedUntil: string | null;
 }
 
 export class AccountRouting extends Context.Service<
@@ -177,10 +215,19 @@ export class AccountRouting extends Context.Service<
       readonly currentInstanceId: ProviderInstanceId | null;
       readonly started: boolean;
     }) => Effect.Effect<ModelSelection>;
-    /** Accounts a usage limit stopped, each with its latest reported reset. */
-    readonly limitedAccounts: Effect.Effect<ReadonlyMap<ProviderInstanceId, string>>;
+    /** Subscription accounts that can run this model, in failover order. */
+    readonly accountsWithRoom: (input: {
+      readonly driver: ProviderDriverKind;
+      readonly projectId: ProjectId;
+      readonly model: string;
+    }) => Effect.Effect<
+      ReadonlyArray<{ readonly instanceId: ProviderInstanceId; readonly model: string }>
+    >;
+    /** Account-wide usage limits from refusals and usage windows; null means an unknown reset. */
+    readonly limitedAccounts: Effect.Effect<ReadonlyMap<ProviderInstanceId, string | null>>;
     /** The usage-limited account a new thread on `selection` would start on, or null if it has room. */
     readonly launchLimit: (input: {
+      readonly explicitAccount: boolean;
       readonly selection: ModelSelection;
       readonly projectId: ProjectId;
     }) => Effect.Effect<LaunchLimit | null>;
@@ -204,16 +251,45 @@ export const layer = Layer.effect(
         Effect.catchCause((cause) =>
           Effect.logWarning("orchestration-v2.account-routing.limits-unavailable", {
             cause,
-          }).pipe(Effect.as(new Map<ProviderInstanceId, string>())),
+          }).pipe(Effect.as(new Map<ProviderInstanceId, ProjectionStore.RecordedUsageLimit>())),
         ),
       );
     return {
-      limitedAccounts: DateTime.now.pipe(Effect.flatMap(readLimits)),
+      accountsWithRoom: Effect.fn("AccountRouting.accountsWithRoom")(
+        function* (input) {
+          const now = yield* DateTime.now;
+          return accountsWithRoom({
+            ...input,
+            settings: yield* serverSettings.getSettings,
+            providers: yield* providerRegistry.getProviders,
+            recordedLimits: yield* readLimits(now),
+            nowMs: DateTime.toEpochMillis(now),
+          });
+        },
+        (effect) =>
+          effect.pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("orchestration-v2.account-routing.accounts-unavailable", {
+                cause,
+              }).pipe(Effect.as([])),
+            ),
+          ),
+      ),
+      limitedAccounts: Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const recorded = yield* readLimits(now);
+        const limited = new Map<ProviderInstanceId, string | null>();
+        for (const provider of yield* providerRegistry.getProviders) {
+          const limit = accountLimit(provider, recorded, DateTime.toEpochMillis(now));
+          if (limit !== null) limited.set(provider.instanceId, limit.limitedUntil);
+        }
+        return limited;
+      }),
       launchLimit: Effect.fn("AccountRouting.launchLimit")(
         function* (input) {
           const now = yield* DateTime.now;
           const limited = yield* readLimits(now);
-          if (limited.size === 0) return null;
+          const providers = yield* providerRegistry.getProviders;
           // A new thread's first turn routes like this, so Auto is judged where it would start.
           const selection =
             input.selection.autoAccount === true
@@ -223,15 +299,21 @@ export const layer = Layer.effect(
                   currentInstanceId: null,
                   started: false,
                   settings: yield* serverSettings.getSettings,
-                  providers: yield* providerRegistry.getProviders,
-                  limitedInstanceIds: new Set(limited.keys()),
+                  providers,
+                  recordedLimits: limited,
                   nowMs: DateTime.toEpochMillis(now),
                 })
               : input.selection;
-          const limitedUntil = limited.get(selection.instanceId);
-          return limitedUntil === undefined
+          const provider = providers.find((entry) => entry.instanceId === selection.instanceId);
+          return provider === undefined
             ? null
-            : { instanceId: selection.instanceId, limitedUntil };
+            : accountLimit(
+                provider,
+                limited,
+                DateTime.toEpochMillis(now),
+                selection.model,
+                input.explicitAccount,
+              );
         },
         (effect) =>
           effect.pipe(
@@ -253,7 +335,7 @@ export const layer = Layer.effect(
             ...input,
             settings,
             providers: yield* providerRegistry.getProviders,
-            limitedInstanceIds: yield* projections.getUsageLimitedProviderInstanceIds(now),
+            recordedLimits: yield* readLimits(now),
             nowMs: DateTime.toEpochMillis(now),
           });
         },
@@ -275,7 +357,7 @@ export const layer = Layer.effect(
             ...input,
             settings: yield* serverSettings.getSettings,
             providers: yield* providerRegistry.getProviders,
-            limitedInstanceIds: yield* projections.getUsageLimitedProviderInstanceIds(now),
+            recordedLimits: yield* readLimits(now),
             nowMs: DateTime.toEpochMillis(now),
           });
         },

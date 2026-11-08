@@ -5191,8 +5191,47 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       );
       assert.deepEqual(
         [...(yield* store.getUsageLimitedProviderInstances(now))],
-        [[providerInstanceId, limitItem.failure.resetAt]],
+        [
+          [
+            providerInstanceId,
+            {
+              resetAt: limitItem.failure.resetAt,
+              refusedAt: DateTime.formatIso(limitItem.updatedAt),
+            },
+          ],
+        ],
       );
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:unknown-reset"),
+        type: "turn-item.updated",
+        threadId,
+        runId: original.id,
+        nodeId: original.rootNodeId!,
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: { ...limitItem, failure: { ...limitItem.failure, resetAt: undefined } },
+      });
+      assert.deepEqual(
+        [...(yield* store.getUsageLimitedProviderInstances(now))],
+        [
+          [
+            providerInstanceId,
+            { resetAt: null, refusedAt: DateTime.formatIso(limitItem.updatedAt) },
+          ],
+        ],
+      );
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:restore-reset"),
+        type: "turn-item.updated",
+        threadId,
+        runId: original.id,
+        nodeId: original.rootNodeId!,
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: limitItem,
+      });
       const sql = yield* SqlClient.SqlClient;
       yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${aheadRunId}`;
       yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${queuedRunId}`;

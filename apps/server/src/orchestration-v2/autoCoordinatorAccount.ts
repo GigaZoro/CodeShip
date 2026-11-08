@@ -1,30 +1,81 @@
+import type { autoCoordinatorInstructions } from "@t3tools/provider-core/server/orchestrationInstructions";
 import type {
+  ModelSelection,
   ProviderDriverKind,
   ProviderInstanceId,
-  ServerProvider,
-  ServerSettings,
+  ProjectId,
 } from "@t3tools/contracts";
-import { orderProviderInstancesForFailover } from "@t3tools/shared/serverSettings";
+import {
+  autoModeModelFor,
+  orderProviderInstancesForFailover,
+} from "@t3tools/shared/serverSettings";
 import { providerConstraints } from "../provider/providerConstraints.ts";
+import { modelWithRoom, type AccountRoutingContext } from "./AccountRouting.ts";
 
-export function autoCoordinatorAccount(input: {
-  readonly driver: ProviderDriverKind;
-  readonly providers: ReadonlyArray<ServerProvider>;
-  readonly settings: Pick<ServerSettings, "providerInstanceFailoverOrder">;
-  readonly orchestrationCapableInstanceIds: ReadonlySet<ProviderInstanceId>;
-  readonly limitedAccounts: ReadonlyMap<ProviderInstanceId, string>;
-}): ServerProvider | undefined {
+export function autoCoordinatorAccounts(
+  input: AccountRoutingContext & {
+    readonly driver: ProviderDriverKind;
+    readonly projectId: ProjectId;
+    readonly orchestrationCapableInstanceIds: ReadonlySet<ProviderInstanceId>;
+  },
+) {
   const other =
     input.driver === "claudeAgent" ? "codex" : input.driver === "codex" ? "claudeAgent" : undefined;
-  if (other === undefined) return undefined;
   return orderProviderInstancesForFailover(
     input.settings.providerInstanceFailoverOrder,
     input.providers,
-  ).find(
-    (provider) =>
-      provider.driver === other &&
-      !input.limitedAccounts.has(provider.instanceId) &&
-      providerConstraints(provider, input.orchestrationCapableInstanceIds.has(provider.instanceId))
-        .length === 0,
+  )
+    .filter(
+      (provider) =>
+        provider.driver === other &&
+        providerConstraints(
+          provider,
+          input.orchestrationCapableInstanceIds.has(provider.instanceId),
+        ).length === 0,
+    )
+    .flatMap((provider) => {
+      const models = provider.models.filter(
+        (model) =>
+          !model.isLegacy && modelWithRoom(provider, { ...input, model: model.slug }) !== null,
+      );
+      return models.length === 0 ? [] : [{ ...provider, models }];
+    });
+}
+
+export function autoCoordinatorBriefInput(
+  input: Parameters<typeof autoCoordinatorAccounts>[0] & { readonly selection: ModelSelection },
+): Parameters<typeof autoCoordinatorInstructions>[0] {
+  const others = autoCoordinatorAccounts(input);
+  const own = input.providers.find(
+    (provider) => provider.instanceId === input.selection.instanceId,
   );
+  const otherDriver = others[0]?.driver;
+  const otherPrimary =
+    otherDriver === undefined ? undefined : autoModeModelFor(input.settings, otherDriver);
+  const reviewer =
+    otherPrimary == null
+      ? undefined
+      : others.find(
+          (provider) => modelWithRoom(provider, { ...input, model: otherPrimary.model }) !== null,
+        );
+  return {
+    driver: input.driver,
+    model: input.selection.model,
+    primary: autoModeModelFor(input.settings, input.driver),
+    ...(reviewer === undefined || otherPrimary == null
+      ? {}
+      : {
+          otherPrimary: { ...otherPrimary, providerInstanceId: reviewer.instanceId },
+        }),
+    models:
+      own?.models.filter(
+        (model) => !model.isLegacy && modelWithRoom(own, { ...input, model: model.slug }) !== null,
+      ) ?? [],
+    otherProviders: others.map((provider) => ({
+      providerInstanceId: provider.instanceId,
+      displayName: provider.displayName ?? provider.instanceId,
+      driver: provider.driver,
+      models: provider.models,
+    })),
+  };
 }

@@ -1,4 +1,10 @@
-import type { ProviderDriverKind, ProviderInteractionMode } from "@t3tools/contracts";
+import {
+  REASONING_EFFORT_OPTION_IDS,
+  type ProviderOptionDescriptor,
+  type ProviderOptionSelection,
+  type ProviderDriverKind,
+  type ProviderInteractionMode,
+} from "@t3tools/contracts";
 import { supportsAutoCoordinator } from "@t3tools/shared/serverSettings";
 
 // Codex truncates entries over 4,000 bytes; keep each section self-contained and below that limit.
@@ -51,57 +57,94 @@ const AUTO_MODEL_HINTS = [
 const autoProviderName = (driver: ProviderDriverKind) =>
   driver === "claudeAgent" ? "Claude" : "Codex";
 
-/** The brief for one Auto turn, or null where the provider's subagents cannot pick a model. */
+interface AutoBriefModel {
+  readonly slug: string;
+  readonly name: string;
+  readonly capabilities?:
+    | { readonly optionDescriptors?: ReadonlyArray<ProviderOptionDescriptor> | undefined }
+    | null
+    | undefined;
+}
+
 export function autoCoordinatorInstructions(input: {
   readonly driver: ProviderDriverKind;
   readonly model: string;
-  readonly otherProvider?: {
+  readonly primary: {
+    readonly model: string;
+    readonly options?: ReadonlyArray<ProviderOptionSelection>;
+  } | null;
+  readonly otherPrimary?: {
+    readonly providerInstanceId: string;
+    readonly model: string;
+    readonly options?: ReadonlyArray<ProviderOptionSelection>;
+  };
+  readonly otherProviders?: ReadonlyArray<{
     readonly providerInstanceId: string;
     readonly displayName: string;
     readonly driver: ProviderDriverKind;
-    readonly models: ReadonlyArray<{
-      readonly slug: string;
-      readonly name: string;
-      readonly effort?: { readonly id: string; readonly values: ReadonlyArray<string> };
-    }>;
-  };
-  /** The account's models in catalog order; empty when unknown. */
-  readonly models: ReadonlyArray<{ readonly slug: string; readonly name: string }>;
+    readonly models: ReadonlyArray<AutoBriefModel>;
+  }>;
+  readonly models: ReadonlyArray<AutoBriefModel>;
 }): string | null {
   const tool = AUTO_COORDINATOR_SUBAGENT_TOOLS.get(input.driver);
-  if (tool === undefined || !supportsAutoCoordinator(input.driver)) return null;
+  if (input.primary === null || tool === undefined || !supportsAutoCoordinator(input.driver))
+    return null;
   const own = input.models.find((model) => model.slug === input.model)?.name ?? input.model;
-  const other = input.otherProvider;
-  if (other !== undefined) {
-    const describeModel = (
-      model: { readonly slug: string; readonly name: string },
-      own: boolean,
-    ) => {
-      const hint = AUTO_MODEL_HINTS.find(([family]) =>
-        model.slug.toLowerCase().includes(family),
-      )?.[1];
-      return `${model.name} (\`${model.slug}\`${own && model.slug === input.model ? ", you" : ""})${hint === undefined ? "" : `: ${hint}`}`;
-    };
+  const describePrimary = (
+    selection: NonNullable<typeof input.primary>,
+    models: ReadonlyArray<AutoBriefModel>,
+  ) => {
+    const name = models.find((model) => model.slug === selection.model)?.name ?? selection.model;
+    return `${name} (\`${selection.model}\`)${(selection.options ?? []).map(({ id, value }) => `, ${id} ${value}`).join("")}`;
+  };
+  const primary = describePrimary(input.primary, input.models);
+  const otherPrimary = input.otherPrimary;
+  const review =
+    otherPrimary === undefined
+      ? `- Review changes on your primary Auto model from Settings, ${primary}, yourself or with a fresh native subagent on that model.`
+      : `- Review changes on primary Auto models from Settings, preferring the provider that did not write the code; use both for big or risky changes. Yours: ${primary}, yourself or a fresh native subagent on that model. Other provider: ${describePrimary(otherPrimary, input.otherProviders?.flatMap((provider) => provider.models) ?? [])}; \`delegate_task\` with role "review" and target \`${JSON.stringify({ ...otherPrimary, options: Object.fromEntries((otherPrimary.options ?? []).map(({ id, value }) => [id, value])) })}\`.`;
+  const describeModel = (model: AutoBriefModel, own: boolean) => {
+    const hint = AUTO_MODEL_HINTS.find(([family]) =>
+      model.slug.toLowerCase().includes(family),
+    )?.[1];
+    const effort = model.capabilities?.optionDescriptors?.find(
+      (option) => option.type === "select" && REASONING_EFFORT_OPTION_IDS.includes(option.id),
+    );
+    return `${model.name} (\`${model.slug}\`${own && model.slug === input.model ? ", you" : ""})${hint === undefined ? "" : `: ${hint}`}${effort?.type === "select" ? `; ${effort.id}: ${effort.options.map((option) => option.id).join(", ")}` : ""}`;
+  };
+  const others = input.otherProviders ?? [];
+  const seen = new Set<string>();
+  const availableOtherModels = others.flatMap((provider) =>
+    provider.models.flatMap((model) => {
+      if (seen.has(model.slug)) return [];
+      seen.add(model.slug);
+      return [{ provider, model }];
+    }),
+  );
+  const omitted =
+    input.models.length > MAX_AUTO_COORDINATOR_MODELS ||
+    availableOtherModels.length > MAX_AUTO_COORDINATOR_MODELS;
+  const more = omitted ? "\n- More accounts and models: call `orchestrator_capabilities`." : "";
+  if (others.length > 0) {
     const ownModels = input.models
       .slice(0, MAX_AUTO_COORDINATOR_MODELS)
       .map((model) => describeModel(model, true))
       .join("; ");
-    const otherModels = other.models
-      .slice(0, 6)
-      .map((model) => describeModel(model, false))
-      .join("; ");
-    const effort = other.models[0]?.effort;
-    const target = JSON.stringify({
-      providerInstanceId: other.providerInstanceId,
-      model: "<id>",
-      ...(effort === undefined ? {} : { options: { [effort.id]: "<effort>" } }),
-    });
+    const otherModels = availableOtherModels
+      .slice(0, MAX_AUTO_COORDINATOR_MODELS)
+      .map(
+        ({ provider, model }) =>
+          `  - ${describeModel(model, false)}; target \`${JSON.stringify({ providerInstanceId: provider.providerInstanceId, model: model.slug })}\``,
+      )
+      .join("\n");
     return `<t3_auto_mode>
 You coordinate this request in T3.CodeShip Auto mode, as ${own}. Spend your own model on judgment and review, and the best-fitting model below on the rest.
 - Size the request first. Do a tiny one yourself: a question, an explanation, a one-line edit.
 - Otherwise split the work and give each piece (implementation, research, tests, mechanical edits) to the cheapest model below that can do it well, from either provider. Keep your own model for design, subtle bugs, and work another model got wrong. Brief each with the goal, the files, the constraints, and how to check the result.
 - ${autoProviderName(input.driver)} models, as a native subagent (${tool}): ${ownModels}.
-- ${autoProviderName(other.driver)} models on ${other.displayName}, with \`delegate_task\` and target \`${target}\`${effort === undefined ? "" : `, effort one of ${effort.values.join(", ")}`}: ${otherModels}.
+- ${autoProviderName(others[0]!.driver)} models, with \`delegate_task\` (effort goes in target.options):
+${otherModels}
+${review}${more}
 - Check every result before you reply: read the diff, run the relevant checks, and compare it with the request. Fix small problems yourself; send bigger ones back with your findings, or take the work over.
 </t3_auto_mode>`;
   }
@@ -114,6 +157,7 @@ You coordinate this request in T3.CodeShip Auto mode, as ${own}. Spend your own 
 - Size the request first. Do a tiny one yourself: a question, an explanation, a one-line edit.
 - Otherwise run the work as a native subagent (${tool}) and set its model to the cheapest one that can do it well, even where the tool prefers your own: a small model for searches, mechanical edits and test runs, a mid-size model for ordinary features and fixes. Keep your own model for design, subtle bugs, and work a cheaper model got wrong. Brief the subagent with the goal, the files, the constraints, and how to check the result.
 - Check every result before you reply: read the diff, run the relevant checks, and compare it with the request. Fix small problems yourself; send bigger ones back with your findings, or take the work over.${models === "" ? "" : `\n- Models on this account: ${models}.`}
+${review}${more}
 </t3_auto_mode>`;
 }
 

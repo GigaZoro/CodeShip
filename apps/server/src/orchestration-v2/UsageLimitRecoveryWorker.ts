@@ -207,7 +207,7 @@ const makeSweep = Effect.gen(function* () {
         : {
             settings: preferences,
             providers: yield* providerRegistry.getProviders,
-            limitedInstanceIds: new Set(limited.keys()),
+            recordedLimits: limited,
             nowMs,
           };
     let acted = false;
@@ -264,7 +264,11 @@ const makeSweep = Effect.gen(function* () {
     if (acted) return;
     const wakeAt = yield* projections.getLimitRecoveryWakeAt(now);
     // A waiting thread can move to another account the moment that account's limit resets.
-    const accountResetAt = Math.min(...[...(limited?.values() ?? [])].map(Date.parse));
+    const accountResetAt = Math.min(
+      ...[...(limited?.values() ?? [])].flatMap(({ resetAt }) =>
+        resetAt === null ? [] : [Date.parse(resetAt)],
+      ),
+    );
     yield* due.record(readVersion, Math.min(wakeAt ?? Infinity, accountResetAt), nowMs);
   });
 });

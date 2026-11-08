@@ -63,7 +63,10 @@ follows the model above and its project overrides. A task with **Use default mod
 which is how new tasks start, runs this model on every run, so changing it here changes all of
 them. Turn the switch off in a task to pick a model for that task alone. Tasks an agent schedules
 use the default too, unless you ask the agent to choose a model for that task. Agents
-can also restore **Use default model** without losing the task's own choice. When some tasks still run their own model, **Use default for all** under the
+can also restore **Use default model** without losing the task's own choice. Before saving
+an agent's model change, CodeShip checks the account and its advertised models and
+options. An unknown account, unknown model or unavailable model catalog leaves the
+saved task unchanged. When some tasks still run their own model, **Use default for all** under the
 setting switches them over; **Undo** brings their own models back. A task that posts into an
 existing thread always runs that thread's model.
 

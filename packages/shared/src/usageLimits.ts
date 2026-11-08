@@ -30,10 +30,11 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
+/** Omit the model to inspect any pool; null asks only for an account-wide limit. */
 export function exhaustedUsageWindow(
   provider: ServerProvider | undefined,
   now: number,
-  model?: string,
+  model?: string | null,
 ) {
   const exhausted = (provider?.usageLimits?.windows ?? []).filter(
     (window) =>
@@ -46,7 +47,7 @@ export function exhaustedUsageWindow(
   switch (provider?.driver) {
     case "claudeAgent": {
       // A `seven_day_<model>` window limits only the model it names, such as Fable.
-      const words = model.toLowerCase().split(/[^a-z0-9]+/);
+      const words = model?.toLowerCase().split(/[^a-z0-9]+/) ?? [];
       return exhausted.find((window) => {
         const scope = window.id.match(/^seven_day_(.+)$/)?.[1];
         return scope === undefined || scope.split("_").every((word) => words.includes(word));
@@ -55,23 +56,24 @@ export function exhaustedUsageWindow(
     case "cursor": {
       const api = exhausted.find((window) => window.id === "apiPercentUsed");
       const auto = exhausted.find((window) => window.id === "autoPercentUsed");
-      return /^(auto|default|grok|composer)/.test(model) ? auto && api : api;
+      return model === null || /^(auto|default|grok|composer)/.test(model) ? auto && api : api;
     }
     case "antigravity": {
-      const family = model.match(/^(gemini|claude|gpt)-/)?.[1];
+      const family = model?.match(/^(gemini|claude|gpt)-/)?.[1];
       return exhausted.find((window) => {
         const pool = window.id.match(/^(gemini|claude|gpt|3p)-/)?.[1];
         return (
           pool === undefined ||
-          family === undefined ||
-          pool === family ||
-          (pool === "3p" && (family === "claude" || family === "gpt"))
+          (model !== null &&
+            (family === undefined ||
+              pool === family ||
+              (pool === "3p" && (family === "claude" || family === "gpt"))))
         );
       });
     }
     case "opencode":
       return exhausted.find(
-        (window) => !window.id.startsWith("go_") || model.startsWith("opencode-go/"),
+        (window) => !window.id.startsWith("go_") || (model?.startsWith("opencode-go/") ?? false),
       );
     default:
       return exhausted[0];

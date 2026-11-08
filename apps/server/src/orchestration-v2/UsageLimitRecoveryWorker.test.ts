@@ -135,7 +135,12 @@ const failover = (overrides: Partial<Parameters<typeof limitFailoverCommand>[0]>
     thread,
     settings,
     providers,
-    limitedInstanceIds: new Set([ProviderInstanceId.make("claude_limited")]),
+    recordedLimits: new Map([
+      [
+        ProviderInstanceId.make("claude_limited"),
+        { resetAt: null, refusedAt: "2026-10-29T11:00:00Z" },
+      ],
+    ]),
     nowMs: now,
     ...overrides,
   });
@@ -227,10 +232,11 @@ describe("limitFailoverCommand", () => {
     assert.isNull(
       failover({
         thread: candidate,
-        limitedInstanceIds: new Set(
-          ["claude_limited", "claude_second", "claude_first"].map((instanceId) =>
+        recordedLimits: new Map(
+          ["claude_limited", "claude_second", "claude_first"].map((instanceId) => [
             ProviderInstanceId.make(instanceId),
-          ),
+            { resetAt: null, refusedAt: "2026-10-29T11:00:00Z" },
+          ]),
         ),
       }),
     );
@@ -319,9 +325,19 @@ it.effect(
                 ),
               getUsageLimitedProviderInstances: () =>
                 Effect.succeed(
-                  new Map([
-                    [ProviderInstanceId.make("claudeAgent"), resetAt],
-                    [ProviderInstanceId.make("claude_first"), "2026-10-29T12:02:00.000Z"],
+                  new Map<ProviderInstanceId, ProjectionStore.RecordedUsageLimit>([
+                    [
+                      ProviderInstanceId.make("unknown-reset"),
+                      { resetAt: null, refusedAt: "2026-10-29T11:00:00Z" },
+                    ],
+                    [
+                      ProviderInstanceId.make("claudeAgent"),
+                      { resetAt, refusedAt: "2026-10-29T11:00:00Z" },
+                    ],
+                    [
+                      ProviderInstanceId.make("claude_first"),
+                      { resetAt: "2026-10-29T12:02:00.000Z", refusedAt: "2026-10-29T11:00:00Z" },
+                    ],
                   ]),
                 ),
               getLimitRecoveryWakeAt: () => Effect.succeed(Date.parse(resetAt)),

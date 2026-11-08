@@ -92,6 +92,7 @@ describe("T3 device instructions", () => {
 const input = {
   driver: ProviderDriverKind.make("claudeAgent"),
   model: "opus",
+  primary: { model: "custom-opus", options: [{ id: "effort", value: "max" }] },
   models: [
     { slug: "opus", name: "Opus" },
     { slug: "haiku", name: "Haiku" },
@@ -105,82 +106,84 @@ describe("autoCoordinatorInstructions", () => {
     expect(autoCoordinatorInstructions(input)).toContain("cheaper models on routine work");
     expect(autoCoordinatorInstructions(input)).not.toContain("delegate_task");
   });
-  it.each([undefined, { id: "reasoningEffort", values: ["low", "high", "xhigh"] }])(
-    "lists both providers for a Claude coordinator with effort %j",
-    (effort) => {
-      const brief = autoCoordinatorInstructions({
-        ...input,
-        models: [
-          ...input.models,
-          { slug: "claude-sonnet-5-5", name: "Sonnet" },
-          { slug: "claude-fable", name: "Fable" },
-        ],
-        otherProvider: {
-          providerInstanceId: "codex_work",
-          displayName: "Work Codex",
-          driver: ProviderDriverKind.make("codex"),
-          models: [
-            { slug: "gpt-6-astra", name: "Astra", ...(effort === undefined ? {} : { effort }) },
-            { slug: "gpt-sol", name: "Sol" },
-            { slug: "gpt-terra", name: "Terra" },
-            { slug: "gpt-luna", name: "Luna" },
-            { slug: "unknown", name: "Unknown" },
-            { slug: "sixth", name: "Sixth" },
-            { slug: "excluded", name: "Excluded" },
-          ],
-        },
-      });
-      expect(brief).toContain(
-        "Otherwise split the work and give each piece (implementation, research, tests, mechanical edits) to the cheapest model below that can do it well, from either provider.",
-      );
-      expect(brief).toContain(
-        "Claude models, as a native subagent (Claude `Agent` with `model`): Opus (`opus`, you): hardest design, subtle bugs, reviews; Haiku (`haiku`): fast and cheap: searches, mechanical edits, test runs; Sonnet (`claude-sonnet-5-5`): features, fixes and tests; Fable (`claude-fable`): frontier: the hardest problems.",
-      );
-      expect(brief).toContain(
-        "Codex models on Work Codex, with `delegate_task` and target `" +
-          JSON.stringify({
-            providerInstanceId: "codex_work",
-            model: "<id>",
-            ...(effort === undefined ? {} : { options: { reasoningEffort: "<effort>" } }),
-          }) +
-          "`",
-      );
-      expect(brief).toContain(
-        "Astra (`gpt-6-astra`): frontier: the most demanding work; Sol (`gpt-sol`): coding and everyday work; Terra (`gpt-terra`): straightforward work; Luna (`gpt-luna`): fast and cheap: easier tasks; Unknown (`unknown`); Sixth (`sixth`).",
-      );
-      expect(brief).not.toContain("Excluded");
-      if (effort) expect(brief).toContain("effort one of low, high, xhigh");
-      else expect(brief).not.toContain("effort one of");
-    },
-  );
-  it("lists Claude effort options and Codex native models for a Codex coordinator", () => {
-    const brief = autoCoordinatorInstructions({
-      driver: ProviderDriverKind.make("codex"),
-      model: "gpt-sol",
-      models: [
-        { slug: "gpt-sol", name: "Sol" },
-        ...Array.from({ length: 8 }, (_, i) => ({ slug: `model-${i}`, name: `Model ${i}` })),
-      ],
-      otherProvider: {
-        providerInstanceId: "claude_work",
-        displayName: "Work Claude",
-        driver: ProviderDriverKind.make("claudeAgent"),
-        models: [
-          {
-            slug: "claude-sonnet",
-            name: "Sonnet",
-            effort: { id: "effort", values: ["low", "high", "max"] },
-          },
-        ],
+  it("uses each model's effort descriptors and points to omitted models", () => {
+    const model = (slug: string, id?: string, values: string[] = []) => ({
+      slug,
+      name: slug,
+      capabilities: {
+        optionDescriptors:
+          id === undefined
+            ? []
+            : [
+                {
+                  id,
+                  label: "Effort",
+                  type: "select" as const,
+                  options: values.map((id) => ({ id, label: id })),
+                },
+              ],
       },
     });
+    const brief = autoCoordinatorInstructions({
+      ...input,
+      otherProviders: [
+        {
+          providerInstanceId: "codex_first",
+          displayName: "First",
+          driver: ProviderDriverKind.make("codex"),
+          models: [model("one", "reasoningEffort", ["low", "high"])],
+        },
+        {
+          providerInstanceId: "codex_second",
+          displayName: "Second",
+          driver: ProviderDriverKind.make("codex"),
+          models: [
+            model("one", "effort", ["max"]),
+            model("two", "effort", ["max"]),
+            model("none"),
+            ...Array.from({ length: 7 }, (_, i) => model(`extra-${i}`)),
+          ],
+        },
+      ],
+    });
     expect(brief).toContain(
-      "Codex models, as a native subagent (Codex `spawn_agent` with `model`, then wait): Sol (`gpt-sol`, you): coding and everyday work;",
+      '\n  - one (`one`); reasoningEffort: low, high; target `{"providerInstanceId":"codex_first","model":"one"}`',
     );
     expect(brief).toContain(
-      'Claude models on Work Claude, with `delegate_task` and target `{"providerInstanceId":"claude_work","model":"<id>","options":{"effort":"<effort>"}}`, effort one of low, high, max: Sonnet (`claude-sonnet`): features, fixes and tests.',
+      '\n  - two (`two`); effort: max; target `{"providerInstanceId":"codex_second","model":"two"}`',
     );
-    expect(brief).toContain("Model 6 (`model-6`).");
-    expect(brief).not.toContain("Model 7");
+    expect(brief).toContain(
+      '\n  - none (`none`); target `{"providerInstanceId":"codex_second","model":"none"}`',
+    );
+    expect(brief).not.toContain('"providerInstanceId":"codex_second","model":"one"');
+    expect(brief?.match(/one \(`one`\)/g)).toHaveLength(1);
+    expect(brief).toContain("extra-4");
+    expect(brief).not.toContain("extra-5");
+    expect(brief).toContain("More accounts and models: call `orchestrator_capabilities`");
   });
+  it.each([false, true])(
+    "reviews on the configured primary models (other available: %s)",
+    (otherAvailable) => {
+      const otherPrimary = {
+        providerInstanceId: "codex_review",
+        model: "custom-review-model",
+        options: [{ id: "reasoningEffort", value: "ultra" }],
+      };
+      const brief = autoCoordinatorInstructions({
+        ...input,
+        models: [...input.models, { slug: input.primary.model, name: "Custom Opus" }],
+        ...(otherAvailable ? { otherPrimary } : {}),
+      });
+      expect(brief).toContain("Custom Opus (`custom-opus`), effort max");
+      expect(brief).not.toContain(JSON.stringify(input.primary));
+      expect(brief).toContain("fresh native subagent on that model");
+      if (otherAvailable) {
+        expect(brief).toContain(
+          'role "review" and target `{"providerInstanceId":"codex_review","model":"custom-review-model","options":{"reasoningEffort":"ultra"}}`',
+        );
+        expect(brief).toContain("preferring the provider that did not write the code");
+        expect(brief).toContain("both for big or risky changes");
+      } else expect(brief).not.toContain("delegate_task");
+    },
+  );
 });

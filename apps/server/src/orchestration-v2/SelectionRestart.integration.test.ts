@@ -1052,7 +1052,7 @@ it.live("moves a turn its provider holds for a usage limit to an account with ro
                   providerInstances: { [targetId]: { driver } },
                 },
                 providers,
-                limitedInstanceIds,
+                recordedLimits: yield* projections.getUsageLimitedProviderInstances(now),
                 nowMs: DateTime.toEpochMillis(now),
               });
         assert.isNotNull(failover);

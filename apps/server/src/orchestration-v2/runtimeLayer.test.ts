@@ -8434,7 +8434,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
             skills: [],
           }),
         ),
-        limitedInstanceIds: yield* projections.getUsageLimitedProviderInstanceIds(now),
+        recordedLimits: yield* projections.getUsageLimitedProviderInstances(now),
         nowMs: DateTime.toEpochMillis(now),
       });
       assert.isNotNull(failover);

@@ -1,3 +1,4 @@
+import { derive } from "@t3tools/provider-core/server/IdAllocator";
 import { providerConstraints } from "../provider/providerConstraints.ts";
 import {
   CommandId,
@@ -71,6 +72,7 @@ import {
   type ServerProviderModel,
   ThreadId,
   isOrchestrationV2WorkActive,
+  resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
 import {
   getProviderOptionCurrentValue,
@@ -79,6 +81,7 @@ import {
 } from "@t3tools/shared/model";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveScheduledTaskDefaultModelSelection } from "@t3tools/shared/projectSettings";
+import { exhaustedUsageWindow, isSubscriptionAccount } from "@t3tools/shared/usageLimits";
 import { autoModePick } from "@t3tools/shared/serverSettings";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
@@ -421,17 +424,23 @@ export const requireAutoModePick = (
  */
 export const requireAccountWithRoom = Effect.fn("OrchestratorMcpService.requireAccountWithRoom")(
   function* (
-    input: { readonly selection: ModelSelection; readonly projectId: ProjectId },
+    input: {
+      readonly selection: ModelSelection;
+      readonly projectId: ProjectId;
+      readonly explicitAccount: boolean;
+    },
     routing: Option.Option<AccountRouting.AccountRouting["Service"]>,
   ) {
     if (Option.isNone(routing)) return;
     const limit = yield* routing.value.launchLimit(input);
     if (limit === null) return;
+    const until =
+      limit.limitedUntil === null ? " (reset time unknown)" : ` until ${limit.limitedUntil}`;
     return yield* failure(
       "provider_unavailable",
       input.selection.autoAccount === true
-        ? `Auto would start on account ${limit.instanceId}, usage-limited until ${limit.limitedUntil}: no other account has room, or account switching is off in Settings. The thread was not created. Retry after the reset, or name another provider's model.`
-        : `Account ${limit.instanceId} is usage-limited until ${limit.limitedUntil}, so the thread was not created. Pick an account without limitedUntil in orchestrator_capabilities, or retry after the reset.`,
+        ? `Auto would start on account ${limit.instanceId}, usage-limited${until}: no other account has room, or account switching is off in Settings. The thread was not created. Retry when usage is available, or name another provider's model.`
+        : `Account ${limit.instanceId} is usage-limited${until}, so the thread was not created. Pick an account without usageLimited or limitedUntil in orchestrator_capabilities, or retry when usage is available.`,
     );
   },
 );
@@ -496,6 +505,18 @@ const requireModelSelection = Effect.fn("OrchestratorMcpService.requireModelSele
     );
 });
 
+const requireVerifiedModelSelection = Effect.fn(
+  "OrchestratorMcpService.requireVerifiedModelSelection",
+)(function* (providers: ReadonlyArray<ServerProvider>, selection: ModelSelection) {
+  const provider = providers.find((candidate) => candidate.instanceId === selection.instanceId);
+  if (provider === undefined || provider.models.length === 0)
+    return yield* failure(
+      "model_unavailable",
+      `Model ${selection.model} is not advertised by provider ${selection.instanceId}.`,
+    );
+  yield* requireModelSelection(provider, selection);
+});
+
 export const requireModelPreferences = Effect.fn("OrchestratorMcpService.requireModelPreferences")(
   function* (providers: ReadonlyArray<ServerProvider>, patch: ServerSettingsPatch) {
     for (const selection of [
@@ -504,13 +525,7 @@ export const requireModelPreferences = Effect.fn("OrchestratorMcpService.require
       ...Object.values(patch.delegatedTaskModelSelections ?? {}),
     ]) {
       if (selection == null) continue;
-      const provider = providers.find((candidate) => candidate.instanceId === selection.instanceId);
-      if (provider === undefined || provider.models.length === 0)
-        return yield* new OrchestratorMcpFailure({
-          code: "model_unavailable",
-          message: `Model ${selection.model} is not advertised by provider ${selection.instanceId}.`,
-        });
-      yield* requireModelSelection(provider, selection);
+      yield* requireVerifiedModelSelection(providers, selection);
     }
     for (const [driver, selection] of Object.entries(patch.autoModeModels ?? {})) {
       if (selection === null) continue;
@@ -1478,6 +1493,7 @@ const make = Effect.gen(function* () {
     const requestedDriver = input.target?.driverKind;
     const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
     let instanceId = requestedInstanceId;
+    let driverModel: string | undefined;
 
     if (instanceId === undefined && requestedDriver !== undefined) {
       const candidates = input.providers.filter(
@@ -1521,6 +1537,37 @@ const make = Effect.gen(function* () {
             : `No instance of driver ${requestedDriver} is enabled for this project.`,
         );
       }
+      const inherited = input.parent.thread.modelSelection;
+      driverModel =
+        input.target?.model ??
+        (instanceId === inherited.instanceId
+          ? inherited.model
+          : candidates.find((provider) => provider.instanceId === instanceId)?.models[0]?.slug);
+      if (
+        input.skipProjectEnablementFilter !== true &&
+        driverModel !== undefined &&
+        Option.isSome(accountRouting)
+      ) {
+        const withRoom = yield* accountRouting.value.accountsWithRoom({
+          driver: requestedDriver,
+          projectId: input.parent.thread.projectId,
+          model: driverModel,
+        });
+        for (const candidate of withRoom) {
+          if (!healthyCandidates.some((provider) => provider.instanceId === candidate.instanceId))
+            continue;
+          if (
+            !(yield* threadManagement.isProviderInstanceEnabledForProject({
+              projectId: input.parent.thread.projectId,
+              instanceId: candidate.instanceId,
+            }))
+          )
+            continue;
+          instanceId = candidate.instanceId;
+          driverModel = candidate.model;
+          break;
+        }
+      }
     }
     instanceId ??= input.parent.thread.modelSelection.instanceId;
 
@@ -1551,6 +1598,7 @@ const make = Effect.gen(function* () {
     const inheritedSelection = input.parent.thread.modelSelection;
     const requestedModel = input.target?.model;
     const model =
+      driverModel ??
       requestedModel ??
       (instanceId === inheritedSelection.instanceId
         ? inheritedSelection.model
@@ -2019,10 +2067,7 @@ const make = Effect.gen(function* () {
           "invalid_request",
           "A task bound to a thread always runs that thread's model; omit modelSelection.",
         );
-      const provider = (yield* loadProviders).find(
-        (candidate) => candidate.instanceId === selection.instanceId,
-      );
-      if (provider !== undefined) yield* requireModelSelection(provider, selection);
+      yield* requireVerifiedModelSelection(yield* loadProviders, selection);
     },
   );
 
@@ -2569,6 +2614,7 @@ const make = Effect.gen(function* () {
       const limitedAccounts = Option.isNone(accountRouting)
         ? new Map<ProviderInstanceId, string>()
         : yield* accountRouting.value.limitedAccounts;
+      const nowMs = yield* Clock.currentTimeMillis;
       const inherited = parent?.thread.modelSelection;
       const searchTerms = input.search?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
       return {
@@ -2586,11 +2632,27 @@ const make = Effect.gen(function* () {
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
         providers: providers.map((provider) => {
-          const constraints = providerConstraints(
-            provider,
-            orchestrationCapableInstanceIds.has(provider.instanceId),
-          );
+          const constraints = [
+            ...providerConstraints(
+              provider,
+              orchestrationCapableInstanceIds.has(provider.instanceId),
+            ),
+          ];
+          if (
+            provider.enabled &&
+            parent != null &&
+            !resolveProjectProviderInstanceEnabled(
+              settings,
+              parent.thread.projectId,
+              provider.instanceId,
+            )
+          ) {
+            constraints.push("Disabled for this project.");
+          }
           const limitedUntil = limitedAccounts.get(provider.instanceId);
+          if (limitedUntil === null) {
+            constraints.push("Usage limit reached; the reset time is unknown.");
+          }
           const { listed, omitted } = listCapabilityModels({
             provider,
             preferences: settings.providerModelPreferences?.[provider.instanceId],
@@ -2611,6 +2673,11 @@ const make = Effect.gen(function* () {
               const options = model.capabilities?.optionDescriptors ?? [];
               return {
                 id: model.slug,
+                ...(limitedUntil === undefined &&
+                isSubscriptionAccount(provider) &&
+                exhaustedUsageWindow(provider, nowMs, model.slug) !== undefined
+                  ? { usageLimited: true as const }
+                  : {}),
                 ...(model.name.toLowerCase() === model.slug.toLowerCase()
                   ? {}
                   : { label: model.name }),
@@ -2625,7 +2692,8 @@ const make = Effect.gen(function* () {
             canRunChildTask: constraints.length === 0,
             canRunCrossProviderChildTask: constraints.length === 0,
             constraints: [...constraints],
-            ...(limitedUntil === undefined ? {} : { limitedUntil }),
+            ...(limitedUntil === undefined ? {} : { usageLimited: true as const }),
+            ...(limitedUntil == null ? {} : { limitedUntil }),
           };
         }),
         features: {
@@ -2688,32 +2756,48 @@ const make = Effect.gen(function* () {
         operation: "delegate-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
+      const committedThread = isRetryOfAcceptedDelegation
+        ? yield* threadManagement
+            .getThreadShell(derive.delegatedTaskThread({ commandId }))
+            .pipe(Effect.mapError(threadManagementFailure))
+        : null;
       const resolveDelegateTarget = (base: Pick<OrchestrationV2ThreadProjection, "thread">) =>
         resolveTargetRechecking({
           parent: base,
           target: input.target,
           providers,
-          skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
         });
-      const roleSelection = yield* delegatedTaskRoleSelection(input);
+      const roleSelection =
+        committedThread === null ? yield* delegatedTaskRoleSelection(input) : undefined;
       // The role's model stands in for the parent's, so the child inherits it the same way.
       const target =
-        roleSelection === undefined
-          ? yield* resolveDelegateTarget(parent)
-          : yield* resolveDelegateTarget({
-              thread: { ...parent.thread, modelSelection: roleSelection },
-            }).pipe(
-              Effect.catch((cause) =>
-                Effect.logWarning("orchestrator-mcp.delegated-task-role-model-unavailable", {
-                  role: input.role ?? "general",
-                  instanceId: roleSelection.instanceId,
-                  cause,
-                }).pipe(Effect.andThen(resolveDelegateTarget(parent))),
-              ),
-            );
+        committedThread !== null
+          ? {
+              modelSelection: committedThread.modelSelection,
+              supportedRuntimeModes: providers.find(
+                (provider) => provider.instanceId === committedThread.modelSelection.instanceId,
+              )?.supportedRuntimeModes,
+            }
+          : roleSelection === undefined
+            ? yield* resolveDelegateTarget(parent)
+            : yield* resolveDelegateTarget({
+                thread: { ...parent.thread, modelSelection: roleSelection },
+              }).pipe(
+                Effect.catch((cause) =>
+                  Effect.logWarning("orchestrator-mcp.delegated-task-role-model-unavailable", {
+                    role: input.role ?? "general",
+                    instanceId: roleSelection.instanceId,
+                    cause,
+                  }).pipe(Effect.andThen(resolveDelegateTarget(parent))),
+                ),
+              );
       if (!isRetryOfAcceptedDelegation)
         yield* requireAccountWithRoom(
-          { selection: target.modelSelection, projectId: parent.thread.projectId },
+          {
+            selection: target.modelSelection,
+            projectId: parent.thread.projectId,
+            explicitAccount: input.target?.providerInstanceId !== undefined,
+          },
           accountRouting,
         );
       const runtimeMode = yield* resolveRuntimeMode(
@@ -3183,7 +3267,11 @@ const make = Effect.gen(function* () {
               yield* assertTargetEnabledForProject(parent, commandId, target);
               if (!isRetryOfAcceptedCreation)
                 yield* requireAccountWithRoom(
-                  { selection: target.modelSelection, projectId: parent.thread.projectId },
+                  {
+                    selection: target.modelSelection,
+                    projectId: parent.thread.projectId,
+                    explicitAccount: request.target?.providerInstanceId !== undefined,
+                  },
                   accountRouting,
                 ).pipe(
                   Effect.mapError((error) =>

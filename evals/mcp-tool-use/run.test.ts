@@ -3402,14 +3402,13 @@ it("builds Auto model-choice and control cases from the current coordinator brie
         ?.content.map((part) => part.text)
         .join("\n") ?? "";
     assert.include(prompt, "<t3_auto_mode>");
-    if (testCase.setup.otherAutoProvider) {
-      assert.include(
-        prompt,
-        '{"providerInstanceId":"codex","model":"<id>","options":{"reasoningEffort":"<effort>"}}',
-      );
+    if (testCase.setup.otherAutoProviders) {
+      assert.include(prompt, '{"providerInstanceId":"codex","model":"gpt-6-astra"}');
       assert.include(prompt, "Otherwise split the work and give each piece");
       assert.include(prompt, "Claude models, as a native subagent");
-      assert.include(prompt, "Codex models on Codex");
+      assert.include(prompt, "Codex models, with");
+      assert.include(prompt, "\n  - GPT-6 Astra (`gpt-6-astra`)");
+      assert.include(prompt, "claude-opus-5-5 (`claude-opus-5-5`), effort max");
     } else {
       assert.include(prompt, "Otherwise run the work as a native subagent");
       assert.notInclude(prompt, "Otherwise split the work");

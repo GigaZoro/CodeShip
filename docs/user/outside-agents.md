@@ -55,7 +55,17 @@ Then choose what the agent may do:
 - **Full access** also lets an agent change the environment's default models for
   new threads, scheduled tasks, delegated tasks by role, and Auto. This works on linked machines paired
   with Full access too. Ask for a model on one scheduled task to override its
-  default, or ask to restore the default while keeping its own choice.
+  default, or ask to restore the default while keeping its own choice. These changes
+  require a known account and an advertised model; an empty catalog cannot verify a choice.
+  New threads and delegates refuse exhausted subscription allowances. Capabilities mark
+  limited accounts with `usageLimited: true` and include `limitedUntil` only when the reset
+  is known. A refusal without a reset clears when a usage check made after the refusal
+  shows room for the chosen model, or a run started after the refusal completes successfully.
+  Auto, inherited accounts, role defaults and provider-only requests skip uncleared refusals.
+  A launch that names the account can retry its unknown-reset refusal, even after failed usage checks; a known future
+  reset or an exhausted window in the current usage snapshot still blocks it. A limit on
+  one model is marked with `usageLimited: true` on that model alone. Project-disabled
+  accounts cannot run child tasks; API-key accounts remain available for explicit tasks.
 
 ## Claude Code
 

@@ -160,6 +160,8 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 
 const CODEX_PROVIDER = ProviderDriverKind.make("codex");
 const CODEX_CAPACITY_MAX_RETRIES = 5;
+const isOpenSessionError = Schema.is(ProviderAdapter.ProviderAdapterOpenSessionError);
+
 export const CODEX_DRIVER_KIND = CODEX_PROVIDER;
 export const CODEX_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(CODEX_DRIVER_KIND);
 
@@ -1144,6 +1146,29 @@ function withCodexManagedFailure(
       };
 }
 
+function codexTurnFailure(
+  error: Partial<CodexSchema.ServerNotification__TurnError>,
+  retryable?: true,
+  nativeError: unknown = error,
+): OrchestrationV2ProviderFailure {
+  const code = codexErrorInfoCode(error.codexErrorInfo);
+  return withCodexManagedFailure(
+    makeProviderFailure({
+      message: error.additionalDetails?.trim() || error.message,
+      code,
+      class: codexUsageLimitError(code, error.codexErrorInfo)
+        ? "usage_limit"
+        : retryable && (code?.startsWith("http") || code?.startsWith("responseStream"))
+          ? "transport_error"
+          : "provider_error",
+      ...(retryable === undefined ? {} : { retryable }),
+    }),
+    nativeError,
+  );
+}
+
+const isCodexErrorInfo = Schema.is(CodexSchema.ServerNotification__CodexErrorInfo);
+
 function failureResetAt(
   failure: OrchestrationV2ProviderFailure,
   snapshot: CodexRateLimitSnapshot | undefined,
@@ -1709,6 +1734,63 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
   const { clientFactory, crypto, fileSystem, idAllocator, serverConfig } = adapterOptions;
   const continuationRequests = adapterOptions.continuationRequests;
 
+  const usageResetAt = Effect.fn("CodexAdapterV2.usageResetAt")(
+    (failure: OrchestrationV2ProviderFailure, snapshot: CodexRateLimitSnapshot | undefined) =>
+      isChatGptSharingLimit(failure) && adapterOptions.chatGptSharingLimitResetAt
+        ? adapterOptions.chatGptSharingLimitResetAt
+        : Effect.succeed(failureResetAt(failure, snapshot)),
+  );
+
+  const startupFailure = Effect.fn("CodexAdapterV2.startupFailure")(function* <E>(
+    providerSessionId: OrchestrationV2ProviderSession["id"],
+    cause: E,
+    snapshot?: CodexRateLimitSnapshot,
+  ) {
+    if (isOpenSessionError(cause) && cause.failure !== undefined) return yield* cause;
+    let nested: unknown = cause;
+    for (let depth = 0; depth < 16 && nested != null; depth++) {
+      const record = typeof nested === "object" ? nested : undefined;
+      const data =
+        record && "data" in record && typeof record.data === "object" && record.data !== null
+          ? record.data
+          : record;
+      const errorInfo =
+        data && "codexErrorInfo" in data
+          ? data.codexErrorInfo
+          : record && "code" in record
+            ? record.code
+            : nested;
+      const failure = codexTurnFailure(
+        {
+          ...(isCodexErrorInfo(errorInfo) ? { codexErrorInfo: errorInfo } : {}),
+          ...(typeof nested === "string"
+            ? { message: nested }
+            : record && "message" in record && typeof record.message === "string"
+              ? { message: record.message }
+              : {}),
+          ...(data && "additionalDetails" in data && typeof data.additionalDetails === "string"
+            ? { additionalDetails: data.additionalDetails }
+            : {}),
+        },
+        undefined,
+        nested,
+      );
+      if (failure.class === "usage_limit") {
+        return yield* new ProviderAdapter.ProviderAdapterOpenSessionError({
+          driver: CODEX_PROVIDER,
+          providerSessionId,
+          cause,
+          failure: makeProviderFailure({
+            ...failure,
+            resetAt: yield* usageResetAt(failure, snapshot),
+          }),
+        });
+      }
+      nested = record && "cause" in record ? record.cause : undefined;
+    }
+    return yield* Effect.fail(cause);
+  });
+
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CODEX_PROVIDER,
@@ -1786,6 +1868,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }),
           ),
         );
+        const rateLimitSnapshot = yield* Ref.make<CodexRateLimitSnapshot | undefined>(undefined);
+        const sessionStartupFailure = Effect.fn("CodexAdapterV2.sessionStartupFailure")(
+          <E>(cause: E) =>
+            Ref.get(rateLimitSnapshot).pipe(
+              Effect.flatMap((snapshot) =>
+                startupFailure(input.providerSessionId, cause, snapshot),
+              ),
+            ),
+        );
         const initialized = yield* Ref.make(false);
         // Codex rejects a second initialize on the shared app-server.
         const initializePermit = yield* Semaphore.make(1);
@@ -1808,7 +1899,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   CodexAppServerRequestError: (error) =>
                     error.code === -32600 && error.errorMessage === "Already initialized"
                       ? Effect.succeed(null)
-                      : Effect.fail(error),
+                      : sessionStartupFailure(error),
                 }),
               );
             const version = userAgent && /\/(\S+)/u.exec(userAgent)?.[1];
@@ -1829,8 +1920,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             yield* Ref.set(initialized, true);
           }),
         );
-        // A failed open is discarded, so the next turn spawns the updated binary.
-        if (adapterOptions.compatibility !== undefined) yield* ensureInitialized;
         const now = yield* DateTime.now;
         const session = providerSession({
           providerSessionId: input.providerSessionId,
@@ -1858,13 +1947,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ),
           Effect.forkScoped,
         );
-        const rateLimitSnapshot = yield* Ref.make<CodexRateLimitSnapshot | undefined>(undefined);
         const terminalResetAt = (failure: OrchestrationV2ProviderFailure) =>
-          isChatGptSharingLimit(failure) && adapterOptions.chatGptSharingLimitResetAt
-            ? adapterOptions.chatGptSharingLimitResetAt
-            : Ref.get(rateLimitSnapshot).pipe(
-                Effect.map((snapshot) => failureResetAt(failure, snapshot)),
-              );
+          Ref.get(rateLimitSnapshot).pipe(
+            Effect.flatMap((snapshot) => usageResetAt(failure, snapshot)),
+          );
         const limitedTurnItems = yield* Ref.make(
           new Map<ProviderThreadId, Extract<OrchestrationV2TurnItem, { type: "error" }>>(),
         );
@@ -4705,16 +4791,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               context.latestProviderFailure = {
                 nativeMessage: payload.error.message,
                 nativeCode: notificationCode,
-                failure: withCodexManagedFailure(
-                  makeProviderFailure({
-                    message: payload.error.additionalDetails?.trim() || payload.error.message,
-                    code: notificationCode,
-                    class: codexUsageLimitError(notificationCode, payload.error.codexErrorInfo)
-                      ? "usage_limit"
-                      : "provider_error",
-                  }),
-                  payload.error,
-                ),
+                failure: codexTurnFailure(payload.error),
               };
               return;
             }
@@ -4727,23 +4804,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               retryDelayMs: null,
             };
             const code = codexErrorInfoCode(payload.error.codexErrorInfo);
-            const additionalDetails = payload.error.additionalDetails?.trim();
-            const failure = withCodexManagedFailure(
-              makeProviderFailure({
-                message:
-                  additionalDetails === undefined || additionalDetails.length === 0
-                    ? payload.error.message
-                    : additionalDetails,
-                code,
-                class: codexUsageLimitError(code, payload.error.codexErrorInfo)
-                  ? "usage_limit"
-                  : code?.startsWith("http") === true || code?.startsWith("responseStream") === true
-                    ? "transport_error"
-                    : "provider_error",
-                retryable: true,
-              }),
-              payload.error,
-            );
+            const failure = codexTurnFailure(payload.error, true);
             const itemOrdinal =
               previous?.itemOrdinal ??
               (yield* resolveItemOrdinal(context, `terminal-failure:${context.providerTurnId}`));
@@ -5816,14 +5877,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 (failureCode === undefined || failureCode === previousFailure.nativeCode) &&
                 (exhaustionStatus === null || previousFailure.failure.class === failureClass)
                   ? previousFailure.failure
-                  : withCodexManagedFailure(
-                      makeProviderFailure({
-                        message: input.failureMessage,
-                        code: failureCode,
-                        class: failureClass,
-                      }),
-                      input.failureMessage,
-                    );
+                  : codexTurnFailure({
+                      ...(input.failureMessage === undefined
+                        ? {}
+                        : { message: input.failureMessage }),
+                      ...(input.failureErrorInfo === undefined
+                        ? {}
+                        : { codexErrorInfo: input.failureErrorInfo }),
+                    });
               return {
                 type: "turn.terminal",
                 driver: CODEX_PROVIDER,
@@ -7100,6 +7161,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   thread: response.thread,
                 }),
               ),
+              Effect.catch(sessionStartupFailure),
               Effect.mapError(
                 (cause) =>
                   new ProviderAdapter.ProviderAdapterEnsureThreadError({
@@ -7178,6 +7240,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             },
             (effect, threadInput) =>
               effect.pipe(
+                Effect.catch(sessionStartupFailure),
                 Effect.mapError(
                   (cause) =>
                     new ProviderAdapter.ProviderAdapterResumeThreadError({
@@ -7889,6 +7952,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             },
             (effect, threadInput) =>
               effect.pipe(
+                Effect.catch(sessionStartupFailure),
                 Effect.mapError(
                   (cause) =>
                     new ProviderAdapter.ProviderAdapterReadThreadSnapshotError({
@@ -8052,6 +8116,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             },
             (effect, threadInput) =>
               effect.pipe(
+                Effect.catch(sessionStartupFailure),
                 Effect.mapError(
                   (cause) =>
                     new ProviderAdapter.ProviderAdapterForkThreadError({
@@ -8063,17 +8128,21 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ),
           ),
         };
+        // Register notification handlers before initialization can publish allowance updates.
+        if (adapterOptions.compatibility !== undefined) yield* ensureInitialized;
         return runtime;
       },
       (effect, input) =>
         effect.pipe(
-          Effect.mapError(
-            (cause) =>
-              new ProviderAdapter.ProviderAdapterOpenSessionError({
-                driver: CODEX_PROVIDER,
-                providerSessionId: input.providerSessionId,
-                cause,
-              }),
+          Effect.catch((cause) => startupFailure(input.providerSessionId, cause)),
+          Effect.mapError((cause) =>
+            isOpenSessionError(cause)
+              ? cause
+              : new ProviderAdapter.ProviderAdapterOpenSessionError({
+                  driver: CODEX_PROVIDER,
+                  providerSessionId: input.providerSessionId,
+                  cause,
+                }),
           ),
         ),
     ),

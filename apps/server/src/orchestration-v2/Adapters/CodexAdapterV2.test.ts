@@ -1,3 +1,4 @@
+import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import {
   makeProviderTextDeltaCoalescer,
@@ -888,6 +889,8 @@ describe("CodexAdapterV2 session initialize", () => {
     transcript: CodexReplay.CodexAppServerReplayTranscript,
     beforeEmitInbound?: CodexReplay.CodexAppServerReplayDriver["beforeEmitInbound"],
     compatibility?: CodexAdapterV2.CodexAdapterV2Options["compatibility"],
+    chatGptSharingLimitResetAt?: Effect.Effect<string | null>,
+    openError?: unknown,
   ) =>
     Effect.gen(function* () {
       const driver = yield* CodexReplay.makeReplayDriver(
@@ -900,31 +903,40 @@ describe("CodexAdapterV2 session initialize", () => {
         settings: DEFAULT_CODEX_SETTINGS,
         environment: {},
         ...(compatibility === undefined ? {} : { compatibility }),
+        ...(chatGptSharingLimitResetAt === undefined ? {} : { chatGptSharingLimitResetAt }),
         clientFactory: {
           open: (openInput) =>
-            Layer.build(CodexReplay.layerReplayWithDriver(driver)).pipe(
-              Effect.flatMap((context) =>
-                Effect.service(CodexClient.CodexAppServerClient).pipe(Effect.provide(context)),
-              ),
-              Effect.map(
-                (client) =>
-                  ({
-                    ...client,
-                    request: (method, params) =>
-                      Effect.sync(() => {
-                        if (method === "initialize") initializeRequests++;
-                      }).pipe(Effect.andThen(client.request(method, params))),
-                  }) satisfies CodexClient.CodexAppServerClient["Service"],
-              ),
-              Effect.mapError(
-                (cause) =>
+            openError !== undefined
+              ? Effect.fail(
                   new ProviderAdapter.ProviderAdapterOpenSessionError({
                     driver: CodexAdapterV2.CODEX_DRIVER_KIND,
                     providerSessionId: openInput.providerSessionId,
-                    cause,
+                    cause: openError,
                   }),
-              ),
-            ),
+                )
+              : Layer.build(CodexReplay.layerReplayWithDriver(driver)).pipe(
+                  Effect.flatMap((context) =>
+                    Effect.service(CodexClient.CodexAppServerClient).pipe(Effect.provide(context)),
+                  ),
+                  Effect.map(
+                    (client) =>
+                      ({
+                        ...client,
+                        request: (method, params) =>
+                          Effect.sync(() => {
+                            if (method === "initialize") initializeRequests++;
+                          }).pipe(Effect.andThen(client.request(method, params))),
+                      }) satisfies CodexClient.CodexAppServerClient["Service"],
+                  ),
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapter.ProviderAdapterOpenSessionError({
+                        driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+                        providerSessionId: openInput.providerSessionId,
+                        cause,
+                      }),
+                  ),
+                ),
         },
         crypto: yield* Crypto.Crypto,
         fileSystem: yield* FileSystem.FileSystem,
@@ -943,6 +955,12 @@ describe("CodexAdapterV2 session initialize", () => {
         ensureThread: (threadId: string) =>
           runtime.ensureThread({
             threadId: ThreadId.make(threadId),
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          }),
+        resumeThread: (providerThread: OrchestrationV2ProviderThread) =>
+          runtime.resumeThread({
+            providerThread,
             modelSelection: CODEX_TEST_MODEL_SELECTION,
             runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
           }),
@@ -1029,6 +1047,164 @@ describe("CodexAdapterV2 session initialize", () => {
         Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
       ),
     ),
+  );
+
+  it.effect.each(
+    [
+      "subscription_sharing_usage_limit_exceeded",
+      "usageLimitExceeded",
+      "rateLimitExceeded",
+    ].flatMap((code) =>
+      [null, "2099-01-01T00:00:00.000Z"].flatMap((resetAt) =>
+        [true, false].flatMap((eager) =>
+          ["openSession", "initialize", "thread/start", "thread/resume", "thread/unarchive"].map(
+            (stage) => ({ resetAt, eager, stage, code }),
+          ),
+        ),
+      ),
+    ),
+  )(
+    "classifies a $code startup refusal during $stage (reset $resetAt, eager $eager)",
+    ({ resetAt, eager, stage, code }) =>
+      Effect.gen(function* () {
+        const sharing = code === "subscription_sharing_usage_limit_exceeded";
+        const message = sharing ? code : "Provider stopped this request.";
+        const preamble = replayPreamble("usage-refusal");
+        const resuming = stage === "thread/resume" || stage === "thread/unarchive";
+        const entries: Array<CodexReplay.CodexAppServerReplayEntry> =
+          stage === "initialize"
+            ? preamble.slice(0, 1)
+            : stage === "thread/start"
+              ? preamble.slice(0, 4)
+              : [
+                  ...preamble.slice(0, 5),
+                  {
+                    type: "expect_outbound",
+                    label: "thread/resume",
+                    frame: {
+                      id: 3,
+                      method: "thread/resume",
+                      params: {
+                        threadId: "usage-refusal",
+                        excludeTurns: true,
+                        cwd: CODEX_TEST_RUNTIME_POLICY.cwd,
+                        model: CODEX_TEST_MODEL_SELECTION.model,
+                        config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                      },
+                    },
+                  },
+                  ...(stage === "thread/unarchive"
+                    ? [
+                        {
+                          type: "emit_inbound" as const,
+                          label: "thread/resume",
+                          frame: {
+                            id: 3,
+                            error: { code: -32000, message: "session usage-refusal is archived" },
+                          },
+                        },
+                        {
+                          type: "expect_outbound" as const,
+                          label: "thread/unarchive",
+                          frame: {
+                            id: 4,
+                            method: "thread/unarchive",
+                            params: { threadId: "usage-refusal" },
+                          },
+                        },
+                      ]
+                    : []),
+                ];
+        const failure = yield* openReplaySession(
+          makeCodexReplayTranscript({
+            scenario: "usage-refusal",
+            entries: [
+              ...entries,
+              ...(!sharing && resetAt !== null
+                ? [
+                    {
+                      type: "emit_inbound" as const,
+                      label: "account/rateLimits/updated",
+                      frame: {
+                        method: "account/rateLimits/updated",
+                        params: {
+                          rateLimits: {
+                            limitId: "codex",
+                            primary: {
+                              usedPercent: 100,
+                              resetsAt: Date.parse(resetAt) / 1000,
+                              windowDurationMins: 300,
+                            },
+                          },
+                        },
+                      },
+                    },
+                  ]
+                : []),
+              {
+                type: "emit_inbound",
+                label: stage,
+                frame: {
+                  id:
+                    stage === "initialize"
+                      ? 1
+                      : stage === "thread/start"
+                        ? 2
+                        : stage === "thread/resume"
+                          ? 3
+                          : 4,
+                  error: {
+                    code: -32000,
+                    message,
+                    ...(!sharing ? { data: { codexErrorInfo: code } } : {}),
+                  },
+                },
+              },
+            ],
+          }),
+          undefined,
+          eager
+            ? (version) =>
+                Effect.succeed(
+                  resolveProviderCompatibility(
+                    ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility,
+                    CodexAdapterV2.CODEX_DRIVER_KIND,
+                    version,
+                  ),
+                )
+            : undefined,
+          Effect.succeed(resetAt),
+          stage === "openSession"
+            ? new CodexError.CodexAppServerRequestError({
+                code: -32000,
+                errorMessage: message,
+                ...(!sharing ? { data: { codexErrorInfo: code } } : {}),
+              })
+            : undefined,
+        ).pipe(
+          Effect.flatMap((session) =>
+            Effect.gen(function* () {
+              const thread = yield* session.ensureThread("usage-refusal");
+              return resuming ? yield* session.resumeThread(thread) : thread;
+            }),
+          ),
+          Effect.flip,
+        );
+        assert.deepEqual(makeProviderFailure({ cause: failure }), {
+          class: "usage_limit",
+          code,
+          message: sharing
+            ? "Your ChatGPT usage limit was reached. Check ChatGPT Usage settings for your available allowance."
+            : message,
+          retryable: null,
+          ...(resetAt === null || (!sharing && stage === "openSession") ? {} : { resetAt }),
+        });
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
   );
 
   it.effect("refuses to open a session on a Codex version marked broken", () =>

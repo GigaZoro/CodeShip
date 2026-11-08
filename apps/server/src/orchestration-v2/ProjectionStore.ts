@@ -548,14 +548,14 @@ export interface ProjectionStoreV2Shape {
     readonly snooze: boolean;
     readonly failover?: boolean;
   }) => Effect.Effect<ReadonlyArray<ProjectionLimitRecoveryCandidate>, ProjectionStoreV2Error>;
-  /** Accounts that stopped or hold a turn on a usage limit whose reported reset is still ahead. */
+  /** Accounts with a usage refusal whose reset is still ahead or unknown. */
   readonly getUsageLimitedProviderInstanceIds: (
     now: DateTime.Utc,
   ) => Effect.Effect<ReadonlySet<ProviderInstanceId>, ProjectionStoreV2Error>;
-  /** The same accounts, each with its latest reported reset as an ISO time. */
+  /** Uncleared refusals, with their latest refusal time and latest known future reset. */
   readonly getUsageLimitedProviderInstances: (
     now: DateTime.Utc,
-  ) => Effect.Effect<ReadonlyMap<ProviderInstanceId, string>, ProjectionStoreV2Error>;
+  ) => Effect.Effect<ReadonlyMap<ProviderInstanceId, RecordedUsageLimit>, ProjectionStoreV2Error>;
   /** Epoch ms of the next armed reset or snooze end after `now`, when a waiting thread becomes a candidate. */
   readonly getLimitRecoveryWakeAt: (
     now: DateTime.Utc,
@@ -735,6 +735,11 @@ type ProjectionWindow = Omit<
   readonly suppressLocal?: boolean | undefined;
   readonly historyAnchor?: { readonly threadId: ThreadId; readonly itemId: TurnItemId } | undefined;
 };
+
+export interface RecordedUsageLimit {
+  readonly resetAt: string | null;
+  readonly refusedAt: string;
+}
 
 export class ProjectionStoreV2 extends Context.Service<ProjectionStoreV2, ProjectionStoreV2Shape>()(
   "t3/orchestration-v2/ProjectionStore/ProjectionStoreV2",
@@ -4109,7 +4114,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         const nowIso = DateTime.formatIso(now);
         const rows = yield* sql<{
           readonly provider_instance_id: string;
-          readonly reset_at: string;
+          readonly reset_at: string | null;
+          readonly refused_at: string;
         }>`
           WITH refusals AS (
             SELECT failure.thread_id, failure.run_id, failure.node_id, failure.payload_json
@@ -4137,9 +4143,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ON attempt.thread_id = refusal.thread_id
               AND attempt.run_id = refusal.run_id
               AND attempt.root_node_id = refusal.node_id
-            WHERE julianday(json_extract(refusal.payload_json, '$.failure.resetAt')) > julianday(${nowIso})
+            WHERE json_extract(refusal.payload_json, '$.failure.resetAt') IS NULL
+              OR julianday(json_extract(refusal.payload_json, '$.failure.resetAt')) > julianday(${nowIso})
           )
-          SELECT provider_instance_id, reset_at FROM limited
+          SELECT provider_instance_id, reset_at, refused_at FROM limited
           WHERE provider_instance_id IS NOT NULL
             AND NOT EXISTS (
               SELECT 1 FROM orchestration_v2_projection_runs later
@@ -4149,13 +4156,21 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   > julianday(limited.refused_at)
             )
         `;
-        const limited = new Map<ProviderInstanceId, string>();
+        const limited = new Map<ProviderInstanceId, RecordedUsageLimit>();
         for (const row of rows) {
           const instanceId = ProviderInstanceId.make(row.provider_instance_id);
           const latest = limited.get(instanceId);
-          if (latest === undefined || Date.parse(row.reset_at) > Date.parse(latest)) {
-            limited.set(instanceId, row.reset_at);
-          }
+          limited.set(instanceId, {
+            resetAt:
+              latest?.resetAt == null ||
+              (row.reset_at !== null && Date.parse(row.reset_at) > Date.parse(latest.resetAt))
+                ? row.reset_at
+                : latest.resetAt,
+            refusedAt:
+              latest === undefined || Date.parse(row.refused_at) > Date.parse(latest.refusedAt)
+                ? row.refused_at
+                : latest.refusedAt,
+          });
         }
         return limited;
       },

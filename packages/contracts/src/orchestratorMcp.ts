@@ -602,6 +602,7 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
       /** Omitted when it only restates the id. */
       label: Schema.optional(Schema.String),
       options: Schema.optional(Schema.Array(OrchestratorMcpModelOption)),
+      usageLimited: Schema.optional(Schema.Literal(true)),
     }),
   ),
   /** Models left out of `models`: unlisted visible models, or matches past the cap with `search`. */
@@ -612,8 +613,13 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
   constraints: Schema.Array(Schema.String),
   limitedUntil: Schema.optional(
     Schema.String.annotate({
+      description: "Usage-limited until this known reset time. Pick another account.",
+    }),
+  ),
+  usageLimited: Schema.optional(
+    Schema.Literal(true).annotate({
       description:
-        "Usage-limited until this time. New threads on this account fail until then; pick another.",
+        "Usage-limited. When limitedUntil is absent, the reset is unknown. Pick another account.",
     }),
   ),
 });

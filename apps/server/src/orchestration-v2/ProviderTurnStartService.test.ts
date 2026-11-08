@@ -1,6 +1,5 @@
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
-import * as AccountRouting from "./AccountRouting.ts";
 import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
 import * as ProviderSkills from "../provider/ProviderSkills.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -78,7 +77,32 @@ const layerWorktreeLocation = (
   Layer.mergeAll(
     Path.layer,
     Layer.mock(ServerConfig.ServerConfig)({ worktreesDir } as ServerConfig.ServerConfig["Service"]),
-    ServerSettings.layerTest(),
+    ServerSettings.layerTest({
+      providerInstances: {
+        [ProviderInstanceId.make("codex-personal")]: {
+          driver: ProviderDriverKind.make("codex"),
+          enabled: true,
+        },
+        [ProviderInstanceId.make("codex-other")]: {
+          driver: ProviderDriverKind.make("codex"),
+          enabled: true,
+        },
+        [ProviderInstanceId.make("claude_work")]: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          enabled: true,
+        },
+      },
+      autoModeModels: {
+        [ProviderDriverKind.make("codex")]: {
+          model: "gpt-review-custom",
+          options: [{ id: "reasoningEffort", value: "ultra" }],
+        },
+        [ProviderDriverKind.make("claudeAgent")]: {
+          model: "claude-opus-5-5",
+          options: [{ id: "effort", value: "max" }],
+        },
+      },
+    }),
     skillFailure === undefined
       ? ProviderSkillsTestkit.layer
       : Layer.mock(ProviderSkills.ProviderSkills)({
@@ -939,6 +963,22 @@ function makeLocalCommandHarness(input: {
           getProviders: Effect.succeed(
             input.otherAutoProvider
               ? [
+                  ...["codex-personal", "codex-other"].map((id) => ({
+                    instanceId: ProviderInstanceId.make(id),
+                    driver: ProviderDriverKind.make("codex"),
+                    enabled: true,
+                    installed: true,
+                    version: null,
+                    status: "ready" as const,
+                    auth: { status: "authenticated" as const },
+                    checkedAt: "2026-11-08T00:00:00Z",
+                    slashCommands: [],
+                    skills: [],
+                    models: (id === "codex-personal"
+                      ? ["gpt-review-custom", "gpt-own-model"]
+                      : ["gpt-unreachable-account"]
+                    ).map((slug) => ({ slug, name: slug, isCustom: false, capabilities: null })),
+                  })),
                   {
                     instanceId: ProviderInstanceId.make("claude_work"),
                     driver: ProviderDriverKind.make("claudeAgent"),
@@ -986,7 +1026,6 @@ function makeLocalCommandHarness(input: {
         Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
           list: () => Effect.succeed([ProviderInstanceId.make("claude_work")]),
         }),
-        Layer.mock(AccountRouting.AccountRouting)({ limitedAccounts: Effect.succeed(new Map()) }),
         input.fileSystem === undefined
           ? FileSystem.layerNoop({ exists: () => Effect.succeed(true) })
           : Layer.succeed(FileSystem.FileSystem, input.fileSystem),
@@ -1004,6 +1043,7 @@ function makeLocalCommandHarness(input: {
             } as never),
         }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getUsageLimitedProviderInstances: () => Effect.succeed(new Map()),
           getThreadRecords,
           getTurnStartContext,
           getRuntimeRecoveryProjection: () =>
@@ -1369,14 +1409,16 @@ effectIt.effect.each([
       const sent = harness.startTurn.mock.calls[0]?.[0].message.text ?? "";
       expect(sent.includes("<t3_auto_mode>")).toBe(briefed);
       if (briefed && "otherAutoProvider" in turn) {
-        expect(sent).toContain("Claude models on Work Claude, with `delegate_task`");
+        expect(sent).toContain("gpt-review-custom (`gpt-review-custom`), reasoningEffort ultra");
+        expect(sent).toContain('"model":"claude-opus-5-5","options":{"effort":"max"}');
+        expect(sent).toContain("Claude models, with `delegate_task`");
+        expect(sent).toContain('{"providerInstanceId":"claude_work","model":"claude-opus-5-5"}');
         expect(sent).toContain(
-          '{"providerInstanceId":"claude_work","model":"<id>","options":{"effort":"<effort>"}}',
-        );
-        expect(sent).toContain(
-          "effort one of high, max: Opus (`claude-opus-5-5`): hardest design, subtle bugs, reviews.",
+          "\n  - Opus (`claude-opus-5-5`): hardest design, subtle bugs, reviews; effort: high, max",
         );
         expect(sent).not.toContain("Legacy");
+        expect(sent).toContain("gpt-own-model");
+        expect(sent).not.toContain("gpt-unreachable-account");
       } else {
         expect(sent).not.toContain("delegate_task");
       }
@@ -1937,3 +1979,37 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
       }),
   );
 }
+
+effectIt.effect.each([undefined, "2099-01-01T00:00:00.000Z"])(
+  "records a delegated startup usage refusal with reset %s",
+  (resetAt) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Implement",
+        delegatedChild: true,
+        openFailure: new ProviderAdapter.ProviderAdapterOpenSessionError({
+          driver: ProviderDriverKind.make("codex"),
+          providerSessionId: ProviderSessionId.make("new-provider-session"),
+          failure: {
+            class: "usage_limit",
+            code: "subscription_sharing_usage_limit_exceeded",
+            message: "Usage limit reached",
+            retryable: null,
+            ...(resetAt === undefined ? {} : { resetAt }),
+          },
+        }),
+      });
+      yield* harness.start;
+      expect(harness.projection().turnItems).toMatchObject([
+        {
+          type: "error",
+          status: "failed",
+          failure: {
+            class: "usage_limit",
+            code: "subscription_sharing_usage_limit_exceeded",
+            ...(resetAt === undefined ? {} : { resetAt }),
+          },
+        },
+      ]);
+    }),
+);

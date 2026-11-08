@@ -264,7 +264,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           });
         if (!replaying)
           yield* OrchestrationMcp.requireAccountWithRoom(
-            { selection: modelSelection, projectId },
+            {
+              selection: modelSelection,
+              projectId,
+              explicitAccount: input.modelSelection !== undefined,
+            },
             yield* Effect.serviceOption(AccountRouting.AccountRouting),
           );
         let startedRuntimeMode =

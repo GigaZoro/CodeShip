@@ -448,7 +448,11 @@ an account stops a turn on a limit with a reset time, or Claude holds the turn
 open until that reset, the thread continues on the first other signed-in account
 of that provider, in that order, that still has usage left. A reset less than
 five minutes away is waited out instead. An account that hit a limit is skipped
-until it resets. If none is free, the thread waits as above, and moves to the first
+until it resets. When no reset is known, a newer usage check showing room for the
+chosen model, or a successful run started after the refusal, makes it usable again.
+Auto skips it until then. Explicitly choosing the account lets you try again when
+the refusal has no reset, even after failed usage checks. A known future reset or
+an exhausted window in the current usage snapshot still blocks the launch. If none is free, the thread waits as above, and moves to the first
 account that gets usage back unless you snooze it or cancel its auto-resume. Each provider is one account: a provider
 signed in to an account another provider already uses is unavailable until you
 sign it in to a different account. Some providers' terms forbid using extra
@@ -475,8 +479,14 @@ in the picker turns Auto off for that thread.
 
 On Claude and Codex, the coordinator does small requests itself. For larger requests,
 it sees usable models from both providers and chooses the cheapest model that can
-do each piece well, then reviews every result. The other provider's models come from
-its first usable account in failover order, skipping accounts at their usage limit.
+do each piece well. It uses subscription accounts enabled for the project, skipping
+accounts at their usage limit, including exhausted usage windows even before a turn
+fails. A model-specific limit excludes only that model. Each model uses the first
+account in failover order that can run it; native subagents use the coordinator's
+own account. The short model list points the agent to the full catalog when needed.
+Reviews use each provider's Auto model and effort from Settings, preferring the
+provider that did not write the code, and both for big or risky changes. If the
+other provider's Auto model cannot run, the coordinator reviews on its own primary model.
 When the other provider cannot run, it delegates routine work to cheaper models of
 its own provider.
 

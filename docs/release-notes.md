@@ -1,3 +1,10 @@
+## 2026-11-08 — Auto respects account limits and reviews on your primary models
+
+- Auto and delegated work skip exhausted subscription accounts, respect project account settings, and keep models available when only another model's allowance is exhausted. Auto considers all eligible accounts and shows each model's own effort choices.
+- Auto reviews use the primary model and effort you chose for each provider in Settings, preferring the provider that did not implement the change.
+- Agents cannot replace a scheduled task's model with an unknown account or an unverifiable model. Startup usage refusals keep exhausted accounts out of Auto. Unknown-reset refusals clear when a newer usage check shows room or a later run succeeds; a launch that names the account can retry an unknown-reset refusal even after failed usage checks. Inherited accounts, role defaults and provider-only requests keep skipping those refusals. Known future resets and exhausted usage windows still block launches.
+- Retrying an accepted delegation keeps its chosen account and model. Linked machines running older versions also avoid accounts with an unknown usage reset.
+
 ## 2026-11-08 — Scheduled tasks take less room in the thread list
 
 - Each task in the **Scheduled** section is now one line, the height of a settled thread, with its run status or the time to its next run (such as "in 2h 30m") at the end. Six tasks take about 220px instead of 360px.

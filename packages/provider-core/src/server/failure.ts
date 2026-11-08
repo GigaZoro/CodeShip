@@ -1,3 +1,4 @@
+import { OrchestrationV2ProviderFailure as ProviderFailureSchema } from "@t3tools/contracts";
 import type {
   NodeId,
   OrchestrationV2ProviderFailure,
@@ -38,6 +39,8 @@ export class ContextHandoffBackgroundWorkError extends Schema.TaggedError<Contex
 export const MAX_PROVIDER_FAILURE_MESSAGE_LENGTH = 4_096;
 const MAX_PROVIDER_FAILURE_CODE_LENGTH = 128;
 
+const isProviderFailure = Schema.is(ProviderFailureSchema);
+
 const DEFAULT_PROVIDER_FAILURE_MESSAGE = "Provider turn failed.";
 
 const PROVIDER_FAILURE_CATEGORIES: Partial<
@@ -72,6 +75,7 @@ const PROVIDER_FAILURE_REASONS: Record<ProviderAdapterFailureReason, string> = {
  * `category` is the generic message of the innermost provider wrapper seen.
  */
 function curatedCauseMessages(cause: unknown): {
+  readonly failure?: OrchestrationV2ProviderFailure;
   readonly known: string | undefined;
   readonly category: string | undefined;
 } {
@@ -94,6 +98,12 @@ function curatedCauseMessages(cause: unknown): {
       if (typeof cause !== "object") break;
       const tag = (cause as Record<string, unknown>)._tag;
       switch (tag) {
+        case "ProviderAdapterOpenSessionError": {
+          const failure = (cause as Record<string, unknown>).failure;
+          if (isProviderFailure(failure))
+            return { known: failure.message, category: categoryMessage(), failure };
+          break;
+        }
         case "ContextHandoffBudgetError":
           return { known: new ContextHandoffBudgetError().message, category: categoryMessage() };
         case "ContextHandoffBackgroundWorkError":
@@ -261,6 +271,8 @@ export function makeProviderFailure(input: {
   readonly resetAt?: string | null;
 }): OrchestrationV2ProviderFailure {
   const curated = curatedCauseMessages(input.cause);
+  if (curated.failure !== undefined)
+    return makeProviderFailure({ ...curated.failure, resetAt: curated.failure.resetAt ?? null });
   const rawMessage =
     input.message ?? curated.known ?? curated.category ?? DEFAULT_PROVIDER_FAILURE_MESSAGE;
   const message = boundedText(rawMessage, MAX_PROVIDER_FAILURE_MESSAGE_LENGTH);
