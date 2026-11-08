@@ -17,6 +17,17 @@ const { workspaceSearch, filesystemMetadata } = vi.hoisted(() => ({
   filesystemMetadata: vi.fn(),
 }));
 const parsedSources = vi.hoisted(() => [] as string[]);
+const fileLinkScans = vi.hoisted(() => [] as string[]);
+vi.mock(import("@t3tools/shared/markdownLinks"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    extractInlineCodeSpans: (text: string) => {
+      fileLinkScans.push(text);
+      return actual.extractInlineCodeSpans(text);
+    },
+  };
+});
 vi.mock(import("mdast-util-from-markdown"), async (original) => {
   const actual = await original();
   return {
@@ -151,6 +162,7 @@ it("keeps compact audio playback loaded across signed URL renewals", async () =>
 function setup() {
   appearance.value = "light";
   parsedSources.length = 0;
+  fileLinkScans.length = 0;
   settingsOverrides.mathRenderingEnabled = false;
   renderDiagram.mockReset();
   workspaceSearch.mockReset().mockResolvedValue(AsyncResult.success({ entries: [] }));
@@ -235,6 +247,21 @@ it("reuses the parse of a streaming reply's finished blocks when it remounts", a
   expect(parsedSources.filter((source) => source.includes("Finished block"))).toHaveLength(1);
 });
 
+it("scans each finished block of a streaming reply for file links once", async () => {
+  setup();
+  const message = (rest: string, isStreaming = true) => (
+    <ChatMarkdown
+      cwd="/tmp/project"
+      text={`Scanned once: \`src/scan-once.ts\`\n\n${rest}`}
+      isStreaming={isStreaming}
+    />
+  );
+  await using screen = await render(message("Still"));
+  for (const rest of ["Still growing", "Still growing here"]) await screen.rerender(message(rest));
+  await screen.rerender(message("Still growing here", false));
+  expect(fileLinkScans.filter((text) => text.includes("src/scan-once.ts"))).toHaveLength(1);
+});
+
 it("reuses the parse of a remounted message that has stable extra plugins", async () => {
   setup();
   const parsed = vi.fn();
@@ -272,6 +299,26 @@ describe("ChatMarkdown favicon privacy", () => {
 });
 
 describe("ChatMarkdown streaming", () => {
+  it("keeps each block's state when the reply finishes streaming", async () => {
+    setup();
+    const message = (isStreaming: boolean) => (
+      <ChatMarkdown
+        cwd="/tmp/project"
+        text={"Intro\n\nSelected prose\n\n```ts\nconst a = 1;\n```"}
+        isStreaming={isStreaming}
+      />
+    );
+    await using screen = await render(message(true));
+    const wrapToggle = () => screen.container.querySelector("button[aria-pressed]")!;
+    const wrappedAtFirst = wrapToggle().getAttribute("aria-pressed");
+    await userEvent.click(wrapToggle());
+    window.getSelection()!.selectAllChildren(screen.getByText("Selected prose").element());
+
+    await screen.rerender(message(false));
+    expect(wrapToggle().getAttribute("aria-pressed")).not.toBe(wrappedAtFirst);
+    expect(window.getSelection()?.toString()).toBe("Selected prose");
+  });
+
   it("runs only a complete single-line shell block after a click", async () => {
     setup();
     const onRunShellCommand = vi.fn();
@@ -345,6 +392,11 @@ describe("ChatMarkdown streaming", () => {
     await act(async () => original.click());
     expect(editedText).toBe("- [ ] A longer first task\n- [x] Second");
     await vi.waitFor(() => expect(checkboxes()[1]!.checked).toBe(true));
+
+    // Each block reads offsets from its own text, so the edit adds where the block starts.
+    await rerender(message("Intro\n\n- [ ] First\n\nBetween\n\n- [ ] Second"));
+    await act(async () => checkboxes()[1]!.click());
+    expect(editedText).toBe("Intro\n\n- [ ] First\n\nBetween\n\n- [x] Second");
   });
 });
 
@@ -514,7 +566,8 @@ describe("ChatMarkdown headings", () => {
       { parseRawHtml: true },
     );
     const { container } = screen;
-    expect([...container.querySelectorAll("h2")].map((heading) => heading.id)).toEqual([
+    const headingIds = () => [...container.querySelectorAll("h2")].map((heading) => heading.id);
+    expect(headingIds()).toEqual([
       "user-content-setup",
       "user-content-setup-1",
       "user-content-setup-1-1",
@@ -522,6 +575,22 @@ describe("ChatMarkdown headings", () => {
       "user-content-install",
       "user-content-install-2",
     ]);
+
+    // Rendered block by block, while streaming and after.
+    const split =
+      '## Setup\n\n## Setup\n\n## Setup-1\n\nPinned <span id="install-1">here</span>\n\n## Install\n\n## Install';
+    for (const isStreaming of [true, false]) {
+      await screen.rerender(
+        <ChatMarkdown cwd="/tmp/project" text={split} isStreaming={isStreaming} />,
+      );
+      expect(headingIds()).toEqual([
+        "user-content-setup",
+        "user-content-setup-1",
+        "user-content-setup-1-1",
+        "user-content-install",
+        "user-content-install-2",
+      ]);
+    }
   });
 });
 

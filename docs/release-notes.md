@@ -1,3 +1,9 @@
+## 2026-11-08 — A reply keeps its code blocks, selection and videos when it finishes
+
+- When a reply finishes streaming, everything below its first paragraph now stays as it was: a code block's **Wrap lines** choice, text you selected, a playing video and a Mermaid diagram no longer reset or jump. A Markdown file preview now redraws only the part of the file that changed.
+- Headings with the same name in a streaming reply now get different link targets, so its contents links jump to the right heading while it streams.
+- An unclosed inline HTML tag such as `<b>` now formats the following paragraphs the same while a reply streams as after it finishes.
+
 ## 2026-11-08 — Updates wait for background work chats are waiting on
 
 - An update no longer stops a long background command, task or subagent that a chat is waiting on, such as a test run or a CI replay. The update waits until that work finishes, then restarts, so the chat still gets the result. **Safe update** lists the work it waits for and offers **Update now** to restart right away. While it waits, the update button says how many tasks it is waiting for, and you can update now or stop waiting.

@@ -5,6 +5,26 @@ const CROSS_BLOCK_LINE_PATTERN =
 const FENCE_PATTERN = /^ {0,3}(`{3,}|~{3,})/;
 // After a blank line these still continue the previous block: a list item or indented content.
 const CONTINUATION_PATTERN = /^(?:[ \t]|(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$))/;
+const CODE_SPAN_PATTERN = /(?<![\\`])(`+)[^`][\s\S]*?(?<!`)\1(?!`)/g;
+// Anything that might start a tag counts as open; only a whole closing tag closes one.
+const INLINE_TAG_PATTERN =
+  /<([A-Za-z][A-Za-z0-9-]*)(?=[\s/>]|$)|(?<!\\)<\/([A-Za-z][A-Za-z0-9-]*)\s*>/g;
+const VOID_ELEMENTS = new Set(
+  "area base br col embed hr img input link meta param source track wbr".split(" "),
+);
+
+/** Inline tags left open on a line; the HTML parser carries an open `<b>` into later paragraphs. */
+function trackOpenTags(line: string, open: Map<string, number>) {
+  const outsideCode = line.replace(CODE_SPAN_PATTERN, "");
+  for (const [, opened, closed] of outsideCode.matchAll(INLINE_TAG_PATTERN)) {
+    const name = (opened ?? closed)!.toLowerCase();
+    if (VOID_ELEMENTS.has(name)) continue;
+    const count = open.get(name) ?? 0;
+    if (opened) open.set(name, count + 1);
+    else if (count > 1) open.set(name, count - 1);
+    else open.delete(name);
+  }
+}
 
 /**
  * Cuts Markdown at blank lines that close every open block, so each piece renders exactly as it
@@ -13,6 +33,7 @@ const CONTINUATION_PATTERN = /^(?:[ \t]|(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$))/;
 export function splitMarkdownBlocks(text: string): string[] | null {
   if (text.includes("\r")) return null;
   const blocks: string[] = [];
+  const openTags = new Map<string, number>();
   let blockStart = 0;
   let lineStart = 0;
   let fence: string | null = null;
@@ -41,7 +62,12 @@ export function splitMarkdownBlocks(text: string): string[] | null {
     } else if (tracking && line.trim() === "") {
       afterBlankLine = true;
     } else if (tracking) {
-      if (afterBlankLine && lineStart > blockStart && !CONTINUATION_PATTERN.test(line)) {
+      if (
+        afterBlankLine &&
+        lineStart > blockStart &&
+        openTags.size === 0 &&
+        !CONTINUATION_PATTERN.test(line)
+      ) {
         blocks.push(text.slice(blockStart, lineStart));
         blockStart = lineStart;
       }
@@ -49,6 +75,7 @@ export function splitMarkdownBlocks(text: string): string[] | null {
       const opener = FENCE_PATTERN.exec(line)?.[1];
       fence = opener ?? null;
       if (opener) fenceIndent = line.indexOf(opener);
+      else trackOpenTags(line, openTags);
     }
     lineStart += line.length + 1;
   }

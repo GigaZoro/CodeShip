@@ -35,6 +35,8 @@ describe("splitMarkdownBlocks", () => {
     "- a\n\n  ```\n  x\n\ny\n\n  ```\n\nb",
     "```html\n<div>\n\n[a]: b\n:::\n$$\n</div>\n```\n\nafter",
     "Match `[^a-z]` once.\n\nlast",
+    "text <b>bold\n\nmore</b> end\n\nnext <div>x\n\ny\n\nw </div> z\n\nlast",
+    "Use `<b>` and <br> here\n\nnext <span>x\n\ny</span>\n\nz",
   ])("renders each block as the whole text renders it, at every streamed prefix: %j", (text) => {
     for (let end = 0; end <= text.length; end++) {
       const source = text.slice(0, end);
@@ -50,6 +52,9 @@ describe("splitMarkdownBlocks", () => {
       "```\nb\n\nc\n```\n\n- d\n\n- e\n\n",
       "f",
     ]);
+    expect(splitMarkdownBlocks("Use `<b>`, <br> and <i>it</i>\n\nnext <b>x\n\ny</b>\n\nz")).toEqual(
+      ["Use `<b>`, <br> and <i>it</i>\n\n", "next <b>x\n\ny</b>\n\n", "z"],
+    );
   });
 
   it.each([

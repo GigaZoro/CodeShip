@@ -6,11 +6,17 @@ import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 import remarkParse from "remark-parse";
 import remarkRehype from "remark-rehype";
 import { type PluggableList, unified } from "unified";
-import { VFile } from "vfile";
+import { type Data, VFile } from "vfile";
 
 import { remarkParseWithoutUnusedSyntax } from "./markdownSyntaxGates";
 
 export type MarkdownUrlTransform = (url: string, key: string, node: Element) => string;
+
+interface MarkdownRender {
+  readonly element: ReactElement;
+  /** What the plugins recorded about the text. */
+  readonly data: Data;
+}
 
 interface MarkdownRendererOptions {
   readonly remarkPlugins: PluggableList;
@@ -23,7 +29,7 @@ interface MarkdownRendererOptions {
 // reuses one instead of parsing again. Parsing is most of the cost of rendering markdown.
 // An element and the hast it keeps hold about 20 bytes per source character, so ~10 MB.
 const MAX_CACHED_CHARS = 500_000;
-const rendered = new Map<string, ReactElement>();
+const rendered = new Map<string, MarkdownRender>();
 let cachedChars = 0;
 let nextRendererId = 0;
 
@@ -31,10 +37,10 @@ let nextRendererId = 0;
 const ENTRY_OVERHEAD_CHARS = 200;
 const entrySize = (key: string) => key.length + ENTRY_OVERHEAD_CHARS;
 
-function remember(key: string, element: ReactElement) {
+function remember(key: string, result: MarkdownRender) {
   // One huge message would otherwise evict everything else.
   if (entrySize(key) > MAX_CACHED_CHARS / 4) return;
-  rendered.set(key, element);
+  rendered.set(key, result);
   cachedChars += entrySize(key);
   for (const oldest of rendered.keys()) {
     if (cachedChars <= MAX_CACHED_CHARS) break;
@@ -82,7 +88,7 @@ export function createMarkdownRenderer({
     }
   };
 
-  return (text: string, cache: boolean): ReactElement => {
+  return (text: string, cache: boolean): MarkdownRender => {
     const key = keyPrefix + text;
     const cached = rendered.get(key);
     if (cached !== undefined) {
@@ -103,7 +109,8 @@ export function createMarkdownRenderer({
       passKeys: true,
       passNode: true,
     });
-    if (cache) remember(key, element);
-    return element;
+    const result = { element, data: file.data };
+    if (cache) remember(key, result);
+    return result;
   };
 }

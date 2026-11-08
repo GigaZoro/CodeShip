@@ -150,6 +150,7 @@ import { isMarkdownFileLinkLabel } from "@t3tools/shared/markdownLinks";
 import { isElectron } from "../env";
 import { useOpenThreadPageLink } from "./threadPage/threadPageLinks";
 import { readLocalApi } from "../localApi";
+import { LRUCache } from "../lib/lruCache";
 import { cn } from "../lib/utils";
 import { resolveRemoteOpenState, useRemoteOpenResolution } from "../remoteOpen";
 import { useRightPanelStore } from "../rightPanelStore";
@@ -211,7 +212,12 @@ import { MarkdownExternalLinkContent } from "./chat/MarkdownExternalLink";
 import { MarkdownFileLink } from "./chat/MarkdownFileLink";
 import { canUseMarkdownFileShellActions } from "./chat/MarkdownFileLink.logic";
 import { rehypeChipPunctuation } from "./chat/markdownChipPunctuation";
-import { handleMarkdownFragmentClick, rehypeHeadingIds } from "./chat/markdownFragments";
+import {
+  handleMarkdownFragmentClick,
+  headingIdRenames,
+  headingIdsTakenBefore,
+  rehypeHeadingIds,
+} from "./chat/markdownFragments";
 import { rehypeTextDirection } from "./chat/markdownTextDirection";
 import { hastHasText, hastPlainTextDeep, plainHastText } from "./chat/markdownHast.logic";
 import {
@@ -452,11 +458,16 @@ const markdownServerConfigFieldsAtom = Atom.family((environmentId: EnvironmentId
   }).pipe(Atom.withLabel("markdown-server-config-fields")),
 );
 
-function fileLinkSourcesKey(
+interface FileLinkSources {
+  readonly hrefs: ReadonlyArray<string>;
+  readonly spans: ReadonlyArray<string>;
+}
+
+function scanFileLinkSources(
   text: string,
   cwd: string | undefined,
   imageBaseDir: string | undefined,
-): string {
+): FileLinkSources {
   const hrefs = extractMarkdownLinkHrefs(renderCodexInlineDirectivesAsMarkdown(text))
     .filter((href) => !parseComposerContextHref(href))
     .map(normalizeMarkdownLinkHrefKey)
@@ -464,7 +475,42 @@ function fileLinkSourcesKey(
   const spans = extractInlineCodeSpans(text).filter((span) =>
     resolveInlineCodeFileLinkMeta(span, cwd, imageBaseDir ?? cwd),
   );
-  return JSON.stringify([[...new Set(hrefs)], [...new Set(spans)]]);
+  return { hrefs, spans };
+}
+
+// A streaming reply rescans only the block still growing.
+const finishedBlockFileLinks = new LRUCache<FileLinkSources>(2_000, 4_000_000);
+
+function finishedBlockFileLinkSources(
+  block: string,
+  cwd: string | undefined,
+  imageBaseDir: string | undefined,
+): FileLinkSources {
+  const key = JSON.stringify([cwd ?? null, imageBaseDir ?? null, block]);
+  const cached = finishedBlockFileLinks.get(key);
+  if (cached !== null) return cached;
+  const sources = scanFileLinkSources(block, cwd, imageBaseDir);
+  finishedBlockFileLinks.set(key, sources, key.length * 2);
+  return sources;
+}
+
+function fileLinkSourcesKey(
+  blocks: ReadonlyArray<string>,
+  isStreaming: boolean,
+  cwd: string | undefined,
+  imageBaseDir: string | undefined,
+): string {
+  const hrefs = new Set<string>();
+  const spans = new Set<string>();
+  blocks.forEach((block, index) => {
+    const sources =
+      isStreaming && index === blocks.length - 1
+        ? scanFileLinkSources(block, cwd, imageBaseDir)
+        : finishedBlockFileLinkSources(block, cwd, imageBaseDir);
+    for (const href of sources.hrefs) hrefs.add(href);
+    for (const span of sources.spans) spans.add(span);
+  });
+  return JSON.stringify([[...hrefs], [...spans]]);
 }
 
 function resolveFileLinkSources(
@@ -490,25 +536,27 @@ function resolveFileLinkSources(
   return { markdownFileLinkMetaByHref, inlineCodeFileLinkMetaByText, fileLinkParentSuffixByPath };
 }
 
-function useChatMarkdownState({
-  text,
-  inline = false,
-  cwd,
-  threadRef,
-  pullRequestPanelRef,
-  environmentId: explicitEnvironmentId,
-  onTaskListChange,
-  isStreaming = false,
-  skills = EMPTY_MARKDOWN_SKILLS,
-  onUseArtifactTemplate,
-  onRunShellCommand,
-  imageBaseDir,
-  workspaceMutationId,
-  onImageExpand,
-  renderContextReference,
-  headingLevelOffset = 0,
-  sourceControlMedia = false,
-}: ChatMarkdownProps) {
+function useChatMarkdownState(
+  {
+    inline = false,
+    cwd,
+    threadRef,
+    pullRequestPanelRef,
+    environmentId: explicitEnvironmentId,
+    onTaskListChange,
+    isStreaming = false,
+    skills = EMPTY_MARKDOWN_SKILLS,
+    onUseArtifactTemplate,
+    onRunShellCommand,
+    imageBaseDir,
+    workspaceMutationId,
+    onImageExpand,
+    renderContextReference,
+    headingLevelOffset = 0,
+    sourceControlMedia = false,
+  }: ChatMarkdownProps,
+  blocks: ReadonlyArray<string>,
+) {
   const resolvedTheme = useRenderedAppearance();
   const markdownRef = useRef<HTMLElement>(null);
   const mediaRequestId = useRef(0);
@@ -704,7 +752,7 @@ function useChatMarkdownState({
   // Keyed by the file links found, not the text, so streamed text that adds none keeps the
   // renderer context, and every block reading it, unchanged.
   // A template literal marks the key as a string, so the compiler memoizes the maps on its value.
-  const fileLinksKey = `${fileLinkSourcesKey(text, cwd, imageBaseDir)}`;
+  const fileLinksKey = `${fileLinkSourcesKey(blocks, isStreaming, cwd, imageBaseDir)}`;
   const { markdownFileLinkMetaByHref, inlineCodeFileLinkMetaByText, fileLinkParentSuffixByPath } =
     resolveFileLinkSources(fileLinksKey, cwd, imageBaseDir);
   const resolveThreadPullRequest = (
@@ -926,8 +974,20 @@ const ChatMarkdownRendererContext = React.createContext<
   ReturnType<typeof useChatMarkdownState>["componentState"]
 >(null!);
 
-// Isolate streamed source text from the renderer context; only offset-based renderers need it.
-const ChatMarkdownTextContext = React.createContext("");
+interface ChatMarkdownBlock {
+  /** The block's source; renderers read node offsets against it. */
+  readonly text: string;
+  /** Where the block starts in the whole text. */
+  readonly offset: number;
+  readonly headingIds: ReadonlyMap<string, string> | null;
+}
+
+// Isolate streamed source text from the renderer context.
+const ChatMarkdownBlockContext = React.createContext<ChatMarkdownBlock>({
+  text: "",
+  offset: 0,
+  headingIds: null,
+});
 
 const TaskItemLabelContext = React.createContext("");
 
@@ -1040,12 +1100,15 @@ function markdownHeadingRenderer(level: 1 | 2 | 3 | 4 | 5 | 6) {
   const Tag = `h${level}` as const;
   return function MarkdownHeading({
     node: _node,
+    id,
     ...props
   }: ComponentProps<typeof Tag> & ReactMarkdownExtraProps) {
     const { headingLevelOffset } = use(ChatMarkdownRendererContext);
+    const { headingIds } = use(ChatMarkdownBlockContext);
     return (
       <Tag
         {...props}
+        id={(id && headingIds?.get(id)) ?? id}
         aria-level={headingLevelOffset > 0 ? Math.min(level + headingLevelOffset, 6) : undefined}
       />
     );
@@ -1153,7 +1216,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
   },
   input: function MarkdownInput({ node: _node, type, checked, disabled: _disabled, ...props }) {
     const { onTaskListChange } = use(ChatMarkdownRendererContext);
-    const text = use(ChatMarkdownTextContext);
+    const { text, offset } = use(ChatMarkdownBlockContext);
     const taskLabel = use(TaskItemLabelContext);
     if (type !== "checkbox" || !onTaskListChange) {
       return (
@@ -1178,7 +1241,10 @@ const CHAT_MARKDOWN_COMPONENTS = {
           if (!Number.isSafeInteger(listItemStart)) return;
           const markerOffset = findTaskListMarkerOffset(text, listItemStart);
           if (markerOffset === null) return;
-          onTaskListChange({ markerOffset, checked: event.currentTarget.checked });
+          onTaskListChange({
+            markerOffset: offset + markerOffset,
+            checked: event.currentTarget.checked,
+          });
         }}
       />
     );
@@ -1205,7 +1271,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       updateThreadPullRequestLink,
       renderContextReference,
     } = use(ChatMarkdownRendererContext);
-    const text = use(ChatMarkdownTextContext);
+    const { text } = use(ChatMarkdownBlockContext);
     // An unsafe or empty destination leaves no usable href, so it is not a link.
     if (!href) {
       return (
@@ -1700,7 +1766,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       inline,
       mathEnabled,
     } = use(ChatMarkdownRendererContext);
-    const text = use(ChatMarkdownTextContext);
+    const { text } = use(ChatMarkdownBlockContext);
     const codeBlock = extractCodeBlock(children);
     if (!codeBlock) {
       return <pre {...props}>{children}</pre>;
@@ -1812,14 +1878,40 @@ function markdownRenderer(remarkPlugins: PluggableList, rehypePlugins: Pluggable
   return renderer;
 }
 
+function withOffsets(blocks: ReadonlyArray<string>) {
+  let offset = 0;
+  return blocks.map((text) => {
+    const block = { text, offset };
+    offset += text.length;
+    return block;
+  });
+}
+
+/** The heading ids the finished blocks take, keyed for each of them and for a block after them. */
+function knownHeadingIdsTaken(
+  remarkPlugins: PluggableList,
+  rehypePlugins: PluggableList,
+  knownText: string,
+) {
+  const render = markdownRenderer(remarkPlugins, rehypePlugins);
+  // The known text ends where a block starts, so it splits into the same blocks.
+  const known = knownText === "" ? [] : splitMarkdownBlocks(knownText)!;
+  return headingIdsTakenBefore(known.map((block) => render(block, true).data.headingIds));
+}
+
 const MarkdownSource = memo(function MarkdownSource({
   text,
+  offset,
+  headingIdsTaken,
   remarkPlugins,
   rehypePlugins,
   shared,
   cache,
 }: {
   text: string;
+  offset: number;
+  /** Heading ids earlier blocks took, from `headingIdsTakenBefore`. */
+  headingIdsTaken: string;
   remarkPlugins: PluggableList;
   rehypePlugins: PluggableList;
   /** The plugins are one of the shared sets. */
@@ -1836,9 +1928,13 @@ const MarkdownSource = memo(function MarkdownSource({
         components: CHAT_MARKDOWN_COMPONENTS,
         urlTransform: markdownUrlTransform,
       });
-  return (
-    <ChatMarkdownTextContext value={text}>{render(text, shared && cache)}</ChatMarkdownTextContext>
-  );
+  const { element, data } = render(text, shared && cache);
+  const block = {
+    text,
+    offset,
+    headingIds: headingIdRenames(data.headingIds, headingIdsTaken),
+  };
+  return <ChatMarkdownBlockContext value={block}>{element}</ChatMarkdownBlockContext>;
 });
 
 function ChatMarkdown({
@@ -1850,19 +1946,14 @@ function ChatMarkdown({
   extraRemarkPlugins = EMPTY_REMARK_PLUGINS,
   ...props
 }: ChatMarkdownProps) {
+  // Streaming re-renders only the last block, and the blocks stay when it ends, keeping their state.
+  const splitBlocks = !inline && extraRemarkPlugins.length === 0 ? splitMarkdownBlocks(text) : null;
+  const blocks = splitBlocks ?? [text];
   const { componentState, handleCopy, markdownRef, localMediaPreview, closeLocalMediaPreview } =
-    useChatMarkdownState({ text, inline, ...props });
-  // Streaming re-renders only the last block; offsets for task edits need the whole text.
-  const streamingBlocks =
-    props.isStreaming === true &&
-    !inline &&
-    extraRemarkPlugins.length === 0 &&
-    !props.onTaskListChange
-      ? splitMarkdownBlocks(text)
-      : null;
+    useChatMarkdownState({ text, inline, ...props }, blocks);
   const incrementalParsing =
     props.isStreaming === true &&
-    streamingBlocks === null &&
+    splitBlocks === null &&
     extraRemarkPlugins.length === 0 &&
     /(?:^|\n) {0,3}(?:`{3}|~{3})/.test(text);
   const Root = inline ? "span" : "div";
@@ -1884,7 +1975,18 @@ function ChatMarkdown({
   const remarkPlugins = incrementalParsing
     ? [...sharedRemarkPlugins, ...extraRemarkPlugins, createIncrementalMarkdownPlugin()]
     : withExtraPlugins(sharedRemarkPlugins, extraRemarkPlugins);
-  const blocks = streamingBlocks ?? [text];
+  const rehypePlugins = parseRawHtml
+    ? CHAT_MARKDOWN_RENDER_REHYPE_PLUGINS
+    : CHAT_MARKDOWN_LITERAL_HTML_REHYPE_PLUGINS;
+  // Only finished blocks' headings are known here; the streaming block numbers its own.
+  const knownText =
+    blocks.length < 2
+      ? ""
+      : props.isStreaming
+        ? text.slice(0, text.length - (blocks.at(-1)?.length ?? 0))
+        : text;
+  // Split text has no extra plugins, so its blocks render with the shared set.
+  const headingIdsTaken = knownHeadingIdsTaken(sharedRemarkPlugins, rehypePlugins, knownText);
 
   return (
     <Root
@@ -1899,17 +2001,15 @@ function ChatMarkdown({
       onCopy={handleCopy}
     >
       <ChatMarkdownRendererContext value={componentState}>
-        {blocks.map((source, index) => (
+        {withOffsets(blocks).map(({ text: source, offset }, index) => (
           <MarkdownSource
-            // oxlint-disable-next-line react/no-array-index-key -- streamed blocks only change at the end
+            // oxlint-disable-next-line react/no-array-index-key -- a block keeps its place as the text grows
             key={index}
             text={source}
+            offset={offset}
+            headingIdsTaken={headingIdsTaken.keys[index] ?? headingIdsTaken.following}
             remarkPlugins={remarkPlugins}
-            rehypePlugins={
-              parseRawHtml
-                ? CHAT_MARKDOWN_RENDER_REHYPE_PLUGINS
-                : CHAT_MARKDOWN_LITERAL_HTML_REHYPE_PLUGINS
-            }
+            rehypePlugins={rehypePlugins}
             shared={!uncachedPlugins}
             // Every block before the last is finished, so its parse can be reused.
             cache={!props.isStreaming || index < blocks.length - 1}
