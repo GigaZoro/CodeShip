@@ -61,6 +61,7 @@ import {
   useResetCredit,
 } from "./UsageLimits";
 import { AccountFailoverNotice, LimitsFreshness, useCheckedAgo } from "./UsageLimitsStatus";
+import { CodexLimitsSignIn } from "./CodexLimitsSignIn";
 import { t, tn } from "~/i18n";
 
 function accountInitials(email: string): string {
@@ -717,8 +718,15 @@ function PoolResetCredits({ pool, now }: { readonly pool: LimitPool; readonly no
 }
 
 /** Accounts whose limits another site keeps, so they have no bar here. */
-function ExternalUsageAccounts({ link }: { readonly link: ExternalUsageLink }) {
+function ExternalUsageAccounts({
+  link,
+  showEnvironment,
+}: {
+  readonly link: ExternalUsageLink;
+  readonly showEnvironment: boolean;
+}) {
   const chatGpt = link.url === CHATGPT_USAGE_URL;
+  const canSignIn = link.accounts.some((account) => account.signIns.length > 0);
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-border/60 p-4">
       <div className="flex flex-col gap-1">
@@ -739,9 +747,13 @@ function ExternalUsageAccounts({ link }: { readonly link: ExternalUsageLink }) {
         {chatGpt || link.message ? (
           <p className="max-w-2xl text-xs text-muted-foreground">
             {chatGpt
-              ? t(
-                  "ChatGPT shares an account's limits only with that account's Codex CLI login. Add the login as a Codex provider on a connected machine to see its limits here, or open ChatGPT signed in as the account.",
-                )
+              ? canSignIn
+                ? t(
+                    "ChatGPT shares an account's limits only with Codex's own login. Read limits once per account on each machine: T3.CodeShip then shows its limits, switches accounts before they run out, and resumes threads when they reset.",
+                  )
+                : t(
+                    "ChatGPT shares an account's limits only with that account's Codex CLI login. Add the login as a Codex provider on a connected machine to see its limits here, or open ChatGPT signed in as the account.",
+                  )
               : link.message}
           </p>
         ) : null}
@@ -759,6 +771,17 @@ function ExternalUsageAccounts({ link }: { readonly link: ExternalUsageLink }) {
               </span>
             </span>
             <span className="text-muted-foreground">{account.environments.join(" · ")}</span>
+            {account.signIns.length > 0 ? (
+              <div className="flex w-full flex-col gap-2 pt-1">
+                {account.signIns.map((target) => (
+                  <CodexLimitsSignIn
+                    key={`${target.environmentId}:${target.instanceId}`}
+                    target={target}
+                    showEnvironment={showEnvironment}
+                  />
+                ))}
+              </div>
+            ) : null}
           </li>
         ))}
       </ul>
@@ -822,7 +845,7 @@ function ProviderSection({
         : null}
       {pool ? <PoolResetCredits pool={pool} now={now} /> : null}
       {external.map((link) => (
-        <ExternalUsageAccounts key={link.url} link={link} />
+        <ExternalUsageAccounts key={link.url} link={link} showEnvironment={showEnvironment} />
       ))}
     </section>
   );

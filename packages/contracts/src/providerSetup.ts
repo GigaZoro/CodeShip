@@ -14,6 +14,19 @@ export const ProviderSetupInput = Schema.Struct({
 });
 export type ProviderSetupInput = typeof ProviderSetupInput.Type;
 
+/**
+ * "limits" addresses a second login some accounts keep only to read their usage limits, beside
+ * their own sign-in. Starting or ending it never touches the account's sessions.
+ */
+export const ProviderAuthPurpose = Schema.Literals(["limits"]);
+export type ProviderAuthPurpose = typeof ProviderAuthPurpose.Type;
+
+export const ProviderAuthTargetInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  purpose: Schema.optionalKey(ProviderAuthPurpose),
+});
+export type ProviderAuthTargetInput = typeof ProviderAuthTargetInput.Type;
+
 const SetupOperationId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
 
 export const ProviderAuthMethod = Schema.Struct({
@@ -85,6 +98,7 @@ export type ProviderAuthResponse = typeof ProviderAuthResponse.Type;
 
 export const ProviderAuthStartInput = Schema.Struct({
   instanceId: ProviderInstanceId,
+  purpose: Schema.optionalKey(ProviderAuthPurpose),
   methodId: Schema.optionalKey(SetupOperationId),
   returnUrl: Schema.optionalKey(Schema.String),
   callbackMode: Schema.optionalKey(Schema.Literals(["server", "client"])),
@@ -93,6 +107,7 @@ export type ProviderAuthStartInput = typeof ProviderAuthStartInput.Type;
 
 export const ProviderAuthRespondInput = Schema.Struct({
   instanceId: ProviderInstanceId,
+  purpose: Schema.optionalKey(ProviderAuthPurpose),
   flowId: SetupOperationId,
   interactionId: SetupOperationId,
   response: ProviderAuthResponse,
@@ -125,6 +140,7 @@ export type ProviderAuthState = typeof ProviderAuthState.Type;
 
 export const ProviderAuthCompleteInput = Schema.Struct({
   instanceId: ProviderInstanceId,
+  purpose: Schema.optionalKey(ProviderAuthPurpose),
   flowId: SetupOperationId,
   callbackUrl: TrimmedNonEmptyString.check(Schema.isMaxLength(16_384)),
 });
@@ -132,6 +148,7 @@ export type ProviderAuthCompleteInput = typeof ProviderAuthCompleteInput.Type;
 
 export const ProviderAuthCancelInput = Schema.Struct({
   instanceId: ProviderInstanceId,
+  purpose: Schema.optionalKey(ProviderAuthPurpose),
   flowId: SetupOperationId,
 });
 export type ProviderAuthCancelInput = typeof ProviderAuthCancelInput.Type;

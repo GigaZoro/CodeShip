@@ -3,7 +3,9 @@ import {
   ProviderSetupError,
   TextGenerationError,
   type CodexSettings,
+  type ServerProviderUsageLimits,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -26,6 +28,9 @@ import {
   withCodexAppServerClient,
 } from "../CodexProvider.ts";
 import { makeCodexConsumeResetCredit } from "../codexResetCredit.ts";
+import { codexAccountLimitsHomePath, makeCodexLimitsLogin } from "../CodexLimitsLogin.ts";
+import { chatGptSharingLimitResetAt } from "../codexUsageLimits.ts";
+import * as ServerConfig from "../../config.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import { makeCodexMcpManagement } from "../CodexMcp.ts";
 import { makeCodexPluginManagement } from "../CodexPlugins.ts";
@@ -41,6 +46,26 @@ import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIden
 import { HttpClient } from "effect/http";
 const DRIVER = ProviderDriverKind.make("codex");
 
+const readable = (limits: ServerProviderUsageLimits | undefined) =>
+  limits !== undefined && limits.unavailable === undefined && limits.windows.length > 0;
+
+/**
+ * A readable reading wins. Otherwise the account links to ChatGPT and offers the limits sign-in,
+ * keeping the notice of a login that could not read.
+ */
+const limitsToShow = (
+  ownLogin: ServerProviderUsageLimits | undefined,
+  machineLogin: ServerProviderUsageLimits | undefined,
+  chatGptUsage: ServerProviderUsageLimits,
+): ServerProviderUsageLimits => {
+  const shown = [ownLogin, machineLogin].find(readable);
+  if (shown) return shown;
+  const failed = ownLogin ?? machineLogin;
+  return failed?.unavailable
+    ? { ...failed, externalUsage: chatGptUsage.externalUsage, limitsSignIn: true }
+    : chatGptUsage;
+};
+
 export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(function* (
   input: ProviderDriverCreateInput<CodexSettings>,
 ) {
@@ -51,11 +76,35 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   const path = yield* Path.Path;
   const host = yield* ProviderHost.ProviderHost;
   const resetCreditCoordinator = yield* ResetCreditCoordinator.ResetCreditCoordinator;
-  const runtime = yield* makeCodexManagedRuntime({
+  const { stateDir } = yield* ServerConfig.ServerConfig;
+  const environment = yield* mergeProviderInstanceEnvironment(input.environment);
+  const runtime = yield* makeCodexManagedRuntime({ instanceId, enabled, config, environment });
+  // The limits login is a plain Codex login, so no ambient override may redirect it.
+  const limitsEnvironment: NodeJS.ProcessEnv = { ...environment };
+  delete limitsEnvironment.ACCESS_TOKEN;
+  delete limitsEnvironment.T3CODE_CODEX_LAUNCH_ARGS;
+  delete limitsEnvironment.OPENAI_API_KEY;
+  delete limitsEnvironment.OPENAI_BASE_URL;
+  const limits = yield* makeCodexLimitsLogin({
     instanceId,
-    enabled,
-    config,
-    environment: yield* mergeProviderInstanceEnvironment(input.environment),
+    home: codexAccountLimitsHomePath(path, stateDir, instanceId),
+    binaryPath: runtime.installation.resolve().pipe(
+      Effect.map((codex) => codex.executablePath),
+      Effect.mapError(
+        (cause) =>
+          new ProviderSetupError({
+            instanceId,
+            operation: "install",
+            detail: "Set up managed Codex before reading its limits.",
+            cause,
+          }),
+      ),
+    ),
+    environment: limitsEnvironment,
+    accountEmail: runtime.auth.read.pipe(
+      Effect.map((saved) => (Option.isSome(saved) ? saved.value.email?.trim() : undefined)),
+      Effect.orElseSucceed(() => undefined),
+    ),
   });
   const continuationIdentity = codexContinuationIdentity(runtime.homeLayout);
   const stamp = withInstanceIdentity({
@@ -116,7 +165,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
         message: "Sign in with ChatGPT to use Codex.",
         auth: { status: "unauthenticated" as const },
       };
-    // Shown when this home has no Codex login of its own for the account to read limits with.
+    // Shown when no Codex login of this account can read its limits on this machine.
     const chatGptUsageLimits = {
       checkedAt: base.checkedAt,
       windows: [],
@@ -126,7 +175,8 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
           "ChatGPT tracks subscription usage across connected apps. Open Usage settings with the account you connected to Codex.",
       },
       externalUsage: { label: "ChatGPT usage", url: "https://chatgpt.com/#settings/Usage" },
-    };
+      limitsSignIn: true,
+    } satisfies ServerProviderUsageLimits;
     const managedAuth = {
       subscriptionSharing: true,
       profileId: saved.value.clientId,
@@ -168,12 +218,13 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
           return { ...draft, models };
         }),
       ),
-      Effect.map((draft) =>
+      Effect.zip(limits.read),
+      Effect.map(([draft, ownLimits]) =>
         stamp({
           ...draft,
           auth: managedAuth,
           version: draft.version ?? executable.value.version,
-          usageLimits: draft.usageLimits ?? chatGptUsageLimits,
+          usageLimits: limitsToShow(ownLimits, draft.usageLimits, chatGptUsageLimits),
           models: draft.models.map((model) => ({
             ...model,
             ...(model.capabilities
@@ -197,9 +248,11 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
         }),
       ),
       Effect.catch(() =>
-        runtime.auth.read.pipe(
-          Effect.orElseSucceed(() => Option.none()),
-          Effect.map((current) => ({
+        Effect.all([
+          runtime.auth.read.pipe(Effect.orElseSucceed(() => Option.none())),
+          limits.read,
+        ]).pipe(
+          Effect.map(([current, ownLimits]) => ({
             ...base,
             installed: true,
             version: executable.value.version,
@@ -219,7 +272,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
                 : {}),
             },
             ...(Option.isSome(current) && current.value.scopes.includes("chatgpt.tokens.use.direct")
-              ? { usageLimits: chatGptUsageLimits }
+              ? { usageLimits: limitsToShow(ownLimits, undefined, chatGptUsageLimits) }
               : {}),
             message: "Could not check Codex right now. Retry, or reconnect in provider settings.",
           })),
@@ -258,6 +311,13 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     Stream.runForEach(() => snapshot.refresh.pipe(Effect.ignoreCause({ log: true }))),
     Effect.forkScoped,
   );
+  // `subscribe` replays the current idle state first; only a later sign-in or sign-out re-reads.
+  yield* limits.controller.subscribe("codex-limits-snapshot").pipe(
+    Stream.drop(1),
+    Stream.filter((state) => state.phase === "succeeded" || state.phase === "idle"),
+    Stream.runForEach(() => snapshot.refresh.pipe(Effect.ignoreCause({ log: true }))),
+    Effect.forkScoped,
+  );
   const resolveRuntime = runtime.auth.controller.withAccess!(runtime.resolve);
   const openAppServerClient = resolveRuntime.pipe(
     Effect.flatMap((effective) =>
@@ -276,7 +336,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   // while it is still signed in as this account. A sharing launch reports no account, so the
   // saved login names it.
   const accountHome = runtime.homeLayout.effectiveHomePath ?? runtime.homeLayout.sharedHomePath;
-  const consumeResetCredit = makeCodexConsumeResetCredit({
+  const consumeThroughOwnHome = makeCodexConsumeResetCredit({
     instanceId,
     accountHome,
     coordinator: resetCreditCoordinator,
@@ -297,6 +357,26 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     ),
     snapshot,
   });
+  const consumeThroughLimitsLogin = makeCodexConsumeResetCredit({
+    instanceId,
+    accountHome: limits.home,
+    coordinator: resetCreditCoordinator,
+    openClient: limits.openClient,
+    snapshot,
+  });
+  const consumeResetCredit: NonNullable<ProviderInstance["consumeResetCredit"]> = () =>
+    limits.signedIn.pipe(
+      Effect.flatMap((present) =>
+        present ? consumeThroughLimitsLogin() : consumeThroughOwnHome(),
+      ),
+    );
+  const removeLimitsLogin = limits.controller
+    .logout(Effect.void)
+    .pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Could not remove the Codex limits sign-in.", { cause }),
+      ),
+    );
   const plugins = yield* makeCodexPluginManagement({ instanceId, openClient: openAppServerClient });
   const mcp = yield* makeCodexMcpManagement({
     instanceId,
@@ -323,6 +403,17 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   const orchestrationAdapter = yield* createCodexAdapterV2(input, {
     onUsageLimits: (update) => snapshot.applyUsageLimits(update),
     resolveRuntime: runtime.resolve,
+    // Reading now also shows the stop on the Limits bar.
+    chatGptSharingLimitResetAt: snapshot.refresh.pipe(
+      Effect.timeoutOption("30 seconds"),
+      Effect.flatMap((refreshed) =>
+        Effect.map(DateTime.now, (now) =>
+          Option.isSome(refreshed)
+            ? chatGptSharingLimitResetAt(refreshed.value.usageLimits, DateTime.toEpochMillis(now))
+            : null,
+        ),
+      ),
+    ),
   }).pipe(
     Effect.mapError(
       (cause) =>
@@ -374,7 +465,13 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     consumeResetCredit,
     orchestrationAdapter,
     textGeneration,
-    auth: runtime.auth.controller,
+    // Disconnecting the account also removes the login kept for its limits.
+    auth: {
+      ...runtime.auth.controller,
+      logout: (stopSessions) =>
+        runtime.auth.controller.logout(stopSessions).pipe(Effect.tap(() => removeLimitsLogin)),
+    },
+    limitsAuth: limits.controller,
     plugins,
     mcp,
     snapshotForCwd: (cwd: string) =>

@@ -1154,6 +1154,10 @@ function failureResetAt(
     : codexUsageLimitResetAt(snapshot);
 }
 
+/** A workspace admin's cap has no reset; the plan's own sharing limit is read from the account. */
+const isChatGptSharingLimit = (failure: OrchestrationV2ProviderFailure) =>
+  classifyCodexManagedError(failure.code)?.code === "subscription_sharing_usage_limit_exceeded";
+
 interface ActiveCodexTurnContext {
   hookStopReason?: string;
   capacityRetryAttempt?: number;
@@ -1621,7 +1625,10 @@ export type CodexAdapterV2DriverEnv =
 
 export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapterV2")(function* (
   { instanceId, environment, enabled, config }: ProviderAdapterDriverCreateInput<CodexSettings>,
-  hooks: Pick<CodexAdapterV2Options, "onUsageLimits" | "resolveRuntime" | "compatibility"> = {},
+  hooks: Pick<
+    CodexAdapterV2Options,
+    "onUsageLimits" | "resolveRuntime" | "compatibility" | "chatGptSharingLimitResetAt"
+  > = {},
 ) {
   const clientFactory = yield* CodexAppServerClientFactory;
   const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
@@ -1672,6 +1679,8 @@ export interface CodexAdapterV2Options {
   readonly environment: NodeJS.ProcessEnv;
   readonly clientFactory: CodexAppServerClientFactoryShape;
   readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
+  /** When a ChatGPT-shared account hits its usage limit: its reset, read now, or null if unknown. */
+  readonly chatGptSharingLimitResetAt?: Effect.Effect<string | null>;
   readonly resolveRuntime?: Effect.Effect<CodexEffectiveRuntime, ProviderSetupError, Scope.Scope>;
   /** Keeps this account's MCP sign-ins in its own home. A resolved runtime already carries the flag. */
   readonly privateMcpSignIns?: boolean;
@@ -1850,6 +1859,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           Effect.forkScoped,
         );
         const rateLimitSnapshot = yield* Ref.make<CodexRateLimitSnapshot | undefined>(undefined);
+        const terminalResetAt = (failure: OrchestrationV2ProviderFailure) =>
+          isChatGptSharingLimit(failure) && adapterOptions.chatGptSharingLimitResetAt
+            ? adapterOptions.chatGptSharingLimitResetAt
+            : Ref.get(rateLimitSnapshot).pipe(
+                Effect.map((snapshot) => failureResetAt(failure, snapshot)),
+              );
         const limitedTurnItems = yield* Ref.make(
           new Map<ProviderThreadId, Extract<OrchestrationV2TurnItem, { type: "error" }>>(),
         );
@@ -5822,10 +5837,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 status: terminalStatus,
                 failure:
                   failure.class === "usage_limit"
-                    ? {
-                        ...failure,
-                        resetAt: failureResetAt(failure, yield* Ref.get(rateLimitSnapshot)),
-                      }
+                    ? { ...failure, resetAt: yield* terminalResetAt(failure) }
                     : failure,
                 ...(input.providerRetry === undefined
                   ? {}
@@ -5862,9 +5874,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ...event,
                   failure: {
                     ...event.failure,
-                    resetAt:
-                      event.failure.resetAt ??
-                      failureResetAt(event.failure, yield* Ref.get(rateLimitSnapshot)),
+                    resetAt: event.failure.resetAt ?? (yield* terminalResetAt(event.failure)),
                   },
                 }
               : event;

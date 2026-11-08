@@ -2866,6 +2866,8 @@ const catalog: MessageCatalog = {
   "ChatGPT account to connect": "Обліковий запис ChatGPT для підключення",
   "ChatGPT dots and Claude Duets": "ChatGPT dots і Claude Duets",
   "ChatGPT shared usage": "Спільне використання ChatGPT",
+  "ChatGPT shares an account's limits only with Codex's own login. Read limits once per account on each machine: T3.CodeShip then shows its limits, switches accounts before they run out, and resumes threads when they reset.":
+    "ChatGPT передає ліміти облікового запису лише власному входу Codex. Увімкніть читання лімітів один раз для кожного облікового запису на кожній машині: тоді T3.CodeShip показує його ліміти, перемикає облікові записи, перш ніж вони вичерпаються, і відновлює чати після скидання.",
   "ChatGPT shares an account's limits only with that account's Codex CLI login. Add the login as a Codex provider on a connected machine to see its limits here, or open ChatGPT signed in as the account.":
     "ChatGPT передає ліміти облікового запису лише входу цього облікового запису в Codex CLI. Додайте такий вхід як провайдера Codex на підключеній машині, щоб бачити тут його ліміти, або відкрийте ChatGPT, увійшовши в цей обліковий запис.",
   "ChatGPT sharing is on": "Спільне використання ChatGPT увімкнено",
@@ -8777,6 +8779,8 @@ const catalog: MessageCatalog = {
   "Read file +{count} more": "Прочитано файл, ще +{count}",
   "Read files": "Читання файлів",
   "Read it before you send.": "Прочитайте його перед надсиланням.",
+  "Read limits": "Читати ліміти",
+  "Read limits on {environment}": "Читати ліміти на {environment}",
   "Read more": "Докладніше",
   "Read only": "Лише читання",
   "Read only. These subagents cannot take messages.":
@@ -10465,6 +10469,8 @@ const catalog: MessageCatalog = {
     "Вхід виконано. Запити до GitHub використовують вищий ліміт застосунку в репозиторіях, де його встановлено.",
   "Signed in. New {provider} sessions can use its tools.":
     "Вхід виконано. Нові сесії {provider} можуть використовувати його інструменти.",
+  "Signed in. Reading this account's limits…":
+    "Вхід виконано. Читаємо ліміти цього облікового запису…",
   "Signed out": "Не ввійшли",
   "Signed out of {server}": "Вихід з {server} виконано",
   "Signed-in GitHub account": "Обліковий запис GitHub, у який виконано вхід",
@@ -13694,6 +13700,8 @@ const catalog: MessageCatalog = {
     "Досягнуто ліміт профілів. Виберіть наявний профіль для імпорту.",
   "You've reached the profile limit. Delete a profile or import into an existing one.":
     "Досягнуто ліміту профілів. Видаліть профіль або імпортуйте в наявний.",
+  "You've reached your workspace's limit for using your ChatGPT plan in other apps.":
+    "Ви досягли ліміту вашого робочого простору на використання плану ChatGPT в інших застосунках.",
   "You've reached your workspace's limit for using your ChatGPT plan in other apps. Copy a request to ask your workspace admin for increased usage limits.":
     "Ви досягли ліміту вашого робочого простору на використання плану ChatGPT в інших застосунках. Скопіюйте запит, щоб попросити адміністратора робочого простору збільшити ліміти використання.",
   "Your {host} account": "Ваш обліковий запис {host}",

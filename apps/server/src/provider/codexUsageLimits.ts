@@ -204,3 +204,24 @@ export function codexUsageLimitResetAt(
     null,
   );
 }
+
+/**
+ * A ChatGPT-shared account spends its plan's Codex allowance, so a stop resets with the windows it
+ * exhausted. With none exhausted, the stop was the app's own cap, a share of the weekly allowance
+ * that resets with the week. Without a reading the reset is unknown.
+ */
+export function chatGptSharingLimitResetAt(
+  limits: ServerProviderUsageLimits | undefined,
+  nowMs: number,
+): string | null {
+  const upcoming = (limits?.windows ?? []).filter(
+    (window) => window.resetsAt !== undefined && Date.parse(window.resetsAt) > nowMs,
+  );
+  const exhausted = upcoming.filter((window) => window.usedPercent >= 100);
+  const resets = (
+    exhausted.length > 0 ? exhausted : upcoming.filter((window) => window.kind === "weekly")
+  )
+    .map((window) => window.resetsAt!)
+    .toSorted((left, right) => Date.parse(right) - Date.parse(left));
+  return resets[0] ?? null;
+}

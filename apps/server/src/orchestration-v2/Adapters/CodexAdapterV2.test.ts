@@ -1154,6 +1154,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     onNotification: (method: string) => Effect.Effect<void> = () => Effect.void,
     beforeEmitInbound?: CodexReplay.CodexAppServerReplayDriver["beforeEmitInbound"],
     onUsageLimits?: CodexAdapterV2.CodexAdapterV2Options["onUsageLimits"],
+    chatGptSharingLimitResetAt?: CodexAdapterV2.CodexAdapterV2Options["chatGptSharingLimitResetAt"],
   ) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -1229,6 +1230,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         clientFactory,
         crypto: yield* Crypto.Crypto,
         ...(onUsageLimits ? { onUsageLimits } : {}),
+        ...(chatGptSharingLimitResetAt ? { chatGptSharingLimitResetAt } : {}),
         fileSystem,
         idAllocator,
         serverConfig,
@@ -5357,6 +5359,17 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       expectedMessage: "Usage settings",
     },
     {
+      name: "chatgpt-sharing-reading",
+      code: "responseStreamDisconnected",
+      errorInfo: { responseStreamDisconnected: { httpStatusCode: null } },
+      message: CHATGPT_SHARING_LIMIT_MESSAGE,
+      notification: false,
+      sharingResetAt: "2026-11-11T08:00:00.000Z",
+      expectedClass: "usage_limit",
+      expectedCode: "subscription_sharing_usage_limit_exceeded",
+      expectedMessage: "Usage settings",
+    },
+    {
       name: "sharing-code-mention",
       code: "responseStreamDisconnected",
       errorInfo: { responseStreamDisconnected: { httpStatusCode: null } },
@@ -5555,6 +5568,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           undefined,
           undefined,
           () => Deferred.succeed(snapshotReceipt, undefined),
+          "sharingResetAt" in scenario ? Effect.succeed(scenario.sharingResetAt) : undefined,
         );
         yield* harness.runtime.startTurn(
           makeCodexTestTurnInput({
@@ -5600,7 +5614,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         if ("expectedCode" in scenario && "expectedMessage" in scenario) {
           assert.equal(terminal.failure.code, scenario.expectedCode);
           assert.include(terminal.failure.message, scenario.expectedMessage);
-          assert.equal(terminal.failure.resetAt, null);
+          // Without the account's reading, a sharing cap's reset is unknown.
+          assert.equal(
+            terminal.failure.resetAt,
+            "sharingResetAt" in scenario ? scenario.sharingResetAt : null,
+          );
         }
       }).pipe(
         Effect.provide(

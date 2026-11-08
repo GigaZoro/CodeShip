@@ -235,11 +235,19 @@ function isConnected(presentation: {
 }
 
 /** One login whose limits another site keeps, with every environment it is signed in on. */
+/** A connected environment where the account can sign in to have its limits read there. */
+export interface LimitsSignInTarget {
+  readonly environmentId: EnvironmentId;
+  readonly environmentLabel: string;
+  readonly instanceId: ProviderInstanceId;
+}
+
 export interface ExternalUsageAccount {
   readonly key: string;
   readonly names: readonly string[];
   readonly email: string | undefined;
   readonly environments: readonly string[];
+  readonly signIns: readonly LimitsSignInTarget[];
 }
 
 export interface ExternalUsageLink {
@@ -285,8 +293,9 @@ export function collectExternalUsageLinks(
       const external = provider.usageLimits?.externalUsage;
       if (!external || provider.auth.status !== "authenticated") continue;
       const login = accountKey(provider.driver, provider.auth.email);
-      // The account's limits already show in its bar.
-      if (login && readable.has(login)) continue;
+      const canSignIn = provider.usageLimits?.limitsSignIn === true && isConnected(presentation);
+      // Its limits already show in a bar, and this environment cannot read them itself.
+      if (login && readable.has(login) && !canSignIn) continue;
       const linkKey = `${provider.driver}:${external.url}`;
       const entry = links.get(linkKey) ?? {
         link: {
@@ -311,6 +320,12 @@ export function collectExternalUsageLinks(
         ],
         email: previous?.email ?? provider.auth.email,
         environments: [...new Set([...(previous?.environments ?? []), environment])],
+        signIns: [
+          ...(previous?.signIns ?? []),
+          ...(canSignIn
+            ? [{ environmentId, environmentLabel: environment, instanceId: provider.instanceId }]
+            : []),
+        ],
       });
     }
   }

@@ -56,6 +56,7 @@ function makeInstance(input: {
   instanceId: ProviderInstanceId;
   enabled: boolean;
   auth?: ProviderAuthService.ProviderAuthController;
+  limitsAuth?: ProviderAuthService.ProviderAuthController;
 }): ProviderInstance {
   return {
     ...input,
@@ -130,6 +131,8 @@ const makeHarness = Effect.fn("ProviderAuthService.test.makeHarness")(function* 
     sharedBusy?: boolean;
     sharedBusyEffect?: Effect.Effect<boolean>;
     responds?: boolean;
+    /** The instance also keeps a login only to read its limits. */
+    limits?: boolean;
     beforeLogout?: Effect.Effect<void>;
     beforeStop?: Effect.Effect<void>;
     beforeListSessions?: Effect.Effect<void>;
@@ -217,8 +220,26 @@ const makeHarness = Effect.fn("ProviderAuthService.test.makeHarness")(function* 
       Stream.fromEffect(Effect.sync(() => (ownerSessionId === flowOwner ? state : idle))),
     isLogoutPrompt: (text, hasAttachments) => !hasAttachments && text.trim() === "/logout",
   };
+  const limitsAuth: ProviderAuthService.ProviderAuthController = {
+    ...auth,
+    start: Effect.fn(function* (_ownerSessionId, stopSessions) {
+      yield* stopSessions ?? Effect.void;
+      actions.push("limits-start");
+      return waitingAuthState;
+    }),
+    logout: Effect.fn(function* (stopSessions) {
+      yield* stopSessions;
+      actions.push("limits-logout");
+      return idle;
+    }),
+  };
   const instances = [
-    makeInstance({ instanceId, enabled: input.enabled ?? true, auth }),
+    makeInstance({
+      instanceId,
+      enabled: input.enabled ?? true,
+      auth,
+      ...(input.limits ? { limitsAuth } : {}),
+    }),
     makeInstance({ instanceId: unsupportedInstanceId, enabled: true }),
     ...(input.sharedCredentials
       ? [
@@ -399,6 +420,22 @@ const observeAuth = Effect.fn("ProviderAuthService.test.observeAuth")(function* 
 });
 
 describe("ProviderAuthService", () => {
+  it.effect("a limits sign-in and its sign-out leave the account's sessions running", () =>
+    Effect.gen(function* () {
+      const { service, actions, sessions } = yield* makeHarness({
+        limits: true,
+        ...sessionThreads([makeSession("target")]),
+      });
+      yield* service.start({ instanceId, purpose: "limits" }, owner);
+      yield* service.logout({ instanceId, purpose: "limits" });
+      assert.deepStrictEqual(actions, ["limits-start", "limits-logout"]);
+      assert.strictEqual(sessions.size, 1);
+      const error = yield* service
+        .start({ instanceId: unsupportedInstanceId, purpose: "limits" }, owner)
+        .pipe(Effect.flip);
+      assert.include(error.detail, "without a separate sign-in");
+    }),
+  );
   it.effect(
     "stops sessions sharing credentials and invalidates their processes before logout",
     () =>

@@ -61,6 +61,8 @@ export interface ProviderInstance {
   readonly orchestrationAdapter: ProviderAdapter.ProviderAdapterV2["Service"];
   readonly textGeneration: ProviderTextGeneration;
   readonly auth?: ProviderAuthController;
+  /** A login kept beside `auth` only to read this account's usage limits; see ProviderAuthPurpose. */
+  readonly limitsAuth?: ProviderAuthController;
   readonly plugins?: ProviderPluginManagement;
   /** Where this provider loads personal skills from; absent when it cannot take copied skills. */
   readonly personalSkillsDirectory?: string;

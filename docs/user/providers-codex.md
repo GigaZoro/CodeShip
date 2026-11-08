@@ -104,6 +104,13 @@ when it resets, when Codex reports them. Send the message again after the reset.
 message also says whether your workspace owner needs to add credits or raise the
 spend limit to continue sooner.
 
+An account you connected with ChatGPT can stop on its plan's limit or on the cap you set for
+T3.CodeShip in ChatGPT's usage settings. T3.CodeShip knows when either resets only on a machine
+that reads the account's limits, so choose **Read limits** for the account under
+**Usage → Limits** on each machine that runs its threads. With the reset known, **Switch accounts
+at usage limits** moves a stopped thread to an account with room, and the thread can resume by
+itself at the reset.
+
 ## Send feedback to OpenAI
 
 In an existing Codex thread, send `/feedback` with an optional description, for

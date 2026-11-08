@@ -1,3 +1,9 @@
+## 2026-11-08 — Codex accounts connected with ChatGPT switch at their limits by themselves
+
+- **Limits kept by ChatGPT** under **Usage → Limits** now has **Read limits** for each account connected with ChatGPT, on each machine that cannot read its limits yet. Sign in as the account once: T3.CodeShip keeps that Codex login only for reading the account's limits and using its reset credits, and leaves your Codex CLI and Codex Desktop logins alone. Running threads keep going while you sign in. Signing in as a different account is refused, and disconnecting the account removes the login.
+- When such an account stops on its ChatGPT usage limit, the thread now says so with the ChatGPT recovery options, and a machine that reads the account's limits knows when it resets. **Switch accounts at usage limits** then moves the thread to an account with room, auto-resume can wait for the reset, and new threads skip an account that is out. Before, these stops looked like a dropped connection and you had to switch accounts by hand.
+- On web, desktop and mobile.
+
 ## 2026-11-08 — Open at login
 
 - **Settings → Maintenance & about → Open at login** starts T3.CodeShip when you sign in on macOS and Windows. On Windows the entry follows the app across updates that rename it: the installer and the app keep it on the current executable, and a startup entry left on an older executable name in the install folder, including one added by hand, is moved over instead of starting a deleted file. Uninstalling removes it.

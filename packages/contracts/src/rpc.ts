@@ -78,6 +78,7 @@ import {
   ProviderInstallState,
   ProviderSetupError,
   ProviderSetupInput,
+  ProviderAuthTargetInput,
 } from "./providerSetup.ts";
 
 import {
@@ -795,13 +796,13 @@ const WsProviderAuthCancelRpc = Rpc.make(WS_METHODS.providerAuthCancel, {
 });
 
 const WsProviderAuthLogoutRpc = Rpc.make(WS_METHODS.providerAuthLogout, {
-  payload: ProviderSetupInput,
+  payload: ProviderAuthTargetInput,
   success: ProviderAuthState,
   error: ProviderSetupRpcError,
 });
 
 const WsProviderAuthSubscribeRpc = Rpc.make(WS_METHODS.providerAuthSubscribe, {
-  payload: ProviderSetupInput,
+  payload: ProviderAuthTargetInput,
   success: ProviderAuthState,
   error: ProviderSetupRpcError,
   stream: true,

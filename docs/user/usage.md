@@ -151,13 +151,15 @@ time has no refill estimate; refresh Limits for a new reading. Claude's model-sp
 allowances keep their reported values.
 
 Codex accounts you [connect with ChatGPT](./providers-codex.md#connect-with-chatgpt) spend the
-same limits as the account's Codex CLI login, but ChatGPT shares those limits only with the CLI
-login. Such an account gets a bar, with its reset credits, once a connected machine has a
-[Codex CLI login](./providers-codex.md#use-an-existing-codex-login) for it: added as its own Codex
-provider, or, for the first account you connected on that machine, run as `codex login` in
-`~/.codex`. **Limits kept by ChatGPT** under Codex lists the other accounts once each, with every
-environment they are signed in on; choose **Open ChatGPT usage**, then sign in with the account
-you connected.
+same allowance as Codex's own login for the account, but ChatGPT shares their limits only with
+that login. **Limits kept by ChatGPT** under Codex lists each such account with the machines whose
+limits it cannot read yet. Choose **Read limits** on a machine and sign in as that account once:
+T3.CodeShip keeps that login for the account on that machine, only to read its limits and use its
+reset credits, and leaves your Codex CLI and Codex Desktop logins alone. The account then gets a
+bar, and on that machine [account switching](./providers-codex.md#codex-says-i-hit-a-usage-limit)
+skips it before it runs out and knows when it resets. Disconnecting the account removes that
+login too. A Codex CLI login of the same account on a machine, as its own Codex provider or in
+`~/.codex` for the first account you connected there, is read the same way.
 
 Opening Limits checks the selected connected environments automatically. Each client waits at
 least five minutes between automatic checks of an environment, including after a failed check.

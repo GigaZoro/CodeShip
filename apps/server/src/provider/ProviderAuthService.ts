@@ -2,6 +2,7 @@ import {
   ProviderSetupError,
   type ChatGptReconnectProfile,
   type ChatGptTransferredProfile,
+  type ProviderAuthPurpose,
   type ProviderAuthRespondInput,
   type ProviderAuthStartInput,
   type ProviderAuthState,
@@ -24,6 +25,7 @@ export type { ProviderAuthController } from "@t3tools/provider-core/server/auth"
 
 interface ProviderAuthTarget {
   readonly instanceId: ProviderInstanceId;
+  readonly purpose?: ProviderAuthPurpose;
 }
 
 export class ProviderAuthService extends Context.Service<
@@ -73,8 +75,19 @@ export const makeProviderAuthService = Effect.gen(function* () {
   const getController = Effect.fn("ProviderAuthService.getController")(function* (
     instanceId: ProviderInstanceId,
     operation: string,
+    purpose?: ProviderAuthPurpose,
   ) {
     const instance = yield* registry.getInstance(instanceId);
+    if (purpose === "limits") {
+      if (instance?.limitsAuth) return instance.limitsAuth;
+      return yield* new ProviderSetupError({
+        instanceId,
+        operation,
+        detail: instance
+          ? "This account reads its limits without a separate sign-in."
+          : "This provider instance is no longer available.",
+      });
+    }
     if (!instance?.auth) {
       return yield* new ProviderSetupError({
         instanceId,
@@ -226,11 +239,13 @@ export const makeProviderAuthService = Effect.gen(function* () {
     start: Effect.fn("ProviderAuthService.start")(function* (input, ownerSessionId) {
       return yield* credentialChanges.withPermit(
         Effect.gen(function* () {
-          const auth = yield* getController(input.instanceId, "start");
-          yield* checkSharedBinding(input.instanceId, "start", auth);
+          const auth = yield* getController(input.instanceId, "start", input.purpose);
+          // A limits login sits beside the account's own sign-in, so its sessions keep running.
+          const limitsLogin = input.purpose === "limits";
+          if (!limitsLogin) yield* checkSharedBinding(input.instanceId, "start", auth);
           return yield* auth.start(
             ownerSessionId,
-            stopSessions(input.instanceId, auth.credentialBinding),
+            limitsLogin ? Effect.void : stopSessions(input.instanceId, auth.credentialBinding),
             input.methodId,
             input.returnUrl,
             input.callbackMode,
@@ -239,7 +254,7 @@ export const makeProviderAuthService = Effect.gen(function* () {
       );
     }),
     respond: Effect.fn("ProviderAuthService.respond")(function* (input, ownerSessionId) {
-      const auth = yield* getController(input.instanceId, "respond");
+      const auth = yield* getController(input.instanceId, "respond", input.purpose);
       if (!auth.respond) {
         return yield* new ProviderSetupError({
           instanceId: input.instanceId,
@@ -250,17 +265,18 @@ export const makeProviderAuthService = Effect.gen(function* () {
       return yield* auth.respond(ownerSessionId, input);
     }),
     complete: Effect.fn("ProviderAuthService.complete")(function* (input, ownerSessionId) {
-      const auth = yield* getController(input.instanceId, "complete");
+      const auth = yield* getController(input.instanceId, "complete", input.purpose);
       return yield* auth.complete(ownerSessionId, input);
     }),
     cancel: Effect.fn("ProviderAuthService.cancel")(function* (input, ownerSessionId) {
-      const auth = yield* getController(input.instanceId, "cancel");
+      const auth = yield* getController(input.instanceId, "cancel", input.purpose);
       return yield* auth.cancel(ownerSessionId, input.flowId);
     }),
     logout: Effect.fn("ProviderAuthService.logout")(function* (input) {
       return yield* credentialChanges.withPermit(
         Effect.gen(function* () {
-          const auth = yield* getController(input.instanceId, "logout");
+          const auth = yield* getController(input.instanceId, "logout", input.purpose);
+          if (input.purpose === "limits") return yield* auth.logout(Effect.void);
           yield* checkSharedBinding(input.instanceId, "logout", auth);
           return yield* auth.logout(stopSessions(input.instanceId, auth.credentialBinding));
         }),
@@ -269,11 +285,11 @@ export const makeProviderAuthService = Effect.gen(function* () {
     subscribe: Function.flow(
       Effect.fn("ProviderAuthService.subscribe")(function* (input, ownerSessionId) {
         const changes = yield* registry.subscribeChanges;
-        const initial = yield* getController(input.instanceId, "subscribe");
+        const initial = yield* getController(input.instanceId, "subscribe", input.purpose);
         return Stream.concat(
           Stream.succeed(initial),
           Stream.fromSubscription(changes).pipe(
-            Stream.mapEffect(() => getController(input.instanceId, "subscribe")),
+            Stream.mapEffect(() => getController(input.instanceId, "subscribe", input.purpose)),
           ),
         ).pipe(
           Stream.changesWith((previous, next) => previous === next),

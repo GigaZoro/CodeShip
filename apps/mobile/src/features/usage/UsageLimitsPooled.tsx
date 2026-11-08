@@ -38,6 +38,7 @@ import { ProviderIcon } from "../../components/ProviderIcon";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { environmentPresentations } from "../../state/presentation";
 import { relativeTime } from "../../lib/time";
+import { CodexLimitsSignIn } from "./CodexLimitsSignIn";
 import { ResetCredits } from "./UsageLimitsSection";
 import { usageProviderKind, useProviderColors } from "./usageProviders";
 import { t, tn, msg, getFormattingLocale } from "../../lib/i18n";
@@ -150,8 +151,15 @@ function PoolResetCredits({ pool, now }: { readonly pool: LimitPool; readonly no
   );
 }
 
-function ExternalUsageAccounts({ link }: { readonly link: ExternalUsageLink }) {
+function ExternalUsageAccounts({
+  link,
+  showEnvironment,
+}: {
+  readonly link: ExternalUsageLink;
+  readonly showEnvironment: boolean;
+}) {
   const chatGpt = link.url === CHATGPT_USAGE_URL;
+  const canSignIn = link.accounts.some((account) => account.signIns.length > 0);
   return (
     <View className="gap-3 rounded-[24px] border-continuous bg-grouped-card p-4">
       <View className="gap-1">
@@ -161,24 +169,37 @@ function ExternalUsageAccounts({ link }: { readonly link: ExternalUsageLink }) {
         {chatGpt || link.message ? (
           <Text className="text-xs text-foreground-muted">
             {chatGpt
-              ? t(
-                  "ChatGPT shares an account's limits only with that account's Codex CLI login. Add the login as a Codex provider on a connected machine to see its limits here, or open ChatGPT signed in as the account.",
-                )
+              ? canSignIn
+                ? t(
+                    "ChatGPT shares an account's limits only with Codex's own login. Read limits once per account on each machine: T3.CodeShip then shows its limits, switches accounts before they run out, and resumes threads when they reset.",
+                  )
+                : t(
+                    "ChatGPT shares an account's limits only with that account's Codex CLI login. Add the login as a Codex provider on a connected machine to see its limits here, or open ChatGPT signed in as the account.",
+                  )
               : link.message}
           </Text>
         ) : null}
       </View>
       {link.accounts.map((account) => (
-        <View key={account.key} className="flex-row items-center gap-2">
-          {account.email ? <AccountChip email={account.email} /> : null}
-          <View className="min-w-0 flex-1">
-            <Text numberOfLines={1} className="text-sm font-t3-medium text-foreground">
-              {account.names.join(" / ")}
-            </Text>
-            <Text className="text-xs text-foreground-muted">
-              {account.environments.join(" · ")}
-            </Text>
+        <View key={account.key} className="gap-1">
+          <View className="flex-row items-center gap-2">
+            {account.email ? <AccountChip email={account.email} /> : null}
+            <View className="min-w-0 flex-1">
+              <Text numberOfLines={1} className="text-sm font-t3-medium text-foreground">
+                {account.names.join(" / ")}
+              </Text>
+              <Text className="text-xs text-foreground-muted">
+                {account.environments.join(" · ")}
+              </Text>
+            </View>
           </View>
+          {account.signIns.map((target) => (
+            <CodexLimitsSignIn
+              key={`${target.environmentId}:${target.instanceId}`}
+              target={target}
+              showEnvironment={showEnvironment}
+            />
+          ))}
         </View>
       ))}
       <Pressable
@@ -683,7 +704,11 @@ export function UsageLimitsSection({
             {externalLinks
               .filter((link) => link.driver === driver)
               .map((link) => (
-                <ExternalUsageAccounts key={link.url} link={link} />
+                <ExternalUsageAccounts
+                  key={link.url}
+                  link={link}
+                  showEnvironment={selected.size > 1}
+                />
               ))}
           </View>
         </Fragment>

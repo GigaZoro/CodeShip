@@ -40,6 +40,8 @@ export const ServerProviderUsageLimits = Schema.Struct({
       url: TrimmedNonEmptyString,
     }),
   ),
+  /** These limits become readable through a sign-in with the auth purpose "limits". */
+  limitsSignIn: Schema.optional(Schema.Boolean),
   unavailable: Schema.optional(
     Schema.Struct({
       reason: Schema.Literals(["unsupported", "probeFailed"]),

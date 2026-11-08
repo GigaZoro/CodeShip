@@ -26,16 +26,14 @@ const CHATGPT_METHOD: ProviderAuthMethod = {
 };
 
 /** Signs a Codex home in and out through the app server's own ChatGPT login. */
-export const makeCodexCliAuth = Effect.fn("makeCodexCliAuth")(function* (options: {
+export const makeCodexChatGptLogin = Effect.fn("makeCodexChatGptLogin")(function* (options: {
   readonly instanceId: ProviderInstanceId;
-  readonly credentialKey: string;
-  /** An initialized app server for this instance's Codex home, closed with the scope. */
+  /** An initialized app server for the Codex home, closed with the scope. */
   readonly openClient: Effect.Effect<
     CodexClient.CodexAppServerClient["Service"],
-    CodexErrors.CodexAppServerError,
+    CodexErrors.CodexAppServerError | ProviderSetupError,
     Scope.Scope
   >;
-  readonly canLogout: boolean;
 }) {
   const http = yield* HttpClient.HttpClient;
   const failure = (operation: string, detail: string, cause?: unknown) =>
@@ -46,7 +44,6 @@ export const makeCodexCliAuth = Effect.fn("makeCodexCliAuth")(function* (options
     );
 
   const authenticate = Effect.fn("CodexCliAuth.authenticate")(function* (
-    _methodId: string,
     context: ProviderAuthFlow.ProviderAuthFlowContext,
   ) {
     // The app server hosts Codex's localhost login page, so it stays open for the whole flow.
@@ -113,29 +110,47 @@ export const makeCodexCliAuth = Effect.fn("makeCodexCliAuth")(function* (options
     yield* context.verifying;
   });
 
-  const logout = options.canLogout
-    ? Effect.scoped(
-        Effect.gen(function* () {
-          const client = yield* openClient("logout");
-          yield* client.request("account/logout", undefined).pipe(
-            Effect.timeout(REQUEST_TIMEOUT),
-            Effect.mapError((cause) =>
-              failure("logout", "Codex could not sign this account out. Try again.", cause),
-            ),
-          );
-          return "Signed this Codex account out.";
-        }),
-      )
-    : Effect.fail(
-        failure("logout", "Sign out of this Codex login in a terminal with `codex logout`."),
+  const logout = Effect.scoped(
+    Effect.gen(function* () {
+      const client = yield* openClient("logout");
+      yield* client.request("account/logout", undefined).pipe(
+        Effect.timeout(REQUEST_TIMEOUT),
+        Effect.mapError((cause) =>
+          failure("logout", "Codex could not sign this account out. Try again.", cause),
+        ),
       );
+      return "Signed this Codex account out.";
+    }),
+  );
+  return { authenticate, logout };
+});
 
+export const makeCodexCliAuth = Effect.fn("makeCodexCliAuth")(function* (options: {
+  readonly instanceId: ProviderInstanceId;
+  readonly credentialKey: string;
+  /** An initialized app server for this instance's Codex home, closed with the scope. */
+  readonly openClient: Effect.Effect<
+    CodexClient.CodexAppServerClient["Service"],
+    CodexErrors.CodexAppServerError,
+    Scope.Scope
+  >;
+  readonly canLogout: boolean;
+}) {
+  const login = yield* makeCodexChatGptLogin(options);
   const controller = yield* ProviderAuthFlow.make({
     instanceId: options.instanceId,
     credentialBinding: { owner: "provider", key: options.credentialKey },
     methods: Effect.succeed([CHATGPT_METHOD]),
-    authenticate,
-    logout,
+    authenticate: (_methodId, context) => login.authenticate(context),
+    logout: options.canLogout
+      ? login.logout
+      : Effect.fail(
+          new ProviderSetupError({
+            instanceId: options.instanceId,
+            operation: "logout",
+            detail: "Sign out of this Codex login in a terminal with `codex logout`.",
+          }),
+        ),
   });
   return { controller };
 });

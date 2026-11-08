@@ -2,6 +2,7 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  chatGptSharingLimitResetAt,
   codexRateLimitsFailureMessage,
   codexRateLimitsToLimits,
   codexRateLimitsToUpdate,
@@ -282,5 +283,47 @@ describe("codexUsageLimitResetAt", () => {
     expect(
       codexUsageLimitResetAt({ primary: { usedPercent: 50, resetsAt: 2000000000 } }),
     ).toBeNull();
+  });
+});
+
+describe("chatGptSharingLimitResetAt", () => {
+  const now = Date.parse("2026-11-08T00:00:00.000Z");
+  const window = (kind: "session" | "weekly", usedPercent: number, resetsAt: string) => ({
+    id: kind === "session" ? "primary" : "secondary",
+    kind,
+    label: kind,
+    usedPercent,
+    resetsAt,
+  });
+  const limits = (...windows: ReturnType<typeof window>[]) => ({
+    checkedAt: "2026-11-08T00:00:00.000Z",
+    windows,
+  });
+
+  it("resets with the exhausted windows, else with the week for the app's own cap", () => {
+    const session = "2026-11-08T03:00:00.000Z";
+    const week = "2026-11-11T08:00:00.000Z";
+    expect(
+      chatGptSharingLimitResetAt(
+        limits(window("session", 100, session), window("weekly", 60, week)),
+        now,
+      ),
+    ).toBe(session);
+    expect(
+      chatGptSharingLimitResetAt(
+        limits(window("session", 40, session), window("weekly", 60, week)),
+        now,
+      ),
+    ).toBe(week);
+    expect(
+      chatGptSharingLimitResetAt(
+        limits(window("session", 100, session), window("weekly", 100, week)),
+        now,
+      ),
+    ).toBe(week);
+    expect(
+      chatGptSharingLimitResetAt(limits(window("weekly", 100, "2026-11-07T00:00:00.000Z")), now),
+    ).toBeNull();
+    expect(chatGptSharingLimitResetAt(undefined, now)).toBeNull();
   });
 });

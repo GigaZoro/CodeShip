@@ -1664,9 +1664,22 @@ describe("external usage settings", () => {
             names: [String(managed.instanceId), "Work"],
             email: "Work@example.com",
             environments: ["A", "B"],
+            signIns: [],
           },
-          { key: "a:personal", names: ["personal"], email: undefined, environments: ["A"] },
-          { key: "b:personal", names: ["personal"], email: undefined, environments: ["B"] },
+          {
+            key: "a:personal",
+            names: ["personal"],
+            email: undefined,
+            environments: ["A"],
+            signIns: [],
+          },
+          {
+            key: "b:personal",
+            names: ["personal"],
+            email: undefined,
+            environments: ["B"],
+            signIns: [],
+          },
         ],
       },
     ]);
@@ -1674,7 +1687,7 @@ describe("external usage settings", () => {
     expect(collectLimitNotices(presentations)).toEqual([]);
   });
 
-  it("leaves out a login whose limits another environment reads", () => {
+  it("leaves out a login whose limits another environment reads, unless it can sign in here", () => {
     const managed = provider({
       auth: { status: "authenticated", email: "work@example.com" },
       usageLimits: {
@@ -1705,6 +1718,34 @@ describe("external usage settings", () => {
     expect(
       collectExternalUsageLinks(presentations).flatMap((link) => link.accounts.map((a) => a.key)),
     ).toEqual(["codex:a@example.com"]);
+
+    const signable = {
+      ...managed,
+      usageLimits: { ...managed.usageLimits!, limitsSignIn: true },
+    };
+    const withSignIn = new Map([
+      ...presentations,
+      [
+        EnvironmentId.make("a"),
+        { entry: { target: { label: "A" } }, serverConfig: { providers: [signable] } },
+      ],
+    ]);
+    expect(
+      collectExternalUsageLinks(withSignIn).flatMap((link) =>
+        link.accounts.map((account) => [account.key, account.signIns]),
+      ),
+    ).toEqual([
+      [
+        "codex:work@example.com",
+        [
+          {
+            environmentId: EnvironmentId.make("a"),
+            environmentLabel: "A",
+            instanceId: signable.instanceId,
+          },
+        ],
+      ],
+    ]);
   });
 });
 
