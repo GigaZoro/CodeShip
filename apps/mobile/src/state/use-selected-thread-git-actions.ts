@@ -1,6 +1,10 @@
 import { useAtomMount } from "@effect/atom-react";
 
-import { EnvironmentProject, EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import {
+  EnvironmentProject,
+  EnvironmentThreadShell,
+  threadRuntimeIsActive,
+} from "@t3tools/client-runtime/state/shell";
 import { wasThreadChangedMeanwhile } from "@t3tools/client-runtime/errors";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import {
@@ -81,6 +85,10 @@ export function useSelectedThreadGitActions() {
     AuthOrchestrationOperateScope,
   );
   const canChangeThreadBranch = canWriteSourceControl && canOperateThread;
+  // A switch would move the checkout the agent is editing, and a ref in another worktree stops its turn.
+  const branchChangeBlockedReason = threadRuntimeIsActive(selectedThread?.runtime)
+    ? t("Branches can't change while the agent is working.")
+    : null;
   const { selectedThreadCwd, selectedThreadWorktreePath } = useSelectedThreadWorktree();
   const runStackedAction = useAtomCommand(
     vcsActionManager.runStackedAction({
@@ -178,7 +186,11 @@ export function useSelectedThreadGitActions() {
       readonly project: EnvironmentProject;
       readonly cwd: string;
     }) => Promise<AtomCommandResult<T, E>>,
-    options?: { readonly managedExternally?: boolean; readonly changesThreadBranch?: boolean },
+    options?: {
+      readonly managedExternally?: boolean;
+      readonly changesThreadBranch?: boolean;
+      readonly refusedWhileTurnRuns?: boolean;
+    },
   ): Promise<T | null> => {
     if (
       !selectedThread ||
@@ -195,6 +207,14 @@ export function useSelectedThreadGitActions() {
       environmentId: selectedThread.environmentId,
       cwd: selectedThreadCwd,
     };
+    if (options?.refusedWhileTurnRuns === true && branchChangeBlockedReason !== null) {
+      showGitActionResult(target, {
+        type: "error",
+        title: t("Git action failed"),
+        description: branchChangeBlockedReason,
+      });
+      return null;
+    }
     setPendingConnectionError(null);
     const run = () =>
       execute({
@@ -281,7 +301,7 @@ export function useSelectedThreadGitActions() {
         });
         return AsyncResult.isFailure(syncResult) ? AsyncResult.failure(syncResult.cause) : result;
       },
-      { changesThreadBranch: true },
+      { changesThreadBranch: true, refusedWhileTurnRuns: true },
     );
   };
 
@@ -307,7 +327,7 @@ export function useSelectedThreadGitActions() {
         });
         return AsyncResult.isFailure(syncResult) ? AsyncResult.failure(syncResult.cause) : result;
       },
-      { changesThreadBranch: true },
+      { changesThreadBranch: true, refusedWhileTurnRuns: true },
     );
   };
 
@@ -341,7 +361,7 @@ export function useSelectedThreadGitActions() {
         });
         return AsyncResult.isFailure(syncResult) ? AsyncResult.failure(syncResult.cause) : result;
       },
-      { changesThreadBranch: true },
+      { changesThreadBranch: true, refusedWhileTurnRuns: true },
     );
   };
 
@@ -432,6 +452,7 @@ export function useSelectedThreadGitActions() {
   return {
     canWriteSourceControl,
     canChangeThreadBranch,
+    branchChangeBlockedReason,
     refreshSelectedThreadGitStatus,
     refreshSelectedThreadBranches,
     onCheckoutSelectedThreadBranch,

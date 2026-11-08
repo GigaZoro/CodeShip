@@ -20,6 +20,7 @@ const state = vi.hoisted(() => ({
     environmentId: "environment",
     branch: "main",
     worktreePath: null as string | null,
+    runtime: null as { status: "running" } | null,
   },
   commits: 0,
   pushes: 0,
@@ -164,6 +165,7 @@ describe("thread Git mutation permissions", () => {
     state.worktrees = [];
     state.thread.branch = "main";
     state.thread.worktreePath = null;
+    state.thread.runtime = null;
     state.commits = 0;
     state.pushes = 0;
     state.metadataRequests = [];
@@ -249,6 +251,35 @@ describe("thread Git mutation permissions", () => {
     ]);
     expect(state.results.map((entry) => entry.type)).toEqual(["success"]);
   });
+
+  it.each(["create", "checkout", "worktree"] as const)(
+    "refuses to %s while the thread's turn is running",
+    async (operation) => {
+      state.scopes.add(AuthOrchestrationOperateScope);
+      state.thread.runtime = { status: "running" };
+      const actions = useSelectedThreadGitActions();
+      const result =
+        operation === "create"
+          ? await actions.onCreateSelectedThreadBranch("feature")
+          : operation === "checkout"
+            ? await actions.onCheckoutSelectedThreadBranch("feature")
+            : await actions.onCreateSelectedThreadWorktree({
+                baseBranch: "main",
+                newBranch: "feature",
+              });
+      expect(result).toBeNull();
+      expect(state.branch).toBe("main");
+      expect(state.worktrees).toEqual([]);
+      expect(state.metadataRequests).toEqual([]);
+      expect(state.results).toEqual([
+        {
+          type: "error",
+          title: "Git action failed",
+          description: "Branches can't change while the agent is working.",
+        },
+      ]);
+    },
+  );
 
   it("refreshes the worktree status when the metadata update is denied after checkout", async () => {
     state.scopes.add(AuthOrchestrationOperateScope);

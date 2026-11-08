@@ -3,10 +3,13 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 
 import {
   GitManagerError,
   GitCommandError,
+  VcsCheckoutBusyError,
   type VcsSwitchRefInput,
   type VcsSwitchRefResult,
   type VcsCreateRefInput,
@@ -32,6 +35,8 @@ import {
 } from "@t3tools/contracts";
 
 import * as GitManager from "./GitManager.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
@@ -75,7 +80,10 @@ export class GitWorkflowService extends Context.Service<
     ) => Effect.Effect<GitResolvePullRequestResult, GitManagerServiceError>;
     readonly preparePullRequestThread: (
       input: GitPreparePullRequestThreadInput,
-    ) => Effect.Effect<GitPreparePullRequestThreadResult, GitManagerServiceError>;
+    ) => Effect.Effect<
+      GitPreparePullRequestThreadResult,
+      GitManagerServiceError | VcsCheckoutBusyError
+    >;
     readonly listRefs: (
       input: VcsListRefsInput,
     ) => Effect.Effect<VcsListRefsResult, GitCommandError>;
@@ -126,10 +134,10 @@ export class GitWorkflowService extends Context.Service<
     ) => Effect.Effect<void, GitCommandError>;
     readonly createRef: (
       input: VcsCreateRefInput,
-    ) => Effect.Effect<VcsCreateRefResult, GitCommandError>;
+    ) => Effect.Effect<VcsCreateRefResult, GitCommandError | VcsCheckoutBusyError>;
     readonly switchRef: (
       input: VcsSwitchRefInput,
-    ) => Effect.Effect<VcsSwitchRefResult, GitCommandError>;
+    ) => Effect.Effect<VcsSwitchRefResult, GitCommandError | VcsCheckoutBusyError>;
     readonly renameBranch: (input: {
       readonly exactName?: boolean;
       readonly cwd: string;
@@ -184,12 +192,80 @@ export const make = Effect.gen(function* () {
   const git = yield* GitVcsDriver.GitVcsDriver;
   const gitManager = yield* GitManager.GitManager;
   const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const threads = yield* ProjectionStore.ProjectionStoreV2;
+  const projects = yield* ProjectStore.ProjectStoreV2;
+
+  const realPath = (target: string) =>
+    fileSystem.realPath(target).pipe(Effect.orElseSucceed(() => path.resolve(target)));
+  const contains = (parent: string, child: string) => {
+    const relative = path.relative(parent, child);
+    return (
+      relative === "" ||
+      (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`))
+    );
+  };
 
   // Nested projects and path aliases must share the checkout's branch-mutation lease.
   const withCheckoutLease = <A, E, R>(rootPath: string, effect: Effect.Effect<A, E, R>) =>
-    fileSystem.realPath(rootPath).pipe(
-      Effect.orElseSucceed(() => rootPath),
-      Effect.flatMap((cwd) => withWorkspaceLease(cwd, effect)),
+    realPath(rootPath).pipe(Effect.flatMap((cwd) => withWorkspaceLease(cwd, effect)));
+
+  const findActiveTurnIn = Effect.fn("GitWorkflowService.findActiveTurnIn")(function* (
+    checkoutRoot: string,
+  ) {
+    for (const workspace of yield* threads.getActiveTurnWorkspaces()) {
+      const folder =
+        workspace.worktreePath ??
+        Option.getOrNull(yield* projects.get(workspace.projectId))?.workspaceRoot;
+      if (folder === undefined) continue;
+      const turnCwd = yield* realPath(folder);
+      if (contains(turnCwd, checkoutRoot)) return workspace.threadId;
+      if (!contains(checkoutRoot, turnCwd)) continue;
+      // A worktree inside the checkout's folder is a checkout of its own.
+      const handle = yield* registry.detect({ cwd: turnCwd });
+      if (handle !== null && (yield* realPath(handle.repository.rootPath)) === checkoutRoot) {
+        return workspace.threadId;
+      }
+    }
+    return null;
+  });
+
+  // A switch moves files under the agent, and a turn holds the lease only while it starts.
+  const ensureCheckoutIdle = Effect.fn("GitWorkflowService.ensureCheckoutIdle")(function* (
+    operation: string,
+    cwd: string,
+    checkoutRoot: string,
+  ) {
+    const threadId = yield* findActiveTurnIn(checkoutRoot).pipe(
+      Effect.mapError(
+        (cause) =>
+          new GitCommandError({
+            operation,
+            command: "turn-guard",
+            cwd,
+            detail: "Failed to check for turns running in this checkout.",
+            cause,
+          }),
+      ),
+    );
+    if (threadId !== null) {
+      return yield* new VcsCheckoutBusyError({ operation, cwd, threadId });
+    }
+  });
+
+  const withIdleCheckoutLease = <A, E, R>(
+    operation: string,
+    cwd: string,
+    rootPath: string,
+    effect: Effect.Effect<A, E, R>,
+  ) =>
+    realPath(rootPath).pipe(
+      Effect.flatMap((checkoutRoot) =>
+        withWorkspaceLease(
+          checkoutRoot,
+          ensureCheckoutIdle(operation, cwd, checkoutRoot).pipe(Effect.andThen(effect)),
+        ),
+      ),
     );
 
   const ensureGit = Effect.fn("GitWorkflowService.ensureGit")(function* (
@@ -453,10 +529,13 @@ export const make = Effect.gen(function* () {
     ),
     preparePullRequestThread: Effect.fn("GitWorkflowService.preparePullRequestThread")(
       function (input) {
-        return ensureGit("GitWorkflowService.preparePullRequestThread", input.cwd).pipe(
+        const operation = "GitWorkflowService.preparePullRequestThread";
+        return ensureGit(operation, input.cwd).pipe(
           Effect.flatMap((handle) =>
             input.mode === "local"
-              ? withCheckoutLease(
+              ? withIdleCheckoutLease(
+                  operation,
+                  input.cwd,
                   handle.repository.rootPath,
                   gitManager.preparePullRequestThread(input),
                 )
@@ -534,18 +613,30 @@ export const make = Effect.gen(function* () {
       );
     }),
     createRef: Effect.fn("GitWorkflowService.createRef")(function (input) {
-      return ensureGitCommand("GitWorkflowService.createRef", input.cwd).pipe(
+      const operation = "GitWorkflowService.createRef";
+      return ensureGitCommand(operation, input.cwd).pipe(
         Effect.flatMap((handle) =>
           input.switchRef
-            ? withCheckoutLease(handle.repository.rootPath, git.createRef(input))
+            ? withIdleCheckoutLease(
+                operation,
+                input.cwd,
+                handle.repository.rootPath,
+                git.createRef(input),
+              )
             : git.createRef(input),
         ),
       );
     }),
     switchRef: Effect.fn("GitWorkflowService.switchRef")(function (input) {
-      return ensureGitCommand("GitWorkflowService.switchRef", input.cwd).pipe(
+      const operation = "GitWorkflowService.switchRef";
+      return ensureGitCommand(operation, input.cwd).pipe(
         Effect.flatMap((handle) =>
-          withCheckoutLease(handle.repository.rootPath, Effect.scoped(git.switchRef(input))),
+          withIdleCheckoutLease(
+            operation,
+            input.cwd,
+            handle.repository.rootPath,
+            Effect.scoped(git.switchRef(input)),
+          ),
         ),
       );
     }),

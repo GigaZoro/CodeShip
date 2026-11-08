@@ -1,16 +1,36 @@
 import { assert, it } from "@effect/vitest";
+import { ProjectId, ThreadId, VcsCheckoutBusyError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FileSystem from "effect/FileSystem";
 
 import * as ServerConfig from "../config.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as GitManager from "./GitManager.ts";
 import * as GitWorkflowService from "./GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+
+type ActiveTurnWorkspaces = ReadonlyArray<ProjectionStore.ActiveTurnWorkspace>;
+
+const layerActiveTurns = (
+  workspaces: () => ActiveTurnWorkspaces = () => [],
+  projectRoot: () => string = () => "/unused",
+) =>
+  Layer.merge(
+    Layer.mock(ProjectionStore.ProjectionStoreV2)({
+      getActiveTurnWorkspaces: () => Effect.sync(workspaces),
+    }),
+    Layer.mock(ProjectStore.ProjectStoreV2)({
+      get: () =>
+        Effect.sync(() => Option.some({ workspaceRoot: projectRoot() } as ProjectStore.ProjectRow)),
+    }),
+  );
 
 it.layer(NodeServices.layer)("GitWorkflowService", (it) => {
   it.effect("finds a name among the refs of every namespace", () =>
@@ -43,6 +63,7 @@ it.layer(NodeServices.layer)("GitWorkflowService", (it) => {
             }),
           ),
           Layer.provide(Layer.mock(GitManager.GitManager)({})),
+          Layer.provide(layerActiveTurns()),
           Layer.provideMerge(GitVcsDriver.layer),
           Layer.provideMerge(VcsProcess.layer),
           Layer.provideMerge(
@@ -141,10 +162,91 @@ it.layer(NodeServices.layer)("GitWorkflowService", (it) => {
               branchPullRequest: () => Effect.succeed(pullRequest),
             }),
           ),
+          Layer.provide(layerActiveTurns()),
           Layer.provideMerge(GitVcsDriver.layer),
           Layer.provideMerge(VcsProcess.layer),
           Layer.provideMerge(
             ServerConfig.layerTest(process.cwd(), { prefix: "t3-unmerged-" }).pipe(
+              Layer.provide(NodeServices.layer),
+            ),
+          ),
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    );
+  });
+
+  it.effect("refuses to move a checkout while a turn is running in it", () => {
+    let active: ActiveTurnWorkspaces = [];
+    let projectRoot = "";
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-turn-guard-" });
+      const cwd = `${root}/repo`;
+      const nested = `${cwd}/src`;
+      const side = `${cwd}/.worktrees/side`;
+      projectRoot = cwd;
+      yield* fileSystem.makeDirectory(nested, { recursive: true });
+      const workflow = yield* GitWorkflowService.GitWorkflowService;
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      for (const args of [
+        ["init", "-b", "main"],
+        ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"],
+        ["branch", "other"],
+        ["worktree", "add", "-b", "side", side],
+      ]) {
+        yield* driver.execute({ operation: "test.setupRepo", cwd, args });
+      }
+      const projectId = ProjectId.make("project:turn-guard");
+      const projectTurn = {
+        threadId: ThreadId.make("thread:project"),
+        projectId,
+        worktreePath: null,
+      };
+      const sideTurn = { threadId: ThreadId.make("thread:side"), projectId, worktreePath: side };
+
+      const goneTurn = {
+        threadId: ThreadId.make("thread:gone"),
+        projectId,
+        worktreePath: `${cwd}/.worktrees/gone`,
+      };
+
+      // A worktree inside the checkout's folder is a checkout of its own.
+      active = [sideTurn, goneTurn];
+      assert.deepEqual(yield* workflow.switchRef({ cwd, refName: "other" }), { refName: "other" });
+      const sideBusy = yield* Effect.flip(workflow.switchRef({ cwd: side, refName: "main" }));
+      assert.instanceOf(sideBusy, VcsCheckoutBusyError);
+      assert.equal(sideBusy.threadId, sideTurn.threadId);
+
+      active = [projectTurn];
+      for (const refused of [
+        workflow.switchRef({ cwd: nested, refName: "main" }),
+        workflow.createRef({ cwd: nested, refName: "feature", switchRef: true }),
+      ]) {
+        const busy = yield* Effect.flip(refused);
+        assert.instanceOf(busy, VcsCheckoutBusyError);
+        assert.equal(busy.threadId, projectTurn.threadId);
+      }
+      assert.equal(yield* workflow.currentBranch(cwd), "other");
+      assert.deepEqual(yield* workflow.createRef({ cwd, refName: "feature" }), {
+        refName: "feature",
+      });
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        GitWorkflowService.layer.pipe(
+          Layer.provide(
+            layerActiveTurns(
+              () => active,
+              () => projectRoot,
+            ),
+          ),
+          Layer.provide(VcsDriverRegistry.layer),
+          Layer.provide(Layer.mock(GitManager.GitManager)({})),
+          Layer.provideMerge(GitVcsDriver.layer),
+          Layer.provideMerge(VcsProcess.layer),
+          Layer.provideMerge(
+            ServerConfig.layerTest(process.cwd(), { prefix: "t3-turn-guard-" }).pipe(
               Layer.provide(NodeServices.layer),
             ),
           ),

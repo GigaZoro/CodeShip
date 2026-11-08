@@ -66,6 +66,7 @@ vi.mock("../../../state/use-selected-thread-git-state", () => ({
 vi.mock("../../../state/use-selected-thread-git-actions", () => ({
   useSelectedThreadGitActions: () => ({
     canChangeThreadBranch: true,
+    branchChangeBlockedReason: null,
     onCreateSelectedThreadWorktree: async (input: { baseBranch: string; newBranch: string }) => {
       state.worktrees.push(input);
       return null;

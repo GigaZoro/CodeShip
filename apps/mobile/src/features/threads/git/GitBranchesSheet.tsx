@@ -32,7 +32,9 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
   const { selectedThreadCwd } = useSelectedThreadWorktree();
   const gitState = useSelectedThreadGitState();
   const gitActions = useSelectedThreadGitActions();
-  const { canChangeThreadBranch } = gitActions;
+  const { branchChangeBlockedReason } = gitActions;
+  const canChangeThreadBranch =
+    gitActions.canChangeThreadBranch && branchChangeBlockedReason === null;
 
   const gitStatus = useEnvironmentQuery(
     selectedThread !== null && selectedThreadCwd !== null
@@ -107,6 +109,14 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
               : undefined
           }
         >
+          {branchChangeBlockedReason !== null ? (
+            <Text
+              accessibilityLiveRegion="polite"
+              className="text-foreground-secondary text-sm font-medium android:px-4"
+            >
+              {branchChangeBlockedReason}
+            </Text>
+          ) : null}
           <View className="bg-card android:gap-3 android:rounded-[20px] android:p-4 ios:gap-2 ios:rounded-[18px] ios:border ios:border-border ios:px-4 ios:py-4">
             <Text className="android:text-foreground android:text-base android:font-t3-medium ios:text-foreground-secondary ios:text-2xs ios:font-t3-bold ios:tracking-[1px] ios:uppercase">
               {t("New branch")}
@@ -199,7 +209,8 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
               </Text>
             ) : null}
             {availableBranches.map((branch) => {
-              const disabled = disabledExistingBranches.has(branch.name);
+              const disabled =
+                !canChangeThreadBranch || busy || disabledExistingBranches.has(branch.name);
               const subtitle = branch.worktreePath
                 ? branch.worktreePath === currentWorktreePath
                   ? t("Checked out in this thread")
@@ -218,8 +229,8 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
                       : "android:bg-card ios:border-border",
                   )}
                   accessibilityRole="button"
-                  accessibilityState={{ selected: branch.current, disabled: busy || disabled }}
-                  disabled={!canChangeThreadBranch || busy || disabled}
+                  accessibilityState={{ selected: branch.current, disabled }}
+                  disabled={disabled}
                   onPress={() => {
                     void gitActions.onCheckoutSelectedThreadBranch(branch.name).then((result) => {
                       if (result === null) return;

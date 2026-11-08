@@ -10,6 +10,7 @@ import {
   type ModelSelection,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2RunStatus,
   type OrchestrationV2TurnItem,
   type OrchestrationV2ThreadHistoryPage,
   type OrchestrationV2ThreadShellSnapshot,
@@ -837,6 +838,58 @@ const threadWorktreePathsIncludeArchivedOnRequest = Effect.gen(function* () {
     { threadId: ThreadId.make("thread:active"), worktreePath: "/worktrees/active" },
     { threadId: ThreadId.make("thread:archived"), worktreePath: "/worktrees/archived" },
   ]);
+
+  const addRun = (id: string, ordinal: number, status: OrchestrationV2RunStatus) => {
+    const threadId = ThreadId.make(id);
+    const runId = RunId.make(`run:${id}:${ordinal}`);
+    const rootNodeId = NodeId.make(`node:${id}:${ordinal}`);
+    return store.apply({
+      id: EventId.make(`event:${id}:run-${ordinal}`),
+      type: "run.created",
+      threadId,
+      runId,
+      nodeId: rootNodeId,
+      driver,
+      providerInstanceId,
+      occurredAt: now,
+      payload: {
+        id: runId,
+        threadId,
+        ordinal,
+        providerInstanceId,
+        modelSelection,
+        providerThreadId: null,
+        userMessageId: MessageId.make(`message:${id}:${ordinal}`),
+        rootNodeId,
+        activeAttemptId: null,
+        status,
+        requestedAt: now,
+        startedAt: status === "queued" ? null : now,
+        completedAt: status === "completed" ? now : null,
+        checkpointId: null,
+        contextHandoffId: null,
+      },
+    });
+  };
+  yield* addRun("thread:active", 1, "completed");
+  yield* addRun("thread:active", 2, "queued");
+  yield* addRun("thread:archived", 1, "waiting");
+  yield* addRun("thread:local", 1, "running");
+  yield* addRun("thread:deleted", 1, "running");
+  const projectId = ProjectId.make("project:worktree-paths");
+  assert.deepEqual(
+    (yield* store.getActiveTurnWorkspaces()).toSorted((left, right) =>
+      left.threadId.localeCompare(right.threadId),
+    ),
+    [
+      {
+        threadId: ThreadId.make("thread:archived"),
+        projectId,
+        worktreePath: "/worktrees/archived",
+      },
+      { threadId: ThreadId.make("thread:local"), projectId, worktreePath: null },
+    ],
+  );
 });
 
 const commandReadsSkipSettledLeafNodes = Effect.gen(function* () {
@@ -1770,7 +1823,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     () => runlessNativeSubagentNeedsRecovery,
   );
   it.effect(
-    "worktree path lookup defaults to active threads and can include archived threads",
+    "worktree lookups list active threads, archived on request, and turns underway",
     () => threadWorktreePathsIncludeArchivedOnRequest,
   );
 

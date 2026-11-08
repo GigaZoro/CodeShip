@@ -410,6 +410,20 @@ export class TextGenerationError extends Schema.TaggedError<TextGenerationError>
   }
 }
 
+/** A switch would move the checkout a running turn is working in. */
+export class VcsCheckoutBusyError extends Schema.TaggedError<VcsCheckoutBusyError>()(
+  "VcsCheckoutBusyError",
+  {
+    operation: Schema.String,
+    cwd: Schema.String,
+    threadId: ThreadId,
+  },
+) {
+  override get message(): string {
+    return "Branches can't change while the agent is working in this checkout.";
+  }
+}
+
 export class GitManagerError extends Schema.TaggedError<GitManagerError>()("GitManagerError", {
   operation: Schema.String,
   cwd: Schema.String,

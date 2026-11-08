@@ -435,6 +435,13 @@ export interface ActiveShellIndexEntry extends Pick<
   readonly mayBeLive: boolean;
 }
 
+export interface ActiveTurnWorkspace {
+  readonly threadId: ThreadId;
+  readonly projectId: ProjectId;
+  /** Null when the turn works in the project root. */
+  readonly worktreePath: string | null;
+}
+
 export interface OlderSettledThreadsQuery {
   readonly before: OrchestrationV2OlderSettledCursor;
   readonly projectIds?: ReadonlyArray<ProjectId> | undefined;
@@ -572,6 +579,11 @@ export interface ProjectionStoreV2Shape {
     readonly includeArchived?: boolean;
   }) => Effect.Effect<
     ReadonlyArray<{ readonly threadId: ThreadId; readonly worktreePath: string }>,
+    ProjectionStoreV2Error
+  >;
+  /** Threads with a turn underway. */
+  readonly getActiveTurnWorkspaces: () => Effect.Effect<
+    ReadonlyArray<ActiveTurnWorkspace>,
     ProjectionStoreV2Error
   >;
   /**
@@ -6756,6 +6768,31 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
       );
 
+    const getActiveTurnWorkspaces: ProjectionStoreV2Shape["getActiveTurnWorkspaces"] = () =>
+      sql<{
+        readonly thread_id: string;
+        readonly project_id: string;
+        readonly worktree_path: string | null;
+      }>`
+        SELECT t.thread_id, t.project_id, json_extract(t.payload_json, '$.worktreePath') AS worktree_path
+        FROM orchestration_v2_projection_threads t
+        WHERE t.deleted_at IS NULL
+          AND EXISTS (
+            SELECT 1 FROM orchestration_v2_projection_runs r
+            WHERE r.thread_id = t.thread_id
+              AND r.status IN ('preparing', 'starting', 'running', 'waiting')
+          )
+      `.pipe(
+        Effect.map((rows) =>
+          rows.map((row) => ({
+            threadId: ThreadId.make(row.thread_id),
+            projectId: ProjectId.make(row.project_id),
+            worktreePath: row.worktree_path,
+          })),
+        ),
+        Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+      );
+
     const shellThreadStateFromRow =
       /* Runs once per shell row; the enclosing snapshot or thread read owns the span. */
       Effect.fnUntraced(function* (input: {
@@ -7375,6 +7412,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getSettlementCandidates: readOnReader(getSettlementCandidates),
       getThreadsWithPullRequests: readOnReader(getThreadsWithPullRequests),
       getThreadWorktreePaths: readOnReader(getThreadWorktreePaths),
+      getActiveTurnWorkspaces: readOnReader(getActiveTurnWorkspaces),
       getOpenRemoteDelegatedTasks: getOpenRemoteDelegatedTasks.pipe(NodeSqliteClient.readOnly),
       getThreadProjection,
       getTurnStartContext: readOnReader(getTurnStartContext),

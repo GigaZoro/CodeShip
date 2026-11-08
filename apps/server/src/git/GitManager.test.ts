@@ -743,6 +743,10 @@ function makeManager(input?: {
 
 const asThreadId = (threadId: string) => threadId as ThreadId;
 
+const layerEmptyStores = Layer.merge(ProjectionStore.layer, ProjectStore.layer).pipe(
+  Layer.provide(SqlitePersistence.layerMemory),
+);
+
 const layerGitManagerTest = GitVcsDriver.layer.pipe(
   Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-git-manager-test-" })),
   Layer.provideMerge(VcsProcess.layer),
@@ -777,6 +781,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
           VcsStatusBroadcaster.layer.pipe(
             Layer.provide(
               GitWorkflowService.layer.pipe(
+                Layer.provide(layerEmptyStores),
                 Layer.provide(Layer.succeed(GitManager.GitManager, manager)),
                 Layer.provide(
                   VcsDriverRegistry.layer.pipe(
@@ -4319,8 +4324,10 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         const canonicalRoot = yield* fileSystem.realPath(resolvedHandle.repository.rootPath);
         const git = yield* GitVcsDriver.GitVcsDriver;
         const events: string[] = [];
+        const stores = yield* Layer.build(layerEmptyStores);
         const workflows = yield* Effect.forEach([0, 1], () =>
           GitWorkflowService.make.pipe(
+            Effect.provideContext(stores),
             // Cache the real filesystem result so startImmediately reaches lease acquisition.
             Effect.provideService(FileSystem.FileSystem, {
               ...fileSystem,

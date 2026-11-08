@@ -159,6 +159,7 @@ import {
   VcsSwitchRefInput,
   VcsSwitchRefResult,
   GitCommandError,
+  VcsCheckoutBusyError,
   VcsCreateRefInput,
   VcsCreateRefResult,
   VcsCreateWorktreeInput,
@@ -1702,7 +1703,11 @@ const WsGitResolvePullRequestRpc = Rpc.make(WS_METHODS.gitResolvePullRequest, {
 const WsGitPreparePullRequestThreadRpc = Rpc.make(WS_METHODS.gitPreparePullRequestThread, {
   payload: GitPreparePullRequestThreadInput,
   success: GitPreparePullRequestThreadResult,
-  error: Schema.Union([GitManagerServiceError, EnvironmentAuthorizationError]),
+  error: Schema.Union([
+    GitManagerServiceError,
+    VcsCheckoutBusyError,
+    EnvironmentAuthorizationError,
+  ]),
 });
 
 const WsVcsListRefsRpc = Rpc.make(WS_METHODS.vcsListRefs, {
@@ -1726,13 +1731,13 @@ const WsVcsRemoveWorktreeRpc = Rpc.make(WS_METHODS.vcsRemoveWorktree, {
 const WsVcsCreateRefRpc = Rpc.make(WS_METHODS.vcsCreateRef, {
   payload: VcsCreateRefInput,
   success: VcsCreateRefResult,
-  error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
+  error: Schema.Union([GitCommandError, VcsCheckoutBusyError, EnvironmentAuthorizationError]),
 });
 
 const WsVcsSwitchRefRpc = Rpc.make(WS_METHODS.vcsSwitchRef, {
   payload: VcsSwitchRefInput,
   success: VcsSwitchRefResult,
-  error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
+  error: Schema.Union([GitCommandError, VcsCheckoutBusyError, EnvironmentAuthorizationError]),
 });
 
 const WsVcsInitRpc = Rpc.make(WS_METHODS.vcsInit, {

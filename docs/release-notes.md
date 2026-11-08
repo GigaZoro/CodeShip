@@ -1,3 +1,8 @@
+## 2026-11-08 — Branches stay put while an agent works, on mobile and for every client
+
+- On mobile, **Branches & worktrees** now keeps a thread's branch while its agent is working, like web and desktop: switching, creating a branch and creating a worktree are disabled, and the sheet says why. Before, a switch moved the files the agent was editing, and picking a branch checked out in another worktree stopped the turn.
+- The server now refuses a branch switch, a new branch that is checked out right away, or a pull request checked out in place in any folder where a turn is running, whichever client, agent or tool asks. The refusal shows as an error saying branches can't change while the agent is working. A turn in a separate worktree, even one inside the project's folder, doesn't block the main checkout, and commits stay available.
+
 ## 2026-11-08 — The Android app starts again
 
 - The Android app crashed on launch with "undefined cannot be used as a constructor" since the language setting arrived, because Android's JavaScript engine has no plural-rules or locale API. The app now picks plural forms itself, so Ukrainian counts such as 1 файл, 3 файли and 5 файлів work there too.
