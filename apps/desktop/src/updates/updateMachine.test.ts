@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   createInitialDesktopUpdateState,
+  reduceDesktopUpdateStateOnBackgroundError,
   reduceDesktopUpdateStateOnCheckFailure,
   reduceDesktopUpdateStateOnCheckStart,
   reduceDesktopUpdateStateOnDownloadComplete,
@@ -47,6 +48,41 @@ describe("updateMachine", () => {
     expect(failed.releaseNotes).toEqual(downloadedState.releaseNotes);
     expect(failed.omittedReleaseCount).toBe(2);
     expect(failed.message).toBeNull();
+  });
+
+  it("keeps a found update on offer when a later check or background error fails", () => {
+    const availableState = {
+      ...createInitialDesktopUpdateState("1.0.0", runtimeInfo, "latest"),
+      enabled: true,
+      status: "available" as const,
+      availableVersion: "1.1.0",
+      releaseNotes: [{ version: "1.1.0", items: ["fix: found update"], totalItems: 1 }],
+      omittedReleaseCount: 1,
+    };
+    const checking = reduceDesktopUpdateStateOnCheckStart(
+      availableState,
+      "2026-03-04T00:00:00.000Z",
+    );
+    const failed = reduceDesktopUpdateStateOnCheckFailure(
+      checking,
+      "HttpError: 503",
+      "2026-03-04T00:00:01.000Z",
+    );
+    const backgroundFailed = reduceDesktopUpdateStateOnBackgroundError(
+      availableState,
+      "net::ERR_CONNECTION_CLOSED",
+      "2026-03-04T00:00:02.000Z",
+    );
+
+    expect(failed.status).toBe("available");
+    expect(failed.availableVersion).toBe("1.1.0");
+    expect(failed.releaseNotes).toEqual(availableState.releaseNotes);
+    expect(failed.omittedReleaseCount).toBe(1);
+    expect(failed.errorContext).toBeNull();
+    expect(failed.message).toBeNull();
+    expect(backgroundFailed.status).toBe("available");
+    expect(backgroundFailed.availableVersion).toBe("1.1.0");
+    expect(backgroundFailed.message).toBeNull();
   });
 
   it("preserves available version on download failure for retry", () => {

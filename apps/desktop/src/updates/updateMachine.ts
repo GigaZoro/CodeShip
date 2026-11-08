@@ -15,6 +15,18 @@ function getCanRetryAfterDownloadFailure(currentState: DesktopUpdateState): bool
   return currentState.availableVersion !== null;
 }
 
+/**
+ * An update was found but not downloaded yet. A later check or updater error that fails
+ * (GitHub timing out, a dropped connection) says nothing about it, so it stays on offer.
+ */
+function keepFoundUpdateOnOffer(state: DesktopUpdateState, checkedAt: string): DesktopUpdateState {
+  return { ...state, status: "available", checkedAt, downloadPercent: null };
+}
+
+function hasFoundUpdateToDownload(state: DesktopUpdateState): boolean {
+  return state.downloadedVersion === null && state.availableVersion !== null;
+}
+
 export function createInitialDesktopUpdateState(
   currentVersion: string,
   runtimeInfo: DesktopRuntimeInfo,
@@ -45,12 +57,14 @@ export function reduceDesktopUpdateStateOnCheckStart(
   checkedAt: string,
 ): DesktopUpdateState {
   const hasDownloadedUpdate = state.downloadedVersion !== null;
+  // A successful check replaces these notes; a failed one keeps the update they describe.
+  const hasKnownUpdate = hasDownloadedUpdate || state.availableVersion !== null;
   return {
     ...state,
     status: "checking",
     checkedAt,
-    releaseNotes: hasDownloadedUpdate ? state.releaseNotes : [],
-    omittedReleaseCount: hasDownloadedUpdate ? state.omittedReleaseCount : 0,
+    releaseNotes: hasKnownUpdate ? state.releaseNotes : [],
+    omittedReleaseCount: hasKnownUpdate ? state.omittedReleaseCount : 0,
     message: null,
     downloadPercent: hasDownloadedUpdate ? 100 : null,
     errorContext: null,
@@ -74,6 +88,7 @@ export function reduceDesktopUpdateStateOnCheckFailure(
       canRetry: true,
     };
   }
+  if (hasFoundUpdateToDownload(state)) return keepFoundUpdateOnOffer(state, checkedAt);
 
   return {
     ...state,
@@ -83,6 +98,23 @@ export function reduceDesktopUpdateStateOnCheckFailure(
     downloadPercent: null,
     errorContext: "check",
     canRetry: true,
+  };
+}
+
+export function reduceDesktopUpdateStateOnBackgroundError(
+  state: DesktopUpdateState,
+  message: string,
+  checkedAt: string,
+): DesktopUpdateState {
+  if (hasFoundUpdateToDownload(state)) return keepFoundUpdateOnOffer(state, checkedAt);
+  return {
+    ...state,
+    status: "error",
+    message,
+    checkedAt,
+    downloadPercent: null,
+    errorContext: state.errorContext,
+    canRetry: state.downloadedVersion !== null,
   };
 }
 

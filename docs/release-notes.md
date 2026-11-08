@@ -1,3 +1,7 @@
+## 2026-11-08 — A found update stays on offer when GitHub stops answering
+
+- When the desktop app had found a new version and a later automatic check failed, because GitHub timed out or dropped the connection, the update button disappeared until a check succeeded again. During a GitHub outage that could be hours. The update now stays on offer, with its release notes, until a check that does answer says otherwise.
+
 ## 2026-11-08 — Claude usage no longer counts a resumed chat's history again
 
 - After a Claude chat was stopped, failed, sat idle or switched settings, its next turn counted every token the chat had used before as subagent and compaction ("other") usage, sometimes hundreds of millions of tokens in a few seconds. That turn's other usage is now left out as unknown, and later turns count only their own. Turns already recorded keep their earlier numbers.

@@ -42,6 +42,7 @@ import { desktopUpdateChannelOf } from "@t3tools/shared/cliRelease";
 import { compareSemverVersions } from "@t3tools/shared/semver";
 import {
   createInitialDesktopUpdateState,
+  reduceDesktopUpdateStateOnBackgroundError,
   reduceDesktopUpdateStateOnCheckFailure,
   reduceDesktopUpdateStateOnCheckStart,
   reduceDesktopUpdateStateOnDownloadComplete,
@@ -315,10 +316,6 @@ function createBaseUpdateState(
     status: enabled ? "idle" : "disabled",
     message: Option.getOrNull(disabledReason),
   };
-}
-
-function getCanRetryFromState(state: DesktopUpdateState): boolean {
-  return state.availableVersion !== null || state.downloadedVersion !== null;
 }
 
 function shouldBroadcastDownloadProgress(
@@ -1042,15 +1039,9 @@ export const make = Effect.gen(function* () {
 
     if (Option.isNone(activeAction)) {
       const checkedAt = yield* currentIsoTimestamp;
-      yield* updateState((current) => ({
-        ...current,
-        status: "error",
-        message: error.message,
-        checkedAt,
-        downloadPercent: null,
-        errorContext: current.errorContext,
-        canRetry: getCanRetryFromState(current),
-      }));
+      yield* updateState((current) =>
+        reduceDesktopUpdateStateOnBackgroundError(current, error.message, checkedAt),
+      );
     }
 
     yield* logUpdaterError(error.message, {
