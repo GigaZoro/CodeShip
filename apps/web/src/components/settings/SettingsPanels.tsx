@@ -140,7 +140,10 @@ import { useUpdateEverythingRun } from "../sidebar/updateEverythingRun";
 import { awaitsTrackSwitch, channelSwitchLabel } from "../sidebar/updateEverything.logic";
 import { isHostedByThisApp } from "../sidebar/useUpdateEverything";
 import { SafeUpdateDialog, useThisAppRunningThreads } from "../sidebar/SafeUpdateDialog";
-import { installLocalUpdate } from "../sidebar/SidebarUpdatePill";
+import { installLocalUpdate, installLocalUpdateWhenIdle } from "../sidebar/SidebarUpdatePill";
+import { usePendingLocalInstall, usePendingLocalInstallWork } from "../sidebar/localInstallWait";
+import { PendingLocalInstallDialog } from "../sidebar/PendingLocalInstallDialog";
+import { restartHoldTooltip, waitingOnWorkLabel } from "../restartHold.logic";
 
 const RESPONSE_STREAMING_MODE_LABELS: Record<ResponseStreamingMode, Message> = {
   turn: msg("Wait for the full response"),
@@ -184,6 +187,9 @@ function AboutVersionSection() {
   const [switchChannel, setSwitchChannel] = useState<DesktopUpdateChannel | null>(null);
   const [isUpdateActionPending, setIsUpdateActionPending] = useState(false);
   const [isConfirmingSafeUpdate, setIsConfirmingSafeUpdate] = useState(false);
+  const [isShowingPendingInstall, setIsShowingPendingInstall] = useState(false);
+  const pendingInstall = usePendingLocalInstall();
+  const pendingWork = usePendingLocalInstallWork();
   const thisAppThreads = useThisAppRunningThreads(
     resolveDesktopUpdatePendingAction(updateState) === "install",
   );
@@ -231,6 +237,11 @@ function AboutVersionSection() {
 
     const action = updateState ? resolveDesktopUpdateButtonAction(updateState) : "none";
 
+    if (pendingInstall !== null) {
+      setIsShowingPendingInstall(true);
+      return;
+    }
+
     if (action === "download") {
       void bridge.downloadUpdate().catch((error: unknown) => {
         toastManager.add(
@@ -246,7 +257,7 @@ function AboutVersionSection() {
 
     if (action === "install") {
       if (isUpdateActionPending) return;
-      if (thisAppThreads.count > 0) {
+      if (thisAppThreads.busy) {
         setIsConfirmingSafeUpdate(true);
         return;
       }
@@ -285,19 +296,33 @@ function AboutVersionSection() {
     void installLocalUpdate(bridge).finally(() => setIsUpdateActionPending(false));
   };
 
+  const confirmSafeUpdateWhenIdle = () => {
+    const bridge = window.desktopBridge;
+    setIsConfirmingSafeUpdate(false);
+    if (bridge) void installLocalUpdateWhenIdle(bridge);
+  };
+
   // Updates are checked automatically, so the button appears only for an update to act on.
   const pendingAction = resolveDesktopUpdatePendingAction(updateState);
   const isDownloading = updateState?.status === "downloading";
   const showUpdateButton = pendingAction !== "none" || isDownloading;
-  const buttonTooltip = updateState ? getDesktopUpdateButtonTooltip(updateState) : null;
+  const buttonTooltip =
+    pendingInstall !== null
+      ? restartHoldTooltip(pendingWork)
+      : updateState
+        ? getDesktopUpdateButtonTooltip(updateState)
+        : null;
   // The updater holds a found update until its background recheck finishes.
   const buttonDisabled =
     updateState?.status === "checking" || isDesktopUpdateButtonDisabled(updateState);
-  const buttonLabel = isDownloading
-    ? t("Downloading…")
-    : pendingAction === "install"
-      ? t("Install")
-      : t("Download");
+  const buttonLabel =
+    pendingInstall !== null
+      ? waitingOnWorkLabel(pendingWork.length)
+      : isDownloading
+        ? t("Downloading…")
+        : pendingAction === "install"
+          ? t("Install")
+          : t("Download");
   const description = showUpdateButton
     ? t("Update available.")
     : (getDesktopUpdateDisabledReason(updateState, updatesDenial) ??
@@ -325,7 +350,11 @@ function AboutVersionSection() {
                   </Button>
                 }
               />
-              {buttonTooltip ? <TooltipPopup>{buttonTooltip}</TooltipPopup> : null}
+              {buttonTooltip ? (
+                <TooltipPopup>
+                  <span className="whitespace-pre-line">{buttonTooltip}</span>
+                </TooltipPopup>
+              ) : null}
             </Tooltip>
           ) : undefined
         }
@@ -438,6 +467,13 @@ function AboutVersionSection() {
           version={updateState ? getDesktopUpdateDownloadedVersion(updateState) : null}
           environmentIds={thisAppThreads.key}
           onConfirm={confirmSafeUpdate}
+          onConfirmWhenIdle={confirmSafeUpdateWhenIdle}
+        />
+      ) : null}
+      {hasDesktopBridge ? (
+        <PendingLocalInstallDialog
+          open={isShowingPendingInstall}
+          onOpenChange={setIsShowingPendingInstall}
         />
       ) : null}
     </>

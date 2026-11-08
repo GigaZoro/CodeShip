@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  type OrchestrationV2RestartHoldWork,
   type ProviderInstanceId,
   type ServerConfig,
   type ServerConfigStreamEvent,
@@ -25,7 +26,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import { AsyncResult, Atom } from "effect/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
 import {
   createAtomCommandScheduler,
@@ -63,7 +64,7 @@ import { t } from "@t3tools/shared/i18n";
 
 export type { ServerConfigProjection } from "./serverConfigProjection.ts";
 
-export type ServerUpdateStage = "downloading" | "installing" | "resuming";
+export type ServerUpdateStage = "waiting" | "downloading" | "installing" | "resuming";
 
 export type ServerUpdateState =
   | { readonly status: "idle" }
@@ -72,6 +73,8 @@ export type ServerUpdateState =
       readonly stage: ServerUpdateStage;
       readonly fromVersion: string;
       readonly targetVersion: string;
+      /** While `waiting`: the background work chats wait on, which a restart would stop. */
+      readonly waitingOn?: ReadonlyArray<OrchestrationV2RestartHoldWork>;
     }
   | {
       readonly status: "failed";
@@ -95,6 +98,38 @@ export const serverUpdateStateAtom = Atom.family((environmentId: EnvironmentId) 
     Atom.withLabel(`environment-data:server:update-state:${environmentId}`),
   ),
 );
+
+export type RestartHoldDecision = "update-now" | "cancel";
+
+/** "Update now" or "Cancel" for an update that waits on this server's background work. */
+const serverRestartHoldDecisionAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.make<{ readonly decision: RestartHoldDecision } | null>(null).pipe(
+    Atom.keepAlive,
+    Atom.withLabel(`environment-data:server:restart-hold-decision:${environmentId}`),
+  ),
+);
+
+export function decideRestartHold(
+  atomRegistry: AtomRegistry.AtomRegistry,
+  environmentId: EnvironmentId,
+  decision: RestartHoldDecision,
+): void {
+  // A fresh object, so a repeated decision still reaches the wait.
+  atomRegistry.set(serverRestartHoldDecisionAtom(environmentId), { decision });
+}
+
+/** Decisions made after this call; the wait that reads them ignores earlier ones. */
+export function restartHoldDecisions(
+  atomRegistry: AtomRegistry.AtomRegistry,
+  environmentId: EnvironmentId,
+): Stream.Stream<RestartHoldDecision> {
+  const decisionAtom = serverRestartHoldDecisionAtom(environmentId);
+  const before = atomRegistry.get(decisionAtom);
+  return AtomRegistry.toStream(atomRegistry, decisionAtom).pipe(
+    Stream.filter((entry) => entry !== null && entry !== before),
+    Stream.map((entry) => entry?.decision ?? "update-now"),
+  );
+}
 
 export class ServerUpdateResumeTimeoutError extends Schema.TaggedError<ServerUpdateResumeTimeoutError>()(
   "ServerUpdateResumeTimeoutError",
@@ -834,6 +869,43 @@ export function createServerEnvironmentAtoms<R, E>(
   );
   const updateStateAtom = (environmentId: EnvironmentId | null) =>
     environmentId === null ? EMPTY_SERVER_UPDATE_STATE_ATOM : updateStateValueAtom(environmentId);
+  /** Ends when no chat there waits on background work, or when the user decides first. */
+  const awaitRestartHoldClear = Effect.fn("ServerUpdate.awaitRestartHoldClear")(function* (
+    environmentId: EnvironmentId,
+    atomRegistry: AtomRegistry.AtomRegistry,
+    onWaiting: (work: ReadonlyArray<OrchestrationV2RestartHoldWork>) => void,
+  ) {
+    const environmentRegistry = yield* EnvironmentRegistry.EnvironmentRegistry;
+    const decisions = restartHoldDecisions(atomRegistry, environmentId);
+    const cleared = environmentRegistry
+      .followStream(environmentId, subscribe(WS_METHODS.serverWatchRestartHold, {}))
+      .pipe(
+        Stream.tap((hold) =>
+          hold.work.length === 0 ? Effect.void : Effect.sync(() => onWaiting(hold.work)),
+        ),
+        Stream.filter((hold) => hold.work.length === 0),
+        Stream.as("clear" as const),
+      );
+    const outcome = yield* Stream.merge(cleared, decisions).pipe(Stream.runHead);
+    return Option.getOrElse(outcome, (): "clear" | RestartHoldDecision => "clear");
+  });
+  const awaitRestartHold = createRuntimeCommand<
+    EnvironmentRegistry.EnvironmentRegistry | R,
+    E,
+    { readonly environmentId: EnvironmentId },
+    "clear" | RestartHoldDecision,
+    unknown
+  >(runtime, {
+    label: "environment-data:server:await-restart-hold",
+    concurrency: { mode: "singleFlight", key: ({ environmentId }) => environmentId },
+    execute: (input, atomRegistry) =>
+      awaitRestartHoldClear(input.environmentId, atomRegistry, () => undefined),
+  });
+  const restartHold = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+    label: "environment-data:server:restart-hold",
+    tag: WS_METHODS.serverWatchRestartHold,
+    idleTtlMs: 0,
+  });
   const updateServer = createRuntimeCommand<
     EnvironmentRegistry.EnvironmentRegistry | Persistence.EnvironmentCacheStore | R,
     E,
@@ -876,6 +948,34 @@ export function createServerEnvironmentAtoms<R, E>(
           Effect.andThen(Deferred.succeed(desktopReconnected, undefined)),
           Effect.forkChild,
         );
+        // Outside the config queue: a long wait must not hold other settings for this server.
+        if (
+          atomRegistry.get(configValueAtom(target.environmentId))?.environment.capabilities
+            .restartHold === true
+        ) {
+          const decision = yield* awaitRestartHoldClear(
+            target.environmentId,
+            atomRegistry,
+            (waitingOn) => {
+              currentStage = "waiting";
+              atomRegistry.set(stateAtom, {
+                status: "running",
+                stage: currentStage,
+                fromVersion,
+                targetVersion,
+                waitingOn,
+              });
+            },
+          );
+          if (decision === "cancel") return yield* Effect.interrupt;
+          currentStage = "downloading";
+          atomRegistry.set(stateAtom, {
+            status: "running",
+            stage: currentStage,
+            fromVersion,
+            targetVersion,
+          });
+        }
         const result = yield* scheduleAtomCommandEffect(
           atomRegistry,
           configScheduler,
@@ -1223,6 +1323,8 @@ export function createServerEnvironmentAtoms<R, E>(
     }),
     databaseStorage,
     databaseCompactionRecommendations,
+    restartHold,
+    awaitRestartHold,
     storageCleanupReport: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:storage-cleanup-report",
       tag: WS_METHODS.serverGetStorageCleanupReport,

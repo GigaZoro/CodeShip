@@ -262,6 +262,8 @@ import {
   OrchestrationV2CommandOutputError,
   OrchestrationV2GetThreadProjectionError,
   OrchestrationV2ListHtmlRendersError,
+  OrchestrationV2RestartHold,
+  OrchestrationV2RestartHoldError,
   OrchestrationV2RpcSchemas,
   OrchestrationV2ThreadLaunchError,
 } from "./orchestrationV2.ts";
@@ -575,6 +577,7 @@ export const WS_METHODS = {
   serverGetStorageCleanupReport: "server.getStorageCleanupReport",
   serverGetDatabaseStorage: "server.getDatabaseStorage",
   manualStepsList: "manualSteps.list",
+  serverWatchRestartHold: "server.watchRestartHold",
   peerLinksList: "peerLinks.list",
   peerLinksLink: "peerLinks.link",
   peerLinksUnlink: "peerLinks.unlink",
@@ -950,6 +953,13 @@ const WsServerCommitDesktopUpdateRpc = Rpc.make(WS_METHODS.serverCommitDesktopUp
   payload: DesktopUpdateCommitInput,
   success: ServerSelfUpdateResult,
   error: Schema.Union([ServerSelfUpdateError, EnvironmentAuthorizationError]),
+});
+
+const WsServerWatchRestartHoldRpc = Rpc.make(WS_METHODS.serverWatchRestartHold, {
+  payload: Schema.Struct({}),
+  success: OrchestrationV2RestartHold,
+  stream: true,
+  error: Schema.Union([OrchestrationV2RestartHoldError, EnvironmentAuthorizationError]),
 });
 
 const WsServerRunStorageCleanupRpc = Rpc.make(WS_METHODS.serverRunStorageCleanup, {
@@ -2266,6 +2276,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRunStorageCleanupRpc,
   WsServerGetStorageCleanupReportRpc,
   WsServerGetDatabaseStorageRpc,
+  WsServerWatchRestartHoldRpc,
   WsServerUpdateSettingsRpc,
   WsManualStepsListRpc,
   WsPeerLinksListRpc,

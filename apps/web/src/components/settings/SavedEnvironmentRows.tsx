@@ -334,7 +334,7 @@ export function SavedBackendListRow({
           ) : null}
           {serverUpdateState.status !== "idle" ? (
             <div className="mt-1 max-w-md">
-              <ServerUpdateProgress state={serverUpdateState} />
+              <ServerUpdateProgress environmentId={environmentId} state={serverUpdateState} />
             </div>
           ) : null}
         </>

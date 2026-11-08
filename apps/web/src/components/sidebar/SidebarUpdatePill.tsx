@@ -6,6 +6,7 @@ import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime
 import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
 import { ensureLocalApi } from "../../localApi";
+import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import {
@@ -23,6 +24,7 @@ import {
   shouldToastDesktopUpdateActionResult,
 } from "../desktopUpdate.logic";
 import { showDesktopUpdateDownloadedToast } from "../desktopUpdate.toast";
+import { restartHoldTooltip } from "../restartHold.logic";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { SidebarMenuItem } from "../ui/sidebar";
@@ -33,6 +35,13 @@ import {
 } from "./DesktopUpdateStatusIcon";
 import { SidebarUpdateReleaseNotes } from "./SidebarUpdateReleaseNotes";
 import { SafeUpdateDialog, useThisAppRunningThreads } from "./SafeUpdateDialog";
+import {
+  pendingLocalInstallAtom,
+  usePendingLocalInstall,
+  usePendingLocalInstallWork,
+  waitForHostedBackgroundWork,
+} from "./localInstallWait";
+import { PendingLocalInstallDialog } from "./PendingLocalInstallDialog";
 import { SidebarUpdateCapsule } from "./SidebarUpdateCapsule";
 import { UpdateEverythingDialog } from "./UpdateEverythingDialog";
 import type {
@@ -181,6 +190,33 @@ export async function installLocalUpdate(
   }
 }
 
+/**
+ * Installs once no chat on this app's servers waits on background work, which an install would
+ * stop. Every surface reads `pendingLocalInstallAtom` to show the wait.
+ */
+export async function installLocalUpdateWhenIdle(
+  bridge: DesktopBridge,
+  reportError: ReportLocalUpdateError = toastUpdateError,
+  expectedVersion?: string,
+): Promise<boolean> {
+  if (appAtomRegistry.get(pendingLocalInstallAtom) !== null) return false;
+  appAtomRegistry.set(pendingLocalInstallAtom, { version: expectedVersion ?? null });
+  try {
+    const wait = await waitForHostedBackgroundWork();
+    if (wait.status === "cancelled") return false;
+    if (wait.status === "failed") {
+      reportError(
+        t("Could not wait for background work"),
+        wait.error instanceof Error ? wait.error.message : t("An unexpected error occurred."),
+      );
+      return false;
+    }
+  } finally {
+    appAtomRegistry.set(pendingLocalInstallAtom, null);
+  }
+  return installLocalUpdate(bridge, reportError, expectedVersion);
+}
+
 export function SidebarUpdatePill() {
   return <SidebarUpdateControl />;
 }
@@ -190,6 +226,7 @@ function SidebarUpdateControl() {
   const [isActionPending, setIsActionPending] = useState(false);
   const [isConfirmingEverything, setIsConfirmingEverything] = useState(false);
   const [isConfirmingSafeUpdate, setIsConfirmingSafeUpdate] = useState(false);
+  const [isShowingPendingInstall, setIsShowingPendingInstall] = useState(false);
   const [releaseNotesPopoverHandle] = useState(() => PopoverCreateHandle());
   const suppressReleaseNotesFocusOpen = useRef(false);
   const releaseNotesPopupRef = useRef<HTMLDivElement>(null);
@@ -206,6 +243,8 @@ function SidebarUpdateControl() {
   const everything = useUpdateEverything(localUpdateVersion);
   const runsEverything = everything.hasUpdates && !isDownloading;
   const run = useUpdateEverythingRun();
+  const pendingInstall = usePendingLocalInstall();
+  const pendingWork = usePendingLocalInstallWork();
   const isRunningEverything = run !== null;
   const { iconStatus, showUpdateDetails } = resolveSidebarUpdatePresentation({
     action: pendingAction,
@@ -214,13 +253,15 @@ function SidebarUpdateControl() {
     isDownloading,
   });
   const tooltip =
-    runsEverything && !isWaitingOnRecheck
-      ? everything.summary
-      : state && action === "install" && thisAppThreads.count > 0
-        ? getSafeUpdateButtonTooltip(state, thisAppThreads.count)
-        : state
-          ? getDesktopUpdateButtonTooltip(state)
-          : t("Update available");
+    pendingInstall !== null
+      ? restartHoldTooltip(pendingWork)
+      : runsEverything && !isWaitingOnRecheck
+        ? everything.summary
+        : state && action === "install" && thisAppThreads.count > 0
+          ? getSafeUpdateButtonTooltip(state, thisAppThreads.count)
+          : state
+            ? getDesktopUpdateButtonTooltip(state)
+            : t("Update available");
   const disabled = isWaitingOnRecheck || isDesktopUpdateButtonDisabled(state);
   const isInteractionDisabled = disabled || isActionPending || isRunningEverything;
   const showReleaseNotesPopover =
@@ -240,13 +281,18 @@ function SidebarUpdateControl() {
     const bridge = window.desktopBridge;
     if (isInteractionDisabled) return;
 
+    if (pendingInstall !== null) {
+      setIsShowingPendingInstall(true);
+      return;
+    }
+
     if (runsEverything) {
       setIsConfirmingEverything(true);
       return;
     }
 
     if (!bridge || !state || action === "none") return;
-    if (action === "install" && thisAppThreads.count > 0) {
+    if (action === "install" && thisAppThreads.busy) {
       setIsConfirmingSafeUpdate(true);
       return;
     }
@@ -296,7 +342,7 @@ function SidebarUpdateControl() {
             }
           : {}),
         ...(local && bridge && action !== "none"
-          ? { installLocal: (reportError) => installLocalUpdate(bridge, reportError) }
+          ? { installLocal: (reportError) => installLocalUpdateWhenIdle(bridge, reportError) }
           : {}),
       }),
     );
@@ -342,6 +388,15 @@ function SidebarUpdateControl() {
           setIsActionPending(true);
           void installLocalUpdate(bridge).finally(() => setIsActionPending(false));
         }}
+        onConfirmWhenIdle={() => {
+          const bridge = window.desktopBridge;
+          setIsConfirmingSafeUpdate(false);
+          if (bridge) void installLocalUpdateWhenIdle(bridge);
+        }}
+      />
+      <PendingLocalInstallDialog
+        open={isShowingPendingInstall}
+        onOpenChange={setIsShowingPendingInstall}
       />
     </>
   );
@@ -500,7 +555,7 @@ export function SidebarUpdateRunCapsule() {
                   failures: [],
                   restarting: [],
                 });
-                if (!(await installLocalUpdate(window.desktopBridge!))) {
+                if (!(await installLocalUpdateWhenIdle(window.desktopBridge!))) {
                   clearSavedUpdateEverythingResult();
                 }
               },

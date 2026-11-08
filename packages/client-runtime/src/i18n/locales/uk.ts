@@ -4341,6 +4341,7 @@ const catalog: MessageCatalog = {
   "Could not verify {host}.": "Не вдалося перевірити {host}.",
   "Could not verify your permissions. Retrying automatically.":
     "Не вдалося перевірити ваші дозволи. Автоматична повторна спроба.",
+  "Could not wait for background work": "Не вдалося дочекатися фонових завдань",
   "Could not wake thread": "Не вдалося повернути чат",
   "Could not write a review guide": "Не вдалося створити посібник рев’ю",
   "Could not write guide": "Не вдалося написати посібник",
@@ -10773,6 +10774,7 @@ const catalog: MessageCatalog = {
   "Stop the current turn and send it instead": "Зупинити поточний хід і надіслати замість нього",
   "Stop the provider from automatically merging this {term}.":
     "Вимкнути автоматичне злиття провайдером: {term}.",
+  "Stop waiting": "Не чекати",
   "stop watching": "припинити стеження",
   "Stop watching": "Припинити стеження",
   "Stop watching #{number}": "Припинити стеження за #{number}",
@@ -11677,6 +11679,8 @@ const catalog: MessageCatalog = {
     "Не вдалося завантажити оновлення. Спробуйте «Завантажити оновлення» ще раз.",
   "The update install failed. Try Restart to update again.":
     "Не вдалося встановити оновлення. Спробуйте «Перезапустити для оновлення» ще раз.",
+  "The update installs when this finishes. Restarting now stops it.":
+    "Оновлення встановиться, коли це завершиться. Перезапуск зараз зупинить ці завдання.",
   "The update track did not change.": "Канал оновлень не змінився.",
   "The upload was refused.": "Завантаження було відхилено.",
   "The URL appears after you save.": "URL з’явиться після збереження.",
@@ -12868,6 +12872,7 @@ const catalog: MessageCatalog = {
   "Update failed": "Не вдалося оновити",
   "Update for full support.": "Оновіть для повної підтримки.",
   "Update helper": "Оновити помічник",
+  "Update is waiting": "Оновлення очікує",
   "Update now": "Оновити зараз",
   "Update older servers to save this setting.":
     "Оновіть старіші сервери, щоб зберегти це налаштування.",
@@ -12932,7 +12937,9 @@ const catalog: MessageCatalog = {
     "Оновіть цей сервер, щоб надсилати файли з відповідями на запитання",
   "Update time unavailable": "Час оновлення недоступний",
   "Update to {version}": "Оновити до {version}",
+  "Update to {version} is waiting": "Оновлення до {version} очікує",
   "Update track": "Канал оновлень",
+  "Update when it finishes": "Оновити після завершення",
   "Update with {method}": "Оновити способом «{method}»",
   "Update with rebase": "Оновити через rebase",
   "Update your T3.CodeShip servers to browse pull requests.":
@@ -13356,11 +13363,20 @@ const catalog: MessageCatalog = {
   Waiting: "Очікування",
   "Waiting · {label}": "Очікування · {label}",
   "Waiting · {task}": "Очікування · {task}",
+  "Waiting for {count} tasks": {
+    one: "Очікування {count} завдання",
+    few: "Очікування {count} завдань",
+    many: "Очікування {count} завдань",
+    other: "Очікування {count} завдання",
+  },
   "Waiting for {device}'s configuration.": "Очікування конфігурації пристрою {device}.",
   "Waiting for an answer in the original thread": "Очікування відповіді в початковому чаті",
   "Waiting for approval": "Очікування схвалення",
   "Waiting for approval · code expires at {time}": "Очікування схвалення · код діє до {time}",
   "Waiting for approval…": "Очікування схвалення…",
+  "waiting for background work": "очікує фонові завдання",
+  "Waiting for background work ({count})": "Очікування фонових завдань ({count})",
+  "Waiting for background work…": "Очікування фонових завдань…",
   "Waiting for collector health.": "Очікування стану збирача.",
   "Waiting for connection…": "Очікування з’єднання…",
   "Waiting for device video…": "Очікування відео з пристрою…",
@@ -13385,6 +13401,7 @@ const catalog: MessageCatalog = {
   "Waiting on a command": "Очікування команди",
   "Waiting on a monitor": "Очікування монітора",
   "Waiting on a subagent": "Очікування субагента",
+  "Waits for background work": "Очікує фонові завдання",
   Wake: "Повернути",
   "Wake {title} now": "Розбудити {title} зараз",
   "Wake now": "Розбудити зараз",

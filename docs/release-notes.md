@@ -1,3 +1,9 @@
+## 2026-11-08 — Updates wait for background work chats are waiting on
+
+- An update no longer stops a long background command, task or subagent that a chat is waiting on, such as a test run or a CI replay. The update waits until that work finishes, then restarts, so the chat still gets the result. **Safe update** lists the work it waits for and offers **Update now** to restart right away. While it waits, the update button says how many tasks it is waiting for, and you can update now or stop waiting.
+- Updating a server on another machine, including **Update everything** and from the mobile app, waits the same way for that machine's background work and shows it as **Waiting for background work**.
+- The note a chat gets after a restart now also wakes it for a background command it said it was waiting on while that command's step still showed as running.
+
 ## 2026-11-08 — A git action no longer overwrites a branch the thread moved to
 
 - When a git action creates a feature branch, the thread now switches to it only if its branch hasn't changed while the action ran, for example because another device or a finished agent turn moved it. The newer branch is kept. On mobile, the action still reports success in that case instead of "Git action failed". On web, desktop and mobile.

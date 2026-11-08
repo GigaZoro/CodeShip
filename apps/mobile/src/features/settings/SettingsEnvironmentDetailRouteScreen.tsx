@@ -33,6 +33,7 @@ import { OutdatedServerUpdateSection } from "./OutdatedServerUpdateSection";
 import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActionRow";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
+import { isWaitingOnWork, WaitingOnWorkActions, waitingOnWorkText } from "./WaitingOnWorkActions";
 import {
   canMaintainEnvironment,
   canUpdateEnvironmentProvider,
@@ -258,9 +259,11 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                     ) : null}
                     {running ? (
                       <Text className="text-sm text-foreground-muted">
-                        {updateState.stage === "resuming"
-                          ? t("Restarting and reconnecting…")
-                          : t("Downloading update…")}
+                        {isWaitingOnWork(updateState)
+                          ? waitingOnWorkText(updateState.waitingOn)
+                          : updateState.stage === "resuming"
+                            ? t("Restarting and reconnecting…")
+                            : t("Downloading update…")}
                       </Text>
                     ) : updateState.status === "failed" ? (
                       <Text selectable className="text-sm text-danger-foreground">
@@ -312,6 +315,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                       }}
                     />
                   )}
+                  <WaitingOnWorkActions environmentId={environmentId} state={updateState} />
                   {checkedRelease?.targetVersion &&
                   !updatesDenial &&
                   supportsEnvironmentUpdate(config.environment.capabilities) ? (

@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
-import { type RefObject, useRef } from "react";
+import type { OrchestrationV2RestartHoldWork } from "@t3tools/contracts";
+import { type ReactNode, type RefObject, useRef } from "react";
 
 import { useEnvironments } from "~/state/environments";
 import { environmentIdsKey } from "~/state/environmentAtomList";
@@ -20,14 +21,20 @@ import {
   runningThreadsAtom,
   splitRunningThreadsForRestart,
 } from "./runningThreads";
+import {
+  useHostedRestartHoldKey,
+  useRestartHoldWork,
+  useRestartHoldWorkCount,
+} from "./localInstallWait";
 import { isHostedByThisApp } from "./useUpdateEverything";
 
 import { t, tx } from "~/i18n";
 const LISTED_THREADS = 5;
 
 /**
- * Threads running on the servers this desktop app restarts when it installs an update. Watches
- * them only while an update is `ready` to install, since the count updates with every thread.
+ * Threads running, and background work waited on, on the servers this desktop app restarts when
+ * it installs an update. Watches them only while an update is `ready` to install, since the
+ * counts update with every thread.
  */
 export function useThisAppRunningThreads(ready: boolean) {
   const { environments } = useEnvironments();
@@ -36,7 +43,9 @@ export function useThisAppRunningThreads(ready: boolean) {
         environments.filter(isHostedByThisApp).map(({ environmentId }) => environmentId),
       )
     : "";
-  return { key, count: useAtomValue(runningThreadCountAtom(key)) };
+  const count = useAtomValue(runningThreadCountAtom(key));
+  const holdCount = useRestartHoldWorkCount(useHostedRestartHoldKey(ready));
+  return { key, count, busy: count > 0 || holdCount > 0 };
 }
 
 export function SafeUpdateDialog({
@@ -45,13 +54,17 @@ export function SafeUpdateDialog({
   version,
   environmentIds,
   onConfirm,
+  onConfirmWhenIdle,
 }: {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly version: string | null;
   /** An `environmentIdsKey` of the servers that restart. */
   readonly environmentIds: string;
+  /** Installs now, stopping any background work. */
   readonly onConfirm: () => void;
+  /** Installs once no chat waits on background work. */
+  readonly onConfirmWhenIdle: () => void;
 }) {
   const cancelRef = useRef<HTMLButtonElement>(null);
   return (
@@ -65,6 +78,7 @@ export function SafeUpdateDialog({
           version={version}
           environmentIds={environmentIds}
           onConfirm={onConfirm}
+          onConfirmWhenIdle={onConfirmWhenIdle}
           cancelRef={cancelRef}
         />
       </AlertDialogPopup>
@@ -76,16 +90,19 @@ function SafeUpdateDialogContent({
   version,
   environmentIds,
   onConfirm,
+  onConfirmWhenIdle,
   cancelRef,
 }: {
   readonly version: string | null;
   readonly environmentIds: string;
   readonly onConfirm: () => void;
+  readonly onConfirmWhenIdle: () => void;
   readonly cancelRef: RefObject<HTMLButtonElement | null>;
 }) {
   const { resuming, waitingOnYou } = splitRunningThreadsForRestart(
     useAtomValue(runningThreadsAtom(environmentIds)),
   );
+  const work = useRestartHoldWork(useHostedRestartHoldKey());
   return (
     <>
       <AlertDialogHeader className="shrink-0">
@@ -104,6 +121,11 @@ function SafeUpdateDialogContent({
       </AlertDialogHeader>
       <ScrollArea scrollFade>
         <div className="flex flex-col gap-4 px-6 pb-4 text-sm">
+          <BackgroundWorkGroup
+            title={t("Waits for background work")}
+            note={t("The update installs when this finishes. Restarting now stops it.")}
+            work={work}
+          />
           <ThreadGroup title={t("Resume after the restart")} threads={resuming} />
           <ThreadGroup
             title={t("Waiting for your answer")}
@@ -116,9 +138,50 @@ function SafeUpdateDialogContent({
         <AlertDialogClose ref={cancelRef} render={<Button variant="outline" />}>
           {t("Cancel")}
         </AlertDialogClose>
-        <Button onClick={onConfirm}>{t("Safe update")}</Button>
+        {work.length > 0 ? (
+          <>
+            <Button variant="outline" onClick={onConfirm}>
+              {t("Update now")}
+            </Button>
+            <Button onClick={onConfirmWhenIdle}>{t("Update when it finishes")}</Button>
+          </>
+        ) : (
+          <Button onClick={onConfirm}>{t("Safe update")}</Button>
+        )}
       </AlertDialogFooter>
     </>
+  );
+}
+
+/** A titled list that shows the first few entries and counts the rest. */
+function EntryGroup({
+  title,
+  note,
+  entries,
+}: {
+  readonly title: string;
+  readonly note?: string;
+  readonly entries: ReadonlyArray<{ readonly key: string; readonly content: ReactNode }>;
+}) {
+  if (entries.length === 0) return null;
+  const hidden = entries.length - LISTED_THREADS;
+  return (
+    <section className="flex min-w-0 flex-col gap-1">
+      <h3 className="font-medium text-muted-foreground text-xs">
+        {title} · {entries.length}
+      </h3>
+      {note !== undefined ? <p className="text-muted-foreground text-xs">{note}</p> : null}
+      <ul className="flex min-w-0 flex-col gap-0.5">
+        {entries.slice(0, LISTED_THREADS).map(({ key, content }) => (
+          <li key={key} className="truncate">
+            {content}
+          </li>
+        ))}
+        {hidden > 0 ? (
+          <li className="text-muted-foreground">{t("and {count} more", { count: hidden })}</li>
+        ) : null}
+      </ul>
+    </section>
   );
 }
 
@@ -131,24 +194,40 @@ function ThreadGroup({
   readonly note?: string;
   readonly threads: ReadonlyArray<RunningThread>;
 }) {
-  if (threads.length === 0) return null;
-  const hidden = threads.length - LISTED_THREADS;
   return (
-    <section className="flex min-w-0 flex-col gap-1">
-      <h3 className="font-medium text-muted-foreground text-xs">
-        {title} · {threads.length}
-      </h3>
-      {note !== undefined ? <p className="text-muted-foreground text-xs">{note}</p> : null}
-      <ul className="flex min-w-0 flex-col gap-0.5">
-        {threads.slice(0, LISTED_THREADS).map(({ environmentId, thread }) => (
-          <li key={`${environmentId}:${thread.id}`} className="truncate">
-            {thread.title}
-          </li>
-        ))}
-        {hidden > 0 ? (
-          <li className="text-muted-foreground">{t("and {count} more", { count: hidden })}</li>
-        ) : null}
-      </ul>
-    </section>
+    <EntryGroup
+      title={title}
+      {...(note !== undefined ? { note } : {})}
+      entries={threads.map(({ environmentId, thread }) => ({
+        key: `${environmentId}:${thread.id}`,
+        content: thread.title,
+      }))}
+    />
+  );
+}
+
+/** What chats wait on: the task, then the chat that waits. */
+export function BackgroundWorkGroup({
+  title,
+  note,
+  work,
+}: {
+  readonly title: string;
+  readonly note?: string;
+  readonly work: ReadonlyArray<OrchestrationV2RestartHoldWork>;
+}) {
+  return (
+    <EntryGroup
+      title={title}
+      {...(note !== undefined ? { note } : {})}
+      entries={work.map((entry, index) => ({
+        key: `${entry.threadId}:${index}`,
+        content: (
+          <>
+            {entry.label} <span className="text-muted-foreground">{entry.threadTitle}</span>
+          </>
+        ),
+      }))}
+    />
   );
 }

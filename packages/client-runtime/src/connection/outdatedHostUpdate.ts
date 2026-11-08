@@ -1,6 +1,7 @@
 import {
   ORCHESTRATION_PROTOCOL_VERSION,
   type EnvironmentId,
+  type OrchestrationV2RestartHoldWork,
   type ExecutionEnvironmentDescriptor,
   type ServerSelfUpdateInput,
   type ServerSelfUpdateResult,
@@ -22,7 +23,11 @@ import * as Socket from "effect/socket/Socket";
 
 import { fetchRemoteEnvironmentDescriptor } from "../environment/descriptor.ts";
 import { makeWsRpcProtocolClient, PING_TIMEOUT } from "../rpc/protocol.ts";
-import { isLegacyUpdateHandoffLoss, resolveServerUpdateProgressResult } from "../state/server.ts";
+import {
+  isLegacyUpdateHandoffLoss,
+  type RestartHoldDecision,
+  resolveServerUpdateProgressResult,
+} from "../state/server.ts";
 import * as RelayEnvironmentDiscovery from "../relay/discovery.ts";
 import * as ConnectionResolver from "./resolver.ts";
 import * as EnvironmentRegistry from "./registry.ts";
@@ -47,7 +52,7 @@ export class OutdatedHostUpdateError extends Schema.TaggedError<OutdatedHostUpda
   },
 ) {}
 
-export type OutdatedHostUpdateStage = "downloading" | "installing" | "resuming";
+export type OutdatedHostUpdateStage = "waiting" | "downloading" | "installing" | "resuming";
 
 const reachOutdatedHost = Effect.fn("clientRuntime.connection.reachOutdatedHost")(function* (
   environmentId: EnvironmentId,
@@ -77,7 +82,11 @@ export const updateOutdatedHost = Effect.fn("clientRuntime.connection.updateOutd
   function* (
     environmentId: EnvironmentId,
     input: ServerSelfUpdateInput,
-    onStage: (stage: OutdatedHostUpdateStage) => Effect.Effect<void>,
+    onStage: (
+      stage: OutdatedHostUpdateStage,
+      waitingOn?: ReadonlyArray<OrchestrationV2RestartHoldWork>,
+    ) => Effect.Effect<void>,
+    restartHoldDecisions: Stream.Stream<RestartHoldDecision>,
   ) {
     const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
     const webSocketConstructor = yield* Socket.WebSocketConstructor;
@@ -139,6 +148,20 @@ export const updateOutdatedHost = Effect.fn("clientRuntime.connection.updateOutd
           ),
         );
         const client = yield* makeWsRpcProtocolClient.pipe(Effect.provide(protocolContext));
+        if (capabilities.restartHold === true) {
+          const decision = yield* Stream.merge(
+            client[WS_METHODS.serverWatchRestartHold]({}).pipe(
+              Stream.tap((hold) =>
+                hold.work.length === 0 ? Effect.void : onStage("waiting", hold.work),
+              ),
+              Stream.filter((hold) => hold.work.length === 0),
+              Stream.as("clear" as const),
+            ),
+            restartHoldDecisions,
+          ).pipe(Stream.runHead);
+          if (Option.contains(decision, "cancel")) return yield* Effect.interrupt;
+          yield* onStage("downloading");
+        }
 
         const updateResult: ServerSelfUpdateResult =
           capabilities.serverSelfUpdateProgress === true

@@ -14,7 +14,11 @@ import type {
   ServerInstallation,
   ServerSelfUpdateCapability,
 } from "@t3tools/contracts";
-import type { ServerUpdateStage, ServerUpdateState } from "@t3tools/client-runtime/state/server";
+import {
+  decideRestartHold,
+  type ServerUpdateStage,
+  type ServerUpdateState,
+} from "@t3tools/client-runtime/state/server";
 import {
   isAtomCommandInterrupted,
   settlePromise,
@@ -32,6 +36,7 @@ import { useServerConfigs } from "~/state/entities";
 import { useManagedPolicy } from "~/state/managedPolicy";
 import { environmentPresentations } from "~/state/presentation";
 import { ManagedControl } from "./ManagedPolicy";
+import { restartHoldWorkLines, waitingOnWorkLabel } from "./restartHold.logic";
 import { manualServerUpdateCommand } from "~/versionSkew";
 import { crossesReleaseTrack } from "@t3tools/shared/cliRelease";
 import { Button } from "./ui/button";
@@ -41,6 +46,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 const UPDATE_STAGE_LABELS: Record<ServerUpdateStage, Message> = {
   downloading: msg("Downloading…"),
   installing: msg("Downloading…"),
+  waiting: msg("Waiting for background work…"),
   resuming: msg("Restarting…"),
 };
 const pendingUpdateEnvironmentIds = new Set<EnvironmentId>();
@@ -235,8 +241,10 @@ export function canUpdateServer(
 }
 
 export function ServerUpdateProgress({
+  environmentId,
   state,
 }: {
+  readonly environmentId: EnvironmentId;
   readonly state: Exclude<ServerUpdateState, { status: "idle" }>;
 }) {
   if (state.status === "failed") {
@@ -250,6 +258,36 @@ export function ServerUpdateProgress({
           <TooltipTrigger render={<span className="min-w-0 truncate">{state.message}</span>} />
           <TooltipPopup side="top">{state.message}</TooltipPopup>
         </Tooltip>
+      </div>
+    );
+  }
+  if (state.stage === "waiting") {
+    const work = state.waitingOn ?? [];
+    return (
+      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs font-medium text-foreground">
+        <span className="size-1.5 shrink-0 rounded-full bg-foreground" aria-hidden="true" />
+        <Tooltip>
+          <TooltipTrigger render={<span>{waitingOnWorkLabel(work.length)}</span>} />
+          {work.length > 0 ? (
+            <TooltipPopup side="top">
+              <span className="whitespace-pre-line">{restartHoldWorkLines(work)}</span>
+            </TooltipPopup>
+          ) : null}
+        </Tooltip>
+        <Button
+          size="xs"
+          variant="outline"
+          onClick={() => decideRestartHold(appAtomRegistry, environmentId, "update-now")}
+        >
+          {t("Update now")}
+        </Button>
+        <Button
+          size="xs"
+          variant="ghost"
+          onClick={() => decideRestartHold(appAtomRegistry, environmentId, "cancel")}
+        >
+          {t("Cancel")}
+        </Button>
       </div>
     );
   }

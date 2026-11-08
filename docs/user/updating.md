@@ -48,6 +48,17 @@ is, installs the update, restarts, and resumes them, even when **Continue
 threads after restarts** is off. An update another device starts follows that
 setting instead.
 
+A restart stops background work: a command, task or subagent a chat started and
+is waiting on, such as a test run. When chats are waiting on such work, the Safe
+update lists it, and **Update when it finishes** installs the update once that
+work is done, so the chats still get its results. While it waits, the update
+button shows how many tasks it is waiting for; open it to **Update now** or
+**Stop waiting**. A dev server or watcher left running does not hold the update.
+
+Updating a server on another machine waits the same way for the work its chats
+are waiting on, and shows **Waiting for background work** with **Update now**
+and **Cancel**.
+
 ## Switch between Stable and Nightly
 
 In the desktop app, change **Settings → Maintenance & about → Update track**. T3.CodeShip shows each

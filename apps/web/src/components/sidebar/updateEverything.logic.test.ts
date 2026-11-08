@@ -8,6 +8,7 @@ import {
   collectServerUpdateTargets,
   describeUpdateCapsule,
   describeUpdateEverything,
+  resolveUpdateRunMachineStatus,
   runUpdateEverything,
   selectUpdateRows,
   type UpdateEverythingMachine,
@@ -411,5 +412,35 @@ describe("describeUpdateCapsule", () => {
     expect(describeUpdateCapsule({ ...run, trackSwitch: true }, [failed], null, 0).action).toBe(
       "dismiss",
     );
+  });
+
+  it("says a server waits on background work, and never calls that wait slow", () => {
+    const machine = {
+      environmentId: EnvironmentId.make("remote"),
+      label: "remote",
+      updatesProviders: false,
+      server: {
+        environmentId: EnvironmentId.make("remote"),
+        serverLabel: "remote",
+        selfUpdate: "boot-service" as const,
+        targetVersion: "0.1.3",
+      },
+      handedOffVersion: null,
+      startedAt: 0,
+      result: null,
+      failure: null,
+      providerFailure: null,
+    };
+    const status = resolveUpdateRunMachineStatus(machine, "servers", {
+      status: "running",
+      stage: "waiting",
+      fromVersion: "0.1.2",
+      targetVersion: "0.1.3",
+    });
+    const run = { localVersion: null, phase: "servers" as const, restartAt: null, machines: [] };
+
+    const view = describeUpdateCapsule(run, [{ machine, status }], null, 60 * 60_000);
+    expect(view.tone).toBe("default");
+    expect(view.label).toBe("Waiting for background work…");
   });
 });

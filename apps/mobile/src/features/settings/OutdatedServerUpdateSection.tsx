@@ -16,6 +16,7 @@ import {
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActionRow";
 import { SettingsSection } from "./components/SettingsSection";
+import { isWaitingOnWork, WaitingOnWorkActions, waitingOnWorkText } from "./WaitingOnWorkActions";
 import {
   environmentReleaseCheckAtom,
   releaseCheckError,
@@ -86,11 +87,13 @@ export function OutdatedServerUpdateSection({
         </Text>
         <Text className="text-sm text-foreground-muted">
           {state.status === "running"
-            ? state.stage === "resuming"
-              ? t("Restarting and reconnecting…")
-              : state.stage === "installing"
-                ? t("Installing update…")
-                : t("Downloading update…")
+            ? isWaitingOnWork(state)
+              ? waitingOnWorkText(state.waitingOn)
+              : state.stage === "resuming"
+                ? t("Restarting and reconnecting…")
+                : state.stage === "installing"
+                  ? t("Installing update…")
+                  : t("Downloading update…")
             : release
               ? release.targetVersion
                 ? t("Version {version} is available.", { version: release.targetVersion })
@@ -110,6 +113,7 @@ export function OutdatedServerUpdateSection({
         loading={checking}
         onPress={check}
       />
+      <WaitingOnWorkActions environmentId={environmentId} state={state} />
       {release?.targetVersion ? (
         <SettingsActionRow
           icon="arrow.up.circle"

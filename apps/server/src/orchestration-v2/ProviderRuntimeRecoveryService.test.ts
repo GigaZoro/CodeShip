@@ -12,10 +12,16 @@ import {
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
+  type OrchestrationV2RestartHold,
+  type OrchestrationV2StoredEvent,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -1519,4 +1525,215 @@ it.effect("leaves delegated tasks to their own child threads after process loss"
     );
     assert.deepEqual(noted, [`subagent ${nativeSubagentId}`]);
   }).pipe(Effect.provide(layer));
+});
+
+function restartHoldFixture() {
+  const threadId = ThreadId.make("thread_restart_hold");
+  const runId = RunId.make("run_restart_hold");
+  const providerThreadId = ProviderThreadId.make("provider_thread_restart_hold");
+  const instanceId = ProviderInstanceId.make("claudeAgent");
+  const startedAt = DateTime.makeUnsafe("2026-11-07T23:02:00.000Z");
+  const verify = {
+    kind: "command" as const,
+    taskId: "baavq1vr7",
+    description: "Replay CI validation",
+    awaited: true as const,
+  };
+  const devServer = { kind: "command" as const, taskId: "bdevsrv1", description: "vp run dev" };
+  const projectionWith = (
+    pendingBackgroundTasks: ReadonlyArray<typeof verify | typeof devServer>,
+    turnItems: ReadonlyArray<unknown> = [],
+  ) =>
+    ({
+      thread: {
+        id: threadId,
+        title: "AB#975 one-sided book",
+        providerInstanceId: instanceId,
+        archivedAt: null,
+        deletedAt: null,
+      },
+      runtimeRequests: [],
+      providerSessions: [],
+      providerThreads: [
+        {
+          id: providerThreadId,
+          driver: ProviderDriverKind.make("claudeAgent"),
+          providerInstanceId: instanceId,
+          ownerNodeId: null,
+          status: "idle",
+          pendingBackgroundTasks,
+        },
+      ],
+      providerTurns: [],
+      // The agent ended its turn to wait on the command, as t3_background_wait asks.
+      runs: [
+        {
+          id: runId,
+          ordinal: 1,
+          status: "completed",
+          providerInstanceId: instanceId,
+          providerThreadId,
+          requestedAt: startedAt,
+          startedAt,
+          completedAt: startedAt,
+        },
+      ],
+      attempts: [],
+      nodes: [],
+      subagents: [],
+      messages: [],
+      turnItems,
+    }) as unknown as OrchestrationV2ThreadProjection;
+  return { threadId, runId, providerThreadId, verify, devServer, projectionWith };
+}
+
+function restartHoldLayer(input: {
+  readonly threadId: ThreadId;
+  readonly projection: () => OrchestrationV2ThreadProjection;
+  readonly live?: Stream.Stream<OrchestrationV2StoredEvent>;
+  readonly onCommit?: (
+    input: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0],
+  ) => void;
+}) {
+  return ProviderRuntimeRecovery.layer.pipe(
+    Layer.provide(ServerSettings.layerTest()),
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getRecoveryThreadIds: () => Effect.succeed([input.threadId]),
+          getRuntimeRecoveryProjection: () => Effect.sync(input.projection),
+        }),
+        Layer.mock(EventSink.EventSinkV2)({
+          latestSequence: () => Effect.succeed(0),
+          stream: () => input.live ?? Stream.never,
+          commitCommand: (committed) => {
+            input.onCommit?.(committed);
+            return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
+          },
+        }),
+        IdAllocator.layer,
+        Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
+          runRecoveryOnce: Effect.succeed(false),
+        }),
+        Layer.mock(EffectOutbox.EffectOutboxV2)({
+          listByCommandId: () => Effect.succeed([]),
+          reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+        }),
+      ),
+    ),
+  );
+}
+
+it.effect(
+  "holds an update for the background command a chat waits on, as a restart would report it",
+  () => {
+    const fixture = restartHoldFixture();
+    let projection = fixture.projectionWith([fixture.verify, fixture.devServer]);
+    let committed: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0] | null = null;
+    return Effect.gen(function* () {
+      const live = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
+      const pulled = yield* Queue.unbounded<void>();
+      const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService.pipe(
+        Effect.provide(
+          restartHoldLayer({
+            threadId: fixture.threadId,
+            projection: () => projection,
+            live: Stream.fromQueue(live).pipe(Stream.tap(() => Queue.offer(pulled, undefined))),
+            onCommit: (input) => {
+              committed = input;
+            },
+          }),
+        ),
+      );
+      const expected = {
+        threadId: fixture.threadId,
+        threadTitle: "AB#975 one-sided book",
+        kind: "shell" as const,
+        label: "Replay CI validation (id baavq1vr7)",
+      };
+      // The dev server stops too, but nobody waits on it, so it does not hold the update.
+      assert.deepEqual(yield* recovery.restartHold, { work: [expected] });
+
+      const holds = yield* Queue.unbounded<OrchestrationV2RestartHold>();
+      yield* recovery.watchRestartHold.pipe(
+        Stream.runForEach((hold) => Queue.offer(holds, hold)),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      assert.deepEqual(yield* Queue.take(holds), { work: [expected] });
+
+      // Restarting now cancels the command, and the restart note names the same work.
+      yield* recovery.reconcile("shutdown");
+      const notes = (committed?.events ?? []).flatMap((event) =>
+        event.type === "run.background-work-cancelled" ? [event.payload] : [],
+      );
+      assert.deepEqual(notes, [
+        {
+          runId: fixture.runId,
+          restartCancelledBackgroundWork: [
+            { kind: "shell", label: expected.label, id: "baavq1vr7", awaited: true },
+            { kind: "shell", label: "vp run dev (id bdevsrv1)", id: "bdevsrv1" },
+          ],
+        },
+      ]);
+
+      // The command finishes, so the waiting update can go ahead.
+      projection = fixture.projectionWith([fixture.devServer]);
+      yield* Queue.offer(live, {
+        sequence: 1,
+        event: { type: "provider-thread.updated", threadId: fixture.threadId },
+      } as unknown as OrchestrationV2StoredEvent);
+      yield* Queue.take(pulled);
+      yield* TestClock.adjust("1 second");
+      assert.deepEqual(yield* Queue.take(holds), { work: [] });
+    }).pipe(Effect.scoped);
+  },
+);
+
+it.effect("keeps the agent's wait on a background command whose turn item still runs", () => {
+  const fixture = restartHoldFixture();
+  const projection = fixture.projectionWith(
+    [fixture.verify],
+    [
+      {
+        id: TurnItemId.make("turn-item:verify"),
+        runId: fixture.runId,
+        nodeId: null,
+        providerThreadId: fixture.providerThreadId,
+        type: "command_execution",
+        status: "running",
+        input: "node ado-autopilot.mjs verify",
+        nativeItemRef: { nativeId: "baavq1vr7" },
+      },
+    ],
+  );
+  let committed: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0] | null = null;
+  return Effect.gen(function* () {
+    const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+    assert.deepEqual(
+      (yield* recovery.restartHold).work.map((entry) => entry.label),
+      ["node ado-autopilot.mjs verify"],
+    );
+    yield* recovery.reconcile("startup");
+    const notes = (committed?.events ?? []).flatMap((event) =>
+      event.type === "run.background-work-cancelled" ? [event.payload] : [],
+    );
+    assert.deepEqual(notes[0]?.restartCancelledBackgroundWork, [
+      {
+        kind: "shell",
+        label: "node ado-autopilot.mjs verify",
+        id: "turn-item:verify",
+        awaited: true,
+      },
+    ]);
+  }).pipe(
+    Effect.provide(
+      restartHoldLayer({
+        threadId: fixture.threadId,
+        projection: () => projection,
+        onCommit: (input) => {
+          committed = input;
+        },
+      }),
+    ),
+  );
 });

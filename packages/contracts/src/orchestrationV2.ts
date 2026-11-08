@@ -652,6 +652,28 @@ export const OrchestrationV2RestartCancelledBackgroundWork = Schema.Struct({
 export type OrchestrationV2RestartCancelledBackgroundWork =
   typeof OrchestrationV2RestartCancelledBackgroundWork.Type;
 
+/** Work a chat waits on that a restart of its server would stop now. Updates wait for it. */
+export const OrchestrationV2RestartHoldWork = Schema.Struct({
+  threadId: ThreadId,
+  threadTitle: Schema.String,
+  kind: OrchestrationV2RestartCancelledBackgroundWork.fields.kind,
+  label: TrimmedNonEmptyString,
+});
+export type OrchestrationV2RestartHoldWork = typeof OrchestrationV2RestartHoldWork.Type;
+
+export const OrchestrationV2RestartHold = Schema.Struct({
+  work: Schema.Array(OrchestrationV2RestartHoldWork),
+});
+export type OrchestrationV2RestartHold = typeof OrchestrationV2RestartHold.Type;
+
+export class OrchestrationV2RestartHoldError extends Schema.TaggedError<OrchestrationV2RestartHoldError>()(
+  "OrchestrationV2RestartHoldError",
+  {
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
 export const OrchestrationV2RunBackgroundWorkCancelled = Schema.Struct({
   runId: RunId,
   restartCancelledBackgroundWork: Schema.Array(OrchestrationV2RestartCancelledBackgroundWork),

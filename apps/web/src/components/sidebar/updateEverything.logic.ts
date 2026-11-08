@@ -18,6 +18,7 @@ import {
   supportsDesktopAppUpdate,
 } from "~/versionSkew";
 import type { ServerUpdateOutcome, ServerUpdateTarget } from "../ServerUpdateAction";
+import { waitingOnWorkLabel } from "../restartHold.logic";
 
 import { getFormattingLocale, msg, t, tn, type Message } from "~/i18n";
 export interface UpdateEverythingMachine {
@@ -387,6 +388,7 @@ export type UpdateRunMachineStatus =
   | "providers"
   | "waiting"
   | "downloading"
+  | "background-work"
   | "restarting"
   | "done"
   | "failed";
@@ -421,6 +423,7 @@ export function resolveUpdateRunMachineStatus(
   if (machine.handedOffVersion !== null) return "restarting";
   if (phase === "providers" && machine.updatesProviders) return "providers";
   if (machine.server !== null && serverState.status === "running") {
+    if (serverState.stage === "waiting") return "background-work";
     return serverState.stage === "resuming" ? "restarting" : "downloading";
   }
   return "waiting";
@@ -471,15 +474,24 @@ export function describeUpdateCapsule(
   machines: ReadonlyArray<UpdateRunMachineView>,
   local: UpdateRunLocalState,
   now: number,
+  /** Tasks the final install of this app waits on; null when it is not waiting. */
+  localWaitingOn: number | null = null,
 ): UpdateCapsuleView {
   if (run.phase === "countdown" && run.restartAt !== null) {
     const seconds = Math.max(0, Math.ceil((run.restartAt - now) / 1000));
     return { tone: "default", label: t("Restart in {seconds}s", { seconds }), action: "later" };
   }
   if (run.phase === "installing") {
-    return { tone: "default", label: t("Restarting…"), action: null };
+    return {
+      tone: "default",
+      label: localWaitingOn === null ? t("Restarting…") : waitingOnWorkLabel(localWaitingOn),
+      action: null,
+    };
   }
-  const active = machines.filter(({ status }) => isActive(status) && status !== "waiting");
+  // Waiting for a chat's task is deliberate, so it never turns the capsule into a slow warning.
+  const active = machines.filter(
+    ({ status }) => isActive(status) && status !== "waiting" && status !== "background-work",
+  );
   const slowest = active.toSorted((a, b) => a.machine.startedAt - b.machine.startedAt)[0];
   if (slowest && now - slowest.machine.startedAt >= UPDATE_SLOW_AFTER_MS) {
     return {
@@ -494,9 +506,16 @@ export function describeUpdateCapsule(
   }
   const done = machines.filter(({ status }) => status === "done").length;
   if (machines.some(({ status }) => isActive(status))) {
+    const heldByWork =
+      machines.some(({ status }) => status === "background-work") &&
+      machines.every(
+        ({ status }) => !isActive(status) || status === "background-work" || status === "waiting",
+      );
     return {
       tone: "default",
-      label: t("{done} of {total} updated", { done, total: machines.length }),
+      label: heldByWork
+        ? waitingOnWorkLabel(0)
+        : t("{done} of {total} updated", { done, total: machines.length }),
       action: null,
     };
   }
@@ -535,6 +554,7 @@ export const RUN_STATUS_LABELS: Record<UpdateRunMachineStatus, Message> = {
   providers: msg("updating providers"),
   waiting: msg("waiting"),
   downloading: msg("downloading"),
+  "background-work": msg("waiting for background work"),
   restarting: msg("restarting"),
   done: msg("done"),
   failed: msg("failed"),

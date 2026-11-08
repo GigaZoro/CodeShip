@@ -106,7 +106,10 @@ export function useAutoBalanceUpdateBanner(
               <div key={machine.environmentId} className="space-y-1">
                 <div className="font-medium">{machine.serverLabel}</div>
                 {machine.state.status !== "idle" ? (
-                  <ServerUpdateProgress state={machine.state} />
+                  <ServerUpdateProgress
+                    environmentId={machine.environmentId}
+                    state={machine.state}
+                  />
                 ) : !machine.remoteUpdate ? (
                   <>
                     <div className="text-muted-foreground">{t("Manual update required")}</div>

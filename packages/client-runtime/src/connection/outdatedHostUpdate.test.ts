@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
@@ -224,6 +225,7 @@ describe("updateOutdatedHost", () => {
         TARGET.environmentId,
         { targetVersion: "0.0.46" },
         () => Effect.void,
+        Stream.never,
       ).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -267,7 +269,12 @@ describe("updateOutdatedHost", () => {
       };
       let opened = false;
       const error = yield* Effect.flip(
-        updateOutdatedHost(TARGET.environmentId, { targetVersion: "0.0.46" }, () => Effect.void),
+        updateOutdatedHost(
+          TARGET.environmentId,
+          { targetVersion: "0.0.46" },
+          () => Effect.void,
+          Stream.never,
+        ),
       ).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -400,6 +407,7 @@ describe("updateOutdatedHost", () => {
             // Lose the transport only after the consumer has observed progress.
             if (stage === "downloading") sockets[0]?.close();
           }),
+        Stream.never,
       ).pipe(
         Effect.provide(
           Layer.mergeAll(

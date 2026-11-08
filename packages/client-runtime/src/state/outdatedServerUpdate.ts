@@ -1,4 +1,8 @@
-import type { EnvironmentId, ServerSelfUpdateInput } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  OrchestrationV2RestartHoldWork,
+  ServerSelfUpdateInput,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -12,6 +16,7 @@ import type * as EnvironmentRegistry from "../connection/registry.ts";
 import type * as RelayEnvironmentDiscovery from "../relay/discovery.ts";
 import { createAtomCommandScheduler, createRuntimeCommand } from "./runtime.ts";
 import {
+  restartHoldDecisions,
   serverUpdateFailureMessage,
   serverUpdateStateAtom,
   type ServerUpdateStage,
@@ -62,13 +67,29 @@ export function createOutdatedServerUpdateCommand<E>(
       const targetVersion = target.input.targetVersion;
       const fromVersion = target.fromVersion ?? targetVersion;
       let currentStage: ServerUpdateStage = "downloading";
-      const setStage = (stage: ServerUpdateStage) =>
+      const setStage = (
+        stage: ServerUpdateStage,
+        waitingOn?: ReadonlyArray<OrchestrationV2RestartHoldWork>,
+      ) =>
         Effect.sync(() => {
           currentStage = stage;
-          atomRegistry.set(stateAtom, { status: "running", stage, fromVersion, targetVersion });
+          atomRegistry.set(stateAtom, {
+            status: "running",
+            stage,
+            fromVersion,
+            targetVersion,
+            ...(waitingOn === undefined ? {} : { waitingOn }),
+          });
         });
       return setStage(currentStage).pipe(
-        Effect.andThen(updateOutdatedHost(target.environmentId, target.input, setStage)),
+        Effect.andThen(
+          updateOutdatedHost(
+            target.environmentId,
+            target.input,
+            setStage,
+            restartHoldDecisions(atomRegistry, target.environmentId),
+          ),
+        ),
         Effect.onExit((exit) =>
           Effect.sync(() => {
             if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) {

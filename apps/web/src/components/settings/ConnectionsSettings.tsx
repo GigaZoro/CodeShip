@@ -1102,7 +1102,10 @@ export function ConnectionsSettings() {
                 title={t("Version")}
                 description={
                   primaryServerUpdateState.status !== "idle" ? (
-                    <ServerUpdateProgress state={primaryServerUpdateState} />
+                    <ServerUpdateProgress
+                      environmentId={primaryEnvironmentId}
+                      state={primaryServerUpdateState}
+                    />
                   ) : (
                     [
                       primaryServerConfig?.environment.serverVersion ?? null,

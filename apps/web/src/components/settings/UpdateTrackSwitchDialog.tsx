@@ -11,7 +11,7 @@ import { APP_VERSION } from "~/branding";
 import { useDesktopUpdateState } from "~/state/desktopUpdate";
 import { useEnvironments } from "~/state/environments";
 import { npmReleaseAtom, npmReleaseFailureMessage } from "~/state/npmRelease";
-import { downloadLocalUpdate, installLocalUpdate } from "../sidebar/SidebarUpdatePill";
+import { downloadLocalUpdate, installLocalUpdateWhenIdle } from "../sidebar/SidebarUpdatePill";
 import { UpdateEverythingDialog } from "../sidebar/UpdateEverythingDialog";
 import {
   channelSwitchLabel,
@@ -154,7 +154,7 @@ function SwitchPlan({
                   );
                   return false;
                 }
-                return installLocalUpdate(bridge, reportError, downloadedVersion);
+                return installLocalUpdateWhenIdle(bridge, reportError, downloadedVersion);
               },
             },
       ),

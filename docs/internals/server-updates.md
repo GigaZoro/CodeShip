@@ -97,6 +97,17 @@ command and message IDs prevent duplicate submissions after an outbox retry. Cod
 resumes without adding provider prompt text unless the turn lost background work;
 other adapters receive the continuation message through their normal turn path.
 
+Clients hold an update while chats wait on background work, because no provider's
+background shell outlives the provider process a restart stops. Claude Code owns its
+`run_in_background` shells and kills them when it exits, and a new server cannot
+reattach to an old provider process mid-protocol. `server.watchRestartHold` streams
+the awaited part of what a restart would cancel, computed by the same
+`restartCancelledBackgroundWork` the shutdown reconcile uses for its note, so the hold
+and the note cannot disagree. The client that starts the update waits on it before
+restarting and lets the user update now or cancel. The wait happens outside the
+per-environment config queue so other settings for that server are not held. A
+crash still loses the work; the note reports it.
+
 Delegated tasks (`delegate_task` child threads) are reconciled as their own threads,
 never as the parent's background work. The orchestrator settles child results and
 completion deliveries in a startup pass after reconciliation, because the terminal-run

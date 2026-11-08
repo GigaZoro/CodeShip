@@ -4,7 +4,15 @@ import { type ReactNode, useSyncExternalStore } from "react";
 import { cn } from "~/lib/utils";
 import { environmentIdsKey } from "~/state/environmentAtomList";
 import { environmentUpdateStatesAtom } from "~/state/server";
+import { decideRestartHold } from "@t3tools/client-runtime/state/server";
+import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useServerUpdate } from "../ServerUpdateAction";
+import { waitingOnWorkLabel } from "../restartHold.logic";
+import {
+  decideHostedRestartHold,
+  usePendingLocalInstall,
+  usePendingLocalInstallWork,
+} from "./localInstallWait";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import {
@@ -45,13 +53,20 @@ function useUpdateRunMachineViews(run: UpdateEverythingRun): ReadonlyArray<Updat
   }));
 }
 
-function localStatusLabel(run: UpdateEverythingRun, local: UpdateRunLocalState, now: number) {
+function localStatusLabel(
+  run: UpdateEverythingRun,
+  local: UpdateRunLocalState,
+  now: number,
+  waitingOn: number | null,
+) {
   if (run.phase === "countdown" && run.restartAt !== null) {
     return t("restarts in {seconds}s", {
       seconds: Math.max(0, Math.ceil((run.restartAt - now) / 1000)),
     });
   }
-  if (run.phase === "installing") return t("restarting");
+  if (run.phase === "installing") {
+    return waitingOn === null ? t("restarting") : waitingOnWorkLabel(waitingOn);
+  }
   if (local?.status === "downloading") {
     return local.percent === null
       ? t("downloading")
@@ -72,11 +87,14 @@ export function SidebarUpdateCapsule({
   readonly onRestart?: () => Promise<void>;
 }) {
   const machines = useUpdateRunMachineViews(run);
+  const pendingInstall = usePendingLocalInstall();
+  const pendingWork = usePendingLocalInstallWork();
+  const localWaitingOn = pendingInstall === null ? null : pendingWork.length;
   const hasActiveMachine = machines.some(
     ({ status }) => status !== "done" && status !== "failed" && status !== "waiting",
   );
   const now = useNow(run.phase === "countdown" ? 1_000 : hasActiveMachine ? 30_000 : null);
-  const view = describeUpdateCapsule(run, machines, local, now);
+  const view = describeUpdateCapsule(run, machines, local, now, localWaitingOn);
   const updateServer = useServerUpdate();
   const failed = machines.some(({ status }) => status === "failed");
   const settled = !hasActiveMachine && run.localVersion === null;
@@ -145,7 +163,7 @@ export function SidebarUpdateCapsule({
             <div className="flex items-center justify-between gap-3">
               <span>{t("This app")}</span>
               <span className="text-muted-foreground tabular-nums">
-                {localStatusLabel(run, local, now)}
+                {localStatusLabel(run, local, now, localWaitingOn)}
               </span>
             </div>
           ) : onRestart ? (
@@ -153,6 +171,20 @@ export function SidebarUpdateCapsule({
               <span>{t("This app")}</span>
               <Button size="xs" variant="outline" onClick={() => void onRestart()}>
                 {t("Restart to update")}
+              </Button>
+            </div>
+          ) : null}
+          {localWaitingOn !== null ? (
+            <div className="flex justify-end gap-1">
+              <Button size="xs" variant="ghost" onClick={() => decideHostedRestartHold("cancel")}>
+                {t("Stop waiting")}
+              </Button>
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => decideHostedRestartHold("update-now")}
+              >
+                {t("Update now")}
               </Button>
             </div>
           ) : null}
@@ -172,6 +204,19 @@ export function SidebarUpdateCapsule({
                     : ""}
                 </span>
               </div>
+              {status === "background-work" ? (
+                <div className="flex justify-end">
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() =>
+                      decideRestartHold(appAtomRegistry, machine.environmentId, "update-now")
+                    }
+                  >
+                    {t("Update now")}
+                  </Button>
+                </div>
+              ) : null}
               {machine.failure !== null ? (
                 <span className="break-words text-muted-foreground">{machine.failure}</span>
               ) : null}
