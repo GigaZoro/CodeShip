@@ -159,6 +159,12 @@ describe("limitFailoverCommand", () => {
       createdBy: "user",
       creationSource: "server",
     });
+    // A stop already waiting to resume at its reset moves once an account has room.
+    assert.equal(
+      failover({ thread: { ...thread, limitRecovery: { runId, resetAt, autoResume: true } } })
+        ?.modelSelection?.instanceId,
+      ProviderInstanceId.make("claude_first"),
+    );
     // Unlisted accounts follow the saved order.
     assert.deepEqual(
       failover({
@@ -170,8 +176,8 @@ describe("limitFailoverCommand", () => {
 
   it.each([
     [
-      "the stop already waits for its reset",
-      { limitRecovery: { runId, resetAt, autoResume: true } },
+      "auto-resume was cancelled for the stop",
+      { limitRecovery: { runId, resetAt, autoResume: false } },
     ],
     ["the limit has reset", { usageLimitResetAt: "2026-10-29T11:00:00.000Z" }],
     [
@@ -293,6 +299,57 @@ it.effect("idle sweeps skip SQL until the next wake time or a relevant event", (
       assert.equal(yield* Queue.take(queries), 100_000);
     }).pipe(Effect.provide(layer));
   }),
+);
+
+it.effect(
+  "a thread waiting for its reset is checked again when another account's limit resets",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(now);
+      const queries = yield* Queue.unbounded<number>();
+      const layer = UsageLimitRecoveryWorker.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Scheduler.layer,
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              getLimitRecoveryCandidates: () =>
+                Clock.currentTimeMillis.pipe(
+                  Effect.flatMap((nowMs) => Queue.offer(queries, nowMs - now)),
+                  Effect.as([{ ...thread, limitRecovery: { runId, resetAt, autoResume: true } }]),
+                ),
+              getUsageLimitedProviderInstances: () =>
+                Effect.succeed(
+                  new Map([
+                    [ProviderInstanceId.make("claudeAgent"), resetAt],
+                    [ProviderInstanceId.make("claude_first"), "2026-10-29T12:02:00.000Z"],
+                  ]),
+                ),
+              getLimitRecoveryWakeAt: () => Effect.succeed(Date.parse(resetAt)),
+            }),
+            Layer.mock(ThreadManagement.ThreadManagementService)({}),
+            Layer.mock(Orchestrator.OrchestratorV2)({ streamDomainEvents: Stream.never }),
+            Layer.mock(ServerSettings.ServerSettingsService)({
+              getSettings: Effect.succeed({
+                ...settings,
+                autoResumeLimitedThreads: true,
+                snoozeLimitedThreads: false,
+                failoverLimitedThreads: true,
+              }),
+              streamChanges: Stream.never,
+            }),
+            Layer.mock(ProviderRegistry.ProviderRegistry)({
+              getProviders: Effect.succeed([provider("claudeAgent"), provider("claude_first")]),
+              streamChanges: Stream.never,
+            }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        assert.equal(yield* Queue.take(queries), 0);
+        yield* TestClock.adjust("120 seconds");
+        assert.equal(yield* Queue.take(queries), 120_000);
+      }).pipe(Effect.provide(layer));
+    }),
 );
 
 const HOUR_MS = 60 * 60 * 1000;

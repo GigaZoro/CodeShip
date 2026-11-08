@@ -1,3 +1,7 @@
+## 2026-11-08 — Limited threads move to an account as soon as it has usage again
+
+- With **Switch accounts at usage limits** on, a thread that stopped while every other account of its provider was also out now moves to the first one that gets usage back, the moment its limit resets. Before, a thread with **Resume at reset** scheduled, which is every limit stop while **Resume after usage limits** is on, waited for its own account's reset even when another account had room again, up to a week for a weekly limit. A thread you snooze or whose auto-resume you cancel still waits.
+
 ## 2026-11-08 — Counters on the sidebar rail
 
 - **Threads** keeps its Needs you count, and hovering it now lists failed chats, usage limits, approvals and questions separately.

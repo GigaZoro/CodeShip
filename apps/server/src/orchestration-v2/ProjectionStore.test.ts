@@ -5280,6 +5280,12 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           (row) => row.id === threadId,
         ),
       );
+      // Waiting for the reset, it can still move to an account that regains usage.
+      assert.isDefined(
+        (yield* store.getLimitRecoveryCandidates({ ...recoveryOptions, failover: true })).find(
+          (row) => row.id === threadId,
+        ),
+      );
       assert.strictEqual(yield* store.getLimitRecoveryWakeAt(now), DateTime.toEpochMillis(reset));
       assert.isNull(yield* store.getLimitRecoveryWakeAt(reset));
       const due = (yield* store.getLimitRecoveryCandidates({
@@ -5318,6 +5324,11 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           now: reset,
           autoResume: true,
         })).find((row) => row.id === threadId),
+      );
+      assert.isUndefined(
+        (yield* store.getLimitRecoveryCandidates({ ...recoveryOptions, failover: true })).find(
+          (row) => row.id === threadId,
+        ),
       );
       yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = ${originalRow!.payload_json} WHERE thread_id = ${threadId}`;
       const session = {

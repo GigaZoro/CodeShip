@@ -109,8 +109,8 @@ export function limitFailoverCommand(
     thread.archivedAt !== null ||
     thread.settledOverride === "settled" ||
     thread.pendingRuntimeRequest !== null ||
-    // An armed stop already chose to wait for the reset.
-    thread.limitRecovery?.runId === thread.latestRunId ||
+    // Cancelling auto-resume keeps the thread until the user continues it.
+    (thread.limitRecovery?.runId === thread.latestRunId && !thread.limitRecovery.autoResume) ||
     thread.latestRunProviderInstanceId !== thread.providerInstanceId ||
     (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > nowMs)
   )
@@ -197,15 +197,19 @@ const makeSweep = Effect.gen(function* () {
       snooze: preferences.snoozeLimitedThreads,
       failover: preferences.failoverLimitedThreads,
     });
-    const failover =
+    const limited =
       preferences.failoverLimitedThreads && candidates.length > 0
-        ? {
+        ? yield* projections.getUsageLimitedProviderInstances(now)
+        : null;
+    const failover =
+      limited === null
+        ? null
+        : {
             settings: preferences,
             providers: yield* providerRegistry.getProviders,
-            limitedInstanceIds: yield* projections.getUsageLimitedProviderInstanceIds(now),
+            limitedInstanceIds: new Set(limited.keys()),
             nowMs,
-          }
-        : null;
+          };
     let acted = false;
     for (const thread of candidates) {
       const failoverCommand =
@@ -259,7 +263,9 @@ const makeSweep = Effect.gen(function* () {
     // A sweep that acted, or failed to, re-checks on the next tick.
     if (acted) return;
     const wakeAt = yield* projections.getLimitRecoveryWakeAt(now);
-    yield* due.record(readVersion, wakeAt ?? Infinity, nowMs);
+    // A waiting thread can move to another account the moment that account's limit resets.
+    const accountResetAt = Math.min(...[...(limited?.values() ?? [])].map(Date.parse));
+    yield* due.record(readVersion, Math.min(wakeAt ?? Infinity, accountResetAt), nowMs);
   });
 });
 
