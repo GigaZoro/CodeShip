@@ -153,6 +153,7 @@ describe("limitFailoverCommand", () => {
       messageId: MessageId.make("limit-failover:thread:failover:run:failover:claude_first"),
       threadId: thread.id,
       manualContinuationOfRunId: runId,
+      automaticContinuationOfRunId: runId,
       modelSelection: {
         instanceId: ProviderInstanceId.make("claude_first"),
         model: "claude-opus-4-1",

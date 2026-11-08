@@ -212,6 +212,7 @@ it.effect(
         ProjectionStore.ProjectionStoreV2,
         ProjectionStore.ProjectionStoreV2.of({
           apply: () => Effect.void,
+          getScheduledTaskRecoveryState: () => Effect.die("unused"),
           getLimitRecoveryCandidates: () => Effect.die("unused getLimitRecoveryCandidates"),
           getUsageLimitedProviderInstances: () =>
             Effect.die("unused getUsageLimitedProviderInstances"),

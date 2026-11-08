@@ -155,6 +155,7 @@ export function limitFailoverCommand(
     commandId: CommandId.make(`limit-failover:${identity}`),
     messageId: MessageId.make(`limit-failover:${identity}`),
     threadId: thread.id,
+    automaticContinuationOfRunId: search.runId,
     // A stopped run reuses the manual resume guard: it must still be the thread's latest.
     ...(heldAttemptId === undefined ? { manualContinuationOfRunId: search.runId } : {}),
     modelSelection: {

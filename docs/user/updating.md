@@ -106,7 +106,8 @@ stopped. Other background shells and monitors, such as a dev server and its
 watchdog, do not wake it; the thread learns about them with your next message.
 A thread is not resumed while it waits for your approval, answer, or secret, or
 while it is archived, snoozed, or settled. After three automatic resumes in a row,
-the thread waits for your next message.
+the thread waits for your next message. Scheduled-task runs also stay stopped when
+a newer occurrence has started or their scheduled window has ended.
 
 Updates from the previous orchestration system preserve conversation transcripts but cannot carry
 every kind of runtime history forward. Read [Threads from older T3.CodeShip versions](./thread-migration.md)

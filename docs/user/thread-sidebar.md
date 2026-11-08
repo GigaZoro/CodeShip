@@ -435,6 +435,11 @@ The environment must be running when the reset arrives; it resumes overdue
 continuations after a restart. Stopping the thread, sending a new message,
 archiving, or settling it prevents a pending continuation from starting.
 
+Scheduled-task runs recover automatically only while they are the latest occurrence
+and their run window is still open: one interval, or until the next fixed time.
+Account switching, reset recovery and restart recovery skip older occurrences and
+leave a notice explaining why. You can still resume a skipped run manually.
+
 Choose **Snooze until reset** to hide the thread until its allowance returns.
 Snooze and auto-resume are independent: snooze alone wakes the thread without
 sending a message; enabling both wakes and continues it. **Wake now** cancels

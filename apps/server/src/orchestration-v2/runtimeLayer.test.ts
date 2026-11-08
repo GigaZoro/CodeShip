@@ -307,7 +307,7 @@ const layerTest = Layer.mergeAll(
 ).pipe(
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(McpProviderSessions.layer),
-  Layer.provide(SqlitePersistence.layerMemory),
+  Layer.provideMerge(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStoreTest),
   Layer.provide(layerServerConfig),
   Layer.provide(ServerSettings.layerTest()),
@@ -8324,13 +8324,28 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
     }),
   );
 
-  it.effect("continues a usage-limited run on the next account of its driver", () =>
+  it.effect.each([
+    "ordinary",
+    "fresh",
+    "superseded",
+    "bound-superseded",
+    "expired",
+    "fixed-time",
+    "shared-window",
+    "fixed-fresh",
+    "chain-expired",
+    "legacy-chain-expired",
+    "manual-expired",
+    "reset-expired",
+    "restart-expired",
+    "setup-expired",
+  ] as const)("recovers only the current scheduled occurrence: %s", (scenario) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const events = yield* EventSink.EventSinkV2;
       const projections = yield* ProjectionStore.ProjectionStoreV2;
-      const threadId = ThreadId.make("limit-failover");
-      const projectId = ProjectId.make("limit-failover:project");
+      const threadId = ThreadId.make(`limit-failover:${scenario}`);
+      const projectId = ProjectId.make(`limit-failover:project:${scenario}`);
       const now = yield* DateTime.now;
       yield* seedProject({
         projectId,
@@ -8339,9 +8354,37 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         defaultModelSelection: modelSelection,
         createdAt: DateTime.formatIso(now),
       });
+      const sql = yield* SqlClient.SqlClient;
+      const taskId = ScheduledTaskId.make(`recovery-task:${scenario}`);
+      const scheduled = scenario !== "ordinary";
+      const intervalMs = 60_000;
+      const schedule = scenario.startsWith("fixed-")
+        ? { type: "fixed_time", timeOfDay: "00:01" }
+        : { type: "interval", everyMs: intervalMs };
+      if (scheduled)
+        yield* sql`
+        INSERT INTO scheduled_tasks (
+          task_id, title, prompt, enabled, schedule_json, project_id, workspace_strategy_json,
+          model_selection_json, runtime_mode, interaction_mode, created_by, creation_source,
+          created_at, updated_at, next_run_at, last_run_at, last_run_status, run_count
+        ) VALUES (
+          ${taskId}, 'Inbox', 'Check inbox', 1, ${JSON.stringify(schedule)}, ${projectId},
+          '{"type":"project"}', ${JSON.stringify(modelSelection)}, 'full-access', 'default',
+          'user', 'web', ${DateTime.formatIso(now)}, ${DateTime.formatIso(now)},
+          ${DateTime.formatIso(DateTime.add(now, { milliseconds: scenario === "shared-window" ? 30_000 : intervalMs }))},
+          ${DateTime.formatIso(now)}, 'succeeded', 1
+        )
+      `;
+      if (scheduled)
+        yield* sql`
+        INSERT INTO scheduled_task_runs (run_id, task_id, trigger, scheduled_for, started_at, outcome, thread_id)
+        VALUES (${`record:${scenario}`}, ${taskId}, 'scheduled',
+          ${DateTime.formatIso(DateTime.subtract(now, { milliseconds: scenario === "shared-window" ? 30_000 : 0 }))},
+          ${DateTime.formatIso(now)}, 'succeeded', ${threadId})
+      `;
       yield* orchestrator.dispatch({
         type: "thread.create",
-        commandId: CommandId.make("limit-failover:create"),
+        commandId: CommandId.make(`limit-failover:create:${scenario}`),
         threadId,
         projectId,
         title: "Limited thread",
@@ -8355,9 +8398,10 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
       });
       yield* orchestrator.dispatch({
         type: "message.dispatch",
-        commandId: CommandId.make("limit-failover:start"),
+        commandId: CommandId.make(`limit-failover:start:${scenario}`),
         threadId,
-        messageId: MessageId.make("limit-failover:start"),
+        messageId: MessageId.make(`limit-failover:start:${scenario}`),
+        ...(scheduled ? { scheduledTaskId: taskId } : {}),
         text: "Start work.",
         attachments: [],
         dispatchMode: { type: "defer_start" },
@@ -8370,19 +8414,19 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
       yield* events.write({
         events: [
           {
-            id: EventId.make("limit-failover:stop"),
+            id: EventId.make(`limit-failover:stop:${scenario}`),
             type: "run.updated",
             threadId,
             occurredAt: now,
             payload: { ...source, status: "failed", completedAt: now },
           },
           {
-            id: EventId.make("limit-failover:error"),
+            id: EventId.make(`limit-failover:error:${scenario}`),
             type: "turn-item.updated",
             threadId,
             occurredAt: now,
             payload: {
-              id: TurnItemId.make("limit-failover:error"),
+              id: TurnItemId.make(`limit-failover:error:${scenario}`),
               type: "error",
               threadId,
               runId: source.id,
@@ -8443,7 +8487,148 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         nowMs: DateTime.toEpochMillis(now),
       });
       assert.isNotNull(failover);
-      yield* orchestrator.dispatch(failover!);
+      if (scenario === "superseded" || scenario === "bound-superseded") {
+        yield* TestClock.adjust("1 second");
+        const newer = yield* DateTime.now;
+        yield* sql`UPDATE scheduled_tasks SET last_run_at = ${DateTime.formatIso(newer)} WHERE task_id = ${taskId}`;
+        const newerThreadId =
+          scenario === "bound-superseded" ? threadId : ThreadId.make(`${threadId}:newer`);
+        if (scenario !== "bound-superseded")
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`${threadId}:newer:create`),
+            threadId: newerThreadId,
+            projectId,
+            title: "Current inbox",
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdBy: "user",
+            creationSource: "web",
+          });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${threadId}:newer:start`),
+          messageId: MessageId.make(`${threadId}:newer:start`),
+          threadId: newerThreadId,
+          scheduledTaskId: taskId,
+          text: "Check inbox",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+      }
+      if (scenario === "bound-superseded") {
+        const queued = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+        yield* events.write({
+          events: [
+            {
+              id: EventId.make(`${threadId}:queued`),
+              type: "run.updated",
+              threadId,
+              occurredAt: now,
+              payload: { ...queued, status: "queued", queueHeld: true },
+            },
+          ],
+        });
+      }
+      let command = failover!;
+      if (scenario === "chain-expired" || scenario === "legacy-chain-expired") {
+        yield* orchestrator.dispatch(command);
+        const resumed = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+        const { automaticContinuationOfRunId: _automatic, ...legacy } = resumed;
+        yield* events.write({
+          events: [
+            {
+              id: EventId.make(`${threadId}:second-failure`),
+              type: "run.updated",
+              threadId,
+              occurredAt: now,
+              payload: {
+                ...(scenario === "legacy-chain-expired" ? legacy : resumed),
+                status: "failed",
+                completedAt: now,
+              },
+            },
+          ],
+        });
+        command = {
+          ...command,
+          commandId: CommandId.make(`${threadId}:second-recovery`),
+          messageId: MessageId.make(`${threadId}:second-recovery`),
+          automaticContinuationOfRunId: resumed.id,
+          manualContinuationOfRunId: resumed.id,
+        };
+      }
+      if (scenario.endsWith("expired") || scenario === "fixed-time")
+        yield* TestClock.adjust("1 day");
+      if (scenario === "shared-window") {
+        // Another machine's watch can move the next check without extending this occurrence.
+        yield* sql`UPDATE scheduled_tasks SET next_run_at = ${DateTime.formatIso(DateTime.add(now, { hours: 1 }))} WHERE task_id = ${taskId}`;
+        yield* TestClock.adjust("30 seconds");
+      }
+      if (scenario === "manual-expired") {
+        const { automaticContinuationOfRunId: _automatic, ...manual } = command;
+        yield* orchestrator.dispatch(manual);
+      } else if (scenario === "reset-expired") {
+        const {
+          automaticContinuationOfRunId: _automatic,
+          manualContinuationOfRunId: _manual,
+          ...reset
+        } = command;
+        yield* orchestrator.dispatch({ ...reset, usageLimitContinuationOfRunId: source.id });
+      } else if (scenario === "restart-expired") {
+        const {
+          automaticContinuationOfRunId: _automatic,
+          manualContinuationOfRunId: _manual,
+          ...restart
+        } = command;
+        yield* orchestrator.dispatch({ ...restart, restartContinuationOfRunId: source.id });
+      } else if (scenario === "setup-expired") {
+        yield* orchestrator.dispatch({
+          type: "prepared-run.retry",
+          commandId: command.commandId,
+          threadId,
+          runId: source.id,
+          automatic: true,
+        });
+      } else yield* orchestrator.dispatch(command);
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      if (scenario === "bound-superseded") {
+        assert.lengthOf(after.runs, 2);
+        assert.equal(after.runs[0]?.status, "cancelled");
+        assert.notEqual(after.thread.settledOverride, "settled");
+        assert.notEqual(after.runs[1]?.queueHeld, true);
+        assert.notEqual(after.runs[1]?.status, "cancelled");
+        return;
+      }
+      const skipped = !["ordinary", "fresh", "fixed-fresh", "manual-expired"].includes(scenario);
+      assert.equal(after.thread.settledOverride, skipped ? "settled" : null);
+      if (skipped) {
+        assert.lengthOf(after.runs, scenario.endsWith("chain-expired") ? 2 : 1);
+        if (scenario === "superseded") {
+          const newer = yield* orchestrator.getThreadProjection(ThreadId.make(`${threadId}:newer`));
+          assert.lengthOf(newer.runs, 1);
+          assert.equal(newer.runs[0]?.status, "starting");
+          assert.isNull(newer.thread.settledOverride);
+          assert.isTrue(
+            after.turnItems.some(
+              (item) =>
+                item.type === "system_notice" &&
+                item.message === "Skipped: a newer run of Inbox replaced this one.",
+            ),
+          );
+        }
+        assert.isTrue(
+          after.turnItems.some(
+            (item) => item.type === "system_notice" && item.message.startsWith("Skipped:"),
+          ),
+        );
+        return;
+      }
       assert.deepEqual(
         (yield* orchestrator.getThreadProjection(threadId)).runs.map((run) => [
           run.providerInstanceId,

@@ -154,6 +154,7 @@ describe("networkRecoveryPlan for a failed workspace setup", () => {
       dueAtMs: nowMs + delay,
       command: {
         type: "prepared-run.retry",
+        automatic: true,
         commandId: CommandId.make(`network-retry-setup:${retries + 1}:run:s`),
         threadId,
         runId: setupRun.id,

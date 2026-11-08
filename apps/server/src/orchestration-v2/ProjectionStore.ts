@@ -46,6 +46,8 @@ import type {
   ProviderTurnId,
 } from "@t3tools/contracts";
 import {
+  ScheduledTaskSchedule,
+  type ScheduledTaskId,
   IDLE_COMPACTION_TEXT,
   idleCompactionOf,
   OrchestrationV2AppThreadJson as OrchestrationV2AppThreadJsonSchema,
@@ -541,6 +543,18 @@ export interface ProjectionStoreV2Shape {
   readonly getThread: (
     threadId: ThreadId,
   ) => Effect.Effect<OrchestrationV2AppThread, ProjectionStoreV2Error>;
+  readonly getScheduledTaskRecoveryState: (
+    taskId: ScheduledTaskId,
+    requestedAt: DateTime.Utc,
+  ) => Effect.Effect<
+    {
+      readonly title: string;
+      readonly schedule: ScheduledTaskSchedule;
+      readonly lastRunAt: string | null;
+      readonly scheduledFor: string | null;
+    } | null,
+    ProjectionStoreV2Error
+  >;
   /** With `failover`, also running turns the provider holds until a reset still ahead. */
   readonly getLimitRecoveryCandidates: (options: {
     readonly now: DateTime.Utc;
@@ -1163,6 +1177,8 @@ const encodeContextHandoffPayload = Schema.encodeEffect(
 const encodeContextTransferPayload = Schema.encodeEffect(
   Schema.fromJsonString(OrchestrationV2ContextTransferJsonSchema),
 );
+
+const decodeTaskSchedule = Schema.decodeEffect(Schema.fromJsonString(ScheduledTaskSchedule));
 
 const decodeThreadPayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2AppThreadJsonSchema),
@@ -3932,6 +3948,32 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               : new ProjectionStoreReadError({ threadId, cause }),
           ),
         ),
+    );
+
+    const getScheduledTaskRecoveryState = Effect.fn(
+      "ProjectionStore.getScheduledTaskRecoveryState",
+    )(
+      function* (taskId: ScheduledTaskId, requestedAt: DateTime.Utc) {
+        const [row] = yield* sql<{
+          title: string;
+          schedule_json: string;
+          last_run_at: string | null;
+          scheduled_for: string | null;
+        }>`SELECT title, schedule_json, last_run_at,
+            (SELECT scheduled_for FROM scheduled_task_runs
+             WHERE task_id = ${taskId} AND started_at <= ${DateTime.formatIso(requestedAt)}
+               AND outcome <> 'skipped'
+             ORDER BY started_at DESC LIMIT 1) AS scheduled_for
+          FROM scheduled_tasks WHERE task_id = ${taskId}`;
+        if (row === undefined) return null;
+        return {
+          title: row.title,
+          schedule: yield* decodeTaskSchedule(row.schedule_json),
+          lastRunAt: row.last_run_at,
+          scheduledFor: row.scheduled_for,
+        };
+      },
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
 
     const getLimitRecoveryCandidates = Effect.fn("ProjectionStore.getLimitRecoveryCandidates")(
@@ -7544,6 +7586,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getRuntimeRequest: readOnReader(getRuntimeRequest),
       getPlan: readOnReader(getPlan),
       getProviderControlContext: readOnReader(getProviderControlContext),
+      getScheduledTaskRecoveryState: readOnReader(getScheduledTaskRecoveryState),
       getLimitRecoveryCandidates: readOnReader(getLimitRecoveryCandidates),
       getUsageLimitedProviderInstances: readOnReader(getUsageLimitedProviderInstances),
       getLimitRecoveryWakeAt: readOnReader(getLimitRecoveryWakeAt),

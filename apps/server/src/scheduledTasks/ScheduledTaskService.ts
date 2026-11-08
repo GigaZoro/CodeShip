@@ -775,28 +775,6 @@ export const layer = Layer.effect(
         enabled INTEGER NOT NULL
       )
     `;
-    // Each time a task fired, kept to the latest RUN_HISTORY_RETENTION per task.
-    yield* sql`
-      CREATE TABLE IF NOT EXISTS scheduled_task_runs (
-        run_id TEXT PRIMARY KEY,
-        task_id TEXT NOT NULL,
-        trigger TEXT NOT NULL,
-        scheduled_for TEXT,
-        started_at TEXT NOT NULL,
-        completed_at TEXT,
-        outcome TEXT NOT NULL,
-        thread_id TEXT,
-        error TEXT,
-        skip_reason TEXT,
-        ran_on TEXT,
-        failover_from TEXT,
-        failover_to TEXT
-      )
-    `;
-    yield* sql`
-      CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_task
-      ON scheduled_task_runs(task_id, started_at)
-    `;
     // Outlives the task so a stale copy on another machine is removed, not restored.
     yield* sql`
       CREATE TABLE IF NOT EXISTS scheduled_task_shared_deletions (

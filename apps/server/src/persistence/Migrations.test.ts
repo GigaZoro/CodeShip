@@ -8,6 +8,7 @@ import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { migrationManifest, runMigrations } from "./Migrations.ts";
+import ScheduledTaskRunHistory from "./Migrations/081_ScheduledTaskRunHistory.ts";
 
 const v2Migrations = migrationManifest.filter(([id]) => id >= 55);
 const newerMigrationId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
@@ -29,6 +30,21 @@ const v2TableCount = Effect.gen(function* () {
 });
 
 describe("runMigrations", () => {
+  it.effect("keeps scheduler-owned occurrence history when migrating it into startup", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 80 });
+      yield* ScheduledTaskRunHistory;
+      yield* sql`INSERT INTO scheduled_task_runs (run_id, task_id, trigger, scheduled_for, started_at, outcome)
+        VALUES ('old-run', 'inbox', 'scheduled', '2026-11-08T01:00:00.000Z', '2026-11-08T01:05:00.000Z', 'succeeded')`;
+      yield* runMigrations();
+      assert.deepEqual(yield* sql`SELECT run_id, scheduled_for FROM scheduled_task_runs`, [
+        { run_id: "old-run", scheduled_for: "2026-11-08T01:00:00.000Z" },
+      ]);
+      assert.deepEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("refuses to start when another migration took a V2 id", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

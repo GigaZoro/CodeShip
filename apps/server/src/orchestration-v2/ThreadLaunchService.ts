@@ -115,6 +115,7 @@ type PreparationInput = Pick<
 };
 
 export interface ThreadLaunchPreparationInput {
+  readonly automatic?: boolean | undefined;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
   readonly runId: RunId;
@@ -1096,6 +1097,7 @@ const make = Effect.gen(function* () {
   )(function* (input) {
     const dispatched = yield* threads.dispatch({
       type: "prepared-run.retry",
+      ...(input.automatic === undefined ? {} : { automatic: input.automatic }),
       commandId: input.commandId,
       threadId: input.threadId,
       runId: input.runId,

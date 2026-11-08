@@ -107,6 +107,7 @@ export function networkRecoveryPlan(
       dueAtMs: failedAtMs + delayMs,
       command: {
         type: "prepared-run.retry",
+        automatic: true,
         commandId: CommandId.make(`network-retry-setup:${setupRetries + 1}:${run.id}`),
         threadId: candidate.threadId,
         runId: run.id,
@@ -127,6 +128,7 @@ export function networkRecoveryPlan(
       threadId: candidate.threadId,
       // The manual resume guard: the failed run must still be the thread's latest.
       manualContinuationOfRunId: run.id,
+      automaticContinuationOfRunId: run.id,
       text: CONTINUE_PROMPT,
       attachments: [],
       dispatchMode: { type: "start_immediately" },

@@ -1,3 +1,7 @@
+## 2026-11-08 — Automatic recovery skips outdated scheduled runs
+
+- Scheduled-task runs no longer restart after a newer occurrence has started or their scheduled window has ended. Automatic recovery settles those chats with an explanation, preventing old runs from competing with current work. The latest run can still recover within its window, and ordinary chats recover as before.
+
 ## 2026-11-08 — Usage-limit checks stay fast as failed turns pile up
 
 - Auto turns, agent launches and account routing no longer slow down as your history of failed turns grows: checking which accounts are out of usage reads only the usage refusals that can still hold an account (a reset still ahead, or no known reset within the last five hours), not every failed turn ever recorded. Which accounts count as limited is unchanged.

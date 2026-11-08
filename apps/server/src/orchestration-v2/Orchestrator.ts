@@ -98,6 +98,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ProjectStore from "./ProjectStore.ts";
+import { nextScheduledRunAt } from "../scheduledTasks/Schedule.ts";
 import {
   isCheckpointRestoreIsolated,
   SHARED_WORKSPACE_RESTORE_MESSAGE,
@@ -5419,12 +5420,204 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ]);
   });
 
+  const skipStaleScheduledRecovery = Effect.fn("Orchestrator.skipStaleScheduledRecovery")(
+    function* (
+      command: Extract<
+        OrchestrationV2Command,
+        { readonly type: "message.dispatch" | "prepared-run.retry" }
+      >,
+      sourceRunId: RunId,
+      projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "messages">,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+      effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    ) {
+      const candidate = projection.runs.find((run) => run.id === sourceRunId);
+      if (
+        candidate === undefined ||
+        projection.runs.some(
+          (run) => run.id !== sourceRunId && run.status !== "queued" && runRanAfter(run, candidate),
+        )
+      )
+        return null;
+      if (
+        projection.thread.archivedAt !== null ||
+        projection.thread.deletedAt !== null ||
+        projection.thread.settledOverride === "settled"
+      ) {
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId: command.threadId,
+          occurredAt: yield* DateTime.now,
+          payload: projection.thread,
+        });
+        return { cancelUnsettledEffects: undefined };
+      }
+      let source: OrchestrationV2Run = candidate;
+      const visited = new Set<RunId>();
+      while (!visited.has(source.id)) {
+        visited.add(source.id);
+        const previousId: RunId | undefined =
+          source.automaticContinuationOfRunId ?? source.restartContinuationOfRunId;
+        const sourceMessage = projection.messages.find((item) => item.id === source.userMessageId);
+        // Older recovery runs predate the link; only server continuations inherit earlier work.
+        const previous: OrchestrationV2Run | undefined =
+          previousId !== undefined
+            ? projection.runs.find((run) => run.id === previousId)
+            : sourceMessage?.creationSource === "server" &&
+                sourceMessage.scheduledTaskId === undefined
+              ? projection.runs.findLast(
+                  (run) => run.ordinal < source.ordinal && run.status !== "queued",
+                )
+              : undefined;
+        if (previous === undefined) break;
+        source = previous;
+      }
+      const message = projection.messages.find((item) => item.id === source.userMessageId);
+      if (message?.scheduledTaskId === undefined) return null;
+      const task = yield* projectionStore
+        .getScheduledTaskRecoveryState(message.scheduledTaskId, source.requestedAt)
+        .pipe(
+          Effect.mapError(
+            (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+          ),
+        );
+      const now = yield* DateTime.now;
+      const sourceMs = DateTime.toEpochMillis(source.requestedAt);
+      let notice: string | undefined;
+      if (task === null) notice = "Skipped: the scheduled task no longer exists.";
+      else if (task.lastRunAt !== null && Date.parse(task.lastRunAt) > sourceMs) {
+        notice = `Skipped: a newer run of ${task.title} replaced this one.`;
+      } else {
+        const following = nextScheduledRunAt(
+          task.schedule,
+          DateTime.makeZonedUnsafe(task.scheduledFor ?? source.requestedAt, {
+            timeZone: DateTime.zoneMakeLocal(),
+          }),
+        );
+        const end = following === null ? Infinity : DateTime.toEpochMillis(following);
+        if (DateTime.toEpochMillis(now) >= end)
+          notice = `Skipped: the run window for ${task.title} has ended.`;
+      }
+      if (notice === undefined) return null;
+      const cancelUnsettledEffects = yield* dispatchThreadStop(
+        {
+          type: "thread.stop",
+          commandId: command.commandId,
+          threadId: command.threadId,
+          reason: notice,
+        },
+        events,
+        effects,
+      );
+      const queued = projection.runs.filter((run) => run.status === "queued");
+      if (queued.length > 0) {
+        // A bound task's next occurrence shares this chat; retire only the obsolete run.
+        if (candidate.status === "failed" || candidate.status === "interrupted") {
+          yield* emit(
+            events,
+            command,
+          )({
+            type: "run.updated",
+            threadId: command.threadId,
+            runId: candidate.id,
+            occurredAt: now,
+            payload: { ...candidate, status: "cancelled", completedAt: now },
+          });
+        }
+        for (const run of queued) {
+          const unattended = projection.messages.some(
+            (item) =>
+              item.id === run.userMessageId &&
+              (item.scheduledTaskId !== undefined || item.createdBy !== "user"),
+          );
+          yield* emit(
+            events,
+            command,
+          )({
+            type: "run.updated",
+            threadId: command.threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: { ...run, ...(unattended ? { queueHeld: false } : {}) },
+          });
+        }
+      }
+      const updated = yield* getProjectionWithPendingEvents(command.threadId, events);
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "turn-item.updated",
+        threadId: command.threadId,
+        runId: sourceRunId,
+        occurredAt: now,
+        payload: {
+          id: TurnItemId.make(`scheduled-recovery-skip:${sourceRunId}`),
+          type: "system_notice",
+          threadId: command.threadId,
+          runId: sourceRunId,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: yield* nextTurnItemOrdinal(updated),
+          status: "completed",
+          title: notice,
+          message: notice,
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+        },
+      });
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "thread.metadata-updated",
+        threadId: command.threadId,
+        occurredAt: now,
+        payload: {
+          ...updated.thread,
+          settledOverride: queued.length === 0 ? "settled" : null,
+          settledAt: queued.length === 0 ? now : null,
+          unsettledAt: null,
+          pinnedAt: null,
+          pinOrderKey: null,
+          activeOrderKey: null,
+          snoozedUntil: null,
+          snoozedAt: null,
+          limitRecovery: null,
+          updatedAt: now,
+        },
+      });
+      return { cancelUnsettledEffects };
+    },
+  );
+
   const dispatchMessage = Effect.fn("Orchestrator.dispatchMessage")(function* (
     command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) {
     let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+    const automaticSourceRunId =
+      command.automaticContinuationOfRunId ??
+      command.usageLimitContinuationOfRunId ??
+      command.restartContinuationOfRunId;
+    if (automaticSourceRunId !== undefined) {
+      const skipped = yield* skipStaleScheduledRecovery(
+        command,
+        automaticSourceRunId,
+        projection,
+        events,
+        effects,
+      );
+      if (skipped !== null) return skipped.cancelUnsettledEffects;
+    }
     if (command.manualContinuationOfRunId !== undefined) {
       const source = projection.runs.find((run) => run.id === command.manualContinuationOfRunId);
       const stopped = latestRootProviderFailure(source ?? null, projection.turnItems);
@@ -6084,6 +6277,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         checkpointId: null,
         contextHandoffId: null,
         ...(command.sourcePlanRef === undefined ? {} : { sourcePlanRef: command.sourcePlanRef }),
+        ...(automaticSourceRunId === undefined
+          ? {}
+          : { automaticContinuationOfRunId: automaticSourceRunId }),
         ...(command.restartContinuationOfRunId === undefined
           ? {}
           : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
@@ -6427,6 +6623,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         checkpointId: null,
         contextHandoffId: legacyImportHandoff?.id ?? null,
         ...(command.sourcePlanRef === undefined ? {} : { sourcePlanRef: command.sourcePlanRef }),
+        ...(automaticSourceRunId === undefined
+          ? {}
+          : { automaticContinuationOfRunId: automaticSourceRunId }),
         ...(command.restartContinuationOfRunId === undefined
           ? {}
           : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
@@ -7182,6 +7381,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         legacyImportRecoveryHandoff?.id ??
         null,
       ...(command.sourcePlanRef === undefined ? {} : { sourcePlanRef: command.sourcePlanRef }),
+      ...(automaticSourceRunId === undefined
+        ? {}
+        : { automaticContinuationOfRunId: automaticSourceRunId }),
       ...(command.restartContinuationOfRunId === undefined
         ? {}
         : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
@@ -13373,9 +13575,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "prepared-run.fail":
         yield* dispatchPreparedRunFail(command, events);
         break;
-      case "prepared-run.retry":
+      case "prepared-run.retry": {
+        if (command.automatic === true) {
+          const projection = yield* loadProjectionForCommand(command, ["runs", "messages"]);
+          const skipped = yield* skipStaleScheduledRecovery(
+            command,
+            command.runId,
+            projection,
+            events,
+            effects,
+          );
+          if (skipped !== null) {
+            cancelUnsettledEffects = skipped.cancelUnsettledEffects;
+            break;
+          }
+        }
         yield* dispatchPreparedRunRetry(command, events);
         break;
+      }
       case "runtime-request.respond":
         yield* dispatchRuntimeRequestRespond(command, events, effects);
         break;
