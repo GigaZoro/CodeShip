@@ -29,7 +29,7 @@ Cases are JSON lines in `cases/`, one file per area. The case schema in `run.ts`
 - `kind`: `bad` reproduces a mistake, `guard` protects correct behavior, `control` is ordinary work.
 - `experience`: the real mistake, in a sentence. `source`: where it happened.
 - `setup`: the fake thread, its `world` (repo, branch, files, PRs, pages), `priorTurns`, and `mocks` for tool results.
-- `expect`: the checks, such as `calls`, `callsMustNot`, `maxCalls`, `order`, `textMust`, and `linked`. Device cases also use `device` to check every child brief, forbid raw UI commands, bound failed device actions per user turn, and require artifact paths in completed final answers.
+- `expect`: the checks, such as `calls`, `callsMustNot`, `maxCalls`, `order`, `textMust`, and `linked`. A `calls` entry with `"succeeded": true` counts only a call T3 answered without an error, such as one that passed input validation. Device cases also use `device` to check every child brief, forbid raw UI commands, bound failed device actions per user turn, and require artifact paths in completed final answers.
 
 Check that the case builds with `--dry-run --case <id>`. Then run it on the text before your fix, where it must fail, and on the text after, where it must pass.
 
@@ -138,6 +138,21 @@ Passes, 3 samples each, Codex login on 2026-11-07:
 | `runtime_info`: "Ask the user only about money… Decide anything else…" (current) | GPT-6 Astra | 3/3   | 3/3      | 3/3     |
 
 The money case was added with the money-only rule, so it has no run on the earlier text; on the text before `ask_user` existed it could not pass. Astra's earlier control failure was the simulator showing an empty checkout; the control's world now has a `package.json`. GPT-6 Luna at low effort never loaded the deferred `ask_user` tool on any wording tried (0/3). Delegated children do not see `ask_user`.
+
+## Launch cases
+
+`launch-worktree-without-base` in `cases/orchestration.ndjson` checks that an agent told to launch with `workspaceStrategy {"type": "worktree"}` launches once. The advertised schema listed only `type` as required, agents left out `baseRef`, and T3 refused the launch (13 failures in 8 chats on 2026-11-07). Now `baseRef` is optional and the worktree starts from the project's default branch.
+
+Passes, 3 samples each, Codex login on 2026-11-08:
+
+| Runtime text                                                          | GPT-6 Luna | GPT-6 Astra |
+| --------------------------------------------------------------------- | ---------- | ----------- |
+| 96db846519: worktree needs `baseRef`, which the schema does not mark  | 0/3        | 0/3         |
+| Current: without `baseRef`, a worktree starts from the default branch | 3/3        | 3/3         |
+
+On the old text, every launch without `baseRef` was refused; Luna then gave up and Astra retried without it. The case first passed on both texts, because a refused launch still counted as a launch. It now requires `succeeded`. Astra then still failed on the current text: the simulator answered a launch with `{ok: true}` and a read of the new thread with an unrelated one, so Astra launched again. A launch now answers like T3, with the new thread's id and link, the same thread for a repeated `clientRequestId`, and its title and first message on `t3_thread_read`.
+
+The same change notes on properties only some variants need ("Required when type is 'existing_worktree'.") in `preview_navigate`, `schedule_task`, `t3_project_update`, `t3_provider_mcp_servers`, `t3_thread_launch` and `t3_thread_transfer`. The other 44 cases that mention those tools ran once on GPT-6 Luna on 96db846519's text and on the current text, with the same grader and simulator: 34 of 41 finished samples passed before and 36 of 40 after. The one case that passed before and failed after, CAP-01, passed 3/3 on both texts in a 3-sample rerun. The three cases that lost a sample to a provider stream error scored the same on both texts in that rerun (`launch-forwards-user-attachments` 2/3, the others every finished sample). These runs used about 3.0M uncached and 9.7M cached agent input tokens and 0.7M shell simulator tokens on the Codex subscription.
 
 ## Where T3's text lives
 

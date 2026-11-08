@@ -107,7 +107,10 @@ const failed = (expect: Parameters<typeof gradeSample>[0], run: SampleRun) =>
 
 it("passes a good run and names every rule a bad run breaks", () => {
   const expect = {
-    calls: [{ tool: "delegate_task", args: { task: "~FINDING", "target.options": "~max" } }],
+    calls: [
+      { tool: "delegate_task", args: { task: "~FINDING", "target.options": "~max" } },
+      { tool: "t3_thread_launch", succeeded: true } as const,
+    ],
     callsMustNot: [{ tool: "delegate_task", args: { runtimeMode: "approval-required" } }],
     notCalls: ["t3_thread_send"],
     order: ["orchestrator_capabilities", "delegate_task"],
@@ -128,6 +131,7 @@ it("passes a good run and names every rule a bad run breaks", () => {
         tool: "delegate_task",
         input: { task: "Prior findings: ...", target: { options: { reasoningEffort: "max" } } },
       },
+      { step: 1, tool: "t3_thread_launch", input: {}, failed: false },
     ],
     text: "Started <t3-thread://v2/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/11111111-1111-4111-8111-111111111111>. Do not paste a token.",
     stopReason: "end_turn",
@@ -143,6 +147,7 @@ it("passes a good run and names every rule a bad run breaks", () => {
         input: { task: "Review again", runtimeMode: "approval-required" },
       },
       { step: 1, tool: "t3_thread_send", input: {} },
+      { step: 1, tool: "t3_thread_launch", input: {}, failed: true },
       { step: 2, tool: "Monitor", input: { command: "sleep 60" } },
       { step: 3, tool: "task_status", input: { taskId: "task-1" } },
     ],
@@ -151,6 +156,7 @@ it("passes a good run and names every rule a bad run breaks", () => {
   };
   assert.deepEqual(failed(expect, bad), [
     'calls delegate_task {"task":"~FINDING","target.options":"~max"}',
+    "calls t3_thread_launch succeeded",
     'callsMustNot delegate_task {"runtimeMode":"approval-required"}',
     "notCalls t3_thread_send",
     "order orchestrator_capabilities > delegate_task",
@@ -455,6 +461,50 @@ it.effect(
         HttpClient.make(() => Effect.die("Unexpected model request")),
       ),
     ),
+);
+
+it.effect("replays a launch by its client request id and reads back the launched thread", () =>
+  Effect.gen(function* () {
+    const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
+    const sample = makeSample(childCase, base);
+    const tool = (name: string) => base.t3.find((t) => t.name === `mcp__t3-code__${name}`)!;
+    sample.tools.push(tool("t3_thread_launch"), tool("t3_thread_read"));
+    const config = {
+      apiKey: "",
+      model: "claude-sonnet-5-5",
+      shellModel: "claude-haiku-5-5",
+      effort: "low",
+      maxSteps: 1,
+    } as const;
+    const call = (name: string, input: Record<string, unknown>) =>
+      answerToolCall(sample, config, {
+        type: "tool_use",
+        id: "call-1",
+        name: tool(name).name,
+        input,
+      }).pipe(Effect.map((result) => JSON.parse(String(result.content))));
+    const launch = {
+      title: "Work order 311",
+      workspaceStrategy: { type: "worktree" },
+      message: "Work order 311: remove the export button.",
+      clientRequestId: "wo-311",
+    };
+    const first = yield* call("t3_thread_launch", launch);
+    assert.deepEqual(yield* call("t3_thread_launch", launch), first);
+    const other = yield* call("t3_thread_launch", { ...launch, clientRequestId: "wo-312" });
+    assert.notEqual(other.threadId, first.threadId);
+    const read = yield* call("t3_thread_read", { threadId: first.threadId });
+    assert.equal(read.thread.title, "Work order 311");
+    assert.deepEqual(
+      read.items.map((item: { text: string }) => item.text),
+      [launch.message],
+    );
+  }).pipe(
+    Effect.provideService(
+      HttpClient.HttpClient,
+      HttpClient.make(() => Effect.die("Unexpected model request")),
+    ),
+  ),
 );
 
 const decodeDeviceCase = Schema.decodeSync(Schema.fromJsonString(McpToolUseCase));

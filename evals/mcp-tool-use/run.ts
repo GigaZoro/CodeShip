@@ -157,11 +157,13 @@ const PriorToolCall = Schema.Struct({
 
 /**
  * One expected call. `args` match partially: `~text` is a case-insensitive substring (`~a|b`: any one),
- * `"<=N"` / `">=N"` bound a number, and keys may be dotted paths.
+ * `"<=N"` / `">=N"` bound a number, and keys may be dotted paths. With `succeeded`, only a call
+ * answered without an error matches.
  */
 const McpToolUseCall = Schema.Struct({
   tool: Schema.String,
   args: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  succeeded: Schema.optional(Schema.Literal(true)),
 });
 type McpToolUseCall = typeof McpToolUseCall.Type;
 
@@ -751,7 +753,8 @@ const createdPullRequests = ({ tool, input, output }: ShellEntry) =>
     : [];
 /**
  * One sample's state. ToolSearch adds loaded schemas to `tools`, like Claude Code. `shell` is the
- * history the simulator keeps consistent with; `linked` and `nextTask` do the same for T3 results.
+ * history the simulator keeps consistent with; `linked`, `nextTask` and `launches` do the same for
+ * T3 results.
  */
 type Sample = {
   readonly testCase: McpToolUseCase;
@@ -763,6 +766,11 @@ type Sample = {
   readonly linked: Set<string>;
   readonly codeStore: Record<string, unknown>;
   nextTask: number;
+  /** Threads t3_thread_launch started, so a replay or a read of one answers as T3 would. */
+  readonly launches: Array<{
+    readonly input: Readonly<Record<string, unknown>>;
+    readonly result: Record<string, unknown>;
+  }>;
   /** T3's device tools, once `withDevices` builds them for a world with devices. */
   devices?: DeviceTools;
   /** T3's results for prior device calls whose case result is "default". */
@@ -807,6 +815,7 @@ export const makeSample = (testCase: McpToolUseCase, base: Base): Sample => {
     linked: new Set([...urls, ...shell.flatMap(createdPullRequests)]),
     codeStore: {},
     nextTask: Math.max(0, ...taskNumbers) + 1,
+    launches: [],
     priorResults: new Map(),
   };
 };
@@ -1031,6 +1040,8 @@ const linkedEntry = (sample: Sample, url: string) => {
   return { ...pr, state: seeded?.state ?? "open", title: seeded?.title ?? null };
 };
 
+const EVAL_PROJECT_ID = "22222222-2222-4222-8222-222222222222";
+
 /** A believable T3 result for a tool the case does not mock. */
 const t3Default = (sample: Sample, name: string, input: Readonly<Record<string, unknown>>) => {
   const pr = () => pullRequest(sample.repo, input);
@@ -1058,6 +1069,28 @@ const t3Default = (sample: Sample, name: string, input: Readonly<Record<string, 
         hasPendingQuestion: false,
         pendingApproval: null,
       };
+    }
+    case "t3_thread_launch": {
+      const replayed = sample.launches.find(
+        (launch) =>
+          input.clientRequestId !== undefined &&
+          launch.input.clientRequestId === input.clientRequestId,
+      );
+      if (replayed) return replayed.result;
+      const n = sample.nextTask++;
+      const started = input.message !== undefined || input.attachments !== undefined;
+      const result = {
+        threadId: uuid(n),
+        projectId: input.projectId ?? EVAL_PROJECT_ID,
+        modelSelection: input.modelSelection ?? {
+          instanceId: sample.base.codex ? "codex" : "claudeAgent",
+          model: sample.base.model,
+        },
+        runId: started ? `run-${n}` : null,
+        status: started ? "starting" : null,
+      };
+      sample.launches.push({ input, result });
+      return result;
     }
     case "task_status":
       return {
@@ -1140,6 +1173,14 @@ const t3Default = (sample: Sample, name: string, input: Readonly<Record<string, 
       };
     case "t3_thread_read": {
       const threadId = valueText(input.threadId);
+      const launch = sample.launches.find(({ result }) => result.threadId === threadId);
+      if (launch) {
+        const { title, message } = launch.input;
+        const items =
+          message === undefined ? [] : [{ position: 1, createdBy: "user", text: message }];
+        const thread = { threadId, title, status: launch.result.status ?? "idle" };
+        return { thread, items, nextPosition: items.length + 1, hasMore: false };
+      }
       const { title, status, items } = DEFAULT_THREAD;
       return { thread: { threadId, title, status }, items, nextPosition: 3, hasMore: false };
     }
@@ -1496,9 +1537,15 @@ export const gradeSample = (expect: McpToolUseCase["expect"], run: SampleRun) =>
   const calls = run.calls.map((call) => ({ ...call, input: withOptionsObject(call.input) }));
   const count = (tool: string) => calls.filter((call) => call.tool === tool).length;
   // `tool` may list alternatives, as in "link_pull_request|watch_pull_request".
-  const found = ({ tool, args = {} }: McpToolUseCall) =>
-    calls.some((call) => tool.split("|").includes(call.tool) && matches(args, call.input));
-  const label = ({ tool, args }: McpToolUseCall) => (args ? `${tool} ${valueText(args)}` : tool);
+  const found = ({ tool, args = {}, succeeded }: McpToolUseCall) =>
+    calls.some(
+      (call) =>
+        tool.split("|").includes(call.tool) &&
+        (!succeeded || call.failed === false) &&
+        matches(args, call.input),
+    );
+  const label = ({ tool, args, succeeded }: McpToolUseCall) =>
+    [tool, ...(args ? [valueText(args)] : []), ...(succeeded ? ["succeeded"] : [])].join(" ");
   for (const call of expect.calls ?? []) add(`calls ${label(call)}`, found(call));
   for (const call of expect.callsMustNot ?? []) add(`callsMustNot ${label(call)}`, !found(call));
   for (const tool of expect.notCalls ?? []) add(`notCalls ${tool}`, count(tool) === 0);

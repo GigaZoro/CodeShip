@@ -1,3 +1,7 @@
+## 2026-11-08 — Eval check for worktree launches without a base branch
+
+- The MCP tool-use eval now confirms today's `t3_thread_launch` fix: told to launch with `workspaceStrategy {type: "worktree"}` and no `baseRef`, GPT-6 Luna and GPT-6 Astra had their launch refused on every try before the fix and launched it on every try after. A refused launch no longer counts as a launch, and a launch now answers with the new thread the way T3 does, so an agent that checks its launch no longer starts it a second time.
+
 ## 2026-11-08 — Open a manual step's chat
 
 - A **Manual steps** row now has **Open chat** when the chat that set the step Waiting recorded itself in the ThreadPage thread, as a `Chat: <link>` line in its description. It opens that chat; clicking the row still opens the step in ThreadPage. On web, desktop and mobile. The chat must be on a machine this app is connected to.
