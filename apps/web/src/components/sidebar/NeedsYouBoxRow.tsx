@@ -300,8 +300,9 @@ export const NeedsYouBoxRow = memo(function NeedsYouBoxRow(props: {
               <WaitingSinceLabel since={props.since} />
             </span>
           ) : (
-            <span className="relative flex h-5 shrink-0 items-center justify-end text-xs text-muted-foreground tabular-nums">
-              <span className="group-focus-within/needs-you-row:invisible group-any-hover/needs-you-row:invisible pointer-coarse:hidden">
+            // One grid cell holds both, so the slot fits the wider "Later" and it never covers the title.
+            <span className="grid h-5 shrink-0 items-center text-xs text-muted-foreground tabular-nums">
+              <span className="col-start-1 row-start-1 justify-self-end group-focus-within/needs-you-row:invisible group-any-hover/needs-you-row:invisible pointer-coarse:hidden">
                 <WaitingSinceLabel since={props.since} />
               </span>
               <Tooltip>
@@ -311,7 +312,7 @@ export const NeedsYouBoxRow = memo(function NeedsYouBoxRow(props: {
                       type="button"
                       aria-label={laterLabel}
                       onClick={handleToggleLaterClick}
-                      className="pointer-events-none absolute inset-y-0 right-0 -mr-1 inline-flex cursor-pointer items-center gap-1 rounded-md px-1 whitespace-nowrap opacity-0 hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-focus-within/needs-you-row:pointer-events-auto group-focus-within/needs-you-row:opacity-100 group-any-hover/needs-you-row:pointer-events-auto group-any-hover/needs-you-row:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:static pointer-coarse:opacity-100"
+                      className="pointer-events-none col-start-1 row-start-1 -mr-1 inline-flex h-5 cursor-pointer items-center justify-self-end gap-1 rounded-md px-1 whitespace-nowrap opacity-0 hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-focus-within/needs-you-row:pointer-events-auto group-focus-within/needs-you-row:opacity-100 group-any-hover/needs-you-row:pointer-events-auto group-any-hover/needs-you-row:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100"
                     />
                   }
                 >

@@ -1,3 +1,7 @@
+## 2026-11-08 — Needs you rows no longer overlap
+
+- In the sidebar's **Needs you** box, the **Later** button you see on hover no longer covers "This thread" or the end of a long title. The row keeps room for it, so nothing moves when it appears.
+
 ## 2026-11-08 — Codex accounts connected with ChatGPT switch at their limits by themselves
 
 - **Limits kept by ChatGPT** under **Usage → Limits** now has **Read limits** for each account connected with ChatGPT, on each machine that cannot read its limits yet. Sign in as the account once: T3.CodeShip keeps that Codex login only for reading the account's limits and using its reset credits, and leaves your Codex CLI and Codex Desktop logins alone. Running threads keep going while you sign in. Signing in as a different account is refused, and disconnecting the account removes the login.
