@@ -4,7 +4,7 @@ import { Tool } from "effect/ai";
 
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
 
-it("drops JSON noise, merges tagged unions, and keeps null where it is required", () => {
+it("drops JSON noise, merges tagged unions, and keeps null and per-tag requirements", () => {
   const Every = Schema.Struct({ ms: Schema.Int });
   const tool = Tool.make("example", {
     parameters: Schema.Struct({
@@ -15,8 +15,12 @@ it("drops JSON noise, merges tagged unions, and keeps null where it is required"
       target: Schema.optional(
         Schema.NullOr(
           Schema.Union([
-            Schema.Struct({ kind: Schema.Literal("url"), url: Schema.String }),
+            Schema.Struct({
+              kind: Schema.Literal("url"),
+              url: Schema.String.annotate({ description: "Page URL." }),
+            }),
             Schema.Struct({ kind: Schema.Literal("number"), number: Schema.Int }),
+            Schema.Struct({ kind: Schema.Literal("none"), number: Schema.optional(Schema.Int) }),
           ]),
         ),
       ),
@@ -33,9 +37,9 @@ it("drops JSON noise, merges tagged unions, and keeps null where it is required"
       target: {
         type: "object",
         properties: {
-          kind: { type: "string", enum: ["url", "number"] },
-          url: { type: "string" },
-          number: { type: "integer" },
+          kind: { type: "string", enum: ["url", "number", "none"] },
+          url: { type: "string", description: "Page URL. Required when kind is 'url'." },
+          number: { type: "integer", description: "Required when kind is 'number'." },
         },
         required: ["kind"],
       },

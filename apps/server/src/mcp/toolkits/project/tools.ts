@@ -122,6 +122,15 @@ const ProjectCloneTool = Tool.make("t3_project_clone", {
 })
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
+/** As stored, except that a new worktree may leave its base to the project's default branch. */
+const LaunchWorkspaceStrategy = OrchestrationV2ThreadLaunchWorkspaceStrategy.mapMembers(
+  ([root, existingWorktree, worktree]) => [
+    root,
+    existingWorktree,
+    worktree.mapFields((fields) => ({ ...fields, baseRef: Schema.optional(fields.baseRef) })),
+  ],
+);
+export type LaunchWorkspaceStrategy = typeof LaunchWorkspaceStrategy.Type;
 const ThreadLaunchTool = Tool.make("t3_thread_launch", {
   ...shared,
   description:
@@ -146,9 +155,9 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     runtimeMode: Schema.optional(RuntimeMode),
     interactionMode: Schema.optional(ProviderInteractionMode),
     workspaceStrategy: Schema.optional(
-      OrchestrationV2ThreadLaunchWorkspaceStrategy.annotate({
+      LaunchWorkspaceStrategy.annotate({
         description:
-          "'worktree': new checkout from `baseRef`. 'existing_worktree': bind `worktreePath`, a project worktree. 'root': project checkout, the default, not your worktree. Stack: parent branch as `baseRef`, `startFromOrigin: false`. Uncommitted edits are not copied.",
+          "'worktree': new checkout from `baseRef`, else from the project's default branch, fetched first. 'existing_worktree': bind `worktreePath`, a project worktree. 'root': project checkout, the default, not your worktree. Stack: parent branch as `baseRef`, `startFromOrigin: false`. Uncommitted edits are not copied.",
       }),
     ),
     message: Schema.optional(

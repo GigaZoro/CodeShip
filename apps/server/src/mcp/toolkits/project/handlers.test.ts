@@ -920,6 +920,58 @@ it.effect("a launch into a new worktree creates nothing when its base ref has no
   }),
 );
 
+it.effect(
+  "a launch into a new worktree with no base starts from the project's default branch",
+  () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-launch-default-base-" });
+      const repo = path.join(root, "repo");
+      const origin = path.join(root, "origin.git");
+      yield* fileSystem.makeDirectory(repo);
+
+      const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const { projectId, dependencies } = clientLaunchHarness({
+        runtimeModeCeiling: "auto",
+        launched,
+        workspaceRoot: repo,
+      });
+      const git = yield* GitVcsDriver.GitVcsDriver.pipe(Effect.provide(dependencies));
+      yield* git.execute({
+        operation: "test.setupOrigin",
+        cwd: root,
+        args: ["init", "--bare", origin],
+      });
+      for (const args of [
+        ["init", "-b", "main"],
+        ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"],
+        ["remote", "add", "origin", origin],
+        ["push", "origin", "main"],
+      ]) {
+        yield* git.execute({ operation: "test.setupRepo", cwd: repo, args });
+      }
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const launchInto = (workspaceStrategy: { type: "worktree"; startFromOrigin?: boolean }) =>
+        toolkit
+          .handle("t3_thread_launch", { title: "Fix", projectId, workspaceStrategy })
+          .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+
+      yield* launchInto({ type: "worktree" });
+      yield* launchInto({ type: "worktree", startFromOrigin: false });
+      expect(launched.map((launch) => launch.workspaceStrategy)).toEqual([
+        { type: "worktree", baseRef: "origin/main", startFromOrigin: true },
+        { type: "worktree", baseRef: "origin/main", startFromOrigin: false },
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 it.effect("a retried worktree launch replays after its base ref is gone", () =>
   Effect.gen(function* () {
     const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];

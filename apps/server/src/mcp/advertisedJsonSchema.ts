@@ -58,12 +58,29 @@ const mergeTaggedObjects = (branches: ReadonlyArray<Json>): JsonObject | undefin
       }
     }
   }
-  const [first = [], ...others] = objects.map((object) =>
+  const requiredBy = objects.map((object) =>
     Array.isArray(object.required) ? object.required : [],
   );
-  const requiredByAll = first.filter(
-    (name) => name !== tag && others.every((required) => required.includes(name)),
+  const requiredByAll = Object.keys(properties).filter(
+    (name) => name !== tag && requiredBy.every((required) => required.includes(name)),
   );
+  // `required` can only list keys every branch needs, so say which branches need the others.
+  for (const name of Object.keys(properties)) {
+    if (name === tag || requiredByAll.includes(name)) continue;
+    const values = objects
+      .filter((_, index) => requiredBy[index]!.includes(name))
+      .map((object) => `'${String(tagOf(object, tag))}'`);
+    if (values.length === 0) continue;
+    const property = properties[name];
+    const note = `Required when ${tag} is ${values.join(" or ")}.`;
+    properties[name] = Predicate.isObject(property)
+      ? {
+          ...property,
+          description:
+            typeof property.description === "string" ? `${property.description} ${note}` : note,
+        }
+      : property;
+  }
   return { type: "object", properties, required: [tag, ...requiredByAll] };
 };
 
@@ -97,10 +114,10 @@ const compact = (schema: Json, optional: boolean): Json => {
 };
 
 /**
- * The input schema T3 advertises for a tool. Drops JSON noise that every thread pays for:
- * `additionalProperties: true`, safe-integer bounds, nested `anyOf`, JSON-string fallbacks, and
- * the `null` branch of optional properties. A tagged union of objects becomes one object.
- * Decoding still uses the full schema, so each tag's own required fields still apply.
+ * The input schema T3 advertises: no `additionalProperties: true`, safe-integer bounds, nested
+ * `anyOf`, JSON-string fallbacks, or `null` branches of optional properties. A tagged union of
+ * objects becomes one object whose properties name the tags that require them; decoding still
+ * applies each tag's own schema.
  */
 export const advertisedJsonSchema = (tool: Tool.Any) =>
   compact(Tool.getJsonSchema(tool), false) as ReturnType<typeof Tool.getJsonSchema>;

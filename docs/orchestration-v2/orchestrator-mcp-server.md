@@ -363,7 +363,9 @@ without a prompt remain idle.
 ### `t3_thread_launch`
 
 Launches one ordinary top-level thread through the app's launch service. Use an
-explicit `workspaceStrategy` to create a new worktree (`worktree` with `baseRef`),
+explicit `workspaceStrategy` to create a new worktree (`worktree` from `baseRef`;
+without one it starts where a scheduled task does, from the project's default
+branch, fetched first),
 attach an existing checkout (`existing_worktree` with `worktreePath`), or use the
 project root (`root`, also the default). The thread is bound to that workspace
 before the agent starts. Creating a worktree in the task prompt does not update

@@ -1,3 +1,8 @@
+## 2026-11-08 — Worktree launches without a base branch
+
+- An agent that starts a new thread in a new worktree with `t3_thread_launch` no longer has to name a base branch. Without `baseRef` the worktree starts from the project's default branch, fetched first, as a scheduled task's does. Before, leaving it out failed with "Missing key at workspaceStrategy.baseRef".
+- T3's tool schemas now say which fields a choice needs, such as `worktreePath` for an existing worktree or `everyMs` for an interval schedule, so agents no longer leave them out.
+
 ## 2026-11-08 — A chat that archives itself ends completed
 
 - When an agent archives its own chat during its turn, for example as the last step of a scheduled run, the chat is now archived when the turn ends and the run counts as completed. Before, archiving stopped the agent mid-turn, so the run ended failed with "The provider event stream closed unexpectedly". As with settling, a failed turn or a message someone queued leaves the chat unarchived.

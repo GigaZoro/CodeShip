@@ -22,6 +22,7 @@ import { mutateProjectWithClone } from "../../../project/ProjectMutation.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
+import { defaultWorktreeStrategy } from "../../../vcs/defaultWorktreeStrategy.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as DateTime from "effect/DateTime";
 import { withAutoAccount } from "@t3tools/shared/model";
@@ -33,7 +34,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as OrchestrationMcp from "../../OrchestratorMcpService.ts";
 import { newCommandId, readCaller, resolveProjectId, unavailable } from "../../threadAccess.ts";
-import { ProjectToolkit } from "./tools.ts";
+import { type LaunchWorkspaceStrategy, ProjectToolkit } from "./tools.ts";
 
 const isAboveCeilingError = Schema.is(OrchestratorRuntimeModeAboveCeilingError);
 
@@ -66,6 +67,34 @@ const assertProjectWorktree = Effect.fn("mcp.assertProjectWorktree")(function* (
       message:
         "worktreePath must be one of the project's git worktrees. t3_worktree_list shows them.",
     });
+});
+
+/** A new worktree that names no base starts from the project's default branch, as a scheduled task does. */
+const withWorktreeBase = Effect.fn("mcp.withWorktreeBase")(function* <R>(
+  requested: LaunchWorkspaceStrategy | undefined,
+  readProject: Effect.Effect<
+    { readonly workspaceRoot: string } | undefined,
+    OrchestratorMcpFailure,
+    R
+  >,
+) {
+  if (requested?.type !== "worktree") return requested;
+  if (requested.baseRef !== undefined) return { ...requested, baseRef: requested.baseRef };
+  const project = yield* readProject;
+  if (project === undefined)
+    return yield* new OrchestratorMcpFailure({
+      code: "invalid_request",
+      message: "The project was not found.",
+    });
+  const fallback = yield* defaultWorktreeStrategy(
+    yield* GitVcsDriver.GitVcsDriver,
+    project.workspaceRoot,
+  );
+  return {
+    ...requested,
+    baseRef: fallback.baseRef,
+    startFromOrigin: requested.startFromOrigin ?? fallback.startFromOrigin,
+  };
 });
 
 /** A fixed-length id, so a long key fits in the scratch folder name derived from it. */
@@ -169,8 +198,8 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 ),
                 yield* (yield* ProviderRegistry.ProviderRegistry).getProviders,
               );
+        const strategy = yield* withWorktreeBase(input.workspaceStrategy, readProject);
         // Reject unresolved base refs before accepting a launch; worktree provisioning happens later.
-        const strategy = input.workspaceStrategy;
         if (!replaying && strategy?.type === "worktree")
           yield* ThreadLaunch.ThreadLaunchService.pipe(
             Effect.flatMap((launches) =>
@@ -266,7 +295,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               modelSelection,
               runtimeMode: startedRuntimeMode,
               interactionMode,
-              workspaceStrategy: input.workspaceStrategy ?? { type: "root" },
+              workspaceStrategy: strategy ?? { type: "root" },
               ...(input.message === undefined && attachments.length === 0
                 ? {}
                 : {
