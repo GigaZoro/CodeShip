@@ -33,6 +33,10 @@ import {
 import { provideDeterministicTestRuntime } from "../src/orchestration-v2/testkit/DeterministicRuntime.ts";
 import { ORCHESTRATOR_REPLAY_FIXTURES } from "../src/orchestration-v2/testkit/fixtures/index.ts";
 import { materializeFixtureInput } from "../src/orchestration-v2/testkit/fixtures/shared.ts";
+import {
+  materializeReplayTranscriptRuntimeInstructions,
+  stripMuseReplayRuntimeInstructions,
+} from "../src/orchestration-v2/testkit/ReplayRuntimeInstructions.ts";
 import { runOrchestratorV2ProviderReplayScenario } from "../src/orchestration-v2/testkit/ProviderReplayHarness.ts";
 import {
   checkpointWorkspace,
@@ -263,11 +267,14 @@ const record = Effect.gen(function* () {
       model: variant.modelSelection.model,
       commandIds,
     },
-    entries: normalizeEntries(entries, [
-      yield* museWorkspaceRoot(canonicalWorkspace),
-      canonicalWorkspace,
-      workspace,
-    ]),
+    entries: stripMuseReplayRuntimeInstructions(
+      normalizeEntries(entries, [
+        yield* museWorkspaceRoot(canonicalWorkspace),
+        canonicalWorkspace,
+        workspace,
+      ]),
+      variant.modelSelection.model,
+    ),
   } satisfies ProviderReplayTranscript;
 
   yield* Effect.gen(function* () {
@@ -277,7 +284,13 @@ const record = Effect.gen(function* () {
       {
         name: `${fixture.name}/muse:verify`,
         transcript: yield* MuseOrchestratorReplayHarness.decodeTranscript(
-          yield* materializeMuseReplayWorkspace(transcript, replayWorkspace),
+          yield* materializeMuseReplayWorkspace(
+            materializeReplayTranscriptRuntimeInstructions(transcript, {
+              driver: variant.driver,
+              model: variant.modelSelection.model,
+            }),
+            replayWorkspace,
+          ),
         ),
         commands: materialized.commands,
         steps: materialized.steps,

@@ -1,3 +1,7 @@
+## 2026-11-08 — Muse replay tests pass again
+
+- The Muse replay tests no longer keep their own copy of the instructions T3.CodeShip gives agents. They build the current text when they run, so they pass again and keep passing when that wording changes. Nothing changes in the app.
+
 ## 2026-11-08 — Branches stay put while an agent works, on mobile and for every client
 
 - On mobile, **Branches & worktrees** now keeps a thread's branch while its agent is working, like web and desktop: switching, creating a branch and creating a worktree are disabled, and the sheet says why. Before, a switch moved the files the agent was editing, and picking a branch checked out in another worktree stopped the turn.
