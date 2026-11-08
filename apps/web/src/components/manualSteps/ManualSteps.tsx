@@ -8,7 +8,7 @@ import type { ManualStep } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { CircleDollarSignIcon, HandIcon } from "lucide-react";
-import type { KeyboardEvent } from "react";
+import type { KeyboardEvent, MouseEvent } from "react";
 
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { attachSidebarTree } from "../../lib/sidebarTree";
@@ -18,7 +18,7 @@ import { useManualSteps } from "../../state/manualSteps";
 import { searchableSetting } from "../settings/settingsSearch";
 import { WaitingSinceLabel } from "../sidebar/SidebarThreadRow";
 import { openInSystemBrowser, useOpenThreadPageLink } from "../threadPage/threadPageLinks";
-import { Button } from "../ui/button";
+import { Button, InlineButton } from "../ui/button";
 import { CollapsibleSectionHeader } from "../ui/collapsible-section-header";
 import { RefreshIcon } from "../ui/refresh-icon";
 import { Skeleton } from "../ui/skeleton";
@@ -38,6 +38,10 @@ function ConnectThreadPageLink(props: { readonly size?: "xs" | "sm" }) {
       {t("Connect ThreadPage")}
     </Button>
   );
+}
+
+function stopRowActivation(event: MouseEvent) {
+  event.stopPropagation();
 }
 
 function useOpenManualStep() {
@@ -100,6 +104,24 @@ function ManualStepRow(props: {
             <span className="shrink-0 font-medium text-warning-foreground">{t("Money")}</span>
           ) : null}
           <span className="min-w-0 flex-1 truncate">{step.title}</span>
+          {step.chat ? (
+            <span className="shrink-0" onClick={stopRowActivation}>
+              <InlineButton
+                tone="muted"
+                render={
+                  <Link
+                    to="/$environmentId/$threadId"
+                    params={{
+                      environmentId: step.chat.environmentId,
+                      threadId: step.chat.threadId,
+                    }}
+                  />
+                }
+              >
+                {t("Open chat")}
+              </InlineButton>
+            </span>
+          ) : null}
           <span className="max-w-[40%] shrink-0 truncate">{step.machine}</span>
         </div>
       </div>

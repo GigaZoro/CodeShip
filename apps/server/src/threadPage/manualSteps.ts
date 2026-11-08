@@ -1,4 +1,5 @@
-import type { ManualStep, ManualStepKind } from "@t3tools/contracts";
+import type { ManualStep, ManualStepKind, ScopedThreadRef } from "@t3tools/contracts";
+import { parseThreadLinkHref } from "@t3tools/shared/threadLinks";
 
 /** Agents keep each machine's pending list in `Work/Agent Maintenance/Machine inbox/<machine>`. */
 const MACHINE_INBOX_FOLDER_NAME = "Machine inbox";
@@ -83,17 +84,42 @@ function splitPrefix(text: string): {
   return { kind: null, rest: text };
 }
 
+const CHAT_LINE = /^\s*chat:.*?(t3-thread:\/\/v2\/[^\s<>()[\]]+)/i;
+
+function chatOf(line: string): ScopedThreadRef | null {
+  const href = CHAT_LINE.exec(line)?.[1];
+  const link = href === undefined ? null : parseThreadLinkHref(href);
+  return link?.environmentId == null
+    ? null
+    : { environmentId: link.environmentId, threadId: link.threadId };
+}
+
+/** Agents add `Chat: <t3-thread://v2/…>` to a step's description; a line that does not parse stays text. */
+function splitChat(description: string): {
+  readonly chat: ScopedThreadRef | null;
+  readonly rest: string;
+} {
+  const lines = description.split("\n");
+  for (const [index, line] of lines.entries()) {
+    const chat = chatOf(line);
+    if (chat !== null) return { chat, rest: lines.toSpliced(index, 1).join("\n") };
+  }
+  return { chat: null, rest: description };
+}
+
 /** A step's kind comes from its description's prefix, else its title's; unmarked steps are hands-on. */
 function parseManualStep(input: {
   readonly title: string;
   readonly description: string;
-}): Pick<ManualStep, "kind" | "step" | "title"> {
+}): Pick<ManualStep, "kind" | "step" | "title" | "chat"> {
   const title = splitPrefix(oneLine(input.title));
-  const description = splitPrefix(oneLine(input.description));
+  const { chat, rest } = splitChat(input.description);
+  const description = splitPrefix(oneLine(rest));
   return {
     kind: description.kind ?? title.kind ?? "hands-on",
     step: description.rest || title.rest,
     title: title.rest,
+    ...(chat === null ? {} : { chat }),
   };
 }
 

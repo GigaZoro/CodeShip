@@ -4,6 +4,7 @@ import {
   manualStepsFailureMessage,
   type ManualStepsState,
 } from "@t3tools/client-runtime/state/manualSteps";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { ManualStep } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { memo } from "react";
@@ -15,6 +16,7 @@ import { RowPressable } from "../../components/ui/RowPressable";
 import { cn } from "../../lib/cn";
 import { t } from "../../lib/i18n";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
+import { useThreadShell } from "../../state/entities";
 import { useManualSteps } from "../../state/manualSteps";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import {
@@ -35,8 +37,11 @@ function UpdatedAgo(props: { readonly at: string }) {
 const ManualStepRow = memo(function ManualStepRow(props: {
   readonly step: ManualStep;
   readonly pane: "screen" | "sidebar";
+  readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
 }) {
-  const { step } = props;
+  const { step, onSelectThread } = props;
+  // Only a chat on a machine this phone is connected to resolves.
+  const chatShell = useThreadShell(step.chat ?? null);
   const theme = useUniwindTheme();
   const sidebarPane = props.pane === "sidebar";
   const appearance = getThreadListV2RowAppearance(theme, sidebarPane, false);
@@ -72,6 +77,15 @@ const ManualStepRow = memo(function ManualStepRow(props: {
         >
           {step.title}
         </Text>
+        {chatShell ? (
+          <Pressable
+            accessibilityRole="button"
+            hitSlop={8}
+            onPress={() => onSelectThread(chatShell)}
+          >
+            <Text className="text-xs font-t3-medium text-primary">{t("Open chat")}</Text>
+          </Pressable>
+        ) : null}
         <Text
           className={cn("max-w-[40%] shrink-0 text-xs", appearance.mutedForegroundClassName)}
           numberOfLines={1}
@@ -97,6 +111,10 @@ const ManualStepRow = memo(function ManualStepRow(props: {
         className={appearance.className}
         interactionClassName={appearance.interactionClassName}
         interactionOpacity={appearance.interactionOpacity}
+        accessibilityActions={chatShell ? [{ name: "openChat", label: t("Open chat") }] : undefined}
+        onAccessibilityAction={(event) => {
+          if (chatShell && event.nativeEvent.actionName === "openChat") onSelectThread(chatShell);
+        }}
         onPress={() => openStep(step)}
         style={appearance.cardStyle}
       >
@@ -138,7 +156,10 @@ function shown(state: ManualStepsState | null): state is ManualStepsState {
  * Above the thread list: the steps only the user can do, from every machine's ThreadPage list.
  * Hidden without a ThreadPage token or with nothing to do; it never alerts.
  */
-export function ThreadListManualSteps(props: { readonly pane: "screen" | "sidebar" }) {
+export function ThreadListManualSteps(props: {
+  readonly pane: "screen" | "sidebar";
+  readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
+}) {
   const { state, refresh } = useManualSteps();
   const { expanded, toggle } = useManualStepsExpanded();
   if (!shown(state)) return null;
@@ -161,7 +182,12 @@ export function ThreadListManualSteps(props: { readonly pane: "screen" | "sideba
       {expanded && state.view.status === "listed"
         ? state.view.groups.flatMap((group) =>
             group.steps.map((step) => (
-              <ManualStepRow key={step.threadId} step={step} pane={props.pane} />
+              <ManualStepRow
+                key={step.threadId}
+                step={step}
+                pane={props.pane}
+                onSelectThread={props.onSelectThread}
+              />
             )),
           )
         : null}

@@ -1,3 +1,7 @@
+## 2026-11-08 — Open a manual step's chat
+
+- A **Manual steps** row now has **Open chat** when the chat that set the step Waiting recorded itself in the ThreadPage thread, as a `Chat: <link>` line in its description. It opens that chat; clicking the row still opens the step in ThreadPage. On web, desktop and mobile. The chat must be on a machine this app is connected to.
+
 ## 2026-11-08 — Needs you rows no longer overlap
 
 - In the sidebar's **Needs you** box, the **Later** button you see on hover no longer covers "This thread" or the end of a long title. The row keeps room for it, so nothing moves when it appears.

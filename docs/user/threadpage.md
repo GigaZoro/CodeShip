@@ -34,7 +34,9 @@ machine's pending list in ThreadPage. Each list is a folder under a folder named
 (such as `Work/Agent Maintenance/Machine inbox/<machine>`), and each step is a thread there with
 the status **Waiting** whose description starts with `Hands-on:` or, for a money decision,
 `Needs you:`. Money decisions come first. Open a step to read its newest note, which says what to
-do; reply there when you are done.
+do; reply there when you are done. When the description also has a line `Chat: <link>`, holding a
+T3.CodeShip thread link, the step shows **Open chat**, which opens the chat that set it Waiting.
+That works when the app is connected to the machine the chat runs on.
 
 To fill the list, create a token in ThreadPage under **Settings → Connections → Connect an
 automation → Script or API**, with **Read only** access to the Machine inbox folder or all threads.

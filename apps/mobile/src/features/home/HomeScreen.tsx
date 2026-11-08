@@ -741,7 +741,10 @@ export function HomeScreen(props: HomeScreenProps) {
         />
       )}
       {hasSearchQuery ? null : (
-        <ThreadListManualSteps pane={primaryColumn ? "sidebar" : "screen"} />
+        <ThreadListManualSteps
+          pane={primaryColumn ? "sidebar" : "screen"}
+          onSelectThread={selectThread}
+        />
       )}
     </>
   );

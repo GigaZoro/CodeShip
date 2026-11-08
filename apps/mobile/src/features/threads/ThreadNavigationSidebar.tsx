@@ -575,7 +575,7 @@ function ThreadNavigationSidebarPane(
         selectedThreadKey={props.selectedThreadKey ?? null}
         onSelectThread={handleSelectThread}
       />
-      <ThreadListManualSteps pane="sidebar" />
+      <ThreadListManualSteps pane="sidebar" onSelectThread={handleSelectThread} />
     </>
   );
   const handleOpenThreadPullRequests = (

@@ -1,5 +1,7 @@
 import * as Schema from "effect/Schema";
 
+import { ScopedThreadRef } from "./environment.ts";
+
 /** `needs-you` is a money decision; `hands-on` is a step only a person can do. */
 export const ManualStepKind = Schema.Literals(["needs-you", "hands-on"]);
 export type ManualStepKind = typeof ManualStepKind.Type;
@@ -17,6 +19,8 @@ export const ManualStep = Schema.Struct({
   /** When a note in the thread last changed: the step has waited at least since then. */
   updatedAt: Schema.String,
   url: Schema.String,
+  /** The chat that holds the step, from a `Chat: <t3-thread://v2/…>` line in the description. */
+  chat: Schema.optional(ScopedThreadRef),
 });
 export type ManualStep = typeof ManualStep.Type;
 

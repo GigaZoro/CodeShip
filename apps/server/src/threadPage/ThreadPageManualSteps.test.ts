@@ -32,7 +32,8 @@ const threadsByFolder: Record<string, ReadonlyArray<ReturnType<typeof thread>>> 
   mac: [
     thread("minions", {
       title: "Hands-on: sign in to the minions MCP server",
-      description: "Hands-on: run `claude mcp login minions`\non this Mac.",
+      description:
+        "Hands-on: run `claude mcp login minions`\non this Mac.\nChat: <t3-thread://v2/mac-env/chat-1>",
     }),
     thread("active", { status: "active", description: "Working: agent run" }),
     thread("done", { status: "done", description: "Done 2026-11-07" }),
@@ -42,7 +43,9 @@ const threadsByFolder: Record<string, ReadonlyArray<ReturnType<typeof thread>>> 
   vps: [
     thread("contabo", {
       title: "Finish the open Zoro-VPS setup steps",
-      description: "Needs you: the Contabo contract term. Hands-on: then reboot.",
+      // A v1 link names no machine, so it stays text rather than open a guess.
+      description:
+        "Needs you: the Contabo contract term. Hands-on: then reboot.\nChat: t3-thread://v1/old",
     }),
   ],
   gone: [thread("trashed-folder")],
@@ -114,7 +117,7 @@ const listWith = (http: HttpClient.HttpClient, apiToken = "tp_test") =>
   );
 
 describe("ThreadPageManualSteps", () => {
-  it.effect("lists the Waiting threads of every machine folder, prefixes removed", () =>
+  it.effect("lists each machine folder's Waiting threads, prefixes and chat lines removed", () =>
     Effect.gen(function* () {
       const { http, requests } = fakeThreadPage();
       const result = yield* listWith(http);
@@ -122,19 +125,20 @@ describe("ThreadPageManualSteps", () => {
       expect(
         [...result.steps]
           .sort((left, right) => left.threadId.localeCompare(right.threadId))
-          .map(({ threadId, kind, machine, step, title }) => ({
+          .map(({ threadId, kind, machine, step, title, chat }) => ({
             threadId,
             kind,
             machine,
             step,
             title,
+            chat,
           })),
       ).toEqual([
         {
           threadId: "contabo",
           kind: "needs-you",
           machine: "Zoro-VPS",
-          step: "the Contabo contract term. Hands-on: then reboot.",
+          step: "the Contabo contract term. Hands-on: then reboot. Chat: t3-thread://v1/old",
           title: "Finish the open Zoro-VPS setup steps",
         },
         {
@@ -143,6 +147,7 @@ describe("ThreadPageManualSteps", () => {
           machine: "MacBook-Pro",
           step: "run `claude mcp login minions` on this Mac.",
           title: "sign in to the minions MCP server",
+          chat: { environmentId: "mac-env", threadId: "chat-1" },
         },
         {
           threadId: "nested",
