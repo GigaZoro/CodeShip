@@ -15,6 +15,7 @@ import {
   type PreviewAutomationSnapshot,
   type PreviewAutomationStatus,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
@@ -1541,17 +1542,63 @@ it.live("a restarted server removes the previous run's downloads and keeps its p
       const { stateDir } = yield* ServerConfig.ServerConfig;
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
+      const broker = yield* Broker.PreviewAutomationBroker;
+      const work = { id: "profile-work", name: "Work", kind: "persistent" } as const;
       const previousTab = path.join(stateDir, "server-browser", "downloads", "previous-tab");
-      const profile = path.join(stateDir, "server-browser", "profiles", "default");
+      const profile = path.join(stateDir, "server-browser", "profiles", work.id);
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const context = yield* Layer.build(ServerBrowser.layer);
+          const reportProfiles = yield* Context.get(context, ServerBrowser.ServerBrowser)
+            .profileReporter;
+          yield* reportProfiles({
+            profiles: [work],
+            defaultProfileId: work.id,
+            recordingFrameRate: 60,
+          });
+        }),
+      );
       yield* fs.makeDirectory(previousTab, { recursive: true });
       yield* fs.makeDirectory(profile, { recursive: true });
       yield* fs.writeFileString(path.join(previousTab, "report.csv"), "a,b");
-      yield* fs.writeFileString(path.join(profile, "Preferences"), "{}");
+      yield* fs.writeFileString(path.join(profile, "Cookies"), "signed-in");
 
+      // No app connects to the restarted server.
       yield* Layer.build(ServerBrowser.layer);
+      yield* Effect.yieldNow;
 
       expect(yield* fs.exists(previousTab)).toBe(false);
-      expect(yield* fs.readFileString(path.join(profile, "Preferences"))).toBe("{}");
+      expect(yield* fs.readFileString(path.join(profile, "Cookies"))).toBe("signed-in");
+      expect(
+        yield* broker.invoke<PreviewAutomationStatus>({ scope, operation: "status", input: {} }),
+      ).toMatchObject({
+        defaultProfileId: work.id,
+        profiles: [
+          { id: "default", name: "Default" },
+          { id: "incognito", name: "Incognito", incognito: true },
+          { id: work.id, name: work.name },
+        ],
+      });
+      const openWith = (profileId?: string) =>
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: {
+            reuseExistingTab: false,
+            show: false,
+            ...(profileId === undefined ? {} : { profileId }),
+          },
+        });
+      const { tabId } = yield* openWith();
+      yield* openWith("work");
+      yield* openWith(work.id);
+      expect(contextRequests).toEqual([
+        { profileId: work.id, isolated: false },
+        { profileId: work.id, isolated: false },
+        { profileId: work.id, isolated: false },
+      ]);
+      yield* broker.invoke({ scope, tabId: tabId!, operation: "recordingStart", input: {} });
+      expect(encoderStreams).toEqual([{ frameRate: 60, bitsPerSecond: 1280 * 800 * 60 * 0.05 }]);
     }),
   ).pipe(Effect.provide(dependencies)),
 );
@@ -2172,9 +2219,16 @@ it.live("profiles reported by one client survive another client's report", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const { browser, broker } = yield* ready;
+      const { stateDir } = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       contextRequests.length = 0;
       const work = { id: "profile-work", name: "Work", kind: "persistent" } as const;
       const shared = { id: "profile-shared", name: "Shared", kind: "persistent" } as const;
+      const signedIn = { id: "profile-signed-in", name: "Signed in", kind: "persistent" } as const;
+      yield* fs.makeDirectory(path.join(stateDir, "server-browser", "profiles", signedIn.id), {
+        recursive: true,
+      });
       const openWork = () =>
         broker.invoke<PreviewAutomationStatus>({
           scope,
@@ -2187,7 +2241,7 @@ it.live("profiles reported by one client survive another client's report", () =>
         Effect.provideService(Scope.Scope, clientB),
       );
       yield* reportFromA({ profiles: [work, shared], defaultProfileId: work.id });
-      yield* reportFromB({ profiles: [shared], defaultProfileId: shared.id });
+      yield* reportFromB({ profiles: [shared, signedIn], defaultProfileId: shared.id });
       expect(yield* openWork()).toMatchObject({
         defaultProfileId: shared.id,
         profiles: [
@@ -2195,6 +2249,7 @@ it.live("profiles reported by one client survive another client's report", () =>
           { id: "incognito", name: "Incognito", incognito: true },
           { id: work.id, name: work.name },
           { id: shared.id, name: shared.name },
+          { id: signedIn.id, name: signedIn.name },
         ],
       });
       expect(contextRequests).toEqual([{ profileId: work.id, isolated: false }]);
@@ -2205,10 +2260,54 @@ it.live("profiles reported by one client survive another client's report", () =>
       expect(removed).toMatchObject({
         _tag: "PreviewAutomationExecutionError",
         reason:
-          'No browser profile is named "profile-work". Use one of: Default (id default), Incognito (id incognito), Shared (id profile-shared).',
+          'No browser profile is named "profile-work". Use one of: Default (id default), Incognito (id incognito), Shared (id profile-shared), Signed in (id profile-signed-in).',
       });
     }),
   ).pipe(Effect.provide(layer)),
+);
+
+it.live(
+  "a profile name two apps use opens the one with a sign-in and refuses when both have one",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const browser = yield* ServerBrowser.ServerBrowser;
+        const broker = yield* Broker.PreviewAutomationBroker;
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        yield* Effect.yieldNow;
+        // Each app makes its own random id for a profile.
+        const fromLaptop = { id: "profile-laptop", name: "Research", kind: "persistent" } as const;
+        const fromDesktop = {
+          id: "profile-desktop",
+          name: "Research",
+          kind: "persistent",
+        } as const;
+        const reportFromLaptop = yield* browser.profileReporter;
+        const reportFromDesktop = yield* browser.profileReporter;
+        yield* reportFromLaptop({ profiles: [fromLaptop], defaultProfileId: "default" });
+        yield* reportFromDesktop({ profiles: [fromDesktop], defaultProfileId: "default" });
+        const signIn = (profileId: string) =>
+          fs.makeDirectory(path.join(stateDir, "server-browser", "profiles", profileId), {
+            recursive: true,
+          });
+        const openResearch = broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false, profileId: "research" },
+        });
+        yield* signIn(fromDesktop.id);
+        yield* openResearch;
+        expect(contextRequests).toEqual([{ profileId: fromDesktop.id, isolated: false }]);
+        yield* signIn(fromLaptop.id);
+        expect(yield* openResearch.pipe(Effect.flip)).toMatchObject({
+          _tag: "PreviewAutomationExecutionError",
+          reason:
+            '2 browser profiles are named "research": Research (id profile-laptop), Research (id profile-desktop). Pass the id of the one to use.',
+        });
+      }),
+    ).pipe(Effect.provide(layer)),
 );
 
 it.live.each([

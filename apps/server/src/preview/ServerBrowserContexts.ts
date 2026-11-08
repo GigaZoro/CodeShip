@@ -4,10 +4,10 @@ import { constVoid } from "effect/Function";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeModule from "node:module";
 import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
 import type { Browser, BrowserContext, CDPSession } from "playwright-core";
 
 import { sandboxDisabled } from "./PreviewBrowserHost.ts";
+import { profileDirectory } from "./ServerBrowserProfiles.ts";
 
 // Playwright needs its files on disk. createRequire also resolves it from a Node SEA executable.
 const requirePlaywright = NodeModule.createRequire(import.meta.url);
@@ -169,7 +169,7 @@ export class ServerBrowserContexts {
       const browser = await this.sharedBrowser();
       return browser.newContext(contextOptions);
     }
-    const directory = this.profileDirectory(profileId);
+    const directory = profileDirectory(this.options.profilesDir, profileId);
     await NodeFSP.mkdir(directory, { recursive: true });
     const { executable, ...options } = await this.launchOptions();
     const { chromium } = loadPlaywright();
@@ -179,14 +179,6 @@ export class ServerBrowserContexts {
         ...contextOptions,
         executablePath,
       }),
-    );
-  }
-
-  private profileDirectory(profileId: string) {
-    const encoded = encodeURIComponent(profileId);
-    return NodePath.join(
-      this.options.profilesDir,
-      profileId === "." || profileId === ".." ? encoded.replaceAll(".", "%2E") : encoded,
     );
   }
 
@@ -221,7 +213,10 @@ export class ServerBrowserContexts {
         const context = await pending.catch(() => undefined);
         await context?.close();
       }
-      await NodeFSP.rm(this.profileDirectory(profileId), { recursive: true, force: true });
+      await NodeFSP.rm(profileDirectory(this.options.profilesDir, profileId), {
+        recursive: true,
+        force: true,
+      });
     })();
     this.clearing.set(key, clearing);
     try {

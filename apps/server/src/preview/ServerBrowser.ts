@@ -2,15 +2,8 @@
 // Screencasts ignore emulated device scale; real 2x keeps captures sharp.
 // --disable-gpu uses cheaper software compositing while preserving SwiftShader WebGL.
 import {
-  BUILT_IN_BROWSER_PROFILES,
-  DEFAULT_BROWSER_PROFILE_ID,
-  DEFAULT_BROWSER_RECORDING_FRAME_RATE,
   FILL_PREVIEW_VIEWPORT,
-  findBrowserProfile,
   INCOGNITO_BROWSER_PROFILE_ID,
-  resolveBrowserProfiles,
-  type BrowserProfile,
-  type PreviewReportProfilesInput,
   PREVIEW_AUTOMATION_SERVER_OPERATIONS,
   PreviewViewportSetting as PreviewViewportSettingSchema,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
@@ -82,6 +75,7 @@ import * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
 import * as PreviewManager from "./Manager.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
+import * as ServerBrowserProfiles from "./ServerBrowserProfiles.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import { presentAsChrome, ServerBrowserContexts } from "./ServerBrowserContexts.ts";
@@ -211,7 +205,7 @@ export interface ServerBrowserViewer {
   readonly input: (message: unknown) => Effect.Effect<void>;
 }
 
-export type ProfileReporter = (input: PreviewReportProfilesInput) => Effect.Effect<void>;
+export type { ProfileReporter } from "./ServerBrowserProfiles.ts";
 
 export class ServerBrowser extends Context.Service<
   ServerBrowser,
@@ -247,7 +241,11 @@ export class ServerBrowser extends Context.Service<
 
     readonly clearProfile: (profileId: string) => Effect.Effect<void, PreviewClearProfileError>;
 
-    readonly profileReporter: Effect.Effect<ProfileReporter, never, Scope.Scope>;
+    readonly profileReporter: Effect.Effect<
+      ServerBrowserProfiles.ProfileReporter,
+      never,
+      Scope.Scope
+    >;
   }
 >()("t3/preview/ServerBrowser") {}
 
@@ -475,6 +473,7 @@ const make = Effect.gen(function* () {
   const setupCommand = yield* resolveRootCliCommand(PreviewBrowserHost.SETUP_SUBCOMMAND);
   const agentScope = yield* AgentScope;
   const launchersDir = NodePath.join(config.stateDir, "server-browser", "launchers");
+  const profiles = yield* ServerBrowserProfiles.make(config.stateDir);
 
   const hostSetupProblem = Effect.flatMap(previewBrowser.installed, (executable) =>
     PreviewBrowserHost.hostSetupProblem({ executable, setupCommand }),
@@ -493,7 +492,7 @@ const make = Effect.gen(function* () {
   let viewerResizeOrder = 0;
 
   const contexts = new ServerBrowserContexts({
-    profilesDir: NodePath.join(config.stateDir, "server-browser", "profiles"),
+    profilesDir: profiles.profilesDir,
     executable: () => runPromise(previewBrowser.executable),
     // An agent scope keeps Chrome out of the server's memory protection and OOM score.
     launcher: async (executable) => {
@@ -1482,84 +1481,6 @@ const make = Effect.gen(function* () {
         ? ("agent" as const)
         : ("unclaimed" as const);
 
-  const reportsByClient = new Map<number, PreviewReportProfilesInput>();
-  let nextClient = 0;
-  let reportedProfiles: {
-    readonly profiles: ReadonlyArray<BrowserProfile>;
-    readonly defaultProfileId: string;
-  } | null = null;
-  // Agent recordings encode here, so they need the client's Browser recording frame rate. The
-  // last report outlives the client, which lets agents record while no client is connected.
-  let recordingFrameRate = DEFAULT_BROWSER_RECORDING_FRAME_RATE;
-
-  // Each client reports only the profiles in its own settings, so the catalog is
-  // their union while they stay connected. The last catalog stays usable after
-  // every client disconnects, as a single report did before.
-  const rebuildReportedProfiles = () => {
-    const byId = new Map<string, BrowserProfile>();
-    let latest: PreviewReportProfilesInput | undefined;
-    for (const report of reportsByClient.values()) {
-      for (const profile of report.profiles) byId.set(profile.id, profile);
-      latest = report;
-    }
-    if (latest === undefined) return;
-    const profiles = resolveBrowserProfiles([...byId.values()]);
-    reportedProfiles = {
-      profiles,
-      defaultProfileId:
-        findBrowserProfile(profiles, latest.defaultProfileId)?.id ?? DEFAULT_BROWSER_PROFILE_ID,
-    };
-  };
-
-  const profileReporter: ServerBrowser["Service"]["profileReporter"] = Effect.acquireRelease(
-    Effect.sync(() => nextClient++),
-    (client) =>
-      Effect.sync(() => {
-        reportsByClient.delete(client);
-        rebuildReportedProfiles();
-      }),
-  ).pipe(
-    Effect.map(
-      (client): ProfileReporter =>
-        (input) =>
-          Effect.sync(() => {
-            if (input.recordingFrameRate !== undefined)
-              recordingFrameRate = input.recordingFrameRate;
-            reportsByClient.delete(client);
-            reportsByClient.set(client, input);
-            rebuildReportedProfiles();
-          }),
-    ),
-  );
-
-  const profileStatus = () => {
-    const profiles = reportedProfiles?.profiles ?? BUILT_IN_BROWSER_PROFILES;
-    return {
-      profiles: profiles.map((profile) => ({
-        id: profile.id,
-        name: profile.name,
-        ...(profile.kind === "incognito" ? { incognito: true } : {}),
-      })),
-      ...(reportedProfiles ? { defaultProfileId: reportedProfiles.defaultProfileId } : {}),
-    };
-  };
-
-  const resolveOpenProfile = (requested: string | undefined): string | undefined => {
-    if (requested === undefined) return reportedProfiles?.defaultProfileId;
-    const profiles = reportedProfiles?.profiles ?? BUILT_IN_BROWSER_PROFILES;
-    const wanted = requested.toLowerCase();
-    const match =
-      findBrowserProfile(profiles, requested) ??
-      profiles.find((profile) => profile.name.toLowerCase() === wanted);
-    if (match) return match.id;
-    throw new ServerBrowserPage.ServerBrowserOperationError(
-      "PreviewAutomationUnknownProfileError",
-      `No browser profile is named "${requested}". Use one of: ${profiles
-        .map((profile) => `${profile.name} (id ${profile.id})`)
-        .join(", ")}.`,
-    );
-  };
-
   const statusWithTitle = async (
     tab: ServerTab | undefined,
     agentSessionId?: string,
@@ -1576,7 +1497,7 @@ const make = Effect.gen(function* () {
         title: null,
         loading: false,
         ...(problem ? { hostSetup: problem.message } : {}),
-        ...profileStatus(),
+        ...profiles.status(),
       };
     }
     const url = ServerBrowserPage.withoutDataPayload(tab.page.url());
@@ -1613,7 +1534,7 @@ const make = Effect.gen(function* () {
           visible: candidate.viewers.size > 0,
           ...(candidate.profileId === undefined ? {} : { profileId: candidate.profileId }),
         })),
-      ...profileStatus(),
+      ...profiles.status(),
       downloads: tab.downloads.map(({ fileName, path, sizeBytes, url, completedAt }) => ({
         fileName,
         path,
@@ -1687,7 +1608,9 @@ const make = Effect.gen(function* () {
       const encoder = await contexts.scratchPage();
       let session: CDPSession | null = null;
       try {
-        await encoder.evaluate(ServerBrowserPage.recordingEncoderScript(recordingFrameRate));
+        await encoder.evaluate(
+          ServerBrowserPage.recordingEncoderScript(profiles.recordingFrameRate()),
+        );
         // Seed idle pages before returning so an immediate stop has a frame to encode.
         const firstFrame = await ServerBrowserPage.captureViewport(tab.cdp, {
           format: "jpeg",
@@ -2003,7 +1926,9 @@ const make = Effect.gen(function* () {
             ? found
             : undefined;
         const navigationTimeout = Math.min(request.timeoutMs, NAVIGATION_TIMEOUT_MS);
-        const profileId = existing ? undefined : resolveOpenProfile(open.profileId);
+        const profileId = existing
+          ? undefined
+          : await runPromise(profiles.resolveOpen(open.profileId));
         if (!existing) closeIdleAgentTabs();
         const tab =
           existing ??
@@ -2769,7 +2694,7 @@ const make = Effect.gen(function* () {
   return ServerBrowser.of({
     attachViewer,
     clearProfile,
-    profileReporter,
+    profileReporter: profiles.reporter,
     openDownload,
     answerFileChooser,
   });

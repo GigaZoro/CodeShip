@@ -1,3 +1,9 @@
+## 2026-11-08 — Server browsers keep your profiles after a restart
+
+- A server browser now remembers the browser profiles your apps reported and the recording frame rate you chose, after it restarts. Agents on an always-on server can open a tab in a custom profile, such as one signed in to a second ChatGPT account, before any app connects again. Before, they got "No browser profile is named …" until you opened an app on that environment.
+- A signed-in profile stays available to agents when another device with different profiles connects. Removing a profile in an app's settings still removes it.
+- When two devices each have a profile with the same name, an agent that opens it by name gets the one that holds a sign-in on that server. If both do, it is told both ids and asked to pick one.
+
 ## 2026-11-08 — Git, branch, markdown and project action fixes, and a tidier phone layout
 
 - **Git actions** follow the same rules on web, desktop and mobile. A branch that is behind offers **Pull** first and in the menu, a clean default branch only pushes (it no longer commits changes an agent made meanwhile), and the feature-branch option appears only for actions that commit. Each disabled menu item says why, in the item itself. **Publish repository** can't be closed while it publishes, and names the provider it used. Commit file checkboxes are labelled for screen readers and easier to hit on touch.

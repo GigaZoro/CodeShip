@@ -35,8 +35,8 @@ const reportTargetsAtom = Atom.make((get) => {
 
 /**
  * Keeps every operable server browser on this client's profiles. An environment is reported
- * again when its server config changes (a restarted server has forgotten them), when it becomes
- * operable, and when the profile settings change.
+ * again when its server config changes (a restarted server has only the reports it saved), when it
+ * becomes operable, and when the profile settings change.
  */
 export function startBrowserProfileReporting(): () => void {
   const reported: ReportedProfiles = new Map();
