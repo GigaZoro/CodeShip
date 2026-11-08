@@ -10,11 +10,20 @@ import {
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
-  type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
-import { parseKeybindingShortcut } from "@t3tools/shared/keybindings";
-import * as Cause from "effect/Cause";
-import { AsyncResult } from "effect/reactivity";
+import {
+  ProjectScriptShortcutError,
+  type ProjectScriptSaveInput,
+  type ProjectScriptSaveResult,
+} from "@t3tools/client-runtime/state/projectScriptSaves";
+import { keybindingValueForCommand, parseKeybindingShortcut } from "@t3tools/shared/keybindings";
+import {
+  commandForProjectScript,
+  decodeProjectScriptKeybindingRule,
+  EMPTY_PROJECT_SCRIPT_INPUT as EMPTY_SCRIPT_INPUT,
+  nextProjectScriptId,
+  projectScriptInputFromScript,
+} from "@t3tools/shared/projectScripts";
 import {
   BugIcon,
   FlaskConicalIcon,
@@ -26,17 +35,12 @@ import {
 import React, { type FormEvent, type KeyboardEvent, useEffect, useRef, useState } from "react";
 
 import {
-  keybindingValueForCommand,
-  decodeProjectScriptKeybindingRule,
-} from "~/lib/projectScriptKeybindings";
-import {
   buildKeybindingRows,
   keybindingConflictLabels,
   keybindingFromKeyboardEvent,
 } from "~/components/settings/KeybindingsSettings.logic";
 import { formatShortcutLabel } from "~/keybindings";
 import { isMacPlatform } from "~/lib/utils";
-import { commandForProjectScript, nextProjectScriptId } from "~/projectScripts";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { useComposerMenuState } from "./chat/useComposerMenuState";
 import {
@@ -88,61 +92,14 @@ export function ScriptIcon({
   return <PlayIcon className={className} />;
 }
 
-export interface NewProjectScriptInput {
-  name: string;
-  command: string;
-  icon: ProjectScriptIcon;
-  runOnWorktreeCreate: boolean;
-  waitForSetup: boolean;
-  runOnSettle: boolean;
-  /** Omit to preserve the current shortcut when the form did not edit it. */
-  keybinding?: string | null;
-  previewUrl: string | null;
-  autoOpenPreview: boolean;
-}
-
-export type ProjectScriptActionResult = AtomCommandResult<void, unknown>;
-
-/** The action itself was saved, so saving again must edit it rather than add a copy. */
-export class ProjectScriptShortcutError extends Error {
-  readonly scriptId: string;
-
-  constructor(scriptId: string, reason: string) {
-    super(t("The action was saved, but its shortcut was not: {reason}", { reason }));
-    this.scriptId = scriptId;
-  }
-}
-
-export function projectScriptShortcutFailure(
-  scriptId: string,
-  failure: { readonly cause: Cause.Cause<unknown> },
-): ProjectScriptActionResult {
-  const error = squashAtomCommandFailure(failure);
-  return AsyncResult.failure(
-    Cause.fail(
-      new ProjectScriptShortcutError(
-        scriptId,
-        error instanceof Error ? error.message : t("An unexpected error occurred."),
-      ),
-    ),
-  );
-}
-
-export const EMPTY_PROJECT_SCRIPT_INPUT: NewProjectScriptInput = {
-  name: "",
-  command: "",
-  icon: "play",
-  runOnWorktreeCreate: false,
-  waitForSetup: false,
-  runOnSettle: false,
+export const EMPTY_PROJECT_SCRIPT_INPUT: ProjectScriptSaveInput = {
+  ...EMPTY_SCRIPT_INPUT,
   keybinding: null,
-  previewUrl: null,
-  autoOpenPreview: false,
 };
 
 export interface ProjectScriptEditorRequest {
   scriptId: string | null;
-  initial: NewProjectScriptInput;
+  initial: ProjectScriptSaveInput;
   error?: string;
 }
 
@@ -163,15 +120,8 @@ export function editorRequestForScript(
   return {
     scriptId: script.id,
     initial: {
-      name: script.name,
-      command: script.command,
-      icon: script.icon,
-      runOnWorktreeCreate: script.runOnWorktreeCreate,
-      waitForSetup: script.runOnWorktreeCreate && script.async === false,
-      runOnSettle: script.runOnSettle ?? false,
+      ...projectScriptInputFromScript(script),
       keybinding: keybindingValueForCommand(keybindings, commandForProjectScript(script.id)),
-      previewUrl: script.previewUrl ?? null,
-      autoOpenPreview: script.autoOpenPreview ?? false,
     },
   };
 }
@@ -193,8 +143,8 @@ export function ProjectScriptEditorDialog({
   keybindings: ResolvedKeybindingsConfig;
   onSubmit: (
     scriptId: string | null,
-    input: NewProjectScriptInput,
-  ) => Promise<ProjectScriptActionResult>;
+    input: ProjectScriptSaveInput,
+  ) => Promise<ProjectScriptSaveResult>;
   onDelete: (scriptId: string) => void;
   onClose: () => void;
 }) {
@@ -344,8 +294,8 @@ function ProjectScriptEditorForm({
   onSavingChange: (request: ProjectScriptEditorRequest, saving: boolean) => void;
   onSubmit: (
     scriptId: string | null,
-    input: NewProjectScriptInput,
-  ) => Promise<ProjectScriptActionResult>;
+    input: ProjectScriptSaveInput,
+  ) => Promise<ProjectScriptSaveResult>;
   onRequestDelete: (script: SavedScript) => void;
   onClose: () => void;
 }) {
@@ -488,7 +438,7 @@ function ProjectScriptEditorForm({
     if (keybindingConflict) return;
 
     setValidationError(null);
-    let payload: NewProjectScriptInput;
+    let payload: ProjectScriptSaveInput;
     try {
       const keybindingRule = decodeProjectScriptKeybindingRule({
         keybinding,
@@ -513,7 +463,7 @@ function ProjectScriptEditorForm({
           : {}),
         previewUrl: trimmedPreviewUrl.length > 0 ? trimmedPreviewUrl : null,
         autoOpenPreview: trimmedPreviewUrl.length > 0 ? autoOpenPreview : false,
-      } satisfies NewProjectScriptInput;
+      } satisfies ProjectScriptSaveInput;
     } catch (error) {
       setValidationError({
         message: error instanceof Error ? error.message : t("Failed to save action."),

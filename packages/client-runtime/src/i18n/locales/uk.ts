@@ -1826,8 +1826,10 @@ const catalog: MessageCatalog = {
   "Across environments": "У всіх середовищах",
   Action: "Дія",
   "Action failed": "Дія не вдалася",
+  "Action not found.": "Дію не знайдено.",
   "Action required": "Потрібна дія",
   "Action unavailable": "Дія недоступна",
+  actions: "дії",
   Actions: "Дії",
   "Actions for {command}": "Дії для {command}",
   "Actions for {name}": "Дії для {name}",
@@ -3053,8 +3055,8 @@ const catalog: MessageCatalog = {
   "Choose a project in this environment.": "Виберіть проєкт у цьому середовищі.",
   "Choose a project to manage its name, icon, checkouts and actions.":
     "Виберіть проєкт, щоб керувати його назвою, значком, робочими копіями та діями.",
-  "Choose a project with the filter above to manage its name, checkouts and removal.":
-    "Виберіть проєкт у фільтрі вище, щоб керувати його назвою, робочими копіями та видаленням.",
+  "Choose a project with the filter above to manage its name, actions, checkouts and removal.":
+    "Виберіть проєкт у фільтрі вище, щоб керувати його назвою, діями, робочими копіями та видаленням.",
   "Choose a pull request from the sidebar to review it.":
     "Виберіть пул-реквест на бічній панелі, щоб переглянути його.",
   "Choose a text config file.": "Виберіть текстовий файл конфігурації.",
@@ -3427,6 +3429,8 @@ const catalog: MessageCatalog = {
   "Command palette": "Палітра команд",
   "Command Palette...": "Палітра команд...",
   Commands: "Команди",
+  "Commands that run in this project's checkout or its worktree, from a thread's terminal menu.":
+    "Команди, що запускаються в робочій копії цього проєкту або його worktree з меню термінала в чаті.",
   "Commands that run in this project's checkout or its worktree, with optional shortcuts.":
     "Команди, що запускаються в робочій копії цього проєкту або його worktree, з необов’язковими скороченнями.",
   Comment: "Коментар",
@@ -6063,6 +6067,7 @@ const catalog: MessageCatalog = {
     many: "Імпортувати {count} проєктів",
     other: "Імпортувати {count} проєкту",
   },
+  "Import {name} from t3.json": "Імпортувати {name} з t3.json",
   "Import Claude Code and Codex conversations": "Імпортувати розмови Claude Code і Codex",
   "import conversations": "імпорт розмов",
   "Import conversations": "Імпортувати розмови",
@@ -7465,7 +7470,6 @@ const catalog: MessageCatalog = {
   "No project": "Немає проєкту",
   "No project in this environment can read {host}/{repository}.":
     "Жоден проєкт у цьому середовищі не може читати {host}/{repository}.",
-  "No project scripts": "Немає скриптів проєкту",
   "No projects available": "Немає доступних проєктів",
   "No projects found": "Проєктів не знайдено",
   "No projects in this workspace": "У цьому робочому просторі немає проєктів",
@@ -9813,6 +9817,7 @@ const catalog: MessageCatalog = {
   "Screenshot capture failed. Try again.": "Не вдалося зробити знімок екрана. Спробуйте ще раз.",
   "Screenshot saved": "Знімок екрана збережено",
   "Screenshot unavailable": "Знімок екрана недоступний",
+  scripts: "скрипти",
   "Scroll display equation": "Прокрутити окреме рівняння",
   "Scroll inline equation": "Прокрутити рядкове рівняння",
   "Scroll panel tabs": "Прокрутити вкладки панелі",
@@ -11031,6 +11036,7 @@ const catalog: MessageCatalog = {
     "Помічник захоплення T3.CodeShip дає змогу захоплювати інші застосунки та повертатися до чернетки. Він входить до складу T3.CodeShip.",
   "T3.CodeShip's voice input uses Apple's on-device speech transcription, which needs iOS 26 or later on a device that supports it. Without it, the composer has no microphone button, and allowing microphone access won't add one. Apple keyboard dictation is separate and isn't affected.":
     "Голосове введення T3.CodeShip використовує транскрипцію мовлення Apple на пристрої, якій потрібна iOS 26 або новіша на підтримуваному пристрої. Без неї в полі повідомлення немає кнопки мікрофона, і дозвіл на доступ до мікрофона її не додасть. Диктування Apple з клавіатури працює окремо й не зачіпається.",
+  "t3.json": "t3.json",
   "t3.json is invalid": "t3.json недійсний",
   "Tab {number}": "Вкладка {number}",
   "Tab customization becomes available when there are six sections, including Settings.":
@@ -12185,11 +12191,11 @@ const catalog: MessageCatalog = {
   "This preview expired. Review changes again before saving.":
     "Цей попередній перегляд застарів. Перегляньте зміни ще раз перед збереженням.",
   "this project": "цей проєкт",
+  "This project has no actions yet": "У цьому проєкті ще немає дій",
   "This project has no checkout on the selected connected environments. Change the filter above.":
     "Цей проєкт не має робочої копії у вибраних підключених середовищах. Змініть фільтр вище.",
   "This project has no checkout on this environment.":
     "Цей проєкт не має копії репозиторію в цьому середовищі.",
-  "This project has no saved scripts yet": "У цьому проєкті ще немає збережених скриптів",
   "This project is a repository subdirectory. Choose another branch or add the repository root as a project to reuse this worktree.":
     "Цей проєкт є підкаталогом репозиторію. Виберіть іншу гілку або додайте корінь репозиторію як проєкт, щоб повторно використати цей worktree.",
   "This project is no longer available.": "Цей проєкт більше недоступний.",

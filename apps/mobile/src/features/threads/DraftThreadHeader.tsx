@@ -98,6 +98,7 @@ export function DraftThreadHeader(props: {
         onRunProjectScript: async () => {
           requiresThread();
         },
+        onAddProjectScript: requiresThread,
         onPull: async () => {
           const cwd = props.cwd;
           if (!canWriteGit || !cwd) return;

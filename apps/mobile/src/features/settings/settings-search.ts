@@ -58,6 +58,9 @@ const SETTINGS_SEARCH_TERMS = {
     msg("overview"),
     msg("checkouts"),
     msg("delete project"),
+    msg("actions"),
+    msg("scripts"),
+    msg("t3.json"),
   ],
   SettingsOrganization: [
     msg("project grouping"),

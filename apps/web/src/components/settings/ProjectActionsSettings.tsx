@@ -5,7 +5,16 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import type {
+  ProjectScriptChange,
+  ProjectScriptSaveInput,
+  ProjectScriptSaveResult,
+} from "@t3tools/client-runtime/state/projectScriptSaves";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
+import {
+  importableT3ProjectFileScripts,
+  projectScriptInputFromT3File,
+} from "@t3tools/shared/projectScripts";
 import { ChevronDownIcon, PlusIcon } from "lucide-react";
 import { useState } from "react";
 import { useT3ProjectFileState } from "../../hooks/useT3ProjectFileScripts";
@@ -15,8 +24,6 @@ import {
   editorRequestForScript,
   ProjectScriptEditorDialog,
   ScriptIcon,
-  type NewProjectScriptInput,
-  type ProjectScriptActionResult,
   type ProjectScriptEditorRequest,
 } from "../projectScriptEditor";
 import { Button } from "../ui/button";
@@ -30,13 +37,13 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { toastManager } from "../ui/toast";
-import { useSaveProjectScripts, type ProjectScriptChange } from "../useSaveProjectScripts";
+import { useSaveProjectScripts } from "../useSaveProjectScripts";
 import { ProjectActionsList } from "./ProjectActionsList";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { t } from "~/i18n";
 
-function reportScriptFailure(result: ProjectScriptActionResult) {
+function reportScriptFailure(result: ProjectScriptSaveResult) {
   if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
     const error = squashAtomCommandFailure(result);
     toastManager.add({
@@ -78,7 +85,7 @@ export function ProjectActionsSettings() {
   });
   const save = (change: ProjectScriptChange) =>
     saveProjectScripts(lists, change).then(reportScriptFailure);
-  const submit = (scriptId: string | null, input: NewProjectScriptInput) =>
+  const submit = (scriptId: string | null, input: ProjectScriptSaveInput) =>
     save({ kind: "save", scriptId, input });
 
   const representativeMember = target?.projectId ? memberById.get(target.projectId) : undefined;
@@ -86,25 +93,11 @@ export function ProjectActionsSettings() {
     representativeMember?.environmentId ?? EnvironmentId.make("none"),
     representativeMember?.workspaceRoot ?? null,
   );
-  const importableScripts = t3File.scripts.filter(
-    (fileScript) =>
-      !scripts.some(
-        (script) =>
-          script.command === fileScript.command ||
-          script.name.toLowerCase() === fileScript.name.toLowerCase(),
-      ),
-  );
+  const importableScripts = importableT3ProjectFileScripts(t3File.scripts, scripts);
   const importFileScript = async (fileScript: T3ProjectFileScript) => {
-    const payload: NewProjectScriptInput = {
-      name: fileScript.name,
-      command: fileScript.command,
-      icon: fileScript.icon ?? "play",
-      runOnWorktreeCreate: fileScript.runOnWorktreeCreate ?? false,
-      waitForSetup: fileScript.runOnWorktreeCreate === true && fileScript.async === false,
-      runOnSettle: fileScript.runOnSettle ?? false,
+    const payload: ProjectScriptSaveInput = {
+      ...projectScriptInputFromT3File(fileScript),
       keybinding: null,
-      previewUrl: fileScript.previewUrl ?? null,
-      autoOpenPreview: fileScript.previewUrl ? (fileScript.autoOpenPreview ?? false) : false,
     };
     const result = await submit(null, payload);
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {

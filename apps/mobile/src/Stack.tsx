@@ -126,6 +126,7 @@ import {
 } from "./features/settings/SettingsOpenSourceLicensesRouteScreen";
 import { SettingsProjectGroupingRouteScreen } from "./features/settings/SettingsProjectGroupingRouteScreen";
 import { SettingsProjectOverviewRouteScreen } from "./features/settings/SettingsProjectOverviewRouteScreen";
+import { SettingsProjectActionRouteScreen } from "./features/settings/SettingsProjectActionRouteScreen";
 import { UsageLimitAccountScreen } from "./features/usage/UsageLimitsPooled";
 import { UsageRouteScreen } from "./features/usage/UsageRouteScreen";
 import { SettingsNotificationsRouteScreen } from "./features/settings/SettingsNotificationsRouteScreen";
@@ -331,6 +332,14 @@ const SETTINGS_SCREENS = {
     screen: SettingsProjectOverviewRouteScreen,
     linking: "settings/project",
     options: () => ({ ...SETTINGS_PAGE_OPTIONS, title: t("Projects") }),
+  }),
+  // No linking path: its params name the checkouts it writes, which a URL would leave stale.
+  SettingsProjectAction: createNativeStackScreen({
+    screen: SettingsProjectActionRouteScreen,
+    options: ({ route }) => ({
+      ...SETTINGS_PAGE_OPTIONS,
+      title: route.params.scriptId === null ? t("Add action") : t("Edit action"),
+    }),
   }),
   SettingsKeyboard: createNativeStackScreen({
     screen: SettingsKeyboardRouteScreen,

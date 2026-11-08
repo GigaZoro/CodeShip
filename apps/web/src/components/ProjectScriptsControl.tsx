@@ -12,11 +12,18 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { projectScriptMenuLabel } from "@t3tools/shared/projectScripts";
+import type {
+  ProjectScriptSaveInput,
+  ProjectScriptSaveResult,
+} from "@t3tools/client-runtime/state/projectScriptSaves";
+import {
+  commandForProjectScript,
+  primaryProjectScript,
+  projectScriptMenuLabel,
+} from "@t3tools/shared/projectScripts";
 import { ChevronDownIcon, DownloadIcon, PlusIcon, SettingsIcon, WrenchIcon } from "lucide-react";
 import { useRef, useState } from "react";
 
-import { commandForProjectScript, primaryProjectScript } from "~/projectScripts";
 import { shortcutLabelForCommand } from "~/keybindings";
 import { serverEnvironment } from "~/state/server";
 import { readEnvironmentScope } from "~/state/session";
@@ -25,8 +32,6 @@ import {
   editorRequestForScript,
   ProjectScriptEditorDialog,
   ScriptIcon,
-  type NewProjectScriptInput,
-  type ProjectScriptActionResult,
   type ProjectScriptEditorRequest,
 } from "./projectScriptEditor";
 import {
@@ -53,8 +58,6 @@ import {
   THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS,
 } from "./chat/threadDetailsPanelStyles";
 
-export type { NewProjectScriptInput, ProjectScriptActionResult };
-
 const NO_FILE_SCRIPTS: ReadonlyArray<T3ProjectFileScript> = [];
 
 interface ProjectScriptsControlProps {
@@ -64,12 +67,12 @@ interface ProjectScriptsControlProps {
   preferredScriptId?: string | null;
   /** Omitted when this client cannot run terminal commands. */
   onRunScript?: ((script: ProjectScript) => void) | undefined;
-  onAddScript: (input: NewProjectScriptInput) => Promise<ProjectScriptActionResult>;
+  onAddScript: (input: ProjectScriptSaveInput) => Promise<ProjectScriptSaveResult>;
   onUpdateScript: (
     scriptId: string,
-    input: NewProjectScriptInput,
-  ) => Promise<ProjectScriptActionResult>;
-  onDeleteScript: (scriptId: string) => Promise<ProjectScriptActionResult>;
+    input: ProjectScriptSaveInput,
+  ) => Promise<ProjectScriptSaveResult>;
+  onDeleteScript: (scriptId: string) => Promise<ProjectScriptSaveResult>;
 }
 
 export default function ProjectScriptsControl({
@@ -106,11 +109,11 @@ export default function ProjectScriptsControl({
     setEditorRequest({ scriptId: null, initial: EMPTY_PROJECT_SCRIPT_INPUT });
   };
 
-  const submitScript = (scriptId: string | null, input: NewProjectScriptInput) =>
+  const submitScript = (scriptId: string | null, input: ProjectScriptSaveInput) =>
     scriptId === null ? onAddScript(input) : onUpdateScript(scriptId, input);
 
   const importFileScript = async (fileScript: T3ProjectFileScript) => {
-    const payload: NewProjectScriptInput = {
+    const payload: ProjectScriptSaveInput = {
       name: fileScript.name,
       command: fileScript.command,
       icon: fileScript.icon ?? "play",

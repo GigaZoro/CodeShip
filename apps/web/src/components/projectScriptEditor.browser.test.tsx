@@ -18,10 +18,12 @@ vi.mock(import("~/state/session"), async (original) => ({
 }));
 
 import {
+  ProjectScriptShortcutError,
+  type ProjectScriptSaveResult,
+} from "@t3tools/client-runtime/state/projectScriptSaves";
+import {
   EMPTY_PROJECT_SCRIPT_INPUT,
   ProjectScriptEditorDialog,
-  ProjectScriptShortcutError,
-  type ProjectScriptActionResult,
   type ProjectScriptEditorRequest,
 } from "./projectScriptEditor";
 
@@ -69,9 +71,9 @@ const saveButton = () => document.querySelector<HTMLButtonElement>('button[type=
 const keybindingField = () => document.querySelector<HTMLInputElement>("#script-keybinding")!;
 
 function deferredSave() {
-  let resolve!: (result: ProjectScriptActionResult) => void;
+  let resolve!: (result: ProjectScriptSaveResult) => void;
   let reject!: (error: Error) => void;
-  const promise = new Promise<ProjectScriptActionResult>((resolveResult, rejectResult) => {
+  const promise = new Promise<ProjectScriptSaveResult>((resolveResult, rejectResult) => {
     resolve = resolveResult;
     reject = rejectResult;
   });

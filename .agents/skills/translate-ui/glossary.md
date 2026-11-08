@@ -15,7 +15,7 @@ message passes only when every word in it is listed here.
   VoiceOver, Face ID, Sidecar, Live Activities, live activity, Liquid Glass, Material,
   Material You, One UI, Bluetooth.
 - Technical terms: MCP, ACP, SSH, PR, CLI, API, URL, JSON, HTML, PDF, GPU, PID, UI, ID, OK, px,
-  Trace ID, Git, git, worktree, push, pull, raw, Markdown, webhook, cron, ghq, npm, `npx t3`,
+  Trace ID, t3.json, Git, git, worktree, push, pull, raw, Markdown, webhook, cron, ghq, npm, `npx t3`,
   Conventional Commits, Auto, Enter, Esc, Tab, Ctrl-C, ⌘K. Model ids stay as written too.
 - The font preview sample: The quick brown fox jumps over the lazy dog.
 

@@ -200,7 +200,7 @@ import { cn } from "~/lib/utils";
 import { isModelPickerOpen } from "../modelPickerVisibility";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { toastManager } from "./ui/toast";
-import { projectScriptIdFromCommand } from "~/projectScripts";
+import { projectScriptIdFromCommand } from "@t3tools/shared/projectScripts";
 import { newMessageId } from "~/lib/utils";
 import { isInSideChatPane, type SideChatParentPanel } from "~/lib/sideChatPane";
 import {

@@ -885,6 +885,18 @@ function ThreadRouteContent(
     onOpenTerminal: handleOpenTerminal,
     onOpenNewTerminal: handleOpenNewTerminal,
     onRunProjectScript: handleRunProjectScript,
+    onAddProjectScript: () => {
+      if (!selectedThreadProject) return;
+      navigation.navigate("SettingsProjectAction", {
+        targets: [
+          {
+            environmentId: String(selectedThreadProject.environmentId),
+            projectId: String(selectedThreadProject.id),
+          },
+        ],
+        scriptId: null,
+      });
+    },
     onPull: gitActions.onPullSelectedThreadBranch,
     onRunAction: gitActions.onRunSelectedThreadGitAction,
   };

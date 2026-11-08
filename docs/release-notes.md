@@ -1,3 +1,10 @@
+## 2026-11-08 — Add, edit and delete project actions on mobile
+
+- **Settings → Projects → Actions** on mobile lists the selected project's actions. Add one, tap one to edit or delete it, or import one from the checkout's `t3.json`; web and desktop see the change. A connection that can't change settings, or a server too old to save actions, still shows the list and the editor, with the reason. Deleting an action also removes its shortcut unless another project still has that action.
+- With no actions yet, the terminal menu in a thread on iPhone and iPad offers **Add action** and opens the editor.
+- Mobile saves actions the same way web does, so a new action gets the same kind of id and edits from both never overwrite each other.
+- Adding an action to a project with two checkouts on one machine now adds it to both, on web too. Before, the second failed with "Another action with this name was just added".
+
 ## 2026-11-08 — Git action results speak your language, and the next step stays clickable
 
 - Commit, push, pull request and pull results, and the progress steps while an action runs ("Committing…", "Pushing…", "Generating PR content…"), now show in the app's language on web, desktop and mobile. Before, they always came from the server in English.

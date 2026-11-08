@@ -4,12 +4,15 @@ import {
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
+import type {
+  ProjectScriptChange,
+  ProjectScriptSaveInput,
+} from "@t3tools/client-runtime/state/projectScriptSaves";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { AsyncResult } from "effect/reactivity";
 import { useStableCallback } from "../../hooks/useStableCallback";
-import { type NewProjectScriptInput } from "../ProjectScriptsControl";
 import { stackedThreadToast, toastManager } from "../ui/toast";
-import { useSaveProjectScripts, type ProjectScriptChange } from "../useSaveProjectScripts";
+import { useSaveProjectScripts } from "../useSaveProjectScripts";
 import { t } from "~/i18n";
 
 /** The chat's project actions control edits the active project's list. */
@@ -46,10 +49,10 @@ export function useProjectScriptEditing(input: {
     return result;
   };
   return {
-    saveProjectScript: useStableCallback((input: NewProjectScriptInput) =>
+    saveProjectScript: useStableCallback((input: ProjectScriptSaveInput) =>
       save({ kind: "save", scriptId: null, input }),
     ),
-    updateProjectScript: useStableCallback((scriptId: string, input: NewProjectScriptInput) =>
+    updateProjectScript: useStableCallback((scriptId: string, input: ProjectScriptSaveInput) =>
       save({ kind: "save", scriptId, input }),
     ),
     deleteProjectScript: useStableCallback(deleteProjectScript),

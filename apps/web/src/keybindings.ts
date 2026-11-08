@@ -22,7 +22,7 @@ import {
 } from "@t3tools/shared/keybindings";
 import { isElectron } from "./env";
 import { isEditableFocused } from "./lib/editableFocus";
-import { projectScriptIdFromCommand } from "./projectScripts";
+import { projectScriptIdFromCommand } from "@t3tools/shared/projectScripts";
 import { getKeyboardLayoutMap } from "./keyboardLayout";
 
 export type { ShortcutModifierStateLike } from "@t3tools/shared/keybindings";

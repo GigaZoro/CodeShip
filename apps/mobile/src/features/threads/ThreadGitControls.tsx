@@ -2,6 +2,7 @@ import * as Dialog from "../../components/ui/Dialog";
 import type { AppBarMenu } from "../../components/ui/AppBar.types";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import {
+  AuthSettingsWriteScope,
   AuthSourceControlWriteScope,
   EnvironmentId,
   type GitRunStackedActionResult,
@@ -120,6 +121,8 @@ export type ThreadGitControlsProps = ThreadGitMenuProps & {
   readonly onOpenTerminal: (terminalId?: string | null) => void;
   readonly onOpenNewTerminal: () => void;
   readonly onRunProjectScript: (script: ProjectScript) => Promise<void>;
+  /** Opens the action editor for this thread's project. */
+  readonly onAddProjectScript: () => void;
 };
 
 function useThreadGitControlModel(props: ThreadGitMenuProps) {
@@ -285,6 +288,10 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
 
 function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGitHeaderActionItems {
   const model = useThreadGitControlModel(props);
+  const canEditProjectScripts = useEnvironmentScope(
+    props.environmentId ? EnvironmentId.make(String(props.environmentId)) : null,
+    AuthSettingsWriteScope,
+  );
 
   return {
     terminal: {
@@ -306,11 +313,13 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
           ...(props.projectScripts.length === 0
             ? [
                 {
-                  description: t("This project has no saved scripts yet"),
-                  disabled: true,
-                  icon: { name: "play", type: "sfSymbol" as const },
-                  label: t("No project scripts"),
-                  onPress: () => {},
+                  description: canEditProjectScripts
+                    ? t("This project has no actions yet")
+                    : t("This connection cannot change project actions."),
+                  disabled: !canEditProjectScripts,
+                  icon: { name: "plus", type: "sfSymbol" as const },
+                  label: t("Add action"),
+                  onPress: props.onAddProjectScript,
                   type: "action" as const,
                 },
               ]

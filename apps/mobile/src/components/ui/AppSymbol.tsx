@@ -77,6 +77,10 @@ import IconGitBranch from "@tabler/icons-react-native/IconGitBranch";
 import IconGitMerge from "@tabler/icons-react-native/IconGitMerge";
 import IconGitPullRequest from "@tabler/icons-react-native/IconGitPullRequest";
 import IconHammer from "@tabler/icons-react-native/IconHammer";
+import IconBug from "@tabler/icons-react-native/IconBug";
+import IconDownload from "@tabler/icons-react-native/IconDownload";
+import IconFlask from "@tabler/icons-react-native/IconFlask";
+import IconListCheck from "@tabler/icons-react-native/IconListCheck";
 import IconHome from "@tabler/icons-react-native/IconHome";
 import IconInfoCircle from "@tabler/icons-react-native/IconInfoCircle";
 import IconKeyboard from "@tabler/icons-react-native/IconKeyboard";
@@ -215,6 +219,11 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   gearshape: IconSettings,
   globe: IconWorld,
   hammer: IconHammer,
+  flask: IconFlask,
+  checklist: IconListCheck,
+  "wrench.and.screwdriver": IconTool,
+  ladybug: IconBug,
+  "square.and.arrow.down": IconDownload,
   headphones: IconHeadphones,
   house: IconHome,
   "info.circle": IconInfoCircle,

@@ -36,6 +36,7 @@ import {
 } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsScreen } from "./components/SettingsScreen";
+import { ProjectActionsSection } from "./components/ProjectActionsSection";
 import { SettingsSection } from "./components/SettingsSection";
 import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActionRow";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
@@ -100,7 +101,7 @@ export function SettingsProjectOverviewRouteScreen() {
           {selectedProjectKey === null ? (
             <Text className="px-2 text-base text-foreground-muted">
               {t(
-                "Choose a project with the filter above to manage its name, checkouts and removal.",
+                "Choose a project with the filter above to manage its name, actions, checkouts and removal.",
               )}
             </Text>
           ) : !group || members.length === 0 ? (
@@ -356,6 +357,8 @@ function ProjectOverviewContent(props: {
           </View>
         </View>
       </SettingsSection>
+
+      <ProjectActionsSection members={props.members} />
 
       {canOrganize ? (
         <SettingsSection title={t("Organize")}>

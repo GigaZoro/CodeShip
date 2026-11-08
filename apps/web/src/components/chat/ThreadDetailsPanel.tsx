@@ -13,10 +13,11 @@ import { useT3ProjectFileScripts } from "../../hooks/useT3ProjectFileScripts";
 import { type EnvMode, type EnvironmentOption } from "../BranchToolbar.logic";
 import { BranchToolbar } from "../BranchToolbar";
 import BaseGitActionsControl from "../GitActionsControl";
-import ProjectScriptsControl, {
-  type NewProjectScriptInput,
-  type ProjectScriptActionResult,
-} from "../ProjectScriptsControl";
+import ProjectScriptsControl from "../ProjectScriptsControl";
+import type {
+  ProjectScriptSaveInput,
+  ProjectScriptSaveResult,
+} from "@t3tools/client-runtime/state/projectScriptSaves";
 import { memo, useState, type ComponentProps } from "react";
 import * as Schema from "effect/Schema";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
@@ -92,12 +93,12 @@ interface ThreadDetailsPanelProps extends Pick<
   onOpenChanges?: () => void;
   /** Omitted when this client cannot run terminal commands. */
   onRunProjectScript?: ((script: ProjectScript) => void) | undefined;
-  onAddProjectScript: (input: NewProjectScriptInput) => Promise<ProjectScriptActionResult>;
+  onAddProjectScript: (input: ProjectScriptSaveInput) => Promise<ProjectScriptSaveResult>;
   onUpdateProjectScript: (
     scriptId: string,
-    input: NewProjectScriptInput,
-  ) => Promise<ProjectScriptActionResult>;
-  onDeleteProjectScript: (scriptId: string) => Promise<ProjectScriptActionResult>;
+    input: ProjectScriptSaveInput,
+  ) => Promise<ProjectScriptSaveResult>;
+  onDeleteProjectScript: (scriptId: string) => Promise<ProjectScriptSaveResult>;
   usage: ThreadDetailsUsageInput;
   /** Sends a request to the thread's agent; null hides the actions, as on a draft or before the thread has started. */
   agentActions: {
