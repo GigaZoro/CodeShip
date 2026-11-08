@@ -1992,6 +1992,33 @@ describe("AcpRegistryAdapterV2", () => {
       }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
+  it.effect("sends a Claude continuation this runtime never dispatched as a prompt", () =>
+    Effect.gen(function* () {
+      const session = yield* openClaudeReplaySession([
+        ...claudeFrames.open,
+        ...claudeFrames.prompt(1),
+        claudeFrames.idle("end_turn"),
+        ...claudeFrames.prompt(2),
+        claudeMarker("continuation prompt delivered"),
+        claudeFrames.idle("end_turn"),
+      ]);
+      yield* session.runtime.startTurn(session.turnInput(1));
+      assert.equal((yield* session.terminal).status, "completed");
+      yield* session.runtime.startTurn(session.turnInput(2, { continuation: true }));
+      const continuation = yield* session.until((event) => event.type === "turn.terminal");
+      assert.isTrue(
+        continuation.some(
+          (event) =>
+            event.type === "provider_thread.updated" &&
+            event.providerThread.nativeMetadata?.title === "continuation prompt delivered",
+        ),
+        "an undelivered wake must reach the agent as a session/prompt",
+      );
+      const terminal = continuation.at(-1)!;
+      assert.equal(terminal.type === "turn.terminal" ? terminal.status : null, "completed");
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
   it.effect("fails active Claude work and releases its children when the process exits", () =>
     Effect.gen(function* () {
       const session = yield* openClaudeReplaySession([

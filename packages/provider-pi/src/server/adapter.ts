@@ -402,6 +402,8 @@ function piApprovalRequestKind(title: string): "command" | "file-change" {
 interface PiThreadState {
   providerThread: OrchestrationV2ProviderThread;
   activeTurn: ActivePiTurn | null;
+  /** Continuations this session dispatched that have not started; a user turn can take their wake first. */
+  dispatchedWakes: number;
 }
 
 interface PiWake {
@@ -1721,9 +1723,14 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                     sessionEventPermit.withPermits(1)(
                       Effect.suspend(() =>
                         pendingWake === wake && threadState === state && !closed
-                          ? dispatch.pipe(
+                          ? Effect.sync(() => state.dispatchedWakes++).pipe(
+                              Effect.andThen(dispatch),
                               Effect.asSome,
-                              Effect.tapError(() => stopPendingWake(wake)),
+                              Effect.tapError(() =>
+                                Effect.sync(() => state.dispatchedWakes--).pipe(
+                                  Effect.andThen(stopPendingWake(wake)),
+                                ),
+                              ),
                             )
                           : Effect.succeedNone,
                       ),
@@ -2290,7 +2297,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                 createdAt,
                 updatedAt: createdAt,
               };
-        threadState = { providerThread, activeTurn: null };
+        threadState = { providerThread, activeTurn: null, dispatchedWakes: 0 };
         const baselineEntries = yield* request({ type: "get_entries" }).pipe(
           Effect.orElseSucceed(() => undefined),
         );
@@ -2466,9 +2473,11 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               return yield* protocolError("Pi turn requested for a different native session");
             }
             // Fork adoption uses the orchestrator-allocated row; preserve that identity in later updates.
+            // A wake this session never held (it ended, or Pi restarted) is sent as its text.
             const continuation =
               turnInput.message.createdBy === "agent" &&
-              turnInput.message.creationSource === "provider";
+              turnInput.message.creationSource === "provider" &&
+              (pendingWake?.state === state || state.dispatchedWakes > 0);
             if (!continuation) yield* applySelection(turnInput.modelSelection);
             if (turnInput.appThread.title !== appliedSessionName) {
               yield* request({
@@ -2551,6 +2560,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                 return yield* protocolError("Pi native wake belongs to a different app thread");
               }
               pendingWake = null;
+              if (continuation && state.dispatchedWakes > 0) state.dispatchedWakes--;
               state.providerThread = turnInput.providerThread;
               state.activeTurn = activeTurn;
               activeTurn.adoptedWake = wake !== null && !continuation;

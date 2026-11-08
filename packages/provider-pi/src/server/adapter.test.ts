@@ -28,6 +28,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
@@ -1282,7 +1283,8 @@ describe("PiAdapterV2", () => {
           runtimePolicy,
         });
         yield* fake.emit({ type: "agent_start" });
-        yield* Queue.take(offers);
+        const offer = yield* Queue.take(offers);
+        assert.isTrue(Option.isSome(yield* offer.dispatchIfCurrent!(Effect.void)));
         yield* fake.emit({ type: "agent_settled", aborted });
         yield* takeEvent(
           (event) =>
@@ -1312,6 +1314,47 @@ describe("PiAdapterV2", () => {
           1,
         );
       }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("sends a continuation its session never held as its text", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const { runtime, takeEvent } = yield* openRuntime(fake);
+      const providerThread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+      const wakeText = "Background task completed.";
+      yield* startTurn(
+        runtime,
+        providerThread,
+        "default",
+        [],
+        wakeText,
+        undefined,
+        1,
+        THREAD_ID,
+        true,
+      );
+      const prompt = yield* Effect.raceFirst(
+        fake.takeRequest("prompt"),
+        takeEvent((event) => event.type === "turn.terminal").pipe(Effect.as(undefined)),
+      );
+      assert.include(String(prompt?.["message"]), wakeText);
+      yield* fake.emit({ type: "agent_start" });
+      yield* fake.emit({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Checked the finished task." }],
+          stopReason: "stop",
+        },
+      });
+      yield* fake.emit({ type: "agent_settled" });
+      const terminal = yield* takeEvent((event) => event.type === "turn.terminal");
+      assert.isTrue(terminal.type === "turn.terminal" && terminal.status === "completed");
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
   it.effect("keeps a pending wake on its thread and lets Stop retire its process", () =>

@@ -303,6 +303,8 @@ interface ThreadState {
       }
     | undefined;
   readonly wakes: Array<Wake>;
+  /** Message ids of every wake this session held whose continuation has not run; a user turn can take one first. */
+  readonly heldWakes: Set<MessageId>;
   readonly reports: Map<
     string,
     {
@@ -768,6 +770,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       calls: new Map(),
       subagent,
       wakes: [],
+      heldWakes: new Set(),
       reports: new Map(),
       stoppedChildren: new Set(),
       strandedSteers: new Set(),
@@ -2204,6 +2207,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         children: new Set(),
       };
       state.wakes.push(wake);
+      if (wake.messageId !== undefined) state.heldWakes.add(wake.messageId);
       yield* Effect.logInfo("OpenCode started a turn on its own; asking for a continuation.", {
         providerThreadId: state.providerThread.id,
       });
@@ -3249,6 +3253,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       yield* beginTurn(state, turnInput, false);
       yield* lock.withPermit(
         Effect.gen(function* () {
+          state.heldWakes.delete(turnInput.message.messageId);
           const index = state.wakes.findIndex(
             (held) => held.messageId === turnInput.message.messageId,
           );
@@ -3542,7 +3547,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       compactThread: (turnInput) =>
         runtime.startTurn({ ...turnInput, message: { ...turnInput.message, text: "/compact" } }),
       startTurn: Effect.fn("OpenCode2Adapter.startTurn")(
-        function* (turnInput) {
+        function* (requestedTurnInput) {
           // Waited out before the session's gate, so a rollback or fork is not
           // held behind a reconnect.
           if (streamFailure !== undefined) {
@@ -3555,6 +3560,18 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
               cause: streamFailure,
             });
           }
+          // A wake this session never held (it ended, or the server restarted) is sent as its text.
+          const unheldWake =
+            isContinuation(requestedTurnInput) &&
+            !threads
+              .get(yield* sessionIdOf(requestedTurnInput.providerThread))
+              ?.heldWakes.has(requestedTurnInput.message.messageId);
+          const turnInput = unheldWake
+            ? {
+                ...requestedTurnInput,
+                message: { ...requestedTurnInput.message, creationSource: "server" as const },
+              }
+            : requestedTurnInput;
           // Gate checks/setup so rollback/fork sees either no turn or the installed turn; prompt outside it.
           const started = yield* exclusive(turnInput.providerThread)(
             Effect.gen(function* () {

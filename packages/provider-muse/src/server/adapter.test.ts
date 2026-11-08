@@ -1124,6 +1124,7 @@ describe("MuseAdapterV2", () => {
       yield* fake.emit("turn/started", { turnId: "report-1" });
       yield* Effect.yieldNow;
       assert.lengthOf(offers, 1);
+      assert.isTrue(Option.isSome(yield* offers[0]!.dispatchIfCurrent!(Effect.succeed("run"))));
       const { nativeId } = yield* startConversation(harness, fake);
       yield* fake.emit("approval/requested", approval("report-1"));
       const asked = yield* harness.takeEvent(
@@ -1140,8 +1141,16 @@ describe("MuseAdapterV2", () => {
       yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "completed" });
       const terminal = yield* harness.takeEvent("turn.terminal");
       assert.strictEqual(terminal.status, "completed");
-      const dispatched = yield* offers[0]!.dispatchIfCurrent!(Effect.succeed("run"));
-      assert.isTrue(Option.isNone(dispatched));
+      const input = yield* turnInput(harness.providerThread, 2, harness.policy);
+      yield* harness.runtime.startTurn({
+        ...input,
+        message: { ...input.message, createdBy: "agent", creationSource: "provider" },
+      });
+      assert.strictEqual((yield* harness.takeEvent("turn.terminal")).status, "completed");
+      assert.lengthOf(
+        fake.calls.filter((call) => call.method === "turn/start"),
+        1,
+      );
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
@@ -1497,7 +1506,7 @@ describe("MuseAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
-  it.effect("discards a dead host's pending continuation before relaunching", () =>
+  it.effect("sends a dead host's continuation to the relaunched host as its text", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakeMuse("first");
       const recovery = yield* makeFakeMuse("second");
@@ -1514,6 +1523,7 @@ describe("MuseAdapterV2", () => {
       );
       yield* fake.emit("turn/started", { turnId: "dead-host-report" });
       const continuation = yield* Deferred.await(offered);
+      assert.isTrue(Option.isSome(yield* continuation.dispatchIfCurrent!(Effect.void)));
       assert.isTrue(yield* harness.runtime.hasPendingBackgroundWork!);
       yield* fake.disconnect();
       yield* harness.takeEvent(
@@ -1533,12 +1543,23 @@ describe("MuseAdapterV2", () => {
         existingProviderThread: harness.providerThread,
       });
       const input = yield* turnInput(reEnsured);
+      const wakeText = "Background task completed.";
       yield* harness.runtime.startTurn({
         ...input,
-        message: { ...input.message, createdBy: "agent", creationSource: "provider" },
+        message: {
+          ...input.message,
+          text: wakeText,
+          createdBy: "agent",
+          creationSource: "provider",
+        },
       });
-      const running = yield* harness.takeEvent("provider_turn.updated");
-      assert.notStrictEqual(running.providerTurn.nativeTurnRef?.nativeId, "dead-host-report");
+      const started = yield* Effect.raceFirst(
+        recovery.takeCall("turn/start"),
+        harness.takeEvent("turn.terminal").pipe(Effect.as(undefined)),
+      );
+      assert.strictEqual(started?.params.displayText, wakeText);
+      assert.notStrictEqual(started?.commandId, "dead-host-report");
+      yield* recovery.emit("turn/completed", { turnId: started!.commandId, terminal: "completed" });
       assert.strictEqual((yield* harness.takeEvent("turn.terminal")).status, "completed");
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );

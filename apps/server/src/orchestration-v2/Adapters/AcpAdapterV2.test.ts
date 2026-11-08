@@ -636,14 +636,23 @@ describe("AcpAdapterV2", () => {
       const instanceId = ProviderInstanceId.make("acp-test-usage-continuation");
       const threadId = ThreadId.make("thread-acp-usage-continuation");
       let promptOrdinal = 0;
+      let offeredContinuation: ProviderContinuationRequests.ProviderContinuationRequest | undefined;
+      type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
+      let sessionUpdateHandler: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
       const promptUsages = [
         { inputTokens: 60, outputTokens: 15, totalTokens: 75 },
         { inputTokens: 130, outputTokens: 30, totalTokens: 160 },
+        { inputTokens: 200, outputTokens: 40, totalTokens: 240 },
       ];
       const adapter = yield* makeAcpAdapterV2({
         instanceId,
         selfInvocation: yield* resolveSelfInvocation(),
-        continuationRequests: { offer: () => Effect.void },
+        continuationRequests: {
+          offer: (request) =>
+            Effect.sync(() => {
+              offeredContinuation = request;
+            }),
+        },
         flavor: {
           driver: ACP_TEST_DRIVER,
           capabilities: AcpProviderCapabilitiesV2,
@@ -656,6 +665,10 @@ describe("AcpAdapterV2", () => {
             ),
             wrapRuntime: (runtime) => ({
               ...runtime,
+              handleSessionUpdate: (handler) =>
+                Effect.sync(() => {
+                  sessionUpdateHandler = handler;
+                }).pipe(Effect.andThen(runtime.handleSessionUpdate(handler))),
               prompt: () => {
                 promptOrdinal += 1;
                 const usage = promptUsages[promptOrdinal - 1];
@@ -710,8 +723,21 @@ describe("AcpAdapterV2", () => {
         inputTokens: 60,
         outputTokens: 15,
       });
-      // Continuation attach: drains wake traffic and finalizes without ever
-      // dispatching session/prompt, so it must report unavailable usage.
+      // A dispatched continuation whose wake a user turn absorbed finalizes
+      // without ever dispatching session/prompt, so it must report unavailable usage.
+      yield* sessionUpdateHandler!({
+        sessionId: "mock-session-1",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "wake" } },
+      });
+      yield* offeredContinuation!.dispatchIfCurrent!(Effect.void);
+      yield* offeredContinuation!.clearIfCurrent!();
+      assert.deepEqual(yield* completedUsage(2), {
+        usageScope: "main_agent",
+        usageStatus: "complete",
+        hasSubagents: false,
+        inputTokens: 130,
+        outputTokens: 30,
+      });
       yield* runtime.startTurn(
         makeTurnInput({
           threadId,
@@ -719,7 +745,7 @@ describe("AcpAdapterV2", () => {
           instanceId,
           runtimePolicy,
           now,
-          ordinal: 2,
+          ordinal: 3,
           messageCreatedBy: "agent",
           messageCreationSource: "provider",
           messageText: "Background task completed.",
@@ -742,16 +768,88 @@ describe("AcpAdapterV2", () => {
         { usageScope: "main_agent", usageStatus: "unavailable", hasSubagents: false },
       );
       // The continuation must not disturb the next real prompt's sample.
-      assert.deepEqual(yield* completedUsage(3), {
+      assert.deepEqual(yield* completedUsage(4), {
         usageScope: "main_agent",
         usageStatus: "complete",
         hasSubagents: false,
-        inputTokens: 130,
-        outputTokens: 30,
+        inputTokens: 200,
+        outputTokens: 40,
       });
-      assert.equal(promptOrdinal, 2, "continuation turn must not dispatch session/prompt");
+      assert.equal(promptOrdinal, 3, "continuation turn must not dispatch session/prompt");
     }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
+  it.live("sends a provider continuation this runtime never dispatched as its text", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const instanceId = ProviderInstanceId.make("acp-test-undispatched-continuation");
+      const threadId = ThreadId.make("thread-acp-undispatched-continuation");
+      const prompts: Array<string> = [];
+      const adapter = yield* makeAcpAdapterV2({
+        instanceId,
+        selfInvocation: yield* resolveSelfInvocation(),
+        continuationRequests: { offer: () => Effect.void },
+        flavor: {
+          driver: ACP_TEST_DRIVER,
+          capabilities: AcpProviderCapabilitiesV2,
+          enablePostSettleContinuation: true,
+          makeRuntime: makeMockRuntime({
+            childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+            mockAgentPath: yield* path.fromFileUrl(
+              new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+            ),
+            wrapRuntime: (runtime) => ({
+              ...runtime,
+              prompt: (payload) => {
+                prompts.push(JSON.stringify(payload));
+                return Effect.succeed({ stopReason: "end_turn" as const });
+              },
+            }),
+          }),
+        },
+      });
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      });
+      const modelSelection = { instanceId, model: "default" } as const;
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("provider-session-acp-undispatched"),
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      yield* runtime.startTurn(
+        makeTurnInput({
+          threadId,
+          providerThread,
+          instanceId,
+          runtimePolicy,
+          now: yield* DateTime.now,
+          ordinal: 1,
+          messageCreatedBy: "agent",
+          messageCreationSource: "provider",
+          messageText: "Background task ended.",
+        }),
+      );
+      const events = Array.from(
+        yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        ),
+      );
+      const terminal = events.at(-1);
+      assert.equal(terminal?.type === "turn.terminal" ? terminal.status : null, "completed");
+      assert.lengthOf(prompts, 1);
+      assert.include(prompts[0], "Background task ended.");
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
   it.live("fails an end_turn the outcome check rejects and restarts before the next turn", () =>
     Effect.gen(function* () {
       const path = yield* Path.Path;

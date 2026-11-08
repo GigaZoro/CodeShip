@@ -347,6 +347,8 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       let wake:
         | { readonly nativeId: string; readonly events: Array<[string, unknown]> }
         | undefined;
+      // Continuations this host dispatched that have not started; a user turn can take their wake first.
+      let dispatchedWakes = 0;
       const emit = (event: ProviderAdapter.ProviderAdapterV2Event) =>
         Queue.offer(events, event).pipe(Effect.asVoid);
       const decode = <A, I>(schema: Schema.Codec<A, I>, data: unknown) =>
@@ -1048,6 +1050,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         broken = true;
         relaunchable = !turn;
         wake = undefined;
+        dispatchedWakes = 0;
         const rootCause = Cause.isCause(cause) ? Cause.squash(cause) : cause;
         const failure = isOpenSessionError(rootCause) ? rootCause.cause : rootCause;
         const detail = isProtocolError(failure)
@@ -1365,7 +1368,19 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                 detail: null,
                 ...(notification ? { notification } : {}),
                 dispatchIfCurrent: (dispatch) =>
-                  wake === held ? Effect.asSome(dispatch) : Effect.succeedNone,
+                  Effect.suspend(() => {
+                    if (wake !== held) return Effect.succeedNone;
+                    const epoch = hostEpoch;
+                    dispatchedWakes++;
+                    return dispatch.pipe(
+                      Effect.asSome,
+                      Effect.tapError(() =>
+                        Effect.sync(() => {
+                          if (hostEpoch === epoch) dispatchedWakes--;
+                        }),
+                      ),
+                    );
+                  }),
                 clearIfCurrent: () =>
                   Effect.sync(() => {
                     if (wake === held) wake = undefined;
@@ -1975,9 +1990,11 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           return yield* protocolError("Muse does not support dedicated Plan mode");
         if (turnInput.runtimePolicy.runtimeMode !== input.runtimePolicy.runtimeMode)
           return yield* protocolError("Runtime policy changes require a fresh Muse host");
+        // A wake this host never held (its host failed, or the runtime restarted) is sent as its text.
         const continuation =
           turnInput.message.createdBy === "agent" &&
-          turnInput.message.creationSource === "provider";
+          turnInput.message.creationSource === "provider" &&
+          (wake !== undefined || dispatchedWakes > 0);
         const adopted = continuation ? wake : undefined;
         const effort = continuation ? undefined : yield* selectionEffort(turnInput.modelSelection);
         const parts = compact || continuation ? [] : yield* prompt(turnInput.message);
@@ -2041,6 +2058,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           yield* updateSession("running");
           const held = wake;
           wake = undefined;
+          if (continuation && dispatchedWakes > 0) dispatchedWakes--;
           if (continuation && !held) return yield* finish(turn, "completed");
           if (held && !continuation) turn.joined.add(held.nativeId);
           for (const [method, data] of held?.events ?? [])

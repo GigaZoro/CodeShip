@@ -1,3 +1,7 @@
+## 2026-11-08 — More agents hear a finished background task after their session ended
+
+- When background work finishes after the Grok, OpenCode, Pi, Muse or ACP registry agent session that started it has ended, for example because the agent process exited or the server restarted, the agent now gets the finish notice as a message and carries on. Before, that turn finished empty and the agent never heard the work had finished. Claude got the same fix earlier today.
+
 ## 2026-11-08 — Add, edit and delete project actions on mobile
 
 - **Settings → Projects → Actions** on mobile lists the selected project's actions. Add one, tap one to edit or delete it, or import one from the checkout's `t3.json`; web and desktop see the change. A connection that can't change settings, or a server too old to save actions, still shows the list and the editor, with the reason. Deleting an action also removes its shortcut unless another project still has that action.

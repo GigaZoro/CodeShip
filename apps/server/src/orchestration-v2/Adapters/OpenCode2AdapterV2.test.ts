@@ -773,7 +773,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
   });
   const continuationTurn = (
     thread: OrchestrationV2ProviderThread,
-    offer: ProviderContinuationRequests.ProviderContinuationRequest,
+    offer: Pick<ProviderContinuationRequests.ProviderContinuationRequest, "messageId" | "detail">,
     suffix = "wake",
   ) => ({
     ...withLineage(thread),
@@ -4633,6 +4633,77 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
         ["REPLY_B"],
       );
       assert.isFalse(yield* runtime.hasPendingBackgroundWork!);
+    }).pipe(Effect.scoped, Effect.provide(IdAllocator.layer)),
+  );
+
+  it.effect("sends a continuation this session never held as a prompt", () =>
+    Effect.gen(function* () {
+      const prompts: Array<unknown> = [];
+      const { runtime, thread } = yield* resumed(
+        [
+          out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+          promptAccepted,
+          event("session.execution.succeeded", { sessionID: SESSION }),
+        ],
+        { onPrompt: (input) => prompts.push(input) },
+      );
+      const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
+      yield* runtime.startTurn(
+        continuationTurn(thread, {
+          messageId: MessageId.make("message:opencode2-adapter:unheld"),
+          detail: "CHILD_NOTICE",
+        }),
+      );
+      assert.equal((yield* Fiber.join(terminal))?.status, "completed");
+      assert.lengthOf(prompts, 1);
+      assert.include(JSON.stringify(prompts[0]), "CHILD_NOTICE");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("ends a continuation a user prompt took the wake from without prompting again", () =>
+    Effect.gen(function* () {
+      const prompts: Array<unknown> = [];
+      const offers: Array<ProviderContinuationRequests.ProviderContinuationRequest> = [];
+      const offered = yield* Deferred.make<void>();
+      const { runtime, thread } = yield* resumed(
+        [
+          event("session.execution.started", { sessionID: SESSION }),
+          out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+          promptAccepted,
+          event("session.execution.succeeded", { sessionID: SESSION }),
+        ],
+        { onPrompt: (input) => prompts.push(input) },
+      ).pipe(
+        Effect.provideService(ProviderContinuationRequests.ProviderContinuationRequests, {
+          offer: (request) =>
+            Effect.sync(() => void offers.push(request)).pipe(
+              Effect.andThen(Deferred.succeed(offered, undefined)),
+              Effect.asVoid,
+            ),
+          take: Effect.never,
+        }),
+      );
+      const terminals: Array<string> = [];
+      const userEnded = yield* Deferred.make<void>();
+      const bothEnded = yield* Deferred.make<void>();
+      yield* runtime.events.pipe(
+        Stream.tap((event) =>
+          Effect.gen(function* () {
+            if (event.type !== "turn.terminal") return;
+            terminals.push(event.status);
+            yield* Deferred.succeed(terminals.length === 1 ? userEnded : bothEnded, undefined);
+          }),
+        ),
+        Stream.runDrain,
+        Effect.forkScoped,
+      );
+      yield* Deferred.await(offered);
+      yield* runtime.startTurn(withLineage(thread));
+      yield* Deferred.await(userEnded);
+      yield* runtime.startTurn(continuationTurn(thread, offers[0]!));
+      yield* Deferred.await(bothEnded);
+      assert.deepEqual(terminals, ["completed", "completed"]);
+      assert.lengthOf(prompts, 1);
     }).pipe(Effect.scoped, Effect.provide(IdAllocator.layer)),
   );
 

@@ -2023,6 +2023,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           }));
         });
         const continuationRequested = yield* Ref.make(false);
+        // Continuations this agent process dispatched that have not started; a user turn can take their wake first.
+        const dispatchedContinuations = yield* Ref.make(0);
         const continuationGeneration = yield* Ref.make(0);
         const continuationPermit = yield* Semaphore.make(1);
         const continuationClosed = yield* Ref.make(false);
@@ -2105,6 +2107,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             runtimeGeneration,
             Effect.gen(function* () {
               yield* Ref.set(runtimeRestartRequired, true);
+              yield* Ref.set(dispatchedContinuations, 0);
               if (!followsAgentWorkState) return;
               agentWork = { sessionUpdate: "state_update", state: "idle", stopReason: "error" };
               for (const child of nativeChildren.values()) {
@@ -4348,6 +4351,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     yield* clearIfOwner;
                     return yield* Effect.failCause(exit.cause);
                   }
+                  yield* Ref.update(dispatchedContinuations, (count) => count + 1);
                   return Option.some(exit.value);
                 }),
               ),
@@ -6779,6 +6783,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 yield* Ref.set(wakeBuffer, []);
                 yield* Ref.set(wakeReports, noWakeReports);
                 yield* Ref.set(continuationRequested, false);
+                yield* Ref.set(dispatchedContinuations, 0);
                 yield* Ref.set(runningBackgroundTaskIds, new Set());
                 yield* Ref.set(endedBackgroundTaskIds, new Set());
                 yield* Ref.set(midTurnUnreportedCompletedTaskIds, new Set());
@@ -7583,8 +7588,42 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           return true;
         });
 
+        // A continuation only drains here when this agent process dispatched it or still buffers its
+        // output. One from an ended process or session (an exit, a restart) is sent as its text.
+        const deliverableTurnInput = Effect.fnUntraced(function* (
+          turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
+        ) {
+          if (
+            continuationRequests === undefined ||
+            (flavor.enablePostSettleContinuation !== true &&
+              flavor.followAgentWorkState !== true) ||
+            !acpIsProviderContinuationMessage(turnInput.message)
+          )
+            return turnInput;
+          const sessionId = yield* nativeThreadId(driver, turnInput.providerThread);
+          const held = yield* continuationPermit.withPermit(
+            Effect.gen(function* () {
+              const dispatched = yield* Ref.modify(dispatchedContinuations, (count) =>
+                count > 0 ? ([true, count - 1] as const) : ([false, count] as const),
+              );
+              return (
+                dispatched ||
+                (yield* Ref.get(wakeBuffer)).some(
+                  (notification) => notification.sessionId === sessionId,
+                )
+              );
+            }),
+          );
+          return held
+            ? turnInput
+            : {
+                ...turnInput,
+                message: { ...turnInput.message, creationSource: "server" as const },
+              };
+        });
+
         const startTurnUnlocked = Effect.fn("AcpAdapterV2.startTurn")(
-          function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
+          function* (requestedTurnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
             yield* awaitRuntimeTeardown();
             const existing = yield* Ref.get(activeTurn);
             if (existing !== null) {
@@ -7594,6 +7633,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 reason: "previous_turn_active",
               });
             }
+            const turnInput = yield* deliverableTurnInput(requestedTurnInput);
             useProviderThreadIdentity(turnInput.providerThread);
             // load/resume can invoke client methods; install the incoming policy before activation.
             latestRuntimePolicy = turnInput.runtimePolicy;
