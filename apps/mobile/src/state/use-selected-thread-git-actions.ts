@@ -1,6 +1,7 @@
 import { useAtomMount } from "@effect/atom-react";
 
 import { EnvironmentProject, EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import { wasThreadChangedMeanwhile } from "@t3tools/client-runtime/errors";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import {
   createVcsStatusRevalidationAtomFamily,
@@ -40,6 +41,13 @@ import { t } from "../lib/i18n";
 function refreshFailureMessage(cause: Cause.Cause<unknown>): string {
   const error = Cause.squash(cause);
   return error instanceof Error ? error.message : t("Failed to refresh git status.");
+}
+
+interface ThreadGitContextUpdate {
+  readonly branch?: string | null;
+  /** Refuse the update unless the thread is still on this branch. */
+  readonly expectedBranch?: string | null;
+  readonly worktreePath?: string | null;
 }
 
 // Selecting a thread or reconnecting its environment refreshes the checkout's
@@ -91,10 +99,7 @@ export function useSelectedThreadGitActions() {
   const branchState = useBranches(branchTarget);
   const updateThreadGitContext = async (
     thread: NonNullable<typeof selectedThread>,
-    nextState: {
-      readonly branch?: string | null;
-      readonly worktreePath?: string | null;
-    },
+    nextState: ThreadGitContextUpdate,
   ) => {
     if (!readEnvironmentScope(thread.environmentId, AuthOrchestrationOperateScope)) {
       return AsyncResult.failure<never, EnvironmentAuthorizationError>(
@@ -111,6 +116,9 @@ export function useSelectedThreadGitActions() {
       input: {
         threadId: thread.id,
         ...(nextState.branch !== undefined ? { branch: nextState.branch } : {}),
+        ...(nextState.expectedBranch !== undefined
+          ? { expectedBranch: nextState.expectedBranch }
+          : {}),
         ...(nextState.worktreePath !== undefined ? { worktreePath: nextState.worktreePath } : {}),
       },
     });
@@ -238,10 +246,7 @@ export function useSelectedThreadGitActions() {
   const syncSelectedThreadBranchState = async (input: {
     readonly thread: EnvironmentThreadShell;
     readonly cwd: string;
-    readonly nextThreadState?: {
-      readonly branch?: string | null;
-      readonly worktreePath?: string | null;
-    };
+    readonly nextThreadState?: ThreadGitContextUpdate;
   }): Promise<AtomCommandResult<void, unknown>> => {
     // Git already changed; refresh even if metadata updates fail so the sheet shows the current branch.
     const updateResult = input.nextThreadState
@@ -394,10 +399,15 @@ export function useSelectedThreadGitActions() {
             cwd,
             nextThreadState: {
               branch: result.value.branch.name,
+              expectedBranch: thread.branch,
               worktreePath: selectedThreadWorktreePath,
             },
           });
-          if (AsyncResult.isFailure(syncResult)) {
+          // A branch the thread moved to while the action ran wins; the action itself succeeded.
+          if (
+            AsyncResult.isFailure(syncResult) &&
+            !wasThreadChangedMeanwhile(Cause.squash(syncResult.cause))
+          ) {
             return AsyncResult.failure(syncResult.cause);
           }
         } else {

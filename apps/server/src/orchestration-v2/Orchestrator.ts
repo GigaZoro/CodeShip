@@ -208,6 +208,8 @@ export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDi
   {
     commandId: CommandId,
     commandType: Schema.String,
+    /** The command expected thread state that changed before it could apply. */
+    stale: Schema.optional(Schema.Boolean),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
@@ -297,6 +299,15 @@ export class OrchestratorThreadAboveModeLimitError extends Schema.TaggedError<Or
 }
 
 const isOrchestratorDispatchError = Schema.is(OrchestratorDispatchError);
+
+export function isStaleDispatchError(error: unknown): boolean {
+  let current = error;
+  while (isOrchestratorDispatchError(current)) {
+    if (current.stale === true) return true;
+    current = current.cause;
+  }
+  return false;
+}
 
 /** The ceiling refusal under however many dispatch errors wrapped it on the way out. */
 function runtimePolicyCeilingCause(error: unknown) {
@@ -3143,6 +3154,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
+        stale: true,
         cause: `Thread ${command.threadId} worktree changed before the metadata update could be applied.`,
       });
     }
@@ -3154,6 +3166,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
+        stale: true,
         cause: `Thread ${command.threadId} branch changed before the metadata update could be applied.`,
       });
     }
@@ -3168,6 +3181,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
+          stale: true,
           cause: `Thread ${command.threadId} is no longer empty.`,
         });
     }

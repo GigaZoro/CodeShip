@@ -41,6 +41,7 @@ import {
   revertThreadCheckpoint,
   resumeThreadQueue,
   startThreadTurn,
+  updateThreadMetadata,
 } from "./commands.ts";
 
 const layerTestCrypto = Layer.succeed(
@@ -168,6 +169,30 @@ describe("V2 environment commands", () => {
 
       expect(commands).toEqual([
         { type: "thread.archive", commandId: "queued-command", threadId: "thread-1" },
+      ]);
+    }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
+  it.effect("sends the branch a branch update expects, so the server can refuse a stale one", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const supervisor = yield* makeSupervisor({ commands, projects: [] });
+
+      yield* updateThreadMetadata({
+        commandId: CommandId.make("branch-update"),
+        threadId: ThreadId.make("thread-1"),
+        branch: "feature/new",
+        expectedBranch: "main",
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+
+      expect(commands).toEqual([
+        {
+          type: "thread.metadata.update",
+          commandId: "branch-update",
+          threadId: "thread-1",
+          branch: "feature/new",
+          expectedBranch: "main",
+        },
       ]);
     }).pipe(Effect.provide(layerTestCrypto)),
   );

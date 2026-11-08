@@ -1949,6 +1949,7 @@ export const layerWsRpc = (
                       commandType: command.type,
                       message: detail ?? "Failed to dispatch orchestration V2 command",
                       ...(detail === undefined ? {} : { detail }),
+                      ...(Orchestrator.isStaleDispatchError(cause) ? { stale: true } : {}),
                       cause,
                     });
                   }),

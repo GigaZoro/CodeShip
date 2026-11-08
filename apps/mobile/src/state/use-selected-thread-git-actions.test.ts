@@ -1,4 +1,9 @@
-import { AuthOrchestrationOperateScope, AuthSourceControlWriteScope } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  AuthSourceControlWriteScope,
+  CommandId,
+  OrchestrationV2DispatchCommandError,
+} from "@t3tools/contracts";
 import type { VcsListRefsResult } from "@t3tools/contracts";
 import { resolveAutoFeatureBranchName } from "@t3tools/shared/git";
 import * as Cause from "effect/Cause";
@@ -18,7 +23,12 @@ const state = vi.hoisted(() => ({
   },
   commits: 0,
   pushes: 0,
-  metadataRequests: [] as { environmentId: string; branch: string }[],
+  metadataRequests: [] as {
+    environmentId: string;
+    branch: string;
+    expectedBranch?: string | null;
+  }[],
+  threadBranchMoved: false,
   results: [] as { type: string; description?: string }[],
   resultTargets: [] as unknown[],
   afterGitAction: undefined as (() => void) | undefined,
@@ -73,13 +83,30 @@ vi.mock("./threads", () => ({
       input,
     }: {
       environmentId: string;
-      input: { branch: string; worktreePath: string | null };
+      input: { branch: string; expectedBranch?: string | null; worktreePath: string | null };
     }) => {
-      state.metadataRequests.push({ environmentId, branch: input.branch });
+      const { expectedBranch, ...update } = input;
+      state.metadataRequests.push({
+        environmentId,
+        branch: input.branch,
+        ...(expectedBranch === undefined ? {} : { expectedBranch }),
+      });
       if (!state.scopes.has(AuthOrchestrationOperateScope)) {
         return AsyncResult.failure(Cause.fail(new Error("Task operation denied")));
       }
-      Object.assign(state.thread, input);
+      if (expectedBranch !== undefined && state.threadBranchMoved) {
+        return AsyncResult.failure(
+          Cause.fail(
+            new OrchestrationV2DispatchCommandError({
+              commandId: CommandId.make("branch-update"),
+              commandType: "thread.metadata.update",
+              message: "Thread thread branch changed before the metadata update could be applied.",
+              stale: true,
+            }),
+          ),
+        );
+      }
+      Object.assign(state.thread, update);
       return AsyncResult.success(undefined);
     },
   },
@@ -140,6 +167,7 @@ describe("thread Git mutation permissions", () => {
     state.commits = 0;
     state.pushes = 0;
     state.metadataRequests = [];
+    state.threadBranchMoved = false;
     state.results = [];
     state.resultTargets = [];
     state.afterGitAction = undefined;
@@ -207,6 +235,20 @@ describe("thread Git mutation permissions", () => {
       expect(state.results.map((result) => result.type)).toEqual(["error"]);
     },
   );
+
+  it("keeps a feature-branch commit's success when the thread's branch moved while it ran", async () => {
+    state.scopes.add(AuthOrchestrationOperateScope);
+    state.threadBranchMoved = true;
+    const result = await useSelectedThreadGitActions().onRunSelectedThreadGitAction({
+      action: "commit",
+      featureBranch: true,
+    });
+    expect(result?.branch).toEqual({ status: "created", name: "feature" });
+    expect(state.metadataRequests).toEqual([
+      { environmentId: "environment", branch: "feature", expectedBranch: "main" },
+    ]);
+    expect(state.results.map((entry) => entry.type)).toEqual(["success"]);
+  });
 
   it("refreshes the worktree status when the metadata update is denied after checkout", async () => {
     state.scopes.add(AuthOrchestrationOperateScope);

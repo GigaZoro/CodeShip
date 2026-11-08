@@ -4032,6 +4032,8 @@ export class OrchestrationV2DispatchCommandError extends Schema.TaggedError<Orch
     commandType: Schema.String,
     message: Schema.String,
     detail: Schema.optional(Schema.String),
+    /** Refused because the thread changed since the caller read it; its newer state stands. */
+    stale: Schema.optional(Schema.Boolean),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}

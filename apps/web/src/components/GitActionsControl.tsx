@@ -953,11 +953,13 @@ export default function GitActionsControl({
         return;
       }
 
+      // The server refuses this if the branch moved meanwhile; the newer branch wins, so the refusal only logs.
       void updateThreadMetadata({
         environmentId: activeThreadRef.environmentId,
         input: {
           threadId: activeThreadRef.threadId,
           branch,
+          expectedBranch: activeServerThread.branch,
         },
       });
 

@@ -1,3 +1,7 @@
+## 2026-11-08 — A git action no longer overwrites a branch the thread moved to
+
+- When a git action creates a feature branch, the thread now switches to it only if its branch hasn't changed while the action ran, for example because another device or a finished agent turn moved it. The newer branch is kept. On mobile, the action still reports success in that case instead of "Git action failed". On web, desktop and mobile.
+
 ## 2026-11-08 — A finished background command no longer ends in an empty turn
 
 - In an **Auto** chat whose account has run out of usage, the turn a finished background command starts now stays on the account that ran the command. Before, it moved to another account, ended within seconds without a reply, and left the chat idle as if the work were done. Now it either replies, or reaches the usage limit and the chat moves to the next account, as **Switch accounts at usage limits** does for any turn.

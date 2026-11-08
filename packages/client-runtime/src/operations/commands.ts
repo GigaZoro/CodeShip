@@ -132,6 +132,8 @@ export interface UpdateThreadMetadataInput extends ThreadCommandInput {
   readonly title?: string;
   readonly modelSelection?: ModelSelection;
   readonly branch?: string | null;
+  /** Reject the update unless the thread is still on this branch. */
+  readonly expectedBranch?: string | null;
   readonly worktreePath?: string | null;
   readonly regenerateTitle?: boolean;
   readonly linkedPullRequest?: ThreadLinkedPullRequest | null;
@@ -661,6 +663,7 @@ export const updateThreadMetadata = Effect.fn("EnvironmentCommands.updateThreadM
         threadId: input.threadId,
         ...(input.title === undefined ? {} : { title: input.title }),
         ...(input.branch === undefined ? {} : { branch: input.branch }),
+        ...(input.expectedBranch === undefined ? {} : { expectedBranch: input.expectedBranch }),
         ...(input.worktreePath === undefined ? {} : { worktreePath: input.worktreePath }),
         ...(input.expectedEmpty === true ? { expectedEmpty: true } : {}),
         ...(input.regenerateTitle === undefined ? {} : { regenerateTitle: input.regenerateTitle }),
