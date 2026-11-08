@@ -15,6 +15,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as Fiber from "effect/Fiber";
 import * as Deferred from "effect/Deferred";
+import * as Tracer from "effect/Tracer";
 import { subscribeChatGptHandoff } from "./CodexChatGptHandoff.ts";
 import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
@@ -23,6 +24,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProviderCredentialStore from "./ProviderCredentialStore.ts";
 import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
 import { makeCodexChatGptAuth } from "./CodexChatGptAuth.ts";
+import { chatGptCodexCatalog, withChatGptToken } from "./CodexChatGptModels.ts";
 
 const assertSameCallback = (actual: string | null, expected: string | null) => {
   const left = new URL(actual!);
@@ -756,6 +758,84 @@ it.effect("clears revoked refresh credentials and does not replay them", () =>
       yield* h.auth.access.pipe(Effect.result);
       assert.strictEqual(h.refreshes(), 1);
       assert.isTrue(Option.isNone(yield* h.auth.read));
+    }),
+  ),
+);
+
+// regression: ChatGPT revoked a session whose token had not expired, and every session
+// open failed with "check your connection" until a restart renewed it.
+it.effect.each([
+  { name: "a renewed token retries once", revoked: false, refusesRetry: false },
+  { name: "a refused renewal signs out", revoked: true, refusesRetry: false },
+  { name: "a refused retry asks to sign in", revoked: false, refusesRetry: true },
+])("a model list that refuses an unexpired token: $name", ({ revoked, refusesRetry }) =>
+  provision(
+    Effect.gen(function* () {
+      const h = yield* makeHarness;
+      yield* h.signIn;
+      yield* h.phase("succeeded");
+      if (revoked) h.setRevoked();
+      const sent: string[] = [];
+      const catalogHttp = HttpClient.make((request) =>
+        Effect.sync(() => {
+          const token = request.headers.authorization!.slice("Bearer ".length);
+          sent.push(token);
+          return HttpClientResponse.fromWeb(
+            request,
+            token === "initial-access" || refusesRetry
+              ? Response.json({ error: { code: "token_revoked" } }, { status: 401 })
+              : Response.json({ models: [] }),
+          );
+        }),
+      );
+      const spans: Tracer.NativeSpan[] = [];
+      const tracer = Tracer.make({
+        span: (options) => {
+          const span = new Tracer.NativeSpan(options);
+          spans.push(span);
+          return span;
+        },
+      });
+      const signedOut = yield* h.auth.signedOut.pipe(
+        Stream.runHead,
+        Effect.forkChild({ startImmediately: true }),
+      );
+      const saved = Option.getOrThrow(yield* h.auth.read);
+      const result = yield* withChatGptToken(h.auth, instanceId, saved, (accessToken) =>
+        chatGptCodexCatalog(accessToken, "0.167.0").pipe(
+          Effect.provideService(HttpClient.HttpClient, catalogHttp),
+        ),
+      ).pipe(Effect.result, Effect.provideService(Tracer.Tracer, tracer));
+
+      assert.strictEqual(h.refreshes(), 1);
+      assert.deepEqual(sent, revoked ? ["initial-access"] : ["initial-access", "access-1"]);
+      if (revoked || refusesRetry) {
+        assert.strictEqual(result._tag, "Failure");
+        if (result._tag === "Failure")
+          assert.strictEqual(
+            result.failure.message,
+            "Your ChatGPT connection was revoked. Sign in again.",
+          );
+      } else {
+        assert.strictEqual(result._tag, "Success");
+        // A second caller holding the refused token reuses the renewal instead of refreshing again.
+        assert.strictEqual((yield* h.auth.renew(saved)).accessToken, "access-1");
+        assert.strictEqual(h.refreshes(), 1);
+      }
+      assert.strictEqual(Option.isNone(yield* h.auth.read), revoked);
+      if (revoked) assert.isTrue(Option.isSome(yield* Fiber.join(signedOut)));
+      const catalog = spans.find((span) => span.name === "chatGptCodexCatalog")!;
+      assert.strictEqual(catalog.attributes.get("http.response.status_code"), 401);
+      assert.strictEqual(catalog.attributes.get("openai.error.code"), "token_revoked");
+      const renewal = spans.find((span) => span.name === "CodexChatGptAuth.exchange")!;
+      assert.strictEqual(renewal.attributes.get("http.response.status_code"), revoked ? 400 : 200);
+      assert.strictEqual(
+        renewal.attributes.get("oauth.error"),
+        revoked ? "invalid_grant" : undefined,
+      );
+      const traced = JSON.stringify(spans.map((span) => [...span.attributes]));
+      for (const secret of ["initial-access", "initial-refresh", "access-1", "refresh-1"])
+        assert.notInclude(traced, secret);
     }),
   ),
 );

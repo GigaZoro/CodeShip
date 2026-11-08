@@ -1,13 +1,82 @@
-import type { ServerProviderModel } from "@t3tools/contracts";
+import {
+  ProviderSetupError,
+  type ProviderInstanceId,
+  type ServerProviderModel,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { HttpClient, HttpClientRequest } from "effect/http";
+import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http";
+import {
+  CHATGPT_SIGNED_OUT,
+  traceableErrorCode,
+  type CodexChatGptCredentials,
+} from "./CodexChatGptAuth.ts";
 import { CODEX_ORIGINATOR, mapCodexModelCapabilities } from "./CodexProvider.ts";
 
 export class ChatGptCatalogError extends Schema.TaggedError<ChatGptCatalogError>()(
   "ChatGptCatalogError",
-  { status: Schema.Int },
-) {}
+  { status: Schema.Int, code: Schema.optional(Schema.String) },
+) {
+  override get message(): string {
+    return `ChatGPT answered the model list with HTTP ${this.status}${this.code ? ` (${this.code})` : ""}.`;
+  }
+}
+
+const ApiError = Schema.Struct({
+  error: Schema.Struct({ code: Schema.optionalKey(Schema.NullOr(Schema.String)) }),
+});
+const decodeApiError = Schema.decodeUnknownEffect(ApiError);
+
+const catalogFailure = Effect.fnUntraced(function* (
+  response: HttpClientResponse.HttpClientResponse,
+) {
+  const code = traceableErrorCode(
+    yield* response.json.pipe(
+      Effect.flatMap(decodeApiError),
+      Effect.map((body) => body.error.code),
+      Effect.orElseSucceed(() => undefined),
+    ),
+  );
+  yield* Effect.annotateCurrentSpan({
+    "http.response.status_code": response.status,
+    ...(code ? { "openai.error.code": code } : {}),
+  });
+  return yield* new ChatGptCatalogError({ status: response.status, ...(code ? { code } : {}) });
+});
+
+const isCatalogError = Schema.is(ChatGptCatalogError);
+const isRefusedToken = (error: unknown) =>
+  isCatalogError(error) && (error.status === 401 || error.status === 403);
+
+/**
+ * Runs `load` with the connection's token. ChatGPT can revoke a session before its token
+ * expires, so a refused token gets one forced renewal and one retry before it means sign in again.
+ */
+export const withChatGptToken = Effect.fn("withChatGptToken")(function* <A, E, R>(
+  auth: {
+    readonly renew: (
+      rejected: CodexChatGptCredentials,
+    ) => Effect.Effect<CodexChatGptCredentials, ProviderSetupError>;
+  },
+  instanceId: ProviderInstanceId,
+  credentials: CodexChatGptCredentials,
+  load: (accessToken: string) => Effect.Effect<A, E, R>,
+) {
+  const first = yield* Effect.result(load(credentials.accessToken));
+  if (first._tag === "Success") return { credentials, value: first.success };
+  if (!isRefusedToken(first.failure)) return yield* Effect.fail(first.failure);
+  const revoked = new ProviderSetupError({
+    instanceId,
+    operation: "models",
+    detail: "Your ChatGPT connection was revoked. Sign in again.",
+  });
+  const renewed = yield* auth
+    .renew(credentials)
+    .pipe(Effect.mapError((error) => (error.operation === CHATGPT_SIGNED_OUT ? revoked : error)));
+  const second = yield* Effect.result(load(renewed.accessToken));
+  if (second._tag === "Success") return { credentials: renewed, value: second.success };
+  return yield* Effect.fail(isRefusedToken(second.failure) ? revoked : second.failure);
+});
 
 const CodexCatalog = Schema.Struct({
   models: Schema.Array(Schema.Record(Schema.String, Schema.Json)),
@@ -26,7 +95,7 @@ export const chatGptCodexCatalog = Effect.fn("chatGptCodexCatalog")(function* (
       HttpClientRequest.bearerToken(accessToken),
     ),
   );
-  if (response.status !== 200) return yield* new ChatGptCatalogError({ status: response.status });
+  if (response.status !== 200) return yield* catalogFailure(response);
   return yield* response.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(CodexCatalog)));
 }, Effect.timeout("15 seconds"));
 
@@ -61,7 +130,7 @@ export const chatGptModels = Effect.fn("chatGptModels")(function* (
       HttpClientRequest.bearerToken(accessToken),
     ),
   );
-  if (response.status !== 200) return yield* new ChatGptCatalogError({ status: response.status });
+  if (response.status !== 200) return yield* catalogFailure(response);
   const catalog = yield* response.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Catalog)));
   return catalog.models
     .filter((model) => model.visibility === "list")

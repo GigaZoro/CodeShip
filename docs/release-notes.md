@@ -1,3 +1,8 @@
+## 2026-11-08 — Codex shows signed out as soon as ChatGPT revokes its connection
+
+- When ChatGPT revokes the connection of a Codex account you connected with ChatGPT, T3.CodeShip now renews it once on the next model check or session start. If ChatGPT refuses the renewal, the account shows as signed out right away, and new chats, generated titles and branch names, and MCP lists say **Your ChatGPT connection was revoked. Sign in again.** Before, the account stayed signed in and everything failed with "Check your connection and retry" until the server restarted.
+- If the renewal works, the request is retried once and nothing else changes.
+
 ## 2026-11-08 — Server browsers keep your profiles after a restart
 
 - A server browser now remembers the browser profiles your apps reported and the recording frame rate you chose, after it restarts. Agents on an always-on server can open a tab in a custom profile, such as one signed in to a second ChatGPT account, before any app connects again. Before, they got "No browser profile is named …" until you opened an app on that environment.

@@ -13,7 +13,7 @@ import { makeCodexChatGptAuth } from "./CodexChatGptAuth.ts";
 import { COMMAND_TIMEOUT_MS } from "./CodexManagedTokenProtocol.ts";
 import { materializeCodexShadowHome } from "./Drivers/CodexHomeLayout.ts";
 import { withPrivateMcpSignIns } from "./codexLaunchArgs.ts";
-import { chatGptCodexCatalog } from "./CodexChatGptModels.ts";
+import { chatGptCodexCatalog, withChatGptToken } from "./CodexChatGptModels.ts";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { HttpClient } from "effect/http";
 
@@ -25,6 +25,7 @@ export interface CodexEffectiveRuntime {
   readonly privateMcpSignIns: boolean;
 }
 const decodeSettings = Schema.decodeSync(CodexSettings);
+const isSetupError = Schema.is(ProviderSetupError);
 const encodeCatalog = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const managedCodexLaunchArgs = (
   command: string,
@@ -101,16 +102,23 @@ export const makeCodexManagedRuntime = Effect.fn("makeCodexManagedRuntime")(func
           }),
       ),
     );
-    const credentials = yield* auth.access;
-    const catalog = yield* chatGptCodexCatalog(credentials.accessToken, executable.version).pipe(
-      Effect.provideService(HttpClient.HttpClient, http),
-      Effect.mapError(
-        () =>
-          new ProviderSetupError({
-            instanceId: options.instanceId,
-            operation: "models",
-            detail: "Could not load your ChatGPT models. Check your connection and retry.",
-          }),
+    const { credentials, value: catalog } = yield* withChatGptToken(
+      auth,
+      options.instanceId,
+      yield* auth.access,
+      (accessToken) =>
+        chatGptCodexCatalog(accessToken, executable.version).pipe(
+          Effect.provideService(HttpClient.HttpClient, http),
+        ),
+    ).pipe(
+      Effect.mapError((error) =>
+        isSetupError(error)
+          ? error
+          : new ProviderSetupError({
+              instanceId: options.instanceId,
+              operation: "models",
+              detail: "Could not load your ChatGPT models. Check your connection and retry.",
+            }),
       ),
     );
     // The catalog's multi_agent_version enables Codex subagents whatever `features.*` says,

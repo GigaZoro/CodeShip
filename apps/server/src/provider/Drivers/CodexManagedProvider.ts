@@ -12,7 +12,7 @@ import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/process";
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
-import { chatGptModels } from "../CodexChatGptModels.ts";
+import { chatGptModels, withChatGptToken } from "../CodexChatGptModels.ts";
 import { makeCodexManagedRuntime } from "../CodexManagedRuntime.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { createCodexAdapterV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -156,8 +156,14 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
               operation: "models",
               detail: "The ChatGPT connection changed while checking Codex. Retry.",
             });
-          const models = yield* chatGptModels(credentials.accessToken, draft.models).pipe(
-            Effect.provideService(HttpClient.HttpClient, http),
+          const { value: models } = yield* withChatGptToken(
+            runtime.auth,
+            instanceId,
+            credentials,
+            (accessToken) =>
+              chatGptModels(accessToken, draft.models).pipe(
+                Effect.provideService(HttpClient.HttpClient, http),
+              ),
           );
           return { ...draft, models };
         }),
@@ -246,6 +252,8 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   );
   yield* runtime.auth.controller.subscribe("managed-codex-snapshot").pipe(
     Stream.filter((state) => ["idle", "succeeded", "failed", "cancelled"].includes(state.phase)),
+    // ChatGPT can refuse a renewal mid-session; publish that sign-out without waiting for a check.
+    Stream.merge(runtime.auth.signedOut),
     // Sign-out interrupts in-flight probes; keep listening for its subsequent idle refresh.
     Stream.runForEach(() => snapshot.refresh.pipe(Effect.ignoreCause({ log: true }))),
     Effect.forkScoped,
