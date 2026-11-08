@@ -1,5 +1,6 @@
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
+import { autoCoordinatorInstructions } from "@t3tools/provider-core/server/orchestrationInstructions";
 import {
   makeProviderTextDeltaCoalescer,
   type ProviderTextDeltaUpdate,
@@ -10,6 +11,7 @@ import {
   CheckpointId,
   CodexSettings,
   EnvironmentId,
+  ProviderDriverKind,
   MessageId,
   type ModelSelection,
   NodeId,
@@ -2275,10 +2277,183 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
+  it.effect("sends the full turn context on every turn, including after thread/revert", () =>
+    Effect.gen(function* () {
+      const nativeThreadId = "auto-thread";
+      const turnInputOptions = {
+        appContext: [{ key: "note", text: "from the app" }],
+        autoModeInstructions: "Auto brief",
+      };
+      const params = yield* CodexAdapterV2.buildCodexTurnStartParams({
+        nativeThreadId,
+        codexInput: [{ type: "text", text: "work" }],
+        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        modelSelection: CODEX_TEST_MODEL_SELECTION,
+        ...turnInputOptions,
+      });
+      assert.deepEqual(Object.keys(params.additionalContext ?? {}).toSorted(), [
+        "note",
+        "t3_auto_mode",
+      ]);
+      const turnEntries = (requestId: number) => [
+        {
+          type: "expect_outbound" as const,
+          label: "Auto turn",
+          frame: { id: requestId, method: "turn/start", params },
+        },
+        ...codexReplayPreamble({
+          nativeThreadId,
+          nativeTurnId: `turn-${requestId}`,
+          prompt: "work",
+        })
+          .slice(6)
+          .map((entry) =>
+            "label" in entry && entry.label === "turn/start"
+              ? withReplayRequestId(entry, requestId)
+              : entry,
+          ),
+        {
+          type: "emit_inbound" as const,
+          label: "done",
+          frame: {
+            method: "turn/completed",
+            params: {
+              threadId: nativeThreadId,
+              turn: makeCodexReplayTurn({ id: `turn-${requestId}`, status: "completed" }),
+            },
+          },
+        },
+      ];
+      const revertEntries = [
+        {
+          type: "expect_outbound" as const,
+          label: "thread/read",
+          frame: {
+            id: 5,
+            method: "thread/read",
+            params: { threadId: nativeThreadId, includeTurns: false },
+          },
+        },
+        {
+          type: "emit_inbound" as const,
+          label: "thread/read",
+          frame: { id: 5, result: { thread: { id: nativeThreadId, historyMode: "paginated" } } },
+        },
+        {
+          type: "expect_outbound" as const,
+          label: "thread/turns/list",
+          frame: {
+            id: 6,
+            method: "thread/turns/list",
+            params: {
+              threadId: nativeThreadId,
+              cursor: null,
+              limit: 1,
+              sortDirection: "desc",
+              itemsView: "summary",
+            },
+          },
+        },
+        {
+          type: "emit_inbound" as const,
+          label: "thread/turns/list",
+          frame: {
+            id: 6,
+            result: {
+              data: [{ id: "turn-4", items: [], status: "completed", error: null }],
+              nextCursor: null,
+            },
+          },
+        },
+        {
+          type: "expect_outbound" as const,
+          label: "thread/revert",
+          frame: {
+            id: 7,
+            method: "thread/revert",
+            params: { threadId: nativeThreadId, beforeTurnId: "turn-4" },
+          },
+        },
+        {
+          type: "emit_inbound" as const,
+          label: "thread/revert",
+          frame: {
+            id: 7,
+            result: codexReplayThreadResult({ nativeThreadId, forkedFromId: null }),
+          },
+        },
+      ];
+      const harness = yield* makeCodexReplayHarness(
+        makeCodexReplayTranscript({
+          scenario: "auto-delivery",
+          entries: [
+            ...codexReplayPreamble({
+              nativeThreadId,
+              nativeTurnId: "unused",
+              prompt: "work",
+            }).slice(0, 5),
+            ...turnEntries(3),
+            ...turnEntries(4),
+            ...revertEntries,
+            ...turnEntries(8),
+          ],
+        }),
+      );
+      const startTurn = Effect.fn("test.startAutoTurn")(function* (
+        index: number,
+        providerThread: typeof harness.providerThread,
+      ) {
+        yield* harness.runtime.startTurn({
+          ...makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(`auto-${index}`),
+            text: "work",
+          }),
+          ...turnInputOptions,
+        });
+        yield* harness.awaitTerminal(index);
+      });
+      yield* startTurn(0, harness.providerThread);
+      yield* startTurn(1, harness.providerThread);
+      const now = yield* DateTime.now;
+      const rolledBack = yield* harness.runtime.rollbackThread({
+        providerThread: harness.providerThread,
+        target: {
+          type: "thread_start",
+          checkpointId: CheckpointId.make("checkpoint-before-auto"),
+          appRunOrdinal: 0,
+        },
+        providerThreadTurns: [
+          codexReplaySourceTurn({
+            id: "provider-turn-auto",
+            ordinal: 1,
+            nativeId: "turn-4",
+            providerThreadId: harness.providerThread.id,
+            now,
+          }),
+        ],
+      });
+      yield* startTurn(2, rolledBack.providerThread);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
   it.effect("preserves T3 context on the wire and restores it after compaction", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const nativeThreadId = "context-thread";
+        const brief = autoCoordinatorInstructions({
+          driver: ProviderDriverKind.make("codex"),
+          model: "gpt-6-astra",
+          primary: { model: "gpt-6-astra" },
+          models: [{ slug: "gpt-6-astra", name: "Astra" }],
+        })!;
         const nativeTurnId = "context-turn";
         const params = yield* CodexAdapterV2.buildCodexTurnStartParams({
           nativeThreadId,
@@ -2286,11 +2461,25 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
           modelSelection: CODEX_TEST_MODEL_SELECTION,
           hasT3Mcp: true,
+          autoModeInstructions: brief,
         });
+        assert.equal(params.additionalContext?.t3_auto_mode?.value, brief);
         assert.include(
           params.additionalContext?.t3_code_orchestration_01?.value ?? "",
           "delegate_task",
         );
+        const restoredItems = Object.entries(params.additionalContext ?? {}).map(
+          ([key, entry]) => ({
+            type: "message",
+            role: "developer",
+            content: [{ type: "input_text", text: `<${key}>${entry.value}</${key}>` }],
+          }),
+        );
+        const restoredBrief = JSON.stringify(
+          restoredItems.find((item) => item.content[0]?.text.startsWith("<t3_auto_mode>")),
+        );
+        assert.equal(restoredBrief.match(/<t3_auto_mode>/g)?.length, 1);
+        assert.equal(restoredBrief.match(/<\/t3_auto_mode>/g)?.length, 1);
         const entries = codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "work" });
         const transcript = makeCodexReplayTranscript({
           scenario: "restore-context",
@@ -2333,11 +2522,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 method: "thread/inject_items",
                 params: {
                   threadId: nativeThreadId,
-                  items: Object.entries(params.additionalContext ?? {}).map(([key, entry]) => ({
-                    type: "message",
-                    role: "developer",
-                    content: [{ type: "input_text", text: `<${key}>${entry.value}</${key}>` }],
-                  })),
+                  items: restoredItems,
                 },
               },
             },
@@ -2373,15 +2558,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           authorizationHeader: "Bearer test",
           browserToolsAvailable: true,
         });
-        yield* harness.runtime.startTurn(
-          makeCodexTestTurnInput({
+        yield* harness.runtime.startTurn({
+          ...makeCodexTestTurnInput({
             threadId: harness.threadId,
             providerThread: harness.providerThread,
             now: yield* DateTime.now,
             attemptId: RunAttemptId.make("context-attempt"),
             text: "work",
           }),
-        );
+          autoModeInstructions: brief,
+        });
         yield* harness.firstTerminal;
         yield* Deferred.await(restoreRequested);
         assert.equal(harness.terminalEvents()[0]?.status, "completed");

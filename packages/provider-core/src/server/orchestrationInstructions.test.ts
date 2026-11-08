@@ -6,6 +6,7 @@ import {
   T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
   autoCoordinatorInstructions,
+  autoModePromptBlock,
   t3AcpPromptWithInstructions,
   t3OrchestrationPrompt,
   t3OrchestrationSystemPrompt,
@@ -94,16 +95,16 @@ const input = {
   model: "opus",
   primary: { model: "custom-opus", options: [{ id: "effort", value: "max" }] },
   models: [
-    { slug: "opus", name: "Opus" },
-    { slug: "haiku", name: "Haiku" },
+    { slug: "claude-opus-5-5", name: "Opus", aliases: ["opus"] },
+    { slug: "claude-haiku-4-5", name: "Haiku", aliases: ["haiku"] },
   ],
 };
 describe("autoCoordinatorInstructions", () => {
   it("keeps the native-subagent brief when the other provider is unavailable", () => {
     expect(autoCoordinatorInstructions(input)).toContain(
-      "Otherwise run the work as a native subagent",
+      "native subagents (Claude `Agent` with `model`)",
     );
-    expect(autoCoordinatorInstructions(input)).toContain("cheaper models on routine work");
+    expect(autoCoordinatorInstructions(input)).toContain("cheapest capable model");
     expect(autoCoordinatorInstructions(input)).not.toContain("delegate_task");
   });
   it("uses each model's effort descriptors and points to omitted models", () => {
@@ -147,14 +148,12 @@ describe("autoCoordinatorInstructions", () => {
       ],
     });
     expect(brief).toContain(
-      '\n  - one (`one`); reasoningEffort: low, high; target `{"providerInstanceId":"codex_first","model":"one"}`',
+      '`{"providerInstanceId":"codex_first","model":"<slug>","options":{"reasoningEffort":"<effort>"}}`, effort low, high:\n  - one (`one`)',
     );
     expect(brief).toContain(
-      '\n  - two (`two`); effort: max; target `{"providerInstanceId":"codex_second","model":"two"}`',
+      '`{"providerInstanceId":"codex_second","model":"<slug>"}`:\n  - two (`two`); `effort`: max',
     );
-    expect(brief).toContain(
-      '\n  - none (`none`); target `{"providerInstanceId":"codex_second","model":"none"}`',
-    );
+    expect(brief).toContain("\n  - none (`none`)\n");
     expect(brief).not.toContain('"providerInstanceId":"codex_second","model":"one"');
     expect(brief?.match(/one \(`one`\)/g)).toHaveLength(1);
     expect(brief).toContain("extra-4");
@@ -171,19 +170,158 @@ describe("autoCoordinatorInstructions", () => {
       };
       const brief = autoCoordinatorInstructions({
         ...input,
-        models: [...input.models, { slug: input.primary.model, name: "Custom Opus" }],
+        models: [
+          ...input.models,
+          { slug: input.primary.model, name: "Custom Opus", aliases: ["opus"] },
+        ],
         ...(otherAvailable ? { otherPrimary } : {}),
       });
-      expect(brief).toContain("Custom Opus (`custom-opus`), effort max");
+      expect(brief).toContain("Custom Opus, effort max");
       expect(brief).not.toContain(JSON.stringify(input.primary));
-      expect(brief).toContain("fresh native subagent on that model");
+      expect(brief).toContain("fresh native subagent (`opus`)");
       if (otherAvailable) {
         expect(brief).toContain(
-          'role "review" and target `{"providerInstanceId":"codex_review","model":"custom-review-model","options":{"reasoningEffort":"ultra"}}`',
+          'role "review", target `{"providerInstanceId":"codex_review","model":"custom-review-model","options":{"reasoningEffort":"ultra"}}`',
         );
-        expect(brief).toContain("preferring the provider that did not write the code");
+        expect(brief).toContain("Prefer the provider that did not write the code");
         expect(brief).toContain("both for big or risky changes");
       } else expect(brief).not.toContain("delegate_task");
     },
   );
+});
+
+it.each([3, 8])("bounds the brief with four Claude and %s Codex models", (count) => {
+  const models = (names: string[], claude: boolean) =>
+    names.map((name) => ({
+      slug: claude ? `claude-${name}-5-5` : `gpt-6-${name}`,
+      name,
+      aliases: claude ? [name] : [],
+      capabilities: {
+        optionDescriptors: [
+          {
+            id: claude ? "effort" : "reasoningEffort",
+            label: "Effort",
+            type: "select" as const,
+            options: ["low", "medium", "high", "max"].map((id) => ({ id, label: id })),
+          },
+        ],
+      },
+    }));
+  const brief = autoCoordinatorInstructions({
+    ...input,
+    models: [
+      ...models(["opus", "sonnet", "haiku", "fable"], true),
+      { slug: "claude-no-native-alias", name: "Unsupported" },
+    ],
+    otherProviders: [
+      {
+        providerInstanceId: "codex_main",
+        displayName: "Codex",
+        driver: ProviderDriverKind.make("codex"),
+        models: models(
+          ["astra", "sol", "luna", "terra", "extra-a", "extra-b", "extra-c", "extra-d"].slice(
+            0,
+            count,
+          ),
+          false,
+        ),
+      },
+    ],
+  })!;
+  expect(brief.length).toBeLessThan(count === 3 ? 1800 : 2100);
+  expect(brief).toContain("opus (`opus`)");
+  expect(brief).not.toContain("claude-opus-5-5");
+  expect(brief).not.toContain("Unsupported");
+  expect(brief).toContain("gpt-6-astra");
+  expect(brief.match(/effort low, medium, high, max/g)).toHaveLength(1);
+  expect(brief).not.toMatch(/native subagents[^\n]*effort/);
+});
+
+it("notes a Codex native model whose effort differs from the others", () => {
+  const model = (slug: string, values: string[]) => ({
+    slug,
+    name: slug,
+    capabilities: {
+      optionDescriptors: [
+        {
+          id: "reasoningEffort",
+          label: "Effort",
+          type: "select" as const,
+          options: values.map((id) => ({ id, label: id })),
+        },
+      ],
+    },
+  });
+  const brief = autoCoordinatorInstructions({
+    ...input,
+    driver: ProviderDriverKind.make("codex"),
+    models: [
+      model("gpt-6-astra", ["low", "high"]),
+      model("gpt-6-luna", ["low", "high"]),
+      model("gpt-6-nova", ["low", "xhigh"]),
+    ],
+  })!;
+  expect(brief).toContain("- gpt-6-nova (`gpt-6-nova`); effort: low, xhigh");
+  expect(brief).not.toMatch(/gpt-6-(astra|luna) \(`[^`]+`\)[^\n]*; effort/);
+});
+
+it("states Codex's spawn_agent effort values once and gives Claude's Agent none", () => {
+  const efforts = ["low", "medium", "high"];
+  const model = (slug: string, name: string, aliases: string[] = []) => ({
+    slug,
+    name,
+    aliases,
+    capabilities: {
+      optionDescriptors: [
+        {
+          id: "reasoningEffort",
+          label: "Effort",
+          type: "select" as const,
+          options: efforts.map((id) => ({ id, label: id })),
+        },
+      ],
+    },
+  });
+  const codex = autoCoordinatorInstructions({
+    ...input,
+    driver: ProviderDriverKind.make("codex"),
+    models: [model("gpt-6-astra", "Astra"), model("gpt-6-luna", "Luna")],
+  })!;
+  expect(codex).toContain(
+    "native subagents (Codex `spawn_agent` with `model`, then wait), `reasoning_effort` low, medium, high:\n  - Astra (`gpt-6-astra`)",
+  );
+  expect(codex.match(/low, medium, high/g)).toHaveLength(1);
+  const claude = autoCoordinatorInstructions({
+    ...input,
+    models: [model("claude-opus-5-5", "Opus", ["opus"])],
+  })!;
+  expect(claude).toContain("native subagents (Claude `Agent` with `model`):\n  - Opus (`opus`)");
+  expect(claude).not.toContain("reasoning_effort");
+  expect(claude).not.toContain("low, medium, high");
+});
+
+it("leaves the brief untagged and wraps it once for the prompt", () => {
+  const brief = autoCoordinatorInstructions(input)!;
+  expect(brief).not.toContain("<t3_auto_mode>");
+  const block = autoModePromptBlock(brief);
+  expect(block.match(/<t3_auto_mode>/g)).toHaveLength(1);
+  expect(block.startsWith("<t3_auto_mode>\nAuto:")).toBe(true);
+  expect(block.endsWith("\n</t3_auto_mode>")).toBe(true);
+});
+
+it("uses native Claude catalog aliases, omits unsupported models, and keeps Codex slugs", () => {
+  const models = [
+    { slug: "claude-sonnet-5-5", name: "Sonnet", aliases: ["primary", "sonnet"] },
+    { slug: "custom", name: "Unsupported", aliases: ["custom"] },
+  ];
+  const claude = autoCoordinatorInstructions({ ...input, models })!;
+  expect(claude).toContain("Sonnet (`sonnet`)");
+  expect(claude).not.toContain("Unsupported");
+  expect(claude).not.toContain("claude-sonnet-5-5");
+  const codex = autoCoordinatorInstructions({
+    ...input,
+    driver: ProviderDriverKind.make("codex"),
+    models: [{ slug: "gpt-6-astra", name: "Astra", aliases: ["primary"] }],
+  })!;
+  expect(codex).toContain("Astra (`gpt-6-astra`)");
 });

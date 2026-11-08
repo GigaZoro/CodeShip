@@ -9,8 +9,9 @@ import {
   autoModeModelFor,
   orderProviderInstancesForFailover,
 } from "@t3tools/shared/serverSettings";
+import { exhaustedModelUsageWindow } from "@t3tools/shared/usageLimits";
 import { providerConstraints } from "../provider/providerConstraints.ts";
-import { modelWithRoom, type AccountRoutingContext } from "./AccountRouting.ts";
+import { modelScopeHolds, modelWithRoom, type AccountRoutingContext } from "./AccountRouting.ts";
 
 export function autoCoordinatorAccounts(
   input: AccountRoutingContext & {
@@ -69,7 +70,11 @@ export function autoCoordinatorBriefInput(
         }),
     models:
       own?.models.filter(
-        (model) => !model.isLegacy && modelWithRoom(own, { ...input, model: model.slug }) !== null,
+        // An account-wide limit leaves these: the coordinator is running on this account now.
+        (model) =>
+          !model.isLegacy &&
+          exhaustedModelUsageWindow(own, input.nowMs, model.slug) === undefined &&
+          !modelScopeHolds(own, input, model.slug),
       ) ?? [],
     otherProviders: others.map((provider) => ({
       providerInstanceId: provider.instanceId,

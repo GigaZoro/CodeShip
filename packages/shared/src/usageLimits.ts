@@ -30,54 +30,140 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
-/** Omit the model to inspect any pool; null asks only for an account-wide limit. */
+/** Claude's model families; a `seven_day_<family>` window or refusal holds only that family. */
+export const CLAUDE_MODEL_FAMILIES: ReadonlyArray<string> = ["opus", "sonnet", "haiku", "fable"];
+
+/** The model scope a Claude `seven_day_<scope>` window limits, such as `opus`; undefined when it limits the account. */
+export function claudeUsageWindowScope(windowId: string): string | undefined {
+  return windowId.match(/^seven_day_(.+)$/)?.[1];
+}
+
+/** Whether a usage scope such as `opus` covers `model`: every scope word is a word of the slug. */
+export function usageScopeCoversModel(scope: string, model: string | null | undefined): boolean {
+  const words = model?.toLowerCase().split(/[^a-z0-9]+/) ?? [];
+  return scope.split("_").every((word) => words.includes(word));
+}
+
+// Claude and ChatGPT subscriptions use a five-hour session window.
+const DEFAULT_USAGE_HOLD_MINS = 5 * 60;
+
+/** How long a limit with no known end holds: the account's shortest usage window, at most five hours. */
+export function usageHoldMs(limits: ServerProviderUsageLimits | undefined): number {
+  const durations = (limits?.windows ?? []).flatMap((window) =>
+    window.windowDurationMins != null && window.windowDurationMins > 0
+      ? [window.windowDurationMins]
+      : [],
+  );
+  return Math.min(DEFAULT_USAGE_HOLD_MINS, ...durations) * MINUTE;
+}
+
+/** When a used-up window stops limiting: its reset, else the hold from when it was first seen used up. */
+export function usageWindowLimitEnd(
+  limits: ServerProviderUsageLimits,
+  window: ServerProviderUsageWindow,
+): number {
+  // Servers before `exhaustedSince` leave it out, so their windows count from the check.
+  return (
+    resetMillis(window) ??
+    Date.parse(window.exhaustedSince ?? limits.checkedAt) + usageHoldMs(limits)
+  );
+}
+
+/** Whether a used-up window limits `model`; null asks whether it limits the whole account. */
+function windowLimitsModel(
+  driver: ServerProvider["driver"],
+  windowId: string,
+  model: string | null,
+): boolean {
+  switch (driver) {
+    case "claudeAgent": {
+      // A `seven_day_<model>` window limits only the model it names, such as Fable.
+      const scope = claudeUsageWindowScope(windowId);
+      return scope === undefined || usageScopeCoversModel(scope, model);
+    }
+    case "antigravity": {
+      const family = model?.match(/^(gemini|claude|gpt)-/)?.[1];
+      const pool = windowId.match(/^(gemini|claude|gpt|3p)-/)?.[1];
+      return (
+        pool === undefined ||
+        (model !== null &&
+          (family === undefined ||
+            pool === family ||
+            (pool === "3p" && (family === "claude" || family === "gpt"))))
+      );
+    }
+    case "opencode":
+      return !windowId.startsWith("go_") || (model?.startsWith("opencode-go/") ?? false);
+    default:
+      return true;
+  }
+}
+
+function usedUpWindows(provider: ServerProvider | undefined, now: number) {
+  const limits = provider?.usageLimits;
+  if (limits === undefined) return null;
+  const end = (window: ServerProviderUsageWindow) => usageWindowLimitEnd(limits, window);
+  return {
+    end,
+    windows: limits.windows.filter((window) => window.usedPercent >= 100 && end(window) > now),
+  };
+}
+
+function latestEnding(
+  windows: ReadonlyArray<ServerProviderUsageWindow>,
+  end: (window: ServerProviderUsageWindow) => number,
+) {
+  return windows.reduce<ServerProviderUsageWindow | undefined>(
+    (latest, window) => (latest === undefined || end(window) > end(latest) ? window : latest),
+    undefined,
+  );
+}
+
+/**
+ * The used-up window that holds `model` longest, so its end is when the model has room again.
+ * Omit the model to inspect any pool; null asks only for an account-wide limit.
+ */
 export function exhaustedUsageWindow(
   provider: ServerProvider | undefined,
   now: number,
   model?: string | null,
 ) {
-  const exhausted = (provider?.usageLimits?.windows ?? []).filter(
-    (window) =>
-      (window.usedPercent ?? 0) >= 100 &&
-      (!window.resetsAt ||
-        !Number.isFinite(Date.parse(window.resetsAt)) ||
-        Date.parse(window.resetsAt) > now),
-  );
-  if (model === undefined) return exhausted[0];
-  switch (provider?.driver) {
-    case "claudeAgent": {
-      // A `seven_day_<model>` window limits only the model it names, such as Fable.
-      const words = model?.toLowerCase().split(/[^a-z0-9]+/) ?? [];
-      return exhausted.find((window) => {
-        const scope = window.id.match(/^seven_day_(.+)$/)?.[1];
-        return scope === undefined || scope.split("_").every((word) => words.includes(word));
-      });
-    }
-    case "cursor": {
-      const api = exhausted.find((window) => window.id === "apiPercentUsed");
-      const auto = exhausted.find((window) => window.id === "autoPercentUsed");
-      return model === null || /^(auto|default|grok|composer)/.test(model) ? auto && api : api;
-    }
-    case "antigravity": {
-      const family = model?.match(/^(gemini|claude|gpt)-/)?.[1];
-      return exhausted.find((window) => {
-        const pool = window.id.match(/^(gemini|claude|gpt|3p)-/)?.[1];
-        return (
-          pool === undefined ||
-          (model !== null &&
-            (family === undefined ||
-              pool === family ||
-              (pool === "3p" && (family === "claude" || family === "gpt"))))
-        );
-      });
-    }
-    case "opencode":
-      return exhausted.find(
-        (window) => !window.id.startsWith("go_") || (model?.startsWith("opencode-go/") ?? false),
-      );
-    default:
-      return exhausted[0];
+  const used = usedUpWindows(provider, now);
+  if (provider === undefined || used === null) return undefined;
+  const { windows, end } = used;
+  if (model === undefined) return latestEnding(windows, end);
+  if (provider.driver === "cursor") {
+    const api = windows.find((window) => window.id === "apiPercentUsed");
+    if (model !== null && !/^(auto|default|grok|composer)/.test(model)) return api;
+    // Auto and Cursor's own models fall back to the other pool, so the first one back frees them.
+    const auto = windows.find((window) => window.id === "autoPercentUsed");
+    return auto && api && (end(auto) < end(api) ? auto : api);
   }
+  return latestEnding(
+    windows.filter((window) => windowLimitsModel(provider.driver, window.id, model)),
+    end,
+  );
+}
+
+/**
+ * Like `exhaustedUsageWindow`, counting only windows that leave the account's other models
+ * usable, such as Claude's weekly Opus cap. Cursor's two pools back each other up, so neither counts.
+ */
+export function exhaustedModelUsageWindow(
+  provider: ServerProvider | undefined,
+  now: number,
+  model: string,
+) {
+  const used = usedUpWindows(provider, now);
+  if (provider === undefined || used === null) return undefined;
+  return latestEnding(
+    used.windows.filter(
+      (window) =>
+        windowLimitsModel(provider.driver, window.id, model) &&
+        !windowLimitsModel(provider.driver, window.id, null),
+    ),
+    used.end,
+  );
 }
 
 export function resolveNewThreadModelSelection(input: {
@@ -1146,19 +1232,19 @@ export type AccountFailoverStatus =
     }
   | { readonly kind: "exhausted"; readonly until: string | null };
 
-/** When a limited account has room again: its last exhausted window's reset, null when unknown. */
-function limitedUntil(provider: ServerProvider, now: number): string | null | undefined {
+/** When a limited account has room again: its last exhausted window's end, as routing counts it. */
+function limitedUntil(provider: ServerProvider, now: number): string | undefined {
+  const limits = provider.usageLimits;
   let latest: number | undefined;
-  for (const window of provider.usageLimits?.windows ?? []) {
+  for (const window of limits?.windows ?? []) {
     // A model-scoped window, such as Claude's weekly cap on one model, leaves the account usable.
     if (
       window.usedPercent < 100 ||
-      (provider.driver === "claudeAgent" && /^seven_day_./.test(window.id))
+      (provider.driver === "claudeAgent" && claudeUsageWindowScope(window.id) !== undefined)
     )
       continue;
-    const reset = resetMillis(window);
-    if (reset === null) return null;
-    if (reset > now) latest = Math.max(latest ?? reset, reset);
+    const end = usageWindowLimitEnd(limits!, window);
+    if (end > now) latest = Math.max(latest ?? end, end);
   }
   return latest === undefined ? undefined : DateTime.formatIso(DateTime.makeUnsafe(latest));
 }

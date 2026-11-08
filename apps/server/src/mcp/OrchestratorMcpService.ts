@@ -76,12 +76,12 @@ import {
 } from "@t3tools/contracts";
 import {
   getProviderOptionCurrentValue,
+  resolveSelectableModel,
   withAutoAccount,
   withLegacyUltracodeEffort,
 } from "@t3tools/shared/model";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveScheduledTaskDefaultModelSelection } from "@t3tools/shared/projectSettings";
-import { exhaustedUsageWindow, isSubscriptionAccount } from "@t3tools/shared/usageLimits";
 import { autoModePick } from "@t3tools/shared/serverSettings";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
@@ -427,15 +427,13 @@ export const requireAccountWithRoom = Effect.fn("OrchestratorMcpService.requireA
     input: {
       readonly selection: ModelSelection;
       readonly projectId: ProjectId;
-      readonly explicitAccount: boolean;
     },
     routing: Option.Option<AccountRouting.AccountRouting["Service"]>,
   ) {
     if (Option.isNone(routing)) return;
     const limit = yield* routing.value.launchLimit(input);
     if (limit === null) return;
-    const until =
-      limit.limitedUntil === null ? " (reset time unknown)" : ` until ${limit.limitedUntil}`;
+    const until = ` until ${limit.limitedUntil}`;
     return yield* failure(
       "provider_unavailable",
       input.selection.autoAccount === true
@@ -1548,24 +1546,35 @@ const make = Effect.gen(function* () {
         driverModel !== undefined &&
         Option.isSome(accountRouting)
       ) {
-        const withRoom = yield* accountRouting.value.accountsWithRoom({
-          driver: requestedDriver,
-          projectId: input.parent.thread.projectId,
-          model: driverModel,
-        });
-        for (const candidate of withRoom) {
-          if (!healthyCandidates.some((provider) => provider.instanceId === candidate.instanceId))
-            continue;
-          if (
-            !(yield* threadManagement.isProviderInstanceEnabledForProject({
-              projectId: input.parent.thread.projectId,
-              instanceId: candidate.instanceId,
-            }))
-          )
-            continue;
-          instanceId = candidate.instanceId;
-          driverModel = candidate.model;
-          break;
+        const parentCanRun =
+          instanceId === inherited.instanceId &&
+          inheritedCandidate !== undefined &&
+          resolveSelectableModel(requestedDriver, driverModel, inheritedCandidate.models) !==
+            null &&
+          (yield* accountRouting.value.launchLimit({
+            projectId: input.parent.thread.projectId,
+            selection: { instanceId, model: driverModel },
+          })) === null;
+        if (!parentCanRun) {
+          const withRoom = yield* accountRouting.value.accountsWithRoom({
+            driver: requestedDriver,
+            projectId: input.parent.thread.projectId,
+            model: driverModel,
+          });
+          for (const candidate of withRoom) {
+            if (!healthyCandidates.some((provider) => provider.instanceId === candidate.instanceId))
+              continue;
+            if (
+              !(yield* threadManagement.isProviderInstanceEnabledForProject({
+                projectId: input.parent.thread.projectId,
+                instanceId: candidate.instanceId,
+              }))
+            )
+              continue;
+            instanceId = candidate.instanceId;
+            driverModel = candidate.model;
+            break;
+          }
         }
       }
     }
@@ -2212,6 +2221,13 @@ const make = Effect.gen(function* () {
 
   return OrchestratorMcpService.of({
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
+      if (input.modelSelection !== undefined && input.followsDefaultModel === true) {
+        return yield* failure(
+          "invalid_request",
+          "modelSelection cannot be combined with followsDefaultModel:true. Choose an own model or follow the default.",
+        );
+      }
+
       const { parent, limits } = yield* loadCaller(scope);
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
       yield* assertLiveCallerForOtherProject(scope, parent, projectId);
@@ -2341,6 +2357,13 @@ const make = Effect.gen(function* () {
     ),
     updateScheduledTask: Effect.fn("OrchestratorMcpService.updateScheduledTask")(
       function* (scope, input) {
+        if (input.modelSelection !== undefined && input.followsDefaultModel === true) {
+          return yield* failure(
+            "invalid_request",
+            "modelSelection cannot be combined with followsDefaultModel:true. Choose an own model or follow the default.",
+          );
+        }
+
         const { parent, limits } = yield* loadCaller(scope);
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
@@ -2611,10 +2634,12 @@ const make = Effect.gen(function* () {
       const providers = yield* loadProviders;
       const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
       const settings = yield* readSettings;
-      const limitedAccounts = Option.isNone(accountRouting)
-        ? new Map<ProviderInstanceId, string>()
-        : yield* accountRouting.value.limitedAccounts;
-      const nowMs = yield* Clock.currentTimeMillis;
+      const availability = Option.isNone(accountRouting)
+        ? {
+            accounts: new Map<ProviderInstanceId, string>(),
+            models: new Map<ProviderInstanceId, ReadonlySet<string>>(),
+          }
+        : yield* accountRouting.value.limits;
       const inherited = parent?.thread.modelSelection;
       const searchTerms = input.search?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
       return {
@@ -2649,10 +2674,7 @@ const make = Effect.gen(function* () {
           ) {
             constraints.push("Disabled for this project.");
           }
-          const limitedUntil = limitedAccounts.get(provider.instanceId);
-          if (limitedUntil === null) {
-            constraints.push("Usage limit reached; the reset time is unknown.");
-          }
+          const limitedUntil = availability.accounts.get(provider.instanceId);
           const { listed, omitted } = listCapabilityModels({
             provider,
             preferences: settings.providerModelPreferences?.[provider.instanceId],
@@ -2674,8 +2696,7 @@ const make = Effect.gen(function* () {
               return {
                 id: model.slug,
                 ...(limitedUntil === undefined &&
-                isSubscriptionAccount(provider) &&
-                exhaustedUsageWindow(provider, nowMs, model.slug) !== undefined
+                availability.models.get(provider.instanceId)?.has(model.slug)
                   ? { usageLimited: true as const }
                   : {}),
                 ...(model.name.toLowerCase() === model.slug.toLowerCase()
@@ -2796,7 +2817,6 @@ const make = Effect.gen(function* () {
           {
             selection: target.modelSelection,
             projectId: parent.thread.projectId,
-            explicitAccount: input.target?.providerInstanceId !== undefined,
           },
           accountRouting,
         );
@@ -3270,7 +3290,6 @@ const make = Effect.gen(function* () {
                   {
                     selection: target.modelSelection,
                     projectId: parent.thread.projectId,
-                    explicitAccount: request.target?.providerInstanceId !== undefined,
                   },
                   accountRouting,
                 ).pipe(
@@ -3420,12 +3439,12 @@ const make = Effect.gen(function* () {
             failure("orchestration_error", `Unable to list threads: ${errorMessage(error)}`),
           ),
         );
-      const nowMs = yield* Clock.currentTimeMillis;
       // An empty list is no filter: clients that fill every optional field send `[]`.
       const statuses =
         input.statuses === undefined || input.statuses.length === 0
           ? null
           : new Set(input.statuses);
+      const nowMs = yield* Clock.currentTimeMillis;
       const titleContains = input.titleContains?.toLocaleLowerCase();
       const filtered = projectThreads
         .filter(

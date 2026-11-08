@@ -45,7 +45,11 @@ import {
   PullRequestState,
   ThreadId,
 } from "@t3tools/contracts";
-import { autoCoordinatorInstructions } from "@t3tools/provider-core/server/orchestrationInstructions";
+import {
+  autoCoordinatorInstructions,
+  AUTO_MODE_CONTEXT_KEY,
+  autoModePromptBlock,
+} from "@t3tools/provider-core/server/orchestrationInstructions";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { buildCodexAdditionalContext } from "../../apps/server/src/provider/CodexDeveloperInstructions.ts";
@@ -374,6 +378,9 @@ const addUsage = (total: Usage, usage: typeof ApiResponse.Type.usage) => {
 };
 
 const text = (value: string): Block => ({ type: "text", text: value });
+const developerText = (value: string): Block => ({ ...text(value), developer: true });
+const autoModeDeveloperMessage = (brief: string) =>
+  `<${AUTO_MODE_CONTEXT_KEY}>${brief}</${AUTO_MODE_CONTEXT_KEY}>`;
 const reminder = (value: string) => text(`<system-reminder>\n${value}\n</system-reminder>`);
 const valueText = (value: unknown) =>
   typeof value === "string" ? value : (JSON.stringify(value) ?? "");
@@ -739,7 +746,7 @@ const codexCall = (name: string, input: unknown) => {
   }
   return `text(await tools.${name.replace("mcp__t3-code__", "mcp__t3_code__")}(${JSON.stringify(input)}));`;
 };
-const codexMessages = (messages: ReadonlyArray<ApiMessage>): Array<Block> =>
+export const codexMessages = (messages: ReadonlyArray<ApiMessage>): Array<Block> =>
   messages.flatMap((message) =>
     message.content.map((block): Block =>
       block.type === "tool_use"
@@ -757,7 +764,7 @@ const codexMessages = (messages: ReadonlyArray<ApiMessage>): Array<Block> =>
             }
           : {
               type: "message",
-              role: message.role,
+              role: block.developer === true ? "developer" : message.role,
               content: [
                 {
                   type: message.role === "user" ? "input_text" : "output_text",
@@ -1008,21 +1015,34 @@ export const buildMessages = (sample: Sample) => {
           : { otherPrimary: { ...otherPrimary, providerInstanceId: reviewer.providerInstanceId } }),
         models: (
           PROVIDERS.find((provider) => provider.providerInstanceId === driver)?.models ?? []
-        ).map((model) => ({ slug: model.id, name: model.id })),
+        ).map((model) => ({
+          slug: model.id,
+          name: model.id,
+          aliases: driver === "claudeAgent" ? [model.id.split("-")[1]!] : [],
+          capabilities: {
+            optionDescriptors: model.options.map((option) => ({
+              id: option.id,
+              label: "Effort",
+              type: "select" as const,
+              options: option.values.map((id) => ({ id, label: id })),
+            })),
+          },
+        })),
       })
     : null;
-  const promptContext = [
+  const sideChatContext =
     sideChat === undefined
       ? ""
       : makeSideChatContext({
           parentThreadId: ThreadId.make(sideChat.parentThreadId),
           digest: sideChat.digest,
-        }),
-    autoBrief ?? "",
-  ]
-    .filter((part) => part !== "")
-    .join("\n\n");
-  const prompt = withInlineContext(promptContext, userText);
+        });
+  // The Claude adapter prepends the tagged brief to the turn text; the Codex adapter sends it as a developer message.
+  const claudeBrief =
+    autoBrief !== null && !base.codex ? `${autoModePromptBlock(autoBrief)}\n\n` : "";
+  const prompt = `${claudeBrief}${withInlineContext(sideChatContext, userText)}`;
+  if (autoBrief !== null && base.codex)
+    push("user", developerText(autoModeDeveloperMessage(autoBrief)));
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
   push("user", text(role === "delegated-child" ? childPrompt() : prompt));
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.

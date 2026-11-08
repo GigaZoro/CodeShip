@@ -246,6 +246,70 @@ describe("new thread model fallback", () => {
     ).toBeDefined();
   });
   it.each([
+    ["within its hold from the check", "2026-09-03T11:00:00.000Z", undefined, true],
+    ["past its hold from the check", "2026-09-03T06:00:00.000Z", undefined, false],
+    [
+      "past its hold from when it was first seen used up",
+      "2026-09-03T11:30:00.000Z",
+      "2026-09-03T06:00:00.000Z",
+      false,
+    ],
+  ] as const)(
+    "a used-up window without a reset limits %s",
+    (_name, checkedAt, exhaustedSince, held) => {
+      const noReset = provider({
+        usageLimits: {
+          checkedAt,
+          windows: [
+            {
+              ...window,
+              usedPercent: 100,
+              resetsAt: undefined,
+              ...(exhaustedSince ? { exhaustedSince } : {}),
+            },
+          ],
+        },
+      });
+      expect(exhaustedUsageWindow(noReset, now, selection.model) !== undefined).toBe(held);
+      expect(
+        resolveNewThreadModelSelection({ ...defaults, providers: [noReset, available] }).selection,
+      ).toEqual(held ? fallback : selection);
+    },
+  );
+  it.each([
+    ["both have resets", "2026-09-03T14:00:00.000Z", "2026-09-03T11:00:00.000Z"],
+    ["the session window has none", undefined, "2026-09-03T11:00:00.000Z"],
+    ["the session window has none and its hold is over", undefined, "2026-09-03T06:00:00.000Z"],
+  ] as const)(
+    "holds a model until its last used-up window resets when %s",
+    (_name, sessionResetsAt, checkedAt) => {
+      const weeklyResetsAt = "2026-09-06T12:00:00.000Z";
+      expect(
+        exhaustedUsageWindow(
+          provider({
+            driver: ProviderDriverKind.make("claudeAgent"),
+            usageLimits: {
+              checkedAt,
+              windows: [
+                { ...window, usedPercent: 100, resetsAt: sessionResetsAt },
+                {
+                  ...window,
+                  id: "seven_day",
+                  kind: "weekly",
+                  usedPercent: 100,
+                  windowDurationMins: 10_080,
+                  resetsAt: weeklyResetsAt,
+                },
+              ],
+            },
+          }),
+          now,
+          "claude-opus-5-5",
+        )?.resetsAt,
+      ).toBe(weeklyResetsAt);
+    },
+  );
+  it.each([
     ["cursor", ["autoPercentUsed"], "claude-opus-5-5", false],
     ["cursor", ["autoPercentUsed"], "composer-2.5", false],
     ["cursor", ["autoPercentUsed", "apiPercentUsed"], "composer-2.5", true],
@@ -1876,10 +1940,21 @@ describe("accountFailoverStatus", () => {
       { kind: "exhausted", until: "2026-09-03T14:00:00.000Z" },
     ],
     [
-      "an unknown reset is reported as unknown",
+      "an unknown reset limits until the hold ends",
       [account("a", { usageLimits: limitedUntil(undefined) }), account("b")],
       {},
-      { kind: "switched", active: "b", limited: ["a"], until: null },
+      { kind: "switched", active: "b", limited: ["a"], until: "2026-09-03T16:00:00.000Z" },
+    ],
+    [
+      "an unknown reset past its hold no longer limits",
+      [
+        account("a", {
+          usageLimits: { ...limitedUntil(undefined), checkedAt: "2026-09-03T06:00:00.000Z" },
+        }),
+        account("b"),
+      ],
+      {},
+      { kind: "ready", active: "a" },
     ],
   ] as const)("%s", (_name, providers, settings, expected) => {
     expect(ids(status(providers, settings))).toEqual(expected);

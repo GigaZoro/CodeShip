@@ -344,6 +344,7 @@ function makeLocalCommandHarness(input: {
   readonly nativeTurn?: boolean;
   readonly autoAccount?: boolean;
   readonly otherAutoProvider?: boolean;
+  readonly limitsReadFailure?: boolean;
   /** The thread is a delegated task's child. */
   readonly delegatedChild?: boolean;
 }) {
@@ -1043,7 +1044,14 @@ function makeLocalCommandHarness(input: {
             } as never),
         }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
-          getUsageLimitedProviderInstances: () => Effect.succeed(new Map()),
+          getUsageLimitedProviderInstances: () =>
+            input.limitsReadFailure
+              ? Effect.fail(
+                  new ProjectionStore.ProjectionStoreSetupError({
+                    cause: new Error("database unavailable"),
+                  }),
+                )
+              : Effect.succeed(new Map()),
           getThreadRecords,
           getTurnStartContext,
           getRuntimeRecoveryProjection: () =>
@@ -1387,6 +1395,12 @@ effectIt.effect.each([
   { autoAccount: true, text: "Add a retry to the upload client", briefed: true },
   {
     autoAccount: true,
+    text: "Continue despite advisory read failure",
+    limitsReadFailure: true,
+    briefed: true,
+  },
+  {
+    autoAccount: true,
     otherAutoProvider: true,
     text: "Add a retry to the upload client",
     briefed: true,
@@ -1406,15 +1420,16 @@ effectIt.effect.each([
 
       yield* harness.start;
 
-      const sent = harness.startTurn.mock.calls[0]?.[0].message.text ?? "";
-      expect(sent.includes("<t3_auto_mode>")).toBe(briefed);
+      const sent = harness.startTurn.mock.calls[0]?.[0].autoModeInstructions ?? "";
+      expect(sent.includes("Auto: coordinate")).toBe(briefed);
+      expect(sent).not.toContain("<t3_auto_mode>");
       if (briefed && "otherAutoProvider" in turn) {
-        expect(sent).toContain("gpt-review-custom (`gpt-review-custom`), reasoningEffort ultra");
+        expect(sent).toContain("gpt-review-custom, reasoningEffort ultra");
         expect(sent).toContain('"model":"claude-opus-5-5","options":{"effort":"max"}');
-        expect(sent).toContain("Claude models, with `delegate_task`");
-        expect(sent).toContain('{"providerInstanceId":"claude_work","model":"claude-opus-5-5"}');
+        expect(sent).toContain("Claude via `delegate_task`");
+        expect(sent).toContain('{"providerInstanceId":"claude_work","model":"<slug>"');
         expect(sent).toContain(
-          "\n  - Opus (`claude-opus-5-5`): hardest design, subtle bugs, reviews; effort: high, max",
+          "\n  - Opus (`claude-opus-5-5`): hardest design, subtle bugs, reviews",
         );
         expect(sent).not.toContain("Legacy");
         expect(sent).toContain("gpt-own-model");
@@ -1422,7 +1437,7 @@ effectIt.effect.each([
       } else {
         expect(sent).not.toContain("delegate_task");
       }
-      expect(sent.endsWith(turn.text)).toBe(true);
+      expect(harness.startTurn.mock.calls[0]?.[0].message.text.endsWith(turn.text)).toBe(true);
     }),
 );
 

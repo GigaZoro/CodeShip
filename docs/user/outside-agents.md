@@ -58,13 +58,19 @@ Then choose what the agent may do:
   default, or ask to restore the default while keeping its own choice. These changes
   require a known account and an advertised model; an empty catalog cannot verify a choice.
   New threads and delegates refuse exhausted subscription allowances. Capabilities mark
-  limited accounts with `usageLimited: true` and include `limitedUntil` only when the reset
-  is known. A refusal without a reset clears when a usage check made after the refusal
-  shows room for the chosen model, or a run started after the refusal completes successfully.
-  Auto, inherited accounts, role defaults and provider-only requests skip uncleared refusals.
-  A launch that names the account can retry its unknown-reset refusal, even after failed usage checks; a known future
-  reset or an exhausted window in the current usage snapshot still blocks it. A limit on
-  one model is marked with `usageLimited: true` on that model alone. Project-disabled
+  limited accounts with `usageLimited: true` and `limitedUntil`: the provider's reset,
+  or CodeShip's hold end when no reset was reported. That hold lasts five hours from
+  the refusal, or the account's shortest reported usage window when that is shorter.
+  It expires even when usage reporting is unavailable. A newer usage check does not
+  clear it early; a completed run on that account started after the refusal does.
+  A used-up usage window with no reset holds the same way, for at most that hold from
+  when CodeShip first saw it used up.
+  Named targets, including targets supplied in Auto's brief, obey the same hold as
+  Auto and inherited targets.
+  Provider-only targets keep the parent's account and effort while it can run the
+  model, then use the saved account order. A provider-attributed limit on
+  one model family is marked with `usageLimited: true` on that family's models alone.
+  It lifts at its reset, or early after a completed run of one of them. Project-disabled
   accounts cannot run child tasks; API-key accounts remain available for explicit tasks.
 
 ## Claude Code

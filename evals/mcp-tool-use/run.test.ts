@@ -12,6 +12,7 @@ import {
   answerToolCall,
   buildBase,
   buildMessages,
+  codexMessages,
   failedEarly,
   executeCodex,
   gradeSample,
@@ -3401,24 +3402,47 @@ it("builds Auto model-choice and control cases from the current coordinator brie
         .at(-1)
         ?.content.map((part) => part.text)
         .join("\n") ?? "";
-    assert.include(prompt, "<t3_auto_mode>");
+    assert.match(prompt, /(^|\n)<t3_auto_mode>\n/);
+    assert.isBelow(prompt.indexOf("<t3_auto_mode>"), prompt.indexOf(testCase.prompt));
+    assert.notInclude(prompt, "User message:");
+    assert.include(prompt, "claude-sonnet-5-5 (`sonnet`)");
+    assert.notInclude(prompt, "claude-sonnet-5-5 (`claude-sonnet-5-5`)");
     if (testCase.setup.otherAutoProviders) {
-      assert.include(prompt, '{"providerInstanceId":"codex","model":"gpt-6-astra"}');
-      assert.include(prompt, "Otherwise split the work and give each piece");
-      assert.include(prompt, "Claude models, as a native subagent");
-      assert.include(prompt, "Codex models, with");
+      assert.include(prompt, '{"providerInstanceId":"codex","model":"<slug>"');
+      assert.include(prompt, "otherwise give each piece to the cheapest capable model");
+      assert.include(prompt, "Claude native subagents");
+      assert.include(prompt, "Codex via");
       assert.include(prompt, "\n  - GPT-6 Astra (`gpt-6-astra`)");
-      assert.include(prompt, "claude-opus-5-5 (`claude-opus-5-5`), effort max");
+      assert.include(prompt, "claude-opus-5-5, effort max");
     } else {
-      assert.include(prompt, "Otherwise run the work as a native subagent");
+      assert.include(prompt, "native subagents");
       assert.notInclude(prompt, "Otherwise split the work");
     }
   }
 });
 
+it("sends the Auto brief to Codex as a developer message, not inline", () => {
+  const testCase = NodeFS.readFileSync(new URL("./cases/auto-mode.ndjson", import.meta.url), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => decodeDeviceCase(line))[0]!;
+  const base = {
+    ...buildBase(template, { model: "claude-opus-5-5", keepUserInstructions: false }),
+    codex: {} as never,
+  };
+  const input = codexMessages(buildMessages(makeSample(testCase, base)));
+  const developer = input.filter((item) => item.role === "developer");
+  assert.lengthOf(developer, 1);
+  const brief = JSON.stringify(developer[0]);
+  assert.include(brief, "<t3_auto_mode>");
+  assert.include(brief, "Codex native subagents");
+  assert.notInclude(JSON.stringify(input.filter((item) => item.role === "user")), "t3_auto_mode");
+  assert.notInclude(JSON.stringify(input), "User message:");
+});
+
 it.each([
   { tool: "Agent", input: { model: "sonnet" }, passes: true },
-  { tool: "Agent", input: { model: "claude-haiku-5-5" }, passes: true },
+  { tool: "Agent", input: { model: "claude-haiku-5-5" }, passes: false },
   {
     tool: "delegate_task",
     input: { target: { providerInstanceId: "codex", model: "gpt-6-luna" } },

@@ -65,6 +65,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -2966,6 +2967,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
   const makeWakeHarnessWithOptions = (options?: {
     readonly onUsageLimits?: ClaudeAdapterV2.ClaudeAdapterV2Options["onUsageLimits"];
+    readonly scopedLimitNames?: ClaudeAdapterV2.ClaudeAdapterV2Options["scopedLimitNames"];
     readonly close?: (sdkMessages: Queue.Queue<SDKMessage>) => Effect.Effect<void>;
     readonly interrupt?: Effect.Effect<void, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
     readonly setPermissionMode?: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["setPermissionMode"];
@@ -3042,6 +3044,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
         settings: options?.settings ?? DEFAULT_CLAUDE_SETTINGS,
         ...(options?.onUsageLimits ? { onUsageLimits: options.onUsageLimits } : {}),
+        ...(options?.scopedLimitNames ? { scopedLimitNames: options.scopedLimitNames } : {}),
         environment: options?.environment ?? {},
         attachmentsDir,
         fileSystem,
@@ -3239,6 +3242,150 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       };
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
+
+  it.effect("sends the tagged Auto brief on every turn, including after a rollback", () =>
+    Effect.gen(function* () {
+      const brief = "Auto: coordinate as Opus.";
+      let allocations = 0;
+      const harness = yield* makeWakeHarnessWithOptions({
+        close: (sdkMessages) => Queue.shutdown(sdkMessages),
+        freshQueueOnReopen: true,
+        allocateSessionId: Effect.sync(() =>
+          allocations++ === 0 ? WAKE_NATIVE_SESSION : "fresh-native-session",
+        ),
+      });
+      const turnInput = {
+        ...makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("auto-brief-0"),
+          text: "Continue",
+          attachments: [],
+          nativeThreadHasTurns: false,
+        }),
+        autoModeInstructions: brief,
+      };
+      const lastPrompt = () =>
+        JSON.stringify(harness.offeredMessages.at(-1)?.message.content ?? null);
+      const tagged = JSON.stringify(`<t3_auto_mode>\n${brief}\n</t3_auto_mode>`).slice(1, -1);
+      yield* harness.runtime.startTurn(turnInput);
+      assert.include(lastPrompt(), tagged);
+      yield* harness.offerAndWait(makeResultFrame({ uuid: "auto-brief-result-0", result: "Done" }));
+      yield* Queue.take(harness.terminalReceipts);
+
+      yield* harness.runtime.startTurn({
+        ...turnInput,
+        attemptId: RunAttemptId.make("auto-brief-1"),
+        providerTurnOrdinal: 2,
+      });
+      assert.include(lastPrompt(), tagged);
+      yield* harness.offerAndWait(makeResultFrame({ uuid: "auto-brief-result-1", result: "Done" }));
+      yield* Queue.take(harness.terminalReceipts);
+
+      const completed = harness.events.findLast(
+        (event) => event.type === "provider_thread.updated",
+      );
+      if (completed?.type !== "provider_thread.updated") throw new Error("No thread update.");
+      const rolledBack = yield* harness.runtime.rollbackThread({
+        providerThread: completed.providerThread,
+        target: {
+          type: "thread_start",
+          checkpointId: CheckpointId.make("checkpoint-before-auto-brief"),
+          appRunOrdinal: 0,
+        },
+        providerThreadTurns: [lastProviderTurn(harness.events)],
+      });
+      yield* harness.runtime.startTurn({
+        ...turnInput,
+        attemptId: RunAttemptId.make("auto-brief-after-rollback"),
+        providerThread: rolledBack.providerThread,
+        providerTurnOrdinal: 3,
+      });
+      assert.equal(harness.processQueues.length, 2);
+      assert.include(lastPrompt(), tagged);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
+  it.effect("restores only the running turn's Auto brief when Claude compacts", () =>
+    Effect.gen(function* () {
+      const brief = "Auto: coordinate as Opus.";
+      const harness = yield* makeWakeHarness;
+      // Runs the SessionStart hooks Claude Code runs for `source`, as the CLI matches them.
+      const sessionStart = (source: "compact" | "startup", agentId?: string) =>
+        Effect.promise(() =>
+          Promise.all(
+            (harness.getOpenedOptions()?.hooks?.SessionStart ?? [])
+              .filter((matcher) => matcher.matcher === undefined || matcher.matcher === source)
+              .flatMap((matcher) =>
+                matcher.hooks.map((hook) =>
+                  hook(
+                    {
+                      hook_event_name: "SessionStart",
+                      source,
+                      ...(agentId === undefined
+                        ? {}
+                        : { agent_id: agentId, agent_type: "general-purpose" }),
+                      session_id: WAKE_NATIVE_SESSION,
+                      transcript_path: "/transcript.jsonl",
+                      cwd: "/workspace",
+                    },
+                    undefined,
+                    { signal: new AbortController().signal },
+                  ),
+                ),
+              ),
+          ),
+        );
+      const turnInput = makeClaudeTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now: yield* DateTime.now,
+        attemptId: RunAttemptId.make("auto-brief-compaction-0"),
+        text: "Continue",
+        attachments: [],
+      });
+      yield* harness.runtime.startTurn({ ...turnInput, autoModeInstructions: brief });
+      yield* harness.offerAndWait(
+        claudeSdkFrame({
+          type: "system",
+          subtype: "compact_boundary",
+          compact_metadata: { trigger: "auto", pre_tokens: 1_075, post_tokens: 400 },
+          uuid: "00000000-0000-4000-8000-0000000006c0",
+          session_id: WAKE_NATIVE_SESSION,
+        }),
+      );
+      assert.deepEqual(yield* sessionStart("compact"), [
+        {
+          hookSpecificOutput: {
+            hookEventName: "SessionStart",
+            additionalContext: `<t3_auto_mode>\n${brief}\n</t3_auto_mode>`,
+          },
+        },
+      ]);
+      assert.deepEqual(yield* sessionStart("startup"), []);
+      assert.deepEqual(yield* sessionStart("compact", "agent-1"), [{}]);
+      yield* harness.offerAndWait(
+        makeResultFrame({ uuid: "auto-brief-compaction-result-0", result: "Done" }),
+      );
+      yield* Queue.take(harness.terminalReceipts);
+
+      yield* harness.runtime.startTurn({
+        ...turnInput,
+        attemptId: RunAttemptId.make("auto-brief-compaction-1"),
+        providerTurnOrdinal: 2,
+      });
+      assert.deepEqual(yield* sessionStart("compact"), [{}]);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
 
   it.effect.each(["release-after", "cancel-after", "release-before", "resume-pending"] as const)(
     "keeps attachment reservations across compaction: %s boundary",
@@ -6691,6 +6838,43 @@ describe("ClaudeAdapterV2 background wake turns", () => {
   );
 
   it.effect.each([
+    {
+      name: "model scoped parent limit",
+      parentErrors: ["rate_limit"],
+      expectedLimit: true,
+      rateLimitType: "seven_day_sonnet",
+      modelScope: "sonnet",
+    },
+    {
+      name: "parent limit on the window of the model the plan includes",
+      parentErrors: ["rate_limit"],
+      expectedLimit: true,
+      rateLimitType: "seven_day_overage_included",
+      overageIncluded: "Opus",
+      modelScope: "opus",
+    },
+    {
+      name: "model scoped parent limit beside an account-wide one",
+      parentErrors: ["rate_limit"],
+      expectedLimit: true,
+      rateLimitType: "seven_day_opus",
+      rejectedFirst: ["five_hour"],
+    },
+    {
+      name: "model scoped limit then an unattributed parent limit",
+      parentErrors: ["rate_limit"],
+      expectedLimit: true,
+      rejectedFirst: ["seven_day_opus"],
+      unattributed: true,
+      modelScope: "opus",
+    },
+    {
+      name: "model scoped and account-wide limits then an unattributed parent limit",
+      parentErrors: ["rate_limit"],
+      expectedLimit: true,
+      rejectedFirst: ["seven_day_opus", "five_hour"],
+      unattributed: true,
+    },
     { name: "parent limit", parentErrors: ["rate_limit"], expectedLimit: true },
     {
       name: "parent limit then nested response",
@@ -6703,70 +6887,100 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       parentErrors: ["rate_limit", "ok"],
       expectedLimit: false,
     },
-  ])("classifies retried terminal API failures after $name", ({ parentErrors, expectedLimit }) =>
-    Effect.gen(function* () {
-      const harness = yield* makeWakeHarness;
-      const now = yield* DateTime.now;
-      yield* harness.runtime.startTurn(
-        makeClaudeTestTurnInput({
-          threadId: harness.threadId,
-          providerThread: harness.providerThread,
-          now,
-          attemptId: RunAttemptId.make(`attempt-claude-retry-${parentErrors.join("-")}`),
-          text: "Continue.",
-          attachments: [],
-        }),
-      );
-      for (const [index, evidence] of parentErrors.entries()) {
-        yield* Queue.offer(
-          harness.sdkMessages,
-          makeAssistantErrorFrame({
-            uuid: `00000000-0000-4000-8000-00000000062${index}`,
-            error: evidence.includes("limit") ? "rate_limit" : undefined,
-            parentToolUseId: evidence.startsWith("nested") ? "nested-tool" : null,
-            ...(evidence.includes("limit")
-              ? {
-                  apiErrorParams: {
-                    rate_limit_info: {
-                      status: "rejected",
-                      rateLimitType: "five_hour",
-                      resetsAt: 1790298600,
-                    },
-                  },
-                }
-              : {}),
+  ])(
+    "classifies retried terminal API failures after $name",
+    ({ parentErrors, expectedLimit, ...row }) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions(
+          "overageIncluded" in row
+            ? {
+                scopedLimitNames: yield* Ref.make<{ readonly overageIncluded: string | undefined }>(
+                  { overageIncluded: row.overageIncluded },
+                ),
+              }
+            : undefined,
+        );
+        const now = yield* DateTime.now;
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make(`attempt-claude-retry-${parentErrors.join("-")}`),
+            text: "Continue.",
+            attachments: [],
           }),
         );
-      }
-      yield* Queue.offer(
-        harness.sdkMessages,
-        makeResultFrame({
-          uuid: "00000000-0000-4000-8000-000000000629",
-          result: "API Error",
-          isError: true,
-          terminalReason: "api_error",
-        }),
-      );
+        for (const [index, rateLimitType] of ("rejectedFirst" in row
+          ? row.rejectedFirst
+          : []
+        ).entries()) {
+          yield* Queue.offer(
+            harness.sdkMessages,
+            claudeSdkFrame({
+              type: "rate_limit_event",
+              rate_limit_info: { status: "rejected", rateLimitType, resetsAt: 1790298600 },
+              uuid: `00000000-0000-4000-8000-00000000061${index}`,
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+        }
+        for (const [index, evidence] of parentErrors.entries()) {
+          yield* Queue.offer(
+            harness.sdkMessages,
+            makeAssistantErrorFrame({
+              uuid: `00000000-0000-4000-8000-00000000062${index}`,
+              error: evidence.includes("limit") ? "rate_limit" : undefined,
+              parentToolUseId: evidence.startsWith("nested") ? "nested-tool" : null,
+              ...(evidence.includes("limit") && !("unattributed" in row)
+                ? {
+                    apiErrorParams: {
+                      rate_limit_info: {
+                        status: "rejected",
+                        rateLimitType: "rateLimitType" in row ? row.rateLimitType : "five_hour",
+                        resetsAt: 1790298600,
+                      },
+                    },
+                  }
+                : {}),
+            }),
+          );
+        }
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000629",
+            result: "API Error",
+            isError: true,
+            terminalReason: "api_error",
+          }),
+        );
 
-      const terminal = yield* Queue.take(harness.terminalReceipts);
-      assert.equal(terminal.status, "failed");
-      if (terminal.status !== "failed") return;
-      assert.equal(terminal.failure.class, expectedLimit ? "usage_limit" : "provider_error");
-      assert.equal(
-        terminal.failure.resetAt,
-        expectedLimit ? "2026-09-25T01:10:00.000Z" : undefined,
-      );
-      assert.equal(
-        terminal.failure.message,
-        expectedLimit
-          ? "Claude usage limit reached. Send the message again once the limit resets."
-          : "Claude gave up after repeated API errors.",
-      );
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        const terminal = yield* Queue.take(harness.terminalReceipts);
+        assert.equal(terminal.status, "failed");
+        if (terminal.status !== "failed") return;
+        assert.equal(terminal.failure.class, expectedLimit ? "usage_limit" : "provider_error");
+        if (expectedLimit) {
+          assert.equal(
+            terminal.failure.modelScope,
+            "modelScope" in row ? row.modelScope : undefined,
+          );
+        }
+        assert.equal(
+          terminal.failure.resetAt,
+          expectedLimit ? "2026-09-25T01:10:00.000Z" : undefined,
+        );
+        assert.equal(
+          terminal.failure.message,
+          expectedLimit
+            ? "Claude usage limit reached. Send the message again once the limit resets."
+            : "Claude gave up after repeated API errors.",
+        );
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
       ),
-    ),
   );
 
   it.effect.each([
@@ -8622,9 +8836,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
-  it.effect.each(["limit first", "retry first"] as const)(
-    "a turn Claude holds for a usage limit reads as limited until its reset (%s)",
-    (order) =>
+  it.effect.each([
+    { order: "limit first", rateLimitType: "five_hour", modelScope: undefined },
+    { order: "retry first", rateLimitType: "five_hour", modelScope: undefined },
+    { order: "retry first", rateLimitType: "seven_day_opus", modelScope: "opus" },
+  ] as const)(
+    "a turn Claude holds for a usage limit reads as limited until its reset ($order, $rateLimitType)",
+    ({ order, rateLimitType, modelScope }) =>
       Effect.scoped(
         Effect.gen(function* () {
           let acknowledgeStop = Effect.void;
@@ -8643,7 +8861,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
           const now = yield* DateTime.now;
           const attemptId = RunAttemptId.make(
-            `attempt-claude-held-limit-${order.replace(" ", "-")}`,
+            `attempt-claude-held-limit-${order.replace(" ", "-")}-${rateLimitType}`,
           );
           yield* harness.runtime.startTurn(
             makeClaudeTestTurnInput({
@@ -8658,7 +8876,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           const resetsAt = Math.floor(DateTime.toEpochMillis(now) / 1000) + 7_200;
           const limit = claudeSdkFrame({
             type: "rate_limit_event",
-            rate_limit_info: { status: "rejected", rateLimitType: "five_hour", resetsAt },
+            rate_limit_info: { status: "rejected", rateLimitType, resetsAt },
             uuid: "00000000-0000-4000-8000-000000000204",
             session_id: WAKE_NATIVE_SESSION,
           });
@@ -8702,6 +8920,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             held?.failure.resetAt,
             DateTime.formatIso(DateTime.makeUnsafe(resetsAt * 1000)),
           );
+          assert.equal(held?.failure.modelScope, modelScope);
 
           // Stopping the held turn, as moving it to another account does, keeps the limit on record.
           if (held === undefined || held.providerTurnId === null) return;

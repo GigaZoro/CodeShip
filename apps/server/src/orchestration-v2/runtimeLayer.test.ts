@@ -3,6 +3,7 @@ import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   SourceControlProviderKind,
 } from "@t3tools/contracts";
+import { completedRunLiftsScope } from "./AccountRouting.ts";
 import { limitFailoverCommand, limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -8411,30 +8412,34 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
       const candidate = (yield* projections.getLimitRecoveryCandidates(sweep)).find(
         (row) => row.id === threadId,
       )!;
+      const providers = [modelSelection.instanceId, alternateInstanceId].map(
+        (instanceId): ServerProvider => ({
+          instanceId,
+          driver,
+          enabled: true,
+          installed: true,
+          version: null,
+          status: "ready",
+          auth: { status: "authenticated" },
+          checkedAt: DateTime.formatIso(now),
+          models: [
+            { slug: modelSelection.model, name: "GPT", isCustom: false, capabilities: null },
+          ],
+          slashCommands: [],
+          skills: [],
+        }),
+      );
       const failover = limitFailoverCommand({
         thread: candidate,
         settings: {
           ...DEFAULT_SERVER_SETTINGS,
           providerInstances: { [alternateInstanceId]: { driver } },
         },
-        providers: [modelSelection.instanceId, alternateInstanceId].map(
-          (instanceId): ServerProvider => ({
-            instanceId,
-            driver,
-            enabled: true,
-            installed: true,
-            version: null,
-            status: "ready",
-            auth: { status: "authenticated" },
-            checkedAt: DateTime.formatIso(now),
-            models: [
-              { slug: modelSelection.model, name: "GPT", isCustom: false, capabilities: null },
-            ],
-            slashCommands: [],
-            skills: [],
-          }),
+        providers,
+        recordedLimits: yield* projections.getUsageLimitedProviderInstances(
+          now,
+          completedRunLiftsScope(providers),
         ),
-        recordedLimits: yield* projections.getUsageLimitedProviderInstances(now),
         nowMs: DateTime.toEpochMillis(now),
       });
       assert.isNotNull(failover);

@@ -1,4 +1,6 @@
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
+import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
 import * as AccountRouting from "./AccountRouting.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
@@ -77,7 +79,10 @@ const route = (input: {
       failoverLimitedThreads: input.switching ?? true,
     },
     recordedLimits: new Map(
-      (input.limited ?? []).map((id) => [id, { resetAt: null, refusedAt: "2026-11-03T00:00:00Z" }]),
+      (input.limited ?? []).map((id) => [
+        id,
+        [{ resetAt: null, refusedAt: "2026-11-03T11:00:00Z" }],
+      ]),
     ),
     nowMs,
   });
@@ -176,7 +181,7 @@ describe("routeAutoAccount", () => {
           },
         },
         recordedLimits: new Map(
-          [primary].map((id) => [id, { resetAt: null, refusedAt: "2026-11-03T00:00:00Z" }]),
+          [primary].map((id) => [id, [{ resetAt: null, refusedAt: "2026-11-03T11:00:00Z" }]]),
         ),
         nowMs,
       });
@@ -257,7 +262,7 @@ describe("failoverLimitedLaunch", () => {
         failoverLimitedThreads: input.switching ?? true,
       },
       recordedLimits: new Map(
-        input.limited.map((id) => [id, { resetAt: null, refusedAt: "2026-11-03T00:00:00Z" }]),
+        input.limited.map((id) => [id, [{ resetAt: null, refusedAt: "2026-11-03T11:00:00Z" }]]),
       ),
       nowMs,
     }).instanceId;
@@ -320,23 +325,37 @@ it.effect.each([
     limited: false,
     accountWide: false,
   },
+  {
+    id: "5h",
+    model: "claude-opus-5-5",
+    resetsAt: undefined,
+    limited: false,
+    accountWide: false,
+    // Five hours after the check that saw the window used up.
+    at: "2026-11-08T05:00:00Z",
+  },
 ])(
-  "launchLimit and capabilities availability respect $id for $model (reset $resetsAt)",
-  ({ id, model, resetsAt, limited, accountWide }) =>
+  "launchLimit and capabilities availability respect $id for $model (reset $resetsAt, limited $limited)",
+  ({ id, model, resetsAt, limited, accountWide, ...row }) =>
     Effect.gen(function* () {
+      // An hour after the check, so the hold must not move with the clock.
+      yield* TestClock.setTime(Date.parse("at" in row ? row.at : "2026-11-08T01:00:00Z"));
       const routing = yield* AccountRouting.AccountRouting;
-      const expected = { instanceId: primary, limitedUntil: resetsAt ?? null };
+      const expected = {
+        instanceId: primary,
+        limitedUntil: resetsAt ?? "2026-11-08T05:00:00.000Z",
+      };
       assert.deepEqual(
         yield* routing.launchLimit({
           projectId,
-          explicitAccount: true,
+
           selection: { instanceId: primary, model },
         }),
         limited ? expected : null,
       );
       assert.deepEqual(
-        [...(yield* routing.limitedAccounts)],
-        accountWide ? [[primary, resetsAt ?? null]] : [],
+        [...(yield* routing.limits).accounts],
+        accountWide ? [[primary, resetsAt ?? "2026-11-08T05:00:00.000Z"]] : [],
       );
     }).pipe(
       Effect.provide(
@@ -373,96 +392,40 @@ it.effect.each([
 );
 
 it.effect.each([
-  {
-    name: "fresh room clears an unknown reset",
-    checkedAt: "2026-11-03T12:01:00Z",
-    refusedAt: "2026-11-03T12:00:00Z",
-    limited: false,
-  },
-  {
-    name: "older room after failed probes allows explicit recovery but not Auto",
-    checkedAt: "2026-11-03T11:59:00Z",
-    refusedAt: "2026-11-03T12:00:00Z",
-    limited: true,
-  },
-  {
-    name: "equally timed room allows explicit recovery but not Auto",
-    checkedAt: "2026-11-03T12:00:00Z",
-    refusedAt: "2026-11-03T12:00:00Z",
-    limited: true,
-  },
-  {
-    name: "fresh room clears a historical refusal",
-    checkedAt: "2026-11-03T12:01:00Z",
-    refusedAt: "2025-01-01T00:00:00Z",
-    limited: false,
-  },
-  {
-    name: "absent reporting allows an explicit recovery run",
-    checkedAt: undefined,
-    refusedAt: "2026-11-03T12:00:00Z",
-    limited: true,
-  },
-  {
-    name: "unavailable reporting allows an explicit recovery run",
-    checkedAt: "2026-11-03T12:01:00Z",
-    unavailable: true,
-    refusedAt: "2026-11-03T12:00:00Z",
-    limited: true,
-  },
-  {
-    name: "fresh room cannot clear a known future reset",
-    checkedAt: "2026-11-03T12:01:00Z",
-    refusedAt: "2026-11-03T12:00:00Z",
-    resetAt: "2099-01-01T00:00:00Z",
-    limited: true,
-  },
-  {
-    name: "an expired known reset no longer blocks a launch",
-    checkedAt: "2026-11-03T12:01:00Z",
-    refusedAt: "2026-11-03T12:00:00Z",
-    resetAt: "1969-12-31T23:00:00Z",
-    limited: false,
-  },
-  {
-    name: "a fresh exhausted window still blocks recovery",
-    checkedAt: "2026-11-03T12:01:00Z",
-    refusedAt: "2026-11-03T12:00:00Z",
-    exhausted: true,
-    limited: true,
-  },
-  {
-    name: "a fresh model-only limit leaves the other model usable",
-    checkedAt: "2026-11-03T12:01:00Z",
-    refusedAt: "2026-11-03T12:00:00Z",
-    exhausted: true,
-    windowId: "seven_day_fable",
-    limited: false,
-  },
-])("$name", ({ checkedAt, refusedAt, limited, ...row }) =>
+  { name: "no reporting holds Auto and named launches", minutes: 1, limited: true },
+  { name: "no reporting recovers at five hours", minutes: 300, limited: false },
+  { name: "unavailable reporting recovers", minutes: 301, limited: false, unavailable: true },
+  { name: "fresh room does not lift the hold", minutes: 1, limited: true, durations: [10_080, 60] },
+  { name: "shortest window ends the hold", minutes: 60, limited: false, durations: [10_080, 60] },
+  { name: "a weekly window holds five hours", minutes: 299, limited: true, durations: [10_080] },
+  { name: "a weekly window ends at five hours", minutes: 300, limited: false, durations: [10_080] },
+])("$name", (row) =>
   Effect.gen(function* () {
-    const unavailable = "unavailable" in row;
-    const resetAt = "resetAt" in row ? row.resetAt! : null;
+    yield* TestClock.setTime(nowMs + row.minutes * 60_000);
     const current = provider(
       primary,
-      checkedAt === undefined
-        ? {}
-        : {
+      "durations" in row || "unavailable" in row
+        ? {
             usageLimits: {
-              checkedAt,
-              windows: [
-                {
-                  id: "windowId" in row ? row.windowId! : "5h",
-                  kind: "session",
-                  label: "Session",
-                  usedPercent: "exhausted" in row ? 100 : 10,
-                },
-              ],
-              ...(unavailable ? { unavailable: { reason: "unsupported" as const } } : {}),
+              checkedAt: "2026-11-03T12:00:30Z",
+              windows:
+                "durations" in row
+                  ? row.durations!.map((windowDurationMins) => ({
+                      id: String(windowDurationMins),
+                      kind: "session" as const,
+                      label: "Session",
+                      usedPercent: 10,
+                      windowDurationMins,
+                    }))
+                  : [],
+              ...("unavailable" in row ? { unavailable: { reason: "unsupported" as const } } : {}),
             },
-          },
+          }
+        : {},
     );
-    const recordedLimits = new Map([[primary, { resetAt, refusedAt }]]);
+    const recordedLimits = new Map([
+      [primary, [{ resetAt: null, refusedAt: "2026-11-03T12:00:00Z" }]],
+    ]);
     const routing = yield* AccountRouting.AccountRouting.pipe(
       Effect.provide(
         AccountRouting.layer.pipe(
@@ -480,31 +443,106 @@ it.effect.each([
         ),
       ),
     );
+    for (const autoAccount of [true, false]) {
+      assert.deepEqual(
+        yield* routing.launchLimit({
+          projectId,
+          selection: { instanceId: primary, model: "primary", autoAccount },
+        }),
+        row.limited
+          ? {
+              instanceId: primary,
+              limitedUntil: DateTime.formatIso(
+                DateTime.makeUnsafe(nowMs + Math.min(300, ...(row.durations ?? [])) * 60_000),
+              ),
+            }
+          : null,
+      );
+    }
     assert.equal(
       AccountRouting.modelWithRoom(current, {
         settings: settings([primary]),
         providers: [current],
         recordedLimits,
-        nowMs: 0,
+        nowMs: nowMs + row.minutes * 60_000,
         projectId,
-        model: "claude-opus-5-5",
+        model: "primary",
       }),
-      limited ? null : "claude-opus-5-5",
-    );
-    const selection = { instanceId: primary, model: "claude-opus-5-5" };
-    assert.deepEqual(
-      yield* routing.launchLimit({
-        projectId,
-        explicitAccount: false,
-        selection: { ...selection, autoAccount: true },
-      }),
-      limited ? { instanceId: primary, limitedUntil: resetAt } : null,
-    );
-    assert.deepEqual(
-      yield* routing.launchLimit({ projectId, explicitAccount: true, selection }),
-      limited && (resetAt !== null || ("exhausted" in row && !("windowId" in row)))
-        ? { instanceId: primary, limitedUntil: resetAt }
-        : null,
+      row.limited ? null : "claude-opus-5-5",
     );
   }),
 );
+
+describe("model-scoped refusals", () => {
+  const refusedAt = "2026-11-03T11:59:00Z";
+  const scopeWindow = (id: string, checkedAt: string, usedPercent: number) => ({
+    usageLimits: {
+      checkedAt,
+      windows: [{ id, kind: "weekly" as const, label: id, usedPercent }],
+    },
+  });
+  const scopedProvider = (overrides: Partial<ServerProvider> = {}) =>
+    provider(primary, {
+      models: [
+        ...provider(primary).models,
+        { slug: "claude-opus-4-8", name: "Opus 4.8", isCustom: false, capabilities: null },
+        { slug: "claude-sonnet-5-5", name: "Sonnet", isCustom: false, capabilities: null },
+      ],
+      ...overrides,
+    });
+  const roomFor = (
+    refusal: Partial<ProjectionStore.RecordedUsageLimit>,
+    overrides: Partial<ServerProvider> = {},
+  ) => {
+    const current = scopedProvider(overrides);
+    const context = {
+      settings: settings([primary]),
+      providers: [current],
+      projectId,
+      nowMs,
+      recordedLimits: new Map([
+        [primary, [{ resetAt: null, refusedAt, modelScope: "opus", ...refusal }]],
+      ]),
+    };
+    return ["primary", "claude-opus-4-8", "claude-sonnet-5-5"].map((model) =>
+      AccountRouting.modelWithRoom(current, { ...context, model }),
+    );
+  };
+  const held = [null, null, "claude-sonnet-5-5"];
+
+  it.each([
+    ["a later run of another model keeps it", "claude-sonnet-5-5", false],
+    ["a later run in its scope lifts it", "claude-opus-4-8", true],
+    ["a later run by alias lifts it", "primary", true],
+  ] as const)("%s", (_, model, lifts) => {
+    assert.equal(
+      AccountRouting.completedRunLiftsScope([scopedProvider()])(primary, "opus", model),
+      lifts,
+    );
+  });
+
+  it.each([
+    ["holds every model of its scope and no other", {}, {}, held],
+    [
+      // A partial update can refresh `checkedAt` while this bar is stale, so it proves nothing.
+      "a newer check with room in its window keeps it",
+      {},
+      scopeWindow("seven_day_opus", "2026-11-03T12:00:00Z", 40),
+      held,
+    ],
+    [
+      "an older check with room keeps it",
+      {},
+      scopeWindow("seven_day_opus", "2026-11-03T11:58:00Z", 40),
+      held,
+    ],
+    [
+      "a newer check with room in another window keeps it",
+      {},
+      scopeWindow("seven_day_sonnet", "2026-11-03T12:00:00Z", 40),
+      held,
+    ],
+  ] as const)("%s", (_, refusal, overrides, expected) => {
+    assert.deepEqual(roomFor(refusal, overrides), expected);
+  });
+});

@@ -448,11 +448,18 @@ an account stops a turn on a limit with a reset time, or Claude holds the turn
 open until that reset, the thread continues on the first other signed-in account
 of that provider, in that order, that still has usage left. A reset less than
 five minutes away is waited out instead. An account that hit a limit is skipped
-until it resets. When no reset is known, a newer usage check showing room for the
-chosen model, or a successful run started after the refusal, makes it usable again.
-Auto skips it until then. Explicitly choosing the account lets you try again when
-the refusal has no reset, even after failed usage checks. A known future reset or
-an exhausted window in the current usage snapshot still blocks the launch. If none is free, the thread waits as above, and moves to the first
+until it resets. When the provider gives no reset, CodeShip holds the account for five
+hours from the refusal, or for its shortest reported usage window when that is shorter.
+Five hours is the session window for Claude and ChatGPT subscriptions. A newer usage
+check showing room does not shorten this hold; a run on that account that started
+after the refusal and completed does. When Claude attributes the limit to one model
+family's weekly window, such as Opus, only that family is held. A completed run of a
+model in that family lifts it early; a run of another model, or a newer usage check, does
+not. Agent launches (`t3_thread_launch`,
+`delegate_task`, `create_threads`), Auto and named, respect the hold; a thread you create
+in the app is not refused. Used-up usage windows still block until the last of them
+resets. A used-up window that reports no reset blocks for at most the same hold, counted
+from when CodeShip first saw it used up. If none is free, the thread waits as above, and moves to the first
 account that gets usage back unless you snooze it or cancel its auto-resume. Each provider is one account: a provider
 signed in to an account another provider already uses is unavailable until you
 sign it in to a different account. Some providers' terms forbid using extra
@@ -481,7 +488,7 @@ On Claude and Codex, the coordinator does small requests itself. For larger requ
 it sees usable models from both providers and chooses the cheapest model that can
 do each piece well. It uses subscription accounts enabled for the project, skipping
 accounts at their usage limit, including exhausted usage windows even before a turn
-fails. A model-specific limit excludes only that model. Each model uses the first
+fails. A limit on one model family excludes only that family. Each model uses the first
 account in failover order that can run it; native subagents use the coordinator's
 own account. The short model list points the agent to the full catalog when needed.
 Reviews use each provider's Auto model and effort from Settings, preferring the

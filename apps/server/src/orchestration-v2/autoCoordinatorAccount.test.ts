@@ -122,7 +122,7 @@ describe("autoCoordinatorAccounts", () => {
           providerInstanceFailoverOrder: [first, second],
         },
         recordedLimits: new Map(
-          limited.map((id) => [id, { resetAt: null, refusedAt: "2026-11-03T00:00:00Z" }]),
+          limited.map((id) => [id, [{ resetAt: null, refusedAt: "2026-11-08T00:00:00Z" }]]),
         ),
         orchestrationCapableInstanceIds: new Set(capable),
       })[0]?.instanceId,
@@ -275,7 +275,7 @@ it.each([false, true])(
       },
       nowMs: Date.parse("2026-11-08T12:00:00Z"),
       recordedLimits: reviewerLimited
-        ? new Map([[second, { resetAt: null, refusedAt: "2026-11-08T11:00:00Z" }]])
+        ? new Map([[second, [{ resetAt: null, refusedAt: "2026-11-08T11:00:00Z" }]]])
         : new Map(),
       orchestrationCapableInstanceIds: new Set([first, second]),
       providers: [
@@ -285,6 +285,7 @@ it.each([false, true])(
         }),
         provider(ownId, {
           driver: ProviderDriverKind.make("claudeAgent"),
+          auth: { status: "authenticated", type: "apiKey" },
           models: [model(primary.model), model("claude-sonnet-5-5"), model("legacy", true)],
           usageLimits: {
             checkedAt: "2026-11-08T11:00:00Z",
@@ -316,5 +317,121 @@ it.each([false, true])(
             [second, ["gpt-6-astra", "gpt-review"]],
           ],
     );
+  },
+);
+
+it.each([
+  {
+    name: "a model-scoped refusal drops its models",
+    modelScope: "opus",
+    expected: ["claude-sonnet-5-5"],
+  },
+  {
+    name: "an account-wide refusal keeps them",
+    modelScope: undefined,
+    expected: ["claude-opus-5-5", "claude-sonnet-5-5"],
+  },
+  {
+    name: "a used-up account-wide window keeps them",
+    windows: ["five_hour"],
+    expected: ["claude-opus-5-5", "claude-sonnet-5-5"],
+  },
+  {
+    name: "a used-up model window beside an account-wide one drops only its models",
+    windows: ["five_hour", "seven_day_opus"],
+    expected: ["claude-sonnet-5-5"],
+  },
+])("on the coordinator's own account, $name", ({ expected, ...row }) => {
+  const ownId = ProviderInstanceId.make("claude_own");
+  const result = autoCoordinatorBriefInput({
+    driver: ProviderDriverKind.make("claudeAgent"),
+    selection: { instanceId: ownId, model: "claude-sonnet-5-5" },
+    projectId: ProjectId.make("project:auto"),
+    settings: {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: { [ownId]: { driver: ProviderDriverKind.make("claudeAgent") } },
+    },
+    nowMs: Date.parse("2026-11-08T12:00:00Z"),
+    recordedLimits: new Map(
+      "windows" in row
+        ? []
+        : [
+            [
+              ownId,
+              [
+                {
+                  resetAt: null,
+                  refusedAt: "2026-11-08T11:00:00Z",
+                  ...(row.modelScope === undefined ? {} : { modelScope: row.modelScope }),
+                },
+              ],
+            ],
+          ],
+    ),
+    orchestrationCapableInstanceIds: new Set(),
+    providers: [
+      provider(ownId, {
+        driver: ProviderDriverKind.make("claudeAgent"),
+        models: ["claude-opus-5-5", "claude-sonnet-5-5"].map((slug) => ({
+          slug,
+          name: slug,
+          isCustom: false,
+          capabilities: null,
+        })),
+        ...("windows" in row
+          ? {
+              usageLimits: {
+                checkedAt: "2026-11-08T11:00:00Z",
+                windows: row.windows.map((id) => ({
+                  id,
+                  kind: "weekly" as const,
+                  label: id,
+                  usedPercent: 100,
+                  resetsAt: "2026-11-10T00:00:00.000Z",
+                })),
+              },
+            }
+          : {}),
+      }),
+    ],
+  });
+  expect(result.models.map((model) => model.slug)).toEqual(expected);
+});
+
+it.each([
+  { name: "within its hold drops the model", checkedAt: "2026-11-08T10:00:00Z", listed: false },
+  { name: "past its hold lists the model again", checkedAt: "2026-11-08T06:00:00Z", listed: true },
+])(
+  "an own-account window used up with no reset, checked $checkedAt, $name",
+  ({ checkedAt, listed }) => {
+    const ownId = ProviderInstanceId.make("claude_own");
+    const result = autoCoordinatorBriefInput({
+      driver: ProviderDriverKind.make("claudeAgent"),
+      selection: { instanceId: ownId, model: "claude-sonnet-5-5" },
+      projectId: ProjectId.make("project:auto"),
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerInstances: { [ownId]: { driver: ProviderDriverKind.make("claudeAgent") } },
+      },
+      nowMs: Date.parse("2026-11-08T12:00:00Z"),
+      recordedLimits: new Map(),
+      orchestrationCapableInstanceIds: new Set(),
+      providers: [
+        provider(ownId, {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          models: ["claude-opus-5-5", "claude-sonnet-5-5"].map((slug) => ({
+            slug,
+            name: slug,
+            isCustom: false,
+            capabilities: null,
+          })),
+          usageLimits: {
+            checkedAt,
+            windows: [{ id: "seven_day_opus", kind: "weekly", label: "Opus", usedPercent: 100 }],
+          },
+        }),
+      ],
+    });
+    expect(result.models.some((model) => model.slug === "claude-opus-5-5")).toBe(listed);
   },
 );

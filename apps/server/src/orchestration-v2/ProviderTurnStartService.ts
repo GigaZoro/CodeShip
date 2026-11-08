@@ -1,4 +1,5 @@
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import { completedRunLiftsScope } from "./AccountRouting.ts";
 import { autoCoordinatorBriefInput } from "./autoCoordinatorAccount.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -930,7 +931,7 @@ export const layer: Layer.Layer<
         restartCancelledWork.length === 0
           ? ""
           : restartCancelledBackgroundWorkNote(restartCancelledWork);
-      // Rides on every top-level Auto prompt, so a change to Auto applies to the next message.
+      // Every top-level Auto turn carries the brief; adapters also restore it after native compaction.
       const autoBriefed =
         run.modelSelection.autoAccount === true &&
         !goalCommand &&
@@ -1649,13 +1650,22 @@ export const layer: Layer.Layer<
           let autoBrief: string | null = null;
           if (autoBriefed && !compact) {
             const now = yield* DateTime.now;
+            const providers = Option.isNone(providerRegistry)
+              ? []
+              : yield* providerRegistry.value.getProviders;
             autoBrief = autoCoordinatorInstructions(
               autoCoordinatorBriefInput({
-                providers: Option.isNone(providerRegistry)
-                  ? []
-                  : yield* providerRegistry.value.getProviders,
+                providers,
                 settings: yield* serverSettings.getSettings,
-                recordedLimits: yield* projectionStore.getUsageLimitedProviderInstances(now),
+                recordedLimits: yield* projectionStore
+                  .getUsageLimitedProviderInstances(now, completedRunLiftsScope(providers))
+                  .pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.logWarning("orchestration-v2.auto-brief.limits-unavailable", {
+                        cause,
+                      }).pipe(Effect.as(new Map())),
+                    ),
+                  ),
                 projectId: projection.thread.projectId,
                 orchestrationCapableInstanceIds: new Set(
                   Option.isNone(providerAdapters) ? [] : yield* providerAdapters.value.list(),
@@ -1666,12 +1676,13 @@ export const layer: Layer.Layer<
               }),
             );
           }
-          const context = [delivery.context, sideChatContext, restartNote, autoBrief ?? ""]
+          const context = [delivery.context, sideChatContext, restartNote]
             .filter((part) => part !== "")
             .join("\n\n");
           const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
           yield* start({
             ...(noteContinuation ? promptedInput : turnInput),
+            ...(autoBrief === null ? {} : { autoModeInstructions: autoBrief }),
             message: {
               ...turnInput.message,
               text: goalCommand ? userText : withInlineContext(context, userText),

@@ -51,6 +51,15 @@ function scopedWindowId(displayName: string): string {
   return `seven_day_${displayName.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`;
 }
 
+/** The usage window a streamed rate-limit type refers to, under the id probes give it. */
+export function claudeRateLimitWindowId(
+  type: string,
+  names: ClaudeScopedLimitNames,
+): string | undefined {
+  if (type !== OVERAGE_INCLUDED_EVENT_TYPE) return type;
+  return names.overageIncluded === undefined ? undefined : scopedWindowId(names.overageIncluded);
+}
+
 function scopedWindow(
   displayName: string,
   usedPercent: number,

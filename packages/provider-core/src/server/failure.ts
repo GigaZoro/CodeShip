@@ -269,6 +269,7 @@ export function makeProviderFailure(input: {
   readonly class?: OrchestrationV2ProviderFailureClass;
   readonly retryable?: boolean | null;
   readonly resetAt?: string | null;
+  readonly modelScope?: string | undefined;
 }): OrchestrationV2ProviderFailure {
   const curated = curatedCauseMessages(input.cause);
   if (curated.failure !== undefined)
@@ -285,6 +286,7 @@ export function makeProviderFailure(input: {
     message: message || DEFAULT_PROVIDER_FAILURE_MESSAGE,
     code,
     retryable: input.retryable ?? null,
+    ...(input.modelScope === undefined ? {} : { modelScope: input.modelScope }),
     ...(input.class === "usage_limit" &&
     input.resetAt != null &&
     Number.isFinite(Date.parse(input.resetAt))

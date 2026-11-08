@@ -71,6 +71,7 @@ import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { applyClaudePromptEffortPrefix } from "@t3tools/shared/model";
+import { CLAUDE_MODEL_FAMILIES, claudeUsageWindowScope } from "@t3tools/shared/usageLimits";
 import {
   CLAUDE_RESUME_COMPACTION_COMPACT_ANSWER,
   CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
@@ -185,10 +186,12 @@ import {
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import {
   claudeRateLimitEventToUpdate,
+  claudeRateLimitWindowId,
   type ClaudeScopedLimitNames,
 } from "../../provider/claudeUsageLimits.ts";
 import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
 import {
+  autoModePromptBlock,
   T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
 } from "@t3tools/provider-core/server/orchestrationInstructions";
@@ -1541,6 +1544,8 @@ export function makeClaudeQueryOptions(input: {
   readonly disallowedTools?: ReadonlyArray<string>;
   readonly permissionMode?: PermissionMode;
   readonly canUseTool?: CanUseTool;
+  /** SessionStart hook for a compaction, which can return context the summary must keep. */
+  readonly afterCompaction?: HookCallback;
   readonly onUserDialog?: ClaudeQueryOptions["onUserDialog"];
   readonly onElicitation?: ClaudeQueryOptions["onElicitation"];
   readonly supportedDialogKinds?: ClaudeQueryOptions["supportedDialogKinds"];
@@ -1604,6 +1609,12 @@ export function makeClaudeQueryOptions(input: {
           env: { ...compactQuerySettings?.env, ENABLE_TOOL_SEARCH: input.toolSearchOverride },
         } as ClaudeSdkSettings);
   const deviceInstructions = input.mcpServers !== undefined && input.deviceToolsAvailable === true;
+  const hooks: NonNullable<ClaudeQueryOptions["hooks"]> = {
+    ...(deviceInstructions ? { SubagentStart: [{ hooks: [subagentDeviceInstructions] }] } : {}),
+    ...(input.afterCompaction === undefined
+      ? {}
+      : { SessionStart: [{ matcher: "compact", hooks: [input.afterCompaction] }] }),
+  };
   const options: ClaudeAgentSdkQueryOptions = {
     model: compiledSelection.apiModelId,
     tools: claudeAgentSdkQueryToolsForSdk(selectedTools),
@@ -1665,9 +1676,7 @@ export function makeClaudeQueryOptions(input: {
         ...launchAppendSystemPrompt,
       ].join("\n\n"),
     },
-    ...(deviceInstructions
-      ? { hooks: { SubagentStart: [{ hooks: [subagentDeviceInstructions] }] } }
-      : {}),
+    ...(Object.keys(hooks).length === 0 ? {} : { hooks }),
     ...(Object.keys(extraArgs).length === 0 ? {} : { extraArgs }),
   };
   const additionalDirectories = [
@@ -4004,6 +4013,8 @@ function providerFailureFromApiRetry(
   });
 }
 
+const UNATTRIBUTED_RATE_LIMIT_TYPE = "unknown";
+
 /** When every window blocking the turn reopens, or null while one has no reported reset. */
 function blockedUsageLimitResetAt(
   context: Pick<ActiveClaudeTurnContext, "rateLimitResetTimes" | "latestAssistantRateLimit">,
@@ -4016,6 +4027,30 @@ function blockedUsageLimitResetAt(
   return resetTimes.length > 0 && resetTimes.every((time) => time !== null)
     ? resetTimes.reduce((latest, time) => (time! > latest ? time! : latest), "")
     : null;
+}
+
+/**
+ * The model family every attributed window blocking the turn limits, such as `opus`; undefined when
+ * one limits the account or none is named. A limit without a type does not widen a named one.
+ */
+function blockedUsageLimitModelScope(
+  context: Pick<ActiveClaudeTurnContext, "rateLimitResetTimes" | "latestAssistantRateLimit">,
+  names: ClaudeScopedLimitNames,
+): string | undefined {
+  const types = [...context.rateLimitResetTimes.keys()];
+  const assistantType = context.latestAssistantRateLimit?.type;
+  if (assistantType != null) types.push(assistantType);
+  const scopes = new Set(
+    types
+      .filter((type) => type !== UNATTRIBUTED_RATE_LIMIT_TYPE)
+      .map((type) => {
+        const windowId = claudeRateLimitWindowId(type, names);
+        const scope = windowId === undefined ? undefined : claudeUsageWindowScope(windowId);
+        // Only a scope naming one model family holds just that family; any other holds the account.
+        return scope !== undefined && CLAUDE_MODEL_FAMILIES.includes(scope) ? scope : undefined;
+      }),
+  );
+  return scopes.size === 1 ? [...scopes][0] : undefined;
 }
 
 function claudeRetryTurnItem(
@@ -5311,19 +5346,30 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const refreshUsageLimitRetry = Effect.fn("ClaudeAdapterV2.refreshUsageLimitRetry")(
           function* (context: ActiveClaudeTurnContext, updatedAt: DateTime.Utc) {
             const resetAt = blockedUsageLimitResetAt(context);
+            const modelScope = blockedUsageLimitModelScope(
+              context,
+              adapterOptions.scopedLimitNames
+                ? yield* Ref.get(adapterOptions.scopedLimitNames)
+                : { overageIncluded: undefined },
+            );
             const providerRetry = yield* Ref.modify(providerRetries, (current) => {
               const retry = current.get(context.providerTurnId);
               if (
                 retry === undefined ||
                 retry.failure.class !== "usage_limit" ||
-                (retry.failure.resetAt ?? null) === resetAt
+                ((retry.failure.resetAt ?? null) === resetAt &&
+                  retry.failure.modelScope === modelScope)
               ) {
                 return [undefined, current] as const;
               }
-              const { resetAt: _previous, ...failure } = retry.failure;
+              const { resetAt: _previous, modelScope: _previousScope, ...failure } = retry.failure;
               const refreshed: ActiveClaudeProviderRetry = {
                 ...retry,
-                failure: resetAt === null ? failure : { ...failure, resetAt },
+                failure: {
+                  ...failure,
+                  ...(resetAt === null ? {} : { resetAt }),
+                  ...(modelScope === undefined ? {} : { modelScope }),
+                },
               };
               return [refreshed, new Map(current).set(context.providerTurnId, refreshed)] as const;
             });
@@ -8533,7 +8579,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               rateLimitInfo.isUsingOverage === true ||
               rateLimitInfo.overageInUse === true;
             const blocked = rateLimitInfo.status === "rejected" && !overageAllowed;
-            const limitType = rateLimitInfo.rateLimitType ?? "unknown";
+            const limitType = rateLimitInfo.rateLimitType ?? UNATTRIBUTED_RATE_LIMIT_TYPE;
             if (blocked) {
               context.rejectedRateLimitTypes.add(limitType);
               context.rateLimitResetTimes.set(
@@ -8795,7 +8841,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   info.overageInUse === true;
                 if (!overageAllowed) {
                   context.latestAssistantRateLimit = {
-                    type: typeof info.rateLimitType === "string" ? info.rateLimitType : "unknown",
+                    type:
+                      typeof info.rateLimitType === "string"
+                        ? info.rateLimitType
+                        : UNATTRIBUTED_RATE_LIMIT_TYPE,
                     resetAt: claudeUsageLimitResetAt(info.resetsAt),
                   };
                 }
@@ -9022,7 +9071,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               maxAttempts: Math.max(1, Math.trunc(message.max_retries)),
               retryDelayMs: Math.max(0, Math.trunc(message.retry_delay_ms)),
             };
-            const failure = providerFailureFromApiRetry(message, blockedUsageLimitResetAt(context));
+            const modelScope = blockedUsageLimitModelScope(
+              context,
+              adapterOptions.scopedLimitNames
+                ? yield* Ref.get(adapterOptions.scopedLimitNames)
+                : { overageIncluded: undefined },
+            );
+            const failure = {
+              ...providerFailureFromApiRetry(message, blockedUsageLimitResetAt(context)),
+              ...(modelScope === undefined ? {} : { modelScope }),
+            };
             const itemOrdinal =
               previous?.itemOrdinal ??
               (yield* resolveItemOrdinal(context, `terminal-failure:${context.providerTurnId}`));
@@ -9708,6 +9766,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ? context.compactionFailure
                 : null;
             const resetAt = blockedUsageLimitResetAt(context);
+            const modelScope = blockedUsageLimitModelScope(
+              context,
+              adapterOptions.scopedLimitNames
+                ? yield* Ref.get(adapterOptions.scopedLimitNames)
+                : { overageIncluded: undefined },
+            );
             const resultFailure = interrupted
               ? null
               : limitedCompaction !== null
@@ -9724,7 +9788,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   );
             const terminalFailure =
               resultFailure?.class === "usage_limit"
-                ? { ...resultFailure, resetAt: resetAt ?? resultFailure.resetAt ?? null }
+                ? {
+                    ...resultFailure,
+                    resetAt: resetAt ?? resultFailure.resetAt ?? null,
+                    ...(modelScope === undefined ? {} : { modelScope }),
+                  }
                 : resultFailure;
             yield* finalizeActiveTurn({
               context,
@@ -10233,6 +10301,25 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const canUseTool: CanUseTool = (toolName, toolInput, callbackOptions) =>
           runPromise(canUseToolEffect(toolName, toolInput, callbackOptions));
 
+        // Only the turn's prompt carries the Auto brief, so a compaction summary can drop it.
+        const restoreAutoBriefAfterCompaction: HookCallback = async (hookInput) => {
+          if (
+            hookInput.hook_event_name !== "SessionStart" ||
+            hookInput.source !== "compact" ||
+            hookInput.agent_id !== undefined
+          )
+            return {};
+          const brief = (await runPromise(Ref.get(activeTurn)))?.input.autoModeInstructions;
+          return brief === undefined
+            ? {}
+            : {
+                hookSpecificOutput: {
+                  hookEventName: "SessionStart",
+                  additionalContext: autoModePromptBlock(brief),
+                },
+              };
+        };
+
         const onElicitationEffect = Effect.fn("ClaudeAdapterV2.onElicitation")(function* (
           request: ElicitationRequest,
           callbackOptions: Parameters<NonNullable<ClaudeQueryOptions["onElicitation"]>>[1],
@@ -10636,6 +10723,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   allowDangerouslySkipPermissions: queryPolicy.allowDangerouslySkipPermissions,
                 }),
             canUseTool,
+            afterCompaction: restoreAutoBriefAfterCompaction,
             onUserDialog,
             onElicitation,
             supportedDialogKinds: ["resume_return"],
@@ -10847,12 +10935,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               pdfBudgets.get(nativeThreadId)!,
               persistAttachmentBudget(nativeThreadId),
             );
+            const promptText =
+              turnInput.autoModeInstructions === undefined
+                ? turnInput.message.text
+                : `${autoModePromptBlock(turnInput.autoModeInstructions)}\n\n${turnInput.message.text}`;
             const userMessage =
               promptUuid === null
                 ? null
                 : yield* makeClaudeUserMessageWithAttachments({
                     text: applyClaudePromptEffortPrefix(
-                      turnInput.message.text,
+                      promptText,
                       compileClaudeModelSelection(turnInput.modelSelection).promptEffort,
                     ),
                     attachments: turnInput.message.attachments,

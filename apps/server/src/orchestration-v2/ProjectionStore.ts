@@ -548,14 +548,17 @@ export interface ProjectionStoreV2Shape {
     readonly snooze: boolean;
     readonly failover?: boolean;
   }) => Effect.Effect<ReadonlyArray<ProjectionLimitRecoveryCandidate>, ProjectionStoreV2Error>;
-  /** Accounts with a usage refusal whose reset is still ahead or unknown. */
-  readonly getUsageLimitedProviderInstanceIds: (
-    now: DateTime.Utc,
-  ) => Effect.Effect<ReadonlySet<ProviderInstanceId>, ProjectionStoreV2Error>;
-  /** Uncleared refusals, with their latest refusal time and latest known future reset. */
+  /**
+   * Usage refusals whose reset is still ahead or unknown. A completed run on the account started
+   * after the refusal drops it; for a model-scoped one, only a run whose model `coversScope`.
+   */
   readonly getUsageLimitedProviderInstances: (
     now: DateTime.Utc,
-  ) => Effect.Effect<ReadonlyMap<ProviderInstanceId, RecordedUsageLimit>, ProjectionStoreV2Error>;
+    coversScope: UsageScopeMatcher,
+  ) => Effect.Effect<
+    ReadonlyMap<ProviderInstanceId, ReadonlyArray<RecordedUsageLimit>>,
+    ProjectionStoreV2Error
+  >;
   /** Epoch ms of the next armed reset or snooze end after `now`, when a waiting thread becomes a candidate. */
   readonly getLimitRecoveryWakeAt: (
     now: DateTime.Utc,
@@ -739,7 +742,16 @@ type ProjectionWindow = Omit<
 export interface RecordedUsageLimit {
   readonly resetAt: string | null;
   readonly refusedAt: string;
+  /** The model family the refusal limits, such as `opus`; absent when it limits the whole account. */
+  readonly modelScope?: string;
 }
+
+/** Whether a completed run of `model` on the account shows a refusal limited to `scope` has room again. */
+export type UsageScopeMatcher = (
+  instanceId: ProviderInstanceId,
+  scope: string,
+  model: string,
+) => boolean;
 
 export class ProjectionStoreV2 extends Context.Service<ProjectionStoreV2, ProjectionStoreV2Shape>()(
   "t3/orchestration-v2/ProjectionStore/ProjectionStoreV2",
@@ -1089,6 +1101,8 @@ const encodeTimelineSources = Schema.encodeEffect(
   ),
 );
 const encodeIdList = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
+// One page of the later models an account's model-scoped refusals are checked against.
+const LATER_COMPLETED_MODELS_PAGE = 32;
 
 // Empty filters still scan SQLite rows; short-circuit them, including turnItemTypes: [].
 const matchesNothing = (...filters: ReadonlyArray<ReadonlyArray<unknown> | undefined>) =>
@@ -4104,18 +4118,66 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
 
+    // The model-scoped refusals on one account that a completed run in their scope, started after
+    // them, lifts. Reads each later model once with its latest start, from the earliest refusal.
+    const liftedScopedRefusals = Effect.fn("ProjectionStore.liftedScopedRefusals")(function* <
+      Refusal extends { readonly refused_at: string; readonly model_scope: string },
+    >(
+      instanceId: ProviderInstanceId,
+      refusals: ReadonlyArray<Refusal>,
+      coversScope: UsageScopeMatcher,
+    ) {
+      const since = refusals
+        .map((refusal) => refusal.refused_at)
+        .reduce((earliest, at) => (Date.parse(at) < Date.parse(earliest) ? at : earliest));
+      const held = new Set(refusals);
+      let after = "";
+      while (held.size > 0) {
+        // A run started after the refusal also completed after it, so completed_at only narrows
+        // the index range; the start decides.
+        const models = yield* sql<{ readonly model: string; readonly started_at: string }>`
+          SELECT json_extract(later.payload_json, '$.modelSelection.model') AS model,
+            MAX(json_extract(later.payload_json, '$.startedAt')) AS started_at
+          FROM orchestration_v2_projection_runs later
+          WHERE later.provider_instance_id = ${instanceId}
+            AND later.status = 'completed'
+            AND later.completed_at > ${since}
+            AND julianday(json_extract(later.payload_json, '$.startedAt')) > julianday(${since})
+            AND json_extract(later.payload_json, '$.modelSelection.model') > ${after}
+          GROUP BY model
+          ORDER BY model
+          LIMIT ${LATER_COMPLETED_MODELS_PAGE}
+        `;
+        for (const refusal of held) {
+          const refusedMs = Date.parse(refusal.refused_at);
+          if (
+            models.some(
+              (row) =>
+                Date.parse(row.started_at) > refusedMs &&
+                coversScope(instanceId, refusal.model_scope, row.model),
+            )
+          )
+            held.delete(refusal);
+        }
+        if (models.length < LATER_COMPLETED_MODELS_PAGE) break;
+        after = models.at(-1)!.model;
+      }
+      return refusals.filter((refusal) => !held.has(refusal));
+    });
+
     const getUsageLimitedProviderInstances = Effect.fn(
       "ProjectionStore.getUsageLimitedProviderInstances",
     )(
-      function* (now: DateTime.Utc) {
+      function* (now: DateTime.Utc, coversScope: UsageScopeMatcher) {
         // Every failure counts, so an account that refused one thread is skipped for all of them.
-        // A run on that account started after the refusal and completed lifts it early,
-        // as when the account's sign-in changed.
+        // A run on that account started after the refusal and completed lifts it early, as when
+        // the account's sign-in changed; for a model-scoped refusal only a run in its scope does.
         const nowIso = DateTime.formatIso(now);
         const rows = yield* sql<{
           readonly provider_instance_id: string;
           readonly reset_at: string | null;
           readonly refused_at: string;
+          readonly model_scope: string | null;
         }>`
           WITH refusals AS (
             SELECT failure.thread_id, failure.run_id, failure.node_id, failure.payload_json
@@ -4136,7 +4198,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             -- A restart moves its run to the new account; the attempt keeps the one it ran on.
             SELECT COALESCE(attempt.provider_instance_id, r.provider_instance_id) AS provider_instance_id,
               json_extract(refusal.payload_json, '$.failure.resetAt') AS reset_at,
-              json_extract(refusal.payload_json, '$.updatedAt') AS refused_at
+              json_extract(refusal.payload_json, '$.updatedAt') AS refused_at,
+              json_extract(refusal.payload_json, '$.failure.modelScope') AS model_scope
             FROM refusals refusal
             INNER JOIN orchestration_v2_projection_runs r ON r.run_id = refusal.run_id
             LEFT JOIN orchestration_v2_projection_run_attempts attempt
@@ -4145,42 +4208,56 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               AND attempt.root_node_id = refusal.node_id
             WHERE json_extract(refusal.payload_json, '$.failure.resetAt') IS NULL
               OR julianday(json_extract(refusal.payload_json, '$.failure.resetAt')) > julianday(${nowIso})
+          ),
+          held AS (
+            -- One account-wide row per known or unknown reset. A model-scoped row per scope and
+            -- reset: its latest refusal is the last a later run lifts, so it speaks for the rest.
+            SELECT limited.*, ROW_NUMBER() OVER (
+              PARTITION BY provider_instance_id, model_scope, reset_at IS NULL,
+                CASE WHEN model_scope IS NULL THEN NULL ELSE reset_at END
+              ORDER BY julianday(reset_at) DESC, julianday(refused_at) DESC
+            ) AS priority
+            FROM limited
+            WHERE provider_instance_id IS NOT NULL
+              AND (model_scope IS NOT NULL OR NOT EXISTS (
+                SELECT 1 FROM orchestration_v2_projection_runs later
+                WHERE later.provider_instance_id = limited.provider_instance_id
+                  AND later.status = 'completed'
+                  AND later.completed_at > limited.refused_at
+                  AND julianday(json_extract(later.payload_json, '$.startedAt'))
+                    > julianday(limited.refused_at)
+              ))
           )
-          SELECT provider_instance_id, reset_at, refused_at FROM limited
-          WHERE provider_instance_id IS NOT NULL
-            AND NOT EXISTS (
-              SELECT 1 FROM orchestration_v2_projection_runs later
-              WHERE later.provider_instance_id = limited.provider_instance_id
-                AND later.status = 'completed'
-                AND julianday(json_extract(later.payload_json, '$.startedAt'))
-                  > julianday(limited.refused_at)
-            )
+          SELECT provider_instance_id, reset_at, refused_at, model_scope
+          FROM held WHERE priority = 1
         `;
-        const limited = new Map<ProviderInstanceId, RecordedUsageLimit>();
+        const scopedRefusals = Map.groupBy(
+          rows.filter(
+            (row): row is (typeof rows)[number] & { readonly model_scope: string } =>
+              row.model_scope !== null,
+          ),
+          (row) => ProviderInstanceId.make(row.provider_instance_id),
+        );
+        const lifted = new Set<(typeof rows)[number]>();
+        for (const [instanceId, refusals] of scopedRefusals) {
+          for (const refusal of yield* liftedScopedRefusals(instanceId, refusals, coversScope)) {
+            lifted.add(refusal);
+          }
+        }
+        const limited = new Map<ProviderInstanceId, ReadonlyArray<RecordedUsageLimit>>();
         for (const row of rows) {
+          if (lifted.has(row)) continue;
           const instanceId = ProviderInstanceId.make(row.provider_instance_id);
-          const latest = limited.get(instanceId);
-          limited.set(instanceId, {
-            resetAt:
-              latest?.resetAt == null ||
-              (row.reset_at !== null && Date.parse(row.reset_at) > Date.parse(latest.resetAt))
-                ? row.reset_at
-                : latest.resetAt,
-            refusedAt:
-              latest === undefined || Date.parse(row.refused_at) > Date.parse(latest.refusedAt)
-                ? row.refused_at
-                : latest.refusedAt,
-          });
+          const refusal: RecordedUsageLimit =
+            row.model_scope === null
+              ? { resetAt: row.reset_at, refusedAt: row.refused_at }
+              : { resetAt: row.reset_at, refusedAt: row.refused_at, modelScope: row.model_scope };
+          limited.set(instanceId, [...(limited.get(instanceId) ?? []), refusal]);
         }
         return limited;
       },
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
-
-    const getUsageLimitedProviderInstanceIds = (now: DateTime.Utc) =>
-      getUsageLimitedProviderInstances(now).pipe(
-        Effect.map((limited): ReadonlySet<ProviderInstanceId> => new Set(limited.keys())),
-      );
 
     const getLimitRecoveryWakeAt = Effect.fn("ProjectionStore.getLimitRecoveryWakeAt")(
       function* (now: DateTime.Utc) {
@@ -7461,7 +7538,6 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getPlan: readOnReader(getPlan),
       getProviderControlContext: readOnReader(getProviderControlContext),
       getLimitRecoveryCandidates: readOnReader(getLimitRecoveryCandidates),
-      getUsageLimitedProviderInstanceIds: readOnReader(getUsageLimitedProviderInstanceIds),
       getUsageLimitedProviderInstances: readOnReader(getUsageLimitedProviderInstances),
       getLimitRecoveryWakeAt: readOnReader(getLimitRecoveryWakeAt),
       getNetworkRecoveryCandidates: readOnReader(getNetworkRecoveryCandidates),

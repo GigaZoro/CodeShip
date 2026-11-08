@@ -37,6 +37,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as TestClock from "effect/testing/TestClock";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -1453,7 +1454,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             Effect.succeed(
               new Map(
                 "refusal" in row
-                  ? [[codexInstanceId, { resetAt: null, refusedAt: "2026-11-08T00:00:00Z" }]]
+                  ? [[codexInstanceId, [{ resetAt: null, refusedAt: "2026-11-08T00:00:00Z" }]]]
                   : [],
               ),
             ),
@@ -1479,18 +1480,15 @@ describe("OrchestratorMcpService provider resolution", () => {
         const account = result.providers[0]!;
         const accountLimited =
           "refusal" in row || ("window" in row && row.window === "5h" && !("apiKey" in row));
-        const canRun = !("disabled" in row) && !(accountLimited && !("reset" in row));
-        const constraints =
-          "disabled" in row
-            ? ["Disabled for this project."]
-            : accountLimited && !("reset" in row)
-              ? ["Usage limit reached; the reset time is unknown."]
-              : [];
+        const canRun = !("disabled" in row);
+        const constraints = "disabled" in row ? ["Disabled for this project."] : [];
+        const until =
+          "reset" in row ? row.reset : accountLimited ? "2026-11-08T05:00:00.000Z" : undefined;
         assert.equal(account.canRunChildTask, canRun);
         assert.equal(account.canRunCrossProviderChildTask, canRun);
         assert.deepEqual(account.constraints, constraints);
         assert.equal(account.usageLimited, accountLimited ? true : undefined);
-        assert.equal(account.limitedUntil, "reset" in row ? row.reset : undefined);
+        assert.equal(account.limitedUntil, until);
         assert.deepEqual(
           account.models.map((model) => ({
             id: model.id,
@@ -1509,7 +1507,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         assert.equal(older.providers[0]!.canRunChildTask, canRun);
         assert.equal(older.providers[0]!.canRunCrossProviderChildTask, canRun);
         assert.deepEqual(older.providers[0]!.constraints, constraints);
-        assert.equal(older.providers[0]!.limitedUntil, "reset" in row ? row.reset : undefined);
+        assert.equal(older.providers[0]!.limitedUntil, until);
         assert.notProperty(older.providers[0]!, "usageLimited");
         for (const model of older.providers[0]!.models) assert.notProperty(model, "usageLimited");
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
@@ -1650,16 +1648,17 @@ describe("OrchestratorMcpService provider resolution", () => {
                 ? [[provider.providerInstanceId, provider.limitedUntil]]
                 : [],
             ),
-            [[codexInstanceId, undefined]],
+            [[codexInstanceId, "2026-11-08T05:00:00.000Z"]],
           );
           const encoded = yield* encodeCapabilities(capabilities);
           assert.isTrue(
             encoded.providers.find((provider) => provider.providerInstanceId === codexInstanceId)
               ?.usageLimited,
           );
-          assert.notProperty(
-            encoded.providers.find((provider) => provider.providerInstanceId === codexInstanceId),
-            "limitedUntil",
+          assert.equal(
+            encoded.providers.find((provider) => provider.providerInstanceId === codexInstanceId)
+              ?.limitedUntil,
+            "2026-11-08T05:00:00.000Z",
           );
           const decodedByOlderMachine = yield* decodeShippedCapabilities(encoded);
           assert.notProperty(
@@ -1706,14 +1705,9 @@ describe("OrchestratorMcpService provider resolution", () => {
           ]) {
             const entry = byId.get(instanceId);
             assert.isDefined(entry);
-            assert.equal(entry!.canRunChildTask, instanceId !== codexInstanceId);
-            assert.equal(entry!.canRunCrossProviderChildTask, instanceId !== codexInstanceId);
-            assert.deepEqual(
-              entry!.constraints,
-              instanceId === codexInstanceId
-                ? ["Usage limit reached; the reset time is unknown."]
-                : [],
-            );
+            assert.isTrue(entry!.canRunChildTask);
+            assert.isTrue(entry!.canRunCrossProviderChildTask);
+            assert.deepEqual(entry!.constraints, []);
           }
 
           const disabled = byId.get(disabledAntigravityInstanceId);
@@ -2017,11 +2011,17 @@ describe("OrchestratorMcpService provider resolution", () => {
       allLimited: true,
       roleDefault: true,
     },
-    { name: "explicit account retry", unknownReset: true, namedAccount: true },
+    {
+      name: "explicit account refuses recent unknown reset",
+      unknownReset: true,
+      namedAccount: true,
+      allLimited: true,
+    },
     { name: "subscription before API key", window: "5h", apiKey: true },
     { name: "saved failover order", window: "5h", ordered: true },
   ])("delegation checks $name", (row) =>
     Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-11-08T00:03:00Z"));
       const altInstanceId = ProviderInstanceId.make("codex-alt");
       const driver = ProviderDriverKind.make("claudeAgent");
       const model = "claude-opus-5-5";
@@ -2084,7 +2084,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                 "unknownReset" in row
                   ? accounts.map((account) => [
                       account.instanceId,
-                      { resetAt: null, refusedAt: "2026-11-08T00:01:00Z" },
+                      [{ resetAt: null, refusedAt: "2026-11-08T00:01:00Z" }],
                     ])
                   : [],
               ),
@@ -2710,6 +2710,18 @@ describe("OrchestratorMcpService provider resolution", () => {
                   } as never),
                 ),
             }),
+            Layer.mock(AccountRouting.AccountRouting)({
+              launchLimit: () => Effect.succeed(null),
+              accountsWithRoom: () =>
+                Effect.succeed([
+                  ...(testCase.peerEnabled
+                    ? [{ instanceId: codexAltInstanceId, model: "codex-alt-model" }]
+                    : []),
+                  ...(testCase.inheritedEnabled
+                    ? [{ instanceId: codexInstanceId, model: "gpt-5.4" }]
+                    : []),
+                ]),
+            }),
             ServerSettings.layerTest(),
             providerRegistryLayer([
               providerSnapshot({
@@ -3334,14 +3346,27 @@ describe("OrchestratorMcpService provider resolution", () => {
           assert.deepEqual((yield* Ref.get(stored)).modelSelection, selected);
           const listed = yield* mcp.listScheduledTasks(client, {});
           assert.deepEqual(listed.tasks[0]?.modelSelection, defaultModel);
-          const retained = yield* mcp.updateScheduledTask(client, {
-            scheduledTaskId: existing.id,
-            modelSelection: own,
-            followsDefaultModel: true,
-          });
-          assert.equal(retained.followsDefaultModel, true);
-          assert.deepEqual(retained.modelSelection, defaultModel);
-          assert.deepEqual((yield* Ref.get(stored)).modelSelection, own);
+          const retained = yield* mcp
+            .updateScheduledTask(client, {
+              scheduledTaskId: existing.id,
+              modelSelection: own,
+              followsDefaultModel: true,
+            })
+            .pipe(Effect.flip);
+          const conflictingCreate = yield* mcp
+            .scheduleTask(client, {
+              projectId,
+              prompt: "Run checks",
+              schedule,
+              modelSelection: own,
+              followsDefaultModel: true,
+            })
+            .pipe(Effect.flip);
+          assert.equal(conflictingCreate.code, "invalid_request");
+          assert.include(conflictingCreate.message, "followsDefaultModel");
+          assert.equal(retained.code, "invalid_request");
+          assert.include(retained.message, "followsDefaultModel");
+          assert.deepEqual((yield* Ref.get(stored)).modelSelection, selected);
         }),
     );
 

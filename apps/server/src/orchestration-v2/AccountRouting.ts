@@ -14,7 +14,13 @@ import {
   resolveAutoModelSelection,
   supportsAccountFailover,
 } from "@t3tools/shared/serverSettings";
-import { exhaustedUsageWindow, isSubscriptionAccount } from "@t3tools/shared/usageLimits";
+import {
+  exhaustedUsageWindow,
+  isSubscriptionAccount,
+  usageHoldMs,
+  usageScopeCoversModel,
+  usageWindowLimitEnd,
+} from "@t3tools/shared/usageLimits";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -36,8 +42,64 @@ export interface AccountRoutingContext {
   >;
   readonly providers: ReadonlyArray<ServerProvider>;
   /** Accounts with an uncleared usage refusal, including unknown resets. */
-  readonly recordedLimits: ReadonlyMap<ProviderInstanceId, ProjectionStore.RecordedUsageLimit>;
+  readonly recordedLimits: ReadonlyMap<
+    ProviderInstanceId,
+    ReadonlyArray<ProjectionStore.RecordedUsageLimit>
+  >;
   readonly nowMs: number;
+}
+
+const canonicalModel = (provider: ServerProvider, slug: string) =>
+  resolveSelectableModel(provider.driver, slug, provider.models) ?? slug;
+
+/**
+ * Whether a later completed run lifts a model-scoped refusal: its model, aliases resolved, is in
+ * the scope. No snapshot lifts one: partial updates refresh `checkedAt` without the window they
+ * omit, so a stale bar under 100% could end the hold early.
+ */
+export function completedRunLiftsScope(
+  providers: ReadonlyArray<ServerProvider>,
+): ProjectionStore.UsageScopeMatcher {
+  return (instanceId, scope, model) => {
+    const provider = providers.find((entry) => entry.instanceId === instanceId);
+    return usageScopeCoversModel(
+      scope,
+      provider === undefined ? model : canonicalModel(provider, model),
+    );
+  };
+}
+
+/** When a refusal stops holding: its reset, else the hold from the refusal. */
+export function recordedUsageLimitEnd(
+  provider: ServerProvider,
+  refusal: ProjectionStore.RecordedUsageLimit,
+): number {
+  return refusal.resetAt === null
+    ? Date.parse(refusal.refusedAt) + usageHoldMs(provider.usageLimits)
+    : Date.parse(refusal.resetAt);
+}
+
+/** Future ends of the refusals that hold `model`; a null model counts only account-wide ones. */
+function refusalEnds(
+  provider: ServerProvider,
+  refusals: ReadonlyArray<ProjectionStore.RecordedUsageLimit>,
+  nowMs: number,
+  model: string | null,
+): Array<number> {
+  return refusals.flatMap((refusal) => {
+    if (refusal.modelScope !== undefined && !usageScopeCoversModel(refusal.modelScope, model))
+      return [];
+    const end = recordedUsageLimitEnd(provider, refusal);
+    return end > nowMs ? [end] : [];
+  });
+}
+
+/** When the used-up usage windows stop limiting `model` (null: account-wide), or null if none does. */
+function windowLimitEnd(provider: ServerProvider, nowMs: number, model: string | null) {
+  const window = exhaustedUsageWindow(provider, nowMs, model);
+  return window === undefined || provider.usageLimits === undefined
+    ? null
+    : usageWindowLimitEnd(provider.usageLimits, window);
 }
 
 function accountLimit(
@@ -45,37 +107,31 @@ function accountLimit(
   recorded: AccountRoutingContext["recordedLimits"],
   nowMs: number,
   model?: string,
-  explicitLaunch = false,
 ): LaunchLimit | null {
   if (!isSubscriptionAccount(provider)) return null;
-  const canonicalModel =
-    model === undefined
-      ? null
-      : (resolveSelectableModel(provider.driver, model, provider.models) ?? model);
-  const window = exhaustedUsageWindow(provider, nowMs, canonicalModel);
-  const refusal = recorded.get(provider.instanceId);
-  const snapshot = provider.usageLimits;
-  const clearedBySnapshot =
-    snapshot !== undefined &&
-    snapshot.unavailable === undefined &&
-    refusal !== undefined &&
-    Date.parse(snapshot.checkedAt) > Date.parse(refusal.refusedAt) &&
-    window === undefined;
-  if (
-    refusal !== undefined &&
-    (refusal.resetAt !== null
-      ? Date.parse(refusal.resetAt) > nowMs
-      : !clearedBySnapshot && !explicitLaunch)
-  ) {
-    return { instanceId: provider.instanceId, limitedUntil: refusal.resetAt };
-  }
-  return window === undefined
+  const canonical = model === undefined ? null : canonicalModel(provider, model);
+  const ends = refusalEnds(provider, recorded.get(provider.instanceId) ?? [], nowMs, canonical);
+  const windowEnd = windowLimitEnd(provider, nowMs, canonical);
+  if (windowEnd !== null) ends.push(windowEnd);
+  return ends.length === 0
     ? null
     : {
         instanceId: provider.instanceId,
-        limitedUntil:
-          window.resetsAt && Number.isFinite(Date.parse(window.resetsAt)) ? window.resetsAt : null,
+        limitedUntil: DateTime.formatIso(DateTime.makeUnsafe(Math.max(...ends))),
       };
+}
+
+/** Whether a model-scoped refusal still holds `model` on this subscription account. */
+export function modelScopeHolds(
+  provider: ServerProvider,
+  input: Pick<AccountRoutingContext, "recordedLimits" | "nowMs">,
+  model: string,
+): boolean {
+  if (!isSubscriptionAccount(provider)) return false;
+  const scoped = (input.recordedLimits.get(provider.instanceId) ?? []).filter(
+    (refusal) => refusal.modelScope !== undefined,
+  );
+  return refusalEnds(provider, scoped, input.nowMs, canonicalModel(provider, model)).length > 0;
 }
 
 /** The model this subscription account would run for `model` now, or null when it cannot take the turn. */
@@ -201,8 +257,8 @@ export function failoverLimitedLaunch(
 
 export interface LaunchLimit {
   readonly instanceId: ProviderInstanceId;
-  /** The account's reported reset as an ISO time, or null when unknown. */
-  readonly limitedUntil: string | null;
+  /** The provider's reset or T3's bounded hold end, as an ISO time. */
+  readonly limitedUntil: string;
 }
 
 export class AccountRouting extends Context.Service<
@@ -223,11 +279,13 @@ export class AccountRouting extends Context.Service<
     }) => Effect.Effect<
       ReadonlyArray<{ readonly instanceId: ProviderInstanceId; readonly model: string }>
     >;
-    /** Account-wide usage limits from refusals and usage windows; null means an unknown reset. */
-    readonly limitedAccounts: Effect.Effect<ReadonlyMap<ProviderInstanceId, string | null>>;
+    /** Account-wide usage limits, ending at the provider reset or T3 hold end. */
+    readonly limits: Effect.Effect<{
+      readonly accounts: ReadonlyMap<ProviderInstanceId, string>;
+      readonly models: ReadonlyMap<ProviderInstanceId, ReadonlySet<string>>;
+    }>;
     /** The usage-limited account a new thread on `selection` would start on, or null if it has room. */
     readonly launchLimit: (input: {
-      readonly explicitAccount: boolean;
       readonly selection: ModelSelection;
       readonly projectId: ProjectId;
     }) => Effect.Effect<LaunchLimit | null>;
@@ -246,23 +304,28 @@ export const layer = Layer.effect(
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     // Limits only steer and warn; a failed read leaves every account usable.
-    const readLimits = (now: DateTime.Utc) =>
-      projections.getUsageLimitedProviderInstances(now).pipe(
+    const readLimits = (now: DateTime.Utc, providers: ReadonlyArray<ServerProvider>) =>
+      projections.getUsageLimitedProviderInstances(now, completedRunLiftsScope(providers)).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("orchestration-v2.account-routing.limits-unavailable", {
             cause,
-          }).pipe(Effect.as(new Map<ProviderInstanceId, ProjectionStore.RecordedUsageLimit>())),
+          }).pipe(
+            Effect.as(
+              new Map<ProviderInstanceId, ReadonlyArray<ProjectionStore.RecordedUsageLimit>>(),
+            ),
+          ),
         ),
       );
     return {
       accountsWithRoom: Effect.fn("AccountRouting.accountsWithRoom")(
         function* (input) {
           const now = yield* DateTime.now;
+          const providers = yield* providerRegistry.getProviders;
           return accountsWithRoom({
             ...input,
             settings: yield* serverSettings.getSettings,
-            providers: yield* providerRegistry.getProviders,
-            recordedLimits: yield* readLimits(now),
+            providers,
+            recordedLimits: yield* readLimits(now, providers),
             nowMs: DateTime.toEpochMillis(now),
           });
         },
@@ -275,21 +338,36 @@ export const layer = Layer.effect(
             ),
           ),
       ),
-      limitedAccounts: Effect.gen(function* () {
+      limits: Effect.gen(function* () {
         const now = yield* DateTime.now;
-        const recorded = yield* readLimits(now);
-        const limited = new Map<ProviderInstanceId, string | null>();
-        for (const provider of yield* providerRegistry.getProviders) {
+        const providers = yield* providerRegistry.getProviders;
+        const recorded = yield* readLimits(now, providers);
+        const limited = new Map<ProviderInstanceId, string>();
+        const models = new Map<ProviderInstanceId, ReadonlySet<string>>();
+        for (const provider of providers) {
           const limit = accountLimit(provider, recorded, DateTime.toEpochMillis(now));
           if (limit !== null) limited.set(provider.instanceId, limit.limitedUntil);
+          else
+            models.set(
+              provider.instanceId,
+              new Set(
+                provider.models
+                  .filter(
+                    (model) =>
+                      accountLimit(provider, recorded, DateTime.toEpochMillis(now), model.slug) !==
+                      null,
+                  )
+                  .map((model) => model.slug),
+              ),
+            );
         }
-        return limited;
+        return { accounts: limited, models };
       }),
       launchLimit: Effect.fn("AccountRouting.launchLimit")(
         function* (input) {
           const now = yield* DateTime.now;
-          const limited = yield* readLimits(now);
           const providers = yield* providerRegistry.getProviders;
+          const limited = yield* readLimits(now, providers);
           // A new thread's first turn routes like this, so Auto is judged where it would start.
           const selection =
             input.selection.autoAccount === true
@@ -307,13 +385,7 @@ export const layer = Layer.effect(
           const provider = providers.find((entry) => entry.instanceId === selection.instanceId);
           return provider === undefined
             ? null
-            : accountLimit(
-                provider,
-                limited,
-                DateTime.toEpochMillis(now),
-                selection.model,
-                input.explicitAccount,
-              );
+            : accountLimit(provider, limited, DateTime.toEpochMillis(now), selection.model);
         },
         (effect) =>
           effect.pipe(
@@ -331,11 +403,12 @@ export const layer = Layer.effect(
             return input.selection;
           }
           const now = yield* DateTime.now;
+          const providers = yield* providerRegistry.getProviders;
           return failoverLimitedLaunch({
             ...input,
             settings,
-            providers: yield* providerRegistry.getProviders,
-            recordedLimits: yield* readLimits(now),
+            providers,
+            recordedLimits: yield* readLimits(now, providers),
             nowMs: DateTime.toEpochMillis(now),
           });
         },
@@ -353,11 +426,12 @@ export const layer = Layer.effect(
         function* (input) {
           if (input.selection.autoAccount !== true) return input.selection;
           const now = yield* DateTime.now;
+          const providers = yield* providerRegistry.getProviders;
           return routeAutoAccount({
             ...input,
             settings: yield* serverSettings.getSettings,
-            providers: yield* providerRegistry.getProviders,
-            recordedLimits: yield* readLimits(now),
+            providers,
+            recordedLimits: yield* readLimits(now, providers),
             nowMs: DateTime.toEpochMillis(now),
           });
         },

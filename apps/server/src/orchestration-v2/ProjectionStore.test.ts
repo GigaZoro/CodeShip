@@ -37,6 +37,7 @@ import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
 import * as SqlClient from "effect/sql/SqlClient";
 import { projectThreadAwarenessV2 } from "@t3tools/shared/agentAwareness";
+import { usageScopeCoversModel } from "@t3tools/shared/usageLimits";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -59,6 +60,8 @@ const modelSelection = {
   model: "gpt-5.4",
 } satisfies ModelSelection;
 const driver = ProviderDriverKind.make("codex");
+const coversScope: ProjectionStore.UsageScopeMatcher = (_, scope, model) =>
+  usageScopeCoversModel(scope, model);
 const providerInstanceId = modelSelection.instanceId;
 const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -5186,18 +5189,20 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       });
       yield* assertSummary("Plan limit reached.", "usage_limit");
       assert.deepEqual(
-        [...(yield* store.getUsageLimitedProviderInstanceIds(now))],
+        [...(yield* store.getUsageLimitedProviderInstances(now, coversScope)).keys()],
         [providerInstanceId],
       );
       assert.deepEqual(
-        [...(yield* store.getUsageLimitedProviderInstances(now))],
+        [...(yield* store.getUsageLimitedProviderInstances(now, coversScope))],
         [
           [
             providerInstanceId,
-            {
-              resetAt: limitItem.failure.resetAt,
-              refusedAt: DateTime.formatIso(limitItem.updatedAt),
-            },
+            [
+              {
+                resetAt: limitItem.failure.resetAt,
+                refusedAt: DateTime.formatIso(limitItem.updatedAt),
+              },
+            ],
           ],
         ],
       );
@@ -5213,14 +5218,79 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         payload: { ...limitItem, failure: { ...limitItem.failure, resetAt: undefined } },
       });
       assert.deepEqual(
-        [...(yield* store.getUsageLimitedProviderInstances(now))],
+        [...(yield* store.getUsageLimitedProviderInstances(now, coversScope))],
         [
           [
             providerInstanceId,
-            { resetAt: null, refusedAt: DateTime.formatIso(limitItem.updatedAt) },
+            [
+              {
+                resetAt: null,
+                refusedAt: DateTime.formatIso(limitItem.updatedAt),
+              },
+            ],
           ],
         ],
       );
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:model-scoped"),
+        type: "turn-item.updated",
+        threadId,
+        runId: original.id,
+        nodeId: original.rootNodeId!,
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: { ...limitItem, failure: { ...limitItem.failure, modelScope: "opus" } },
+      });
+      // A completed run of another model does not lift a model-scoped refusal.
+      const laterSonnetRunId = RunId.make("run:limit-shell:later-sonnet");
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:later-sonnet"),
+        type: "run.created",
+        threadId,
+        runId: laterSonnetRunId,
+        nodeId: NodeId.make("node:limit-shell:later-sonnet"),
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...original,
+          id: laterSonnetRunId,
+          ordinal: original.ordinal + 4,
+          rootNodeId: NodeId.make("node:limit-shell:later-sonnet"),
+          userMessageId: MessageId.make("message:limit-shell:later-sonnet"),
+          modelSelection: { ...original.modelSelection, model: "claude-sonnet-5-5" },
+          status: "completed",
+          startedAt: DateTime.add(now, { minutes: 1 }),
+          completedAt: DateTime.add(now, { minutes: 2 }),
+        },
+      });
+      assert.deepEqual(
+        (yield* store.getUsageLimitedProviderInstances(now, coversScope)).get(providerInstanceId),
+        [
+          {
+            resetAt: limitItem.failure.resetAt,
+            refusedAt: DateTime.formatIso(limitItem.updatedAt),
+            modelScope: "opus",
+          },
+        ],
+      );
+      const sql = yield* SqlClient.SqlClient;
+      // A refusal stored with the turn's model but no scope still decodes, and holds the account.
+      yield* sql`UPDATE orchestration_v2_projection_turn_items
+        SET payload_json = json_set(json_remove(payload_json, '$.failure.modelScope'),
+          '$.failure.modelScoped', json('true'), '$.failure.model', 'claude-opus-5-5')
+        WHERE turn_item_id = ${limitItem.id}`;
+      const legacyRefusal = (yield* store.getThreadProjection(threadId)).turnItems.find(
+        (item) => item.id === limitItem.id,
+      );
+      assert.deepEqual(legacyRefusal?.type === "error" ? legacyRefusal.failure : undefined, {
+        ...limitItem.failure,
+      });
+      assert.isFalse(
+        (yield* store.getUsageLimitedProviderInstances(now, coversScope)).has(providerInstanceId),
+      );
+      yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${laterSonnetRunId}`;
       yield* store.apply({
         id: EventId.make("event:limit-shell:restore-reset"),
         type: "turn-item.updated",
@@ -5232,7 +5302,6 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         occurredAt: now,
         payload: limitItem,
       });
-      const sql = yield* SqlClient.SqlClient;
       yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${aheadRunId}`;
       yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${queuedRunId}`;
       yield* assertSummary("Plan limit reached.", "usage_limit");
@@ -5281,7 +5350,50 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           failover: true,
         })).find((row) => row.id === threadId),
       );
-      assert.deepEqual([...(yield* store.getUsageLimitedProviderInstanceIds(reset))], []);
+      assert.deepEqual(
+        [...(yield* store.getUsageLimitedProviderInstances(reset, coversScope))],
+        [],
+      );
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:unknown-before-success"),
+        type: "turn-item.updated",
+        threadId,
+        runId: original.id,
+        nodeId: original.rootNodeId!,
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: { ...limitItem, failure: { ...limitItem.failure, resetAt: undefined } },
+      });
+      assert.isTrue(
+        (yield* store.getUsageLimitedProviderInstances(now, coversScope)).has(providerInstanceId),
+      );
+      // Completing after the refusal is not enough: the run has to start after it.
+      const straddlingRunId = RunId.make("run:limit-shell:straddling");
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:straddling"),
+        type: "run.created",
+        threadId,
+        runId: straddlingRunId,
+        nodeId: NodeId.make("node:limit-shell:straddling"),
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...original,
+          id: straddlingRunId,
+          ordinal: original.ordinal + 5,
+          rootNodeId: NodeId.make("node:limit-shell:straddling"),
+          userMessageId: MessageId.make("message:limit-shell:straddling"),
+          status: "completed",
+          startedAt: DateTime.subtract(now, { minutes: 1 }),
+          completedAt: DateTime.add(now, { minutes: 1 }),
+        },
+      });
+      assert.isTrue(
+        (yield* store.getUsageLimitedProviderInstances(now, coversScope)).has(providerInstanceId),
+      );
+      yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${straddlingRunId}`;
       const afterRefusalRunId = RunId.make("run:limit-shell:after-refusal");
       yield* store.apply({
         id: EventId.make("event:limit-shell:after-refusal"),
@@ -5303,8 +5415,19 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           completedAt: DateTime.add(now, { minutes: 2 }),
         },
       });
-      assert.deepEqual([...(yield* store.getUsageLimitedProviderInstanceIds(now))], []);
+      assert.deepEqual([...(yield* store.getUsageLimitedProviderInstances(now, coversScope))], []);
       yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${afterRefusalRunId}`;
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:restore-after-success"),
+        type: "turn-item.updated",
+        threadId,
+        runId: original.id,
+        nodeId: original.rootNodeId!,
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: limitItem,
+      });
       const recovery = {
         runId: original.id,
         resetAt: limitItem.failure.resetAt,
@@ -5449,6 +5572,142 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       }
       yield* applyRun("failed", NodeId.make("new-attempt-root"));
       yield* assertSummary(null, null);
+    }),
+  );
+
+  it.effect("lifts each model-scoped refusal only by a run in its scope that came after it", () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = yield* addRolledBackRecoveryCandidate("scoped-refusals");
+      const original = (yield* store.getThreadProjection(threadId)).runs[0]!;
+      const now = yield* DateTime.now;
+      const scopedInstanceId = ProviderInstanceId.make("claude_scoped");
+      const opus = "claude-opus-5-5";
+      const addRun = Effect.fnUntraced(function* (
+        name: string,
+        status: "failed" | "completed",
+        startedMinutes: number,
+        model = opus,
+      ) {
+        const runId = RunId.make(`run:scoped-refusals:${name}`);
+        const rootNodeId = NodeId.make(`node:scoped-refusals:${name}`);
+        yield* store.apply({
+          id: EventId.make(`event:scoped-refusals:${name}`),
+          type: "run.created",
+          threadId,
+          runId,
+          nodeId: rootNodeId,
+          driver,
+          providerInstanceId: scopedInstanceId,
+          occurredAt: now,
+          payload: {
+            ...original,
+            id: runId,
+            ordinal: original.ordinal + 1 + startedMinutes,
+            rootNodeId,
+            userMessageId: MessageId.make(`message:scoped-refusals:${name}`),
+            providerInstanceId: scopedInstanceId,
+            modelSelection: { instanceId: scopedInstanceId, model },
+            status,
+            startedAt: DateTime.add(now, { minutes: startedMinutes }),
+            completedAt: DateTime.add(now, { minutes: startedMinutes + 1 }),
+          },
+        });
+        return { runId, rootNodeId };
+      });
+      const refuse = Effect.fnUntraced(function* (
+        run: { readonly runId: RunId; readonly rootNodeId: NodeId },
+        refusedMinutes: number,
+        resetAt: string,
+      ) {
+        const updatedAt = DateTime.add(now, { minutes: refusedMinutes });
+        yield* store.apply({
+          id: EventId.make(`event:scoped-refusals:${run.runId}:refusal`),
+          type: "turn-item.updated",
+          threadId,
+          runId: run.runId,
+          nodeId: run.rootNodeId,
+          driver,
+          providerInstanceId: scopedInstanceId,
+          occurredAt: updatedAt,
+          payload: {
+            id: TurnItemId.make(`scoped-refusals:${run.runId}:error`),
+            threadId,
+            runId: run.runId,
+            nodeId: run.rootNodeId,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 2,
+            status: "failed",
+            title: "Usage limit reached",
+            startedAt: updatedAt,
+            completedAt: updatedAt,
+            updatedAt,
+            type: "error",
+            failure: {
+              class: "usage_limit",
+              message: "Opus limit reached.",
+              resetAt,
+              code: "usageLimitExceeded",
+              retryable: null,
+              modelScope: "opus",
+            },
+          },
+        });
+        return DateTime.formatIso(updatedAt);
+      });
+      const scoped = () =>
+        store
+          .getUsageLimitedProviderInstances(now, coversScope)
+          .pipe(Effect.map((limited) => limited.get(scopedInstanceId)));
+      // The earlier refusal resets later, so only its own row shows that the Opus run lifts it.
+      const earlierRun = yield* addRun("earlier", "failed", 0);
+      yield* refuse(earlierRun, 0, "2099-02-01T00:00:00.000Z");
+      const coveredRun = yield* addRun("covered", "completed", 1);
+      const laterRun = yield* addRun("later", "failed", 2);
+      const later = yield* refuse(laterRun, 3, "2099-01-01T00:00:00.000Z");
+      assert.deepEqual(yield* scoped(), [
+        { resetAt: "2099-01-01T00:00:00.000Z", refusedAt: later, modelScope: "opus" },
+      ]);
+      // More later models than one page, all sorting before the covered one, still find it.
+      const otherRuns = [];
+      for (let index = 0; index < 32; index++) {
+        const variant = String(index).padStart(2, "0");
+        otherRuns.push(
+          yield* addRun(`other-${variant}`, "completed", 4 + index, `claude-haiku-4-5-${variant}`),
+        );
+      }
+      const { statements, tracer } = traceSqlStatements();
+      assert.deepEqual(yield* scoped().pipe(Effect.withTracer(tracer)), [
+        { resetAt: "2099-01-01T00:00:00.000Z", refusedAt: later, modelScope: "opus" },
+      ]);
+      // Both lifts read only the account's runs completed since the refusal, and the later models
+      // are read once per account page, not once per refusal.
+      const sql = yield* SqlClient.SqlClient;
+      const laterReads = statements.filter((statement) =>
+        statement.includes("orchestration_v2_projection_runs later"),
+      );
+      for (const statement of laterReads) {
+        const plan = (yield* sql.unsafe<{ readonly detail: string }>(
+          `EXPLAIN QUERY PLAN ${statement}`,
+        )).map((row) => row.detail);
+        const runLookups = plan.filter((detail) => /^(?:SCAN|SEARCH) later\b/.test(detail));
+        assert.isNotEmpty(runLookups);
+        for (const lookup of runLookups) {
+          assert.strictEqual(
+            lookup,
+            "SEARCH later USING INDEX orchestration_v2_projection_runs_completed_account_idx (provider_instance_id=? AND completed_at>?)",
+          );
+        }
+      }
+      assert.lengthOf(laterReads, 3);
+      const laterCoveredRun = yield* addRun("later-covered", "completed", 40);
+      assert.isUndefined(yield* scoped());
+      for (const run of [earlierRun, coveredRun, laterRun, ...otherRuns, laterCoveredRun]) {
+        yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${run.runId}`;
+      }
     }),
   );
 

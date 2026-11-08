@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
+import { ServerProviderUsageWindow } from "./providerUsageLimits.ts";
 import {
   OtlpEndpointCheckInput,
   resolveEnvironmentMachineKind,
@@ -69,6 +70,18 @@ describe("server config forward compatibility", () => {
     expect(parsed.usageLimits?.windows).toEqual([
       { id: "primary", kind: "session", label: "Session", usedPercent: 12 },
     ]);
+  });
+
+  it("decodes a used-up window's first-seen time across server versions", () => {
+    const older = { id: "weekly", kind: "weekly", label: "Weekly", usedPercent: 100 };
+    const newer = { ...older, exhaustedSince: "2026-04-10T00:00:00.000Z" };
+    const { exhaustedSince: _added, ...olderFields } = ServerProviderUsageWindow.fields;
+    const decodeOlderClient = Schema.decodeUnknownSync(Schema.Struct(olderFields));
+    const decodeWindow = Schema.decodeUnknownSync(ServerProviderUsageWindow);
+
+    expect(decodeWindow(older)).toEqual(older);
+    expect(decodeWindow(newer)).toEqual(newer);
+    expect(decodeOlderClient(newer)).toEqual(older);
   });
 });
 

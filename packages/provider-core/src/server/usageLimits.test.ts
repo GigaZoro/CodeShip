@@ -1,3 +1,5 @@
+import { usageWindowLimitEnd } from "@t3tools/shared/usageLimits";
+import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
 import { applyUsageLimitsUpdate, resolveUsageLimitsAfterProbe } from "./usageLimits.ts";
@@ -80,6 +82,52 @@ describe("applyUsageLimitsUpdate", () => {
     ).toEqual({ checkedAt, windows: [weekly], unavailable: { reason: "probeFailed" } });
   });
 
+  it("keeps when a window was first seen used up until it drops below 100%", () => {
+    const at = (minutes: number) =>
+      DateTime.formatIso(DateTime.add(DateTime.makeUnsafe(checkedAt), { minutes }));
+    const spent = applyUsageLimitsUpdate({
+      previous: published,
+      checkedAt: at(1),
+      update: { windows: [{ ...weekly, usedPercent: 100 }] },
+    })!;
+    const firstSeen = { ...weekly, usedPercent: 100, exhaustedSince: at(1) };
+    expect(spent.windows).toEqual([session, firstSeen]);
+
+    const omitted = applyUsageLimitsUpdate({
+      previous: spent,
+      checkedAt: at(60),
+      update: { windows: [{ ...session, usedPercent: 55 }] },
+    })!;
+    expect(omitted.windows).toEqual([{ ...session, usedPercent: 55 }, firstSeen]);
+    expect(usageWindowLimitEnd(omitted, omitted.windows[1]!)).toBe(Date.parse(at(1 + 300)));
+
+    expect(
+      applyUsageLimitsUpdate({
+        previous: omitted,
+        checkedAt: at(61),
+        update: { windows: [{ ...weekly, usedPercent: 100 }] },
+      }),
+    ).toBe(omitted);
+
+    // A snapshot from before `exhaustedSince` counts from its check, not the update's.
+    const unstamped = { checkedAt, windows: [session, { ...weekly, usedPercent: 100 }] };
+    expect(
+      applyUsageLimitsUpdate({
+        previous: unstamped,
+        checkedAt: at(60),
+        update: { windows: [{ ...session, usedPercent: 55 }] },
+      })?.windows[1],
+    ).toEqual({ ...weekly, usedPercent: 100, exhaustedSince: checkedAt });
+
+    expect(
+      applyUsageLimitsUpdate({
+        previous: omitted,
+        checkedAt: at(62),
+        update: { windows: [{ ...weekly, usedPercent: 80 }] },
+      })?.windows[1],
+    ).toEqual({ ...weekly, usedPercent: 80 });
+  });
+
   it("preserves reset credits when a streamed window update changes usage", () => {
     const resetCredits = { availableCount: 2, nextExpiresAt: "2026-10-01T00:00:00.000Z" };
     const next = applyUsageLimitsUpdate({
@@ -125,6 +173,51 @@ describe("resolveUsageLimitsAfterProbe", () => {
     expect(resolveUsageLimitsAfterProbe({ published: live, probed: sameTime })).toEqual(sameTime);
     expect(resolveUsageLimitsAfterProbe({ published: live, probed: newer })).toEqual(newer);
   });
+
+  it.each([
+    [
+      "keeps when the replaced reading first saw it",
+      "2026-09-03T11:00:00.000Z",
+      100,
+      "2026-09-03T11:00:00.000Z",
+    ],
+    [
+      "counts from the replaced check when that reading predates the field",
+      undefined,
+      100,
+      checkedAt,
+    ],
+    [
+      "counts from the probe when the window was not used up before",
+      undefined,
+      70,
+      "2026-09-03T13:00:00.000Z",
+    ],
+  ] as const)(
+    "a probe that still finds a window used up %s",
+    (_name, exhaustedSince, publishedPercent, expected) => {
+      const probed = {
+        checkedAt: "2026-09-03T13:00:00.000Z",
+        windows: [session, { ...weekly, usedPercent: 100 }],
+      };
+      const before = {
+        checkedAt,
+        windows: [
+          session,
+          {
+            ...weekly,
+            usedPercent: publishedPercent,
+            ...(exhaustedSince ? { exhaustedSince } : {}),
+          },
+        ],
+      };
+      expect(resolveUsageLimitsAfterProbe({ published: before, probed })?.windows[1]).toEqual({
+        ...weekly,
+        usedPercent: 100,
+        exhaustedSince: expected,
+      });
+    },
+  );
 
   it("keeps the last good windows through a failed probe but not an unsupported one", () => {
     const failed = { checkedAt, windows: [], unavailable: { reason: "probeFailed" as const } };

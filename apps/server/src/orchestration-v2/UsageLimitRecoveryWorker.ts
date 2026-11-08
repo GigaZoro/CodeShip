@@ -13,7 +13,12 @@ import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { type AccountRoutingContext, accountsWithRoom } from "./AccountRouting.ts";
+import {
+  type AccountRoutingContext,
+  accountsWithRoom,
+  completedRunLiftsScope,
+  recordedUsageLimitEnd,
+} from "./AccountRouting.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
@@ -197,17 +202,20 @@ const makeSweep = Effect.gen(function* () {
       snooze: preferences.snoozeLimitedThreads,
       failover: preferences.failoverLimitedThreads,
     });
-    const limited =
+    const providers =
       preferences.failoverLimitedThreads && candidates.length > 0
-        ? yield* projections.getUsageLimitedProviderInstances(now)
+        ? yield* providerRegistry.getProviders
         : null;
     const failover =
-      limited === null
+      providers === null
         ? null
         : {
             settings: preferences,
-            providers: yield* providerRegistry.getProviders,
-            recordedLimits: limited,
+            providers,
+            recordedLimits: yield* projections.getUsageLimitedProviderInstances(
+              now,
+              completedRunLiftsScope(providers),
+            ),
             nowMs,
           };
     let acted = false;
@@ -265,8 +273,11 @@ const makeSweep = Effect.gen(function* () {
     const wakeAt = yield* projections.getLimitRecoveryWakeAt(now);
     // A waiting thread can move to another account the moment that account's limit resets.
     const accountResetAt = Math.min(
-      ...[...(limited?.values() ?? [])].flatMap(({ resetAt }) =>
-        resetAt === null ? [] : [Date.parse(resetAt)],
+      ...(failover?.providers ?? []).flatMap((provider) =>
+        (failover?.recordedLimits.get(provider.instanceId) ?? []).flatMap((refusal) => {
+          const end = recordedUsageLimitEnd(provider, refusal);
+          return end > nowMs ? [end] : [];
+        }),
       ),
     );
     yield* due.record(readVersion, Math.min(wakeAt ?? Infinity, accountResetAt), nowMs);

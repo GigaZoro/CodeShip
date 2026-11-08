@@ -6,6 +6,7 @@ import {
   type ProviderInteractionMode,
 } from "@t3tools/contracts";
 import { supportsAutoCoordinator } from "@t3tools/shared/serverSettings";
+import { CLAUDE_MODEL_FAMILIES } from "@t3tools/shared/usageLimits";
 
 // Codex truncates entries over 4,000 bytes; keep each section self-contained and below that limit.
 export const T3_CODE_ORCHESTRATION_SECTIONS: ReadonlyArray<string> = [
@@ -42,6 +43,7 @@ const AUTO_COORDINATOR_SUBAGENT_TOOLS: ReadonlyMap<string, string> = new Map([
   ["codex", "Codex `spawn_agent` with `model`, then wait"],
 ]);
 
+const CODEX_SPAWN_EFFORT_PARAMETER = "reasoning_effort";
 const MAX_AUTO_COORDINATOR_MODELS = 8;
 const AUTO_MODEL_HINTS = [
   ["opus", "hardest design, subtle bugs, reviews"],
@@ -60,12 +62,22 @@ const autoProviderName = (driver: ProviderDriverKind) =>
 interface AutoBriefModel {
   readonly slug: string;
   readonly name: string;
+  readonly aliases?: ReadonlyArray<string> | undefined;
   readonly capabilities?:
     | { readonly optionDescriptors?: ReadonlyArray<ProviderOptionDescriptor> | undefined }
     | null
     | undefined;
 }
 
+/** Codex delivers the brief as an additionalContext entry under this key and wraps it in the same tag. */
+export const AUTO_MODE_CONTEXT_KEY = "t3_auto_mode";
+
+/** The tagged form for providers whose brief rides on the prompt. */
+export function autoModePromptBlock(brief: string): string {
+  return `<${AUTO_MODE_CONTEXT_KEY}>\n${brief}\n</${AUTO_MODE_CONTEXT_KEY}>`;
+}
+
+/** The brief's body, without its `t3_auto_mode` tag. */
 export function autoCoordinatorInstructions(input: {
   readonly driver: ProviderDriverKind;
   readonly model: string;
@@ -89,76 +101,88 @@ export function autoCoordinatorInstructions(input: {
   const tool = AUTO_COORDINATOR_SUBAGENT_TOOLS.get(input.driver);
   if (input.primary === null || tool === undefined || !supportsAutoCoordinator(input.driver))
     return null;
-  const own = input.models.find((model) => model.slug === input.model)?.name ?? input.model;
-  const describePrimary = (
-    selection: NonNullable<typeof input.primary>,
-    models: ReadonlyArray<AutoBriefModel>,
-  ) => {
-    const name = models.find((model) => model.slug === selection.model)?.name ?? selection.model;
-    return `${name} (\`${selection.model}\`)${(selection.options ?? []).map(({ id, value }) => `, ${id} ${value}`).join("")}`;
-  };
-  const primary = describePrimary(input.primary, input.models);
-  const otherPrimary = input.otherPrimary;
-  const review =
-    otherPrimary === undefined
-      ? `- Review changes on your primary Auto model from Settings, ${primary}, yourself or with a fresh native subagent on that model.`
-      : `- Review changes on primary Auto models from Settings, preferring the provider that did not write the code; use both for big or risky changes. Yours: ${primary}, yourself or a fresh native subagent on that model. Other provider: ${describePrimary(otherPrimary, input.otherProviders?.flatMap((provider) => provider.models) ?? [])}; \`delegate_task\` with role "review" and target \`${JSON.stringify({ ...otherPrimary, options: Object.fromEntries((otherPrimary.options ?? []).map(({ id, value }) => [id, value])) })}\`.`;
-  const describeModel = (model: AutoBriefModel, own: boolean) => {
-    const hint = AUTO_MODEL_HINTS.find(([family]) =>
-      model.slug.toLowerCase().includes(family),
-    )?.[1];
-    const effort = model.capabilities?.optionDescriptors?.find(
+  const nativeModel = (model: AutoBriefModel) =>
+    input.driver === "claudeAgent"
+      ? model.aliases?.find((alias) => CLAUDE_MODEL_FAMILIES.includes(alias))
+      : model.slug;
+  const effort = (model: AutoBriefModel) => {
+    const descriptor = model.capabilities?.optionDescriptors?.find(
       (option) => option.type === "select" && REASONING_EFFORT_OPTION_IDS.includes(option.id),
     );
-    return `${model.name} (\`${model.slug}\`${own && model.slug === input.model ? ", you" : ""})${hint === undefined ? "" : `: ${hint}`}${effort?.type === "select" ? `; ${effort.id}: ${effort.options.map((option) => option.id).join(", ")}` : ""}`;
+    return descriptor?.type === "select"
+      ? { id: descriptor.id, values: descriptor.options.map((option) => option.id).join(", ") }
+      : null;
   };
-  const others = input.otherProviders ?? [];
+  const effortKey = (model: AutoBriefModel) => {
+    const value = effort(model);
+    return value === null ? "" : `${value.id}: ${value.values}`;
+  };
+  // Claude's `Agent` takes only a model; Codex's `spawn_agent` also takes `reasoning_effort`, stated once on its provider line.
+  const describeModels = (models: ReadonlyArray<AutoBriefModel>, native: boolean) => {
+    const counts = new Map<string, number>();
+    for (const model of models) {
+      counts.set(effortKey(model), (counts.get(effortKey(model)) ?? 0) + 1);
+    }
+    const commonKey = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
+    const common = models
+      .map(effort)
+      .find((value, index) => effortKey(models[index]!) === commonKey);
+    const lines = models.map((model) => {
+      const hint = AUTO_MODEL_HINTS.find(([family]) =>
+        model.slug.toLowerCase().includes(family),
+      )?.[1];
+      const own = effort(model);
+      const differs = !(native && input.driver === "claudeAgent") && effortKey(model) !== commonKey;
+      const effortNote = !differs
+        ? ""
+        : own === null
+          ? "; no effort option"
+          : own.id === common?.id
+            ? `; effort: ${own.values}`
+            : `; \`${own.id}\`: ${own.values}`;
+      return `  - ${model.name} (\`${native ? nativeModel(model) : model.slug}\`)${hint ? `: ${hint}` : ""}${effortNote}`;
+    });
+    return { common: common ?? null, lines: lines.join("\n") };
+  };
+  const nativeModels = input.models.filter((model) => nativeModel(model) !== undefined);
+  const own = describeModels(nativeModels.slice(0, MAX_AUTO_COORDINATOR_MODELS), true);
+  const nativeEffort =
+    input.driver === "codex" && own.common !== null
+      ? `, \`${CODEX_SPAWN_EFFORT_PARAMETER}\` ${own.common.values}`
+      : "";
+  const sections = [
+    `- ${autoProviderName(input.driver)} native subagents (${tool})${nativeEffort}:\n${own.lines}`,
+  ];
   const seen = new Set<string>();
-  const availableOtherModels = others.flatMap((provider) =>
-    provider.models.flatMap((model) => {
-      if (seen.has(model.slug)) return [];
-      seen.add(model.slug);
-      return [{ provider, model }];
-    }),
-  );
-  const omitted =
-    input.models.length > MAX_AUTO_COORDINATOR_MODELS ||
-    availableOtherModels.length > MAX_AUTO_COORDINATOR_MODELS;
-  const more = omitted ? "\n- More accounts and models: call `orchestrator_capabilities`." : "";
-  if (others.length > 0) {
-    const ownModels = input.models
-      .slice(0, MAX_AUTO_COORDINATOR_MODELS)
-      .map((model) => describeModel(model, true))
-      .join("; ");
-    const otherModels = availableOtherModels
-      .slice(0, MAX_AUTO_COORDINATOR_MODELS)
-      .map(
-        ({ provider, model }) =>
-          `  - ${describeModel(model, false)}; target \`${JSON.stringify({ providerInstanceId: provider.providerInstanceId, model: model.slug })}\``,
-      )
-      .join("\n");
-    return `<t3_auto_mode>
-You coordinate this request in T3.CodeShip Auto mode, as ${own}. Spend your own model on judgment and review, and the best-fitting model below on the rest.
-- Size the request first. Do a tiny one yourself: a question, an explanation, a one-line edit.
-- Otherwise split the work and give each piece (implementation, research, tests, mechanical edits) to the cheapest model below that can do it well, from either provider. Keep your own model for design, subtle bugs, and work another model got wrong. Brief each with the goal, the files, the constraints, and how to check the result.
-- ${autoProviderName(input.driver)} models, as a native subagent (${tool}): ${ownModels}.
-- ${autoProviderName(others[0]!.driver)} models, with \`delegate_task\` (effort goes in target.options):
-${otherModels}
-${review}${more}
-- Check every result before you reply: read the diff, run the relevant checks, and compare it with the request. Fix small problems yourself; send bigger ones back with your findings, or take the work over.
-</t3_auto_mode>`;
+  let remaining = MAX_AUTO_COORDINATOR_MODELS;
+  let omitted = nativeModels.length > remaining;
+  for (const provider of input.otherProviders ?? []) {
+    const available = provider.models.filter((model) => !seen.has(model.slug));
+    const models = available.slice(0, remaining);
+    omitted ||= available.length > remaining;
+    if (models.length === 0) continue;
+    remaining -= models.length;
+    for (const model of models) seen.add(model.slug);
+    const group = describeModels(models, false);
+    const target = JSON.stringify({
+      providerInstanceId: provider.providerInstanceId,
+      model: "<slug>",
+      ...(group.common === null ? {} : { options: { [group.common.id]: "<effort>" } }),
+    });
+    sections.push(
+      `- ${autoProviderName(provider.driver)} via \`delegate_task\`, target \`${target}\`${group.common === null ? "" : `, effort ${group.common.values}`}:\n${group.lines}`,
+    );
   }
-  const models = input.models
-    .slice(0, MAX_AUTO_COORDINATOR_MODELS)
-    .map((model) => `${model.name} (\`${model.slug}\`${model.slug === input.model ? ", you" : ""})`)
-    .join(", ");
-  return `<t3_auto_mode>
-You coordinate this request in T3.CodeShip Auto mode, as ${own}. Spend your own model on judgment and cheaper models on routine work.
-- Size the request first. Do a tiny one yourself: a question, an explanation, a one-line edit.
-- Otherwise run the work as a native subagent (${tool}) and set its model to the cheapest one that can do it well, even where the tool prefers your own: a small model for searches, mechanical edits and test runs, a mid-size model for ordinary features and fixes. Keep your own model for design, subtle bugs, and work a cheaper model got wrong. Brief the subagent with the goal, the files, the constraints, and how to check the result.
-- Check every result before you reply: read the diff, run the relevant checks, and compare it with the request. Fix small problems yourself; send bigger ones back with your findings, or take the work over.${models === "" ? "" : `\n- Models on this account: ${models}.`}
-${review}${more}
-</t3_auto_mode>`;
+  const ownPrimary = input.models.find((model) => model.slug === input.primary!.model);
+  const primary = `${ownPrimary?.name ?? input.primary.model}${(input.primary.options ?? []).map(({ id, value }) => `, ${id} ${value}`).join("")}`;
+  const review =
+    input.otherPrimary === undefined
+      ? ""
+      : ` Prefer the provider that did not write the code; use both for big or risky changes. Other reviewer: \`delegate_task\` role "review", target \`${JSON.stringify({ ...input.otherPrimary, options: Object.fromEntries((input.otherPrimary.options ?? []).map(({ id, value }) => [id, value])) })}\`.`;
+  return `Auto: coordinate as ${input.models.find((model) => model.slug === input.model)?.name ?? input.model}. Do tiny requests yourself; otherwise give each piece to the cheapest capable model below. Keep judgment, subtle bugs and review. Brief workers with goal, files, constraints and checks.
+${sections.join("\n")}
+- Review on your Settings primary, ${primary}, yourself${ownPrimary && nativeModel(ownPrimary) ? ` or a fresh native subagent (\`${nativeModel(ownPrimary)}\`)` : ""}.${review}
+- Read results and diffs, run relevant checks, fix small issues yourself; take over or reassign bigger ones.${omitted ? "\n- More accounts and models: call `orchestrator_capabilities`." : ""}`;
 }
 
 export const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `

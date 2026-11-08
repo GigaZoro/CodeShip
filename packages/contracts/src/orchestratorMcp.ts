@@ -613,13 +613,12 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
   constraints: Schema.Array(Schema.String),
   limitedUntil: Schema.optional(
     Schema.String.annotate({
-      description: "Usage-limited until this known reset time. Pick another account.",
+      description: "Provider reset or T3 hold end (ISO time). Pick another account.",
     }),
   ),
   usageLimited: Schema.optional(
     Schema.Literal(true).annotate({
-      description:
-        "Usage-limited. When limitedUntil is absent, the reset is unknown. Pick another account.",
+      description: "Usage-limited until limitedUntil (provider reset or T3 hold).",
     }),
   ),
 });
@@ -674,7 +673,7 @@ const scheduledTaskModelFields = {
   }),
   followsDefaultModel: Schema.optional(Schema.Boolean).annotate({
     description:
-      "Use the environment's scheduled tasks model; defaults true unless modelSelection is given.",
+      "Follow the task default. True unless modelSelection is given; cannot combine true with it.",
   }),
 };
 

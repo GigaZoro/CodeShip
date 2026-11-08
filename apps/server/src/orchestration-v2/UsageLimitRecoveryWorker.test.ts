@@ -138,7 +138,7 @@ const failover = (overrides: Partial<Parameters<typeof limitFailoverCommand>[0]>
     recordedLimits: new Map([
       [
         ProviderInstanceId.make("claude_limited"),
-        { resetAt: null, refusedAt: "2026-10-29T11:00:00Z" },
+        [{ resetAt: null, refusedAt: "2026-10-29T11:00:00Z" }],
       ],
     ]),
     nowMs: now,
@@ -235,7 +235,7 @@ describe("limitFailoverCommand", () => {
         recordedLimits: new Map(
           ["claude_limited", "claude_second", "claude_first"].map((instanceId) => [
             ProviderInstanceId.make(instanceId),
-            { resetAt: null, refusedAt: "2026-10-29T11:00:00Z" },
+            [{ resetAt: null, refusedAt: "2026-10-29T11:00:00Z" }],
           ]),
         ),
       }),
@@ -307,9 +307,9 @@ it.effect("idle sweeps skip SQL until the next wake time or a relevant event", (
   }),
 );
 
-it.effect(
-  "a thread waiting for its reset is checked again when another account's limit resets",
-  () =>
+it.effect.each([false, true])(
+  "a waiting thread wakes when another account's limit ends (bounded hold: %s)",
+  (boundedHold) =>
     Effect.gen(function* () {
       yield* TestClock.setTime(now);
       const queries = yield* Queue.unbounded<number>();
@@ -325,18 +325,23 @@ it.effect(
                 ),
               getUsageLimitedProviderInstances: () =>
                 Effect.succeed(
-                  new Map<ProviderInstanceId, ProjectionStore.RecordedUsageLimit>([
+                  new Map<ProviderInstanceId, ReadonlyArray<ProjectionStore.RecordedUsageLimit>>([
                     [
                       ProviderInstanceId.make("unknown-reset"),
-                      { resetAt: null, refusedAt: "2026-10-29T11:00:00Z" },
+                      [{ resetAt: null, refusedAt: "2026-10-29T11:00:00Z" }],
                     ],
                     [
                       ProviderInstanceId.make("claudeAgent"),
-                      { resetAt, refusedAt: "2026-10-29T11:00:00Z" },
+                      [{ resetAt, refusedAt: "2026-10-29T11:00:00Z" }],
                     ],
                     [
                       ProviderInstanceId.make("claude_first"),
-                      { resetAt: "2026-10-29T12:02:00.000Z", refusedAt: "2026-10-29T11:00:00Z" },
+                      [
+                        {
+                          resetAt: boundedHold ? null : "2026-10-29T12:02:00.000Z",
+                          refusedAt: "2026-10-29T11:00:00Z",
+                        },
+                      ],
                     ],
                   ]),
                 ),
@@ -354,7 +359,24 @@ it.effect(
               streamChanges: Stream.never,
             }),
             Layer.mock(ProviderRegistry.ProviderRegistry)({
-              getProviders: Effect.succeed([provider("claudeAgent"), provider("claude_first")]),
+              getProviders: Effect.succeed([
+                provider("claudeAgent"),
+                {
+                  ...provider("claude_first"),
+                  usageLimits: {
+                    checkedAt: "2026-10-29T11:00:00Z",
+                    windows: [
+                      {
+                        id: "session",
+                        kind: "session",
+                        label: "Session",
+                        usedPercent: 10,
+                        windowDurationMins: 62,
+                      },
+                    ],
+                  },
+                },
+              ]),
               streamChanges: Stream.never,
             }),
           ),

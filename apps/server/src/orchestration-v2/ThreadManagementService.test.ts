@@ -243,7 +243,7 @@ it.effect(
               routeInputs.push(input);
               return { ...input.selection, instanceId: routed };
             }),
-          limitedAccounts: Effect.succeed(new Map()),
+          limits: Effect.succeed({ accounts: new Map(), models: new Map() }),
           launchLimit: () => Effect.succeed(null),
           failoverLaunch: (input) => Effect.succeed(input.selection),
         }),
@@ -302,7 +302,7 @@ it.effect("a buffered provider wake-up stays on its account when routing would m
             routeInputs.push(input);
             return { ...input.selection, instanceId: routed };
           }),
-        limitedAccounts: Effect.succeed(new Map()),
+        limits: Effect.succeed({ accounts: new Map(), models: new Map() }),
         launchLimit: () => Effect.succeed(null),
         failoverLaunch: (input) => Effect.succeed(input.selection),
       }),

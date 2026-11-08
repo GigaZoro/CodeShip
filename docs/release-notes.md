@@ -1,3 +1,11 @@
+## 2026-11-08 — Auto limit holds expire and briefs take less context
+
+- A usage refusal without a reset holds the account for five hours, or its shortest reported usage window when that is shorter. Named launches respect the same hold; fresh snapshots do not erase a recent refusal. A used-up usage window without a reset holds from when it was first seen used up, for at most that long. Usage → Limits shows the hold's end as the return time and stops showing the account limited after it.
+- Provider-attributed model limits exclude only that model family, in Auto's brief too. They last until their reset; a completed run of that family lifts them early, however many other models ran since, and a run of another model no longer does. A later Claude limit that names no window keeps a model limit to its family. Driver-only delegates keep the parent's usable account and effort, and API-key coordinators keep their native models.
+- Auto briefs use Claude's native model aliases, share effort choices across models, and go with every top-level Auto turn. Claude gets the turn's brief back when it compacts the conversation mid-turn. Codex's brief states the `reasoning_effort` values its native subagents accept. A failed limits read no longer prevents an Auto turn.
+- Agents cannot set an own scheduled-task model and follow the default in the same request.
+- Auto turns, agent launches and account routing no longer slow down as run history grows: checking an account's usage limits reads only its runs since the refusal.
+
 ## 2026-11-08 — Updates no longer wait for hours on busy chats
 
 - **Update when it finishes** now installs once the background work listed when you chose it is done. Before, every new command or subagent a chat started kept the update waiting, so a chat working in rounds could hold it for hours. Work started later stops in the restart, and its chat restarts it when it resumes.

@@ -85,7 +85,10 @@ const clientLaunchHarness = (input: {
   readonly refusedByCeiling?: true;
   readonly autoModeProvider?: ProviderDriverKind;
   /** Accounts a usage limit stopped, with their resets. */
-  readonly limited?: ReadonlyMap<ProviderInstanceId, ProjectionStore.RecordedUsageLimit>;
+  readonly limited?: ReadonlyMap<
+    ProviderInstanceId,
+    ReadonlyArray<ProjectionStore.RecordedUsageLimit>
+  >;
   readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
   /** A thread calls instead of a client: the first shell, whose parents follow it. */
   readonly callerThreads?: ReadonlyArray<{
@@ -613,7 +616,7 @@ it.effect("a launch onto a usage-limited account fails before any thread exists"
         runtimeModeCeiling: "full-access",
         launched,
         providers,
-        limited: new Map([[claude, { resetAt, refusedAt: "2026-11-03T00:00:00Z" }]]),
+        limited: new Map([[claude, [{ resetAt, refusedAt: "2026-11-03T00:00:00Z" }]]]),
         autoModeProvider: ProviderDriverKind.make("claudeAgent"),
         settings: {
           providerInstances: {

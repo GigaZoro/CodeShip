@@ -267,7 +267,6 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             {
               selection: modelSelection,
               projectId,
-              explicitAccount: input.modelSelection !== undefined,
             },
             yield* Effect.serviceOption(AccountRouting.AccountRouting),
           );

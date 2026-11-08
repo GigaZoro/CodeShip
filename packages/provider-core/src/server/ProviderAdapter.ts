@@ -462,6 +462,7 @@ export interface ProviderAdapterV2TurnInput {
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
   readonly appContext?: ReadonlyArray<{ readonly key: string; readonly text: string }>;
+  readonly autoModeInstructions?: string;
 }
 
 export interface ProviderAdapterV2SteerInput {

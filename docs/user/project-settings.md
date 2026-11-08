@@ -63,7 +63,8 @@ follows the model above and its project overrides. A task with **Use default mod
 which is how new tasks start, runs this model on every run, so changing it here changes all of
 them. Turn the switch off in a task to pick a model for that task alone. Tasks an agent schedules
 use the default too, unless you ask the agent to choose a model for that task. Agents
-can also restore **Use default model** without losing the task's own choice. Before saving
+can also restore **Use default model** without losing the task's own choice. An agent
+cannot set an own model and turn on **Use default model** in the same request. Before saving
 an agent's model change, CodeShip checks the account and its advertised models and
 options. An unknown account, unknown model or unavailable model catalog leaves the
 saved task unchanged. When some tasks still run their own model, **Use default for all** under the
@@ -76,6 +77,15 @@ picked on one account switches even while another account of that provider has u
 [Auto](./thread-sidebar.md#inspect-agent-work) as the default to move to that account instead.
 Auto can be the fallback model too: new threads then start on Auto's provider and model, on
 whichever of its accounts has usage left.
+
+Auto adds a compact model brief to every top-level Auto message. It lists native Claude
+models by their supported family aliases. A usage refusal with no reset holds an
+account for five hours, or its shortest reported usage window when that is shorter,
+even for named launches. Fresh usage checks do not lift the hold early; a completed
+run on that account started after the refusal does. A limit Claude attributes to one
+model family holds only that family, until its reset or a completed run of that family.
+A used-up usage window without a reset holds for at most the same time, counted from when
+it was first seen used up, and so does the switch to the fallback model.
 
 ## Pin and archive projects
 

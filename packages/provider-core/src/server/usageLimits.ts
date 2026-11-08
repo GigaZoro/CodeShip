@@ -47,6 +47,26 @@ export function makeUnavailableUsageLimits(input: {
   };
 }
 
+/**
+ * Stamps a window read at `checkedAt` with when it was first seen at 100%, carried from its
+ * `previous` reading while it stays there, so a later update cannot move a no-reset window's hold.
+ */
+function trackExhaustion(
+  window: ServerProviderUsageWindow,
+  previous: { readonly window: ServerProviderUsageWindow | undefined; readonly checkedAt: string },
+  checkedAt: string,
+): ServerProviderUsageWindow {
+  const since =
+    window.usedPercent < 100
+      ? undefined
+      : previous.window !== undefined && previous.window.usedPercent >= 100
+        ? (previous.window.exhaustedSince ?? previous.checkedAt)
+        : checkedAt;
+  if (window.exhaustedSince === since) return window;
+  const { exhaustedSince: _replaced, ...rest } = window;
+  return since === undefined ? rest : { ...rest, exhaustedSince: since };
+}
+
 export function applyUsageLimitsUpdate(input: {
   readonly previous: ServerProviderUsageLimits | undefined;
   readonly update: ProviderUsageLimitsUpdate;
@@ -57,20 +77,25 @@ export function applyUsageLimitsUpdate(input: {
     return previous;
   }
   const merged = new Map(previous?.windows.map((window) => [window.id, window] as const));
+  const previousCheckedAt = previous?.checkedAt ?? input.checkedAt;
   // Codex repeats unchanged limits on token ticks; avoid allocating snapshots for no-ops.
   let changed = update.available === true && previous?.unavailable !== undefined;
   for (const window of update.windows) {
     const existing = merged.get(window.id);
-    const next: ServerProviderUsageWindow = {
-      ...window,
-      usedPercent: clampPercent(window.usedPercent),
-      ...(window.resetsAt === undefined && existing?.resetsAt !== undefined
-        ? { resetsAt: existing.resetsAt }
-        : {}),
-      ...(window.windowDurationMins === undefined && existing?.windowDurationMins !== undefined
-        ? { windowDurationMins: existing.windowDurationMins }
-        : {}),
-    };
+    const next = trackExhaustion(
+      {
+        ...window,
+        usedPercent: clampPercent(window.usedPercent),
+        ...(window.resetsAt === undefined && existing?.resetsAt !== undefined
+          ? { resetsAt: existing.resetsAt }
+          : {}),
+        ...(window.windowDurationMins === undefined && existing?.windowDurationMins !== undefined
+          ? { windowDurationMins: existing.windowDurationMins }
+          : {}),
+      },
+      { window: existing, checkedAt: previousCheckedAt },
+      input.checkedAt,
+    );
     if (existing === undefined || !usageWindowEquals(existing, next)) {
       merged.set(window.id, next);
       changed = true;
@@ -84,8 +109,12 @@ export function applyUsageLimitsUpdate(input: {
     : previous === undefined
       ? { reason: "probeFailed" as const }
       : previous.unavailable;
+  // The new `checkedAt` must not become the anchor of a used-up window this update omits.
+  const windows = [...merged.values()].map((window) =>
+    trackExhaustion(window, { window, checkedAt: previousCheckedAt }, input.checkedAt),
+  );
   return {
-    ...makeUsageLimits({ checkedAt: input.checkedAt, windows: merged.values() }),
+    ...makeUsageLimits({ checkedAt: input.checkedAt, windows }),
     ...(previous?.resetCredits !== undefined ? { resetCredits: previous.resetCredits } : {}),
     ...(unavailable !== undefined ? { unavailable } : {}),
   };
@@ -98,8 +127,29 @@ function usageWindowEquals(a: ServerProviderUsageWindow, b: ServerProviderUsageW
     a.label === b.label &&
     a.usedPercent === b.usedPercent &&
     a.resetsAt === b.resetsAt &&
-    a.windowDurationMins === b.windowDurationMins
+    a.windowDurationMins === b.windowDurationMins &&
+    a.exhaustedSince === b.exhaustedSince
   );
+}
+
+/** A probe's windows keep when the reading they replace first saw them used up. */
+function carryExhaustion(
+  published: ServerProviderUsageLimits | undefined,
+  probed: ServerProviderUsageLimits,
+): ServerProviderUsageLimits {
+  const before = new Map(published?.windows.map((window) => [window.id, window] as const));
+  const previousCheckedAt = published?.checkedAt ?? probed.checkedAt;
+  let changed = false;
+  const windows = probed.windows.map((window) => {
+    const tracked = trackExhaustion(
+      window,
+      { window: before.get(window.id), checkedAt: previousCheckedAt },
+      probed.checkedAt,
+    );
+    changed ||= tracked !== window;
+    return tracked;
+  });
+  return changed ? { ...probed, windows } : probed;
 }
 
 export function resolveUsageLimitsAfterProbe(input: {
@@ -119,5 +169,5 @@ export function resolveUsageLimitsAfterProbe(input: {
   ) {
     return { ...probed, checkedAt: published.checkedAt, windows: published.windows };
   }
-  return probed;
+  return probed && carryExhaustion(published, probed);
 }

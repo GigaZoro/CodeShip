@@ -33,6 +33,7 @@ import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import { completedRunLiftsScope } from "./AccountRouting.ts";
 import { limitFailoverCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
@@ -1040,7 +1041,10 @@ it.live("moves a turn its provider holds for a usage limit to an account with ro
         assert.isUndefined(yield* candidates(false));
         const candidate = yield* candidates(true);
         assert.equal(candidate?.status, "running");
-        const limitedInstanceIds = yield* projections.getUsageLimitedProviderInstanceIds(now);
+        const limitedInstanceIds = yield* projections.getUsageLimitedProviderInstances(
+          now,
+          completedRunLiftsScope(providers),
+        );
         assert.isTrue(limitedInstanceIds.has(providerInstanceId));
         const failover =
           candidate === undefined
@@ -1052,7 +1056,10 @@ it.live("moves a turn its provider holds for a usage limit to an account with ro
                   providerInstances: { [targetId]: { driver } },
                 },
                 providers,
-                recordedLimits: yield* projections.getUsageLimitedProviderInstances(now),
+                recordedLimits: yield* projections.getUsageLimitedProviderInstances(
+                  now,
+                  completedRunLiftsScope(providers),
+                ),
                 nowMs: DateTime.toEpochMillis(now),
               });
         assert.isNotNull(failover);
@@ -1077,7 +1084,10 @@ it.live("moves a turn its provider holds for a usage limit to an account with ro
         );
         // The account that held the turn stays skipped until its reset.
         assert.isUndefined(yield* candidates(true));
-        const stillLimited = yield* projections.getUsageLimitedProviderInstanceIds(now);
+        const stillLimited = yield* projections.getUsageLimitedProviderInstances(
+          now,
+          completedRunLiftsScope(providers),
+        );
         assert.isTrue(stillLimited.has(providerInstanceId));
         assert.isFalse(stillLimited.has(targetId));
       }).pipe(Effect.provide(ProviderReplayHarness.layerWithRegistry({ name }, layerRegistry)));
