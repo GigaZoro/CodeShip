@@ -790,6 +790,11 @@ const make = Effect.gen(function* () {
     });
     switch (command.type) {
       case "message.dispatch":
+        // A buffered wake is a turn the provider already started in its live session; another
+        // account would restart that session and find nothing to drain. A limit fails over instead.
+        if (command.createdBy === "agent" && command.creationSource === "provider") {
+          return Effect.succeed(command);
+        }
         return route({
           threadId: command.threadId,
           selection: command.modelSelection,

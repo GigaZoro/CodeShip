@@ -10940,14 +10940,31 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 }
                 yield* attachTurn;
                 const drained = (yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages ?? [];
-                yield* Ref.update(requestedContinuations, (current) => {
+                const requestedHere = yield* Ref.modify(requestedContinuations, (current) => {
+                  if (!current.has(nativeThreadId)) return [false, current] as const;
                   const updated = new Set(current);
                   updated.delete(nativeThreadId);
-                  return updated;
+                  return [true, updated] as const;
                 });
                 if (drained.length === 0) {
                   const completedAt = yield* DateTime.now;
-                  yield* finalizeActiveTurn({ context, status: "completed", completedAt });
+                  // Unrequested here, the session that buffered the wake is gone (another account,
+                  // or a restart cleared it), so no wake output can ever arrive on this one.
+                  yield* finalizeActiveTurn(
+                    requestedHere
+                      ? { context, status: "completed", completedAt }
+                      : {
+                          context,
+                          status: "failed",
+                          completedAt,
+                          failure: makeProviderFailure({
+                            class: "provider_error",
+                            code: "claude_wake_undelivered",
+                            message:
+                              "A background task finished, but the Claude session that received its notice closed before it could reply, for example because the chat moved to another account. Send a message to continue.",
+                          }),
+                        },
+                  );
                   return;
                 }
                 // Replay results last to avoid rebuffering later frames. An empty turn's result must not settle a newer running turn.

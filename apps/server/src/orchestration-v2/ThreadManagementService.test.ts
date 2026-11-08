@@ -279,6 +279,54 @@ it.effect(
   },
 );
 
+it.effect("a buffered provider wake-up stays on its account when routing would move it", () => {
+  const threadId = ThreadId.make("thread:thread-management:chokepoint");
+  const current = ProviderInstanceId.make("codex_work");
+  const routed = ProviderInstanceId.make("codex_personal");
+  const dispatched: Array<OrchestrationV2ServerCommand> = [];
+  const routeInputs: Array<unknown> = [];
+  const layerTest = layerDispatchChokepointTest(
+    ServerSettings.layerTest({
+      providerInstances: {
+        [current]: { driver: "codex", enabled: true },
+        [routed]: { driver: "codex", enabled: true },
+      },
+    }),
+    {
+      autoAccount: true,
+      accountRouting: Layer.succeed(AccountRouting.AccountRouting, {
+        route: (input) =>
+          Effect.sync(() => {
+            routeInputs.push(input);
+            return { ...input.selection, instanceId: routed };
+          }),
+        limitedAccounts: Effect.succeed(new Map()),
+        launchLimit: () => Effect.succeed(null),
+        failoverLaunch: (input) => Effect.succeed(input.selection),
+      }),
+    },
+  )(dispatched);
+
+  return Effect.gen(function* () {
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    yield* threads.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("command:thread-management:provider-wake"),
+      threadId,
+      messageId: MessageId.make("message:thread-management:provider-wake"),
+      text: 'Background command "verify" completed (exit code 0)',
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+      createdBy: "agent",
+      creationSource: "provider",
+    });
+
+    expect(routeInputs).toEqual([]);
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0]).not.toHaveProperty("modelSelection");
+  }).pipe(Effect.provide(layerTest));
+});
+
 it.effect("waitForThread follows a restart continuation instead of the cut run", () =>
   Effect.gen(function* () {
     const projectId = ProjectId.make("project:thread-management:wait-restart");

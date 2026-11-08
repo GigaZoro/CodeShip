@@ -1,3 +1,8 @@
+## 2026-11-08 — A finished background command no longer ends in an empty turn
+
+- In an **Auto** chat whose account has run out of usage, the turn a finished background command starts now stays on the account that ran the command. Before, it moved to another account, ended within seconds without a reply, and left the chat idle as if the work were done. Now it either replies, or reaches the usage limit and the chat moves to the next account, as **Switch accounts at usage limits** does for any turn.
+- If a Claude chat's follow-up turn still cannot reach the session that received the notice, for example after that session restarted, the turn now fails with a message saying so instead of showing as completed with no output.
+
 ## 2026-11-08 — Codex shows signed out as soon as ChatGPT revokes its connection
 
 - When ChatGPT revokes the connection of a Codex account you connected with ChatGPT, T3.CodeShip now renews it once on the next model check or session start. If ChatGPT refuses the renewal, the account shows as signed out right away, and new chats, generated titles and branch names, and MCP lists say **Your ChatGPT connection was revoked. Sign in again.** Before, the account stayed signed in and everything failed with "Check your connection and retry" until the server restarted.

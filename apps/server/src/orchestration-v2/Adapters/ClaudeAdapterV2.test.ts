@@ -11451,7 +11451,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
   );
 
-  it.effect("settles a continuation turn immediately when no wake output is buffered", () =>
+  // A wake buffered by a session on another account, or one a restart cleared, never reaches this one.
+  it.effect("fails a continuation turn this session never requested instead of ending empty", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeWakeHarness;
@@ -11471,7 +11472,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
 
         yield* harness.awaitTerminal(1);
-        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+        const terminal = harness.terminalEvents()[0];
+        assert.equal(terminal?.status, "failed");
+        if (terminal?.status !== "failed") return;
+        assert.equal(terminal.failure.code, "claude_wake_undelivered");
+        assert.include(terminal.failure.message, "another account");
         assert.lengthOf(harness.offeredMessages, 0);
       }).pipe(
         Effect.provide(

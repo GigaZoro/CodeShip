@@ -457,7 +457,10 @@ the default model in settings for new threads. A scheduled task's model can be A
 too, and an agent you ask to start a thread in Auto, or `t3 thread start --auto`,
 starts it there. A new thread starts on the primary provider's first account in its
 account order. With **Switch accounts at usage limits** on, it starts on the first
-one that has usage left and switches accounts at usage limits. A thread that
+one that has usage left and switches accounts at usage limits. The turn a
+finished background command starts stays on the account that ran the command,
+because only that session has its result; if that account is out of usage, the
+thread moves on at that limit as described above. A thread that
 already ran stays with its provider and runs that provider's coordinator. Changing
 a coordinator model moves Auto threads to it on their next message. Picking a model
 in the picker turns Auto off for that thread.
