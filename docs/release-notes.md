@@ -1,6 +1,7 @@
-## 2026-11-08 — Muse replay tests pass again
+## 2026-11-08 — Muse and Codex replay tests pass again
 
-- The Muse replay tests no longer keep their own copy of the instructions T3.CodeShip gives agents. They build the current text when they run, so they pass again and keep passing when that wording changes. Nothing changes in the app.
+- The Muse replay tests no longer keep their own copy of the instructions T3.CodeShip gives agents. They build the current text when they run, so they pass again and keep passing when that wording changes.
+- The Codex replay tests no longer check the app name T3.CodeShip reports to Codex, the same way they already skip its version, so a fixture recorded under another name passes. Nothing changes in the app.
 
 ## 2026-11-08 — Branches stay put while an agent works, on mobile and for every client
 

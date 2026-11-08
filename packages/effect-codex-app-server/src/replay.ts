@@ -187,10 +187,12 @@ function normalizeReplayFrame(value: unknown): unknown {
   ) {
     const params = normalized.params as Record<string, unknown>;
     if (typeof params.clientInfo === "object" && params.clientInfo !== null) {
+      // The app's release and display name: forks and renames change them, the protocol does not.
       normalized.params = {
         ...params,
         clientInfo: {
           ...(params.clientInfo as Record<string, unknown>),
+          title: "<ignored>",
           version: "<ignored>",
         },
       };
