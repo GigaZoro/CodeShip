@@ -110,6 +110,15 @@ terminal, open **Settings → Maintenance & about** and choose **Install** next 
 terminal afterwards. **Remove** takes it off again. If you already have `t3`
 from npm, it stays as it is.
 
+### Open at login
+
+On macOS and Windows, turn on **Open at login** in **Settings → Maintenance &
+about** to start T3.CodeShip when you sign in. An update that renames the app
+keeps it working. On Windows, a startup entry you added yourself for the app's
+install folder is taken over by this setting, and Task Manager's Startup apps
+list still controls it. On macOS, approve the app under **System Settings →
+General → Login Items** if asked.
+
 ### Windows Subsystem for Linux
 
 Choose a WSL distro in **Settings → Machines & access** to run agents and projects

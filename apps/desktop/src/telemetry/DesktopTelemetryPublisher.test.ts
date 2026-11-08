@@ -47,6 +47,8 @@ function layerElectronApp(
     setName: () => Effect.void,
     setAboutPanelOptions: () => Effect.void,
     setAppUserModelId: () => Effect.void,
+    getLoginItemSettings: () => Effect.die("unused"),
+    setLoginItemSettings: () => Effect.void,
     getAppMetrics: Effect.sync(() => {
       onMetricsRead();
       return metrics;

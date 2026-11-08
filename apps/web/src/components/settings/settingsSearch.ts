@@ -55,6 +55,7 @@ export interface SettingsSearchItem {
   readonly desktopOnly?: boolean;
   readonly macOnly?: boolean;
   readonly windowsOnly?: boolean;
+  readonly macOrWindowsOnly?: boolean;
   readonly releaseChannelOnly?: boolean;
   readonly secretsFeatureOnly?: boolean;
   readonly cloudOnly?: boolean;
@@ -805,6 +806,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/maintenance",
     searchTerms: ["cli terminal shell path install command line"],
     desktopOnly: true,
+  },
+  {
+    id: "open-at-login",
+    title: msg("Open at login"),
+    to: "/settings/maintenance",
+    searchTerms: ["start launch automatically sign in startup boot login items run"],
+    desktopOnly: true,
+    macOrWindowsOnly: true,
   },
   {
     id: "mobile-app",
@@ -1561,7 +1570,8 @@ export function settingsForThisPlatform<Item extends SettingsSearchItem>(
       (!item.releaseChannelOnly || isElectron || HOSTED_APP_CHANNEL !== null) &&
       (!item.secretsFeatureOnly || isSecretsFeatureEnabled) &&
       (!item.macOnly || isMacPlatform(platform)) &&
-      (!item.windowsOnly || isWindowsPlatform(platform)),
+      (!item.windowsOnly || isWindowsPlatform(platform)) &&
+      (!item.macOrWindowsOnly || isMacPlatform(platform) || isWindowsPlatform(platform)),
   );
 }
 

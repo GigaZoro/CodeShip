@@ -2123,6 +2123,8 @@ const catalog: MessageCatalog = {
     "Дозвольте запис екрана в Системних налаштуваннях, потім перезапустіть T3.CodeShip.",
   "Allow session": "Дозволити на сеанс",
   "Allow snapshots": "Дозволити знімки",
+  "Allow T3.CodeShip in System Settings > General > Login Items to finish turning this on.":
+    "Дозвольте T3.CodeShip у «Системні налаштування > Загальні > Об’єкти входу», щоб завершити ввімкнення.",
   "Allow T3.CodeShip to read your desktop settings. You'll review any changes here before saving.":
     "Дозвольте T3.CodeShip читати налаштування вашого робочого стола. Ви перегляньте будь-які зміни тут перед збереженням.",
   "Allow this {term}'s workflows to run? Review the workflow changes first.":
@@ -3851,6 +3853,7 @@ const catalog: MessageCatalog = {
   "Could not change auto-resume": "Не вдалося змінити автовідновлення",
   "Could not change fold posture.": "Не вдалося змінити положення складання.",
   "Could not change limit recovery.": "Не вдалося змінити відновлення після ліміту.",
+  "Could not change Open at login": "Не вдалося змінити «Відкривати під час входу»",
   "Could not change project": "Не вдалося змінити проєкт",
   "Could not change the viewport": "Не вдалося змінити область перегляду",
   "Could not change this browser tab": "Не вдалося змінити цю вкладку браузера",
@@ -5405,6 +5408,8 @@ const catalog: MessageCatalog = {
   "Failed to archive thread": "Не вдалося архівувати чат",
   "Failed to archive threads": "Не вдалося архівувати чати",
   "Failed to cancel clone": "Не вдалося скасувати клонування",
+  "Failed to check whether T3.CodeShip opens at login.":
+    "Не вдалося перевірити, чи T3.CodeShip відкривається під час входу.",
   "Failed to clear goal.": "Не вдалося очистити ціль.",
   "Failed to clone {name}": "Не вдалося клонувати: {name}",
   "Failed to compact context.": "Не вдалося стиснути контекст.",
@@ -7822,6 +7827,10 @@ const catalog: MessageCatalog = {
   "Open approval from {title}": "Відкрити схвалення з {title}",
   "Open archived threads": "Відкрити архівовані чати",
   "Open artifacts": "Відкрити артефакти",
+  "Open at login": "Відкривати під час входу",
+  "Open at login is not available in this build.":
+    "Відкриття під час входу недоступне в цій збірці.",
+  "Open at login is unavailable.": "Відкриття під час входу недоступне.",
   "Open attachment": "Відкрити вкладення",
   "Open attachment on {host}": "Відкрити вкладення на {host}",
   "Open automation": "Відкрити автоматизацію",
@@ -10676,6 +10685,8 @@ const catalog: MessageCatalog = {
   "Start or reconnect an environment before adding a project.":
     "Запустіть середовище або підключіться до нього знову, перш ніж додавати проєкт.",
   "Start side chat": "Почати побічний чат",
+  "Start T3.CodeShip when you sign in to this computer.":
+    "Запускати T3.CodeShip, коли ви входите в цей комп’ютер.",
   "Start Tailscale to set up HTTPS access through MagicDNS.":
     "Запустіть Tailscale, щоб налаштувати HTTPS-доступ через MagicDNS.",
   "Start the matching WSL backend, then choose the folder again.":

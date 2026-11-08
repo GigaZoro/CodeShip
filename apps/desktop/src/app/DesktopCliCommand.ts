@@ -9,10 +9,9 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
-import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
+import { runWindowsPowerShell } from "../shell/windowsPowerShell.ts";
 import * as DesktopCliShim from "./DesktopCliShim.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 
@@ -107,24 +106,7 @@ export const make = Effect.gen(function* () {
   );
 
   const powershell = (env: Record<string, string>) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const root = process.env.SystemRoot ?? process.env.WINDIR;
-        const handle = yield* spawner.spawn(
-          ChildProcess.make(
-            root ? `${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe` : "powershell.exe",
-            ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_USER_PATH_SCRIPT],
-            { stdin: "ignore", stderr: "ignore", env, extendEnv: true },
-          ),
-        );
-        const [stdout, exitCode] = yield* Effect.all(
-          [handle.stdout.pipe(Stream.decodeText(), Stream.mkString), handle.exitCode],
-          { concurrency: "unbounded" },
-        );
-        if (exitCode !== 0) return yield* Effect.fail(`powershell exited with ${exitCode}`);
-        return stdout;
-      }),
-    );
+    runWindowsPowerShell(spawner, WINDOWS_USER_PATH_SCRIPT, env);
   const readUserPath = powershell({}).pipe(
     Effect.map((encoded) => Buffer.from(encoded.trim(), "base64").toString("utf8")),
     Effect.mapError(() => fail("Could not read your PATH, so it was left unchanged.")),

@@ -339,6 +339,15 @@ export const DesktopCliCommandStateSchema = Schema.Struct({
 });
 export type DesktopCliCommandState = typeof DesktopCliCommandStateSchema.Type;
 
+export const DesktopLoginItemStateSchema = Schema.Struct({
+  /** Packaged builds on macOS and Windows. */
+  supported: Schema.Boolean,
+  enabled: Schema.Boolean,
+  /** macOS registered the app, but the user has to allow it in System Settings > Login Items. */
+  requiresApproval: Schema.Boolean,
+});
+export type DesktopLoginItemState = typeof DesktopLoginItemStateSchema.Type;
+
 export interface DesktopUpdateActionResult {
   accepted: boolean;
   completed: boolean;
@@ -1144,6 +1153,10 @@ export interface DesktopBridge {
     getState: () => Promise<DesktopCliCommandState>;
     install: () => Promise<DesktopCliCommandState>;
     uninstall: () => Promise<DesktopCliCommandState>;
+  };
+  loginItem: {
+    getState: () => Promise<DesktopLoginItemState>;
+    setEnabled: (enabled: boolean) => Promise<DesktopLoginItemState>;
   };
   webLinks: {
     setReady: (ready: boolean) => Promise<void>;

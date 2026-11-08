@@ -1,3 +1,7 @@
+## 2026-11-08 — Open at login
+
+- **Settings → Maintenance & about → Open at login** starts T3.CodeShip when you sign in on macOS and Windows. On Windows the entry follows the app across updates that rename it: the installer and the app keep it on the current executable, and a startup entry left on an older executable name in the install folder, including one added by hand, is moved over instead of starting a deleted file. Uninstalling removes it.
+
 ## 2026-11-08 — Worktree launches without a base branch
 
 - An agent that starts a new thread in a new worktree with `t3_thread_launch` no longer has to name a base branch. Without `baseRef` the worktree starts from the project's default branch, fetched first, as a scheduled task's does. Before, leaving it out failed with "Missing key at workspaceStrategy.baseRef".

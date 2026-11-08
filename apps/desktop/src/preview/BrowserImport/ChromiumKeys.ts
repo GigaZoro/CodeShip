@@ -10,6 +10,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { windowsPowerShellPath } from "../../shell/windowsPowerShell.ts";
 import { LinuxBrowserSecretPath } from "./LinuxBrowserSecret.ts";
 
 const KEY_SALT = "saltysalt";
@@ -167,14 +168,10 @@ export const unwrapWindowsDpapiKey = Effect.fn("ChromiumKeys.unwrapWindowsDpapiK
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const windowsRoot = environment.SystemRoot ?? environment.WINDIR;
-      const powershell = windowsRoot
-        ? `${windowsRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
-        : "powershell.exe";
       const handle = yield* spawner
         .spawn(
           ChildProcess.make(
-            powershell,
+            windowsPowerShellPath(environment),
             [
               "-NoLogo",
               "-NoProfile",

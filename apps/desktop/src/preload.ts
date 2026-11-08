@@ -307,6 +307,11 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     install: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_INSTALL_CHANNEL),
     uninstall: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_UNINSTALL_CHANNEL),
   },
+  loginItem: {
+    getState: () => ipcRenderer.invoke(IpcChannels.LOGIN_ITEM_GET_STATE_CHANNEL),
+    setEnabled: (enabled) =>
+      ipcRenderer.invoke(IpcChannels.LOGIN_ITEM_SET_ENABLED_CHANNEL, enabled),
+  },
   onUpdateState: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, state: unknown) => {
       if (typeof state !== "object" || state === null) return;
