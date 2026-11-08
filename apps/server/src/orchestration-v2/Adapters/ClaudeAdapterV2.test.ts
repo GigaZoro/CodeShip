@@ -11451,12 +11451,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
   );
 
-  // A wake buffered by a session on another account, or one a restart cleared, never reaches this one.
-  it.effect("fails a continuation turn this session never requested instead of ending empty", () =>
+  // A wake buffered by a session that closed, or by one on another account, never reaches this one.
+  it.effect("sends the text of a continuation this session never requested", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeWakeHarness;
         const now = yield* DateTime.now;
+        const wakeText = 'Background command "Replay CI" completed (exit code 0)';
+        const replyText = "The replay passed, so I'm pushing now.";
 
         yield* harness.runtime.startTurn(
           makeClaudeTestTurnInput({
@@ -11464,20 +11466,33 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             providerThread: harness.providerThread,
             now,
             attemptId: RunAttemptId.make("attempt-claude-wake-3"),
-            text: "Background task completed.",
+            text: wakeText,
             attachments: [],
             messageCreatedBy: "agent",
             messageCreationSource: "provider",
           }),
         );
+        yield* harness.until(
+          () => harness.offeredMessages.length === 1 || harness.terminalEvents().length > 0,
+        );
+        assert.lengthOf(harness.terminalEvents(), 0);
+        assert.include(String(harness.offeredMessages[0]?.message.content), wakeText);
 
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeAssistantTextFrame({ uuid: "00000000-0000-4000-8000-0000000001a1", text: replyText }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeResultFrame({ uuid: "00000000-0000-4000-8000-0000000001a2", result: replyText }),
+        );
         yield* harness.awaitTerminal(1);
-        const terminal = harness.terminalEvents()[0];
-        assert.equal(terminal?.status, "failed");
-        if (terminal?.status !== "failed") return;
-        assert.equal(terminal.failure.code, "claude_wake_undelivered");
-        assert.include(terminal.failure.message, "another account");
-        assert.lengthOf(harness.offeredMessages, 0);
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+        assert.isTrue(
+          harness.events.some(
+            (event) => event.type === "message.updated" && event.message.text === replyText,
+          ),
+        );
       }).pipe(
         Effect.provide(
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),

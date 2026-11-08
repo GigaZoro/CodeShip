@@ -1,3 +1,7 @@
+## 2026-11-08 — Claude hears a finished background command after its session closed
+
+- When a background command or task finishes after the Claude session that started it has closed, for example after a network outage, the agent now gets the finish notice as a message and carries on. Before, that turn failed with "Send a message to continue" and the chat waited for you.
+
 ## 2026-11-08 — Muse and Codex replay tests pass again
 
 - The Muse replay tests no longer keep their own copy of the instructions T3.CodeShip gives agents. They build the current text when they run, so they pass again and keep passing when that wording changes.
