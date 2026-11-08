@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   activateLanguage,
+  APP_LANGUAGES,
   normalizeLanguagePreference,
+  pluralCategory,
   resolveAppLanguage,
   resolveFormattingLocale,
   t,
@@ -64,6 +66,54 @@ describe("translation", () => {
     expect(tn(1, "{count} file", "{count} files")).toBe("1 file");
     expect(tn(2, "{count} file", "{count} files")).toBe("2 files");
     expect(tn(1000, "{count} line", "{count} lines")).toBe("1,000 lines");
+  });
+
+  it("picks the same plural category as the CLDR rules for every app language", () => {
+    const counts = [
+      ...Array.from({ length: 1201 }, (_, count) => count),
+      0.5,
+      1.5,
+      2.5,
+      5.5,
+      21.5,
+      1_000_000,
+      1_000_001,
+      1_000_012,
+      -1,
+      -3,
+      -11,
+    ];
+    for (const language of APP_LANGUAGES) {
+      const rules = new Intl.PluralRules(language);
+      const mismatches = counts.filter(
+        (count) => pluralCategory(language, count) !== rules.select(count),
+      );
+      expect(mismatches).toEqual([]);
+    }
+  });
+
+  it("loads and translates on a runtime without Intl.PluralRules or Intl.Locale, as Hermes on Android", async () => {
+    const intlMembers = Object.fromEntries(
+      Object.getOwnPropertyNames(Intl)
+        .filter((name) => name !== "PluralRules" && name !== "Locale")
+        .map((name) => [name, Reflect.get(Intl, name)]),
+    );
+    vi.stubGlobal("Intl", intlMembers);
+    vi.resetModules();
+    try {
+      const i18n = await import("./i18n.ts");
+      i18n.activateLanguage({
+        language: "uk",
+        catalog: UKRAINIAN,
+        formattingLocale: "uk",
+      });
+      expect(i18n.tn(3, "{count} file", "{count} files")).toBe("3 файли");
+      expect(i18n.resolveAppLanguage("system", ["de-DE", "uk-UA"])).toBe("uk");
+      expect(i18n.resolveFormattingLocale("uk", "uk-UA")).toBe("uk-UA");
+    } finally {
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    }
   });
 
   it("marks translated text in pseudo mode and leaves placeholder values alone", () => {

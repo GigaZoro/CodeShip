@@ -54,12 +54,33 @@ export type PluralForms = Readonly<Partial<Record<Intl.LDMLPluralRule, string>>>
 export type MessageCatalog = Readonly<Record<string, string | PluralForms>>;
 export type MessageValues = Readonly<Record<string, string | number>>;
 
-const ENGLISH_PLURAL_RULES = new Intl.PluralRules("en");
 const PLACEHOLDER = /\{(\w+)\}/g;
+
+/**
+ * CLDR plural rules per app language. Not `Intl.PluralRules`: Hermes on Android does not have it,
+ * and reading it at module load took the whole app down. A test checks these against Node's.
+ */
+const PLURAL_CATEGORIES: Readonly<Record<AppLanguage, (count: number) => Intl.LDMLPluralRule>> = {
+  en: (count) => (Math.abs(count) === 1 ? "one" : "other"),
+  uk: (count) => {
+    const n = Math.abs(count);
+    if (!Number.isInteger(n)) return "other";
+    const lastDigit = n % 10;
+    const lastTwoDigits = n % 100;
+    if (lastDigit === 1 && lastTwoDigits !== 11) return "one";
+    if (lastDigit >= 2 && lastDigit <= 4 && (lastTwoDigits < 12 || lastTwoDigits > 14)) {
+      return "few";
+    }
+    return "many";
+  },
+};
+
+export function pluralCategory(language: AppLanguage, count: number): Intl.LDMLPluralRule {
+  return PLURAL_CATEGORIES[language](count);
+}
 
 let activeLanguage: AppLanguage = "en";
 let activeCatalog: MessageCatalog = {};
-let activePluralRules = ENGLISH_PLURAL_RULES;
 let activeFormattingLocale: string | undefined;
 let activeCountFormat = new Intl.NumberFormat();
 let pseudoActive = false;
@@ -74,9 +95,10 @@ export function normalizeLanguagePreference(value: string | null | undefined): L
   return value && isAppLanguage(value) ? value : SYSTEM_LANGUAGE_PREFERENCE;
 }
 
+/** Not `new Intl.Locale(locale).language`: Hermes on Android has no `Intl.Locale`. */
 function languageOf(locale: string): string | undefined {
   try {
-    return new Intl.Locale(locale).language;
+    return Intl.getCanonicalLocales(locale)[0]?.split("-")[0];
   } catch {
     return undefined;
   }
@@ -121,8 +143,6 @@ export interface LanguageActivation {
 export function activateLanguage(options: LanguageActivation): void {
   activeLanguage = options.language;
   activeCatalog = options.catalog;
-  activePluralRules =
-    options.language === "en" ? ENGLISH_PLURAL_RULES : new Intl.PluralRules(options.language);
   activeFormattingLocale = options.formattingLocale;
   activeCountFormat = new Intl.NumberFormat(options.formattingLocale);
   pseudoActive = options.pseudo === true;
@@ -204,8 +224,8 @@ export function tn(count: number, one: string, other: string, values?: MessageVa
   const translated = activeCatalog[other];
   const text =
     translated !== undefined && typeof translated !== "string"
-      ? (translated[activePluralRules.select(count)] ?? translated.other ?? other)
-      : ENGLISH_PLURAL_RULES.select(count) === "one"
+      ? (translated[pluralCategory(activeLanguage, count)] ?? translated.other ?? other)
+      : pluralCategory("en", count) === "one"
         ? one
         : other;
   return interpolate(pseudoActive ? pseudoize(text) : text, {

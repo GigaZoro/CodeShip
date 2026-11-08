@@ -1,3 +1,8 @@
+## 2026-11-08 — The Android app starts again
+
+- The Android app crashed on launch with "undefined cannot be used as a constructor" since the language setting arrived, because Android's JavaScript engine has no plural-rules or locale API. The app now picks plural forms itself, so Ukrainian counts such as 1 файл, 3 файли and 5 файлів work there too.
+- With **Language** on **System**, an Android phone set to Ukrainian now shows Ukrainian. Before, the phone's language was never recognised.
+
 ## 2026-11-08 — Project action saves no longer undo each other
 
 - Adding, editing or deleting a project action now changes only that action, on the list the machine holds at that moment. Importing two actions from t3.json in quick succession, or editing actions from two devices at once, keeps every change. Before, the later save could drop the earlier one, and saving or resetting a project's actions could revert another of its settings changed elsewhere meanwhile. If another device adds an action with the same name first, you're asked to save again.
