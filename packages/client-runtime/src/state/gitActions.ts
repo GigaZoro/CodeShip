@@ -1,6 +1,10 @@
 import type {
+  GitActionProgressPhase,
+  GitActionProgressStep,
   GitRunStackedActionInput,
+  GitRunStackedActionResult,
   GitStackedAction,
+  VcsPullResult,
   VcsStatusResult,
 } from "@t3tools/contracts";
 import { type ChangeRequestTerminology, sourceControlClients } from "../sourceControlClients.ts";
@@ -64,7 +68,9 @@ export type GitActionRequestInput = Pick<
   "action" | "commitMessage" | "featureBranch" | "filePaths"
 >;
 
-function changeRequestTerminologyFor(gitStatus: VcsStatusResult | null): ChangeRequestTerminology {
+export function changeRequestTerminologyFor(
+  gitStatus: VcsStatusResult | null,
+): ChangeRequestTerminology {
   return sourceControlClients.get(gitStatus?.sourceControlProvider?.kind).changeRequest;
 }
 
@@ -392,4 +398,111 @@ export function resolveDefaultBranchActionDialogCopy(input: {
     ),
     continueLabel: t("Push & create {kind}", { kind: terminology.shortLabel }),
   };
+}
+
+const SHORT_SHA_LENGTH = 7;
+
+export interface GitActionResultSummary {
+  readonly title: string;
+  readonly description: string | null;
+}
+
+export function summarizeGitActionResult(
+  result: Pick<GitRunStackedActionResult, "commit" | "push" | "pr">,
+  terminology: ChangeRequestTerminology,
+): GitActionResultSummary {
+  const { commit, push, pr } = result;
+  const { shortLabel } = terminology;
+  const sha = commit.commitSha?.slice(0, SHORT_SHA_LENGTH);
+  const subject = commit.subject ?? null;
+
+  if (pr.status === "created" || pr.status === "opened_existing") {
+    const number = pr.number;
+    const created = pr.status === "created";
+    const title =
+      number === undefined
+        ? created
+          ? t("Created {shortLabel}", { shortLabel })
+          : t("Opened {shortLabel}", { shortLabel })
+        : created
+          ? t("Created {shortLabel} #{number}", { shortLabel, number })
+          : t("Opened {shortLabel} #{number}", { shortLabel, number });
+    return { title, description: pr.title ?? null };
+  }
+
+  if (push.status === "pushed") {
+    const branch = push.upstreamBranch ?? push.branch;
+    const title = branch
+      ? sha
+        ? t("Pushed {sha} to {branch}", { sha, branch })
+        : t("Pushed to {branch}", { branch })
+      : sha
+        ? t("Pushed {sha}", { sha })
+        : t("Pushed");
+    return { title, description: subject };
+  }
+
+  if (commit.status === "created") {
+    return {
+      title: sha ? t("Committed {sha}", { sha }) : t("Committed changes"),
+      description: subject,
+    };
+  }
+
+  if (commit.status === "skipped_no_changes") {
+    return { title: t("No changes to commit"), description: null };
+  }
+  if (push.status === "skipped_up_to_date") {
+    return { title: t("Already up to date"), description: null };
+  }
+  return { title: t("Done"), description: null };
+}
+
+export function summarizePullResult(result: VcsPullResult): GitActionResultSummary {
+  return result.status === "pulled"
+    ? {
+        title: t("Pulled"),
+        description: t("Updated {ref} from {upstream}", {
+          ref: result.refName,
+          upstream: result.upstreamRef ?? t("upstream"),
+        }),
+      }
+    : {
+        title: t("Already up to date"),
+        description: t("{ref} is already synchronized.", { ref: result.refName }),
+      };
+}
+
+// Servers that predate `step` report only the phase.
+const PHASE_DEFAULT_STEP: Readonly<Record<GitActionProgressPhase, GitActionProgressStep>> = {
+  branch: "prepare_feature_branch",
+  commit: "commit",
+  push: "push",
+  pr: "create_change_request",
+};
+
+export function describeGitActionProgress(
+  event: {
+    readonly phase: GitActionProgressPhase;
+    readonly step?: GitActionProgressStep | undefined;
+  },
+  terminology: ChangeRequestTerminology,
+): string {
+  const { shortLabel } = terminology;
+  switch (event.step ?? PHASE_DEFAULT_STEP[event.phase]) {
+    case "prepare_feature_branch":
+      return t("Preparing feature branch...");
+    case "generate_commit_message":
+      return t("Generating commit message...");
+    case "commit":
+      return t("Committing...");
+    case "push":
+      return t("Pushing...");
+    case "prepare_change_request":
+      return t("Preparing {shortLabel}...", { shortLabel });
+    case "generate_change_request":
+      return t("Generating {shortLabel} content...", { shortLabel });
+    case "create_change_request":
+      return t("Creating {shortLabel}...", { shortLabel });
+  }
 }

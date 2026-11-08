@@ -5,6 +5,7 @@ import {
   ThreadId,
   SourceControlProviderKind,
 } from "@t3tools/contracts";
+import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -90,7 +91,12 @@ const cases = [
       const action = useGitStackedAction(scope);
       return {
         isAllowed: action.isAllowed,
-        run: () => action.run({ actionId: "action", action: "commit" }),
+        run: () =>
+          action.run({
+            actionId: "action",
+            action: "commit",
+            changeRequestTerminology: sourceControlClients.get("github").changeRequest,
+          }),
       };
     },
   },

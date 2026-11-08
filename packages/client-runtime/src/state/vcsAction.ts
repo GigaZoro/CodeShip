@@ -26,7 +26,9 @@ import {
   type AtomCommand,
   type AtomCommandResult,
 } from "./runtime.ts";
+import type { ChangeRequestTerminology } from "../sourceControlClients.ts";
 import { createCommandPermissions } from "./commandPermissions.ts";
+import { describeGitActionProgress } from "./gitActions.ts";
 import { vcsCommandScheduler } from "./vcsCommandScheduler.ts";
 import { invalidateCachedVcsRefs } from "./vcsRefInvalidation.ts";
 import { t } from "@t3tools/shared/i18n";
@@ -82,6 +84,8 @@ export interface RunVcsStackedActionInput {
   readonly filePaths?: ReadonlyArray<string>;
   readonly threadId?: ThreadId;
   readonly projectId?: ProjectId;
+  /** Names the host's change request in progress labels ("PR", "MR"). */
+  readonly changeRequestTerminology: ChangeRequestTerminology;
   readonly onProgress?: (event: GitActionProgressEvent) => void;
 }
 
@@ -321,6 +325,7 @@ export function consumeVcsActionProgress<E, R>(
 export function applyVcsActionProgressEvent(
   current: VcsActionState,
   event: GitActionProgressEvent,
+  terminology: ChangeRequestTerminology,
 ): VcsActionState {
   if (current.actionId !== event.actionId) {
     return current;
@@ -341,21 +346,23 @@ export function applyVcsActionProgressEvent(
         lastOutputLine: null,
         error: null,
       };
-    case "phase_started":
+    case "phase_started": {
+      const label = describeGitActionProgress(event, terminology);
       return {
         ...current,
         isRunning: true,
         actionId: event.actionId,
         action: event.action,
         operation: "run_change_request",
-        currentLabel: event.label,
-        currentPhaseLabel: event.label,
+        currentLabel: label,
+        currentPhaseLabel: label,
         phaseStartedAtMs: now,
         hookStartedAtMs: null,
         hookName: null,
         lastOutputLine: null,
         error: null,
       };
+    }
     case "hook_started":
       return {
         ...current,
@@ -498,7 +505,10 @@ export function createVcsActionManager<R, E>(
                 if (current.actionId !== input.actionId) {
                   return;
                 }
-                registry.set(stateAtom, applyVcsActionProgressEvent(current, event));
+                registry.set(
+                  stateAtom,
+                  applyVcsActionProgressEvent(current, event, input.changeRequestTerminology),
+                );
                 if (input.onProgress !== undefined) {
                   try {
                     input.onProgress(event);

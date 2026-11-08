@@ -8,6 +8,7 @@ import {
 import { wasThreadChangedMeanwhile } from "@t3tools/client-runtime/errors";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import {
+  changeRequestTerminologyFor,
   createVcsStatusRevalidationAtomFamily,
   type GitActionRequestInput,
   type VcsActionOperation,
@@ -27,6 +28,7 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 
 import { useBranches } from "../state/queries";
+import { useEnvironmentQuery } from "../state/query";
 import { threadEnvironment } from "../state/threads";
 import { vcsActionManager, vcsEnvironment } from "../state/vcs";
 import { uuidv4 } from "../lib/uuid";
@@ -37,7 +39,7 @@ import {
   setPendingConnectionError,
 } from "./use-remote-environment-registry";
 import { useAtomCommand } from "./use-atom-command";
-import { showGitActionResult } from "./use-vcs-action-state";
+import { pullSuccess, showGitActionResult, stackedActionSuccess } from "./use-vcs-action-state";
 import { useThreadSelection } from "./use-thread-selection";
 import { useSelectedThreadWorktree } from "./use-selected-thread-worktree";
 import { t } from "../lib/i18n";
@@ -97,6 +99,16 @@ export function useSelectedThreadGitActions() {
     }),
     { reportFailure: false },
   );
+
+  const gitStatus = useEnvironmentQuery(
+    selectedThread !== null && selectedThreadCwd !== null
+      ? vcsEnvironment.status({
+          environmentId: selectedThread.environmentId,
+          input: { cwd: selectedThreadCwd },
+        })
+      : null,
+  );
+  const changeRequestTerminology = changeRequestTerminologyFor(gitStatus.data ?? null);
 
   const selectedThreadGitRootCwd = selectedThreadProject?.workspaceRoot ?? null;
   const branchTarget = {
@@ -380,13 +392,7 @@ export function useSelectedThreadGitActions() {
         await refreshSelectedThreadGitStatus({ quiet: true, cwd });
         showGitActionResult(
           { environmentId: thread.environmentId, cwd },
-          {
-            type: "success",
-            title:
-              result.value.status === "skipped_up_to_date"
-                ? t("Already up to date")
-                : t("Pulled latest on {ref}", { ref: result.value.refName }),
-          },
+          pullSuccess(result.value),
         );
         return result;
       },
@@ -408,6 +414,7 @@ export function useSelectedThreadGitActions() {
           ...(input.featureBranch ? { featureBranch: input.featureBranch } : {}),
           ...(input.filePaths?.length ? { filePaths: [...input.filePaths] } : {}),
           threadId: thread.id,
+          changeRequestTerminology,
         });
         if (AsyncResult.isFailure(result)) {
           return result;
@@ -435,13 +442,7 @@ export function useSelectedThreadGitActions() {
         }
         showGitActionResult(
           { environmentId: thread.environmentId, cwd },
-          {
-            type: "success",
-            title: result.value.toast.title,
-            description: result.value.toast.description,
-            prUrl:
-              result.value.toast.cta.kind === "open_pr" ? result.value.toast.cta.url : undefined,
-          },
+          stackedActionSuccess(result.value, changeRequestTerminology),
         );
         return result;
       },

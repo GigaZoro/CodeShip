@@ -64,6 +64,7 @@ vi.mock("./use-selected-thread-worktree", () => ({
 vi.mock("./queries", () => ({
   useBranches: () => ({ data: { refs: state.cachedRefs }, refresh: () => {} }),
 }));
+vi.mock("./query", () => ({ useEnvironmentQuery: () => ({ data: null }) }));
 vi.mock("./use-atom-command", () => ({ useAtomCommand: (command: unknown) => command }));
 vi.mock("./atom-registry", () => ({ appAtomRegistry: {} }));
 vi.mock("./use-remote-environment-registry", () => ({
@@ -75,6 +76,8 @@ vi.mock("./use-vcs-action-state", () => ({
     state.resultTargets.push(target);
     state.results.push(result);
   },
+  pullSuccess: () => ({ type: "success", title: "Pulled" }),
+  stackedActionSuccess: () => ({ type: "success", title: "Done" }),
 }));
 vi.mock("../lib/uuid", () => ({ uuidv4: () => "action" }));
 vi.mock("./threads", () => ({
@@ -115,6 +118,7 @@ vi.mock("./threads", () => ({
 vi.mock("./vcs", () => ({
   vcsEnvironment: {
     readRefs: state.readRefs,
+    status: () => null,
     refreshStatus: async () => {
       state.statusRefreshes += 1;
       return AsyncResult.success({ refName: state.branch });
@@ -149,7 +153,9 @@ vi.mock("./vcs", () => ({
         branch: input.featureBranch
           ? { status: "created", name: "feature" }
           : { status: "skipped_not_requested" },
-        toast: { title: "Done", description: "Done", cta: { kind: "none" } },
+        commit: { status: input.action === "commit" ? "created" : "skipped_not_requested" },
+        push: { status: input.action === "push" ? "pushed" : "skipped_not_requested" },
+        pr: { status: "skipped_not_requested" },
       });
     },
   },

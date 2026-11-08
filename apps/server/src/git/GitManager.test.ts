@@ -2617,16 +2617,34 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
           },
         },
       });
-      const result = yield* runStackedAction(manager, {
-        cwd: repoDir,
-        action: "commit",
-      });
+      const events: GitActionProgressEvent[] = [];
+      const result = yield* runStackedAction(
+        manager,
+        { cwd: repoDir, action: "commit" },
+        {
+          actionId: "action-commit",
+          progressReporter: {
+            publish: (event) =>
+              Effect.sync(() => {
+                events.push(event);
+              }),
+          },
+        },
+      );
 
       expect(result.branch.status).toBe("skipped_not_requested");
       expect(result.commit.status).toBe("created");
       expect(result.push.status).toBe("skipped_not_requested");
       expect(result.pr.status).toBe("skipped_not_requested");
       expect(generatedPolicy).toMatchObject({ commitInstructions: "Use a direct tone." });
+      expect(
+        events.flatMap((event) =>
+          event.kind === "phase_started" ? [[event.phase, event.step]] : [],
+        ),
+      ).toEqual([
+        ["commit", "generate_commit_message"],
+        ["commit", "commit"],
+      ]);
       expect(result.toast).toMatchObject({
         description: "Implement stacked git actions",
         cta: {
@@ -5639,16 +5657,19 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         expect.objectContaining({
           kind: "phase_started",
           phase: "pr",
+          step: "prepare_change_request",
           label: "Preparing PR...",
         }),
         expect.objectContaining({
           kind: "phase_started",
           phase: "pr",
+          step: "generate_change_request",
           label: "Generating PR content...",
         }),
         expect.objectContaining({
           kind: "phase_started",
           phase: "pr",
+          step: "create_change_request",
           label: "Creating pull request...",
         }),
       ]);

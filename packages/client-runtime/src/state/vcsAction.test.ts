@@ -30,6 +30,7 @@ import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as Persistence from "../platform/persistence.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import type { RpcSession } from "../rpc/session.ts";
+import { sourceControlClients } from "../sourceControlClients.ts";
 import type { AtomCommandResult } from "./runtime.ts";
 import {
   applyVcsActionProgressEvent,
@@ -50,6 +51,7 @@ const actionId = "action-123";
 const action = "commit_push" as const;
 const cwd = "/repo";
 const environmentId = EnvironmentId.make("environment-1");
+const changeRequestTerminology = sourceControlClients.get("github").changeRequest;
 const result: GitRunStackedActionResult = {
   action,
   branch: {
@@ -146,8 +148,10 @@ describe("vcsActionState", () => {
         cwd,
         kind: "phase_started",
         phase: "commit",
-        label: "Committing...",
+        step: "generate_commit_message",
+        label: "Server copy",
       }),
+      changeRequestTerminology,
     );
     const hook = applyVcsActionProgressEvent(
       phase,
@@ -158,6 +162,7 @@ describe("vcsActionState", () => {
         kind: "hook_started",
         hookName: "post-commit",
       }),
+      changeRequestTerminology,
     );
     const output = applyVcsActionProgressEvent(
       hook,
@@ -170,6 +175,7 @@ describe("vcsActionState", () => {
         stream: "stdout",
         text: "hook output",
       }),
+      changeRequestTerminology,
     );
     const finished = applyVcsActionProgressEvent(
       output,
@@ -182,12 +188,13 @@ describe("vcsActionState", () => {
         exitCode: 0,
         durationMs: 12,
       }),
+      changeRequestTerminology,
     );
 
     expect(phase).toMatchObject({
       isRunning: true,
-      currentLabel: "Committing...",
-      currentPhaseLabel: "Committing...",
+      currentLabel: "Generating commit message...",
+      currentPhaseLabel: "Generating commit message...",
     });
     expect(output).toMatchObject({
       currentLabel: "Running post-commit...",
@@ -195,7 +202,7 @@ describe("vcsActionState", () => {
       lastOutputLine: "hook output",
     });
     expect(finished).toMatchObject({
-      currentLabel: "Committing...",
+      currentLabel: "Generating commit message...",
       hookName: null,
       lastOutputLine: null,
     });
@@ -219,6 +226,7 @@ describe("vcsActionState", () => {
           phase: "push",
           label: "Pushing...",
         }),
+        changeRequestTerminology,
       ),
     ).toBe(current);
   });
@@ -530,6 +538,7 @@ describe("vcsActionState", () => {
             action,
             threadId,
             projectId,
+            changeRequestTerminology,
           }),
         );
 
@@ -545,6 +554,7 @@ describe("vcsActionState", () => {
           manager.runStackedAction(targetKey).run(registry, {
             actionId: failedActionId,
             action,
+            changeRequestTerminology,
           }),
         );
 
@@ -562,6 +572,7 @@ describe("vcsActionState", () => {
           manager.runStackedAction(targetKey).run(registry, {
             actionId: interruptedActionId,
             action,
+            changeRequestTerminology,
           }),
         );
 

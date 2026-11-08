@@ -1,15 +1,24 @@
-import { SourceControlProviderKind, type VcsStatusResult } from "@t3tools/contracts";
+import {
+  SourceControlProviderKind,
+  type GitRunStackedActionResult,
+  type VcsStatusResult,
+} from "@t3tools/contracts";
+import { activateLanguage } from "@t3tools/shared/i18n";
 import { describe, expect, it } from "vite-plus/test";
 
+import uk from "../i18n/locales/uk.ts";
 import { sourceControlClients } from "../sourceControlClients.ts";
 import {
   buildMenuItems,
+  describeGitActionProgress,
   type GitActionState,
   type GitActionSurface,
   requiresDefaultBranchConfirmation,
   resolveDefaultBranchActionDialogCopy,
   resolveFeatureBranchUnavailableReason,
   resolveQuickAction,
+  summarizeGitActionResult,
+  summarizePullResult,
 } from "./gitActions.ts";
 
 function status(overrides: Partial<VcsStatusResult> = {}): VcsStatusResult {
@@ -58,6 +67,23 @@ const openPr = {
   headRef: "feature/test",
   state: "open" as const,
 };
+
+const github = sourceControlClients.get("github").changeRequest;
+
+const commitResult: Pick<GitRunStackedActionResult, "commit" | "push" | "pr"> = {
+  commit: { status: "created", commitSha: "abc1234def", subject: "Add login" },
+  push: { status: "skipped_not_requested" },
+  pr: { status: "skipped_not_requested" },
+};
+
+function inUkrainian(run: () => void) {
+  activateLanguage({ language: "uk", catalog: uk, formattingLocale: "uk" });
+  try {
+    run();
+  } finally {
+    activateLanguage({ language: "en", catalog: {}, formattingLocale: undefined });
+  }
+}
 
 describe("resolveQuickAction", () => {
   it.each([
@@ -273,6 +299,12 @@ describe("git action copy", () => {
       label: "Create MR",
       disabledReason: "No local commits to include in a merge request.",
     });
+    expect(
+      describeGitActionProgress(
+        { phase: "pr", step: "generate_change_request" },
+        sourceControlClients.get("gitlab").changeRequest,
+      ),
+    ).toBe("Generating MR content...");
   });
 
   it("names the host's change request in the default-ref dialog", () => {
@@ -291,5 +323,87 @@ describe("git action copy", () => {
     });
     expect(gitLabCopy.title).toBe("Push & create MR from default ref?");
     expect(gitLabCopy.description).toContain("create a merge request on");
+  });
+
+  it("builds results from the steps, not the server's toast", () => {
+    expect(summarizeGitActionResult(commitResult, github)).toEqual({
+      title: "Committed abc1234",
+      description: "Add login",
+    });
+    expect(
+      summarizeGitActionResult(
+        { ...commitResult, push: { status: "pushed", branch: "feature/test" } },
+        github,
+      ),
+    ).toEqual({ title: "Pushed abc1234 to feature/test", description: "Add login" });
+    expect(
+      summarizeGitActionResult(
+        {
+          commit: { status: "skipped_not_requested" },
+          push: { status: "skipped_up_to_date" },
+          pr: { status: "skipped_not_requested" },
+        },
+        github,
+      ).title,
+    ).toBe("Already up to date");
+  });
+
+  it("reads results and every progress step in Ukrainian", () => {
+    inUkrainian(() => {
+      expect(summarizeGitActionResult(commitResult, github)).toEqual({
+        title: "Створено коміт abc1234",
+        description: "Add login",
+      });
+      expect(
+        summarizeGitActionResult(
+          {
+            ...commitResult,
+            push: { status: "pushed", branch: "feature/test", upstreamBranch: "origin/feature" },
+          },
+          github,
+        ).title,
+      ).toBe("Надіслано abc1234 в origin/feature");
+      expect(
+        summarizeGitActionResult(
+          {
+            ...commitResult,
+            pr: { status: "created", number: 12, title: "Add login" },
+          },
+          github,
+        ),
+      ).toEqual({ title: "Створено PR #12", description: "Add login" });
+      expect(
+        summarizeGitActionResult(
+          { ...commitResult, pr: { status: "opened_existing", number: 12 } },
+          github,
+        ).title,
+      ).toBe("Відкрито PR #12");
+      expect(
+        summarizePullResult({ status: "pulled", refName: "main", upstreamRef: "origin/main" }),
+      ).toEqual({ title: "Зміни отримано", description: "Оновлено main з origin/main" });
+      expect(
+        (
+          [
+            { phase: "branch", step: "prepare_feature_branch" },
+            { phase: "commit", step: "generate_commit_message" },
+            { phase: "commit", step: "commit" },
+            { phase: "push", step: "push" },
+            { phase: "pr", step: "prepare_change_request" },
+            { phase: "pr", step: "generate_change_request" },
+            { phase: "pr", step: "create_change_request" },
+            { phase: "pr" },
+          ] as const
+        ).map((event) => describeGitActionProgress(event, github)),
+      ).toEqual([
+        "Підготовка окремої гілки…",
+        "Генерування повідомлення коміту…",
+        "Створення коміту…",
+        "Надсилання…",
+        "Підготовка PR…",
+        "Генерування вмісту PR…",
+        "Створення PR…",
+        "Створення PR…",
+      ]);
+    });
   });
 });

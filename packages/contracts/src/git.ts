@@ -26,6 +26,16 @@ export const GitStackedAction = Schema.Literals([
 export type GitStackedAction = typeof GitStackedAction.Type;
 export const GitActionProgressPhase = Schema.Literals(["branch", "commit", "push", "pr"]);
 export type GitActionProgressPhase = typeof GitActionProgressPhase.Type;
+export const GitActionProgressStep = Schema.Literals([
+  "prepare_feature_branch",
+  "generate_commit_message",
+  "commit",
+  "push",
+  "prepare_change_request",
+  "generate_change_request",
+  "create_change_request",
+]);
+export type GitActionProgressStep = typeof GitActionProgressStep.Type;
 export const GitActionProgressKind = Schema.Literals([
   "action_started",
   "phase_started",
@@ -74,6 +84,7 @@ const GitRunStackedActionToastCta = Schema.Union([
   }),
 ]);
 export type GitRunStackedActionToastCta = typeof GitRunStackedActionToastCta.Type;
+// English copy kept for clients that predate client-built results; current clients read the steps.
 const GitRunStackedActionToast = Schema.Struct({
   title: TrimmedNonEmptyStringSchema,
   description: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -475,6 +486,9 @@ const GitActionPhaseStartedEvent = Schema.Struct({
   ...GitActionProgressBase.fields,
   kind: Schema.Literal("phase_started"),
   phase: GitActionProgressPhase,
+  // Older servers omit it; clients then label the phase as a whole.
+  step: Schema.optional(GitActionProgressStep),
+  // English text for clients that predate `step`.
   label: TrimmedNonEmptyStringSchema,
 });
 const GitActionHookStartedEvent = Schema.Struct({

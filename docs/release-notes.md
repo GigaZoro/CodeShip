@@ -1,3 +1,8 @@
+## 2026-11-08 — Git action results speak your language, and the next step stays clickable
+
+- Commit, push, pull request and pull results, and the progress steps while an action runs ("Committing…", "Pushing…", "Generating PR content…"), now show in the app's language on web, desktop and mobile. Before, they always came from the server in English.
+- On web and desktop, after a commit the next action, such as **Push & create PR**, is clickable right away. The result ("Committed abc1234" and its subject) shows on a line under it for 10 seconds instead of replacing the button.
+
 ## 2026-11-08 — Claude hears a finished background command after its session closed
 
 - When a background command or task finishes after the Claude session that started it has closed, for example after a network outage, the agent now gets the finish notice as a message and carries on. Before, that turn failed with "Send a message to continue" and the chat waited for you.

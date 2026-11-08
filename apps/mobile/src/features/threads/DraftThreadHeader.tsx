@@ -9,13 +9,19 @@ import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
+import { changeRequestTerminologyFor } from "@t3tools/client-runtime/state/vcs";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { useEnvironmentQuery } from "../../state/query";
 import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { vcsActionManager, vcsEnvironment } from "../../state/vcs";
-import { showGitActionResult, useVcsActionState } from "../../state/use-vcs-action-state";
+import {
+  pullSuccess,
+  showGitActionResult,
+  stackedActionSuccess,
+  useVcsActionState,
+} from "../../state/use-vcs-action-state";
 import { ThreadHeader } from "./ThreadHeader";
 import { t } from "../../lib/i18n";
 
@@ -105,24 +111,17 @@ export function DraftThreadHeader(props: {
             showFailure(cwd, result.cause);
             return;
           }
-          showGitActionResult(
-            { environmentId, cwd },
-            {
-              type: "success",
-              title:
-                result.value.status === "skipped_up_to_date"
-                  ? t("Already up to date")
-                  : t("Pulled latest on {ref}", { ref: result.value.refName }),
-            },
-          );
+          showGitActionResult({ environmentId, cwd }, pullSuccess(result.value));
         },
         onRunAction: async (input) => {
           const cwd = props.cwd;
           if (!canWriteGit || !cwd) return null;
+          const changeRequestTerminology = changeRequestTerminologyFor(status.data ?? null);
           const result = await runAction({
             ...input,
             projectId: props.project.id,
             actionId: uuidv4(),
+            changeRequestTerminology,
           });
           if (AsyncResult.isFailure(result)) {
             showFailure(cwd, result.cause);
@@ -130,13 +129,7 @@ export function DraftThreadHeader(props: {
           }
           showGitActionResult(
             { environmentId, cwd },
-            {
-              type: "success",
-              title: result.value.toast.title,
-              description: result.value.toast.description,
-              prUrl:
-                result.value.toast.cta.kind === "open_pr" ? result.value.toast.cta.url : undefined,
-            },
+            stackedActionSuccess(result.value, changeRequestTerminology),
           );
           return result.value;
         },

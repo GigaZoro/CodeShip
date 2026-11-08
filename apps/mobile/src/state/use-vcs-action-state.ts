@@ -1,10 +1,14 @@
 import { useAtomValue } from "@effect/atom-react";
 import { secondTick } from "@t3tools/client-runtime/clock";
+import type { ChangeRequestTerminology } from "@t3tools/client-runtime/source-control-clients";
 import {
   type ResolvedVcsActionTarget,
+  summarizeGitActionResult,
+  summarizePullResult,
   type VcsActionState,
   type VcsActionTarget,
 } from "@t3tools/client-runtime/state/vcs";
+import type { GitRunStackedActionResult, VcsPullResult } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import * as Haptics from "expo-haptics";
 import { useSyncExternalStore } from "react";
@@ -22,6 +26,32 @@ export interface GitActionResultNotification {
   readonly title: string;
   readonly description?: string;
   readonly prUrl?: string;
+}
+
+function successNotification(
+  summary: { readonly title: string; readonly description: string | null },
+  prUrl?: string,
+): GitActionResultNotification {
+  return {
+    type: "success",
+    title: summary.title,
+    ...(summary.description === null ? {} : { description: summary.description }),
+    ...(prUrl === undefined ? {} : { prUrl }),
+  };
+}
+
+export function stackedActionSuccess(
+  result: GitRunStackedActionResult,
+  terminology: ChangeRequestTerminology,
+): GitActionResultNotification {
+  return successNotification(
+    summarizeGitActionResult(result, terminology),
+    result.pr.status === "skipped_not_requested" ? undefined : result.pr.url,
+  );
+}
+
+export function pullSuccess(result: VcsPullResult): GitActionResultNotification {
+  return successNotification(summarizePullResult(result));
 }
 
 const RESULT_DISMISS_MS = 5_000;

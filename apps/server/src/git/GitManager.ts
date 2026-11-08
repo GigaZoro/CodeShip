@@ -2153,6 +2153,7 @@ export const make = Effect.gen(function* () {
         yield* emit({
           kind: "phase_started",
           phase: "commit",
+          step: "generate_commit_message",
           label: "Generating commit message...",
         });
       }
@@ -2171,6 +2172,7 @@ export const make = Effect.gen(function* () {
     yield* emit({
       kind: "phase_started",
       phase: "commit",
+      step: "commit",
       label: "Committing...",
     });
 
@@ -2291,6 +2293,7 @@ export const make = Effect.gen(function* () {
     yield* emit({
       kind: "phase_started",
       phase: "pr",
+      step: "generate_change_request",
       label: `Generating ${terms.shortLabel} content...`,
     });
     const baseRangeRef = yield* resolveBaseRangeRef(cwd, baseRef);
@@ -2335,6 +2338,7 @@ export const make = Effect.gen(function* () {
     yield* emit({
       kind: "phase_started",
       phase: "pr",
+      step: "create_change_request",
       label: `Creating ${terms.singular}...`,
     });
     yield* provider
@@ -3145,6 +3149,7 @@ export const make = Effect.gen(function* () {
           yield* progress.emit({
             kind: "phase_started",
             phase: "branch",
+            step: "prepare_feature_branch",
             label: "Preparing feature branch...",
           });
           const result = yield* runFeatureBranchStep(
@@ -3188,6 +3193,7 @@ export const make = Effect.gen(function* () {
               .emit({
                 kind: "phase_started",
                 phase: "push",
+                step: "push",
                 label: "Pushing...",
               })
               .pipe(
@@ -3201,6 +3207,7 @@ export const make = Effect.gen(function* () {
               .emit({
                 kind: "phase_started",
                 phase: "pr",
+                step: "prepare_change_request",
                 label: `Preparing ${changeRequestTerms?.shortLabel ?? "PR"}...`,
               })
               .pipe(
