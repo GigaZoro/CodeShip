@@ -1750,7 +1750,7 @@ export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixtu
           "./turn_interrupt_restart/claude_transcript.ndjson",
           import.meta.url,
         ),
-        modelSelection: CLAUDE_MODEL_SELECTION,
+        modelSelection: { ...CLAUDE_MODEL_SELECTION, model: "claude-haiku-5-5" },
         runtimePolicyOverride: WORKSPACE_NEVER_POLICY,
         assertOutput: assertTurnInterruptRestartClaudeOutput,
       },

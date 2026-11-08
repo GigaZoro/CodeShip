@@ -81,7 +81,9 @@ a provider's own ledger recorded beyond it during the turn: Claude's per-process
 `modelUsage` growth, which covers native subagents, compaction, and helper
 calls. They need a baseline from the same process, so they stay absent when it
 is unknown or the ledger goes backwards, and background work that ends between
-turns lands in the next one. Claude subagents have no turns of their own, so
+turns lands in the next one. A process that resumes a session starts its ledger
+from the session's saved totals (the SDK docs say it starts fresh; the CLI
+restores them), so the first turn after the CLI reopens has no baseline. Claude subagents have no turns of their own, so
 this never overlaps child turns.
 
 `model` and `effort` are what the run selected. `observedModel` and

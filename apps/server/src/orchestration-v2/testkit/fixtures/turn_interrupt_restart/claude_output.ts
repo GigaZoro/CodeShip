@@ -126,4 +126,15 @@ export function assertTurnInterruptRestartClaudeOutput(
   assert.lengthOf(queryOpenFrames, 2);
   assert.isString(queryOpenFrames[1]?.options?.resume);
   assert.lengthOf(interruptFrames, 1);
+  // The resumed process's ledger carries the interrupted turn's usage, which this turn did not make.
+  assert.deepEqual(
+    projection.providerTurns.map((turn) => [
+      turn.turnTokenUsage?.inputTokens,
+      turn.turnTokenUsage?.otherUsage,
+    ]),
+    [
+      [undefined, undefined],
+      [145_073, undefined],
+    ],
+  );
 }

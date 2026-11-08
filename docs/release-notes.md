@@ -1,3 +1,7 @@
+## 2026-11-08 — Claude usage no longer counts a resumed chat's history again
+
+- After a Claude chat was stopped, failed, sat idle or switched settings, its next turn counted every token the chat had used before as subagent and compaction ("other") usage, sometimes hundreds of millions of tokens in a few seconds. That turn's other usage is now left out as unknown, and later turns count only their own. Turns already recorded keep their earlier numbers.
+
 ## 2026-11-08 — Updates arrive after GitHub outages
 
 - When a new version fails to build because GitHub is down, it is now built again every half hour until it is released. Before, it was retried twice within minutes, so after a longer outage no update arrived until the next change shipped.
