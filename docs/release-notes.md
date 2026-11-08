@@ -1,3 +1,7 @@
+## 2026-11-08 — Usage-limit checks stay fast as failed turns pile up
+
+- Auto turns, agent launches and account routing no longer slow down as your history of failed turns grows: checking which accounts are out of usage reads only the usage refusals that can still hold an account (a reset still ahead, or no known reset within the last five hours), not every failed turn ever recorded. Which accounts count as limited is unchanged.
+
 ## 2026-11-08 — Limited threads move as soon as another account's usage window ends
 
 - With **Switch accounts at usage limits** on, a thread waiting because every other account was out of usage now moves to the first account whose used-up usage window resets or whose hold ends, within seconds. Before, an account limited only by its usage bars, with no refused turn, could leave the thread waiting up to ten more minutes.

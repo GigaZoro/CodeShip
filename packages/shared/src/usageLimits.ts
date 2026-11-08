@@ -44,7 +44,8 @@ export function usageScopeCoversModel(scope: string, model: string | null | unde
   return scope.split("_").every((word) => words.includes(word));
 }
 
-// Claude and ChatGPT subscriptions use a five-hour session window.
+// Claude and ChatGPT subscriptions use a five-hour session window. The server's hold-end index
+// (migration 080) bounds refusal reads by it; a longer hold needs a new index.
 const DEFAULT_USAGE_HOLD_MINS = 5 * 60;
 
 /** How long a limit with no known end holds: the account's shortest usage window, at most five hours. */

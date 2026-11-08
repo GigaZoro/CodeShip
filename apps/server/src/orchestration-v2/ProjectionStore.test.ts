@@ -37,7 +37,7 @@ import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
 import * as SqlClient from "effect/sql/SqlClient";
 import { projectThreadAwarenessV2 } from "@t3tools/shared/agentAwareness";
-import { usageScopeCoversModel } from "@t3tools/shared/usageLimits";
+import { usageHoldMs, usageScopeCoversModel } from "@t3tools/shared/usageLimits";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -5231,6 +5231,18 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           ],
         ],
       );
+      // An unknown reset holds for at most usageHoldMs, so the read stops returning it then.
+      const holdEnd = DateTime.add(limitItem.updatedAt, { milliseconds: usageHoldMs(undefined) });
+      assert.isTrue(
+        (yield* store.getUsageLimitedProviderInstances(
+          DateTime.subtract(holdEnd, { milliseconds: 1 }),
+          coversScope,
+        )).has(providerInstanceId),
+      );
+      assert.deepEqual(
+        [...(yield* store.getUsageLimitedProviderInstances(holdEnd, coversScope))],
+        [],
+      );
       yield* store.apply({
         id: EventId.make("event:limit-shell:model-scoped"),
         type: "turn-item.updated",
@@ -5703,6 +5715,17 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         }
       }
       assert.lengthOf(laterReads, 3);
+      // Refusals come from the hold-end index range, not a walk over every failed item.
+      const refusalRead = statements.find((statement) => statement.includes("WITH refusals AS"));
+      assert.isDefined(refusalRead);
+      const refusalLookups = (yield* sql.unsafe<{ readonly detail: string }>(
+        `EXPLAIN QUERY PLAN ${refusalRead}`,
+      ))
+        .map((row) => row.detail)
+        .filter((detail) => /^(?:SCAN|SEARCH) failure\b/.test(detail));
+      assert.deepEqual(refusalLookups, [
+        "SEARCH failure USING INDEX orchestration_v2_projection_turn_items_usage_limit_hold_end_idx (<expr>>?)",
+      ]);
       const laterCoveredRun = yield* addRun("later-covered", "completed", 40);
       assert.isUndefined(yield* scoped());
       for (const run of [earlierRun, coveredRun, laterRun, ...otherRuns, laterCoveredRun]) {

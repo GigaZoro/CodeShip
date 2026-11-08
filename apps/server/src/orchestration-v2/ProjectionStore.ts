@@ -549,8 +549,9 @@ export interface ProjectionStoreV2Shape {
     readonly failover?: boolean;
   }) => Effect.Effect<ReadonlyArray<ProjectionLimitRecoveryCandidate>, ProjectionStoreV2Error>;
   /**
-   * Usage refusals whose reset is still ahead or unknown. A completed run on the account started
-   * after the refusal drops it; for a model-scoped one, only a run whose model `coversScope`.
+   * Usage refusals that can still hold an account: a reset still ahead, or an unknown reset within
+   * the longest hold (five hours). A completed run on the account started after the refusal drops
+   * it; for a model-scoped one, only a run whose model `coversScope`.
    */
   readonly getUsageLimitedProviderInstances: (
     now: DateTime.Utc,
@@ -4184,6 +4185,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             FROM orchestration_v2_projection_turn_items failure
             WHERE failure.type = 'error' AND failure.status = 'failed'
               AND json_extract(failure.payload_json, '$.failure.class') = 'usage_limit'
+              -- The latest a refusal can hold: its reset, else usageHoldMs (at most five hours).
+              -- This exact expression is the key of the hold-end index (migration 080).
+              AND COALESCE(
+                julianday(json_extract(failure.payload_json, '$.failure.resetAt')),
+                julianday(failure.updated_at, '+5 hours')
+              ) > julianday(${nowIso})
             UNION ALL
             -- A turn the provider holds until the reset; the first status term matches the
             -- live-item partial index.
