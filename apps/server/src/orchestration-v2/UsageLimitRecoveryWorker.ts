@@ -17,7 +17,7 @@ import {
   type AccountRoutingContext,
   accountsWithRoom,
   completedRunLiftsScope,
-  recordedUsageLimitEnd,
+  nextAccountRoomAt,
 } from "./AccountRouting.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -92,56 +92,71 @@ export function limitRecoveryCommand(
   };
 }
 
-/**
- * Moves a thread stopped by a usage limit, or held by its provider until the reset, to the first
- * account of its driver with room left.
- */
-export function limitFailoverCommand(
-  input: AccountRoutingContext & {
-    readonly thread: ProjectionStore.ProjectionLimitRecoveryCandidate;
-  },
-): Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> | null {
-  const { thread, nowMs } = input;
+type FailoverInput = AccountRoutingContext & {
+  readonly thread: ProjectionStore.ProjectionLimitRecoveryCandidate;
+};
+
+/** The search for another account of its driver that a limited thread could move to, or null when it stays. */
+function failoverSearch({ thread, ...input }: FailoverInput) {
   const resetMs = Date.parse(thread.usageLimitResetAt ?? "");
-  const heldAttemptId = thread.status === "running" ? thread.heldAttemptId : undefined;
   if (
-    (thread.status !== "failed" && heldAttemptId === undefined) ||
+    (thread.status !== "failed" &&
+      (thread.status !== "running" || thread.heldAttemptId === undefined)) ||
     thread.lastErrorClass !== "usage_limit" ||
     !thread.latestRunId ||
     // Limited accounts are skipped only until their reported reset, so a stop without one
     // could bounce between two limited accounts. A passed reset is auto-resume's job.
-    !(resetMs > nowMs + MIN_FAILOVER_WAIT_MS) ||
+    !(resetMs > input.nowMs + MIN_FAILOVER_WAIT_MS) ||
     thread.archivedAt !== null ||
     thread.settledOverride === "settled" ||
     thread.pendingRuntimeRequest !== null ||
     // Cancelling auto-resume keeps the thread until the user continues it.
     (thread.limitRecovery?.runId === thread.latestRunId && !thread.limitRecovery.autoResume) ||
     thread.latestRunProviderInstanceId !== thread.providerInstanceId ||
-    (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > nowMs)
+    (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > input.nowMs)
   )
     return null;
   const current = input.providers.find(
     (provider) => provider.instanceId === thread.providerInstanceId,
   );
-  if (current === undefined) return null;
-  const target = accountsWithRoom({
-    ...input,
-    driver: current.driver,
-    projectId: thread.projectId,
-    model: thread.modelSelection.model,
-  }).find((account) => account.instanceId !== current.instanceId);
+  return current === undefined
+    ? null
+    : {
+        ...input,
+        driver: current.driver,
+        projectId: thread.projectId,
+        model: thread.modelSelection.model,
+        exceptInstanceId: current.instanceId,
+        runId: thread.latestRunId,
+      };
+}
+
+/**
+ * Moves a thread stopped by a usage limit, or held by its provider until the reset, to the first
+ * account of its driver with room left.
+ */
+export function limitFailoverCommand(
+  input: FailoverInput,
+): Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> | null {
+  const { thread } = input;
+  const search = failoverSearch(input);
+  if (search === null) return null;
+  const heldAttemptId = thread.status === "running" ? thread.heldAttemptId : undefined;
+  const target = accountsWithRoom(search).find(
+    (account) => account.instanceId !== search.exceptInstanceId,
+  );
   if (target === undefined) return null;
   // The target is part of the id so a refused switch does not block trying another account.
   // A held run keeps its id across restarts, so its attempt tells each hold apart.
   const hold = heldAttemptId === undefined ? "" : `${heldAttemptId}:`;
-  const identity = `${thread.id}:${thread.latestRunId}:${hold}${target.instanceId}`;
+  const identity = `${thread.id}:${search.runId}:${hold}${target.instanceId}`;
   return {
     type: "message.dispatch",
     commandId: CommandId.make(`limit-failover:${identity}`),
     messageId: MessageId.make(`limit-failover:${identity}`),
     threadId: thread.id,
     // A stopped run reuses the manual resume guard: it must still be the thread's latest.
-    ...(heldAttemptId === undefined ? { manualContinuationOfRunId: thread.latestRunId } : {}),
+    ...(heldAttemptId === undefined ? { manualContinuationOfRunId: search.runId } : {}),
     modelSelection: {
       ...thread.modelSelection,
       instanceId: target.instanceId,
@@ -152,7 +167,7 @@ export function limitFailoverCommand(
     dispatchMode:
       heldAttemptId === undefined
         ? { type: "start_immediately" }
-        : { type: "restart_active", targetRunId: thread.latestRunId },
+        : { type: "restart_active", targetRunId: search.runId },
     createdBy: "user",
     creationSource: "server",
   };
@@ -271,16 +286,18 @@ const makeSweep = Effect.gen(function* () {
     // A sweep that acted, or failed to, re-checks on the next tick.
     if (acted) return;
     const wakeAt = yield* projections.getLimitRecoveryWakeAt(now);
-    // A waiting thread can move to another account the moment that account's limit resets.
-    const accountResetAt = Math.min(
-      ...(failover?.providers ?? []).flatMap((provider) =>
-        (failover?.recordedLimits.get(provider.instanceId) ?? []).flatMap((refusal) => {
-          const end = recordedUsageLimitEnd(provider, refusal);
-          return end > nowMs ? [end] : [];
-        }),
-      ),
-    );
-    yield* due.record(readVersion, Math.min(wakeAt ?? Infinity, accountResetAt), nowMs);
+    // A waiting thread can move to another account the moment that account's limit ends.
+    const accountRoomAt =
+      failover === null
+        ? Infinity
+        : Math.min(
+            ...candidates.flatMap((thread) => {
+              const search = failoverSearch({ ...failover, thread });
+              const at = search === null ? null : nextAccountRoomAt(search);
+              return at === null ? [] : [at];
+            }),
+          );
+    yield* due.record(readVersion, Math.min(wakeAt ?? Infinity, accountRoomAt), nowMs);
   });
 });
 

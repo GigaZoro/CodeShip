@@ -70,7 +70,7 @@ export function completedRunLiftsScope(
 }
 
 /** When a refusal stops holding: its reset, else the hold from the refusal. */
-export function recordedUsageLimitEnd(
+function recordedUsageLimitEnd(
   provider: ServerProvider,
   refusal: ProjectionStore.RecordedUsageLimit,
 ): number {
@@ -102,22 +102,33 @@ function windowLimitEnd(provider: ServerProvider, nowMs: number, model: string |
     : usageWindowLimitEnd(provider.usageLimits, window);
 }
 
+/** When the last refusal or used-up window holding `model` (omitted: account-wide) ends, or null if none does. */
+function accountLimitEnd(
+  provider: ServerProvider,
+  recorded: AccountRoutingContext["recordedLimits"],
+  nowMs: number,
+  model?: string,
+): number | null {
+  if (!isSubscriptionAccount(provider)) return null;
+  const canonical = model === undefined ? null : canonicalModel(provider, model);
+  const ends = refusalEnds(provider, recorded.get(provider.instanceId) ?? [], nowMs, canonical);
+  const windowEnd = windowLimitEnd(provider, nowMs, canonical);
+  if (windowEnd !== null) ends.push(windowEnd);
+  return ends.length === 0 ? null : Math.max(...ends);
+}
+
 function accountLimit(
   provider: ServerProvider,
   recorded: AccountRoutingContext["recordedLimits"],
   nowMs: number,
   model?: string,
 ): LaunchLimit | null {
-  if (!isSubscriptionAccount(provider)) return null;
-  const canonical = model === undefined ? null : canonicalModel(provider, model);
-  const ends = refusalEnds(provider, recorded.get(provider.instanceId) ?? [], nowMs, canonical);
-  const windowEnd = windowLimitEnd(provider, nowMs, canonical);
-  if (windowEnd !== null) ends.push(windowEnd);
-  return ends.length === 0
+  const end = accountLimitEnd(provider, recorded, nowMs, model);
+  return end === null
     ? null
     : {
         instanceId: provider.instanceId,
-        limitedUntil: DateTime.formatIso(DateTime.makeUnsafe(Math.max(...ends))),
+        limitedUntil: DateTime.formatIso(DateTime.makeUnsafe(end)),
       };
 }
 
@@ -134,10 +145,13 @@ export function modelScopeHolds(
   return refusalEnds(provider, scoped, input.nowMs, canonicalModel(provider, model)).length > 0;
 }
 
-/** The model this subscription account would run for `model` now, or null when it cannot take the turn. */
-export function modelWithRoom(
+/** The model this subscription account would run for `model`, usage limits aside, or null when it cannot. */
+function usableModel(
   provider: ServerProvider,
-  input: AccountRoutingContext & { readonly projectId: ProjectId; readonly model: string },
+  input: Pick<AccountRoutingContext, "settings"> & {
+    readonly projectId: ProjectId;
+    readonly model: string;
+  },
 ): string | null {
   if (
     !provider.enabled ||
@@ -149,19 +163,30 @@ export function modelWithRoom(
     !resolveProjectProviderInstanceEnabled(input.settings, input.projectId, provider.instanceId)
   )
     return null;
-  const model = resolveSelectableModel(provider.driver, input.model, provider.models);
-  return model === null || accountLimit(provider, input.recordedLimits, input.nowMs, model) !== null
+  return resolveSelectableModel(provider.driver, input.model, provider.models);
+}
+
+/** The model this subscription account would run for `model` now, or null when it cannot take the turn. */
+export function modelWithRoom(
+  provider: ServerProvider,
+  input: AccountRoutingContext & { readonly projectId: ProjectId; readonly model: string },
+): string | null {
+  const model = usableModel(provider, input);
+  return model === null ||
+    accountLimitEnd(provider, input.recordedLimits, input.nowMs, model) !== null
     ? null
     : model;
 }
 
+interface AccountSearch extends AccountRoutingContext {
+  readonly driver: ProviderDriverKind;
+  readonly projectId: ProjectId;
+  readonly model: string;
+}
+
 /** Accounts of `driver` that can run `model` now, highest in the saved account order first. */
 export function accountsWithRoom(
-  input: AccountRoutingContext & {
-    readonly driver: ProviderDriverKind;
-    readonly projectId: ProjectId;
-    readonly model: string;
-  },
+  input: AccountSearch,
 ): ReadonlyArray<{ readonly instanceId: ProviderInstanceId; readonly model: string }> {
   if (!supportsAccountFailover(input.driver)) return [];
   const eligible = input.providers.flatMap((provider) => {
@@ -170,6 +195,25 @@ export function accountsWithRoom(
     return model === null ? [] : [{ instanceId: provider.instanceId, model }];
   });
   return orderProviderInstancesForFailover(input.settings.providerInstanceFailoverOrder, eligible);
+}
+
+/**
+ * When the first account of `driver` other than `exceptInstanceId` that a usage limit keeps from
+ * running `model` gets room back: the end of its last refusal or used-up window. Null when none waits.
+ */
+export function nextAccountRoomAt(
+  input: AccountSearch & { readonly exceptInstanceId: ProviderInstanceId },
+): number | null {
+  if (!supportsAccountFailover(input.driver)) return null;
+  const ends = input.providers.flatMap((provider) => {
+    if (provider.driver !== input.driver || provider.instanceId === input.exceptInstanceId)
+      return [];
+    const model = usableModel(provider, input);
+    const end =
+      model === null ? null : accountLimitEnd(provider, input.recordedLimits, input.nowMs, model);
+    return end === null ? [] : [end];
+  });
+  return ends.length === 0 ? null : Math.min(...ends);
 }
 
 /**
@@ -241,7 +285,7 @@ export function failoverLimitedLaunch(
   );
   if (
     current === undefined ||
-    accountLimit(current, input.recordedLimits, input.nowMs, input.selection.model) === null
+    accountLimitEnd(current, input.recordedLimits, input.nowMs, input.selection.model) === null
   ) {
     return input.selection;
   }
@@ -354,8 +398,12 @@ export const layer = Layer.effect(
                 provider.models
                   .filter(
                     (model) =>
-                      accountLimit(provider, recorded, DateTime.toEpochMillis(now), model.slug) !==
-                      null,
+                      accountLimitEnd(
+                        provider,
+                        recorded,
+                        DateTime.toEpochMillis(now),
+                        model.slug,
+                      ) !== null,
                   )
                   .map((model) => model.slug),
               ),

@@ -1,3 +1,7 @@
+## 2026-11-08 — Limited threads move as soon as another account's usage window ends
+
+- With **Switch accounts at usage limits** on, a thread waiting because every other account was out of usage now moves to the first account whose used-up usage window resets or whose hold ends, within seconds. Before, an account limited only by its usage bars, with no refused turn, could leave the thread waiting up to ten more minutes.
+
 ## 2026-11-08 — Auto limit holds expire and briefs take less context
 
 - A usage refusal without a reset holds the account for five hours, or its shortest reported usage window when that is shorter. Named launches respect the same hold; fresh snapshots do not erase a recent refusal. A used-up usage window without a reset holds from when it was first seen used up, for at most that long. Usage → Limits shows the hold's end as the return time and stops showing the account limited after it.

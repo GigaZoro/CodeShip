@@ -460,7 +460,8 @@ not. Agent launches (`t3_thread_launch`,
 in the app is not refused. Used-up usage windows still block until the last of them
 resets. A used-up window that reports no reset blocks for at most the same hold, counted
 from when CodeShip first saw it used up. If none is free, the thread waits as above, and moves to the first
-account that gets usage back unless you snooze it or cancel its auto-resume. Each provider is one account: a provider
+account that gets usage back unless you snooze it or cancel its auto-resume. It moves when that account's last
+limit ends, whether a reset or a hold, with no usage check needed. Each provider is one account: a provider
 signed in to an account another provider already uses is unavailable until you
 sign it in to a different account. Some providers' terms forbid using extra
 accounts to get around limits. With this on, a scheduled task whose account has hit

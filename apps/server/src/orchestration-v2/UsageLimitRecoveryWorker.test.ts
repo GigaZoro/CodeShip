@@ -307,87 +307,116 @@ it.effect("idle sweeps skip SQL until the next wake time or a relevant event", (
   }),
 );
 
-it.effect.each([false, true])(
-  "a waiting thread wakes when another account's limit ends (bounded hold: %s)",
-  (boundedHold) =>
-    Effect.gen(function* () {
-      yield* TestClock.setTime(now);
-      const queries = yield* Queue.unbounded<number>();
-      const layer = UsageLimitRecoveryWorker.layer.pipe(
-        Layer.provide(
-          Layer.mergeAll(
-            Scheduler.layer,
-            Layer.mock(ProjectionStore.ProjectionStoreV2)({
-              getLimitRecoveryCandidates: () =>
-                Clock.currentTimeMillis.pipe(
-                  Effect.flatMap((nowMs) => Queue.offer(queries, nowMs - now)),
-                  Effect.as([{ ...thread, limitRecovery: { runId, resetAt, autoResume: true } }]),
-                ),
-              getUsageLimitedProviderInstances: () =>
-                Effect.succeed(
-                  new Map<ProviderInstanceId, ReadonlyArray<ProjectionStore.RecordedUsageLimit>>([
-                    [
-                      ProviderInstanceId.make("unknown-reset"),
-                      [{ resetAt: null, refusedAt: "2026-10-29T11:00:00Z" }],
-                    ],
-                    [
-                      ProviderInstanceId.make("claudeAgent"),
-                      [{ resetAt, refusedAt: "2026-10-29T11:00:00Z" }],
-                    ],
-                    [
-                      ProviderInstanceId.make("claude_first"),
-                      [
-                        {
-                          resetAt: boundedHold ? null : "2026-10-29T12:02:00.000Z",
-                          refusedAt: "2026-10-29T11:00:00Z",
-                        },
-                      ],
-                    ],
-                  ]),
-                ),
-              getLimitRecoveryWakeAt: () => Effect.succeed(Date.parse(resetAt)),
+// Each limit frees claude_first two minutes in; the sweep's ten-minute backstop would come later.
+const freedAt = "2026-10-29T12:02:00.000Z";
+it.effect.each([
+  { limit: "a refusal's reset", refusalResetAt: freedAt, window: {} },
+  // The 62-minute session window bounds the hold from the 11:00 refusal.
+  { limit: "a refusal's hold", refusalResetAt: null, window: {} },
+  { limit: "a used-up window's reset", window: { usedPercent: 100, resetsAt: freedAt } },
+  {
+    limit: "a used-up window's hold",
+    window: { usedPercent: 100, exhaustedSince: "2026-10-29T11:00:00Z" },
+  },
+] as const)("a waiting thread wakes when another account's limit ends: $limit", (testCase) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(now);
+    const queries = yield* Queue.unbounded<number>();
+    const layer = UsageLimitRecoveryWorker.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Scheduler.layer,
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getLimitRecoveryCandidates: () =>
+              Clock.currentTimeMillis.pipe(
+                Effect.flatMap((nowMs) => Queue.offer(queries, nowMs - now)),
+                Effect.as([{ ...thread, limitRecovery: { runId, resetAt, autoResume: true } }]),
+              ),
+            getUsageLimitedProviderInstances: () =>
+              Effect.succeed(
+                new Map<ProviderInstanceId, ReadonlyArray<ProjectionStore.RecordedUsageLimit>>([
+                  [
+                    ProviderInstanceId.make("unknown-reset"),
+                    [{ resetAt: null, refusedAt: "2026-10-29T11:00:00Z" }],
+                  ],
+                  [
+                    ProviderInstanceId.make("claudeAgent"),
+                    [{ resetAt, refusedAt: "2026-10-29T11:00:00Z" }],
+                  ],
+                  ...("refusalResetAt" in testCase
+                    ? [
+                        [
+                          ProviderInstanceId.make("claude_first"),
+                          [
+                            {
+                              resetAt: testCase.refusalResetAt,
+                              refusedAt: "2026-10-29T11:00:00Z",
+                            },
+                          ],
+                        ] as const,
+                      ]
+                    : []),
+                ]),
+              ),
+            getLimitRecoveryWakeAt: () => Effect.succeed(Date.parse(resetAt)),
+          }),
+          Layer.mock(ThreadManagement.ThreadManagementService)({}),
+          Layer.mock(Orchestrator.OrchestratorV2)({ streamDomainEvents: Stream.never }),
+          Layer.mock(ServerSettings.ServerSettingsService)({
+            getSettings: Effect.succeed({
+              ...settings,
+              autoResumeLimitedThreads: true,
+              snoozeLimitedThreads: false,
+              failoverLimitedThreads: true,
             }),
-            Layer.mock(ThreadManagement.ThreadManagementService)({}),
-            Layer.mock(Orchestrator.OrchestratorV2)({ streamDomainEvents: Stream.never }),
-            Layer.mock(ServerSettings.ServerSettingsService)({
-              getSettings: Effect.succeed({
-                ...settings,
-                autoResumeLimitedThreads: true,
-                snoozeLimitedThreads: false,
-                failoverLimitedThreads: true,
-              }),
-              streamChanges: Stream.never,
-            }),
-            Layer.mock(ProviderRegistry.ProviderRegistry)({
-              getProviders: Effect.succeed([
-                provider("claudeAgent"),
-                {
-                  ...provider("claude_first"),
-                  usageLimits: {
-                    checkedAt: "2026-10-29T11:00:00Z",
-                    windows: [
-                      {
-                        id: "session",
-                        kind: "session",
-                        label: "Session",
-                        usedPercent: 10,
-                        windowDurationMins: 62,
-                      },
-                    ],
-                  },
+            streamChanges: Stream.never,
+          }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.succeed([
+              provider("claudeAgent"),
+              {
+                ...provider("claude_first"),
+                usageLimits: {
+                  checkedAt: "2026-10-29T11:00:00Z",
+                  windows: [
+                    {
+                      id: "session",
+                      kind: "session",
+                      label: "Session",
+                      usedPercent: 10,
+                      windowDurationMins: 62,
+                      ...testCase.window,
+                    },
+                  ],
                 },
-              ]),
-              streamChanges: Stream.never,
-            }),
-          ),
+              },
+              // Only the earliest end sets the wake.
+              provider("claude_second", {
+                usageLimits: {
+                  checkedAt: "2026-10-29T11:00:00Z",
+                  windows: [
+                    {
+                      id: "weekly",
+                      kind: "weekly",
+                      label: "Weekly",
+                      usedPercent: 100,
+                      resetsAt: "2026-10-29T12:30:00.000Z",
+                    },
+                  ],
+                },
+              }),
+            ]),
+            streamChanges: Stream.never,
+          }),
         ),
-      );
-      yield* Effect.gen(function* () {
-        assert.equal(yield* Queue.take(queries), 0);
-        yield* TestClock.adjust("120 seconds");
-        assert.equal(yield* Queue.take(queries), 120_000);
-      }).pipe(Effect.provide(layer));
-    }),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      assert.equal(yield* Queue.take(queries), 0);
+      yield* TestClock.adjust("10 minutes");
+      assert.equal(yield* Queue.take(queries), 120_000);
+    }).pipe(Effect.provide(layer));
+  }),
 );
 
 const HOUR_MS = 60 * 60 * 1000;
