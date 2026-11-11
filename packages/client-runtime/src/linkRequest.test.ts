@@ -11,10 +11,12 @@ import {
   defaultReverseLinkAccess,
   linkableMachines,
   linkedEnvironmentNames,
+  linkedWithoutLinkBack,
   linkRequestAnswerInput,
   linkRequestDisplay,
   linkRequestFailureMessage,
   linkRequestInitialMachine,
+  linkReverseRequest,
   ownLinkUrls,
   rankMachinesByHint,
 } from "./linkRequest.ts";
@@ -210,6 +212,42 @@ describe("linking both ways", () => {
     expect(defaultReverseLinkAccess("full-access")).toBe("auto");
     expect(defaultReverseLinkAccess("auto")).toBe("auto");
     expect(defaultReverseLinkAccess("approval-required")).toBe("approval-required");
+  });
+
+  it("asks the machine to link back only when wanted and the link's access allows it", () => {
+    const urls = ["https://here.ts.net"];
+    const want = { wanted: true, access: "auto", urls } as const;
+    expect(linkReverseRequest({ ...want, forward: "auto" })).toEqual({ access: "auto", urls });
+    expect(linkReverseRequest({ ...want, forward: "full-access", urls: [] })).toEqual({
+      access: "auto",
+    });
+    expect(linkReverseRequest({ ...want, forward: "approval-required" })).toBeUndefined();
+    expect(linkReverseRequest({ ...want, forward: "auto", wanted: false })).toBeUndefined();
+  });
+
+  it("carries the request to link back in the answer, and warns unless it was made", () => {
+    const answer = linkRequestAnswerInput(item, {
+      type: "link",
+      target: { url: "https://box.ts.net" },
+      access: "auto",
+      pairingCode: "abc",
+      reverse: { access: "auto" },
+    });
+    expect(answer).toMatchObject({ answer: { type: "link", reverse: { access: "auto" } } });
+
+    const linkedBack = { linked: true, back: { status: "linked", access: "auto" } } as const;
+    expect(linkedWithoutLinkBack(true, linkedBack)).toBe(false);
+    expect(
+      linkedWithoutLinkBack(true, {
+        linked: true,
+        back: { status: "not_linked", message: "Links are off there." },
+      }),
+    ).toBe(true);
+    // An older server ignores the request and says nothing.
+    expect(linkedWithoutLinkBack(true, undefined)).toBe(true);
+    // A link that was not made has its failure on the card, not a missing way back.
+    expect(linkedWithoutLinkBack(true, { linked: false })).toBe(false);
+    expect(linkedWithoutLinkBack(false, undefined)).toBe(false);
   });
 });
 

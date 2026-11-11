@@ -4,6 +4,9 @@ import {
   type EnvironmentMachineKind,
   type OrchestrationV2TurnItem,
   type PeerLinkRequestAnswerInput,
+  type PeerLinkRequestAnswerResult,
+  peerLinkAccessAllowsLinkBack,
+  type PeerLinkReverseRequest,
   type PeerLinkSummary,
   resolveEnvironmentMachineKind,
   type ServerConfig,
@@ -127,6 +130,22 @@ export function ownLinkUrls(input: {
  */
 export const defaultReverseLinkAccess = (forward: AuthMcpClientAccess): AuthMcpClientAccess =>
   forward === "full-access" ? "auto" : forward;
+
+/**
+ * The request to link back, or nothing unless the user wants it and the link's access allows the
+ * other machine to be asked (`peerLinkAccessAllowsLinkBack`). `urls` are this machine's own
+ * addresses, as `ownLinkUrls` found them.
+ */
+export const linkReverseRequest = (input: {
+  readonly wanted: boolean;
+  readonly forward: AuthMcpClientAccess;
+  /** What the other machine's agents may do here. */
+  readonly access: AuthMcpClientAccess;
+  readonly urls: ReadonlyArray<string>;
+}): PeerLinkReverseRequest | undefined =>
+  input.wanted && peerLinkAccessAllowsLinkBack(input.forward)
+    ? { access: input.access, ...(input.urls.length > 0 ? { urls: input.urls } : {}) }
+    : undefined;
 
 export function linkableMachines(input: {
   readonly environments: ReadonlyArray<
@@ -296,6 +315,8 @@ export function linkRequestAnswerInput(
           | { readonly url: string };
         readonly access: AuthMcpClientAccess;
         readonly pairingCode: string;
+        /** Also let that machine reach this one, as `PeerLinkCreateInput` says. */
+        readonly reverse?: PeerLinkReverseRequest;
       }
     | { readonly type: "use-existing"; readonly environmentId: EnvironmentId }
     | { readonly type: "decline" },
@@ -305,10 +326,14 @@ export function linkRequestAnswerInput(
   const pairingCode = answer.pairingCode.trim();
   if (pairingCode.length === 0) return null;
   const { target } = answer;
+  const reverse = answer.reverse === undefined ? {} : { reverse: answer.reverse };
   if ("url" in target) {
     const url = target.url.trim();
     if (url.length === 0) return null;
-    return { ...base, answer: { type: "link", urls: [url], access: answer.access, pairingCode } };
+    return {
+      ...base,
+      answer: { type: "link", urls: [url], access: answer.access, pairingCode, ...reverse },
+    };
   }
   const [first, ...rest] = target.urls;
   if (first === undefined) return null;
@@ -321,9 +346,20 @@ export function linkRequestAnswerInput(
       urls: [first, ...rest],
       access: answer.access,
       pairingCode,
+      ...reverse,
     },
   };
 }
+
+/**
+ * Whether the user asked to link back and the other machine still cannot reach this one, after
+ * the answer returned. The link itself stands: it is not made at all only when the card records
+ * it failed, which the card shows by itself.
+ */
+export const linkedWithoutLinkBack = (
+  asked: boolean,
+  result: PeerLinkRequestAnswerResult,
+): boolean => asked && result?.linked !== false && result?.back?.status !== "linked";
 
 /** Failures whose message is written for the user and never echoes the request payload. */
 const USER_FACING_FAILURE_TAGS = new Set([

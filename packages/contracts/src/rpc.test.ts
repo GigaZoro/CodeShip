@@ -44,4 +44,16 @@ describe("WebSocket RPC contracts", () => {
     expect(Exit.isSuccess(decode({ ...request, path: null }))).toBe(true);
     expect(Exit.isFailure(decode({ ...request, path: "/repo/.git/hooks" }))).toBe(true);
   });
+
+  it("lets an answer to a link request carry how linking back went, or nothing", () => {
+    const answer = WsRpcGroup.requests.get(WS_METHODS.peerLinksAnswerRequest);
+    if (answer === undefined) throw new Error("peerLinks.answerRequest is not registered");
+    const result = { linked: true, back: { status: "linked", access: "auto" } };
+
+    // An older server answers with nothing, which a client that asks to link back must accept.
+    const decode = Schema.decodeUnknownExit(answer.successSchema);
+    expect(Exit.isSuccess(decode(undefined))).toBe(true);
+    expect(Exit.isSuccess(decode(result))).toBe(true);
+    expect(Exit.isFailure(decode({ linked: "yes" }))).toBe(true);
+  });
 });

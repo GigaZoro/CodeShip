@@ -1,7 +1,9 @@
 import { pipe } from "effect/Function";
 import { useAtomValue } from "@effect/atom-react";
 import {
+  defaultReverseLinkAccess,
   type LinkableMachine,
+  linkedWithoutLinkBack,
   linkRequestAnswerInput,
   linkRequestDefaultAccess,
   linkRequestDisplay,
@@ -9,6 +11,7 @@ import {
   linkRequestInitialMachine,
   type LinkRequestItem,
   linkRequestTargetName,
+  linkReverseRequest,
   rankMachinesByHint,
 } from "@t3tools/client-runtime/link-request";
 import {
@@ -20,21 +23,24 @@ import {
   type AuthMcpClientAccess,
   type EnvironmentId,
   type OrchestrationV2ProjectedTurnItem,
+  peerLinkAccessAllowsLinkBack,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import { useMemo, useRef, useState } from "react";
-import { Modal, Platform, Pressable, ScrollView, View, type ColorValue } from "react-native";
+import { Alert, Modal, Platform, Pressable, ScrollView, View, type ColorValue } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { SymbolView, type AppSymbolName } from "../../components/ui/AppSymbol";
 import { AppText as Text, AppTextInput as TextInput } from "../../components/ui/AppText";
 import { EnvironmentMachineSymbol } from "../../components/EnvironmentMachineSymbol";
-import { peerLinkEnvironment, useLinkableMachines } from "../../state/peerLinks";
+import { useEnvironments } from "../../state/environments";
+import { peerLinkEnvironment, useLinkableMachines, useOwnLinkUrls } from "../../state/peerLinks";
 import { mintPairingCodeOn } from "../../state/peerPairingCode";
 import { useEnvironmentScope, usePreparedConnection } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ListChoiceRow as SettingsChoiceRow } from "../../components/ui/ListChoiceRow";
+import { SettingsSwitchRow } from "../settings/components/SettingsSwitchRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { Button } from "../../components/ui/Button";
 import { RUNTIME_MODE_CHOICES } from "./thread-settings-options";
@@ -241,6 +247,15 @@ function LinkRequestSheet(props: {
   const [address, setAddress] = useState(item.url ?? "");
   const [access, setAccess] = useState<AuthMcpClientAccess>(() => linkRequestDefaultAccess(item));
   const [pairingCode, setPairingCode] = useState("");
+  // Also let the machine reach this one; its access follows the one above until picked on its own.
+  const [bothWays, setBothWays] = useState(false);
+  const [reverseChoice, setReverseChoice] = useState<AuthMcpClientAccess | null>(null);
+  const reverseAccess = reverseChoice ?? defaultReverseLinkAccess(access);
+  const ownUrls = useOwnLinkUrls(props.environmentId);
+  const { environments } = useEnvironments();
+  const hereLabel =
+    environments.find((environment) => environment.environmentId === props.environmentId)?.entry
+      .target.label ?? null;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mintFailed, setMintFailed] = useState<ReadonlySet<EnvironmentId>>(new Set());
@@ -270,6 +285,14 @@ function LinkRequestSheet(props: {
     (useExisting ||
       ((!needsAddress || address.trim().length > 0) && (canMint || pairingCode.trim().length > 0)));
 
+  const mayLinkBack = peerLinkAccessAllowsLinkBack(access);
+  const reverse = linkReverseRequest({
+    wanted: bothWays,
+    forward: access,
+    access: reverseAccess,
+    urls: ownUrls,
+  });
+
   const prepareAnswer = async () => {
     if (target.kind === "none") return null;
     if (target.kind === "machine" && target.linked) {
@@ -296,6 +319,7 @@ function LinkRequestSheet(props: {
           : { ...target, urls: needsAddress ? [address.trim()] : target.urls },
       access,
       pairingCode: code,
+      ...(reverse === undefined ? {} : { reverse }),
     });
   };
 
@@ -313,6 +337,17 @@ function LinkRequestSheet(props: {
     if (result._tag === "Success") {
       setPairingCode("");
       props.onClose();
+      // The link stands; only the way back is missing. The card's row cannot say so, and it
+      // outlives this sheet.
+      if (linkedWithoutLinkBack(reverse !== undefined, result.value)) {
+        Alert.alert(
+          t("Linked {name}, but it cannot reach this machine yet", { name: targetName }),
+          t("Link {here} from {name} to let it reach this machine.", {
+            here: hereLabel ?? t("this machine"),
+            name: targetName,
+          }),
+        );
+      }
     } else if (!isAtomCommandInterrupted(result)) {
       pipe(squashAtomCommandFailure(result), linkRequestFailureMessage, setError);
     }
@@ -432,24 +467,49 @@ function LinkRequestSheet(props: {
                 </Text>
               </View>
             )}
-            <SettingsSection title={t("What agents here may do there")}>
-              {ACCESS_CHOICES.map((choice, index) => (
-                <SettingsChoiceRow
-                  key={choice.access}
-                  label={t(choice.label)}
-                  description={t(choice.description)}
-                  selected={choice.access === access}
-                  separated={index > 0}
-                  disabled={busy}
-                  onPress={() => setAccess(choice.access)}
-                />
-              ))}
-            </SettingsSection>
+            <AccessSection
+              title={t("What agents here may do there")}
+              value={access}
+              onChange={setAccess}
+              disabled={busy}
+            />
             <Text className="font-sans text-xs text-foreground-muted">
               {t(
                 "An agent here never gets more there than its own mode here either. Threads it starts there cannot change that environment's own threads, projects or settings.",
               )}
             </Text>
+            <SettingsSection>
+              <SettingsSwitchRow
+                label={t("Also let {name} reach this machine", { name: targetName })}
+                subtitle={
+                  mayLinkBack
+                    ? t(
+                        "This machine links {name} back in the same step, so no second pairing code is typed there. Linked environments must be on there too.",
+                        { name: targetName },
+                      )
+                    : t(
+                        "{name} can link back only when this link has auto or full access. Otherwise link this machine from {name}.",
+                        { name: targetName },
+                      )
+                }
+                value={bothWays && mayLinkBack}
+                disabled={busy || !mayLinkBack}
+                onValueChange={setBothWays}
+              />
+            </SettingsSection>
+            {reverse === undefined ? null : (
+              <>
+                <AccessSection
+                  title={t("What agents there may do here")}
+                  value={reverseAccess}
+                  onChange={setReverseChoice}
+                  disabled={busy}
+                />
+                <Text className="font-sans text-xs text-foreground-muted">
+                  {t("An agent there never gets more access here than its own mode there.")}
+                </Text>
+              </>
+            )}
           </>
         )}
         {error !== null ? (
@@ -477,6 +537,30 @@ function LinkRequestSheet(props: {
         />
       </ScrollView>
     </Modal>
+  );
+}
+
+/** The access levels to pick from, as a list under `title`. */
+function AccessSection(props: {
+  readonly title: string;
+  readonly value: AuthMcpClientAccess;
+  readonly onChange: (access: AuthMcpClientAccess) => void;
+  readonly disabled: boolean;
+}) {
+  return (
+    <SettingsSection title={props.title}>
+      {ACCESS_CHOICES.map((choice, index) => (
+        <SettingsChoiceRow
+          key={choice.access}
+          label={t(choice.label)}
+          description={t(choice.description)}
+          selected={choice.access === props.value}
+          separated={index > 0}
+          disabled={props.disabled}
+          onPress={() => props.onChange(choice.access)}
+        />
+      ))}
+    </SettingsSection>
   );
 }
 

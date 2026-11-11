@@ -148,6 +148,20 @@ export const PeerLinkRequestAnswerInput = Schema.Struct({
 });
 export type PeerLinkRequestAnswerInput = typeof PeerLinkRequestAnswerInput.Type;
 
+/**
+ * What an answer returns beyond its record on the card, when the user asked to link back: whether
+ * the link was made at all, and how linking back went. It is nothing otherwise, which is also all
+ * an older server returns and all an older client decodes, so only a client that asked can get an
+ * object.
+ */
+export const PeerLinkRequestAnswerResult = Schema.UndefinedOr(
+  Schema.Struct({
+    linked: Schema.Boolean,
+    back: Schema.optionalKey(PeerLinkBackOutcome),
+  }),
+);
+export type PeerLinkRequestAnswerResult = typeof PeerLinkRequestAnswerResult.Type;
+
 const PEER_LINK_REQUEST_FAILURE_MESSAGES = {
   load_failed: "Could not load the link request.",
   not_found: "This link request no longer exists.",

@@ -351,7 +351,8 @@ sets what the other machine's agents may do here.
 
 You can also ask an agent to link a machine by name, such as "delegate this to
 my vps". It shows a card in the thread where you pick the machine the same way
-and the access, then approve.
+and the access, then approve. The card has the same **Also let {machine} reach this
+machine** option as the dialog, and the agent is told whether the link back was made.
 
 - The access you pick is the most agents from this machine may do there. An
   agent also never gets more there than its own mode here.

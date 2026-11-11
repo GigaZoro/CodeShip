@@ -3,6 +3,7 @@ import {
   linkableMachines,
   linkedEnvironmentNames,
   offersLinkedEnvironments,
+  ownLinkUrls,
 } from "@t3tools/client-runtime/link-request";
 import { createPeerLinkEnvironmentAtoms } from "@t3tools/client-runtime/state/peerLinks";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -66,6 +67,19 @@ export function useLinkableMachines(environmentId: EnvironmentId, enabled: boole
     environments,
     threadEnvironmentId: environmentId,
     links: links.data?.links ?? [],
+    connect: discovery.environments,
+  });
+}
+
+/**
+ * Where another machine may reach `environmentId`, for linking back to it. The server adds the
+ * direct addresses it finds on its own, so these are the ones only a client knows.
+ */
+export function useOwnLinkUrls(environmentId: EnvironmentId) {
+  const { environments } = useEnvironments();
+  const discovery = useAtomValue(relayEnvironmentDiscovery.stateValueAtom);
+  return ownLinkUrls({
+    environment: environments.find((environment) => environment.environmentId === environmentId),
     connect: discovery.environments,
   });
 }

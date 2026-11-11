@@ -7,6 +7,8 @@ import {
   MessageId,
   NodeId,
   OrchestratorMcpFailure,
+  type PeerLinkBackOutcome,
+  type PeerLinkCreateInput,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -28,6 +30,7 @@ import * as HttpServer from "effect/http/HttpServer";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
@@ -153,11 +156,37 @@ const makeLaptop = Effect.gen(function* () {
     Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
     Layer.provideMerge(Layer.merge(layerOrchestrator, ServerSettings.layerTest())),
   );
+  // Linking back itself is PeerLinkBack's own test; here it records what the answer asked it for
+  // and answers as the box would.
+  const linkAsked = yield* Ref.make<ReadonlyArray<PeerLinkCreateInput>>([]);
+  const backOutcome = yield* Ref.make<PeerLinkBackOutcome | undefined>(undefined);
+  const peerLinks = Context.get(linking, PeerLinks.PeerLinks);
+  const layerLinkBack = Layer.succeed(
+    PeerLinkBack.PeerLinkBack,
+    PeerLinkBack.PeerLinkBack.of({
+      link: ({ reverse, ...input }) =>
+        Ref.update(linkAsked, (asked) => [
+          ...asked,
+          { ...input, ...(reverse ? { reverse } : {}) },
+        ]).pipe(
+          Effect.andThen(peerLinks.link(input)),
+          Effect.zipWith(Ref.get(backOutcome), (linked, back) =>
+            reverse === undefined
+              ? linked
+              : {
+                  ...linked,
+                  back: back ?? ({ status: "linked", access: reverse.access } as const),
+                },
+          ),
+        ),
+      accept: () => Effect.die("unused"),
+    }),
+  );
   const layerHere = McpHttpServer.layerOrchestratorToolkit.pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provideMerge(PeerLinkRequests.layer),
     Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
-    Layer.provide(Layer.mock(PeerLinkBack.PeerLinkBack)({})),
+    Layer.provide(layerLinkBack),
     Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
     Layer.provide(Layer.succeedContext(linking)),
     Layer.provide(NodeCrypto.layer),
@@ -181,7 +210,9 @@ const makeLaptop = Effect.gen(function* () {
   const here = yield* Layer.build(layerHere);
   const server = Context.get(here, McpServer.McpServer);
   return {
-    links: Context.get(linking, PeerLinks.PeerLinks),
+    links: peerLinks,
+    linkAsked,
+    backOutcome,
     linksSql: Context.get(linking, SqlClient.SqlClient),
     requests: Context.get(here, PeerLinkRequests.PeerLinkRequests),
     orchestrator: Context.get(here, Orchestrator.OrchestratorV2),
@@ -1047,4 +1078,123 @@ it.live(
         expect((yield* b.linkedSessions).length).toBe(1);
       }),
     ),
+);
+
+it.live(
+  "an answer that asks to link back passes that on, and tells the agent it was linked back",
+  () =>
+    withBoth((a, b) =>
+      Effect.gen(function* () {
+        yield* seedThread(a);
+        yield* a.call({ url: b.url });
+        const card = yield* pendingCard(a);
+        const pairing = yield* b.auth.issuePairingCredential();
+        const reverse = { access: "auto", urls: ["https://laptop.example.ts.net"] } as const;
+
+        const result = yield* a.requests.answer({
+          threadId,
+          turnItemId: card.id,
+          answer: {
+            type: "link",
+            urls: [b.url],
+            access: "full-access",
+            pairingCode: pairing.credential,
+            reverse,
+          },
+        });
+
+        expect(result).toEqual({ linked: true, back: { status: "linked", access: "auto" } });
+        const [asked] = yield* Ref.get(a.linkAsked);
+        expect(asked?.reverse).toEqual(reverse);
+        expect(yield* cardOf(a)).toMatchObject({
+          linkStatus: "linked",
+          linkedAccess: "full-access",
+        });
+        const { messages } = yield* outcomeMessages(a);
+        expect(messages[0]!.text).toContain(
+          "Box was also linked back to this machine with auto access.",
+        );
+      }),
+    ),
+);
+
+it.live("a link back the box does not make still links it, and the agent hears that", () =>
+  withBoth((a, b) =>
+    Effect.gen(function* () {
+      yield* seedThread(a);
+      yield* a.call({ url: b.url });
+      const card = yield* pendingCard(a);
+      yield* Ref.set(a.backOutcome, { status: "not_linked", message: "Box has links off." });
+      const pairing = yield* b.auth.issuePairingCredential();
+
+      const result = yield* a.requests.answer({
+        threadId,
+        turnItemId: card.id,
+        answer: {
+          type: "link",
+          urls: [b.url],
+          access: "auto",
+          pairingCode: pairing.credential,
+          reverse: { access: "auto" },
+        },
+      });
+
+      expect(result).toEqual({
+        linked: true,
+        back: { status: "not_linked", message: "Box has links off." },
+      });
+      expect(Option.isSome(yield* a.links.get(box.environmentId))).toBe(true);
+      const { messages } = yield* outcomeMessages(a);
+      expect(messages[0]!.text).toContain("Box could not be linked back to this machine.");
+    }),
+  ),
+);
+
+it.live("a refused link tells a client that asked to link back it was not linked at all", () =>
+  withBoth((a, b) =>
+    Effect.gen(function* () {
+      yield* seedThread(a);
+      yield* a.call({ url: b.url });
+      const card = yield* pendingCard(a);
+
+      const result = yield* a.requests.answer({
+        threadId,
+        turnItemId: card.id,
+        answer: {
+          type: "link",
+          urls: [b.url],
+          access: "auto",
+          pairingCode: "not-a-real-code",
+          reverse: { access: "auto" },
+        },
+      });
+
+      expect(result).toEqual({ linked: false });
+      const { messages } = yield* outcomeMessages(a);
+      expect(messages[0]!.text).not.toContain("linked back");
+    }),
+  ),
+);
+
+it.live("an answer that does not ask to link back returns nothing and says nothing of it", () =>
+  withBoth((a, b) =>
+    Effect.gen(function* () {
+      yield* seedThread(a);
+      yield* a.call({ url: b.url });
+      const card = yield* pendingCard(a);
+      const pairing = yield* b.auth.issuePairingCredential();
+
+      const result = yield* a.requests.answer({
+        threadId,
+        turnItemId: card.id,
+        answer: { type: "link", urls: [b.url], access: "auto", pairingCode: pairing.credential },
+      });
+
+      // Nothing is what an older client decodes.
+      expect(result).toBeUndefined();
+      expect((yield* Ref.get(a.linkAsked))[0]?.reverse).toBeUndefined();
+      const { messages } = yield* outcomeMessages(a);
+      expect(messages[0]!.text).not.toContain("linked back");
+    }),
+  ),
 );
