@@ -7,11 +7,11 @@ import {
   type ManualStepsView,
 } from "@t3tools/client-runtime/state/manualSteps";
 import { settlePromise } from "@t3tools/client-runtime/state/runtime";
-import type { ContextMenuItem, ManualStep } from "@t3tools/contracts";
-import { Link } from "@tanstack/react-router";
+import type { ContextMenuItem, EnvironmentId, ManualStep } from "@t3tools/contracts";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
-import { CircleDollarSignIcon, HandIcon, KeyRoundIcon } from "lucide-react";
-import type { KeyboardEvent, MouseEvent } from "react";
+import { BotIcon, CircleDollarSignIcon, HandIcon, KeyRoundIcon } from "lucide-react";
+import { useId, type KeyboardEvent, type MouseEvent } from "react";
 
 import { updateClientSettings, useClientSettings } from "../../hooks/useSettings";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
@@ -19,10 +19,9 @@ import { readLocalApi } from "../../localApi";
 import { attachSidebarTree } from "../../lib/sidebarTree";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import { cn } from "../../lib/utils";
-import { useManualSteps } from "../../state/manualSteps";
+import { useManualStepReview, useManualSteps } from "../../state/manualSteps";
 import { searchableSetting } from "../settings/settingsSearch";
 import { WaitingSinceLabel } from "../sidebar/SidebarThreadRow";
-import { openInSystemBrowser, useOpenThreadPageLink } from "../threadPage/threadPageLinks";
 import { detectedStepText, useOpenDetectedStep } from "./detectedManualStep";
 import { Button, InlineButton } from "../ui/button";
 import { CollapsibleSectionHeader } from "../ui/collapsible-section-header";
@@ -31,6 +30,7 @@ import { RefreshIcon } from "../ui/refresh-icon";
 import { Skeleton } from "../ui/skeleton";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { ManualStepCard } from "./ManualStepCard";
 import { t } from "~/i18n";
 
 const MANUAL_STEPS_ROW_ID = "shelf:manual-steps";
@@ -52,23 +52,40 @@ function stopRowActivation(event: MouseEvent) {
   event.stopPropagation();
 }
 
-function useOpenManualStep() {
-  const openThreadPageLink = useOpenThreadPageLink();
-  return (step: ManualStep) => {
-    if (!openThreadPageLink(step.url)) openInSystemBrowser(step.url);
-  };
+/** Shown when the review says an agent can do the step without the user. */
+function AgentCanDoMarker() {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span className="inline-flex shrink-0 text-muted-foreground">
+            <BotIcon aria-hidden className="size-3.5" />
+            <span className="sr-only">{t("An agent can do this.")}</span>
+          </span>
+        }
+      />
+      <TooltipPopup side="top">{t("An agent can do this. See the review.")}</TooltipPopup>
+    </Tooltip>
+  );
 }
 
-/** One step only the user can do; it opens its ThreadPage thread, whose newest note says how. */
+/**
+ * One step only the user can do; it opens the Manual steps page at its review. The row asks for
+ * its own review, so every listed step is reviewed and only this row re-renders when one arrives.
+ */
 function ManualStepRow(props: {
   readonly step: ManualStep;
   readonly parentRowId?: string;
   /** False under the machine's own heading, which already names it. */
   readonly showMachine?: boolean;
-  readonly onOpen: (step: ManualStep) => void;
+  readonly reviewEnvironmentId: EnvironmentId | null;
 }) {
   const { step } = props;
   const machine = props.showMachine === false ? null : step.machine;
+  const navigate = useNavigate();
+  const review = useManualStepReview(step, props.reviewEnvironmentId).state;
+  const agentCanDo = review?.status === "ready" && !review.review.needsPerson;
+  const openStep = () => void navigate({ to: "/manual-steps", search: { step: step.threadId } });
   const money = step.kind === "needs-you";
   const Icon = money ? CircleDollarSignIcon : HandIcon;
   const handleKeyDown = (event: KeyboardEvent) => {
@@ -76,7 +93,7 @@ function ManualStepRow(props: {
       return;
     }
     event.preventDefault();
-    props.onOpen(step);
+    openStep();
   };
   return (
     <li className="list-none">
@@ -85,10 +102,16 @@ function ManualStepRow(props: {
         tabIndex={-1}
         data-sidebar-row={`manual-step:${step.threadId}`}
         data-sidebar-parent={props.parentRowId}
-        aria-label={[money ? t("Money decision") : null, step.step, step.title, machine]
+        aria-label={[
+          money ? t("Money decision") : null,
+          agentCanDo ? t("An agent can do this.") : null,
+          step.step,
+          step.title,
+          machine,
+        ]
           .filter(Boolean)
           .join(", ")}
-        onClick={() => props.onOpen(step)}
+        onClick={openStep}
         onKeyDown={handleKeyDown}
         className="cursor-pointer rounded-md px-2 py-1.5 text-left outline-none select-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
@@ -106,6 +129,7 @@ function ManualStepRow(props: {
             />
             <TooltipPopup side="top">{step.step}</TooltipPopup>
           </Tooltip>
+          {agentCanDo ? <AgentCanDoMarker /> : null}
           <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
             <WaitingSinceLabel since={Date.parse(step.updatedAt)} />
           </span>
@@ -218,6 +242,18 @@ function ManualStepsSkeleton() {
   );
 }
 
+/** Detected sign-ins can list while ThreadPage fails; this says why its steps are missing. */
+function ThreadPageIssueNote(props: { readonly view: ManualStepsView }) {
+  if (props.view.status !== "listed" || props.view.threadPageIssue === undefined) return null;
+  return (
+    <p role="status" className="px-2 py-1.5 text-xs text-muted-foreground">
+      {t("ThreadPage steps are not shown. {reason}", {
+        reason: manualStepsFailureMessage(props.view.threadPageIssue),
+      })}
+    </p>
+  );
+}
+
 /** The list's state: its rows, or why there are none. */
 function ManualStepsBody(props: {
   readonly view: ManualStepsView;
@@ -225,7 +261,6 @@ function ManualStepsBody(props: {
   /** Labels each machine's rows; a narrow box shows the machine on each row instead. */
   readonly groupHeadings: boolean;
 }) {
-  const openStep = useOpenManualStep();
   const openDetected = useOpenDetectedStep();
   const { view } = props;
   if (view.status === "loading") return <ManualStepsSkeleton />;
@@ -288,20 +323,14 @@ function ManualStepsBody(props: {
                   key={step.threadId}
                   step={step}
                   showMachine={!props.groupHeadings}
-                  onOpen={openStep}
+                  reviewEnvironmentId={view.reviewEnvironmentId}
                 />
               ))}
             </ul>
           </li>
         ))}
       </ul>
-      {view.threadPageIssue ? (
-        <p role="status" className="px-2 py-1.5 text-xs text-muted-foreground">
-          {t("ThreadPage steps are not shown. {reason}", {
-            reason: manualStepsFailureMessage(view.threadPageIssue),
-          })}
-        </p>
-      ) : null}
+      <ThreadPageIssueNote view={view} />
     </>
   );
 }
@@ -416,12 +445,13 @@ export function ManualStepsBox() {
 /** In the thread list, where narrow windows keep Needs you too. */
 export function ManualStepsSidebarSection() {
   const { state, refresh } = useManualSteps();
-  const openStep = useOpenManualStep();
   const openDetected = useOpenDetectedStep();
   const [expanded, setExpanded] = useManualStepsExpanded();
   const enabled = useClientSettings((s) => s.sidebarManualStepsEnabled);
   if (!enabled || !shownInPlace(state)) return null;
   if (state.view.status === "listed" && state.view.count === 0) return null;
+  const reviewEnvironmentId =
+    state.view.status === "listed" ? state.view.reviewEnvironmentId : null;
   return (
     <>
       <li className="mx-0.5 h-8 shrink-0 list-none">
@@ -452,7 +482,7 @@ export function ManualStepsSidebarSection() {
                 key={step.threadId}
                 step={step}
                 parentRowId={MANUAL_STEPS_ROW_ID}
-                onOpen={openStep}
+                reviewEnvironmentId={reviewEnvironmentId}
               />
             )),
           ])
@@ -467,9 +497,74 @@ export function ManualStepsSidebarSection() {
   );
 }
 
+function ManualStepsMachineSection(props: {
+  readonly group: ManualStepGroup;
+  readonly reviewEnvironmentId: EnvironmentId | null;
+  readonly selectedThreadId: string | undefined;
+}) {
+  const { group } = props;
+  const headingId = useId();
+  const openDetected = useOpenDetectedStep();
+  return (
+    <section aria-labelledby={headingId}>
+      <h2 id={headingId} className="px-1 pb-2 text-xs font-medium text-muted-foreground">
+        {group.machine}
+      </h2>
+      {group.detected.length > 0 ? (
+        <ul
+          ref={attachSidebarTree}
+          role="tree"
+          aria-label={t("Sign-ins on {machine}", { machine: group.machine })}
+          className="mb-3 flex flex-col gap-px rounded-2xl border border-border/70 bg-sidebar p-1.5 text-sidebar-foreground"
+        >
+          {group.detected.map((entry) => (
+            <DetectedStepRow
+              key={detectedManualStepKey(entry)}
+              entry={entry}
+              showMachine={false}
+              onOpen={openDetected}
+            />
+          ))}
+        </ul>
+      ) : null}
+      <ul className="flex flex-col gap-3">
+        {group.steps.map((step) => (
+          <ManualStepCard
+            key={step.threadId}
+            step={step}
+            reviewEnvironmentId={props.reviewEnvironmentId}
+            selected={step.threadId === props.selectedThreadId}
+          />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** Every step with its review, grouped by machine. */
+function ManualStepsPageList(props: {
+  readonly groups: ReadonlyArray<ManualStepGroup>;
+  readonly reviewEnvironmentId: EnvironmentId | null;
+  readonly selectedThreadId: string | undefined;
+}) {
+  return (
+    <div className="flex flex-col gap-4">
+      {props.groups.map((group) => (
+        <ManualStepsMachineSection
+          key={group.machine}
+          group={group}
+          reviewEnvironmentId={props.reviewEnvironmentId}
+          selectedThreadId={props.selectedThreadId}
+        />
+      ))}
+    </div>
+  );
+}
+
 /** The whole list, for the Manual steps page. */
 export function ManualStepsPageContent() {
   const { state, refresh } = useManualSteps();
+  const { step: selectedThreadId } = useSearch({ from: "/_chat/manual-steps" });
   if (state === null) {
     return (
       <p className="text-sm text-muted-foreground">
@@ -477,12 +572,13 @@ export function ManualStepsPageContent() {
       </p>
     );
   }
+  const { view } = state;
   return (
     <div className="flex min-w-0 flex-col gap-3">
       <div className="flex items-center justify-between gap-3">
         <p className="max-w-2xl text-sm text-muted-foreground">
           {t(
-            "Steps only you can do. Sign-ins each machine notices itself come first; the rest are every machine's pending list in ThreadPage. Open a ThreadPage step to see its newest note; replying there tells that machine to check it again.",
+            "Steps only you can do. Sign-ins each machine notices itself come first; the rest are every machine's pending list in ThreadPage, each reviewed for whether it needs you, with ways to get it done. Replying in a step's ThreadPage thread tells that machine to check it again.",
           )}
         </p>
         <Button size="sm" variant="outline" disabled={state.refreshing} onClick={refresh}>
@@ -490,9 +586,20 @@ export function ManualStepsPageContent() {
           {t("Refresh")}
         </Button>
       </div>
-      <div className="rounded-2xl border border-border/70 bg-sidebar p-1.5 text-sidebar-foreground">
-        <ManualStepsBody view={state.view} onRetry={refresh} groupHeadings />
-      </div>
+      {view.status === "listed" && view.count > 0 ? (
+        <>
+          <ManualStepsPageList
+            groups={view.groups}
+            reviewEnvironmentId={view.reviewEnvironmentId}
+            selectedThreadId={selectedThreadId}
+          />
+          <ThreadPageIssueNote view={view} />
+        </>
+      ) : (
+        <div className="rounded-2xl border border-border/70 bg-sidebar p-1.5 text-sidebar-foreground">
+          <ManualStepsBody view={view} onRetry={refresh} groupHeadings />
+        </div>
+      )}
     </div>
   );
 }

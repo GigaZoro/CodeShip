@@ -852,6 +852,26 @@ export function createEnvironmentCommand<R, ER, Input, A, E>(
   });
 }
 
+/** Keeps the last value while a refetch runs and lets a command write its result into the cache. */
+export function createWritableQueryAtomFamily<A, E>() {
+  return Atom.family((source: Atom.Atom<AsyncResult.AsyncResult<A, E>>) =>
+    Atom.writable(
+      (get) => {
+        const result = get(source);
+        if (result._tag === "Success" && !result.waiting) return result;
+        const previous = get.self<AsyncResult.AsyncResult<A, E>>();
+        const value = Option.flatMap(previous, AsyncResult.value);
+        if (Option.isNone(value)) return result;
+        return result._tag === "Failure"
+          ? AsyncResult.failureWithPrevious(result.cause, { previous, waiting: result.waiting })
+          : AsyncResult.success<A, E>(value.value, result);
+      },
+      (context, value: AsyncResult.AsyncResult<A, E>) => context.setSelf(value),
+      (refresh) => refresh(source),
+    ).pipe(Atom.setIdleTTL(5 * 60_000)),
+  );
+}
+
 export function createEnvironmentRpcQueryAtomFamily<
   R,
   ER,

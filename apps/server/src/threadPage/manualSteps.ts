@@ -148,3 +148,57 @@ export function selectManualSteps(
   }
   return [...steps.values()];
 }
+
+export interface ThreadPageNoteSummary {
+  readonly id: string;
+  readonly created_at: string;
+  readonly trashed: boolean;
+}
+
+export interface ThreadPageNote {
+  readonly createdAt: string;
+  readonly markdown: string;
+}
+
+const RECENT_NOTE_COUNT = 3;
+const NOTE_CHAR_LIMIT = 8_000;
+const NOTES_CHAR_LIMIT = 24_000;
+
+/** The notes worth reading: the first one (the work order) and the newest few, oldest first. */
+export function selectNotesToRead(
+  notes: ReadonlyArray<ThreadPageNoteSummary>,
+): ReadonlyArray<string> {
+  const ordered = notes
+    .filter((note) => !note.trashed)
+    .toSorted((a, b) => a.created_at.localeCompare(b.created_at));
+  const first = ordered.slice(0, 1);
+  const recent = ordered.slice(Math.max(1, ordered.length - RECENT_NOTE_COUNT));
+  return [...first, ...recent].map((note) => note.id);
+}
+
+const capNote = (note: ThreadPageNote): ThreadPageNote => ({
+  createdAt: note.createdAt,
+  markdown:
+    note.markdown.length > NOTE_CHAR_LIMIT
+      ? `${note.markdown.slice(0, NOTE_CHAR_LIMIT - 1)}…`
+      : note.markdown,
+});
+
+/**
+ * Caps each note, then the set. The oldest note (the work order) and the newest always stay;
+ * the middle notes fill the rest of the budget, newest first.
+ */
+export function limitNotes(notes: ReadonlyArray<ThreadPageNote>): ReadonlyArray<ThreadPageNote> {
+  const ordered = notes.toSorted((a, b) => a.createdAt.localeCompare(b.createdAt)).map(capNote);
+  if (ordered.length <= 2) return ordered;
+  const first = ordered[0]!;
+  const last = ordered[ordered.length - 1]!;
+  let budget = NOTES_CHAR_LIMIT - first.markdown.length - last.markdown.length;
+  const middle: ThreadPageNote[] = [];
+  for (const note of ordered.slice(1, -1).toReversed()) {
+    if (note.markdown.length > budget) continue;
+    middle.push(note);
+    budget -= note.markdown.length;
+  }
+  return [first, ...middle.toReversed(), last];
+}

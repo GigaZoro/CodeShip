@@ -98,6 +98,8 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverGetDatabaseStorage]: AuthOrchestrationReadScope,
   [WS_METHODS.manualStepsList]: AuthOrchestrationReadScope,
   [WS_METHODS.manualStepsDetected]: AuthOrchestrationReadScope,
+  // Reviewing a step may run a model on this environment's providers.
+  [WS_METHODS.manualStepsReview]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverWatchRestartHold]: AuthOrchestrationReadScope,
   [WS_METHODS.peerLinksList]: AuthAccessReadScope,
   [WS_METHODS.serverUpdateSettings]: AuthSettingsWriteScope,

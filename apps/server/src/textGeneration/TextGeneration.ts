@@ -27,6 +27,8 @@ export type {
   BranchNameGenerationResult,
   CommitMessageGenerationInput,
   CommitMessageGenerationResult,
+  ManualStepReviewGenerationInput,
+  ManualStepReviewGenerationResult,
   PrContentGenerationInput,
   PrContentGenerationResult,
   ReviewGuideGenerationInput,
@@ -44,7 +46,8 @@ type TextGenerationOp =
   | "generatePrContent"
   | "generateBranchName"
   | "generateThreadTitle"
-  | "generateReviewGuide";
+  | "generateReviewGuide"
+  | "generateManualStepReview";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -147,6 +150,16 @@ export const make = Effect.gen(function* () {
         service.generateReviewGuide({ ...input, modelSelection }),
       );
     }),
+    generateManualStepReview: Effect.fn("TextGeneration.generateManualStepReview")(
+      function (input) {
+        return generate(
+          "generateManualStepReview",
+          input.modelSelection,
+          (service, modelSelection) =>
+            service.generateManualStepReview({ ...input, modelSelection }),
+        );
+      },
+    ),
     generateThreadTitle: Effect.fn("TextGeneration.generateThreadTitle")(function (input) {
       return generate(
         "generateThreadTitle",

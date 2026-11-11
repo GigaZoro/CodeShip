@@ -2055,6 +2055,7 @@ const catalog: MessageCatalog = {
     "Оновлення активності агента ввімкнено. Додайте середовище, щоб почати їх отримувати.",
   "Agent alerts": "Сповіщення агентів",
   "Agent browser access": "Доступ агентів до браузера",
+  "Agent can do it": "Агент може це зробити",
   "agent credit removal": "видалення авторства агента",
   "agent credits": "кредити агента",
   "Agent device": "Пристрій агента",
@@ -2191,6 +2192,9 @@ const catalog: MessageCatalog = {
   Amount: "Кількість",
   "An accessibility call": "Рішення щодо доступності",
   'An action named "{name}" already exists.': "Дія з назвою «{name}» уже існує.",
+  "An agent can do this": "Це може зробити агент",
+  "An agent can do this.": "Це може зробити агент.",
+  "An agent can do this. See the review.": "Це може зробити агент. Дивіться рев’ю.",
   "An agent here never gets more there than its own mode here either. Threads it starts there cannot change that environment's own threads, projects or settings.":
     "Агент тут ніколи не матиме там більше прав, ніж його власний режим тут. Чати, які він там запускає, не можуть змінювати чати, проєкти чи налаштування цього середовища.",
   "An agent investigates a T3.CodeShip problem and helps file an issue":
@@ -6969,6 +6973,7 @@ const catalog: MessageCatalog = {
     "Лише ручне захоплення. Щоразу ви обиратимете вікно",
   "Manual only": "Лише вручну",
   "Manual setup": "Налаштування вручну",
+  "Manual step": "Ручний крок",
   "manual steps": "ручні кроки",
   "Manual steps": "Ручні кроки",
   "Manual steps ({count})": "Ручні кроки ({count})",
@@ -7892,6 +7897,7 @@ const catalog: MessageCatalog = {
     "Підключитися може лише цей комп’ютер. Перезапустіть із не-loopback хостом для віддаленого сполучення.",
   "Only UTF-8 text and images can be opened inside an archive.":
     "В архіві можна відкривати лише текст UTF-8 та зображення.",
+  "Only you": "Лише ви",
   Open: "Відкрити",
   "Open {file} in editor": "Відкрити {file} у редакторі",
   "Open {kind} {label}: {title}": "Відкрити {kind} {label}: {title}",
@@ -7988,6 +7994,7 @@ const catalog: MessageCatalog = {
   "Open in system browser": "Відкрити в системному браузері",
   "Open in the browser panel. {key} for your browser.":
     "Відкрити на панелі браузера. {key} – у вашому браузері.",
+  "Open in ThreadPage": "Відкрити в ThreadPage",
   "Open in…": "Відкрити в…",
   "Open it again": "Відкрити знову",
   "Open it in the browser on the device you want to connect.":
@@ -8173,7 +8180,7 @@ const catalog: MessageCatalog = {
     "Відкриває розміщений застосунок, встановлення не потрібне",
   "Opens the project picker": "Відкриває вибір проєкту",
   "Opens the project website": "Відкриває сайт проєкту",
-  "Opens the step's ThreadPage thread.": "Відкриває тред цього кроку в ThreadPage.",
+  "Opens the step and its review.": "Відкриває крок і його перевірку.",
   "Opens the task editor.": "Відкриває редактор завдання.",
   "Opens the task's last run.": "Відкриває останній запуск завдання.",
   "Opens the thread": "Відкриває чат",
@@ -8956,6 +8963,7 @@ const catalog: MessageCatalog = {
   Recents: "Нещодавні",
   "Reclaim database space": "Звільнити місце бази даних",
   "Reclaim freed database space": "Повернути звільнений простір бази даних",
+  Recommended: "Рекомендовано",
   Reconnect: "Перепідключити",
   "Reconnect {environment} to change its settings.":
     "Перепідключіть {environment}, щоб змінити його налаштування.",
@@ -9615,6 +9623,7 @@ const catalog: MessageCatalog = {
     many: "Рев’ю: {term}, {count} коментарів очікують",
     other: "Рев’ю: {term}, {count} коментаря очікують",
   },
+  "Review again": "Перевірити ще раз",
   "Review and confirm your commit. Leave the message blank to auto-generate one.":
     "Перегляньте та підтвердьте коміт. Залиште повідомлення порожнім, щоб створити його автоматично.",
   "Review changes": "Переглянути зміни",
@@ -9658,6 +9667,7 @@ const catalog: MessageCatalog = {
   "Review what runs on this environment before using simulators and emulators.":
     "Перегляньте, що працює в цьому середовищі, перш ніж використовувати симулятори й емулятори.",
   "Review your usage settings in ChatGPT.": "Перегляньте налаштування використання в ChatGPT.",
+  "Reviewed {time}": "Перевірено {time}",
   "Reviewer {number}": "Рецензент {number}",
   "Reviewer {number} model": "Модель рецензента {number}",
   "Reviewer ID": "ID рецензента",
@@ -9665,6 +9675,7 @@ const catalog: MessageCatalog = {
   Reviewers: "Рецензенти",
   "Reviewers loading": "Завантаження рецензентів",
   Reviewing: "На рев’ю",
+  "Reviewing…": "Перевіряємо…",
   Reviews: "Рев’ю",
   "Reviews approved": "Рев’ю схвалено",
   Revoke: "Відкликати",
@@ -10582,6 +10593,7 @@ const catalog: MessageCatalog = {
   "sign-in code": "код входу",
   "Sign-in did not finish": "Вхід не завершено",
   "Sign-in method": "Спосіб входу",
+  "Sign-ins on {machine}": "Входи на {machine}",
   "Signature check configured on desktop/web.":
     "Перевірку підпису налаштовано на десктопі чи у вебверсії.",
   "Signature verified": "Підпис перевірено",
@@ -10897,8 +10909,8 @@ const catalog: MessageCatalog = {
   "Steered the active turn": "Скерувало активний хід",
   "Step 1 of 2: open device": "Крок 1 з 2: відкриття пристрою",
   "Step 2 of 2: connect video": "Крок 2 з 2: підключення відео",
-  "Steps only you can do. Sign-ins each machine notices itself come first; the rest are every machine's pending list in ThreadPage. Open a ThreadPage step to see its newest note; replying there tells that machine to check it again.":
-    "Кроки, які можете виконати лише ви. Спершу йдуть входи, які кожна машина помічає сама; решта це списки очікування кожної машини в ThreadPage. Відкрийте крок із ThreadPage, щоб побачити його найновішу нотатку; відповідь там підкаже машині перевірити його ще раз.",
+  "Steps only you can do. Sign-ins each machine notices itself come first; the rest are every machine's pending list in ThreadPage, each reviewed for whether it needs you, with ways to get it done. Replying in a step's ThreadPage thread tells that machine to check it again.":
+    "Кроки, які можете виконати лише ви. Спершу йдуть входи, які кожна машина помічає сама; решта це списки очікування кожної машини в ThreadPage, і кожен такий крок перевіряється: чи справді потрібні ви, і як його виконати. Відповідь у треді кроку в ThreadPage підкаже машині перевірити його ще раз.",
   "Still bringing attached context into this message.":
     "Прикріплений контекст ще додається до повідомлення.",
   "Still compressing a pasted image.": "Вставлене зображення ще стискається.",
@@ -11736,6 +11748,8 @@ const catalog: MessageCatalog = {
   "The resource monitor retry failed.": "Повторна спроба запуску монітора ресурсів не вдалася.",
   "The rest of this diff could not be loaded.": "Не вдалося завантажити решту змін.",
   "The review could not be submitted": "Не вдалося подати рев’ю",
+  "The review could not be written. Try again.":
+    "Не вдалося підготувати перевірку. Спробуйте ще раз.",
   "The route order must list every saved route once.":
     "Порядок маршрутів має містити кожен збережений маршрут по одному разу.",
   "The run did not start.": "Запуск не розпочався.",
@@ -12449,6 +12463,7 @@ const catalog: MessageCatalog = {
   "This slide could not be drawn.": "Не вдалося відобразити цей слайд.",
   "This SSH verification prompt expired. Try connecting again.":
     "Цей запит перевірки SSH прострочено. Спробуйте підключитися ще раз.",
+  "This step is no longer waiting in ThreadPage.": "Цей крок більше не чекає в ThreadPage.",
   "This stops the running process and clears its history.":
     "Це зупинить запущений процес і очистить його історію.",
   "This stops their running processes and clears their histories: {terminals}.": {
@@ -12578,6 +12593,8 @@ const catalog: MessageCatalog = {
   ThreadPage: "ThreadPage",
   "ThreadPage didn't load": "ThreadPage не завантажився",
   "ThreadPage is busy. Try again in a minute.": "ThreadPage зайнятий. Спробуйте ще раз за хвилину.",
+  "ThreadPage is not connected on the machine that reviews steps.":
+    "ThreadPage не підключено на комп’ютері, який перевіряє кроки.",
   "ThreadPage opens in its own tab": "ThreadPage відкривається в окремій вкладці",
   "ThreadPage refused the token. Save a new one in Settings.":
     "ThreadPage відхилив токен. Збережіть новий у налаштуваннях.",

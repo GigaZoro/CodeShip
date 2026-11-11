@@ -1,28 +1,41 @@
 import {
+  ManualStepReviewError,
   ManualStepsListError,
   WS_METHODS,
   type DetectedManualStep,
   type DetectedManualStepsResult,
   type EnvironmentId,
   type ManualStep,
+  type ManualStepReview,
+  type ManualStepReviewFailure,
   type ManualStepsListFailure,
   type ManualStepsListResult,
   type ServerConfig,
 } from "@t3tools/contracts";
 import { msg, t, type Message } from "@t3tools/shared/i18n";
 import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
-import { createEnvironmentRpcQueryAtomFamily } from "./runtime.ts";
+import {
+  createEnvironmentRpcCommand,
+  createEnvironmentRpcQueryAtomFamily,
+  createWritableQueryAtomFamily,
+} from "./runtime.ts";
 
 /** One machine's answer. `offline` covers a server that could not be asked. */
 export type ManualStepsSource =
   | { readonly status: "loading" }
   | { readonly status: "not-connected" }
-  | { readonly status: "listed"; readonly steps: ReadonlyArray<ManualStep> }
+  | {
+      readonly status: "listed";
+      readonly steps: ReadonlyArray<ManualStep>;
+      /** Set when this machine serves `manualSteps.review` and this client may ask it. */
+      readonly reviewEnvironmentId?: EnvironmentId;
+    }
   | { readonly status: "failed"; readonly reason: ManualStepsListFailure | "offline" };
 
 /** One machine's answer to `manualSteps.detected`. */
@@ -60,6 +73,11 @@ export type ManualStepsView =
       readonly count: number;
       /** Why no ThreadPage steps are shown while detected ones are; absent when ThreadPage listed. */
       readonly threadPageIssue?: ManualStepsListFailure | "offline";
+      /**
+       * The one machine that reviews every ThreadPage step for this user: the lowest environment id
+       * among those that list, serve reviews and let this client ask. Null when there is none.
+       */
+      readonly reviewEnvironmentId: EnvironmentId | null;
     };
 
 export interface ManualStepsState {
@@ -84,6 +102,18 @@ const FAILURE_MESSAGES: Record<ManualStepsListFailure | "offline", Message> = {
 
 export const manualStepsFailureMessage = (reason: ManualStepsListFailure | "offline") =>
   t(FAILURE_MESSAGES[reason]);
+
+export type ManualStepReviewProblem = ManualStepReviewFailure | "offline";
+
+const REVIEW_FAILURE_MESSAGES: Record<ManualStepReviewProblem, Message> = {
+  ...FAILURE_MESSAGES,
+  "not-connected": msg("ThreadPage is not connected on the machine that reviews steps."),
+  "not-found": msg("This step is no longer waiting in ThreadPage."),
+  "generation-failed": msg("The review could not be written. Try again."),
+};
+
+export const manualStepReviewFailureMessage = (reason: ManualStepReviewProblem) =>
+  t(REVIEW_FAILURE_MESSAGES[reason]);
 
 const byUrgency = (left: ManualStep, right: ManualStep) =>
   Number(right.kind === "needs-you") - Number(left.kind === "needs-you") ||
@@ -171,6 +201,19 @@ function detectedEntries(
 }
 
 /**
+ * Every client picks the same reviewer by comparing ids, not by catalog order, so a user's
+ * clients never review one step on two machines.
+ */
+function lowestReviewEnvironmentId(sources: ReadonlyArray<ManualStepsSource>) {
+  let lowest: EnvironmentId | null = null;
+  for (const source of sources) {
+    if (source.status !== "listed" || source.reviewEnvironmentId === undefined) continue;
+    if (lowest === null || source.reviewEnvironmentId < lowest) lowest = source.reviewEnvironmentId;
+  }
+  return lowest;
+}
+
+/**
  * One machine's ThreadPage list is enough to show, and detected steps need no ThreadPage at all.
  * A ThreadPage failure shows alone only when nothing else is there to show.
  */
@@ -189,6 +232,7 @@ export function combineManualSteps(
       groups,
       count: groups.reduce((total, group) => total + group.steps.length + group.detected.length, 0),
       ...(listed.length === 0 && failure !== undefined ? { threadPageIssue: failure.reason } : {}),
+      reviewEnvironmentId: lowestReviewEnvironmentId(sources),
     };
   }
   if (
@@ -201,15 +245,21 @@ export function combineManualSteps(
 }
 
 const isManualStepsListError = Schema.is(ManualStepsListError);
+const isManualStepReviewError = Schema.is(ManualStepReviewError);
 
 function manualStepsSource(
   result: AsyncResult.AsyncResult<ManualStepsListResult, unknown>,
+  reviewEnvironmentId: EnvironmentId | undefined,
 ): ManualStepsSource {
   const value = AsyncResult.value(result);
   if (Option.isSome(value)) {
     return value.value._tag === "NotConnected"
       ? { status: "not-connected" }
-      : { status: "listed", steps: value.value.steps };
+      : {
+          status: "listed",
+          steps: value.value.steps,
+          ...(reviewEnvironmentId === undefined ? {} : { reviewEnvironmentId }),
+        };
   }
   if (result._tag !== "Failure") return { status: "loading" };
   const error = Cause.findErrorOption(result.cause);
@@ -231,24 +281,54 @@ function detectedManualStepsSource(
   return result._tag === "Failure" ? { status: "failed" } : { status: "loading" };
 }
 
+/** One step's review as a client shows it. */
+export type ManualStepReviewState =
+  | { readonly status: "loading" }
+  | { readonly status: "failed"; readonly reason: ManualStepReviewProblem }
+  /** `refreshing` while a new review replaces this one. */
+  | {
+      readonly status: "ready";
+      readonly review: ManualStepReview;
+      readonly refreshing: boolean;
+    };
+
+export function manualStepReviewState(
+  result: AsyncResult.AsyncResult<ManualStepReview, unknown>,
+): ManualStepReviewState {
+  const value = AsyncResult.value(result);
+  if (Option.isSome(value)) {
+    return { status: "ready", review: value.value, refreshing: result.waiting };
+  }
+  if (result._tag !== "Failure") return { status: "loading" };
+  const error = Cause.findErrorOption(result.cause);
+  return {
+    status: "failed",
+    reason:
+      Option.isSome(error) && isManualStepReviewError(error.value) ? error.value.reason : "offline",
+  };
+}
+
 interface ManualStepsKey {
   /** Environments that serve `manualSteps.list`. */
   readonly list: ReadonlyArray<EnvironmentId>;
   /** Environments that serve `manualSteps.detected`; older servers do not. */
   readonly detected: ReadonlyArray<EnvironmentId>;
+  /** Environments that serve `manualSteps.review`; older servers do not. */
+  readonly reviews: ReadonlyArray<EnvironmentId>;
 }
 
 /** The key of `view` for the connected servers that serve either list, or null when none does. */
 export function manualStepsEnvironmentIdsKey(
   serverConfigs: ReadonlyMap<EnvironmentId, Pick<ServerConfig, "environment">>,
 ): string | null {
-  const serving = (capability: "manualSteps" | "detectedManualSteps") =>
+  const serving = (capability: "manualSteps" | "detectedManualSteps" | "manualStepReviews") =>
     [...serverConfigs]
       .filter(([, config]) => config.environment.capabilities[capability] === true)
       .map(([environmentId]) => environmentId);
   const key: ManualStepsKey = {
     list: serving("manualSteps"),
     detected: serving("detectedManualSteps"),
+    reviews: serving("manualStepReviews"),
   };
   return key.list.length === 0 && key.detected.length === 0 ? null : JSON.stringify(key);
 }
@@ -270,20 +350,53 @@ export function createManualStepsEnvironmentAtoms<R, E>(
     staleTimeMs: 30_000,
     refreshIntervalMs: 60_000,
   });
+  const reviewQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:manual-steps:review",
+    tag: WS_METHODS.manualStepsReview,
+    staleTimeMs: 24 * 60 * 60_000,
+  });
+  const writable = createWritableQueryAtomFamily<ManualStepReview, unknown>();
+  /** A review of one step version never changes, so it is read once and kept. */
+  const review = (target: {
+    readonly environmentId: EnvironmentId;
+    readonly input: { readonly threadId: string; readonly updatedAt: string };
+  }) => writable(reviewQuery(target));
+  const reviewAgain = createEnvironmentRpcCommand(runtime, {
+    label: "environment-data:manual-steps:review-again",
+    tag: WS_METHODS.manualStepsReviewAgain,
+    // The card looks at the review of the input it showed, which the server may store under a
+    // later updatedAt; a failed card must show the new review too.
+    onSuccess: (target, registry, result) =>
+      Effect.sync(() => {
+        const atom = review(target);
+        if (registry.get(atom).waiting) registry.refresh(atom);
+        registry.set(atom, AsyncResult.success(result));
+      }),
+  });
   /** Keyed by a JSON {@link ManualStepsKey}. */
   const view = Atom.family((environmentIdsKey: string) => {
     const key = JSON.parse(environmentIdsKey) as ManualStepsKey;
-    const listAtoms = key.list.map((environmentId) => list({ environmentId, input: {} }));
+    const listEntries = key.list.map((environmentId) => ({
+      environmentId,
+      servesReviews: key.reviews.includes(environmentId),
+      list: list({ environmentId, input: {} }),
+      permission: reviewAgain.permissionAtom(environmentId),
+    }));
     const detectedAtoms = key.detected.map((environmentId) =>
       detected({ environmentId, input: {} }),
     );
     return Atom.readable(
       (get): ManualStepsState => {
-        const results = listAtoms.map((atom) => get(atom));
+        const results = listEntries.map((entry) => get(entry.list));
         const detectedResults = detectedAtoms.map((atom) => get(atom));
         return {
           view: combineManualSteps(
-            results.map(manualStepsSource),
+            results.map((result, index) => {
+              const entry = listEntries[index]!;
+              // A reviewer serves reviews and lets this client run `reviewAgain`, the same scope.
+              const reviews = entry.servesReviews && get(entry.permission);
+              return manualStepsSource(result, reviews ? entry.environmentId : undefined);
+            }),
             detectedResults.map((result, index) =>
               detectedManualStepsSource(key.detected[index]!, result),
             ),
@@ -292,12 +405,12 @@ export function createManualStepsEnvironmentAtoms<R, E>(
         };
       },
       (refresh) => {
-        for (const atom of listAtoms) refresh(atom);
+        for (const entry of listEntries) refresh(entry.list);
         for (const atom of detectedAtoms) refresh(atom);
       },
     ).pipe(Atom.withLabel(`environment-data:manual-steps:view:${environmentIdsKey}`));
   });
-  return { list, detected, view };
+  return { list, detected, view, review, reviewAgain };
 }
 
 export interface DetectedManualStepText {

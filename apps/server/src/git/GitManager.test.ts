@@ -296,6 +296,7 @@ function createTextGeneration(
         title: "Update workflow",
       }),
     generateReviewGuide: () => Effect.succeed({ stops: [] }),
+    generateManualStepReview: () => Effect.die("unused"),
     ...overrides,
   };
 
@@ -345,6 +346,7 @@ function createTextGeneration(
         ),
       ),
     generateReviewGuide: (input) => implementation.generateReviewGuide(input),
+    generateManualStepReview: (input) => implementation.generateManualStepReview(input),
   };
 }
 

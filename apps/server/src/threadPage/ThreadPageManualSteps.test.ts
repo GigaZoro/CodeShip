@@ -1,6 +1,7 @@
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import { TestClock } from "effect/testing";
 import { HttpClient, HttpClientResponse, UrlParams } from "effect/http";
 
 import * as Settings from "../serverSettings.ts";
@@ -52,6 +53,19 @@ const threadsByFolder: Record<string, ReadonlyArray<ReturnType<typeof thread>>> 
   codeship: [thread("outside-inbox", { description: "Hands-on: not a machine list" })],
 };
 
+const noteSummaries = ["n1", "n2", "n3", "n4", "n5"].map((id) => ({
+  id,
+  thread_id: "minions",
+  created_at: `2026-11-0${id.slice(1)}T10:00:00.000Z`,
+  trashed: false,
+}));
+noteSummaries.push({
+  id: "gone",
+  thread_id: "minions",
+  created_at: "2026-11-06T10:00:00.000Z",
+  trashed: true,
+});
+
 function fakeThreadPage(
   options: { status?: number; headers?: Record<string, string>; noInbox?: boolean } = {},
 ) {
@@ -92,6 +106,32 @@ function fakeThreadPage(
           ),
         );
       }
+      const noteMatch = /\/threads\/([^/]+)\/notes$/.exec(url.pathname);
+      if (noteMatch !== null) {
+        const cursor = params.get("cursor");
+        return HttpClientResponse.fromWeb(
+          request,
+          Response.json(
+            cursor === null
+              ? { items: noteSummaries.slice(0, 3), next_cursor: "page-2" }
+              : { items: noteSummaries.slice(3), next_cursor: null },
+          ),
+        );
+      }
+      const bodyMatch = /\/notes\/([^/]+)$/.exec(url.pathname);
+      if (bodyMatch !== null) {
+        const id = bodyMatch[1] ?? "";
+        return HttpClientResponse.fromWeb(
+          request,
+          Response.json({
+            id,
+            created_at: noteSummaries.find((entry) => entry.id === id)?.created_at,
+            trashed: false,
+            text: `plain ${id}`,
+            markdown: `markdown ${id}`,
+          }),
+        );
+      }
       const folderId = params.get("folder_id") ?? "";
       return HttpClientResponse.fromWeb(
         request,
@@ -101,6 +141,23 @@ function fakeThreadPage(
   );
   return { requests, http };
 }
+
+const withService = <A, E>(
+  http: HttpClient.HttpClient,
+  use: (service: ThreadPageManualSteps.ThreadPageManualSteps["Service"]) => Effect.Effect<A, E>,
+  apiToken = "tp_test",
+) =>
+  Effect.gen(function* () {
+    return yield* use(yield* ThreadPageManualSteps.ThreadPageManualSteps);
+  }).pipe(
+    Effect.provide(
+      ThreadPageManualSteps.layer.pipe(
+        Layer.provide(Settings.ServerSettingsService.layerTest({ threadPage: { apiToken } })),
+        Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
+        Layer.orDie,
+      ),
+    ),
+  );
 
 const listWith = (http: HttpClient.HttpClient, apiToken = "tp_test") =>
   Effect.gen(function* () {
@@ -194,6 +251,73 @@ describe("ThreadPageManualSteps", () => {
       }
       const missing = yield* listWith(fakeThreadPage({ noInbox: true }).http).pipe(Effect.flip);
       expect(missing.reason).toBe("no-inbox");
+    }),
+  );
+
+  it.effect("reads the work order and the newest notes of a thread in full", () =>
+    Effect.gen(function* () {
+      const { http, requests } = fakeThreadPage();
+      const notes = yield* withService(http, (service) => service.notes("minions"));
+      expect(notes.map((entry) => entry.markdown)).toEqual([
+        "markdown n1",
+        "markdown n3",
+        "markdown n4",
+        "markdown n5",
+      ]);
+      expect(requests.filter((path) => path.startsWith("/threads/minions/notes"))).toHaveLength(2);
+    }),
+  );
+
+  it.effect("names why ThreadPage refused a notes read", () =>
+    Effect.gen(function* () {
+      const error = yield* withService(fakeThreadPage({ status: 403 }).http, (service) =>
+        service.notes("minions"),
+      ).pipe(Effect.flip);
+      expect(error.reason).toBe("access-denied");
+    }),
+  );
+
+  it.effect("finds a step from the last list, and reads again only when it may be stale", () =>
+    Effect.gen(function* () {
+      const { http, requests } = fakeThreadPage();
+      const listReads = () => requests.filter((path) => path.startsWith("/folders")).length;
+      yield* withService(http, (service) =>
+        Effect.gen(function* () {
+          // Nothing listed yet: the first lookup reads the list.
+          const first = yield* service.findStep("minions", "2026-11-07T21:41:11.934Z");
+          assert(first._tag === "Found");
+          const readsAfterFirst = listReads();
+
+          // The list already has that version, so no read.
+          yield* service.findStep("minions", "2026-11-07T00:00:00.000Z");
+          expect(listReads()).toBe(readsAfterFirst);
+
+          // A version newer than the last read reads again, however recent that read was.
+          const newer = yield* service.findStep("minions", "2026-11-08T00:00:00.000Z");
+          assert(newer._tag === "Found");
+          expect(listReads()).toBe(readsAfterFirst * 2);
+
+          // A thread absent from a list read after the requested version is missing, no re-read.
+          yield* TestClock.setTime(Date.parse("2026-11-09T00:00:00.000Z"));
+          expect(yield* service.findStep("unknown", "2026-11-08T00:00:00.000Z")).toEqual({
+            _tag: "Missing",
+          });
+          expect(listReads()).toBe(readsAfterFirst * 3);
+          expect(yield* service.findStep("unknown", "2026-11-08T12:00:00.000Z")).toEqual({
+            _tag: "Missing",
+          });
+          expect(listReads()).toBe(readsAfterFirst * 3);
+        }),
+      );
+    }),
+  );
+
+  it.effect("reports a lookup on a server without a token as not connected", () =>
+    Effect.gen(function* () {
+      const { http, requests } = fakeThreadPage();
+      const lookup = yield* withService(http, (service) => service.findStep("minions", ""), "");
+      expect(lookup).toEqual({ _tag: "NotConnected" });
+      expect(requests).toEqual([]);
     }),
   );
 });

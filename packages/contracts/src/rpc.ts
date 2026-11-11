@@ -392,6 +392,9 @@ import {
 import { UsagePricing, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
 import {
   DetectedManualStepsResult,
+  ManualStepReview,
+  ManualStepReviewError,
+  ManualStepReviewInput,
   ManualStepsListError,
   ManualStepsListResult,
 } from "./manualSteps.ts";
@@ -587,6 +590,8 @@ export const WS_METHODS = {
   serverGetDatabaseStorage: "server.getDatabaseStorage",
   manualStepsList: "manualSteps.list",
   manualStepsDetected: "manualSteps.detected",
+  manualStepsReview: "manualSteps.review",
+  manualStepsReviewAgain: "manualSteps.reviewAgain",
   serverWatchRestartHold: "server.watchRestartHold",
   peerLinksList: "peerLinks.list",
   peerLinksLink: "peerLinks.link",
@@ -1002,6 +1007,20 @@ const WsManualStepsDetectedRpc = Rpc.make(WS_METHODS.manualStepsDetected, {
   payload: Schema.Struct({}),
   success: DetectedManualStepsResult,
   error: EnvironmentAuthorizationError,
+});
+
+/** The stored review when it read this step version, else a new one; may run a model. */
+const WsManualStepsReviewRpc = Rpc.make(WS_METHODS.manualStepsReview, {
+  payload: ManualStepReviewInput,
+  success: ManualStepReview,
+  error: Schema.Union([ManualStepReviewError, EnvironmentAuthorizationError]),
+});
+
+/** Replaces the stored review with a new one. */
+const WsManualStepsReviewAgainRpc = Rpc.make(WS_METHODS.manualStepsReviewAgain, {
+  payload: ManualStepReviewInput,
+  success: ManualStepReview,
+  error: Schema.Union([ManualStepReviewError, EnvironmentAuthorizationError]),
 });
 
 const WsPeerLinksListRpc = Rpc.make(WS_METHODS.peerLinksList, {
@@ -2314,6 +2333,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerUpdateProjectScriptsRpc,
   WsManualStepsListRpc,
   WsManualStepsDetectedRpc,
+  WsManualStepsReviewRpc,
+  WsManualStepsReviewAgainRpc,
   WsPeerLinksListRpc,
   WsPeerLinksLinkRpc,
   WsPeerLinksUnlinkRpc,

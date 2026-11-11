@@ -1,6 +1,8 @@
 import type {
   BranchNamingOptions,
   ChatAttachment,
+  ManualStepKind,
+  ManualStepSolution,
   ModelSelection,
   PullRequestReviewGuide,
   TextGenerationError,
@@ -97,6 +99,24 @@ export type ReviewGuideGenerationResult = Omit<
   "headSha" | "generatedAt" | "modelSelection"
 >;
 
+export interface ManualStepReviewGenerationInput {
+  cwd: string;
+  step: {
+    title: string;
+    step: string;
+    kind: ManualStepKind;
+    machine: string;
+  };
+  notes: ReadonlyArray<{ createdAt: string; markdown: string }>;
+  modelSelection: ModelSelection;
+}
+
+export interface ManualStepReviewGenerationResult {
+  summary: string;
+  needsPerson: boolean;
+  solutions: ReadonlyArray<ManualStepSolution>;
+}
+
 export interface ProviderTextGeneration {
   readonly generateCommitMessage: (
     input: CommitMessageGenerationInput,
@@ -117,4 +137,8 @@ export interface ProviderTextGeneration {
   readonly generateReviewGuide: (
     input: ReviewGuideGenerationInput,
   ) => Effect.Effect<ReviewGuideGenerationResult, TextGenerationError>;
+
+  readonly generateManualStepReview: (
+    input: ManualStepReviewGenerationInput,
+  ) => Effect.Effect<ManualStepReviewGenerationResult, TextGenerationError>;
 }

@@ -146,6 +146,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   manualSteps: Schema.optionalKey(Schema.Boolean),
   /** Serves `manualSteps.detected`, the sign-ins this machine noticed on its own. */
   detectedManualSteps: Schema.optionalKey(Schema.Boolean),
+  /** Serves `manualSteps.review` and `manualSteps.reviewAgain`, AI reviews of manual steps. */
+  manualStepReviews: Schema.optionalKey(Schema.Boolean),
   threadProjectFromScratch: Schema.optionalKey(Schema.Boolean),
   threadTitleRegeneration: Schema.optionalKey(Schema.Boolean),
   threadVisitedTracking: Schema.optionalKey(Schema.Boolean),

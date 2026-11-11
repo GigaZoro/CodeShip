@@ -1,3 +1,8 @@
+## 2026-11-11 — Manual steps get an AI review with suggested solutions
+
+- Every manual step from ThreadPage now gets an AI review on its own: whether it really needs you or an agent could do it, a short summary, and up to three ways to get it done, best first, with the exact command to copy when there is one. Open a step from the details column or the sidebar to see its review on the Manual steps page; on mobile, tap a step. A bot icon marks steps the review says an agent can do.
+- A new note in the step's ThreadPage thread brings a fresh review. **Review again** asks for a new one. Reviews use your text generation model and are written once per step on one of your machines, so every device shows the same review.
+
 ## 2026-11-11 — Restarts resume every scheduled run they cut
 
 - A scheduled task whose runs overlap, such as one that starts every 30 minutes while earlier runs are still working, no longer loses its older runs to a restart. A restart used to resume only the newest run and settle the rest with "Skipped: a newer run … replaced this one", which also stopped their delegated tasks. Now each run resumes unless a newer run of the task started, or its next scheduled time came, while it was stopped.

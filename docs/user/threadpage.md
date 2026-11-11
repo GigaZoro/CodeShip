@@ -46,6 +46,12 @@ Providers** or that server on the **Extensions** MCP tab (on mobile, the Provide
 Capabilities narrowed to that server, whose row has **Sign in**). The step disappears by itself
 once the sign-in works. Servers that predate this list show only the ThreadPage steps.
 
+Each ThreadPage step also gets an AI review without you asking: whether it really needs you, and
+up to three suggested solutions, best first, with the exact command to copy when there is one. Tap
+or click a step to read its review on the **Manual steps** page; a bot icon on a row means an agent
+can do it without you. A new note in the step's thread refreshes the review, and **Review again**
+asks for a new one.
+
 To fill the list, create a token in ThreadPage under **Settings → Connections → Connect an
 automation → Script or API**, with **Read only** access to the Machine inbox folder or all threads.
 Save it in **Settings → Threads → ThreadPage** on one machine. The token stays on that machine and

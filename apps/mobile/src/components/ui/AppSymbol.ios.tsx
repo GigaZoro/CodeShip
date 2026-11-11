@@ -5,6 +5,7 @@ import IconGitPullRequestClosed from "@tabler/icons-react-native/IconGitPullRequ
 import IconGitPullRequestDraft from "@tabler/icons-react-native/IconGitPullRequestDraft";
 import type { SFSymbol } from "expo-symbols";
 import IconGitPullRequest from "@tabler/icons-react-native/IconGitPullRequest";
+import IconRobot from "@tabler/icons-react-native/IconRobot";
 import IconFileDiff from "@tabler/icons-react-native/IconFileDiff";
 import { SymbolView as ExpoSymbolView } from "expo-symbols";
 import { withUniwind } from "uniwind";
@@ -22,6 +23,7 @@ const CUSTOM_ICONS = {
   "git.pull-request.closed": IconGitPullRequestClosed,
   "git.pull-request.draft": IconGitPullRequestDraft,
   "git.commit": IconGitCommit,
+  bot: IconRobot,
 };
 
 function AppSymbolView(props: AppSymbolViewProps) {

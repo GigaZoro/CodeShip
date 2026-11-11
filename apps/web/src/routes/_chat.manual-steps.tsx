@@ -33,5 +33,7 @@ function ManualStepsRoute() {
 }
 
 export const Route = createFileRoute("/_chat/manual-steps")({
+  validateSearch: (raw: Record<string, unknown>): { step?: string } =>
+    typeof raw.step === "string" && raw.step ? { step: raw.step.slice(0, 200) } : {},
   component: ManualStepsRoute,
 });

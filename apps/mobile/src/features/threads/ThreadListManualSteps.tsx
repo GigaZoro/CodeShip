@@ -10,10 +10,10 @@ import {
 } from "@t3tools/client-runtime/state/manualSteps";
 import { providerClients } from "@t3tools/client-runtime/provider-clients";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import type { ManualStep } from "@t3tools/contracts";
+import type { EnvironmentId, ManualStep } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { memo } from "react";
-import { Linking, Pressable, View } from "react-native";
+import { Pressable, View } from "react-native";
 
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
@@ -22,7 +22,7 @@ import { cn } from "../../lib/cn";
 import { getFormattingLocale, t } from "../../lib/i18n";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { useThreadShell } from "../../state/entities";
-import { useManualSteps } from "../../state/manualSteps";
+import { useManualStepReview, useManualSteps } from "../../state/manualSteps";
 import { openSettings } from "../settings/settings-navigation";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import {
@@ -33,21 +33,23 @@ import {
 import { ThreadListV2Section } from "./thread-list-v2-items";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
 
-// The phone has no ThreadPage view, so a step opens in the browser, where ThreadPage is signed in.
-const openStep = (step: ManualStep) => void Linking.openURL(step.url).catch(() => undefined);
-
 function UpdatedAgo(props: { readonly at: string }) {
   return formatTimeAgo(props.at, useVisibleSecondClock(true));
 }
 
 const ManualStepRow = memo(function ManualStepRow(props: {
   readonly step: ManualStep;
+  readonly reviewEnvironmentId: EnvironmentId | null;
   readonly pane: "screen" | "sidebar";
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
 }) {
   const { step, onSelectThread } = props;
   // Only a chat on a machine this phone is connected to resolves.
   const chatShell = useThreadShell(step.chat ?? null);
+  const navigation = useNavigation();
+  // Asking here reviews every listed step, so its review is ready when it is opened.
+  const review = useManualStepReview(step, props.reviewEnvironmentId).state;
+  const agentCanDo = review?.status === "ready" && !review.review.needsPerson;
   const theme = useUniwindTheme();
   const sidebarPane = props.pane === "sidebar";
   const appearance = getThreadListV2RowAppearance(theme, sidebarPane, false);
@@ -69,6 +71,15 @@ const ManualStepRow = memo(function ManualStepRow(props: {
         >
           {step.step}
         </Text>
+        {agentCanDo ? (
+          <SymbolView
+            name="bot"
+            size={14}
+            tintColorClassName={appearance.mutedIconTintClassName}
+            type="monochrome"
+            accessibilityLabel={t("An agent can do this.")}
+          />
+        ) : null}
         <Text className={cn("text-xs tabular-nums", appearance.mutedForegroundClassName)}>
           <UpdatedAgo at={step.updatedAt} />
         </Text>
@@ -107,13 +118,14 @@ const ManualStepRow = memo(function ManualStepRow(props: {
         accessibilityRole="link"
         accessibilityLabel={[
           money ? t("Money decision") : null,
+          agentCanDo ? t("An agent can do this.") : null,
           step.step,
           step.title,
           step.machine,
         ]
           .filter(Boolean)
           .join(", ")}
-        accessibilityHint={t("Opens the step's ThreadPage thread.")}
+        accessibilityHint={t("Opens the step and its review.")}
         className={appearance.className}
         interactionClassName={appearance.interactionClassName}
         interactionOpacity={appearance.interactionOpacity}
@@ -121,7 +133,7 @@ const ManualStepRow = memo(function ManualStepRow(props: {
         onAccessibilityAction={(event) => {
           if (chatShell && event.nativeEvent.actionName === "openChat") onSelectThread(chatShell);
         }}
-        onPress={() => openStep(step)}
+        onPress={() => navigation.navigate("ManualStep", { threadId: step.threadId })}
         style={appearance.cardStyle}
       >
         {sidebarPane ? (
@@ -261,6 +273,8 @@ export function ThreadListManualSteps(props: {
   const { expanded, toggle } = useManualStepsExpanded();
   if (!shown(state)) return null;
   const count = state.view.status === "listed" ? state.view.count : 0;
+  const reviewEnvironmentId =
+    state.view.status === "listed" ? state.view.reviewEnvironmentId : null;
   const label = t("Manual steps");
   return (
     <View className={cn(props.pane === "sidebar" && "pb-2")}>
@@ -285,6 +299,7 @@ export function ThreadListManualSteps(props: {
               <ManualStepRow
                 key={step.threadId}
                 step={step}
+                reviewEnvironmentId={reviewEnvironmentId}
                 pane={props.pane}
                 onSelectThread={props.onSelectThread}
               />

@@ -281,6 +281,7 @@ import * as AgentConversationSync from "./project/AgentConversationSync.ts";
 import * as AgentSessionImporter from "./project/AgentSessionImporter.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as DetectedManualSteps from "./provider/DetectedManualSteps.ts";
+import * as ManualStepReviews from "./threadPage/ManualStepReviews.ts";
 import * as ThreadPageManualSteps from "./threadPage/ThreadPageManualSteps.ts";
 
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
@@ -1363,6 +1364,7 @@ export const layerWsRpc = (
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
       const manualSteps = yield* ThreadPageManualSteps.ThreadPageManualSteps;
       const detectedManualSteps = yield* DetectedManualSteps.DetectedManualSteps;
+      const manualStepReviews = yield* ManualStepReviews.ManualStepReviews;
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const repositoryIdentityResolver =
@@ -2608,6 +2610,8 @@ export const layerWsRpc = (
         [WS_METHODS.serverGetDatabaseStorage]: () => databaseStorage.status,
         [WS_METHODS.manualStepsList]: () => manualSteps.list,
         [WS_METHODS.manualStepsDetected]: () => detectedManualSteps.list,
+        [WS_METHODS.manualStepsReview]: (input) => manualStepReviews.review(input),
+        [WS_METHODS.manualStepsReviewAgain]: (input) => manualStepReviews.reviewAgain(input),
         [WS_METHODS.serverWatchRestartHold]: () =>
           runtimeRecovery.watchRestartHold.pipe(
             Stream.mapError(

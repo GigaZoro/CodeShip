@@ -1,7 +1,18 @@
-import type { DetectedManualStep, EnvironmentId, ManualStep } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ManualStepReviewError,
+  type DetectedManualStep,
+  type ManualStep,
+} from "@t3tools/contracts";
+import * as Exit from "effect/Exit";
+import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
-import { combineManualSteps, detectedManualStepText } from "./manualSteps.ts";
+import {
+  combineManualSteps,
+  detectedManualStepText,
+  manualStepReviewState,
+} from "./manualSteps.ts";
 
 const step = (
   threadId: string,
@@ -70,7 +81,16 @@ describe("combineManualSteps", () => {
         { status: "failed", reason: "offline" },
         { status: "listed", steps: [] },
       ],
-      { status: "listed", groups: [], count: 0 },
+      { status: "listed", groups: [], count: 0, reviewEnvironmentId: null },
+    ],
+    [
+      // The lowest id reviews every step, whatever order the sources arrive in.
+      [
+        { status: "listed", steps: [] },
+        { status: "listed", steps: [], reviewEnvironmentId: EnvironmentId.make("env-c") },
+        { status: "listed", steps: [], reviewEnvironmentId: EnvironmentId.make("env-b") },
+      ],
+      { status: "listed", groups: [], count: 0, reviewEnvironmentId: EnvironmentId.make("env-b") },
     ],
   ] as const)("shows %j as %j", (sources, view) => {
     expect(combineManualSteps(sources)).toEqual(view);
@@ -205,5 +225,16 @@ describe("detectedManualStepText", () => {
     ],
   ])("words %#", (input, stepText, detail) => {
     expect(detectedManualStepText(input, helpers)).toEqual({ step: stepText, detail });
+  });
+});
+
+describe("manualStepReviewState", () => {
+  it("reads a failed review's reason, and any other failure as offline", () => {
+    const failure = (error: unknown) =>
+      manualStepReviewState(AsyncResult.fromExit(Exit.fail(error)));
+    expect(
+      failure(new ManualStepReviewError({ reason: "generation-failed", detail: "bad" })),
+    ).toEqual({ status: "failed", reason: "generation-failed" });
+    expect(failure(new Error("socket closed"))).toEqual({ status: "failed", reason: "offline" });
   });
 });

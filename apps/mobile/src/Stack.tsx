@@ -68,6 +68,7 @@ import { GitCommitSheet } from "./features/threads/git/GitCommitSheet";
 import { GitConfirmSheet } from "./features/threads/git/GitConfirmSheet";
 import { GitOverviewSheet } from "./features/threads/git/GitOverviewSheet";
 import { ThreadPullRequestsSheet } from "./features/threads/ThreadPullRequestsSheet";
+import { ManualStepSheet } from "./features/threads/ManualStepSheet";
 import { ThreadAgentsSheet } from "./features/threads/ThreadAgentsSheet";
 import { ThreadGuestShareSheet } from "./features/threads/ThreadGuestShareSheet";
 import { ThreadBackgroundWorkSheet } from "./features/threads/ThreadBackgroundWorkSheet";
@@ -889,6 +890,15 @@ const RootStackConfig = createWorkspaceStackNavigator({
         ...HORIZONTAL_FORM_SHEET_OPTIONS,
         headerShown: false,
         sheetAllowedDetents: formSheetDetents(0.5, 0.9),
+        sheetGrabberVisible: true,
+      },
+    }),
+    ManualStep: createNativeStackScreen({
+      screen: ManualStepSheet,
+      options: {
+        ...HORIZONTAL_FORM_SHEET_OPTIONS,
+        headerShown: false,
+        sheetAllowedDetents: formSheetDetents(0.6, 0.95),
         sheetGrabberVisible: true,
       },
     }),

@@ -17,10 +17,14 @@ import * as Schema from "effect/Schema";
 import { createMuseSdkHost, createMuseSdkHostEffect, type MuseSdkHost } from "./sdk.ts";
 import { museModelCapabilities, resolveMuseReasoningEffort } from "./modelCatalog.ts";
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
-import { investigationUnsupported } from "@t3tools/provider-core/server/textGenerationOperations";
+import {
+  investigationUnsupported,
+  normalizeManualStepReview,
+} from "@t3tools/provider-core/server/textGenerationOperations";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
+  buildManualStepReviewPrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
 } from "@t3tools/provider-core/server/textGenerationPrompts";
@@ -340,6 +344,16 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
     });
     return { title: sanitizeThreadTitle(generated.title) };
   });
+  const generateManualStepReview: ProviderTextGeneration["generateManualStepReview"] = Effect.fn(
+    "MuseTextGeneration.generateManualStepReview",
+  )(function* (input) {
+    const generated = yield* runMuseJson({
+      operation: "generateManualStepReview",
+      ...buildManualStepReviewPrompt(input),
+      modelSelection: input.modelSelection,
+    });
+    return yield* normalizeManualStepReview(generated);
+  });
   const generateReviewGuide: ProviderTextGeneration["generateReviewGuide"] = () =>
     Effect.fail(investigationUnsupported("generateReviewGuide", "Muse Code"));
   return {
@@ -348,5 +362,6 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
     generateBranchName,
     generateThreadTitle,
     generateReviewGuide,
+    generateManualStepReview,
   } satisfies ProviderTextGeneration;
 });

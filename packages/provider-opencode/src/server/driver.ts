@@ -152,6 +152,11 @@ function selectOpenCodeRuntimeTextGeneration(
         v1: v1.generateReviewGuide(input),
         v2: v2.generateReviewGuide(input),
       }),
+    generateManualStepReview: (input) =>
+      byOpenCodeRuntime(probe.get, {
+        v1: v1.generateManualStepReview(input),
+        v2: v2.generateManualStepReview(input),
+      }),
   };
 }
 

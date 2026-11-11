@@ -5,10 +5,11 @@ import { type ChatAttachment, type ModelSelection, TextGenerationError } from "@
 import { formatGeneratedBranchName, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
-import type { ProviderTextGeneration } from "./textGeneration.ts";
+import type { ManualStepReviewGenerationResult, ProviderTextGeneration } from "./textGeneration.ts";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
+  buildManualStepReviewPrompt,
   buildPrContentPrompt,
   buildReviewGuidePrompt,
   buildThreadTitlePrompt,
@@ -68,6 +69,49 @@ export const decodeJsonReply = <S extends Schema.Top>(
     ),
   );
 };
+
+const MANUAL_STEP_SOLUTION_LIMIT = 3;
+const MANUAL_STEP_SOLUTION_TITLE_LIMIT = 80;
+
+interface RawManualStepReview {
+  readonly summary: string;
+  readonly needsPerson: boolean;
+  readonly solutions: ReadonlyArray<{
+    readonly title: string;
+    readonly detail: string;
+    readonly command?: string | undefined;
+    readonly agentCanDo: boolean;
+  }>;
+}
+
+export function normalizeManualStepReview(
+  generated: RawManualStepReview,
+): Effect.Effect<ManualStepReviewGenerationResult, TextGenerationError> {
+  const summary = generated.summary.trim();
+  const solutions = generated.solutions
+    .flatMap((solution) => {
+      const title = solution.title.trim().slice(0, MANUAL_STEP_SOLUTION_TITLE_LIMIT).trim();
+      if (title.length === 0) return [];
+      const command = solution.command?.trim() ?? "";
+      return [
+        {
+          title,
+          detail: solution.detail.trim(),
+          ...(command.length > 0 ? { command } : {}),
+          agentCanDo: solution.agentCanDo,
+        },
+      ];
+    })
+    .slice(0, MANUAL_STEP_SOLUTION_LIMIT);
+  return summary.length === 0 || solutions.length === 0
+    ? Effect.fail(
+        new TextGenerationError({
+          operation: "generateManualStepReview",
+          detail: "The model returned a review without a summary or without solutions.",
+        }),
+      )
+    : Effect.succeed({ summary, needsPerson: generated.needsPerson, solutions });
+}
 
 export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
   const generateCommitMessage: ProviderTextGeneration["generateCommitMessage"] = Effect.fn(
@@ -167,11 +211,24 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     });
   });
 
+  const generateManualStepReview: ProviderTextGeneration["generateManualStepReview"] = Effect.fn(
+    `${name}.generateManualStepReview`,
+  )(function* (input) {
+    const generated = yield* run({
+      operation: "generateManualStepReview",
+      cwd: input.cwd,
+      modelSelection: input.modelSelection,
+      ...buildManualStepReviewPrompt(input),
+    });
+    return yield* normalizeManualStepReview(generated);
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
     generateReviewGuide,
+    generateManualStepReview,
   } satisfies ProviderTextGeneration;
 }

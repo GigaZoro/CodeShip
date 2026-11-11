@@ -4,6 +4,7 @@ import { ForwardCompatibleArray, IsoDateTime, TrimmedNonEmptyString } from "./ba
 import { ScopedThreadRef } from "./environment.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ProviderMcpServerName } from "./providerMcp.ts";
+import { ModelSelection } from "./modelSelection.ts";
 
 /** `needs-you` is a money decision; `hands-on` is a step only a person can do. */
 export const ManualStepKind = Schema.Literals(["needs-you", "hands-on"]);
@@ -101,3 +102,60 @@ export const DetectedManualStepsResult = Schema.Struct({
   checkedAt: IsoDateTime,
 });
 export type DetectedManualStepsResult = typeof DetectedManualStepsResult.Type;
+/** One way to get a manual step done, as the AI review suggests it. */
+export const ManualStepSolution = Schema.Struct({
+  title: Schema.String,
+  /** How, in one to three sentences. */
+  detail: Schema.String,
+  /** The exact command to run, when the solution has one. */
+  command: Schema.optional(Schema.String),
+  /** An agent could do this without the user. */
+  agentCanDo: Schema.Boolean,
+});
+export type ManualStepSolution = typeof ManualStepSolution.Type;
+
+/** An AI review of one manual step: whether it really needs a person, and ways to get it done. */
+export const ManualStepReview = Schema.Struct({
+  threadId: Schema.String,
+  /** The step's `updatedAt` when it was reviewed; a newer note makes the review stale. */
+  updatedAt: Schema.String,
+  /** What the step is really waiting for, in one or two sentences. */
+  summary: Schema.String,
+  /** False when an agent could do the whole step without the user. */
+  needsPerson: Schema.Boolean,
+  /** Best first, one to three. */
+  solutions: Schema.Array(ManualStepSolution),
+  generatedAt: Schema.String,
+  modelSelection: ModelSelection,
+});
+export type ManualStepReview = typeof ManualStepReview.Type;
+
+export const ManualStepReviewInput = Schema.Struct({
+  threadId: Schema.String,
+  /**
+   * The step version the client shows. A stored review of an older version is replaced, and a
+   * new review is stored under at least this version so the client finds it under its own key.
+   */
+  updatedAt: Schema.String,
+});
+export type ManualStepReviewInput = typeof ManualStepReviewInput.Type;
+
+export const ManualStepReviewFailure = Schema.Literals([
+  ...ManualStepsListFailure.literals,
+  /** This server has no ThreadPage token. */
+  "not-connected",
+  /** The thread is no longer a Waiting step in the Machine inbox. */
+  "not-found",
+  /** The model failed or answered in a form that could not be read. */
+  "generation-failed",
+]);
+export type ManualStepReviewFailure = typeof ManualStepReviewFailure.Type;
+
+export class ManualStepReviewError extends Schema.TaggedError<ManualStepReviewError>()(
+  "ManualStepReviewError",
+  { reason: ManualStepReviewFailure, detail: Schema.String },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}

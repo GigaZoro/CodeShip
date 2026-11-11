@@ -119,6 +119,8 @@ import * as DetectedManualSteps from "./provider/DetectedManualSteps.ts";
 import * as ProviderMcp from "./provider/ProviderMcp.ts";
 import * as ProviderUsageLimitsIngestion from "./provider/ProviderUsageLimitsIngestion.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
+import * as ManualStepReviews from "./threadPage/ManualStepReviews.ts";
+import * as ManualStepReviewRepository from "./persistence/ManualStepReviews.ts";
 import * as ThreadPageManualSteps from "./threadPage/ThreadPageManualSteps.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
 import * as T3ProjectFileLoader from "./project/T3ProjectFileLoader.ts";
@@ -747,6 +749,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(
     Layer.mergeAll(ProjectStore.layer, ThreadSearch.layer, HtmlRenderLibrary.layer),
   ),
+  Layer.provideMerge(ManualStepReviews.layer.pipe(Layer.provide(ManualStepReviewRepository.layer))),
   Layer.provideMerge(SecretResolver.layer),
   Layer.provideMerge(layerServerSettings),
   Layer.provideMerge(layerSourceControlProviderRegistry),

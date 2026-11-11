@@ -39,6 +39,7 @@ import {
   createEnvironmentRpcQueryAtomFamily,
   createEnvironmentRpcSubscriptionAtomFamily,
   createEnvironmentQueryAtomFamily,
+  createWritableQueryAtomFamily,
   type QueryAnswerHandler,
 } from "./runtime.ts";
 import { createPullRequestRouter } from "./pullRequestRouting.ts";
@@ -86,22 +87,7 @@ function writableQueryFamily<A, E>(
     readonly input: PullRequestRef;
   }) => Atom.Atom<AsyncResult.AsyncResult<A, E>>,
 ) {
-  const writable = Atom.family((source: Atom.Atom<AsyncResult.AsyncResult<A, E>>) =>
-    Atom.writable(
-      (get) => {
-        const result = get(source);
-        if (result._tag === "Success" && !result.waiting) return result;
-        const previous = get.self<AsyncResult.AsyncResult<A, E>>();
-        const value = Option.flatMap(previous, AsyncResult.value);
-        if (Option.isNone(value)) return result;
-        return result._tag === "Failure"
-          ? AsyncResult.failureWithPrevious(result.cause, { previous, waiting: result.waiting })
-          : AsyncResult.success<A, E>(value.value, result);
-      },
-      (context, value: AsyncResult.AsyncResult<A, E>) => context.setSelf(value),
-      (refresh) => refresh(source),
-    ).pipe(Atom.setIdleTTL(5 * 60_000)),
-  );
+  const writable = createWritableQueryAtomFamily<A, E>();
   return normalizePullRequestQuery((target) => writable(family(target)));
 }
 

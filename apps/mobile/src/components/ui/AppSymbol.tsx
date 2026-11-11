@@ -72,6 +72,7 @@ import IconHeadphones from "@tabler/icons-react-native/IconHeadphones";
 import IconFolderPlus from "@tabler/icons-react-native/IconFolderPlus";
 import IconGitPullRequestClosed from "@tabler/icons-react-native/IconGitPullRequestClosed";
 import IconGitPullRequestDraft from "@tabler/icons-react-native/IconGitPullRequestDraft";
+import IconRobot from "@tabler/icons-react-native/IconRobot";
 import IconGitCommit from "@tabler/icons-react-native/IconGitCommit";
 import IconGitBranch from "@tabler/icons-react-native/IconGitBranch";
 import IconGitMerge from "@tabler/icons-react-native/IconGitMerge";
@@ -149,6 +150,7 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   "git.pull-request.closed": IconGitPullRequestClosed,
   "git.pull-request.draft": IconGitPullRequestDraft,
   "git.commit": IconGitCommit,
+  bot: IconRobot,
   "arrow.branch": IconGitBranch,
   "arrow.left": IconArrowLeft,
   "arrow.right": IconArrowRight,
@@ -299,13 +301,23 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   "xmark.circle.fill": IconCircleXFilled,
 } satisfies Partial<
   Record<
-    SFSymbol | "git.pull-request.closed" | "git.pull-request.draft" | "git.commit" | "file.diff",
+    | SFSymbol
+    | "git.pull-request.closed"
+    | "git.pull-request.draft"
+    | "git.commit"
+    | "file.diff"
+    | "bot",
     Icon
   >
 >;
 const SF_ICON_LOOKUP: Partial<
   Record<
-    SFSymbol | "git.pull-request.closed" | "git.pull-request.draft" | "git.commit" | "file.diff",
+    | SFSymbol
+    | "git.pull-request.closed"
+    | "git.pull-request.draft"
+    | "git.commit"
+    | "file.diff"
+    | "bot",
     Icon
   >
 > = ANDROID_ICON_BY_SF_SYMBOL;
