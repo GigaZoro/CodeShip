@@ -1,5 +1,6 @@
 import { getFormattingLocale, t } from "../../lib/i18n";
 import { providerLoginExpiryText } from "@t3tools/client-runtime/providerLoginExpiryText";
+import { providerAuthMethodText } from "@t3tools/client-runtime/providerAuthMethodText";
 import { providerLoginExpiry } from "@t3tools/shared/providerLoginExpiry";
 import * as Dialog from "../../components/ui/Dialog";
 import {
@@ -235,7 +236,8 @@ function ProviderAccount({
       ? providerLoginExpiryText(loginExpiry, formatLoginDate)
       : null;
   const email = signedIn && !active && provider.enabled ? provider.auth.email?.trim() : undefined;
-  const methods = state?.methods ?? [];
+  const methods =
+    state?.methods?.map((method) => providerAuthMethodText(provider.driver, method)) ?? [];
   // The status line says why a provider that is missing or turned off can't sign in.
   const canSignIn =
     !active &&
@@ -270,6 +272,7 @@ function ProviderAccount({
   const methodActions: MenuAction[] = methods.map((method) => ({
     id: `method:${method.id}`,
     title: method.name,
+    ...(method.description ? { subtitle: method.description } : {}),
   }));
   function startSignIn(methodId?: string) {
     void run(() => start(methodId ? { environmentId, input: { instanceId, methodId } } : target));
@@ -403,6 +406,13 @@ function ProviderAccount({
         <ProviderAccountSummary key={email} name={name} status={status} email={email} />
         {trailing}
       </View>
+      {!active && methods.find((method) => method.id === "setup-token")?.description ? (
+        <View className="px-4 pb-3">
+          <Text className="text-sm text-foreground-muted">
+            {methods.find((method) => method.id === "setup-token")?.description}
+          </Text>
+        </View>
+      ) : null}
       {interaction?.type === "deviceCode" ||
       interaction?.type === "terminal" ||
       interaction?.type === "credentials" ||

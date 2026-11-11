@@ -3,6 +3,7 @@ import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
   ProviderSkillError,
+  ProviderSetupError,
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
@@ -35,6 +36,8 @@ import { makeClaudeScopedLimitNames } from "../claudeUsageLimits.ts";
 import * as ClaudeResetCredits from "../claudeResetCredits.ts";
 import { readClaudeAutoUpdatesChannel, setClaudeSkillOverride } from "./ClaudeSkills.ts";
 import { readClaudeLoginExpiry } from "../claudeLoginExpiry.ts";
+import { saveClaudeOAuthToken } from "../claudeOAuthToken.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import {
   checkClaudeProviderStatus,
@@ -159,7 +162,8 @@ export type ClaudeDriverEnv =
   | ModelCatalog.ModelCatalog
   | Path.Path
   | ProviderEventLoggers.ProviderEventLoggers
-  | ServerConfig.ServerConfig;
+  | ServerConfig.ServerConfig
+  | ServerSettingsService;
 
 export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.Path> = {
   driverKind: DRIVER_KIND,
@@ -181,6 +185,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const serverSettings = yield* ServerSettingsService;
     // The server cwd is $HOME in packaged desktop builds, and `claude`
     // wrappers that scope themselves to their cwd refuse to run there.
     const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -264,10 +269,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         : undefined,
     );
     const claudeEnvironment = yield* makeClaudeEnvironment(effectiveConfig, processEnv);
+    const { CLAUDE_CODE_OAUTH_TOKEN: _existingToken, ...regularLoginEnvironment } = processEnv;
     const readLoginExpiry = readClaudeLoginExpiry({
       configDir,
       claudeConfigDirEnv: claudeEnvironment.CLAUDE_CONFIG_DIR,
       environment: claudeEnvironment,
+      tokenMetadata: config.oauthToken,
     }).pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -281,8 +288,26 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       configDir,
       prepare: prepareAccountHome,
       canLogout: accountHome !== undefined,
+      saveToken: (token) =>
+        saveClaudeOAuthToken(instanceId, token).pipe(
+          Effect.asVoid,
+          Effect.provideService(ServerSettingsService, serverSettings),
+          Effect.mapError(
+            () =>
+              new ProviderSetupError({
+                instanceId,
+                operation: "save-token",
+                detail: "Could not save this account's sign-in. Start sign-in again.",
+              }),
+          ),
+        ),
       // Any other failure is left to the status check that ends every sign-in.
-      needsTermsReview: probeClaudeCapabilities(effectiveConfig, processEnv, stateDir, false).pipe(
+      needsTermsReview: probeClaudeCapabilities(
+        effectiveConfig,
+        regularLoginEnvironment,
+        stateDir,
+        false,
+      ).pipe(
         Effect.as(false),
         Effect.catch((error) => Effect.succeed(isClaudeTermsReviewRequiredError(error))),
         Effect.provideService(FileSystem.FileSystem, fileSystem),

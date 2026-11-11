@@ -18,6 +18,8 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
+import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
@@ -37,6 +39,7 @@ import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import * as ServerSettingsModule from "./serverSettings.ts";
 import * as ManagedPolicy from "./policy/ManagedPolicy.ts";
 import { resolveProviderInstanceTerminalEnvironment } from "./terminal/Manager.ts";
+import { saveClaudeOAuthToken, claudeOAuthTokenExpiry } from "./provider/claudeOAuthToken.ts";
 
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
 const decodeServerSettingsJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ServerSettings));
@@ -1359,6 +1362,63 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           sensitiveLast ? "secret-last" : "",
         );
       }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect(
+    "keeps generated Claude tokens in secrets, dates their expiry and removes the secret on regular sign-in",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const config = yield* ServerConfig.ServerConfig;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const store = yield* ServerSecretStore.ServerSecretStore;
+        const instanceId = ProviderInstanceId.make("claudeAgent_token_test");
+        const token = "sk-ant-oat01-synthetic-test-credential";
+        yield* service.updateProviderInstance({
+          operation: "create",
+          instanceId,
+          instance: {
+            driver: ProviderDriverKind.make("claudeAgent"),
+            displayName: "Scheduled account",
+            environment: [{ name: "KEEP_ME", value: "yes", sensitive: false }],
+          },
+        });
+        const issuedAt = yield* Clock.currentTimeMillis;
+        const saved = yield* saveClaudeOAuthToken(instanceId, token);
+        const instance = saved.providerInstances[instanceId]!;
+        const metadata = (
+          instance.config as {
+            oauthToken: { issuedAt: string; expiresAt: string; fingerprint: string };
+          }
+        ).oauthToken;
+        assert.equal(Date.parse(metadata.issuedAt), issuedAt);
+        assert.equal(
+          claudeOAuthTokenExpiry(token, metadata),
+          DateTime.formatIso(DateTime.makeUnsafe(issuedAt + 365 * 24 * 60 * 60 * 1000)),
+        );
+        assert.isUndefined(claudeOAuthTokenExpiry("sk-ant-oat01-hand-pasted-token", metadata));
+        assert.isUndefined(claudeOAuthTokenExpiry(token, undefined));
+        assert.equal(
+          instance.environment?.find((variable) => variable.name === "CLAUDE_CODE_OAUTH_TOKEN")
+            ?.value,
+          token,
+        );
+        const raw = yield* fileSystem.readFileString(config.settingsPath);
+        assert.notInclude(raw, token);
+        const secretName = `provider-env-${Buffer.from(instanceId).toString("base64url")}-${Buffer.from("CLAUDE_CODE_OAUTH_TOKEN").toString("base64url")}`;
+        assert.equal(
+          new TextDecoder().decode(Option.getOrThrow(yield* store.get(secretName))),
+          token,
+        );
+        const removed = yield* saveClaudeOAuthToken(instanceId, undefined);
+        assert.isTrue(Option.isNone(yield* store.get(secretName)));
+        assert.deepEqual(removed.providerInstances[instanceId]?.environment, [
+          { name: "KEEP_ME", value: "yes", sensitive: false },
+          { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "", sensitive: false },
+        ]);
+        assert.notProperty(removed.providerInstances[instanceId]?.config, "oauthToken");
+        assert.notInclude(yield* fileSystem.readFileString(config.settingsPath), token);
+      }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
   );
 
   it.effect(

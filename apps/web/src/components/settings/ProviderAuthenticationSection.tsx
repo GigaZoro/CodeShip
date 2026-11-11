@@ -4,6 +4,7 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import { providerLoginExpiryText } from "@t3tools/client-runtime/providerLoginExpiryText";
+import { providerAuthMethodText } from "@t3tools/client-runtime/providerAuthMethodText";
 import type {
   EnvironmentId,
   ProviderAuthRespondInput,
@@ -65,6 +66,9 @@ export function ProviderAuthenticationSection({
   const terminalQueue = useRef<ProviderAuthRespondInput[]>([]);
   const terminalSending = useRef(false);
   const auth = query.data;
+  const methods =
+    auth?.methods?.map((method) => providerAuthMethodText(provider.driver, method)) ?? [];
+  const selectedMethod = methods.find((method) => method.id === methodId) ?? methods[0];
   const interaction = auth?.interaction;
   const active =
     auth?.phase === "starting" || auth?.phase === "waiting" || auth?.phase === "verifying";
@@ -190,24 +194,29 @@ export function ProviderAuthenticationSection({
     <SettingsRow
       title={t("Account")}
       description={
-        signedIn && !active && provider.auth.email?.trim() ? (
-          <span>
-            {tx("Signed in as {email}", {
-              email: (
-                <RedactedSensitiveText
-                  key={provider.auth.email}
-                  value={provider.auth.email}
-                  ariaLabel={t("Toggle account email visibility")}
-                  revealTooltip={t("Click to reveal email")}
-                  hideTooltip={t("Click to hide email")}
-                  className="max-w-full truncate"
-                />
-              ),
-            })}
-          </span>
-        ) : (
-          <span role="status">{accountDescription}</span>
-        )
+        <>
+          {signedIn && !active && provider.auth.email?.trim() ? (
+            <span>
+              {tx("Signed in as {email}", {
+                email: (
+                  <RedactedSensitiveText
+                    key={provider.auth.email}
+                    value={provider.auth.email}
+                    ariaLabel={t("Toggle account email visibility")}
+                    revealTooltip={t("Click to reveal email")}
+                    hideTooltip={t("Click to hide email")}
+                    className="max-w-full truncate"
+                  />
+                ),
+              })}
+            </span>
+          ) : (
+            <span role="status">{accountDescription}</span>
+          )}
+          {selectedMethod?.description ? (
+            <span className="mt-1 block">{selectedMethod.description}</span>
+          ) : null}
+        </>
       }
       status={
         statusMessage ? (
@@ -229,21 +238,20 @@ export function ProviderAuthenticationSection({
       }
       control={
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          {!active && (auth?.methods?.length ?? 0) > 1 ? (
+          {!active && methods.length > 1 ? (
             <Select
-              value={auth?.methods?.some((method) => method.id === methodId) ? methodId : ""}
+              value={methods.some((method) => method.id === methodId) ? methodId : ""}
               disabled={disabled}
               onValueChange={(value) => setMethodId(value ?? "")}
             >
               <SelectTrigger size="sm" aria-label={t("Sign-in method")} className="w-44">
                 <SelectValue>
-                  {auth?.methods?.find((method) => method.id === methodId)?.name ??
-                    t("Provider default")}
+                  {methods.find((method) => method.id === methodId)?.name ?? t("Provider default")}
                 </SelectValue>
               </SelectTrigger>
               <SelectPopup>
                 <SelectItem value="">{t("Provider default")}</SelectItem>
-                {auth?.methods?.map((method) => (
+                {methods.map((method) => (
                   <SelectItem key={method.id} value={method.id}>
                     {method.name}
                   </SelectItem>
