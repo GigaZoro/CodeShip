@@ -545,6 +545,12 @@ export class EnvironmentAuth extends Context.Service<
     readonly authenticateMcpClient: (
       request: HttpServerRequest.HttpServerRequest,
     ) => Effect.Effect<McpClientSession, ServerAuthCredentialError | ServerAuthInternalError>;
+    readonly renewMcpClientSession: (
+      token: string,
+    ) => Effect.Effect<
+      SessionStore.IssuedSession & { readonly access: AuthMcpClientAccess },
+      ServerAuthCredentialError | ServerAuthInternalError
+    >;
     readonly issueMcpClientSession: (input: {
       readonly label: string;
       readonly access: AuthMcpClientAccess;
@@ -1319,6 +1325,40 @@ export const make = Effect.gen(function* () {
     );
   };
 
+  const renewMcpClientSession: EnvironmentAuth["Service"]["renewMcpClientSession"] = Effect.fn(
+    "EnvironmentAuth.renewMcpClientSession",
+  )(function* (token) {
+    const session = yield* sessions.verify(token).pipe(mapSessionVerificationErrors);
+    if (
+      session.subject !== MCP_CLIENT_SUBJECT ||
+      session.method !== "bearer-access-token" ||
+      session.peerLink !== true
+    ) {
+      return yield* new ServerAuthInvalidCredentialError({
+        diagnostic: "Only linked environment sessions may be renewed.",
+      });
+    }
+    const issued = yield* sessions
+      .issue({
+        subject: session.subject,
+        method: session.method,
+        scopes: session.scopes,
+        ttl: MCP_CLIENT_SESSION_TTL,
+        ...(session.runtimeModeCeiling === undefined
+          ? {}
+          : { runtimeModeCeiling: session.runtimeModeCeiling }),
+        peerLink: true,
+        client: session.client,
+      })
+      .pipe(Effect.mapError((cause) => new ServerAuthSessionTokenIssueError({ cause })));
+    return {
+      ...issued,
+      access: session.scopes.includes(AuthOrchestrationOperateScope)
+        ? (session.runtimeModeCeiling ?? "approval-required")
+        : "read-only",
+    };
+  });
+
   const issueMcpClientSession: EnvironmentAuth["Service"]["issueMcpClientSession"] = (input) =>
     sessions
       .issue({
@@ -1403,6 +1443,7 @@ export const make = Effect.gen(function* () {
     issueWebSocketTicket,
     issueStartupPairingUrl,
     authenticateMcpClient,
+    renewMcpClientSession,
     issueMcpClientSession,
     consumeMcpApprovalCode,
     authenticateBrowserSession,

@@ -5406,12 +5406,6 @@ const catalog: MessageCatalog = {
     many: "Спливає через {count} днів",
     other: "Спливає через {count} дня",
   },
-  "Expires in {count} days. Link it again to renew.": {
-    one: "Спливає через {count} день. Пов’яжіть знову, щоб продовжити.",
-    few: "Спливає через {count} дні. Пов’яжіть знову, щоб продовжити.",
-    many: "Спливає через {count} днів. Пов’яжіть знову, щоб продовжити.",
-    other: "Спливає через {count} дня. Пов’яжіть знову, щоб продовжити.",
-  },
   "Expires in {duration}": "Спливає через {duration}",
   "Expires in a moment": "Спливає за мить",
   "Explain this {label}": "Пояснити: {label}",

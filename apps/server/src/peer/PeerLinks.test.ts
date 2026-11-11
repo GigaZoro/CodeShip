@@ -3,12 +3,14 @@ import { type ExecutionEnvironmentDescriptor, OrchestratorMcpFailure } from "@t3
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -89,6 +91,7 @@ const makeA = (
       peer: Context.get(context, PeerMcpClient.PeerMcpClient),
       sql: Context.get(context, SqlClient.SqlClient),
       settings: Context.get(context, ServerSettings.ServerSettingsService),
+      secrets: Context.get(context, ServerSecretStore.ServerSecretStore),
     })),
   );
 
@@ -108,6 +111,209 @@ const probe = (
   });
 
 const linkedSessions = (b: ServedPeer) => b.linkedSessions;
+
+it.effect(
+  "renews only inside the expiry window and swaps the stored secret without changing the grant",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* serveB(box);
+        const a = yield* makeA(laptop);
+        const pairing = yield* b.auth.issuePairingCredential();
+        const original = yield* a.links.link({
+          url: b.url,
+          pairingCode: pairing.credential,
+          access: "auto",
+        });
+        const [before] = yield* a.sql<{
+          secret_name: string;
+        }>`SELECT secret_name FROM peer_environment_links`;
+        const token = yield* a.links.resolve(box.environmentId);
+        const count = (yield* linkedSessions(b)).length;
+        yield* TestClock.adjust(Duration.days(19));
+        yield* a.links.renew(box.environmentId);
+        expect(yield* a.links.get(box.environmentId)).toEqual(Option.some(original));
+        expect((yield* linkedSessions(b)).length).toBe(count);
+        yield* TestClock.adjust(Duration.days(1));
+        yield* a.settings.updateSettings({ linkedEnvironmentsEnabled: false });
+        yield* a.links.renew(box.environmentId);
+        expect(yield* a.links.get(box.environmentId)).toEqual(Option.some(original));
+        yield* a.settings.updateSettings({ linkedEnvironmentsEnabled: true });
+        yield* b.settings.updateSettings({ linkedEnvironmentsEnabled: false });
+        yield* a.links.renew(box.environmentId);
+        expect(yield* a.links.get(box.environmentId)).toEqual(Option.some(original));
+        yield* b.settings.updateSettings({ linkedEnvironmentsEnabled: true });
+        yield* a.links.renew(box.environmentId);
+        const renewed = Option.getOrThrow(yield* a.links.get(box.environmentId));
+        expect(renewed).toEqual({
+          ...original,
+          expiresAt: DateTime.add(original.expiresAt, { days: 20 }),
+        });
+        const [after] = yield* a.sql<{
+          secret_name: string;
+        }>`SELECT secret_name FROM peer_environment_links`;
+        expect(after!.secret_name).not.toBe(before!.secret_name);
+        expect(yield* a.secrets.get(before!.secret_name)).toEqual(Option.none());
+        expect(Option.isSome(yield* a.secrets.get(after!.secret_name))).toBe(true);
+        expect((yield* a.links.resolve(box.environmentId)).token).not.toBe(token.token);
+        expect(yield* probe(a)).toEqual({ caller: "T3.CodeShip · Laptop", modes: "auto/default" });
+        yield* TestClock.adjust(Duration.days(20));
+        const currentSession = (yield* linkedSessions(b))[0]!;
+        yield* b.auth.revokeSession(currentSession.sessionId);
+        const beforeRevoked = yield* a.links.get(box.environmentId);
+        yield* a.links.renew(box.environmentId);
+        expect(yield* a.links.get(box.environmentId)).toEqual(beforeRevoked);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("keeps older peers linked and explains how to enable automatic renewal", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const b = yield* serveB(box);
+      const a = yield* makeA(laptop);
+      const pairing = yield* b.auth.issuePairingCredential();
+      const original = yield* a.links.link({
+        url: b.url,
+        pairingCode: pairing.credential,
+        access: "auto",
+      });
+      const [before] = yield* a.sql<{
+        secret_name: string;
+      }>`SELECT secret_name FROM peer_environment_links`;
+      yield* TestClock.adjust(Duration.days(21));
+      yield* Ref.set(b.renewalError, "unsupported_grant_type");
+      yield* a.links.renew(box.environmentId);
+      const after = Option.getOrThrow(yield* a.links.get(box.environmentId));
+      expect(after).toEqual({
+        ...original,
+        lastError: "Update Box so this link can renew itself.",
+      });
+      expect(yield* a.sql`SELECT secret_name FROM peer_environment_links`).toEqual([before]);
+      expect(Option.isSome(yield* a.secrets.get(before!.secret_name))).toBe(true);
+      yield* Ref.set(b.renewalError, undefined);
+      yield* a.links.renew(box.environmentId);
+      expect(Option.getOrThrow(yield* a.links.get(box.environmentId)).lastError).toBeNull();
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("the scoped worker renews at startup and on its hourly tick", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const removed = yield* Queue.unbounded<string>();
+      const observingSecrets = Layer.effect(
+        ServerSecretStore.ServerSecretStore,
+        Effect.gen(function* () {
+          const store = yield* ServerSecretStore.ServerSecretStore;
+          return ServerSecretStore.ServerSecretStore.of({
+            ...store,
+            remove: (name) => store.remove(name).pipe(Effect.tap(() => Queue.offer(removed, name))),
+          });
+        }),
+      ).pipe(Layer.provide(ServerSecretStore.layer));
+      const b = yield* serveB(box);
+      const a = yield* makeA(laptop, observingSecrets);
+      const pairing = yield* b.auth.issuePairingCredential();
+      const original = yield* a.links.link({
+        url: b.url,
+        pairingCode: pairing.credential,
+        access: "auto",
+      });
+      yield* TestClock.adjust(Duration.days(20));
+      yield* a.links.start;
+      yield* Queue.take(removed);
+      const renewed = Option.getOrThrow(yield* a.links.get(box.environmentId));
+      expect(DateTime.isGreaterThan(renewed.expiresAt, original.expiresAt)).toBe(true);
+      yield* a.sql`UPDATE peer_environment_links SET expires_at = ${DateTime.formatIso(original.expiresAt)}`;
+      yield* TestClock.adjust(Duration.hours(1));
+      yield* Queue.take(removed);
+      expect(Option.getOrThrow(yield* a.links.get(box.environmentId)).expiresAt).toEqual(
+        DateTime.add(renewed.expiresAt, { hours: 1 }),
+      );
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "renewal leaves unreachable and wrong-identity peers unchanged and never sends their token",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* serveB(box);
+        const a = yield* makeA(laptop);
+        const pairing = yield* b.auth.issuePairingCredential();
+        const original = yield* a.links.link({
+          url: b.url,
+          pairingCode: pairing.credential,
+          access: "read-only",
+        });
+        yield* TestClock.adjust(Duration.days(21));
+        yield* Ref.set(b.bearers, []);
+        yield* Ref.set(b.descriptor, laptop);
+        yield* a.links.renew(box.environmentId).pipe(Effect.ignore);
+        expect(yield* a.links.get(box.environmentId)).toEqual(Option.some(original));
+        expect(yield* Ref.get(b.bearers)).toEqual([]);
+        yield* a.sql`UPDATE peer_environment_links SET urls_json = ${JSON.stringify(["http://127.0.0.1:1"])}`;
+        const unreachable = yield* a.links.get(box.environmentId);
+        yield* a.links.renew(box.environmentId).pipe(Effect.ignore);
+        expect(yield* a.links.get(box.environmentId)).toEqual(unreachable);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("discards replacement secrets after a failed update or concurrent unlink", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const written = yield* Queue.unbounded<string>();
+      const pause = yield* Ref.make(false);
+      const resume = yield* Deferred.make<void>();
+      const observingSecrets = Layer.effect(
+        ServerSecretStore.ServerSecretStore,
+        Effect.gen(function* () {
+          const store = yield* ServerSecretStore.ServerSecretStore;
+          return ServerSecretStore.ServerSecretStore.of({
+            ...store,
+            set: (name, value) =>
+              store.set(name, value).pipe(
+                Effect.andThen(
+                  Effect.gen(function* () {
+                    yield* Queue.offer(written, name);
+                    if (yield* Ref.get(pause)) yield* Deferred.await(resume);
+                  }),
+                ),
+              ),
+          });
+        }),
+      ).pipe(Layer.provide(ServerSecretStore.layer));
+      const b = yield* serveB(box);
+      const a = yield* makeA(laptop, observingSecrets);
+      const pairing = yield* b.auth.issuePairingCredential();
+      const original = yield* a.links.link({
+        url: b.url,
+        pairingCode: pairing.credential,
+        access: "auto",
+      });
+      const originalSecret = yield* Queue.take(written);
+      yield* TestClock.adjust(Duration.days(21));
+      yield* a.sql`CREATE TRIGGER refuse_renewal BEFORE UPDATE ON peer_environment_links BEGIN SELECT RAISE(FAIL, 'test storage failure'); END`;
+      expect((yield* a.links.renew(box.environmentId).pipe(Effect.flip)).reason).toBe("storage");
+      expect(yield* a.links.get(box.environmentId)).toEqual(Option.some(original));
+      expect(Option.isSome(yield* a.secrets.get(originalSecret))).toBe(true);
+      expect(yield* a.secrets.get(yield* Queue.take(written))).toEqual(Option.none());
+      yield* a.sql`DROP TRIGGER refuse_renewal`;
+      yield* Ref.set(pause, true);
+      const renewing = yield* a.links.renew(box.environmentId).pipe(Effect.forkChild);
+      const replacement = yield* Queue.take(written);
+      yield* a.links.unlink(box.environmentId);
+      yield* Deferred.succeed(resume, undefined);
+      yield* Fiber.join(renewing);
+      expect(yield* a.links.get(box.environmentId)).toEqual(Option.none());
+      expect(yield* a.secrets.get(replacement)).toEqual(Option.none());
+      expect(yield* a.secrets.get(originalSecret)).toEqual(Option.none());
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
 
 /** Another environment on a socket of its own, answering as `descriptor`. */
 const serveApart = (descriptor: ExecutionEnvironmentDescriptor) =>
@@ -457,6 +663,9 @@ it.effect("tells the agent to link again once the peer revokes the link or it ex
       yield* probe(a);
 
       yield* TestClock.adjust(Duration.days(31));
+      const expiredLink = yield* a.links.get(box.environmentId);
+      yield* a.links.renew(box.environmentId);
+      expect(yield* a.links.get(box.environmentId)).toEqual(expiredLink);
       expect((yield* a.links.list).map((link) => link.status)).toEqual(["expired"]);
       yield* Ref.set(b.bearers, []);
       const expired = yield* probe(a).pipe(Effect.flip);

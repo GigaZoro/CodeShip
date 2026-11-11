@@ -548,6 +548,8 @@ export const AuthMcpTokenRequest = Schema.Struct({
   redirect_uri: Schema.optionalKey(Schema.String),
   client_id: Schema.optionalKey(Schema.String),
   code_verifier: Schema.optionalKey(Schema.RedactedFromValue(Schema.String)),
+  subject_token: Schema.optionalKey(Schema.RedactedFromValue(Schema.String)),
+  subject_token_type: Schema.optionalKey(Schema.String),
   resource: Schema.optionalKey(Schema.String),
 }).pipe(HttpApiSchema.asFormUrlEncoded());
 export type AuthMcpTokenRequest = typeof AuthMcpTokenRequest.Type;
@@ -557,6 +559,9 @@ export const AuthMcpTokenResult = Schema.Struct({
   token_type: Schema.Literal("Bearer"),
   expires_in: Schema.Number,
   scope: Schema.String,
+  issued_token_type: Schema.optionalKey(
+    Schema.Literal("urn:ietf:params:oauth:token-type:access_token"),
+  ),
 });
 export type AuthMcpTokenResult = typeof AuthMcpTokenResult.Type;
 
