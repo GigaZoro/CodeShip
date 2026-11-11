@@ -617,6 +617,12 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
       description: "Provider reset or T3 hold end (ISO time). Pick another account.",
     }),
   ),
+  limitedUntilEstimated: Schema.optional(
+    Schema.Literal(true).annotate({
+      description:
+        "limitedUntil is T3's guess, not a reset the provider reported. The account may run sooner, and ChatGPT's connected-app cap is tried again hourly.",
+    }),
+  ),
   usageLimited: Schema.optional(
     Schema.Literal(true).annotate({
       description: "Usage-limited until limitedUntil (provider reset or T3 hold).",

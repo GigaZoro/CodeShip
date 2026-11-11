@@ -29,7 +29,7 @@ import {
 } from "../CodexProvider.ts";
 import { makeCodexConsumeResetCredit } from "../codexResetCredit.ts";
 import { codexAccountLimitsHomePath, makeCodexLimitsLogin } from "../CodexLimitsLogin.ts";
-import { chatGptSharingLimitResetAt } from "../codexUsageLimits.ts";
+import { chatGptSharingLimitReading } from "../codexUsageLimits.ts";
 import * as ServerConfig from "../../config.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import { makeCodexMcpManagement } from "../CodexMcp.ts";
@@ -404,12 +404,12 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     onUsageLimits: (update) => snapshot.applyUsageLimits(update),
     resolveRuntime: runtime.resolve,
     // Reading now also shows the stop on the Limits bar.
-    chatGptSharingLimitResetAt: snapshot.refresh.pipe(
+    chatGptSharingLimitReading: snapshot.refresh.pipe(
       Effect.timeoutOption("30 seconds"),
       Effect.flatMap((refreshed) =>
         Effect.map(DateTime.now, (now) =>
           Option.isSome(refreshed)
-            ? chatGptSharingLimitResetAt(refreshed.value.usageLimits, DateTime.toEpochMillis(now))
+            ? chatGptSharingLimitReading(refreshed.value.usageLimits, DateTime.toEpochMillis(now))
             : null,
         ),
       ),

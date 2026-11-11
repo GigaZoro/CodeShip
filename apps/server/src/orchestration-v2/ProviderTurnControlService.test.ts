@@ -212,6 +212,7 @@ it.effect(
         ProjectionStore.ProjectionStoreV2,
         ProjectionStore.ProjectionStoreV2.of({
           apply: () => Effect.void,
+          liftUsageLimitHolds: () => Effect.die("unused liftUsageLimitHolds"),
           getScheduledTaskRecoveryState: () => Effect.die("unused"),
           getLimitRecoveryCandidates: () => Effect.die("unused getLimitRecoveryCandidates"),
           getSignedOutFailoverCandidates: () => Effect.die("unused getSignedOutFailoverCandidates"),

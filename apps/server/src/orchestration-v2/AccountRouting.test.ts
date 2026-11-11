@@ -392,6 +392,80 @@ it.effect.each([
 );
 
 it.effect.each([
+  {
+    name: "ChatGPT's app cap is tried again an hour after the refusal",
+    refusal: { resetAt: "2026-11-18T08:00:00.000Z", appCap: true as const },
+    at: "2026-11-08T00:30:00Z",
+    until: "2026-11-08T01:00:00.000Z",
+    estimated: true,
+  },
+  {
+    name: "ChatGPT's app cap holds no longer than the hour once the hour has passed",
+    refusal: { resetAt: "2026-11-18T08:00:00.000Z", appCap: true as const },
+    at: "2026-11-08T01:30:00Z",
+    until: undefined,
+    estimated: false,
+  },
+  {
+    name: "a plan limit with a read reset holds until it",
+    refusal: { resetAt: "2026-11-08T03:00:00.000Z" },
+    at: "2026-11-08T01:30:00Z",
+    until: "2026-11-08T03:00:00.000Z",
+    estimated: false,
+  },
+  {
+    name: "a plan limit with no reset holds on T3's guess",
+    refusal: { resetAt: null },
+    at: "2026-11-08T01:30:00Z",
+    until: "2026-11-08T05:00:00.000Z",
+    estimated: true,
+  },
+])("limits marks the end of a held account as read or estimated: $name", (row) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse(row.at));
+    const routing = yield* AccountRouting.AccountRouting;
+    const limits = yield* routing.limits;
+    assert.deepEqual([...limits.accounts], row.until === undefined ? [] : [[primary, row.until]]);
+    assert.deepEqual([...limits.estimated], row.estimated ? [primary] : []);
+  }).pipe(
+    Effect.provide(
+      AccountRouting.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            ServerSettings.layerTest(),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              getUsageLimitedProviderInstances: () =>
+                Effect.succeed(
+                  new Map([[primary, [{ refusedAt: "2026-11-08T00:00:00.000Z", ...row.refusal }]]]),
+                ),
+            }),
+            Layer.mock(ProviderRegistry.ProviderRegistry)({
+              getProviders: Effect.succeed([
+                provider(primary, {
+                  usageLimits: {
+                    checkedAt: "2026-11-08T00:00:00Z",
+                    windows: [
+                      {
+                        id: "secondary",
+                        kind: "weekly",
+                        label: "Weekly",
+                        usedPercent: 27,
+                        resetsAt: "2026-11-18T08:00:00.000Z",
+                        windowDurationMins: 10080,
+                      },
+                    ],
+                  },
+                }),
+              ]),
+            }),
+          ),
+        ),
+      ),
+    ),
+  ),
+);
+
+it.effect.each([
   { name: "no reporting holds Auto and named launches", minutes: 1, limited: true },
   { name: "no reporting recovers at five hours", minutes: 300, limited: false },
   { name: "unavailable reporting recovers", minutes: 301, limited: false, unavailable: true },

@@ -70,14 +70,31 @@ export function completedRunLiftsScope(
   };
 }
 
+/**
+ * ChatGPT's connected-app cap resets with the week, but the owner or ChatGPT can lift it any time,
+ * and nothing says when. The account is held an hour, then its next turn tries it again.
+ */
+const APP_CAP_RETRY_MS = 60 * 60_000;
+
+/** When a limit stops holding, and whether that time is a guess rather than one the provider read. */
+interface LimitEnd {
+  readonly end: number;
+  readonly estimated: boolean;
+}
+
 /** When a refusal stops holding: its reset, else the hold from the refusal. */
 function recordedUsageLimitEnd(
   provider: ServerProvider,
   refusal: ProjectionStore.RecordedUsageLimit,
-): number {
+): LimitEnd {
+  const refusedAt = Date.parse(refusal.refusedAt);
+  if (refusal.appCap === true) {
+    const reset = refusal.resetAt === null ? Infinity : Date.parse(refusal.resetAt);
+    return { end: Math.min(reset, refusedAt + APP_CAP_RETRY_MS), estimated: true };
+  }
   return refusal.resetAt === null
-    ? Date.parse(refusal.refusedAt) + usageHoldMs(provider.usageLimits)
-    : Date.parse(refusal.resetAt);
+    ? { end: refusedAt + usageHoldMs(provider.usageLimits), estimated: true }
+    : { end: Date.parse(refusal.resetAt), estimated: false };
 }
 
 /** Future ends of the refusals that hold `model`; a null model counts only account-wide ones. */
@@ -86,12 +103,12 @@ function refusalEnds(
   refusals: ReadonlyArray<ProjectionStore.RecordedUsageLimit>,
   nowMs: number,
   model: string | null,
-): Array<number> {
+): Array<LimitEnd> {
   return refusals.flatMap((refusal) => {
     if (refusal.modelScope !== undefined && !usageScopeCoversModel(refusal.modelScope, model))
       return [];
     const end = recordedUsageLimitEnd(provider, refusal);
-    return end > nowMs ? [end] : [];
+    return end.end > nowMs ? [end] : [];
   });
 }
 
@@ -100,7 +117,25 @@ function windowLimitEnd(provider: ServerProvider, nowMs: number, model: string |
   const window = exhaustedUsageWindow(provider, nowMs, model);
   return window === undefined || provider.usageLimits === undefined
     ? null
-    : usageWindowLimitEnd(provider.usageLimits, window);
+    : {
+        end: usageWindowLimitEnd(provider.usageLimits, window),
+        estimated: window.resetsAt === undefined,
+      };
+}
+
+/** The last refusal or used-up window holding `model` (omitted: account-wide), or null if none does. */
+function accountLimitDetail(
+  provider: ServerProvider,
+  recorded: AccountRoutingContext["recordedLimits"],
+  nowMs: number,
+  model?: string,
+): LimitEnd | null {
+  if (!isSubscriptionAccount(provider)) return null;
+  const canonical = model === undefined ? null : canonicalModel(provider, model);
+  const ends = refusalEnds(provider, recorded.get(provider.instanceId) ?? [], nowMs, canonical);
+  const windowEnd = windowLimitEnd(provider, nowMs, canonical);
+  if (windowEnd !== null) ends.push(windowEnd);
+  return ends.length === 0 ? null : ends.reduce((last, end) => (end.end > last.end ? end : last));
 }
 
 /** When the last refusal or used-up window holding `model` (omitted: account-wide) ends, or null if none does. */
@@ -110,12 +145,7 @@ function accountLimitEnd(
   nowMs: number,
   model?: string,
 ): number | null {
-  if (!isSubscriptionAccount(provider)) return null;
-  const canonical = model === undefined ? null : canonicalModel(provider, model);
-  const ends = refusalEnds(provider, recorded.get(provider.instanceId) ?? [], nowMs, canonical);
-  const windowEnd = windowLimitEnd(provider, nowMs, canonical);
-  if (windowEnd !== null) ends.push(windowEnd);
-  return ends.length === 0 ? null : Math.max(...ends);
+  return accountLimitDetail(provider, recorded, nowMs, model)?.end ?? null;
 }
 
 function accountLimit(
@@ -360,8 +390,15 @@ export class AccountRouting extends Context.Service<
     /** Account-wide usage limits, ending at the provider reset or T3 hold end. */
     readonly limits: Effect.Effect<{
       readonly accounts: ReadonlyMap<ProviderInstanceId, string>;
+      /** Accounts in `accounts` whose end is T3's guess, not a reset the provider read. */
+      readonly estimated: ReadonlySet<ProviderInstanceId>;
       readonly models: ReadonlyMap<ProviderInstanceId, ReadonlySet<string>>;
     }>;
+    /**
+     * Ends the recorded holds of an account, so its next turn tries it again. A refusal after this
+     * holds it again.
+     */
+    readonly retryAccount: (instanceId: ProviderInstanceId) => Effect.Effect<void>;
     /** The usage-limited account a new thread on `selection` would start on, or null if it has room. */
     readonly launchLimit: (input: {
       readonly selection: ModelSelection;
@@ -421,11 +458,14 @@ export const layer = Layer.effect(
         const providers = yield* providerRegistry.getProviders;
         const recorded = yield* readLimits(now, providers);
         const limited = new Map<ProviderInstanceId, string>();
+        const estimated = new Set<ProviderInstanceId>();
         const models = new Map<ProviderInstanceId, ReadonlySet<string>>();
         for (const provider of providers) {
-          const limit = accountLimit(provider, recorded, DateTime.toEpochMillis(now));
-          if (limit !== null) limited.set(provider.instanceId, limit.limitedUntil);
-          else
+          const detail = accountLimitDetail(provider, recorded, DateTime.toEpochMillis(now));
+          if (detail !== null) {
+            limited.set(provider.instanceId, DateTime.formatIso(DateTime.makeUnsafe(detail.end)));
+            if (detail.estimated) estimated.add(provider.instanceId);
+          } else
             models.set(
               provider.instanceId,
               new Set(
@@ -443,7 +483,10 @@ export const layer = Layer.effect(
               ),
             );
         }
-        return { accounts: limited, models };
+        return { accounts: limited, estimated, models };
+      }),
+      retryAccount: Effect.fn("AccountRouting.retryAccount")(function* (instanceId) {
+        yield* projections.liftUsageLimitHolds(instanceId, yield* DateTime.now).pipe(Effect.orDie);
       }),
       launchLimit: Effect.fn("AccountRouting.launchLimit")(
         function* (input) {

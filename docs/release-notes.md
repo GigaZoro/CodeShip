@@ -1,3 +1,9 @@
+## 2026-11-11 — ChatGPT's app limit is named, and a stopped Codex account is tried again
+
+- When ChatGPT stops a Codex account that connects through ChatGPT while the plan still has room (the account's windows show none used up), the thread now says "ChatGPT's app limit stopped this account" with the plan's remaining percent, instead of a plain usage limit. No ChatGPT setting lifts this limit; the message points to signing the account in with Codex's own login.
+- Such an account is held for an hour and then tried again by the next turn, instead of until the plan's weekly reset. **Try again** in the thread's banner releases the account at once.
+- `orchestrator_capabilities` marks `limitedUntilEstimated` when an account's `limitedUntil` is T3.CodeShip's guess and not a reset ChatGPT or the provider reported.
+
 ## 2026-11-11 — Updates install when idle on a Mac with every window closed
 
 - **Install updates automatically when idle** worked only while a CodeShip window was open. On a Mac the app keeps running after its last window closes, so a closed window meant no update installed until someone opened one. With every window closed, the app now downloads a found update and installs it once no chat is answering and no background work would be cut, checked again right before the restart. With a window open nothing changes, and the update button still shows the wait.

@@ -891,7 +891,7 @@ describe("CodexAdapterV2 session initialize", () => {
     transcript: CodexReplay.CodexAppServerReplayTranscript,
     beforeEmitInbound?: CodexReplay.CodexAppServerReplayDriver["beforeEmitInbound"],
     compatibility?: CodexAdapterV2.CodexAdapterV2Options["compatibility"],
-    chatGptSharingLimitResetAt?: Effect.Effect<string | null>,
+    chatGptSharingLimitReading?: CodexAdapterV2.CodexAdapterV2Options["chatGptSharingLimitReading"],
     openError?: unknown,
   ) =>
     Effect.gen(function* () {
@@ -905,7 +905,7 @@ describe("CodexAdapterV2 session initialize", () => {
         settings: DEFAULT_CODEX_SETTINGS,
         environment: {},
         ...(compatibility === undefined ? {} : { compatibility }),
-        ...(chatGptSharingLimitResetAt === undefined ? {} : { chatGptSharingLimitResetAt }),
+        ...(chatGptSharingLimitReading === undefined ? {} : { chatGptSharingLimitReading }),
         clientFactory: {
           open: (openInput) =>
             openError !== undefined
@@ -1175,7 +1175,9 @@ describe("CodexAdapterV2 session initialize", () => {
                   ),
                 )
             : undefined,
-          Effect.succeed(resetAt),
+          Effect.succeed(
+            resetAt === null ? null : { resetAt, appCap: false, remainingPercent: null },
+          ),
           stage === "openSession"
             ? new CodexError.CodexAppServerRequestError({
                 code: -32000,
@@ -1207,6 +1209,54 @@ describe("CodexAdapterV2 session initialize", () => {
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
         ),
       ),
+  );
+
+  it.effect.each([
+    {
+      name: "with room in the plan",
+      reading: { resetAt: "2099-01-08T00:00:00.000Z", appCap: true, remainingPercent: 73 },
+    },
+    { name: "without a reset", reading: { resetAt: null, appCap: true, remainingPercent: null } },
+    {
+      name: "with an exhausted plan window",
+      reading: { resetAt: "2099-01-01T05:00:00.000Z", appCap: false, remainingPercent: 0 },
+    },
+  ])("names ChatGPT's app cap only for a sharing stop $name", ({ reading }) =>
+    Effect.gen(function* () {
+      const code = "subscription_sharing_usage_limit_exceeded";
+      const failure = yield* openReplaySession(
+        makeCodexReplayTranscript({
+          scenario: "usage-refusal",
+          entries: [
+            ...replayPreamble("usage-refusal").slice(0, 4),
+            {
+              type: "emit_inbound",
+              label: "thread/start",
+              frame: { id: 2, error: { code: -32000, message: code } },
+            },
+          ],
+        }),
+        undefined,
+        undefined,
+        Effect.succeed(reading),
+      ).pipe(
+        Effect.flatMap((session) => session.ensureThread("usage-refusal")),
+        Effect.flip,
+      );
+      const recorded = makeProviderFailure({ cause: failure });
+      assert.equal(recorded.class, "usage_limit");
+      assert.equal(recorded.code, reading.appCap ? "chatgpt_app_cap" : code);
+      assert.equal(recorded.resetAt ?? null, reading.resetAt);
+      if (reading.appCap) {
+        assert.include(recorded.message, "ChatGPT's connected-app limit");
+        assert.equal(recorded.message.includes("73%"), reading.remainingPercent === 73);
+      }
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
   );
 
   it.effect("refuses to open a session on a Codex version marked broken", () =>
@@ -1332,7 +1382,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     onNotification: (method: string) => Effect.Effect<void> = () => Effect.void,
     beforeEmitInbound?: CodexReplay.CodexAppServerReplayDriver["beforeEmitInbound"],
     onUsageLimits?: CodexAdapterV2.CodexAdapterV2Options["onUsageLimits"],
-    chatGptSharingLimitResetAt?: CodexAdapterV2.CodexAdapterV2Options["chatGptSharingLimitResetAt"],
+    chatGptSharingLimitReading?: CodexAdapterV2.CodexAdapterV2Options["chatGptSharingLimitReading"],
   ) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -1408,7 +1458,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         clientFactory,
         crypto: yield* Crypto.Crypto,
         ...(onUsageLimits ? { onUsageLimits } : {}),
-        ...(chatGptSharingLimitResetAt ? { chatGptSharingLimitResetAt } : {}),
+        ...(chatGptSharingLimitReading ? { chatGptSharingLimitReading } : {}),
         fileSystem,
         idAllocator,
         serverConfig,
@@ -5930,7 +5980,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           undefined,
           undefined,
           () => Deferred.succeed(snapshotReceipt, undefined),
-          "sharingResetAt" in scenario ? Effect.succeed(scenario.sharingResetAt) : undefined,
+          "sharingResetAt" in scenario
+            ? Effect.succeed({
+                resetAt: scenario.sharingResetAt,
+                appCap: false,
+                remainingPercent: null,
+              })
+            : undefined,
         );
         yield* harness.runtime.startTurn(
           makeCodexTestTurnInput({

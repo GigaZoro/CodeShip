@@ -5361,6 +5361,46 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           ],
         ],
       );
+      // Try again lifts the refusals recorded so far; a refusal after it would hold again.
+      const liftSql = yield* SqlClient.SqlClient;
+      yield* store.liftUsageLimitHolds(
+        providerInstanceId,
+        DateTime.add(limitItem.updatedAt, { seconds: 1 }),
+      );
+      assert.deepEqual([...(yield* store.getUsageLimitedProviderInstances(now, coversScope))], []);
+      yield* liftSql`DELETE FROM orchestration_v2_usage_limit_lifts`;
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:app-cap"),
+        type: "turn-item.updated",
+        threadId,
+        runId: original.id,
+        nodeId: original.rootNodeId!,
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: { ...limitItem, failure: { ...limitItem.failure, code: "chatgpt_app_cap" } },
+      });
+      assert.deepEqual(
+        (yield* store.getUsageLimitedProviderInstances(now, coversScope)).get(providerInstanceId),
+        [
+          {
+            resetAt: limitItem.failure.resetAt,
+            refusedAt: DateTime.formatIso(limitItem.updatedAt),
+            appCap: true,
+          },
+        ],
+      );
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:app-cap-cleared"),
+        type: "turn-item.updated",
+        threadId,
+        runId: original.id,
+        nodeId: original.rootNodeId!,
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: { ...limitItem, failure: { ...limitItem.failure, resetAt: undefined } },
+      });
       // An unknown reset holds for at most usageHoldMs, so the read stops returning it then.
       const holdEnd = DateTime.add(limitItem.updatedAt, { milliseconds: usageHoldMs(undefined) });
       assert.isTrue(

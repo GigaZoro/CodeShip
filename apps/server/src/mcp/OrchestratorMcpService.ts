@@ -2722,6 +2722,7 @@ const make = Effect.gen(function* () {
       const availability = Option.isNone(accountRouting)
         ? {
             accounts: new Map<ProviderInstanceId, string>(),
+            estimated: new Set<ProviderInstanceId>(),
             models: new Map<ProviderInstanceId, ReadonlySet<string>>(),
           }
         : yield* accountRouting.value.limits;
@@ -2800,6 +2801,9 @@ const make = Effect.gen(function* () {
             constraints: [...constraints],
             ...(limitedUntil === undefined ? {} : { usageLimited: true as const }),
             ...(limitedUntil == null ? {} : { limitedUntil }),
+            ...(limitedUntil != null && availability.estimated.has(provider.instanceId)
+              ? { limitedUntilEstimated: true as const }
+              : {}),
           };
         }),
         features: {

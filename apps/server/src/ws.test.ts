@@ -106,6 +106,7 @@ import * as TerminalManager from "./terminal/Manager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadSearch from "./orchestration-v2/ThreadSearch.ts";
 import * as HtmlRenderLibrary from "./htmlRender/HtmlRenderLibrary.ts";
+import * as AccountRouting from "./orchestration-v2/AccountRouting.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as DetectedManualSteps from "./provider/DetectedManualSteps.ts";
 import * as ManualStepReviews from "./threadPage/ManualStepReviews.ts";
@@ -676,6 +677,7 @@ it.effect.each(["pending", "cached"] as const)(
           streamChanges: Stream.never,
         }),
         Layer.mock(UsageLimitSources.UsageLimitSources)({ streamChanges: Stream.make([]) }),
+        Layer.mock(AccountRouting.AccountRouting)({}),
         Layer.mock(ThreadPageManualSteps.ThreadPageManualSteps)({}),
         Layer.mock(DetectedManualSteps.DetectedManualSteps)({}),
         Layer.mock(ManualStepReviews.ManualStepReviews)({}),
@@ -875,6 +877,7 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
         ),
         refreshWorkspaceSnapshot: () => Effect.succeed([provider]),
       }),
+      Layer.mock(AccountRouting.AccountRouting)({}),
       Layer.mock(UsageLimitSources.UsageLimitSources)({
         current: Effect.succeed([]),
         streamChanges: Stream.make([]),

@@ -205,16 +205,26 @@ export function codexUsageLimitResetAt(
   );
 }
 
+export interface ChatGptSharingLimitReading {
+  /** The windows' reset, or null when no reading shows one. */
+  readonly resetAt: string | null;
+  /** The stop was ChatGPT's connected-app cap: the reading shows no exhausted window. */
+  readonly appCap: boolean;
+  /** What the plan has left of its fullest window, when the reading has one. */
+  readonly remainingPercent: number | null;
+}
+
 /**
  * A ChatGPT-shared account spends its plan's Codex allowance, so a stop resets with the windows it
- * exhausted. With none exhausted, the stop was the app's own cap, a share of the weekly allowance
- * that resets with the week. Without a reading the reset is unknown.
+ * exhausted. With none exhausted, the stop was ChatGPT's connected-app cap, which resets with the
+ * week and which the plan's own room does not lift. Without a reading the reset is unknown.
  */
-export function chatGptSharingLimitResetAt(
+export function chatGptSharingLimitReading(
   limits: ServerProviderUsageLimits | undefined,
   nowMs: number,
-): string | null {
-  const upcoming = (limits?.windows ?? []).filter(
+): ChatGptSharingLimitReading {
+  const windows = limits?.windows ?? [];
+  const upcoming = windows.filter(
     (window) => window.resetsAt !== undefined && Date.parse(window.resetsAt) > nowMs,
   );
   const exhausted = upcoming.filter((window) => window.usedPercent >= 100);
@@ -223,5 +233,14 @@ export function chatGptSharingLimitResetAt(
   )
     .map((window) => window.resetsAt!)
     .toSorted((left, right) => Date.parse(right) - Date.parse(left));
-  return resets[0] ?? null;
+  const weekly = windows.filter((window) => window.kind === "weekly");
+  const measured = weekly.length > 0 ? weekly : windows;
+  return {
+    resetAt: resets[0] ?? null,
+    appCap: windows.length > 0 && exhausted.length === 0,
+    remainingPercent:
+      measured.length === 0
+        ? null
+        : Math.max(0, Math.round(100 - Math.max(...measured.map((window) => window.usedPercent)))),
+  };
 }

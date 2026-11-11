@@ -118,6 +118,7 @@ import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as ProviderRuntimeRecovery from "./orchestration-v2/ProviderRuntimeRecoveryService.ts";
+import * as AccountRouting from "./orchestration-v2/AccountRouting.ts";
 import * as ThreadManagementService from "./orchestration-v2/ThreadManagementService.ts";
 import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
 import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
@@ -1371,6 +1372,7 @@ export const layerWsRpc = (
             );
       const usage = yield* UsageService.UsageService;
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
+      const accountRouting = yield* AccountRouting.AccountRouting;
       const manualSteps = yield* ThreadPageManualSteps.ThreadPageManualSteps;
       const detectedManualSteps = yield* DetectedManualSteps.DetectedManualSteps;
       const manualStepReviews = yield* ManualStepReviews.ManualStepReviews;
@@ -2562,6 +2564,8 @@ export const layerWsRpc = (
             );
             return { outcome };
           }),
+        [WS_METHODS.providerRetryUsageLimit]: (input) =>
+          accountRouting.retryAccount(input.instanceId).pipe(Effect.as({})),
         [WS_METHODS.providerAuthStart]: (input) => providerAuth.start(input, currentSessionId),
         [WS_METHODS.providerAuthRespond]: (input) =>
           Effect.annotateCurrentSpan({ instanceId: input.instanceId }).pipe(

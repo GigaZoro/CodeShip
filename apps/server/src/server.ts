@@ -764,6 +764,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
       Keybindings.layer,
       EnvironmentTheme.layer,
       UsageLimitSources.layer,
+      AccountRouting.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
       ThreadPageManualSteps.layer,
       DetectedManualSteps.layer,
     ),

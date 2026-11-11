@@ -97,6 +97,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
 import { MCP_APP_OUTPUT_KEY } from "@t3tools/shared/mcpApp";
+import { CHATGPT_APP_CAP_CODE } from "@t3tools/shared/usageLimits";
 import { threadHtmlRenderAttachmentIds } from "../attachmentStore.ts";
 import {
   isThreadHistoryUserTurn,
@@ -601,6 +602,14 @@ export interface ProjectionStoreV2Shape {
     ReadonlyMap<ProviderInstanceId, ReadonlyArray<RecordedUsageLimit>>,
     ProjectionStoreV2Error
   >;
+  /**
+   * Ends the hold of every refusal recorded on the account up to `now`, so its next turn runs. A
+   * refusal after `now` holds again.
+   */
+  readonly liftUsageLimitHolds: (
+    instanceId: ProviderInstanceId,
+    now: DateTime.Utc,
+  ) => Effect.Effect<void, ProjectionStoreV2Error>;
   /** Epoch ms of the next armed reset or snooze end after `now`, when a waiting thread becomes a candidate. */
   readonly getLimitRecoveryWakeAt: (
     now: DateTime.Utc,
@@ -784,6 +793,8 @@ type ProjectionWindow = Omit<
 export interface RecordedUsageLimit {
   readonly resetAt: string | null;
   readonly refusedAt: string;
+  /** ChatGPT's connected-app cap stopped it, so the plan's own room does not end the hold. */
+  readonly appCap?: true;
   /** The model family the refusal limits, such as `opus`; absent when it limits the whole account. */
   readonly modelScope?: string;
 }
@@ -4319,6 +4330,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       return refusals.filter((refusal) => !held.has(refusal));
     });
 
+    const liftUsageLimitHolds = Effect.fn("ProjectionStore.liftUsageLimitHolds")(
+      function* (instanceId: ProviderInstanceId, now: DateTime.Utc) {
+        yield* sql`
+          INSERT INTO orchestration_v2_usage_limit_lifts (provider_instance_id, lifted_at)
+          VALUES (${instanceId}, ${DateTime.formatIso(now)})
+          ON CONFLICT (provider_instance_id) DO UPDATE SET lifted_at = excluded.lifted_at
+        `;
+      },
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
     const getUsageLimitedProviderInstances = Effect.fn(
       "ProjectionStore.getUsageLimitedProviderInstances",
     )(
@@ -4331,6 +4353,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           readonly provider_instance_id: string;
           readonly reset_at: string | null;
           readonly refused_at: string;
+          readonly code: string | null;
           readonly model_scope: string | null;
         }>`
           WITH refusals AS (
@@ -4359,6 +4382,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             SELECT COALESCE(attempt.provider_instance_id, r.provider_instance_id) AS provider_instance_id,
               json_extract(refusal.payload_json, '$.failure.resetAt') AS reset_at,
               json_extract(refusal.payload_json, '$.updatedAt') AS refused_at,
+              json_extract(refusal.payload_json, '$.failure.code') AS code,
               json_extract(refusal.payload_json, '$.failure.modelScope') AS model_scope
             FROM refusals refusal
             INNER JOIN orchestration_v2_projection_runs r ON r.run_id = refusal.run_id
@@ -4379,6 +4403,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             ) AS priority
             FROM limited
             WHERE provider_instance_id IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM orchestration_v2_usage_limit_lifts lift
+                WHERE lift.provider_instance_id = limited.provider_instance_id
+                  AND julianday(lift.lifted_at) >= julianday(limited.refused_at)
+              )
               AND (model_scope IS NOT NULL OR NOT EXISTS (
                 SELECT 1 FROM orchestration_v2_projection_runs later
                 WHERE later.provider_instance_id = limited.provider_instance_id
@@ -4388,7 +4417,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     > julianday(limited.refused_at)
               ))
           )
-          SELECT provider_instance_id, reset_at, refused_at, model_scope
+          SELECT provider_instance_id, reset_at, refused_at, code, model_scope
           FROM held WHERE priority = 1
         `;
         const scopedRefusals = Map.groupBy(
@@ -4408,10 +4437,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         for (const row of rows) {
           if (lifted.has(row)) continue;
           const instanceId = ProviderInstanceId.make(row.provider_instance_id);
-          const refusal: RecordedUsageLimit =
-            row.model_scope === null
-              ? { resetAt: row.reset_at, refusedAt: row.refused_at }
-              : { resetAt: row.reset_at, refusedAt: row.refused_at, modelScope: row.model_scope };
+          const refusal: RecordedUsageLimit = {
+            resetAt: row.reset_at,
+            refusedAt: row.refused_at,
+            ...(row.code === CHATGPT_APP_CAP_CODE ? { appCap: true as const } : {}),
+            ...(row.model_scope === null ? {} : { modelScope: row.model_scope }),
+          };
           limited.set(instanceId, [...(limited.get(instanceId) ?? []), refusal]);
         }
         return limited;
@@ -7713,6 +7744,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getLimitRecoveryCandidates: readOnReader(getLimitRecoveryCandidates),
       getSignedOutFailoverCandidates: readOnReader(getSignedOutFailoverCandidates),
       getUsageLimitedProviderInstances: readOnReader(getUsageLimitedProviderInstances),
+      liftUsageLimitHolds,
       getLimitRecoveryWakeAt: readOnReader(getLimitRecoveryWakeAt),
       getNetworkRecoveryCandidates: readOnReader(getNetworkRecoveryCandidates),
       getRecoveryThreadIds: readOnReader(getRecoveryThreadIds),

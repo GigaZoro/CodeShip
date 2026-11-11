@@ -1864,6 +1864,7 @@ const catalog: MessageCatalog = {
   "Account {number}": "Обліковий запис {number}",
   "Account name": "Назва облікового запису",
   "Account order": "Порядок облікових записів",
+  "Account released": "Обліковий запис розблоковано",
   "Account removed": "Обліковий запис видалено",
   "Account-specific home sharing the Codex state above.":
     "Домашня папка облікового запису, що ділить стан Codex зверху.",
@@ -2943,6 +2944,8 @@ const catalog: MessageCatalog = {
   "ChatGPT sign-in redirect URL": "URL перенаправлення входу в ChatGPT",
   "ChatGPT token sharing is active": "Спільне використання токенів ChatGPT активне",
   "ChatGPT usage limit reached": "Досягнуто ліміту використання ChatGPT",
+  "ChatGPT's app limit stopped this account":
+    "Ліміт застосунків ChatGPT зупинив цей обліковий запис",
   check: "перевірити",
   "Check {provider}'s MCP servers again": "Перевірити MCP-сервери {provider} знову",
   "Check access before saving": "Перевірте доступ перед збереженням",
@@ -4263,6 +4266,7 @@ const catalog: MessageCatalog = {
   "Could not refresh plugins": "Не вдалося оновити плагіни",
   "Could not regenerate title": "Не вдалося перегенерувати назву",
   "Could not register the capture shortcut.": "Не вдалося зареєструвати скорочення захоплення.",
+  "Could not release the account": "Не вдалося розблокувати обліковий запис",
   "Could not remove {path}. {error}": "Не вдалося видалити {path}. {error}",
   "Could not remove {server}": "Не вдалося видалити {server}",
   "Could not remove backend": "Не вдалося видалити бекенд",
@@ -10201,6 +10205,8 @@ const catalog: MessageCatalog = {
   "Send a message to decline and redirect the agent":
     "Надішліть повідомлення, щоб відхилити й перенаправити агента",
   "Send a message to start the conversation.": "Надішліть повідомлення, щоб почати розмову.",
+  "Send a message to try the account again.":
+    "Надішліть повідомлення, щоб спробувати обліковий запис знову.",
   "Send activity from this environment to your mobile clients for push notifications and Live Activities.":
     "Надсилайте активність із цього середовища на мобільні клієнти для push-сповіщень і Live Activities.",
   "Send activity to mobile notifications and Live Activities without T3 Connect.":
@@ -11763,6 +11769,8 @@ const catalog: MessageCatalog = {
   "The pending task could not be removed.": "Не вдалося вилучити завдання в очікуванні.",
   "The people with access could not be read.": "Не вдалося прочитати список людей із доступом.",
   "The photo library is unavailable right now.": "Бібліотека фото зараз недоступна.",
+  "The plan still has room, and no ChatGPT setting lifts this limit. Try again, or sign the account in with Codex's own login. CodeShip tries it again by itself every hour.":
+    "У тарифі ще є запас, а жоден параметр ChatGPT цей ліміт не знімає. Спробуйте ще раз або увійдіть в обліковий запис через власний вхід Codex. CodeShip сам пробує знову щогодини.",
   "The previous request may already be running. Check its thread first. Allow another send that could create a duplicate thread?":
     "Попередній запит, можливо, уже виконується. Спершу перевірте його чат. Дозволити ще одну відправку, яка може створити дубльований чат?",
   "the primary environment": "основне середовище",

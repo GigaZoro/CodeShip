@@ -415,7 +415,12 @@ it.effect("starts a new thread on another account when the task's account is out
         accountsWithRoom: () => Effect.succeed([]),
         route: (input) => Effect.succeed(input.selection),
         failoverLaunch: (input) => Effect.succeed({ ...input.selection, instanceId: spare }),
-        limits: Effect.succeed({ accounts: new Map(), models: new Map() }),
+        limits: Effect.succeed({
+          accounts: new Map(),
+          estimated: new Set<never>(),
+          models: new Map(),
+        }),
+        retryAccount: () => Effect.void,
         launchLimit: () => Effect.succeed(null),
       }),
     );

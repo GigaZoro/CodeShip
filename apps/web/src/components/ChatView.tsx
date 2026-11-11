@@ -470,6 +470,9 @@ export default function ChatView(props: ChatViewProps) {
   const interruptThreadTurn = useOrchestrationCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
+  const retryUsageLimit = useAtomCommand(serverEnvironment.retryUsageLimit, {
+    reportFailure: false,
+  });
   const loadEarlierThreadHistory = useAtomCommand(threadEnvironment.loadEarlierHistory, {
     label: "load earlier thread history",
     reportFailure: false,
@@ -2571,6 +2574,17 @@ export default function ChatView(props: ChatViewProps) {
           recovery: activeThreadShell.limitRecovery ?? null,
           snoozedUntil: activeThreadShell.snoozedUntil,
           timestampFormat,
+          ...(activeRuntime?.providerInstanceId
+            ? {
+                onRetryAccount: async () => {
+                  const result = await retryUsageLimit({
+                    environmentId,
+                    input: { instanceId: activeRuntime.providerInstanceId },
+                  });
+                  if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+                },
+              }
+            : {}),
           onChange: async (limitRecovery) => {
             const result = await updateThreadMetadata({
               environmentId,

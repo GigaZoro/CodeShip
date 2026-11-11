@@ -6,6 +6,7 @@ import {
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { deadlineStore } from "@t3tools/client-runtime/clock";
 import {
+  CHATGPT_APP_CAP_CODE,
   CHATGPT_USAGE_LIMIT_CODE,
   CHATGPT_WORKSPACE_USAGE_LIMIT_CODE,
 } from "@t3tools/shared/usageLimits";
@@ -30,13 +31,16 @@ type RecoveryProps = {
   recovery: OrchestrationV2LimitRecovery | null;
   timestampFormat: TimestampFormat;
   onChange: (recovery: OrchestrationV2LimitRecoveryUpdate) => Promise<void>;
+  /** Ends the account's hold so its next turn tries it again; absent when the account is unknown. */
+  onRetryAccount?: () => Promise<void>;
 };
 
 export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBannerStackItem {
   const { runId, errorCode, resetAt, stoppedAt, timestampFormat } = props;
   const canSchedule = resetAt !== null && Date.parse(resetAt) > Date.parse(stoppedAt);
   const workspaceLimit = errorCode === CHATGPT_WORKSPACE_USAGE_LIMIT_CODE;
-  const chatGptLimit = workspaceLimit || errorCode === CHATGPT_USAGE_LIMIT_CODE;
+  const appCap = errorCode === CHATGPT_APP_CAP_CODE;
+  const chatGptLimit = workspaceLimit || appCap || errorCode === CHATGPT_USAGE_LIMIT_CODE;
   const recoveryActions = canSchedule ? (
     <RecoveryActions key={`${runId}:${resetAt}`} {...props} />
   ) : null;
@@ -51,6 +55,23 @@ export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBann
       title: t("Usage limit reached"),
       description: resetDescription,
       actions: recoveryActions,
+    };
+  }
+  if (appCap) {
+    return {
+      id: `usage-limit-recovery:${runId}`,
+      variant: "warning",
+      icon: <OpenAI aria-hidden="true" />,
+      title: t("ChatGPT's app limit stopped this account"),
+      description: t(
+        "The plan still has room, and no ChatGPT setting lifts this limit. Try again, or sign the account in with Codex's own login. CodeShip tries it again by itself every hour.",
+      ),
+      actions: (
+        <>
+          {props.onRetryAccount ? <RetryAccountButton onRetry={props.onRetryAccount} /> : null}
+          {recoveryActions}
+        </>
+      ),
     };
   }
   // OpenAI's partner guidelines specify this ChatGPT notice and its actions.
@@ -75,6 +96,38 @@ export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBann
       </>
     ),
   };
+}
+
+function RetryAccountButton({ onRetry }: { readonly onRetry: () => Promise<void> }) {
+  const [pending, setPending] = useState(false);
+  return (
+    <Button
+      size="xs"
+      variant="ghost"
+      disabled={pending}
+      onClick={() => {
+        setPending(true);
+        onRetry()
+          .then(() =>
+            toastManager.add({
+              type: "success",
+              title: t("Account released"),
+              description: t("Send a message to try the account again."),
+            }),
+          )
+          .catch((cause: unknown) =>
+            toastManager.add({
+              type: "error",
+              title: t("Could not release the account"),
+              description: cause instanceof Error ? cause.message : t("An error occurred."),
+            }),
+          )
+          .finally(() => setPending(false));
+      }}
+    >
+      {pending ? t("Saving...") : t("Try again")}
+    </Button>
+  );
 }
 
 function RecoveryActions({ runId, resetAt, recovery, snoozedUntil, onChange }: RecoveryProps) {

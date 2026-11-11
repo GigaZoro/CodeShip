@@ -1,5 +1,6 @@
 import type { OrchestrationV2ProviderFailureClass } from "@t3tools/contracts";
 import {
+  CHATGPT_APP_CAP_CODE,
   CHATGPT_USAGE_LIMIT_CODE,
   CHATGPT_WORKSPACE_ADMIN_REQUEST,
   CHATGPT_WORKSPACE_USAGE_LIMIT_CODE,
@@ -83,7 +84,8 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
 }) {
   if (!error) return null;
   const workspaceLimit = errorCode === CHATGPT_WORKSPACE_USAGE_LIMIT_CODE;
-  const chatGptLimit = workspaceLimit || errorCode === CHATGPT_USAGE_LIMIT_CODE;
+  const appCap = errorCode === CHATGPT_APP_CAP_CODE;
+  const chatGptLimit = workspaceLimit || appCap || errorCode === CHATGPT_USAGE_LIMIT_CODE;
   const variant = errorClass === "usage_limit" || chatGptLimit ? "warning" : "error";
   return (
     <div className="pointer-events-auto mx-auto w-fit max-w-[min(48rem,calc(100%-2rem))] pt-3">
@@ -96,7 +98,12 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
         <AlertDescription>
           {chatGptLimit ? (
             <div className="space-y-1">
-              <p className="font-medium">{t("ChatGPT usage limit reached")}</p>
+              <p className="font-medium">
+                {appCap
+                  ? t("ChatGPT's app limit stopped this account")
+                  : t("ChatGPT usage limit reached")}
+              </p>
+              {appCap ? <p>{getThreadErrorBannerMessage(error)}</p> : null}
               {workspaceLimit ? (
                 <p>
                   {t(

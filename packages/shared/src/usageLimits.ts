@@ -254,6 +254,13 @@ function withEffortOf(
 
 export const CHATGPT_USAGE_URL = "https://chatgpt.com/#settings/Usage";
 export const CHATGPT_USAGE_LIMIT_CODE = "subscription_sharing_usage_limit_exceeded";
+/**
+ * ChatGPT's own limit on a connected app's sign-in: the plan still has room, and no setting in
+ * ChatGPT lifts it. CodeShip records it when a sharing stop arrives with no exhausted window.
+ */
+export const CHATGPT_APP_CAP_CODE = "chatgpt_app_cap";
+export const isChatGptUsageLimitCode = (code: string | null | undefined) =>
+  code === CHATGPT_USAGE_LIMIT_CODE || code === CHATGPT_APP_CAP_CODE;
 /** A ChatGPT Business admin caps plan use in other apps; only the admin can raise it. */
 export const CHATGPT_WORKSPACE_USAGE_LIMIT_CODE =
   "subscription_sharing_workplace_individual_usage_limit_exceeded";

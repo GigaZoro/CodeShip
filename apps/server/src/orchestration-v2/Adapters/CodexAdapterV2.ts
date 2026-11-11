@@ -27,6 +27,7 @@ import {
   codexRateLimitsToUpdate,
   mergeCodexRateLimits,
   codexUsageLimitResetAt,
+  type ChatGptSharingLimitReading,
   type CodexRateLimitSnapshot,
 } from "../../provider/codexUsageLimits.ts";
 import {
@@ -42,6 +43,7 @@ import {
 } from "@t3tools/contracts";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import { AgentScope } from "@t3tools/shared/AgentScope";
+import { CHATGPT_APP_CAP_CODE } from "@t3tools/shared/usageLimits";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   COMPUTER_USE_TOOL_SOURCE,
@@ -1184,6 +1186,14 @@ function codexTurnFailure(
 
 const isCodexErrorInfo = Schema.is(CodexSchema.ServerNotification__CodexErrorInfo);
 
+function chatGptAppCapMessage(remainingPercent: number | null) {
+  const room =
+    remainingPercent === null
+      ? "The plan itself is not used up."
+      : `The plan itself has about ${remainingPercent}% left.`;
+  return `ChatGPT's connected-app limit stopped this account. ${room} No ChatGPT setting lifts it: sign the account in with Codex's own login instead, or use Try again once ChatGPT allows the sign-in.`;
+}
+
 function failureResetAt(
   failure: OrchestrationV2ProviderFailure,
   snapshot: CodexRateLimitSnapshot | undefined,
@@ -1671,7 +1681,7 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
     | "resolveRuntime"
     | "resolveBinaryPath"
     | "compatibility"
-    | "chatGptSharingLimitResetAt"
+    | "chatGptSharingLimitReading"
   > = {},
 ) {
   const clientFactory = yield* CodexAppServerClientFactory;
@@ -1724,7 +1734,7 @@ export interface CodexAdapterV2Options {
   readonly clientFactory: CodexAppServerClientFactoryShape;
   readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
   /** When a ChatGPT-shared account hits its usage limit: its reset, read now, or null if unknown. */
-  readonly chatGptSharingLimitResetAt?: Effect.Effect<string | null>;
+  readonly chatGptSharingLimitReading?: Effect.Effect<ChatGptSharingLimitReading | null>;
   readonly resolveRuntime?: Effect.Effect<CodexEffectiveRuntime, ProviderSetupError, Scope.Scope>;
   /** The program a session starts when no runtime is resolved; absent, `settings.binaryPath`. */
   readonly resolveBinaryPath?: Effect.Effect<string, ProviderSetupError, Scope.Scope>;
@@ -1755,12 +1765,25 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
   const { clientFactory, crypto, fileSystem, idAllocator, serverConfig } = adapterOptions;
   const continuationRequests = adapterOptions.continuationRequests;
 
-  const usageResetAt = Effect.fn("CodexAdapterV2.usageResetAt")(
-    (failure: OrchestrationV2ProviderFailure, snapshot: CodexRateLimitSnapshot | undefined) =>
-      isChatGptSharingLimit(failure) && adapterOptions.chatGptSharingLimitResetAt
-        ? adapterOptions.chatGptSharingLimitResetAt
-        : Effect.succeed(failureResetAt(failure, snapshot)),
-  );
+  /** Fills a usage-limit failure's reset, and names ChatGPT's connected-app cap when that was the stop. */
+  const limitedFailure = Effect.fn("CodexAdapterV2.limitedFailure")(function* (
+    failure: OrchestrationV2ProviderFailure,
+    snapshot: CodexRateLimitSnapshot | undefined,
+  ) {
+    if (!isChatGptSharingLimit(failure) || !adapterOptions.chatGptSharingLimitReading) {
+      return { ...failure, resetAt: failureResetAt(failure, snapshot) };
+    }
+    const reading = yield* adapterOptions.chatGptSharingLimitReading;
+    if (reading === null) return { ...failure, resetAt: null };
+    return reading.appCap
+      ? {
+          ...failure,
+          code: CHATGPT_APP_CAP_CODE,
+          message: chatGptAppCapMessage(reading.remainingPercent),
+          resetAt: reading.resetAt,
+        }
+      : { ...failure, resetAt: reading.resetAt };
+  });
 
   const startupFailure = Effect.fn("CodexAdapterV2.startupFailure")(function* <E>(
     providerSessionId: OrchestrationV2ProviderSession["id"],
@@ -1801,10 +1824,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           driver: CODEX_PROVIDER,
           providerSessionId,
           cause,
-          failure: makeProviderFailure({
-            ...failure,
-            resetAt: yield* usageResetAt(failure, snapshot),
-          }),
+          failure: makeProviderFailure(yield* limitedFailure(failure, snapshot)),
         });
       }
       nested = record && "cause" in record ? record.cause : undefined;
@@ -1981,9 +2001,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ),
           Effect.forkScoped,
         );
-        const terminalResetAt = (failure: OrchestrationV2ProviderFailure) =>
+        const terminalLimitedFailure = (failure: OrchestrationV2ProviderFailure) =>
           Ref.get(rateLimitSnapshot).pipe(
-            Effect.flatMap((snapshot) => usageResetAt(failure, snapshot)),
+            Effect.flatMap((snapshot) => limitedFailure(failure, snapshot)),
           );
         const limitedTurnItems = yield* Ref.make(
           new Map<ProviderThreadId, Extract<OrchestrationV2TurnItem, { type: "error" }>>(),
@@ -5932,7 +5952,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 status: terminalStatus,
                 failure:
                   failure.class === "usage_limit"
-                    ? { ...failure, resetAt: yield* terminalResetAt(failure) }
+                    ? yield* terminalLimitedFailure(failure)
                     : failure,
                 ...(input.providerRetry === undefined
                   ? {}
@@ -5967,10 +5987,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             event.status === "failed" && event.failure.class === "usage_limit"
               ? {
                   ...event,
-                  failure: {
-                    ...event.failure,
-                    resetAt: event.failure.resetAt ?? (yield* terminalResetAt(event.failure)),
-                  },
+                  failure:
+                    event.failure.resetAt == null
+                      ? yield* terminalLimitedFailure(event.failure)
+                      : event.failure,
                 }
               : event;
           yield* emitProviderEvent(current);

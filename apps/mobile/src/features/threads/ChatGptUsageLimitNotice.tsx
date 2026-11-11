@@ -1,6 +1,6 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
-  CHATGPT_USAGE_LIMIT_CODE,
+  isChatGptUsageLimitCode,
   CHATGPT_USAGE_URL,
   CHATGPT_WORKSPACE_ADMIN_REQUEST,
   CHATGPT_WORKSPACE_USAGE_LIMIT_CODE,
@@ -17,7 +17,7 @@ export function ChatGptUsageLimitNotice({ thread }: { thread: EnvironmentThreadS
   const [status, setStatus] = useState<"copied" | "copy-failed" | "open-failed" | null>(null);
   const code = thread.runtime?.lastErrorCode;
   const workspaceLimit = code === CHATGPT_WORKSPACE_USAGE_LIMIT_CODE;
-  if (thread.runtime?.status !== "failed" || (!workspaceLimit && code !== CHATGPT_USAGE_LIMIT_CODE))
+  if (thread.runtime?.status !== "failed" || (!workspaceLimit && !isChatGptUsageLimitCode(code)))
     return null;
   return (
     <View
