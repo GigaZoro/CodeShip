@@ -17,7 +17,10 @@ to everything else in `~/.claude`: CLAUDE.md, skills, settings, plugins, and pas
 sessions, so threads can move between accounts. Claude saves MCP servers with the
 login, so before Claude starts, T3.CodeShip copies the servers in `~/.claude.json`, such
 as ones added with `claude mcp add --scope user`, into each account. Each account
-signs in to those servers on its own. **Sign out** signs that account out; sign the
+signs in to those servers on its own. A server sign-in that renews itself every hour, such as
+ThreadPage's, is renewed by T3.CodeShip a few minutes before it ends, with `claude mcp get`, so
+the account's chats never renew it at the same moment. After the computer sleeps past that point, a
+chat that starts waits a few seconds for the renewal. **Sign out** signs that account out; sign the
 first provider out with `claude auth logout` in a terminal.
 
 A Claude sign-in expires on a schedule: the access token renews by itself, but the login stops

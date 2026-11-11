@@ -35,11 +35,21 @@ it.layer(NodeServices.layer)("materializeClaudeAccountHome", (it) => {
       yield* fs.makeDirectory(path.join(sharedHome, "backups"));
       yield* fs.makeDirectory(path.join(sharedHome, ".claude.json.lock"));
       yield* fs.makeDirectory(path.join(sharedHome, ".storage-write.lock"));
+      // Held by the main account's renewals while the account's folder is prepared.
+      const mcpRefreshLock = "mcp-refresh-threadpage_0123456789abcdef.lock.lock";
+      yield* fs.makeDirectory(path.join(sharedHome, mcpRefreshLock));
+      yield* fs.makeDirectory(path.join(sharedHome, ".oauth_refresh.lock"));
+      yield* fs.writeFileString(path.join(sharedHome, ".oauth_refresh.lock.owner"), "{}");
       yield* fs.makeDirectory(accountHome, { recursive: true });
       yield* fs.writeFileString(path.join(accountHome, "settings.json"), "account's own");
       yield* fs.symlink(path.join(root, "elsewhere"), path.join(accountHome, "CLAUDE.md"));
       const releasedLock = path.join(accountHome, ".storage-write.lock");
       yield* fs.symlink(path.join(sharedHome, "released.lock"), releasedLock);
+      const releasedRefreshLock = path.join(
+        accountHome,
+        "mcp-refresh-minions_0123456789abcdef.lock.lock",
+      );
+      yield* fs.symlink(path.join(sharedHome, "released-refresh.lock"), releasedRefreshLock);
       yield* fs.symlink(
         path.join(sharedHome, "mcp-needs-auth-cache.json"),
         path.join(accountHome, "mcp-needs-auth-cache.json"),
@@ -75,6 +85,9 @@ it.layer(NodeServices.layer)("materializeClaudeAccountHome", (it) => {
         ".claude.json",
         ".claude.json.lock",
         ".storage-write.lock",
+        mcpRefreshLock,
+        ".oauth_refresh.lock",
+        ".oauth_refresh.lock.owner",
         "mcp-needs-auth-cache.json",
         "remote-settings.json",
         "backups",
@@ -85,7 +98,9 @@ it.layer(NodeServices.layer)("materializeClaudeAccountHome", (it) => {
         yield* fs.readFileString(path.join(sharedHome, "remote-settings.json")),
         "shared login",
       );
-      assert.isTrue(Option.isNone(yield* fs.readLink(releasedLock).pipe(Effect.option)));
+      for (const lock of [releasedLock, releasedRefreshLock]) {
+        assert.isTrue(Option.isNone(yield* fs.readLink(lock).pipe(Effect.option)), lock);
+      }
     }),
   );
 

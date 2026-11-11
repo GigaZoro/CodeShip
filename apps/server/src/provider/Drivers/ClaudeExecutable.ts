@@ -2,10 +2,12 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
+import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { SpawnExecutableResolution } from "@t3tools/shared/shell";
+import { resolveSpawnCommand, SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import { ChildProcess } from "effect/process";
 
 /** Node 20.12+ cannot spawn Windows launcher scripts without a shell; the SDK cannot use these as executables. */
 const WINDOWS_SHIM_EXTENSIONS: ReadonlySet<string> = new Set([".cmd", ".bat", ".ps1"]);
@@ -67,3 +69,23 @@ export const resolveClaudeSdkExecutablePath = Effect.fn("resolveClaudeSdkExecuta
     return binaryPath;
   },
 );
+
+/** Runs the Claude CLI once with an account's environment and collects its output. */
+export const runClaudeCli = Effect.fn("runClaudeCli")(function* (input: {
+  readonly binaryPath: string;
+  readonly args: ReadonlyArray<string>;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly cwd: string;
+}) {
+  const command = yield* resolveSpawnCommand(input.binaryPath, input.args, {
+    env: input.environment,
+  });
+  return yield* spawnAndCollect(
+    input.binaryPath,
+    ChildProcess.make(command.command, command.args, {
+      env: input.environment,
+      shell: command.shell,
+      cwd: input.cwd,
+    }),
+  );
+});

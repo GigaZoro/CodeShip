@@ -10,8 +10,6 @@ import type {
   ProviderPluginCatalog,
   ProviderPluginManagement,
 } from "@t3tools/provider-core/server/driver";
-import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -19,7 +17,9 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { ChildProcessSpawner } from "effect/process";
+
+import { runClaudeCli } from "./ClaudeExecutable.ts";
 
 const ClaudeInstalledPlugin = Schema.Struct({
   id: Schema.String,
@@ -171,17 +171,12 @@ export const makeClaudePluginManagement = Effect.fn("makeClaudePluginManagement"
         args: ReadonlyArray<string>,
         _timeout: Duration.Input,
       ) {
-        const spawnCommand = yield* resolveSpawnCommand(options.binaryPath, args, {
-          env: options.environment,
+        return yield* runClaudeCli({
+          binaryPath: options.binaryPath,
+          args,
+          environment: options.environment,
+          cwd: options.cwd,
         });
-        return yield* spawnAndCollect(
-          options.binaryPath,
-          ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-            env: options.environment,
-            shell: spawnCommand.shell,
-            cwd: options.cwd,
-          }),
-        );
       },
       (effect, operation, _args, timeout) =>
         effect.pipe(

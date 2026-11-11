@@ -12,8 +12,6 @@ import {
   type ProviderMcpTransport,
 } from "@t3tools/contracts";
 import type { ProviderMcpManagement } from "@t3tools/provider-core/server/driver";
-import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import {
   query as claudeQuery,
   type McpServerStatus as ClaudeMcpServerStatus,
@@ -27,10 +25,10 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { ChildProcessSpawner } from "effect/process";
 
 import { editClaudeJsonFile, readClaudeMcpServers } from "./ClaudeAccountHome.ts";
-import { resolveClaudeSdkExecutablePath } from "./ClaudeExecutable.ts";
+import { resolveClaudeSdkExecutablePath, runClaudeCli } from "./ClaudeExecutable.ts";
 
 const CLI_TIMEOUT = Duration.seconds(30);
 const SESSION_START_TIMEOUT = Duration.seconds(30);
@@ -343,6 +341,8 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
     readonly configPath: string;
     readonly copyServers: Effect.Effect<void>;
   };
+  /** Runs before Claude starts with the account's servers, such as renewing their expired sign-ins. */
+  readonly beforeSession?: Effect.Effect<void>;
 }) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -374,17 +374,12 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
       args: ReadonlyArray<string>,
       environment: NodeJS.ProcessEnv,
     ) {
-      const spawnCommand = yield* resolveSpawnCommand(options.binaryPath, args, {
-        env: environment,
+      return yield* runClaudeCli({
+        binaryPath: options.binaryPath,
+        args,
+        environment,
+        cwd: options.cwd,
       });
-      return yield* spawnAndCollect(
-        options.binaryPath,
-        ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-          env: environment,
-          shell: spawnCommand.shell,
-          cwd: options.cwd,
-        }),
-      );
     },
     (effect, operation) =>
       effect.pipe(
@@ -418,6 +413,7 @@ export const makeClaudeMcpManagement = Effect.fn("makeClaudeMcpManagement")(func
   const openSession = Effect.fn("ClaudeMcp.openSession")(function* (
     operation: ProviderMcpOperation,
   ) {
+    if (options.beforeSession !== undefined) yield* options.beforeSession;
     const abort = yield* Effect.acquireRelease(
       Effect.sync(() => new AbortController()),
       (controller) => Effect.sync(() => controller.abort()),

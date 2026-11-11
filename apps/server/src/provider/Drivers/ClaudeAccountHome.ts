@@ -28,11 +28,14 @@ const PRIVATE_ENTRIES = new Set([
   "mcp-needs-auth-cache.json",
   ".DS_Store",
 ]);
-// Claude's locks and pending writes beside its config and login belong to that account.
+// Claude's locks and pending writes belong to one account. A linked lock, such as the MCP or login
+// token refresh lock, dangles once released, and Claude can then never take it, so each renewal
+// runs unlocked and a second chat's renewal of a rotating refresh token signs the account out.
 const isPrivateEntry = (entry: string) =>
   PRIVATE_ENTRIES.has(entry) ||
   entry.startsWith(".claude.json.") ||
-  entry.startsWith(".storage-write");
+  entry.startsWith(".storage-write") ||
+  /\.lock(?:\.|$)/.test(entry);
 // Created in the shared folder first, so every account's sessions land in one place and threads can move between accounts.
 const SHARED_DIRECTORIES = ["projects"];
 

@@ -19,6 +19,17 @@ account launches with the file store and keeps `.credentials.json` in its own sh
 Codex account does not get the flag: it shares `~/.codex` with other Codex apps, and Codex's default
 store mode deletes the file entry whenever it saves that server's sign-in to the keychain.
 
+All processes of one account do share its sign-ins, and a renewal must never present a refresh token
+another process already used: ThreadPage then revokes the sign-in. Codex serializes renewals across
+processes on one `CODEX_HOME`. Claude Code renews only in a token's last five minutes, under a lock
+file in its config folder, but a process that waits for that lock longer than about ten seconds, or
+gets a 401, renews without it. So an added Claude account's folder never links Claude's lock files
+(a linked lock dangles once released, and Claude then never takes it), and
+[the Claude driver](../../apps/server/src/provider/Drivers/ClaudeMcpSignInRenewal.ts) has Claude
+renew each MCP sign-in four minutes before it expires, while the old token still works. A sign-in
+that expired anyway (after sleep or a long restart) is renewed once before any new Claude process of
+the account starts, and every process starting meanwhile waits for that renewal.
+
 The `opencode` driver probes the installed version and runs the 1.x or 2.x runtime. OpenCode's MCP
 registrations are directory-scoped, while T3's MCP connection is thread-scoped, so threads in one
 directory must not share one T3 MCP entry.

@@ -19,6 +19,7 @@ import { HttpClient } from "effect/http";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { ChildProcessSpawner } from "effect/process";
+import * as Option from "effect/Option";
 
 import { makeClaudeTextGeneration } from "../../textGeneration/ClaudeTextGeneration.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
@@ -35,7 +36,7 @@ import { claudeUsageReader } from "./claudeUsage.ts";
 import { makeClaudeScopedLimitNames } from "../claudeUsageLimits.ts";
 import * as ClaudeResetCredits from "../claudeResetCredits.ts";
 import { readClaudeAutoUpdatesChannel, setClaudeSkillOverride } from "./ClaudeSkills.ts";
-import { readClaudeLoginExpiry } from "../claudeLoginExpiry.ts";
+import { readClaudeCredentials, readClaudeLoginExpiry } from "../claudeLoginExpiry.ts";
 import { makeClaudeAuthenticationFailure } from "../claudeSignedOut.ts";
 import { saveClaudeOAuthToken } from "../claudeOAuthToken.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -71,9 +72,16 @@ import {
 import {
   claudeAccountHomePath,
   materializeClaudeAccountHome,
+  readClaudeMcpServers,
   shareClaudeMcpServers,
 } from "./ClaudeAccountHome.ts";
 import { makeClaudeAuth } from "./ClaudeAuth.ts";
+import { runClaudeCli } from "./ClaudeExecutable.ts";
+import {
+  claudeRemoteMcpServerUrls,
+  makeClaudeMcpSignInRenewal,
+  parseClaudeMcpSignIns,
+} from "./ClaudeMcpSignInRenewal.ts";
 import { makeClaudeMcpManagement } from "./ClaudeMcp.ts";
 import { makeClaudePluginManagement } from "./ClaudePlugins.ts";
 import {
@@ -90,6 +98,7 @@ const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
+const MCP_SIGN_IN_RENEW_TIMEOUT = Duration.minutes(2);
 
 const withoutUsage = (capabilities: ClaudeCapabilitiesProbe): ClaudeCapabilitiesProbe => {
   const result = { ...capabilities };
@@ -323,8 +332,53 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       environment: claudeEnvironment,
       cwd: stateDir,
     });
+    const mcpSignInRenewal = enabled
+      ? yield* makeClaudeMcpSignInRenewal({
+          storeKey: configDir,
+          readSignIns: readClaudeCredentials({
+            configDir,
+            claudeConfigDirEnv: claudeEnvironment.CLAUDE_CONFIG_DIR,
+          }).pipe(
+            Effect.map((document) =>
+              Option.match(document, {
+                onNone: () => [],
+                onSome: parseClaudeMcpSignIns,
+              }),
+            ),
+          ),
+          readConfigured: readClaudeMcpServers(accountConfigPath).pipe(
+            Effect.map(claudeRemoteMcpServerUrls),
+          ),
+          // `claude mcp get` connects to the server, which renews its sign-in under Claude's own lock.
+          renew: (serverName) =>
+            runClaudeCli({
+              binaryPath: effectiveConfig.binaryPath,
+              args: ["mcp", "get", serverName],
+              environment: claudeEnvironment,
+              cwd: stateDir,
+            }).pipe(
+              Effect.timeout(MCP_SIGN_IN_RENEW_TIMEOUT),
+              Effect.flatMap((result) =>
+                result.code === 0 ? Effect.void : Effect.fail({ exitCode: result.code }),
+              ),
+              Effect.catch((error) =>
+                Effect.logWarning("Claude could not renew an MCP sign-in.", {
+                  instanceId,
+                  serverName,
+                  error,
+                }),
+              ),
+            ),
+        }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        )
+      : undefined;
+    const ensureMcpSignInsFresh = mcpSignInRenewal?.ensureFresh ?? Effect.void;
     const mcp = yield* makeClaudeMcpManagement({
       instanceId,
+      beforeSession: ensureMcpSignInsFresh,
       binaryPath: effectiveConfig.binaryPath,
       environment: claudeEnvironment,
       cwd: stateDir,
@@ -382,7 +436,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         onAuthenticated: authenticationFailure.clear.pipe(
           Effect.flatMap((hadFailure) => (hadFailure ? republishAuth : Effect.void)),
         ),
-        prepareHome: copyMcpServers,
+        prepareHome: copyMcpServers.pipe(Effect.andThen(ensureMcpSignInsFresh)),
       },
     ).pipe(
       Effect.mapError(

@@ -81,31 +81,48 @@ const readCredentialsFile = Effect.fn("claudeLoginExpiry.readCredentialsFile")(f
   return yield* fileSystem.readFileString(path.join(configDir, CREDENTIALS_FILE));
 });
 
+/** Where a Claude config folder's saved credentials live. */
+export interface ClaudeCredentialStore {
+  readonly configDir: string;
+  /** The `CLAUDE_CONFIG_DIR` Claude runs with, undefined for the default folder. */
+  readonly claudeConfigDirEnv: string | undefined;
+}
+
+/** The saved credentials document Claude is using, or none when it is missing or unreadable. */
+export const readClaudeCredentials = Effect.fn("claudeLoginExpiry.readCredentials")(function* (
+  store: ClaudeCredentialStore,
+): Effect.fn.Return<
+  Option.Option<string>,
+  never,
+  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+> {
+  if ((yield* HostProcess.Platform) === "darwin") {
+    const stored = yield* readKeychainItem(claudeKeychainService(store.claudeConfigDirEnv)).pipe(
+      Effect.orElseSucceed(() => Option.none<string>()),
+    );
+    // The Keychain holds the login Claude is using; a file left by an older login must not outvote it.
+    if (Option.isSome(stored)) return stored;
+  }
+  return yield* readCredentialsFile(store.configDir).pipe(Effect.option);
+});
+
 /**
  * When a Claude subscription login lapses, from the saved login itself. Never runs `claude`, which
  * could refresh the login and race other processes. Unknown (undefined) when the login is
  * missing, unreadable, held by a manually supplied token, or the read times out.
  */
-export const readClaudeLoginExpiry = Effect.fn("claudeLoginExpiry.read")(function* (input: {
-  readonly configDir: string;
-  /** The `CLAUDE_CONFIG_DIR` Claude runs with, undefined for the default folder. */
-  readonly claudeConfigDirEnv: string | undefined;
-  readonly environment: NodeJS.ProcessEnv;
-  readonly tokenMetadata?: ClaudeSettings["oauthToken"];
-}): Effect.fn.Return<
+export const readClaudeLoginExpiry = Effect.fn("claudeLoginExpiry.read")(function* (
+  input: ClaudeCredentialStore & {
+    readonly environment: NodeJS.ProcessEnv;
+    readonly tokenMetadata?: ClaudeSettings["oauthToken"];
+  },
+): Effect.fn.Return<
   string | undefined,
   never,
   ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
 > {
   const token = input.environment.CLAUDE_CODE_OAUTH_TOKEN?.trim();
   if (token) return claudeOAuthTokenExpiry(token, input.tokenMetadata);
-  if ((yield* HostProcess.Platform) === "darwin") {
-    const stored = yield* readKeychainItem(claudeKeychainService(input.claudeConfigDirEnv)).pipe(
-      Effect.orElseSucceed(() => Option.none<string>()),
-    );
-    // The Keychain holds the login Claude is using; a file left by an older login must not outvote it.
-    if (Option.isSome(stored)) return parseClaudeLoginExpiry(stored.value);
-  }
-  const document = yield* readCredentialsFile(input.configDir).pipe(Effect.option);
+  const document = yield* readClaudeCredentials(input);
   return Option.isSome(document) ? parseClaudeLoginExpiry(document.value) : undefined;
 });
