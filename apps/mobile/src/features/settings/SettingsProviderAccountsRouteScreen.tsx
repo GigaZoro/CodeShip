@@ -27,6 +27,7 @@ import { ControlPill } from "../../components/ui/ControlPill";
 import { Menu } from "../../components/ui/Menu";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useNowMinuteMs } from "../../lib/clock";
+import { useEnvironments } from "../../state/environments";
 import { environmentPresentations } from "../../state/presentation";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
@@ -46,7 +47,15 @@ export function SettingsProviderAccountsRouteScreen() {
   const { selectedTargets } = useSettingsEnvironmentFilter();
   const permittedEnvironments = useEnvironmentsWithScope(selectedTargets, AuthProvidersManageScope);
   const providersByEnvironment = useAtomValue(environmentPresentations.providersByEnvironmentAtom);
+  const { environments } = useEnvironments();
   const insets = useSafeAreaInsets();
+  // The machine an account arrived from through shared settings, or null when this app does not know it.
+  const sharedFrom = (target: SettingsTarget, provider: ServerProvider) => {
+    const origin = target.serverConfig.settings.providerInstances[provider.instanceId]?.sharedFrom;
+    return origin === undefined
+      ? undefined
+      : (environments.find((environment) => environment.environmentId === origin)?.label ?? null);
+  };
   return (
     <>
       <SettingsEnvironmentFilterHeader />
@@ -81,6 +90,7 @@ export function SettingsProviderAccountsRouteScreen() {
                           key={provider.instanceId}
                           environment={environment}
                           provider={provider}
+                          sharedFrom={sharedFrom(environment, provider)}
                           divider={index > 0}
                         />
                       ))}
@@ -135,10 +145,13 @@ const formatLoginDate = (iso: string) =>
 export function ProviderAccount({
   environment,
   provider,
+  sharedFrom,
   divider,
 }: {
   readonly environment: Pick<SettingsTarget, "environmentId" | "label">;
   readonly provider: ServerProvider;
+  /** The machine the account arrived from through shared settings; null when it is not known. */
+  readonly sharedFrom?: string | null | undefined;
   readonly divider: boolean;
 }) {
   const nowMs = useNowMinuteMs();
@@ -404,7 +417,21 @@ export function ProviderAccount({
             : "min-h-16 flex-row items-center gap-3 px-4 py-3"
         }
       >
-        <ProviderAccountSummary key={email} name={name} status={status} email={email} />
+        <ProviderAccountSummary
+          key={email}
+          name={name}
+          status={
+            sharedFrom === undefined
+              ? status
+              : [
+                  status,
+                  sharedFrom === null ? t("Shared") : t("From {machine}", { machine: sharedFrom }),
+                ]
+                  .filter(Boolean)
+                  .join(" · ")
+          }
+          email={email}
+        />
         {trailing}
       </View>
       {!active && methods.find((method) => method.id === "setup-token")?.description ? (

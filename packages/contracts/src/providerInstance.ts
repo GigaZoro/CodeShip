@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { EnvironmentId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { SecretReference } from "./secretReference.ts";
 
 const PROVIDER_SLUG_MAX_CHARS = 64;
@@ -79,6 +79,8 @@ export const ProviderInstanceConfig = Schema.Struct({
   environment: Schema.optionalKey(ProviderInstanceEnvironment),
   enabled: Schema.optionalKey(Schema.Boolean),
   config: Schema.optionalKey(Schema.Unknown),
+  /** The machine this account was first shared from, when it arrived here through shared settings. */
+  sharedFrom: Schema.optionalKey(EnvironmentId),
 });
 export type ProviderInstanceConfig = typeof ProviderInstanceConfig.Type;
 

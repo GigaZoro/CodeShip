@@ -271,6 +271,23 @@ other converge by passing versions on. This is not the list in `client-runtime`'
 - **The pulling side checks everything**: the key must be shared and the value must decode as that
   key's setting, since a newer peer may share a key this build does not know. A peer whose build
   has no `t3_shared_settings` is skipped quietly (`PeerMcpClient.callIfAvailable`).
+- **Each provider instance is its own key** (`providerInstance:<id>`), never `providerInstances`,
+  so two machines changing different accounts never overwrite each other. Unlike other keys, a
+  follower shares every change it makes to an account's shared part, and to
+  `providerInstanceFailoverOrder`, with a server stamp (`ownStamp` keeps it newer than any version
+  it knows), because accounts are edited one machine at a time. They travel only by pull, never in
+  a stamped write. What is shared is an allowlist per driver
+  (`SHARED_PROVIDER_CONFIG_FIELDS`): a new config field stays on its machine until listed, and a
+  driver not listed, such as a registry agent, is not shared. Homes, binaries, launch arguments,
+  `environment` and token metadata never are, since a login copied between machines breaks when its
+  refresh token rotates. A follower that takes a version keeps its own value of everything else and
+  applies only the allowlisted fields, ignoring others a peer sends, but passes the JSON on as it
+  came. A new account gets no home, so its driver gives it a private one on that machine. Removal
+  is a `{ removed: true }` version that drops only the definition, never the login or folders; a
+  built-in instance shares only its name and on/off, is never removed, and a version that names
+  another driver under an id here is only passed on. Accounts that existed before a machine
+  followed are not shared until changed: ids made on separate machines (`codex_<uuid>`) do not line
+  up, so sharing them all would give every machine a signed-out copy of every other machine's.
 
 ## Hosted web is a client
 
