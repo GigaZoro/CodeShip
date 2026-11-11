@@ -1,3 +1,9 @@
+## 2026-11-12 — Auto-resume continues a thread as soon as its next model has room
+
+- A thread stopped by a limit that holds only one model, such as Claude's weekly Fable window, now continues by itself as soon as its next turn can run a model the limit does not hold: an Auto thread whose Auto model is another one, or a thread you switched to another model. Before, **Resume at reset** waited for the stopped model's own reset, days away for a weekly window, although the thread could run on another model right away.
+- When that model is limited too, the thread continues when that model's limit ends, if that comes before the stopped model's reset.
+- A thread you moved to another account after it stopped is no longer resumed at the reset, which the server already refused; you continue it yourself, as before.
+
 ## 2026-11-12 — Finished T3.CodeShip work lands by itself
 
 - Agents working on T3.CodeShip now land finished work on main once its checks pass, so fixes reach the next release without you typing `/ship`. This covers chats you start, follow-ups agents start, and requests sent from ThreadPage.

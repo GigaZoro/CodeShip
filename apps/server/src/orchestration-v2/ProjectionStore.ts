@@ -213,6 +213,8 @@ export type ProjectionLimitRecoveryCandidate = Pick<
 > & {
   /** The account the limited run used; the thread may point elsewhere since. */
   readonly latestRunProviderInstanceId?: ProviderInstanceId | null;
+  /** The model the limited run used; an Auto thread may run another one next. */
+  readonly latestRunModel?: string | null;
   /**
    * Set when the provider holds the running attempt until the usage limit resets, instead of
    * stopping it. The thread then reads as running.
@@ -4038,8 +4040,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           readonly failure_payload_json: string;
           readonly last_error: string | null;
           readonly provider_instance_id: string | null;
+          readonly run_model: string | null;
         }>`
           SELECT t.payload_json, r.run_id, r.completed_at, r.provider_instance_id,
+            json_extract(r.payload_json, '$.modelSelection.model') AS run_model,
             item.payload_json AS failure_payload_json,
             (
               SELECT json_extract(session.payload_json, '$.lastError')
@@ -4093,16 +4097,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 json_extract(t.payload_json, '$.limitRecovery.runId') IS r.run_id
                 AND json_extract(t.payload_json, '$.limitRecovery.resetAt') IS json_extract(item.payload_json, '$.failure.resetAt')
                 AND json_extract(t.payload_json, '$.limitRecovery.autoResume') = 1
+                -- Before its reset, a stop still continues where its next turn has room.
                 AND (
-                  (
-                    julianday(json_extract(item.payload_json, '$.failure.resetAt')) <= julianday(${DateTime.formatIso(options.now)})
-                    AND (
-                      json_extract(t.payload_json, '$.snoozedUntil') IS NULL
-                      OR julianday(json_extract(t.payload_json, '$.snoozedUntil')) <= julianday(${DateTime.formatIso(options.now)})
-                    )
-                  )
-                  -- A stop waiting for its reset still moves to an account that regains usage.
-                  OR ${booleanInt(options.failover === true)}
+                  json_extract(t.payload_json, '$.snoozedUntil') IS NULL
+                  OR julianday(json_extract(t.payload_json, '$.snoozedUntil')) <= julianday(${DateTime.formatIso(options.now)})
                 )
               )
               OR (
@@ -4156,6 +4154,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           if (summary.lastErrorClass !== "usage_limit") continue;
           candidates.push({
             ...threadFields(thread, row),
+            latestRunModel: row.run_model,
             status: "failed",
             lastErrorClass: summary.lastErrorClass,
             usageLimitResetAt: summary.usageLimitResetAt,

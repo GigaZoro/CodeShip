@@ -5765,7 +5765,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         recovery.requestId !== command.usageLimitRecoveryRequestId ||
         recovery.runId !== run.id ||
         recovery.resetAt !== failure.resetAt ||
-        Date.parse(recovery.resetAt) > DateTime.toEpochMillis(now) ||
+        // Before the reset it may only run where the limit did not stop it.
+        (Date.parse(recovery.resetAt) > DateTime.toEpochMillis(now) &&
+          (command.modelSelection === undefined ||
+            (command.modelSelection.instanceId === run.providerInstanceId &&
+              command.modelSelection.model === run.modelSelection.model))) ||
         projection.thread.archivedAt !== null ||
         projection.thread.deletedAt !== null ||
         projection.thread.settledOverride === "settled" ||

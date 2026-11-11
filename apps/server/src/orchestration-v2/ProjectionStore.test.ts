@@ -5186,6 +5186,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             providerInstanceId: sqlShell.providerInstanceId,
             modelSelection: sqlShell.modelSelection,
             latestRunProviderInstanceId: sqlShell.providerInstanceId,
+            latestRunModel: sqlShell.modelSelection.model,
             status: sqlShell.status,
             lastErrorClass: sqlShell.lastErrorClass,
             usageLimitResetAt: sqlShell.usageLimitResetAt,
@@ -5619,12 +5620,12 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       yield* sql`UPDATE orchestration_v2_projection_threads
         SET payload_json = json_set(payload_json, '$.limitRecovery', json(${encodeUnknownJsonString(recovery)}))
         WHERE thread_id = ${threadId}`;
-      assert.isUndefined(
+      // Waiting for the reset, it can still continue where its next turn has room.
+      assert.isDefined(
         (yield* store.getLimitRecoveryCandidates({ ...recoveryOptions, autoResume: true })).find(
           (row) => row.id === threadId,
         ),
       );
-      // Waiting for the reset, it can still move to an account that regains usage.
       assert.isDefined(
         (yield* store.getLimitRecoveryCandidates({ ...recoveryOptions, failover: true })).find(
           (row) => row.id === threadId,

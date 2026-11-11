@@ -9638,6 +9638,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
     "stop",
     "stop-before-arm",
     "stop-before-arm-mismatched-recovery",
+    "early-elsewhere",
   ] as const)("guards a scheduled usage-limit continuation against %s", (scenario) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -9975,6 +9976,31 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         (yield* orchestrator.getThreadProjection(threadId)).runs,
         scenario === "queued-resume" ? 2 : 1,
       );
+      if (scenario === "early-elsewhere") {
+        // Before the reset, a resume runs only where the limit did not stop the run.
+        const early = (selection: ModelSelection) =>
+          orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`recovery:early:${selection.model}`),
+            messageId: MessageId.make(`recovery:early:${selection.model}`),
+            threadId,
+            modelSelection: selection,
+            usageLimitContinuationOfRunId: run.id,
+            usageLimitRecoveryRequestId: armCommand.commandId,
+            text: "Continue where you left off.",
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "server",
+          });
+        yield* early(modelSelection);
+        assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 1);
+        yield* early({ ...modelSelection, model: "gpt-5.4-mini" });
+        const resumed = yield* orchestrator.getThreadProjection(threadId);
+        assert.lengthOf(resumed.runs, 2);
+        assert.equal(resumed.runs[1]?.modelSelection.model, "gpt-5.4-mini");
+        return;
+      }
       yield* TestClock.adjust("1 minute");
       const resume = limitRecoveryCommand(
         armedShell,

@@ -1,6 +1,7 @@
 import {
   CommandId,
   MessageId,
+  type ModelSelection,
   type OrchestrationV2Command,
   type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
@@ -18,6 +19,8 @@ import {
   accountsWithRoom,
   completedRunLiftsScope,
   nextAccountRoomAt,
+  roomElsewhereAt,
+  routeAutoAccount,
 } from "./AccountRouting.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -28,11 +31,18 @@ const MIN_FAILOVER_WAIT_MS = 5 * 60_000;
 
 const MAX_OVERDUE_ARM_MS = 24 * 60 * 60 * 1000;
 
+/** Where the thread's next turn runs instead of where it stopped, and when it has room there. */
+export interface LimitRecoveryElsewhere {
+  readonly selection: ModelSelection;
+  readonly roomAtMs: number;
+}
+
 export function limitRecoveryCommand(
   thread: ProjectionStore.ProjectionLimitRecoveryCandidate,
   autoResume: boolean,
   nowMs: number,
   snooze = false,
+  elsewhere: LimitRecoveryElsewhere | null = null,
 ): OrchestrationV2Command | null {
   if (
     thread.status !== "failed" ||
@@ -68,18 +78,27 @@ export function limitRecoveryCommand(
       },
     };
   }
+  // Before the reset, the next turn may still run on a model or account the limit does not hold.
+  const early = resetMs > nowMs ? elsewhere : null;
   if (
     !recovery.autoResume ||
-    resetMs > nowMs ||
+    // The resume refuses a thread moved to another account since its stop.
+    (thread.latestRunProviderInstanceId != null &&
+      thread.latestRunProviderInstanceId !== thread.providerInstanceId) ||
+    (resetMs > nowMs && (early === null || early.roomAtMs > nowMs)) ||
     (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > nowMs)
   )
     return null;
-  const deliveryIdentity = `${identity}:${recovery.requestId ?? "legacy"}`;
+  // The target is part of an early resume's id, so a refused one does not block the reset's.
+  const deliveryIdentity = `${identity}:${recovery.requestId ?? "legacy"}${
+    early === null ? "" : `:${early.selection.instanceId}:${early.selection.model}`
+  }`;
   return {
     type: "message.dispatch",
     commandId: CommandId.make(`limit-resume:${deliveryIdentity}`),
     messageId: MessageId.make(`limit-resume:${deliveryIdentity}`),
     threadId: thread.id,
+    ...(early === null ? {} : { modelSelection: early.selection }),
     usageLimitContinuationOfRunId: thread.latestRunId,
     ...(recovery.requestId === undefined
       ? {}
@@ -95,6 +114,37 @@ export function limitRecoveryCommand(
 type FailoverInput = AccountRoutingContext & {
   readonly thread: ProjectionStore.ProjectionLimitRecoveryCandidate;
 };
+
+/**
+ * Where a limited thread's next turn runs when that is not where it stopped: an Auto thread's
+ * current Auto model, or a model picked since. Null while it would run where the limit holds.
+ */
+export function limitRecoveryElsewhere({
+  thread,
+  ...input
+}: FailoverInput): LimitRecoveryElsewhere | null {
+  if (thread.latestRunProviderInstanceId == null || thread.latestRunModel == null) return null;
+  const selection = routeAutoAccount({
+    ...input,
+    selection: thread.modelSelection,
+    projectId: thread.projectId,
+    currentInstanceId: thread.providerInstanceId,
+    started: true,
+  });
+  // Another account is account switching's move, so a reset minutes away is waited out here too.
+  if (
+    selection.instanceId !== thread.latestRunProviderInstanceId &&
+    !(Date.parse(thread.usageLimitResetAt ?? "") > input.nowMs + MIN_FAILOVER_WAIT_MS)
+  )
+    return null;
+  const roomAtMs = roomElsewhereAt({
+    ...input,
+    selection,
+    projectId: thread.projectId,
+    stopped: { instanceId: thread.latestRunProviderInstanceId, model: thread.latestRunModel },
+  });
+  return roomAtMs === null ? null : { selection, roomAtMs };
+}
 
 /** The search for another account of its driver that a limited thread could move to, or null when it stays. */
 function failoverSearch({ thread, ...input }: FailoverInput) {
@@ -249,12 +299,14 @@ const makeSweep = Effect.gen(function* () {
     ),
   );
   yield* forkParked(Stream.runForEach(settings.streamChanges, () => due.invalidate));
-  // Another account signing in, regaining room, or being enabled can take a waiting thread.
+  // An account signing in, regaining room, or being enabled can take a waiting thread.
   yield* forkParked(
     Stream.runForEach(providerRegistry.streamChanges, () =>
       settings.getSettings.pipe(
         Effect.flatMap((current) =>
-          current.failoverLimitedThreads ? due.invalidate : Effect.void,
+          current.failoverLimitedThreads || current.autoResumeLimitedThreads
+            ? due.invalidate
+            : Effect.void,
         ),
       ),
     ),
@@ -278,10 +330,8 @@ const makeSweep = Effect.gen(function* () {
         })
       : [];
     const providers =
-      preferences.failoverLimitedThreads && (candidates.length > 0 || signedOut.length > 0)
-        ? yield* providerRegistry.getProviders
-        : null;
-    const failover =
+      candidates.length > 0 || signedOut.length > 0 ? yield* providerRegistry.getProviders : null;
+    const routing =
       providers === null
         ? null
         : {
@@ -293,6 +343,7 @@ const makeSweep = Effect.gen(function* () {
             ),
             nowMs,
           };
+    const failover = preferences.failoverLimitedThreads ? routing : null;
     const dispatchSwitch = (
       command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
       failureMessage: string,
@@ -310,6 +361,7 @@ const makeSweep = Effect.gen(function* () {
         ),
       );
     let acted = false;
+    let elsewhereRoomAt = Infinity;
     for (const thread of signedOut) {
       const command = failover === null ? null : signedOutFailoverCommand({ ...failover, thread });
       if (command === null) continue;
@@ -332,11 +384,15 @@ const makeSweep = Effect.gen(function* () {
         if (outcome === "switched") continue;
         // A refused or failed switch falls through, so the stop still arms its reset-time resume.
       }
+      const elsewhere = routing === null ? null : limitRecoveryElsewhere({ ...routing, thread });
+      if (elsewhere !== null && elsewhere.roomAtMs > nowMs)
+        elsewhereRoomAt = Math.min(elsewhereRoomAt, elsewhere.roomAtMs);
       const command = limitRecoveryCommand(
         thread,
         preferences.autoResumeLimitedThreads,
         nowMs,
         preferences.snoozeLimitedThreads,
+        elsewhere,
       );
       if (command === null) continue;
       acted = true;
@@ -373,7 +429,11 @@ const makeSweep = Effect.gen(function* () {
               return at === null ? [] : [at];
             }),
           );
-    yield* due.record(readVersion, Math.min(wakeAt ?? Infinity, accountRoomAt), nowMs);
+    yield* due.record(
+      readVersion,
+      Math.min(wakeAt ?? Infinity, accountRoomAt, elsewhereRoomAt),
+      nowMs,
+    );
   });
 });
 

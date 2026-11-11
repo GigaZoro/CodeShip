@@ -438,7 +438,9 @@ Queued messages stay saved while the limit blocks the thread. They run after
 the continuation finishes.
 
 When the provider reports a reset time, choose **Resume at reset** to schedule a
-continuation. You can cancel it from the thread. In **Settings → Threads →
+continuation. You can cancel it from the thread. When the limit holds only one model,
+such as Claude's weekly Fable window, the thread continues sooner if its next turn runs
+another model with room: Auto's model for an Auto thread, or a model you picked since. In **Settings → Threads →
 When a thread hits a usage limit**, choose **Resume when the limit resets** to
 schedule limit stops by default.
 The environment must be running when the reset arrives; it resumes overdue

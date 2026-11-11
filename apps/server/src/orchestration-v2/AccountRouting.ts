@@ -219,6 +219,32 @@ export function modelWithRoom(
     : model;
 }
 
+/**
+ * When a turn on `selection` can start, when it would run on another account or model than the
+ * stopped run: now if that account has room for it, else when the last limit holding it ends.
+ * Null when it would run where the run stopped, or that account cannot run it.
+ */
+export function roomElsewhereAt(
+  input: AccountRoutingContext & {
+    readonly selection: ModelSelection;
+    readonly projectId: ProjectId;
+    readonly stopped: { readonly instanceId: ProviderInstanceId; readonly model: string };
+  },
+): number | null {
+  const provider = input.providers.find(
+    (candidate) => candidate.instanceId === input.selection.instanceId,
+  );
+  if (provider === undefined) return null;
+  const model = usableModel(provider, { ...input, model: input.selection.model });
+  if (
+    model === null ||
+    (provider.instanceId === input.stopped.instanceId &&
+      model === canonicalModel(provider, input.stopped.model))
+  )
+    return null;
+  return accountLimitEnd(provider, input.recordedLimits, input.nowMs, model) ?? input.nowMs;
+}
+
 interface AccountSearch extends AccountRoutingContext {
   readonly driver: ProviderDriverKind;
   readonly projectId: ProjectId;

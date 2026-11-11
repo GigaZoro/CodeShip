@@ -4,6 +4,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   MessageId,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2ServerCommand,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -30,6 +31,7 @@ import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import {
   limitFailoverCommand,
   limitRecoveryCommand,
+  limitRecoveryElsewhere,
   signedOutFailoverCommand,
 } from "./UsageLimitRecoveryWorker.ts";
 
@@ -245,6 +247,195 @@ describe("limitFailoverCommand", () => {
         ),
       }),
     );
+  });
+});
+
+describe("limitRecoveryElsewhere", () => {
+  const claudeAgent = ProviderInstanceId.make("claudeAgent");
+  const model = (slug: string, name: string) => ({
+    slug,
+    name,
+    isCustom: false,
+    capabilities: null,
+  });
+  // Claude held only Fable on this account until its weekly reset.
+  const stopped: ProjectionStore.ProjectionLimitRecoveryCandidate = {
+    ...thread,
+    modelSelection: { instanceId: claudeAgent, model: "claude-fable-5-2", autoAccount: true },
+    latestRunModel: "claude-fable-5-2",
+    limitRecovery: { runId, resetAt, autoResume: true },
+  };
+  const fableHold = { resetAt, refusedAt: "2026-10-29T11:00:00Z", modelScope: "fable" };
+  const elsewhere = (overrides: Partial<Parameters<typeof limitRecoveryElsewhere>[0]> = {}) =>
+    limitRecoveryElsewhere({
+      thread: stopped,
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        autoModeProvider: claude,
+        autoModeModels: { [claude]: { model: "claude-opus-5-5" } },
+      },
+      providers: [
+        provider("claudeAgent", {
+          models: [
+            model("claude-fable-5-2", "Claude Fable 5.2"),
+            model("claude-opus-5-5", "Claude Opus 5.5"),
+          ],
+        }),
+      ],
+      recordedLimits: new Map([[claudeAgent, [fableHold]]]),
+      nowMs: now,
+      ...overrides,
+    });
+
+  it("resumes an Auto thread now on the Auto model the limit does not hold", () => {
+    const target = elsewhere();
+    assert.include(target?.selection, { instanceId: claudeAgent, model: "claude-opus-5-5" });
+    assert.equal(target?.roomAtMs, now);
+    assert.deepInclude(limitRecoveryCommand(stopped, true, now, false, target), {
+      type: "message.dispatch",
+      commandId: CommandId.make(
+        "limit-resume:thread:failover:run:failover:1793361600000:legacy:claudeAgent:claude-opus-5-5",
+      ),
+      modelSelection: target!.selection,
+      usageLimitContinuationOfRunId: runId,
+    });
+    assert.isNull(limitRecoveryCommand(stopped, true, now));
+  });
+
+  it("resumes when the Auto model's own limit ends, before the stop's reset", () => {
+    const opusFreeAt = now + 60 * 60_000;
+    const target = elsewhere({
+      recordedLimits: new Map([
+        [
+          claudeAgent,
+          [
+            fableHold,
+            {
+              resetAt: DateTime.formatIso(DateTime.makeUnsafe(opusFreeAt)),
+              refusedAt: "2026-10-29T11:00:00Z",
+              modelScope: "opus",
+            },
+          ],
+        ],
+      ]),
+    });
+    assert.equal(target?.roomAtMs, opusFreeAt);
+    assert.isNull(limitRecoveryCommand(stopped, true, now, false, target));
+    assert.equal(
+      limitRecoveryCommand(stopped, true, opusFreeAt, false, target)?.type,
+      "message.dispatch",
+    );
+  });
+
+  it.each([
+    [
+      "Auto still runs the held model",
+      {
+        settings: {
+          ...DEFAULT_SERVER_SETTINGS,
+          autoModeProvider: claude,
+          autoModeModels: { [claude]: { model: "claude-fable-5-2" } },
+        },
+      },
+    ],
+    [
+      "the thread names the held model",
+      {
+        thread: {
+          ...stopped,
+          modelSelection: { instanceId: claudeAgent, model: "claude-fable-5-2" },
+        },
+      },
+    ],
+  ] as const)("waits for the reset when %s", (_, overrides) => {
+    assert.isNull(elsewhere(overrides));
+  });
+
+  it("moves to another account only when the reset is more than minutes away", () => {
+    const models = [model("claude-opus-5-5", "Claude Opus 5.5")];
+    const accountWide = (resetIso: string) =>
+      elsewhere({
+        thread: {
+          ...stopped,
+          modelSelection: { instanceId: claudeAgent, model: "claude-opus-5-5", autoAccount: true },
+          latestRunModel: "claude-opus-5-5",
+          usageLimitResetAt: resetIso,
+          limitRecovery: { runId, resetAt: resetIso, autoResume: true },
+        },
+        settings: {
+          ...settings,
+          autoModeProvider: claude,
+          autoModeModels: { [claude]: { model: "claude-opus-5-5" } },
+          failoverLimitedThreads: true,
+        },
+        providers: [provider("claudeAgent", { models }), provider("claude_first", { models })],
+        recordedLimits: new Map([
+          [claudeAgent, [{ resetAt: resetIso, refusedAt: "2026-10-29T11:00:00Z" }]],
+        ]),
+      });
+    assert.isNull(accountWide("2026-10-29T12:04:00.000Z"));
+    assert.equal(
+      accountWide(resetAt)?.selection.instanceId,
+      ProviderInstanceId.make("claude_first"),
+    );
+  });
+
+  it.effect("a sweep resumes it early with account switching off", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(now);
+      const dispatched = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
+      const layer = UsageLimitRecoveryWorker.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Scheduler.layer,
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              getSignedOutFailoverCandidates: () => Effect.succeed([]),
+              getLimitRecoveryCandidates: () => Effect.succeed([stopped]),
+              getUsageLimitedProviderInstances: () =>
+                Effect.succeed(new Map([[claudeAgent, [fableHold]]])),
+              getLimitRecoveryWakeAt: () => Effect.succeed(Date.parse(resetAt)),
+            }),
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              dispatch: (command) => Queue.offer(dispatched, command).pipe(Effect.as({} as never)),
+            }),
+            Layer.mock(Orchestrator.OrchestratorV2)({ streamDomainEvents: Stream.never }),
+            Layer.mock(ServerSettings.ServerSettingsService)({
+              getSettings: Effect.succeed({
+                ...DEFAULT_SERVER_SETTINGS,
+                autoModeProvider: claude,
+                autoModeModels: { [claude]: { model: "claude-opus-5-5" } },
+                autoResumeLimitedThreads: true,
+                failoverLimitedThreads: false,
+              }),
+              streamChanges: Stream.never,
+            }),
+            Layer.mock(ProviderRegistry.ProviderRegistry)({
+              getProviders: Effect.succeed([
+                provider("claudeAgent", {
+                  models: [
+                    model("claude-fable-5-2", "Claude Fable 5.2"),
+                    model("claude-opus-5-5", "Claude Opus 5.5"),
+                  ],
+                }),
+              ]),
+              streamChanges: Stream.never,
+            }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const command = yield* Queue.take(dispatched);
+        assert(command.type === "message.dispatch");
+        assert.equal(command.usageLimitContinuationOfRunId, runId);
+        assert.equal(command.modelSelection?.model, "claude-opus-5-5");
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it("never resumes a thread moved to another account since its stop", () => {
+    const moved = { ...stopped, providerInstanceId: ProviderInstanceId.make("claude_first") };
+    assert.isNull(limitRecoveryCommand(moved, true, now, false, elsewhere()));
+    assert.isNull(limitRecoveryCommand(moved, true, Date.parse(resetAt)));
   });
 });
 
