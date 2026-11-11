@@ -1,3 +1,7 @@
+## 2026-11-11 — Old releases repository retired
+
+- The temporary second releases repository used for a few builds on 2026-11-07 and 2026-11-08 is retired. Releases are published only to GigaZoro/CodeShip, and nothing changes for users.
+
 ## 2026-11-08 — Automatic recovery skips outdated scheduled runs
 
 - Scheduled-task runs no longer restart after a newer occurrence has started or their scheduled window has ended. Automatic recovery settles those chats with an explanation, preventing old runs from competing with current work. The latest run can still recover within its window, and ordinary chats recover as before.

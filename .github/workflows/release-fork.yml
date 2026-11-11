@@ -26,12 +26,6 @@ concurrency:
   group: release-fork
   cancel-in-progress: false
 
-# Builds from 2026.1107.19 until releases moved back here read their updates
-# from this repository, so each release goes there too until those installs
-# have updated past them.
-env:
-  BRIDGE_RELEASE_REPOSITORY: GigaZoro/codeship-releases
-
 permissions:
   # The Windows job reads this run's artifact list to wait for the Linux CLI
   # archive it embeds as the WSL runtime (see release-desktop.yml).
@@ -97,8 +91,7 @@ jobs:
 
       # Calendar versions (YEAR.MMDD.N) stay clear of upstream's 0.x tags, which
       # clones of a fork also fetch: a fork tag with an upstream tag's name makes
-      # every later fetch fail with "would clobber existing tag". The bridge
-      # repository gets the same tags, so both are checked.
+      # every later fetch fail with "would clobber existing tag".
       - id: version
         name: Resolve release version
         env:
@@ -106,28 +99,21 @@ jobs:
           REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          repositories=("$GITHUB_REPOSITORY" "$BRIDGE_RELEASE_REPOSITORY")
           version="${REQUESTED_VERSION#v}"
           if [[ -z "$version" ]]; then
             prefix="$(date -u +%Y).$((10#$(date -u +%m%d)))"
-            last=0
-            for repository in "${repositories[@]}"; do
-              n="$(gh api "repos/$repository/git/matching-refs/tags/v$prefix." \
-                --jq "[.[].ref | ltrimstr(\"refs/tags/v$prefix.\") | tonumber?] | max // 0")"
-              if (( n > last )); then last=$n; fi
-            done
+            last="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v$prefix." \
+              --jq "[.[].ref | ltrimstr(\"refs/tags/v$prefix.\") | tonumber?] | max // 0")"
             version="$prefix.$((last + 1))"
           fi
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Version must look like 2026.1030.1, got '$version'."
             exit 1
           fi
-          for repository in "${repositories[@]}"; do
-            if gh api "repos/$repository/git/ref/tags/v$version" --silent 2>/dev/null; then
-              echo "::error::Tag v$version already exists in $repository."
-              exit 1
-            fi
-          done
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$version" --silent 2>/dev/null; then
+            echo "::error::Tag v$version already exists in $GITHUB_REPOSITORY."
+            exit 1
+          fi
           echo "Releasing $version."
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
@@ -368,26 +354,3 @@ jobs:
             release-assets/install.sh
           fail_on_unmatched_files: true
           token: ${{ github.token }}
-
-      # Installs that read the bridge repository take this build from there,
-      # and it moves them back to this repository.
-      - name: Publish release to the bridge repository
-        uses: softprops/action-gh-release@v3
-        with:
-          repository: ${{ env.BRIDGE_RELEASE_REPOSITORY }}
-          tag_name: v${{ needs.preflight.outputs.version }}
-          name: T3.CodeShip v${{ needs.preflight.outputs.version }}
-          body_path: release-notes.md
-          make_latest: true
-          files: |
-            release-assets/*.exe
-            release-assets/*.dmg
-            release-assets/*.zip
-            release-assets/*.blockmap
-            release-assets/*.yml
-            release-assets/t3-*.tar.gz
-            release-assets/SHA256SUMS
-            release-assets/install.sh
-          fail_on_unmatched_files: true
-          # Contents write on the bridge repository; this run's token reaches only this one.
-          token: ${{ secrets.RELEASES_TOKEN }}

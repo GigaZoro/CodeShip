@@ -83,10 +83,6 @@ curl -fsSL https://github.com/GigaZoro/CodeShip/releases/latest/download/install
 t3 service install
 ```
 
-Builds from 2026.1107.19 until releases moved back read their updates from
-`GigaZoro/codeship-releases`, so each release is also published there (`BRIDGE_RELEASE_REPOSITORY`,
-written with the `RELEASES_TOKEN` secret) until those installs have updated past them.
-
 Builds use the public T3 Connect identifiers in `.env.example`. Releases also fail for reasons
 outside the build: GitHub-hosted macOS arm64 runners sometimes never pick up a job, and GitHub
 outages make downloads such as Electron's time out for hours. `release-fork-retry.yml` reruns a
