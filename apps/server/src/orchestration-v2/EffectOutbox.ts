@@ -184,6 +184,23 @@ export interface PendingOrchestrationEffectV2 {
   readonly availableAt?: DateTime.Utc;
 }
 
+/** One per source run, so queueing it again re-arms the same effect instead of adding a second. */
+export const restartContinuationEffectId = (sourceRunId: RunId) =>
+  `effect:restart-continuation:${sourceRunId}`;
+
+export const restartContinuationEffect = (input: {
+  readonly commandId: CommandId;
+  readonly threadId: ThreadId;
+  readonly sourceRunId: RunId;
+  readonly availableAt?: DateTime.Utc;
+}): PendingOrchestrationEffectV2 => ({
+  id: restartContinuationEffectId(input.sourceRunId),
+  commandId: input.commandId,
+  threadId: input.threadId,
+  request: { type: "provider-runtime.continue", sourceRunId: input.sourceRunId },
+  ...(input.availableAt === undefined ? {} : { availableAt: input.availableAt }),
+});
+
 export class EffectOutboxError extends Schema.TaggedError<EffectOutboxError>()(
   "EffectOutboxError",
   {

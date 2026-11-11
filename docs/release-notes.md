@@ -1,3 +1,11 @@
+## 2026-11-11 — A restart wakes a chat that waits on a background command
+
+- A chat that ended its turn to wait on a background command it marked as waited on (or on a background task, monitor or subagent) is now told and continues after a restart even when the agent's process stopped a moment before the server did, as an update on Windows or a service restart can do. Before, the server forgot that work in its last moments, so the chat got no note and sat idle until someone sent it a message.
+- The same now happens when only the agent's process ends while the server keeps running: the chat is told its background work stopped and continues, instead of waiting for a result that never comes.
+- The thread shows what happened: a notice (**Server restarted**, **Server shut down** or **Agent process ended**) lists the background work that was stopped and says when the chat was waiting on it, so you can read it later without the server log. The note the agent gets now says the work stopped because the server restarted or its process ended.
+- A scheduled chat that waits on background work is no longer skipped as "a newer run replaced this one" when the task started its next run while the chat was still waiting. It is skipped only when the task moved on after the work was stopped.
+- Known limits: a restart that happens while this fix is not yet installed cannot be repaired afterwards, and background work stopped because a new turn replaced the agent's process is still not reported.
+
 ## 2026-11-11 — A linked machine can be added to the app's machine list
 
 - Linking a machine for agents never put it in the machine list at the bottom-left of the sidebar, and nothing said so. The `t3 environment link` and `t3 environment list` output and the agent link tools now say it is linked for agents only. In **Settings → Machines & access → Linked environments**, a linked machine missing from the list is marked, with **Add to this app**: one click over T3 Connect, otherwise a pairing code from that machine.

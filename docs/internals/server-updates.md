@@ -118,12 +118,20 @@ nothing. Stop, or a failure of the resumed run with no retry scheduled, turns th
 into an ordinary one, and every release drops the mark, so a later failure hold cannot
 inherit it. The run-update listener does
 not replay completions from before startup, so a startup pass after reconciliation applies
-the same release to threads whose latest run completed, then starts their queues. A settled run qualifies only when the restart cancels work the agent waits on
+the same release to threads whose latest run completed, then starts their queues. A settled run qualifies only when it lost work the agent waits on
 (a subagent, a background task, or a shell or monitor the agent marked with
 `t3_background_wait`) and its session was live, so stale records from an older crash
 never wake it. Its continuation prompt is the note of what will not report back. An
 unmarked shell or monitor does not wake a settled run: most are dev servers and their
 watchdogs that nobody waits on, so that note waits for the next user message.
+For a settled chat the provider thread's roster is often the only record of a background
+command, since the command's turn item may already have completed. A provider process
+that ends on its own (a crash, or a restart that kills it before the server) reports the
+roster it drops as lost, and ingestion records that loss on the run in the same write
+that empties the roster: the note's work, a notice in the thread, and a wake. The wake is
+queued after that write, so a server that dies first leaves the work on the run, where
+startup recovery finds it as the latest run's undelivered work. A deliberate close
+(Stop, session release, shutdown) reports nothing; shutdown reconciles the roster itself.
 
 Recovery retires effects tied to the lost process and records continuation intent
 in the durable outbox. That intent survives another restart before provider startup.

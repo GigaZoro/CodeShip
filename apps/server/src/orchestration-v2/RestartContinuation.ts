@@ -265,7 +265,12 @@ export function restartContinuationRun(
     (!preparedContinuation && (session.status === "stopped" || session.status === "error"))
   )
     return;
-  if (settled) return hasOpenAwaitedWork(projection, providerThread) ? run : undefined;
+  // Work its provider process lost is already on the run, and nothing later continued it.
+  if (settled)
+    return hasOpenAwaitedWork(projection, providerThread) ||
+      (run.restartCancelledBackgroundWork ?? []).some(isAwaitedWork)
+      ? run
+      : undefined;
   if (
     liveTurnRequired &&
     !projection.providerTurns.some(
@@ -454,7 +459,7 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
           source: { kind: "system" },
           outcome: "updated",
           summary: note.settled
-            ? "T3.CodeShip restarted and stopped background work"
+            ? "Background work stopped before it finished"
             : "T3.CodeShip restarted and resumed this turn",
           detail: text,
         },

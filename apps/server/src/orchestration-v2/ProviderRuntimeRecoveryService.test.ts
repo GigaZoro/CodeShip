@@ -283,7 +283,9 @@ it.effect(
           driver: ProviderDriverKind.make("claudeAgent"),
           providerInstanceId: claude,
           status: "idle",
-          pendingBackgroundTasks: [{ taskId: "task-claude", description: "Watch the build" }],
+          pendingBackgroundTasks: [
+            { taskId: "task-claude", description: "Watch the build", awaited: true },
+          ],
         },
         {
           id: codexThreadId,
@@ -366,6 +368,26 @@ it.effect(
         })),
         [{ runId: claudeRunId, kinds: ["subagent", "task"] }],
       );
+      const notices = (committedInput?.events ?? []).flatMap((event) =>
+        event.type === "turn-item.updated" && event.payload.type === "system_notice"
+          ? [event.payload]
+          : [],
+      );
+      assert.deepEqual(
+        notices.map((notice) => [notice.runId, notice.title, notice.message]),
+        [
+          [
+            claudeRunId,
+            "Server restarted",
+            [
+              "The server restarted and stopped background work before it finished:",
+              "- subagent: Background subagent",
+              "- task: Watch the build (id task-claude)",
+              "This chat was waiting on it.",
+            ].join("\n"),
+          ],
+        ],
+      );
     }).pipe(Effect.provide(layer));
   },
 );
@@ -440,9 +462,25 @@ it.effect("tells the thread a running run stopped when the server went down", ()
     thread: { id: threadId },
     runtimeRequests: [],
     providerSessions: [],
-    providerThreads: [],
+    providerThreads: [
+      {
+        id: ProviderThreadId.make("provider_thread_restart_notice"),
+        ownerNodeId: null,
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        status: "active",
+        pendingBackgroundTasks: [{ taskId: "task-cut", description: "Watch CI", awaited: true }],
+      },
+    ],
     providerTurns: [],
-    runs: [{ id: runId, status: "running", providerInstanceId: ProviderInstanceId.make("codex") }],
+    runs: [
+      {
+        id: runId,
+        status: "running",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        providerThreadId: ProviderThreadId.make("provider_thread_restart_notice"),
+      },
+    ],
     attempts: [
       {
         id: RunAttemptId.make("attempt_restart_notice"),
@@ -503,7 +541,12 @@ it.effect("tells the thread a running run stopped when the server went down", ()
         ? [event.payload]
         : [],
     );
-    assert.equal(notices.length, 1, "the restart-cancelled run has no notice saying why");
+    assert.isTrue(
+      (committedInput?.events ?? []).some(
+        (event) => event.type === "run.background-work-cancelled" && event.runId === runId,
+      ),
+    );
+    assert.equal(notices.length, 1, "a cut run gets one notice, which also covers its lost work");
     assert.equal(notices[0]?.status, "completed");
     assert.include(notices[0]?.message ?? "", "restarted");
   }).pipe(Effect.provide(layer));

@@ -173,33 +173,46 @@ it("recovers an admitted continuation after another crash before provider start"
   assert.equal(restartContinuationRun(starting, now)?.id, runId);
 });
 
-it("does not continue settled root runs with restart-cancelled background work", () => {
+it("continues a settled root run for awaited work it recorded, only while its session lives", () => {
   const projection = makeProjection();
-  const settled = {
+  const settled = (input: {
+    readonly awaited: boolean;
+    readonly session: "ready" | "stopped";
+    readonly status: "completed" | "waiting";
+    readonly projectId: typeof scratchProjectId;
+  }) => ({
     ...projection,
+    thread: { ...projection.thread, projectId: input.projectId },
     runs: [
       {
         ...projection.runs[0]!,
-        status: "completed" as const,
-        restartCancelledBackgroundWork: [{ kind: "shell" as const, label: "sleep 25" }],
+        status: input.status,
+        restartCancelledBackgroundWork: [
+          {
+            kind: "shell" as const,
+            label: "sleep 25",
+            ...(input.awaited ? { awaited: true as const } : {}),
+          },
+        ],
       },
     ],
     providerThreads: [{ ...projection.providerThreads[0]!, status: "idle" as const }],
-    providerSessions: [{ ...projection.providerSessions[0]!, status: "stopped" as const }],
+    providerSessions: [{ ...projection.providerSessions[0]!, status: input.session }],
     providerTurns: [],
-  };
+  });
   for (const projectId of [scratchProjectId, projection.thread.projectId])
     for (const status of ["completed", "waiting"] as const)
-      assert.isUndefined(
-        restartContinuationRun(
-          {
-            ...settled,
-            thread: { ...settled.thread, projectId },
-            runs: [{ ...settled.runs[0]!, status }],
-          },
-          now,
-        ),
-      );
+      for (const [awaited, session, continues] of [
+        [true, "ready", true],
+        [true, "stopped", false],
+        [false, "ready", false],
+        [false, "stopped", false],
+      ] as const)
+        assert.equal(
+          restartContinuationRun(settled({ awaited, session, status, projectId }), now)?.id,
+          continues ? runId : undefined,
+          `${status} awaited=${awaited} session=${session}`,
+        );
 });
 
 it.effect.each(["completed", "waiting", "cancelled"] as const)(

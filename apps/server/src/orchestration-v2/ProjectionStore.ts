@@ -5148,6 +5148,18 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     WHERE run.thread_id = ${threadId}
                       AND run.status IN ('queued', 'preparing', 'starting', 'running', 'waiting')
                   )
+                  -- Work a provider process lost leaves the roster empty; the latest run carries it.
+                  OR provider_thread.provider_thread_id = (
+                    SELECT latest.provider_thread_id FROM orchestration_v2_projection_runs AS latest
+                    WHERE latest.thread_id = ${threadId}
+                      AND CASE WHEN json_valid(latest.payload_json)
+                        THEN json_array_length(latest.payload_json, '$.restartCancelledBackgroundWork') > 0
+                        ELSE 0 END
+                      AND latest.ordinal = (
+                        SELECT MAX(ordinal) FROM orchestration_v2_projection_runs
+                        WHERE thread_id = ${threadId}
+                      )
+                  )
                   OR provider_thread.provider_thread_id IN (
                     SELECT item.provider_thread_id
                     FROM orchestration_v2_projection_turn_items AS item

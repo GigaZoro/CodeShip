@@ -8,6 +8,7 @@ import {
   OrchestrationV2AppThread,
   OrchestrationV2ConversationMessage,
   OrchestrationV2ExecutionNode,
+  OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderSession,
   OrchestrationV2PlanArtifact,
   OrchestrationV2ProviderCapabilities,
@@ -97,6 +98,8 @@ export const ProviderAdapterV2Event = Schema.Union([
     driver: ProviderDriverKind,
     providerThread: OrchestrationV2ProviderThread,
     retainedNativeTurnIds: Schema.optional(Schema.Array(Schema.String)),
+    /** Tasks this update drops because the provider process running them ended before they finished. */
+    lostBackgroundTasks: Schema.optional(Schema.Array(OrchestrationV2PendingBackgroundTask)),
   }),
   Schema.Struct({
     type: Schema.Literal("provider_turn.updated"),

@@ -121,6 +121,7 @@ import {
 } from "./ContextHandoffService.ts";
 import { notificationTurnItem } from "@t3tools/provider-core/server/notification";
 import {
+  backgroundWorkStoppedNoticeId,
   continuationFailedBeforePrompt,
   continuationStartRetryDelayMs,
   isRestartContinuationSource,
@@ -868,12 +869,18 @@ function queuedRunModelSelection(
     : run.modelSelection;
 }
 
-/** When a run stopped working: its end, or the start of the usage-limit hold that keeps it. */
+/** When a run stopped working: its end or when its background work was stopped, or the start of the usage-limit hold that keeps it. */
 function runStoppedAt(
   run: OrchestrationV2Run,
   turnItems: OrchestrationV2ThreadProjection["turnItems"],
 ): DateTime.Utc {
-  if (run.completedAt !== null) return run.completedAt;
+  if (run.completedAt !== null) {
+    const noticeId = backgroundWorkStoppedNoticeId(run.id);
+    const workStoppedAt = turnItems.find((item) => item.id === noticeId)?.startedAt;
+    return workStoppedAt != null && DateTime.isGreaterThan(workStoppedAt, run.completedAt)
+      ? workStoppedAt
+      : run.completedAt;
+  }
   const hold = turnItems.find(
     (item) =>
       item.type === "error" &&
@@ -2390,13 +2397,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     yield* writeSystemEvents(
       [],
       [
-        {
-          id: `effect:restart-continuation:${run.id}`,
+        EffectOutbox.restartContinuationEffect({
           commandId,
           threadId,
-          request: { type: "provider-runtime.continue", sourceRunId: run.id },
+          sourceRunId: run.id,
           availableAt: DateTime.add(yield* DateTime.now, { milliseconds: delayMs }),
-        },
+        }),
       ],
     );
   });
@@ -5575,7 +5581,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         );
       const now = yield* DateTime.now;
       // Runs of one task overlap, so only what happened while this one was stopped makes it stale.
-      const stoppedMs = DateTime.toEpochMillis(runStoppedAt(candidate, projection.turnItems));
+      // Command projections omit system notices; the background-work-stopped one is on the run.
+      const stopNotices =
+        candidate.completedAt !== null && candidate.restartCancelledBackgroundWork?.length
+          ? yield* projectionStore
+              .getThreadRecords(command.threadId, ["turnItems"], {
+                turnItemRunIds: [candidate.id],
+                turnItemTypes: ["system_notice"],
+              })
+              .pipe(
+                Effect.map((records) => records.turnItems),
+                Effect.mapError(
+                  (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+                ),
+              )
+          : [];
+      const stoppedMs = DateTime.toEpochMillis(
+        runStoppedAt(candidate, [...projection.turnItems, ...stopNotices]),
+      );
       let notice: string | undefined;
       if (task === null) notice = "Skipped: the scheduled task no longer exists.";
       else if (task.lastRunAt !== null && Date.parse(task.lastRunAt) > stoppedMs) {
@@ -12833,7 +12856,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const awaitsRestartContinuation = (run: OrchestrationV2Run) =>
     effectOutbox
-      .get(`effect:restart-continuation:${run.id}`)
+      .get(EffectOutbox.restartContinuationEffectId(run.id))
       .pipe(
         Effect.map(
           Option.exists((effect) => effect.status === "pending" || effect.status === "running"),
@@ -14729,7 +14752,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       },
     ),
     awaitRestartContinuation: Effect.fn("OrchestratorV2.awaitRestartContinuation")(function (run) {
-      return effectOutbox.awaitSettled(`effect:restart-continuation:${run.id}`).pipe(Effect.ignore);
+      return effectOutbox
+        .awaitSettled(EffectOutbox.restartContinuationEffectId(run.id))
+        .pipe(Effect.ignore);
     }),
     dispatch: dispatchWithReceipt,
     autoArmLimitRecovery: Effect.fn("OrchestratorV2.autoArmLimitRecovery")(function (input) {

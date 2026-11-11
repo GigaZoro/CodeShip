@@ -140,7 +140,8 @@ Messages you queued behind a resumed turn follow once it finishes; if it fails,
 they wait for you, as after any failure.
 A thread that finished its turn to wait on a subagent, a background task, or a
 command or monitor the agent said it was waiting on is woken and told that this work
-stopped. Other background shells and monitors, such as a dev server and its
+stopped. The same happens when the agent's own process ends while it waits, even if the
+server keeps running. Other background shells and monitors, such as a dev server and its
 watchdog, do not wake it; the thread learns about them with your next message.
 An interrupted `/compact` compacts again. An approval or secret the restart
 cancelled is asked for again when the thread resumes. A question the agent asked

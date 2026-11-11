@@ -94,7 +94,7 @@ import * as ProjectStore from "./ProjectStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as RuntimeLayer from "./runtimeLayer.ts";
 import { shellStreamItemFromThreadShell } from "./ShellStream.ts";
-import { restartRetryNoticeId } from "./RestartBackgroundNote.ts";
+import { backgroundWorkStoppedNotice, restartRetryNoticeId } from "./RestartBackgroundNote.ts";
 import { CONTINUE_PROMPT, continueRestartedRun } from "./RestartContinuation.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
@@ -9480,6 +9480,146 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         (yield* projections.getLimitRecoveryCandidates(sweep)).find((row) => row.id === threadId),
       );
     }),
+  );
+
+  it.effect.each(["still-current", "moved-on"] as const)(
+    "judges a restart continuation by when its background work stopped, not when its turn ended: %s",
+    (scenario) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.make(`restart-note-stale:${scenario}`);
+        const projectId = ProjectId.make(`restart-note-stale:project:${scenario}`);
+        const taskId = ScheduledTaskId.make(`restart-note-stale:task:${scenario}`);
+        const turnEndedAt = yield* DateTime.now;
+        const newerStartedAt = DateTime.add(turnEndedAt, { minutes: 2 });
+        const stoppedAt = DateTime.add(turnEndedAt, {
+          minutes: scenario === "moved-on" ? 1 : 5,
+        });
+        yield* seedProject({
+          projectId,
+          title: "Restart note project",
+          workspaceRoot: process.cwd(),
+          defaultModelSelection: modelSelection,
+          createdAt: DateTime.formatIso(turnEndedAt),
+        });
+        yield* sql`
+          INSERT INTO scheduled_tasks (
+            task_id, title, prompt, enabled, schedule_json, project_id, workspace_strategy_json,
+            model_selection_json, runtime_mode, interaction_mode, created_by, creation_source,
+            created_at, updated_at, next_run_at, last_run_at, last_run_status, run_count
+          ) VALUES (
+            ${taskId}, 'Inbox', 'Check inbox', 1, '{"type":"interval","everyMs":3600000}', ${projectId},
+            '{"type":"project"}', ${JSON.stringify(modelSelection)}, 'full-access', 'default',
+            'user', 'web', ${DateTime.formatIso(turnEndedAt)}, ${DateTime.formatIso(turnEndedAt)},
+            ${DateTime.formatIso(DateTime.add(turnEndedAt, { hours: 1 }))},
+            ${DateTime.formatIso(newerStartedAt)}, 'succeeded', 2
+          )
+        `;
+        yield* sql`
+          INSERT INTO scheduled_task_runs (run_id, task_id, trigger, scheduled_for, started_at, outcome, thread_id)
+          VALUES (${`record:${scenario}`}, ${taskId}, 'scheduled', ${DateTime.formatIso(turnEndedAt)},
+            ${DateTime.formatIso(turnEndedAt)}, 'succeeded', ${threadId})
+        `;
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`${threadId}:create`),
+          threadId,
+          projectId,
+          title: "Waiting on a command",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${threadId}:start`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:start`),
+          scheduledTaskId: taskId,
+          text: "Check inbox",
+          attachments: [],
+          dispatchMode: { type: "defer_start" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const [original] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
+          OrchestrationV2Run,
+        ];
+        const work = [
+          { kind: "shell" as const, label: "sleep 5400", id: "shell-1", awaited: true as const },
+        ];
+        yield* eventSink.commitCommand({
+          commandId: CommandId.make(`${threadId}:reconcile`),
+          threadId,
+          commandType: "provider-runtime.reconcile",
+          acceptedAt: stoppedAt,
+          events: [
+            {
+              id: EventId.make(`${threadId}:run`),
+              type: "run.updated",
+              threadId,
+              runId: original.id,
+              occurredAt: turnEndedAt,
+              payload: {
+                ...original,
+                status: "completed",
+                completedAt: turnEndedAt,
+                restartCancelledBackgroundWork: work,
+              },
+            },
+            {
+              id: EventId.make(`${threadId}:notice`),
+              type: "turn-item.updated",
+              threadId,
+              runId: original.id,
+              occurredAt: stoppedAt,
+              payload: backgroundWorkStoppedNotice({
+                run: original,
+                cause: "server-restarted",
+                work,
+                stoppedAt,
+                now: stoppedAt,
+                ordinal: 5,
+              }),
+            },
+          ],
+          effects: [],
+        });
+        yield* TestClock.adjust("5 minutes");
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "agent",
+          creationSource: "server",
+          commandId: CommandId.make(`${threadId}:continuation`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:continuation`),
+          text: "Note: the T3 server restarted.",
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: "start_immediately" },
+          restartContinuationOfRunId: original.id,
+        });
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        const skipped = scenario === "moved-on";
+        assert.equal(
+          after.thread.settledOverride,
+          skipped ? "settled" : null,
+          "only a task that moved on while the chat was stopped skips the continuation",
+        );
+        assert.lengthOf(after.runs, skipped ? 1 : 2);
+        assert.equal(
+          after.turnItems.some(
+            (item) => item.type === "system_notice" && item.message.startsWith("Skipped:"),
+          ),
+          skipped,
+        );
+      }),
   );
 
   it.effect.each([

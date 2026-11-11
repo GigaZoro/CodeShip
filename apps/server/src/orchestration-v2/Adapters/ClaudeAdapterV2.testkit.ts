@@ -2832,8 +2832,11 @@ export const ClaudeOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarnes
     layerClaudeProviderAdapterRegistryReplay(transcript, options),
 };
 
-export function makeClaudeRestartReplayHarness(transcript: ClaudeAgentSdkReplayTranscript) {
-  const queryRunner = makeReplayQueryRunner(transcript);
+export function makeClaudeRestartReplayHarness(
+  transcript: ClaudeAgentSdkReplayTranscript,
+  options: { readonly replayGate?: ProviderReplayGate } = {},
+) {
+  const queryRunner = makeReplayQueryRunner(transcript, options);
   return {
     harness: {
       ...ClaudeOrchestratorReplayHarness,

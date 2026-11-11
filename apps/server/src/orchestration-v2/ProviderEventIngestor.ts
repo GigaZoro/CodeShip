@@ -3,6 +3,7 @@ import {
   CommandId,
   OrchestrationV2DomainEvent,
   OrchestrationV2StoredEvent,
+  type OrchestrationV2PendingBackgroundTask,
   type OrchestrationV2PlanArtifact,
   type OrchestrationV2Run,
   type OrchestrationV2Subagent,
@@ -41,6 +42,12 @@ import { makeProviderFailureTurnItem } from "@t3tools/provider-core/server/failu
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import { stripUnservedToolOutputImageBytes } from "./toolOutputImageBytes.ts";
 import { boundFileChangeForStorage } from "./WireProjection.ts";
+import {
+  backgroundWorkStoppedNotice,
+  cancelledRosterTaskWork,
+  isAwaitedWork,
+  mergeRestartCancelledBackgroundWork,
+} from "./RestartBackgroundNote.ts";
 
 export class ProviderEventNormalizeError extends Schema.TaggedError<ProviderEventNormalizeError>()(
   "ProviderEventNormalizeError",
@@ -456,6 +463,103 @@ export const layer: Layer.Layer<
       return events;
     });
 
+    /** Records on the reporting run what its process lost, like a restart does, in the roster's own write. */
+    const recordLostBackgroundWork = Effect.fn("ProviderEventIngestor.recordLostBackgroundWork")(
+      function* (
+        input: ProviderEventIngestInput,
+        lost: {
+          readonly threadId: ThreadId;
+          readonly providerThreadId: ProviderThreadId;
+          readonly tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
+        },
+      ) {
+        if (input.runId === undefined || lost.tasks.length === 0) return [];
+        const { runs } = yield* projections.getThreadRecords(lost.threadId, ["runs"], {
+          runIds: [input.runId],
+        });
+        const run = runs[0];
+        if (run === undefined || run.providerThreadId !== lost.providerThreadId) return [];
+        const work = lost.tasks.map(cancelledRosterTaskWork);
+        const now = yield* DateTime.now;
+        return [
+          yield* makeDomainEvent(input, {
+            type: "run.background-work-cancelled",
+            threadId: lost.threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: {
+              runId: run.id,
+              restartCancelledBackgroundWork: mergeRestartCancelledBackgroundWork(
+                run.restartCancelledBackgroundWork ?? [],
+                work,
+              ),
+            },
+          }),
+          yield* makeDomainEvent(input, {
+            type: "turn-item.updated",
+            threadId: lost.threadId,
+            runId: run.id,
+            nodeId: run.rootNodeId,
+            occurredAt: now,
+            payload: backgroundWorkStoppedNotice({
+              run,
+              cause: "process-ended",
+              work,
+              stoppedAt: now,
+              now,
+              // EventSink places the item after the run's existing items.
+              ordinal: 0,
+            }),
+          }),
+        ];
+      },
+    );
+
+    /** Wakes the chat now; restart recovery wakes it too if the server stops before this commits. */
+    const continueAfterLostBackgroundWork = Effect.fn(
+      "ProviderEventIngestor.continueAfterLostBackgroundWork",
+    )(function* (
+      input: ProviderEventIngestInput,
+      storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>,
+    ) {
+      const recorded = storedEvents.find(
+        (stored) => stored.event.type === "run.background-work-cancelled",
+      );
+      if (
+        recorded?.event.type !== "run.background-work-cancelled" ||
+        input.event.type !== "provider_thread.updated" ||
+        !(input.event.lostBackgroundTasks ?? []).some((task) =>
+          isAwaitedWork(cancelledRosterTaskWork(task)),
+        )
+      )
+        return;
+      const { runId } = recorded.event.payload;
+      const commandId = CommandId.make(`command:background-work-lost:${runId}`);
+      yield* eventSink
+        .writeWithEffects({
+          commandId,
+          events: [],
+          effects: [
+            {
+              id: `effect:restart-continuation:${runId}`,
+              commandId,
+              threadId: recorded.event.threadId,
+              request: { type: "provider-runtime.continue", sourceRunId: runId },
+            },
+          ],
+        })
+        .pipe(
+          retryLockTimeout,
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Failed to queue the wake for lost background work", {
+              threadId: recorded.event.threadId,
+              runId,
+              cause,
+            }),
+          ),
+        );
+    });
+
     const normalize: ProviderEventIngestorV2Shape["normalize"] =
       /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
       Effect.fnUntraced(
@@ -507,16 +611,21 @@ export const layer: Layer.Layer<
                 threadId,
                 payload: input.event.providerThread,
               });
-              return input.event.retainedNativeTurnIds === undefined
-                ? [updated]
-                : [
-                    updated,
-                    ...(yield* rollBackRewoundRuns(input, {
+              return [
+                updated,
+                ...(yield* recordLostBackgroundWork(input, {
+                  threadId,
+                  providerThreadId: input.event.providerThread.id,
+                  tasks: input.event.lostBackgroundTasks ?? [],
+                })),
+                ...(input.event.retainedNativeTurnIds === undefined
+                  ? []
+                  : yield* rollBackRewoundRuns(input, {
                       threadId,
                       providerThreadId: input.event.providerThread.id,
                       retainedNativeTurnIds: new Set(input.event.retainedNativeTurnIds),
                     })),
-                  ];
+              ];
             }
             case "provider_turn.updated":
               return [
@@ -788,6 +897,7 @@ export const layer: Layer.Layer<
                       ),
                     ),
               ),
+              Effect.tap((storedEvents) => continueAfterLostBackgroundWork(input, storedEvents)),
               Effect.tap((storedEvents) =>
                 Effect.gen(function* () {
                   if (storedEvents.length === 0 || input.event.type !== "provider_turn.updated")

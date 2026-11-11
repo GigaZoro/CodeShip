@@ -39,6 +39,7 @@ import {
 } from "@t3tools/provider-core/server/subagentProjection";
 import {
   awaitingProviderThreadId,
+  backgroundWorkStoppedNotice,
   cancelledRosterTaskWork,
   cancelledTurnItemWork,
   isAwaitedWork,
@@ -467,6 +468,14 @@ export const make = Effect.gen(function* () {
           ),
         );
       const events: Array<OrchestrationV2DomainEvent> = [];
+      // EventSink places a notice after its run's existing items.
+      const noticeOrdinal = (runId: RecoveryRun["id"]) =>
+        Math.max(
+          0,
+          ...projection.turnItems
+            .filter((item) => item.runId === runId)
+            .map((item) => item.ordinal),
+        ) + 1;
       const queuedRuns = projection.runs.filter((run) => run.status === "queued");
       const queuedMessages =
         queuedRuns.length === 0
@@ -658,14 +667,7 @@ export const make = Effect.gen(function* () {
             providerTurnId: null,
             nativeItemRef: null,
             parentItemId: null,
-            // EventSink places the item after the run's existing items.
-            ordinal:
-              Math.max(
-                0,
-                ...projection.turnItems
-                  .filter((item) => item.runId === run.id)
-                  .map((item) => item.ordinal),
-              ) + 1,
+            ordinal: noticeOrdinal(run.id),
             status: "completed",
             title: trigger === "startup" ? "Server restarted" : "Server shut down",
             startedAt: now,
@@ -820,6 +822,25 @@ export const make = Effect.gen(function* () {
             ),
           },
         });
+        // A cut run already explains itself with its server-recovery notice.
+        if (cutRunIds.has(noteRun.id)) continue;
+        events.push({
+          id: yield* allocateEventId(),
+          type: "turn-item.updated",
+          threadId: projection.thread.id,
+          runId: noteRun.id,
+          ...(noteRun.rootNodeId === null ? {} : { nodeId: noteRun.rootNodeId }),
+          providerInstanceId: noteRun.providerInstanceId,
+          occurredAt: now,
+          payload: backgroundWorkStoppedNotice({
+            run: noteRun,
+            cause: trigger === "startup" ? "server-restarted" : "server-shut-down",
+            work: entries.map((entry) => entry.work),
+            stoppedAt,
+            now,
+            ordinal: noticeOrdinal(noteRun.id),
+          }),
+        });
       }
       const continuationRun =
         continueAfterRestart && trigger === "startup"
@@ -830,12 +851,11 @@ export const make = Effect.gen(function* () {
           : undefined;
       const effects: Array<EffectOutbox.PendingOrchestrationEffectV2> = continuationRun
         ? [
-            {
-              id: `effect:restart-continuation:${continuationRun.id}`,
+            EffectOutbox.restartContinuationEffect({
               commandId,
               threadId: projection.thread.id,
-              request: { type: "provider-runtime.continue", sourceRunId: continuationRun.id },
-            },
+              sourceRunId: continuationRun.id,
+            }),
           ]
         : [];
       const stoppedSessions = projection.providerSessions.filter(
@@ -986,12 +1006,7 @@ export const make = Effect.gen(function* () {
           commandId,
           events: [],
           effects: [
-            {
-              id: `effect:restart-continuation:${run.id}`,
-              commandId,
-              threadId,
-              request: { type: "provider-runtime.continue", sourceRunId: run.id },
-            },
+            EffectOutbox.restartContinuationEffect({ commandId, threadId, sourceRunId: run.id }),
           ],
         });
       }).pipe(

@@ -9349,6 +9349,80 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect.each([
+    { ending: "ends on its own", deliberate: false },
+    { ending: "is closed by a runtime restart", deliberate: true },
+  ])("reports the awaited roster as lost only when an idle query $ending", ({ deliberate }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({
+          close: (sdkMessages) => Queue.shutdown(sdkMessages),
+        });
+        const awaitBackgroundTasks = harness.runtime.awaitBackgroundTasks;
+        if (awaitBackgroundTasks === undefined) {
+          throw new Error("Claude adapter runtime must expose awaitBackgroundTasks.");
+        }
+        const nextRoster = Effect.fn("nextRoster")(function* (
+          matches: (tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>) => boolean,
+        ) {
+          while (true) {
+            const event = yield* Queue.take(harness.providerThreadReceipts);
+            if (matches(event.providerThread.pendingBackgroundTasks ?? [])) return event;
+          }
+        });
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-claude-lost-roster"),
+            text: "Run the tests in the background and tell me when they finish.",
+            attachments: [],
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "background_tasks_changed",
+            tasks: [{ task_id: WAKE_TASK_ID, task_type: "local_bash", description: "tests" }],
+            uuid: "00000000-0000-4000-8000-000000000311",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* nextRoster((tasks) => tasks.length === 1);
+        yield* awaitBackgroundTasks({
+          providerThread: harness.providerThread,
+          taskIds: [WAKE_TASK_ID],
+          awaited: true,
+        });
+        yield* nextRoster((tasks) => tasks[0]?.awaited === true);
+        yield* Queue.offer(harness.sdkMessages, turnOneResult);
+        const terminal = yield* Queue.take(harness.terminalReceipts);
+
+        if (deliberate) {
+          yield* harness.runtime.interruptTurn({
+            providerThread: harness.providerThread,
+            providerTurnId: terminal.providerTurnId,
+            requestRuntimeRestart: true,
+          });
+        } else {
+          yield* Queue.shutdown(harness.sdkMessages);
+        }
+        const cleared = yield* nextRoster((tasks) => tasks.length === 0);
+        assert.equal(cleared.providerThread.status, "idle");
+        assert.deepStrictEqual(
+          cleared.lostBackgroundTasks?.map((task) => [task.taskId, task.awaited]),
+          deliberate ? undefined : [[WAKE_TASK_ID, true]],
+        );
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
   it.effect("keeps a running Claude monitor typed after many newer monitors end", () =>
     Effect.scoped(
       Effect.gen(function* () {

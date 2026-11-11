@@ -127,14 +127,73 @@ export function cancelledRosterTaskWork(task: OrchestrationV2PendingBackgroundTa
 
 const MAX_NOTE_ENTRIES = 10;
 
-/** Bounds entries and labels to protect the context budget. */
-export function restartCancelledBackgroundWorkNote(work: ReadonlyArray<Work>): string {
+function workList(work: ReadonlyArray<Work>): ReadonlyArray<string> {
   const omitted = work.length - MAX_NOTE_ENTRIES;
   return [
-    "Note: the T3 server restarted, and this background work was cancelled before it finished. It will not report back on its own, so resume or restart what you still need and wait for its result:",
     ...work.slice(0, MAX_NOTE_ENTRIES).map((entry) => `- ${entry.kind}: ${entry.label}`),
     ...(omitted > 0 ? [`- and ${omitted} more`] : []),
+  ];
+}
+
+/** Bounds entries and labels to protect the context budget. */
+export function restartCancelledBackgroundWorkNote(work: ReadonlyArray<Work>): string {
+  return [
+    "Note: this background work was cancelled before it finished, because the T3 server restarted or the agent process running it ended. It will not report back on its own, so resume or restart what you still need and wait for its result:",
+    ...workList(work),
   ].join("\n");
+}
+
+/** What ended background work without a report: its server, or the agent process that ran it. */
+export type BackgroundWorkStop = "server-restarted" | "server-shut-down" | "process-ended";
+
+const BACKGROUND_WORK_STOP_TEXT: Record<
+  BackgroundWorkStop,
+  { readonly title: string; readonly lead: string }
+> = {
+  "server-restarted": { title: "Server restarted", lead: "The server restarted" },
+  "server-shut-down": { title: "Server shut down", lead: "The server shut down" },
+  "process-ended": { title: "Agent process ended", lead: "The agent process ended" },
+};
+
+export function backgroundWorkStoppedNoticeId(runId: RunId) {
+  return derive.runSignalTurnItem({ runId, signal: "background-work-stopped" });
+}
+
+/**
+ * The thread's own record of background work a settled run lost, since the server log rotates.
+ * Its start is when the work stopped, which scheduled recovery reads as when the run stopped.
+ */
+export function backgroundWorkStoppedNotice(input: {
+  readonly run: Pick<OrchestrationV2Run, "id" | "threadId" | "rootNodeId" | "providerThreadId">;
+  readonly cause: BackgroundWorkStop;
+  readonly work: ReadonlyArray<Work>;
+  readonly stoppedAt: DateTime.Utc;
+  readonly now: DateTime.Utc;
+  readonly ordinal: number;
+}): Extract<OrchestrationV2TurnItem, { readonly type: "system_notice" }> {
+  const { title, lead } = BACKGROUND_WORK_STOP_TEXT[input.cause];
+  return {
+    id: backgroundWorkStoppedNoticeId(input.run.id),
+    threadId: input.run.threadId,
+    runId: input.run.id,
+    nodeId: input.run.rootNodeId,
+    providerThreadId: input.run.providerThreadId,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: input.ordinal,
+    status: "completed",
+    title,
+    startedAt: input.stoppedAt,
+    completedAt: input.now,
+    updatedAt: input.now,
+    type: "system_notice",
+    message: [
+      `${lead} and stopped background work before it finished:`,
+      ...workList(input.work),
+      ...(input.work.some(isAwaitedWork) ? ["This chat was waiting on it."] : []),
+    ].join("\n"),
+  };
 }
 
 type ProviderTurnState = Pick<
