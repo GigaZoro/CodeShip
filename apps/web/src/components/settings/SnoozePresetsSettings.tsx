@@ -22,6 +22,15 @@ import { formatShortTimestamp } from "../../timestampFormat";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import {
+  Dialog,
+  DialogPopup,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogPanel,
+  DialogFooter,
+} from "../ui/dialog";
+import {
   NumberField,
   NumberFieldDecrement,
   NumberFieldGroup,
@@ -122,6 +131,7 @@ function withWhen(
  */
 export function SnoozePresetsRow() {
   const settings = useScopedSettings();
+  const [open, setOpen] = useState(false);
   const updateSettings = useUpdateScopedSettings();
   const saved = settings.snoozePresets;
   const nowMinute = useNowMinute();
@@ -178,44 +188,75 @@ export function SnoozePresetsRow() {
   const replaceAt = (index: number, next: SnoozePresetSetting) =>
     save(presets.map((preset, candidate) => (candidate === index ? next : preset)));
 
+  const resetAction =
+    !mixed && sameSnoozePresets(presets, DEFAULT_SNOOZE_PRESETS) ? null : (
+      <SettingResetButton
+        label={t("snooze options")}
+        onClick={() => {
+          const sorted = sortSnoozeRows(
+            DEFAULT_SNOOZE_PRESETS,
+            freshKeys(DEFAULT_SNOOZE_PRESETS.length),
+            now,
+          );
+          save(sorted.presets, sorted.keys);
+        }}
+      />
+    );
   return (
     <SettingsRow
       serverScoped
       settingKeys={["snoozePresets"]}
       {...searchableSetting("snooze-options")}
-      description={t(
-        "Choices in every snooze menu, listed soonest first. Weekdays mean the next one after today.",
-      )}
-      resetAction={
-        !mixed && sameSnoozePresets(presets, DEFAULT_SNOOZE_PRESETS) ? null : (
-          <SettingResetButton
-            label={t("snooze options")}
-            onClick={() => {
-              const sorted = sortSnoozeRows(
-                DEFAULT_SNOOZE_PRESETS,
-                freshKeys(DEFAULT_SNOOZE_PRESETS.length),
-                now,
-              );
-              save(sorted.presets, sorted.keys);
-            }}
-          />
-        )
+      description={
+        <span className="block truncate">
+          {snoozeMenuSummary(presets, now, (date) =>
+            formatShortTimestamp(date.toISOString(), settings.timestampFormat),
+          )}
+        </span>
+      }
+      resetAction={resetAction}
+      control={
+        <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
+          {t("Edit")}
+        </Button>
       }
     >
-      <SnoozePresetList
-        presets={presets}
-        keys={keys}
-        timestampFormat={settings.timestampFormat}
-        onChange={replaceAt}
-        onRemove={(index) =>
-          save(
-            presets.filter((_, candidate) => candidate !== index),
-            keys.filter((_, candidate) => candidate !== index),
-          )
-        }
-        onAdd={() => save([...presets, nextCandidate(presets)], [...keys, ...freshKeys(1)])}
-        onSettle={() => setRows((current) => sortSnoozeRows(current.presets, current.keys, now))}
-      />
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogPopup className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{t("Snooze options")}</DialogTitle>
+            <DialogDescription>
+              {t(
+                "Choices in every snooze menu, listed soonest first. Weekdays mean the next one after today.",
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <SnoozePresetList
+              presets={presets}
+              keys={keys}
+              timestampFormat={settings.timestampFormat}
+              onChange={replaceAt}
+              onRemove={(index) =>
+                save(
+                  presets.filter((_, candidate) => candidate !== index),
+                  keys.filter((_, candidate) => candidate !== index),
+                )
+              }
+              onAdd={() => save([...presets, nextCandidate(presets)], [...keys, ...freshKeys(1)])}
+              onSettle={() =>
+                setRows((current) => sortSnoozeRows(current.presets, current.keys, now))
+              }
+            />
+          </DialogPanel>
+          <DialogFooter>
+            {resetAction}
+            <Button variant="outline" onClick={() => setOpen(false)}>
+              {t("Done")}
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
     </SettingsRow>
   );
 }
@@ -249,16 +290,6 @@ function SnoozePresetList(props: {
     return { tone: "menu", label: resolved.label, when: resolved.whenLabel } as const;
   });
 
-  const menuPresets = resolveSnoozePresets(now, { presets: props.presets, formatTime });
-  const repeatedLabels = new Set(
-    menuPresets
-      .map((preset) => preset.label)
-      .filter((label, index, labels) => labels.indexOf(label) !== index),
-  );
-  const menuOrder = menuPresets.map((preset) =>
-    repeatedLabels.has(preset.label) ? `${preset.label} ${preset.whenLabel}` : preset.label,
-  );
-
   return (
     <div
       className="flex flex-col gap-1.5 pt-3 pb-2"
@@ -281,10 +312,10 @@ function SnoozePresetList(props: {
             key={props.keys[index]}
             role="group"
             aria-label={t("Snooze option {number}", { number: index + 1 })}
-            className="flex flex-wrap items-center gap-2"
+            className="flex min-w-0 flex-col gap-2 border-b border-border/50 pb-3 sm:flex-row sm:flex-wrap sm:items-center"
           >
             <SnoozePresetFields preset={preset} onChange={(next) => props.onChange(index, next)} />
-            <div className="ml-auto flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+            <div className="flex w-full min-w-0 items-center justify-between gap-2 text-xs text-muted-foreground sm:ml-auto sm:w-auto">
               {preview.tone === "menu" ? (
                 <span className="truncate">
                   <span className="text-foreground">{preview.label}</span>
@@ -306,9 +337,7 @@ function SnoozePresetList(props: {
         );
       })}
       <p className="text-xs text-muted-foreground">
-        {menuOrder.length === 0
-          ? t("Menus offer only Custom…")
-          : t("Menu now: {options}", { options: menuOrder.join(" · ") })}
+        {snoozeMenuSummary(props.presets, now, formatTime)}
       </p>
       <div>
         <Button
@@ -341,7 +370,7 @@ function SnoozePresetFields(props: {
   // misclick on "When" can be undone without retyping it.
   const [memory, setMemory] = useState<KindMemory>({ minutes: 60, time: "09:00" });
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
       <Select
         value={when}
         items={labels}
@@ -470,4 +499,24 @@ function DurationFields(props: { minutes: number; onChange: (minutes: number) =>
       </Select>
     </>
   );
+}
+
+function snoozeMenuSummary(
+  presets: ReadonlyArray<SnoozePresetSetting>,
+  now: Date,
+  formatTime: (date: Date) => string,
+) {
+  const menuPresets = resolveSnoozePresets(now, { presets: presets, formatTime });
+  const repeatedLabels = new Set(
+    menuPresets
+      .map((preset) => preset.label)
+      .filter((label, index, labels) => labels.indexOf(label) !== index),
+  );
+  const menuOrder = menuPresets.map((preset) =>
+    repeatedLabels.has(preset.label) ? `${preset.label} ${preset.whenLabel}` : preset.label,
+  );
+
+  return menuOrder.length === 0
+    ? t("Menus offer only Custom…")
+    : t("Menu now: {options}", { options: menuOrder.join(" · ") });
 }

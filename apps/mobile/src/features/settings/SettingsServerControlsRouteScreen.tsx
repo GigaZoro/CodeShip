@@ -22,7 +22,6 @@ import {
   type ProjectScopedServerSettingKey,
 } from "@t3tools/contracts";
 import { useRef, useState } from "react";
-import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
@@ -88,6 +87,7 @@ const PAGE_PROJECT_KEYS: Record<SettingsPage, readonly ProjectScopedServerSettin
     "importAgentConversations",
     "sidebarAutoSettleOnMerge",
     "sidebarAutoSettleAfterDays",
+    "continueThreadsAfterServerUpdate",
   ],
   "source-control": [
     "defaultAutoPull",
@@ -98,7 +98,7 @@ const PAGE_PROJECT_KEYS: Record<SettingsPage, readonly ProjectScopedServerSettin
     "branchNamePrefix",
     "branchNameInstructions",
   ],
-  maintenance: ["continueThreadsAfterServerUpdate"],
+  maintenance: [],
 };
 
 const SUBMODULE_CHOICES: ReadonlyArray<{
@@ -701,34 +701,6 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       }))}
                       onChange={(value) => write(providerUpdatesPatch(value))}
                     />
-                    <View className="border-t border-border-subtle">
-                      <SettingsSwitchRow
-                        icon="arrow.uturn.forward"
-                        label={t("Continue after restart")}
-                        subtitle={managedSubtitle(
-                          "continueThreadsAfterServerUpdate",
-                          t("Resume interrupted threads after an update or restart."),
-                        )}
-                        value={uniform("continueThreadsAfterServerUpdate")}
-                        disabled={disabledFor("continueThreadsAfterServerUpdate")}
-                        onValueChange={(value) =>
-                          write({ continueThreadsAfterServerUpdate: value })
-                        }
-                      />
-                    </View>
-                    <View className="border-t border-border-subtle">
-                      <SettingsSwitchRow
-                        icon="wifi"
-                        label={t("Retry after network errors")}
-                        subtitle={managedSubtitle(
-                          "retryThreadsAfterNetworkErrors",
-                          t("Resume threads stopped by a lost connection once it is back."),
-                        )}
-                        value={uniform("retryThreadsAfterNetworkErrors")}
-                        disabled={disabledFor("retryThreadsAfterNetworkErrors")}
-                        onValueChange={(value) => write({ retryThreadsAfterNetworkErrors: value })}
-                      />
-                    </View>
                   </SettingsSection>
                 </>
               ) : null}

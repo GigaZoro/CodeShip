@@ -52,6 +52,12 @@ export const SETTINGS_DEVICE_ONLY_PATHS: ReadonlySet<string> = new Set([
   "/settings/connections",
 ]);
 
+/** Pages that follow the environment choice but not the project one. */
+const SETTINGS_ENVIRONMENT_ONLY_PATHS: ReadonlySet<string> = new Set([
+  "/settings/keybindings",
+  "/settings/diagnostics",
+]);
+
 interface SettingsScopeMenuProps {
   readonly value: SettingsScopeSearch;
   readonly groups: readonly SidebarProjectSnapshot[];
@@ -70,6 +76,26 @@ export function SettingsScopeSentence({
   const { environments } = useEnvironments();
   const sharedNotice = useSharedScopeNotice();
   if (scope === null || SETTINGS_DEVICE_ONLY_PATHS.has(pathname)) return null;
+  if (SETTINGS_ENVIRONMENT_ONLY_PATHS.has(pathname)) {
+    // One environment has nothing to choose, and a project never changes these pages.
+    if (environments.length <= 1) return null;
+    return (
+      <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 px-3 text-sm text-muted-foreground sm:px-4">
+        <span className="shrink-0">
+          {pathname === "/settings/diagnostics"
+            ? t("Showing diagnostics for")
+            : t("Applying settings for")}
+        </span>
+        <EnvironmentScopeMenu
+          value={{ machine: scope.search.machine }}
+          singleEnvironment={scope.singleEnvironment}
+          groups={scope.groups}
+          environments={environments}
+          onChange={scope.selectScope}
+        />
+      </p>
+    );
+  }
   const props: SettingsScopeMenuProps = {
     value: scope.search,
     singleEnvironment: scope.singleEnvironment,

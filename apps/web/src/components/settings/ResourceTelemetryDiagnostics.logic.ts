@@ -44,6 +44,16 @@ export function shouldShowResourceMonitorRetry(input: {
   );
 }
 
+export function hasLiveResourceCounters(input: {
+  readonly nativeStatus: ResourceTelemetrySourceStatus | null;
+  readonly sampleIntervalMs: number;
+}): boolean {
+  return (
+    input.sampleIntervalMs > 0 &&
+    (input.nativeStatus === "healthy" || input.nativeStatus === "degraded")
+  );
+}
+
 export function resourceHistoryBarHeight(input: {
   readonly value: number;
   readonly max: number;

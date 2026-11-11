@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { SettingsGroup } from "./SettingsGroup";
 import { t, tx } from "~/i18n";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
@@ -29,9 +30,7 @@ import {
   resolveProviderInstanceEnabled,
 } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t3tools/contracts/settings";
-import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import * as Arr from "effect/Array";
-import * as Duration from "effect/Duration";
 import * as Result from "effect/Result";
 import { PlusIcon } from "lucide-react";
 import { createContext, use, useRef, useState, type ReactNode } from "react";
@@ -82,7 +81,6 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import { useManagedPolicy } from "~/state/managedPolicy";
 import { ExpandableText } from "./ExpandableText";
-import { IntervalSecondsField } from "./IntervalSecondsField";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { AccountFailoverSettings } from "./AccountFailoverSettings";
 import { useSecretSources } from "./SecretSourceInput";
@@ -93,15 +91,8 @@ import { CodexSetupSection, CodexManagedRuntimeFields } from "./CodexSetupSectio
 import { readCodexSetupMode } from "./CodexSetupSection.logic";
 import { providerClients } from "./providerDriverMeta";
 import { searchableSetting } from "./settingsSearch";
+import { buildProviderInstanceUpdatePatch } from "./SettingsPanels.logic";
 import {
-  backgroundActivityOverrideSettings,
-  buildProviderInstanceUpdatePatch,
-  durationToSeconds,
-  isBackgroundIntervalOverridden,
-  PROVIDER_HEALTH_INTERVAL_STEP_SECONDS,
-} from "./SettingsPanels.logic";
-import {
-  PolicyTooltip,
   SettingResetButton,
   SettingsPageContainer,
   SettingsRow,
@@ -497,10 +488,6 @@ export function EnvironmentProviderSettings({
         (provider) =>
           provider.instanceId === defaultInstanceIdForDriver(ProviderDriverKind.make("cursor")),
       ),
-  );
-  const resolvedBackgroundActivity = resolveServerBackgroundActivitySettings(settings);
-  const providerHealthRefreshIntervalSeconds = durationToSeconds(
-    resolvedBackgroundActivity.providerHealthRefreshInterval,
   );
 
   const refreshProviders = () => {
@@ -979,70 +966,26 @@ export function EnvironmentProviderSettings({
       ) : null}
 
       {showsProviders ? (
-        <SettingsSection title={t("Advanced")}>
+        <SettingsSection title={t("Background activity")}>
           <SettingsRow
-            id={searchableSetting("provider-health-check-interval").id}
-            title={
-              <span className="inline-flex items-center gap-1.5">
-                {searchableSetting("provider-health-check-interval").title}
-                <PolicyTooltip>
-                  {t(
-                    "This interval is configured here, then the shared Background activity policy decides whether provider probes may run when the timer fires. Custom intervals appear as Advanced in Maintenance settings.",
-                  )}
-                </PolicyTooltip>
-              </span>
-            }
+            title={t("Health check interval")}
             description={t(
-              "Refresh provider status, versions, and models in the background. Set to 0 to disable.",
+              "Configure provider polling in Maintenance & about → Background activity.",
             )}
-            resetAction={
-              isBackgroundIntervalOverridden(settings, "providerHealthRefreshInterval") ? (
-                <span
-                  inert={!canWriteSettings}
-                  className={!canWriteSettings ? "opacity-50" : undefined}
-                >
-                  <SettingResetButton
-                    label={t("provider health check interval")}
-                    onClick={() =>
-                      updateSettings(
-                        backgroundActivityOverrideSettings(
-                          settings.backgroundActivity,
-                          resolvedBackgroundActivity,
-                          { providerHealthRefreshInterval: undefined },
-                        ),
-                      )
-                    }
-                  />
-                </span>
-              ) : null
-            }
             control={
-              <div
-                inert={!canWriteSettings}
-                aria-disabled={!canWriteSettings || undefined}
-                className={cn(
-                  "flex shrink-0 items-center gap-2",
-                  !canWriteSettings && "opacity-50 select-none",
-                )}
+              <Button
+                variant="outline"
+                size="sm"
+                render={
+                  <Link
+                    to="/settings/maintenance"
+                    search={{}}
+                    hash="provider-health-check-interval"
+                  />
+                }
               >
-                <IntervalSecondsField
-                  label={t("provider health check interval")}
-                  value={providerHealthRefreshIntervalSeconds}
-                  min={0}
-                  step={PROVIDER_HEALTH_INTERVAL_STEP_SECONDS}
-                  onCommit={(seconds, options) =>
-                    updateSettings(
-                      backgroundActivityOverrideSettings(
-                        settings.backgroundActivity,
-                        resolvedBackgroundActivity,
-                        { providerHealthRefreshInterval: Duration.seconds(seconds) },
-                      ),
-                      options,
-                    )
-                  }
-                />
-                <span className="text-xs text-muted-foreground">{t("seconds")}</span>
-              </div>
+                {t("Open")}
+              </Button>
             }
           />
         </SettingsSection>

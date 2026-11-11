@@ -73,7 +73,7 @@ No. Your code and prompts go from your machine to your provider (Anthropic, Open
 
 ## Worktrees are eating my disk. How do I clean them up?
 
-Open **Settings > Source control & worktrees** and turn on automatic worktree cleanup under **Cleanup**. To clean up now, use **Delete now** in **Settings > Maintenance & about**. Worktrees add up fast. One user cleared 500 GB. [Storage cleanup](./project-settings.md#storage-cleanup)
+Open **Settings > Maintenance & about > Storage & cleanup** to turn on automatic worktree cleanup or use **Delete now**. Worktrees add up fast. One user cleared 500 GB. [Storage cleanup](./project-settings.md#storage-cleanup)
 
 ## Is there voice input?
 

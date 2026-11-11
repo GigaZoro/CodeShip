@@ -611,7 +611,7 @@ answer its questions.
 
 ## Snooze until later
 
-To change the choices in the snooze menu, open **Settings → Threads → Snooze options**.
+To change the choices in the snooze menu, open **Settings → Threads → Snooze → Edit**.
 
 Archived threads are not a Settings page. Open them from **Archived threads** in the thread list's filter menu, **Open archived threads** in the command palette, or **View archived** in **Settings → Threads → Behavior**.
 Each option is a duration, such as 3 hours, or a time on a day, such as 9:00 PM
