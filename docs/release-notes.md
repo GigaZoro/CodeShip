@@ -1,3 +1,8 @@
+## 2026-11-11 — Accounts and device settings follow your machines
+
+- **Add an account once.** On machines that follow shared settings, adding, renaming, recoloring, turning off or removing a Claude, Codex, Antigravity or Cursor account reaches your other following machines, where it shows **Sign in** in **Manual steps**. Sign-ins, keys, folders and other local details never travel. An account removed elsewhere is deleted here only when it holds nothing of this machine's own; otherwise it is turned off and kept.
+- **Device settings follow you (optional).** Turn on **Use the same appearance and layout on all my devices** in **Settings → Appearance** on each desktop or browser. Fonts, sizes, sidebar layout, confirmations, diff and chat preferences, language and notifications then match across them. A device turning it on for the first time takes the settings the others already share.
+
 ## 2026-11-11 — Settings that follow your machines, and sign-ins in one pass
 
 - **Shared settings work across your machines.** Turn on **Follow shared settings** in **Settings → Machines & access** on each of your machines. Settings saved for all environments then go only to the machines that follow, including ones that were off at the time, and a machine that never opted in, such as a work machine, is never changed. Changes pass through machines that have their own newer edit, the edited machine's server stamps each change, and mobile saves the same way as web.
