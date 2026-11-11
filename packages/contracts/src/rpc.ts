@@ -17,13 +17,13 @@ import {
   McpAppUpdateModelContextInput,
 } from "./mcpApps.ts";
 import {
-  PeerLink,
   PeerLinkCreateInput,
   PeerLinkError,
   PeerLinkRemoveInput,
   PeerLinkRemoveResult,
   PeerLinkRequestAnswerInput,
   PeerLinkRequestError,
+  PeerLinkResult,
   PeerLinkSummary,
 } from "./peerLink.ts";
 import {
@@ -1031,7 +1031,7 @@ const WsPeerLinksListRpc = Rpc.make(WS_METHODS.peerLinksList, {
 
 const WsPeerLinksLinkRpc = Rpc.make(WS_METHODS.peerLinksLink, {
   payload: PeerLinkCreateInput,
-  success: PeerLink,
+  success: PeerLinkResult,
   error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
 });
 

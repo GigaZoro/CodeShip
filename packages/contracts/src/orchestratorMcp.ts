@@ -976,6 +976,36 @@ export const OrchestratorMcpEnvironmentUnlinkResult = Schema.Struct({
 export type OrchestratorMcpEnvironmentUnlinkResult =
   typeof OrchestratorMcpEnvironmentUnlinkResult.Type;
 
+/**
+ * A linked environment asking this one to link back to it. The environment that linked this
+ * one made a pairing code of its own for it; the code travels only over that link.
+ */
+export const OrchestratorMcpLinkBackInput = Schema.Struct({
+  environmentId: EnvironmentId.annotate({
+    description: "The environment that linked this one, and the one to link back to.",
+  }),
+  label: Schema.optional(TrimmedNonEmptyString).annotate({
+    description: "What the user calls it, to name it when it cannot be reached.",
+  }),
+  urls: Schema.NonEmptyArray(TrimmedNonEmptyString).annotate({
+    description: "Where it answers, most preferred first. Only those that prove to be it are used.",
+  }),
+  pairingCode: TrimmedNonEmptyString.annotate({
+    description: "A one-use pairing code from that environment.",
+  }),
+  access: AuthMcpClientAccess.annotate({
+    description: "What agents here may do there.",
+  }),
+});
+export type OrchestratorMcpLinkBackInput = typeof OrchestratorMcpLinkBackInput.Type;
+
+export const OrchestratorMcpLinkBackResult = Schema.Struct({
+  environmentId: EnvironmentId,
+  label: Schema.String,
+  access: AuthMcpClientAccess,
+});
+export type OrchestratorMcpLinkBackResult = typeof OrchestratorMcpLinkBackResult.Type;
+
 export const OrchestratorMcpDeleteScheduledTaskInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
   scheduledTaskId: ScheduledTaskId,

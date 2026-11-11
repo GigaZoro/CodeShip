@@ -8,6 +8,8 @@ import {
   OrchestratorMcpEnvironmentLinkResult,
   OrchestratorMcpEnvironmentLinksResult,
   OrchestratorMcpEnvironmentUnlinkInput,
+  OrchestratorMcpLinkBackInput,
+  OrchestratorMcpLinkBackResult,
   OrchestratorMcpEnvironmentUnlinkResult,
   OrchestratorMcpCreateThreadsInput,
   OrchestratorMcpCreateThreadsResult,
@@ -49,6 +51,7 @@ import * as Struct from "effect/Struct";
 
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
+import * as PeerLinkBack from "../../../peer/PeerLinkBack.ts";
 import * as PeerLinkRequests from "../../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../../peer/PeerLinks.ts";
 import * as SharedSettings from "../../../sharedSettings/SharedSettings.ts";
@@ -69,6 +72,8 @@ const linkingDependencies = [
   PeerLinkRequests.PeerLinkRequests,
   PeerLinks.PeerLinks,
 ];
+/** Linking this environment back to the machine that linked it. */
+const linkBackDependencies = [...dependencies, PeerLinkBack.PeerLinkBack];
 /** Serving the settings shared with other machines. */
 const sharedSettingsDependencies = [...dependencies, SharedSettings.SharedSettings];
 const threadMetadataDependencies = [
@@ -383,6 +388,20 @@ const EnvironmentLinkTool = Tool.make("t3_environment_link", {
   .annotate(Tool.OpenWorld, true)
   .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenWhileLinksOff);
 
+const LinkBackTool = Tool.make("t3_link_back", {
+  description:
+    "For a linked machine: link this environment back to it, with a pairing code it made. The machine linked this one with auto or full access and names only itself.",
+  parameters: OrchestratorMcpLinkBackInput,
+  success: OrchestratorMcpLinkBackResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies: linkBackDependencies,
+})
+  .annotate(Tool.Title, "Link back to the linking machine")
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.OpenWorld, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.visibleToPeerLinks);
+
 const EnvironmentUnlinkTool = Tool.make("t3_environment_unlink", {
   description:
     "Forget a linked environment. That machine's Connections list its session until revoked there.",
@@ -420,5 +439,6 @@ export const OrchestratorToolkit = Toolkit.make(
   ThreadInterruptTool,
   EnvironmentLinksTool,
   EnvironmentLinkTool,
+  LinkBackTool,
   EnvironmentUnlinkTool,
 );

@@ -20,6 +20,7 @@ import {
   type AuthWebSocketTicketResult,
   type AuthWebSocketTicketUse,
   DpopFailureReason,
+  type EnvironmentId,
   type DpopFailureReason as DpopFailureReasonType,
   mcpClientScopes,
 } from "@t3tools/contracts";
@@ -82,6 +83,8 @@ export interface McpClientSession {
   readonly access: AuthMcpClientAccess;
   /** Another T3.CodeShip environment's link, whose work here stays within it. */
   readonly peerLink: boolean;
+  /** The environment that link declared it signs in from, when it did. */
+  readonly peerEnvironmentId?: EnvironmentId;
 }
 
 export interface AuthenticatedSession {
@@ -555,6 +558,7 @@ export class EnvironmentAuth extends Context.Service<
       readonly label: string;
       readonly access: AuthMcpClientAccess;
       readonly peerLink: boolean;
+      readonly peerEnvironmentId?: EnvironmentId;
       readonly client: AuthClientMetadata;
     }) => Effect.Effect<
       {
@@ -1314,6 +1318,9 @@ export const make = Effect.gen(function* () {
                 ? (session.runtimeModeCeiling ?? "approval-required")
                 : "read-only",
               peerLink: session.peerLink === true,
+              ...(session.peerEnvironmentId === undefined
+                ? {}
+                : { peerEnvironmentId: session.peerEnvironmentId }),
             } satisfies McpClientSession)
           : Effect.fail(
               new ServerAuthInvalidCredentialError({
@@ -1348,6 +1355,9 @@ export const make = Effect.gen(function* () {
           ? {}
           : { runtimeModeCeiling: session.runtimeModeCeiling }),
         peerLink: true,
+        ...(session.peerEnvironmentId === undefined
+          ? {}
+          : { peerEnvironmentId: session.peerEnvironmentId }),
         client: session.client,
       })
       .pipe(Effect.mapError((cause) => new ServerAuthSessionTokenIssueError({ cause })));
@@ -1368,6 +1378,9 @@ export const make = Effect.gen(function* () {
         ttl: MCP_CLIENT_SESSION_TTL,
         ...(input.access === "read-only" ? {} : { runtimeModeCeiling: input.access }),
         peerLink: input.peerLink,
+        ...(input.peerEnvironmentId === undefined
+          ? {}
+          : { peerEnvironmentId: input.peerEnvironmentId }),
         client: { ...input.client, label: input.label, deviceType: "bot" },
       })
       .pipe(

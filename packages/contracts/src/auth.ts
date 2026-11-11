@@ -3,6 +3,7 @@ import * as HttpApiSchema from "effect/http-api/HttpApiSchema";
 
 import {
   AuthSessionId,
+  EnvironmentId,
   ForwardCompatibleArray,
   ClientSurface,
   ClientWebDeployment,
@@ -457,6 +458,11 @@ export const AuthMcpClientRegistration = Schema.Struct({
   software_id: Schema.optionalKey(Schema.String),
   redirect_uris: Schema.optionalKey(Schema.Array(Schema.String)),
   token_endpoint_auth_method: Schema.optionalKey(Schema.String),
+  /**
+   * A peer link names the environment it signs in from, so what it may ask for later can be
+   * limited to that environment. It only counts for a peer-link registration.
+   */
+  peer_environment_id: Schema.optionalKey(EnvironmentId),
 });
 export type AuthMcpClientRegistration = typeof AuthMcpClientRegistration.Type;
 

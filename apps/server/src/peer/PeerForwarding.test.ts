@@ -40,6 +40,7 @@ import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as SharedSettings from "../sharedSettings/SharedSettings.ts";
+import * as PeerLinkBack from "./PeerLinkBack.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
 
@@ -242,6 +243,7 @@ const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+          Layer.mock(PeerLinkBack.PeerLinkBack)({}),
           Layer.mock(SharedSettings.SharedSettings)({}),
         ),
       ),
@@ -325,6 +327,7 @@ const makeLaptop = Effect.gen(function* () {
         ServerSettings.layerTest(),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+        Layer.mock(PeerLinkBack.PeerLinkBack)({}),
         Layer.mock(SharedSettings.SharedSettings)({}),
       ),
     ),

@@ -23,6 +23,7 @@ import { ThreadLaunchService } from "../orchestration-v2/ThreadLaunchService.ts"
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 import { ThreadSearch } from "../orchestration-v2/ThreadSearch.ts";
 import { PeerForwarding } from "../peer/PeerForwarding.ts";
+import { PeerLinkBack } from "../peer/PeerLinkBack.ts";
 import { PeerLinkRequests } from "../peer/PeerLinkRequests.ts";
 import { PeerLinks } from "../peer/PeerLinks.ts";
 import { RemoteDelegation } from "../peer/RemoteDelegation.ts";
@@ -59,6 +60,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(OrchestratorV2)({}),
   Layer.mock(PeerForwarding)({}),
   Layer.mock(PeerLinkRequests)({}),
+  Layer.mock(PeerLinkBack)({}),
   Layer.mock(PeerLinks)({}),
   Layer.mock(PreviewAutomationBroker)({}),
   Layer.mock(PreviewBrowser)({}),
@@ -119,6 +121,7 @@ const codexAdditionalContext = () =>
 const PEER_LINK_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "t3_shared_scheduled_tasks",
   "t3_shared_settings",
+  "t3_link_back",
 ]);
 
 it.effect("agent context matches the committed budget", () =>

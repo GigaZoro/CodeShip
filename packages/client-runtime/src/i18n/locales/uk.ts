@@ -1373,6 +1373,8 @@ const catalog: MessageCatalog = {
   "{name} {state}": "{name}: {state}",
   "{name} account options": "Параметри облікового запису {name}",
   "{name} added": "{name} додано",
+  "{name} can link back only when this link has auto or full access. Otherwise link this machine from {name}.":
+    "{name} може зв’язати у відповідь, лише якщо цей зв’язок має авто або повний доступ. Інакше пов’яжіть цей комп’ютер з боку {name}.",
   "{name} enablement": "Увімкнення {name}",
   "{name} is a guest": "{name} – гість",
   "{name} is a guest. A new link ends their access.":
@@ -2190,6 +2192,7 @@ const catalog: MessageCatalog = {
   "Also in this stop": "Також на цьому етапі",
   "Also include skills in the / command menu. Skills always appear when you type $.":
     "Також додавати навички в меню команд «/». Навички завжди з’являються, коли ви вводите $.",
+  "Also let {name} reach this machine": "Також дозволити {name} доступ до цього комп’ютера",
   "Also on {machines}": "Також на: {machines}",
   "Also pauses background probes when the host or client is on battery.":
     "Також призупиняє фонові перевірки, коли хост або клієнт працює від батареї.",
@@ -2212,6 +2215,8 @@ const catalog: MessageCatalog = {
     "Агент читає зміни. Великі зміни займають кілька хвилин. Можете піти: ми повідомимо, коли все буде готово.",
   "An agent never gets more access there than its own mode here. Below full access, it can change only threads this link started, not that machine's own threads, projects or settings.":
     "Агент ніколи не отримує там більше доступу, ніж має його режим тут. Нижче повного доступу він може змінювати лише чати, запущені цим зв’язком, але не власні чати, проєкти чи налаштування того комп’ютера.",
+  "An agent there never gets more access here than its own mode there.":
+    "Агент там ніколи не отримує тут більше доступу, ніж має його режим там.",
   "An approval is already being answered, so your message wasn't sent.":
     "На схвалення вже відповідають, тому ваше повідомлення не надіслано.",
   "An attachment could not upload.": "Не вдалося відвантажити вкладення.",
@@ -6662,6 +6667,8 @@ const catalog: MessageCatalog = {
   "Lines {start}–{end}": "Рядки {start}–{end}",
   link: "посилання",
   Link: "Зв’язати",
+  "Link {here} from {name} to let it reach this machine.":
+    "Щоб надати доступ до цього комп’ютера, пов’яжіть {here} з боку {name}.",
   "Link {name}": "Зв’язати {name}",
   "Link {target}": "Зв’язати {target}",
   "Link {target} to this environment": "Зв’язати {target} із цим середовищем",
@@ -6706,6 +6713,9 @@ const catalog: MessageCatalog = {
   },
   "Linked {date}": "Зв’язано {date}",
   "Linked {name}": "Пов’язано: {name}",
+  "Linked {name} both ways": "Пов’язано в обидва боки: {name}",
+  "Linked {name}, but it cannot reach this machine yet":
+    "Пов’язано: {name}, але він ще не має доступу до цього комп’ютера",
   "Linked {target}": "Пов’язано: {target}",
   "Linked {target} · {access}": "Пов’язано: {target} · {access}",
   "Linked {term}": "Прикріплені {term}",
@@ -11350,6 +11360,7 @@ const catalog: MessageCatalog = {
     "Цей файл має розмір {size}. Файли тем займають лише кілька КБ, тому його не прочитано (ліміт {limit}).",
   "That host reaches {machine}, a different machine. Add it as its own environment instead.":
     "Цей хост веде на {machine}, інший комп’ютер. Додайте його як окреме середовище.",
+  "that machine": "інший комп’ютер",
   "That message already started, so the edit was discarded.":
     "Це повідомлення вже почало виконуватися, тому правку скасовано.",
   "That message already started. Your edit is back in the composer.":
@@ -12341,6 +12352,8 @@ const catalog: MessageCatalog = {
     "Цей комп’ютер офлайн. Показано останні відомі посилання.",
   "This machine is on your T3 Connect account. Use it as a fallback route.":
     "Цей комп’ютер є у вашому обліковому записі T3 Connect. Використайте його як резервний маршрут.",
+  "This machine links {name} back in the same step, so no second pairing code is typed there. Linked environments must be on there too.":
+    "Цей комп’ютер зв’яже {name} у відповідь тим самим кроком, тож другий код сполучення вводити там не потрібно. Пов’язані середовища мають бути ввімкнені й там.",
   "This machine was off or asleep at that time, and catching up is off.":
     "Цей комп’ютер у той час був вимкнений або в режимі сну, а надолуження вимкнено.",
   "This machine was off or asleep at that time, and the next run comes sooner.":
@@ -13674,6 +13687,7 @@ const catalog: MessageCatalog = {
   "What a message you send while the agent works does: steer the turn, queue until it ends, or stop and send.":
     "Що робить повідомлення, надіслане, поки агент працює: спрямовує хід, чекає в черзі до його завершення або зупиняє хід і надсилається.",
   "What agents here may do there": "Що агенти звідси можуть робити там",
+  "What agents there may do here": "Що агенти там можуть робити тут",
   "What it may do": "Що він може робити",
   "What should the agent do each time this runs?": "Що має робити агент під час кожного запуску?",
   "What should the agent do each time?": "Що агент має робити щоразу?",

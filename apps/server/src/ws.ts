@@ -2,6 +2,7 @@ import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
+import * as PeerLinkBack from "./peer/PeerLinkBack.ts";
 import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
 import * as PeerLinks from "./peer/PeerLinks.ts";
 
@@ -1411,6 +1412,7 @@ export const layerWsRpc = (
       const sharedSettings = yield* SharedSettings.SharedSettings;
       const secretResolver = yield* SecretResolver.SecretResolver;
       const peerLinks = yield* PeerLinks.PeerLinks;
+      const peerLinkBack = yield* PeerLinkBack.PeerLinkBack;
       const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
       const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
       const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
@@ -2620,7 +2622,7 @@ export const layerWsRpc = (
           ),
         [WS_METHODS.peerLinksList]: (_input) =>
           peerLinks.list.pipe(Effect.map((links) => ({ links }))),
-        [WS_METHODS.peerLinksLink]: (input) => peerLinks.link(input),
+        [WS_METHODS.peerLinksLink]: (input) => peerLinkBack.link(input),
         [WS_METHODS.peerLinksUnlink]: ({ environmentId }) =>
           peerLinks.unlink(environmentId).pipe(Effect.map((removed) => ({ removed }))),
         [WS_METHODS.peerLinksAnswerRequest]: (input) =>
@@ -3419,6 +3421,7 @@ export const layer = Layer.unwrap(
     const pullRequests = yield* PullRequestService.PullRequestService;
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
     const peerLinks = yield* PeerLinks.PeerLinks;
+    const peerLinkBack = yield* PeerLinkBack.PeerLinkBack;
     const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
     const sharedSettings = yield* SharedSettings.SharedSettings;
     const linkedScheduledTasks = yield* LinkedScheduledTasks.LinkedScheduledTasks;
@@ -3508,6 +3511,7 @@ export const layer = Layer.unwrap(
                 ),
               ),
               Layer.provide(Layer.succeed(PeerLinks.PeerLinks, peerLinks)),
+              Layer.provide(Layer.succeed(PeerLinkBack.PeerLinkBack, peerLinkBack)),
               Layer.provide(Layer.succeed(PeerLinkRequests.PeerLinkRequests, peerLinkRequests)),
               Layer.provide(Layer.succeed(SharedSettings.SharedSettings, sharedSettings)),
               // Server-lifetime: its background refresh and stored lists serve every client.
