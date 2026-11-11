@@ -166,8 +166,9 @@ export function machineSettingDifferences(
 ): MachineSettingDifference[] {
   return COMPARED_SETTINGS.flatMap((setting) => {
     const values = machines.flatMap((machine) => {
-      if (setting.resolve) return [{ machine, value: setting.resolve(machine.settings) }];
-      const value = machine.settings[setting.key];
+      const value = setting.resolve
+        ? setting.resolve(machine.settings)
+        : machine.settings[setting.key];
       return value === undefined ? [] : [{ machine, value }];
     });
     const first = values[0];
