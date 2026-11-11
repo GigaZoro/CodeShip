@@ -1,5 +1,7 @@
 import {
   type EnvironmentId,
+  type OrchestrationV2RestartHold,
+  OrchestrationV2RestartHoldError,
   type OrchestrationV2RestartHoldWork,
   type ProviderInstanceId,
   type ServerConfig,
@@ -62,7 +64,10 @@ import {
   withoutEnvironmentThemes,
 } from "./serverConfigProjection.ts";
 import { t } from "@t3tools/shared/i18n";
-import { untilListedRestartHoldWorkEnds } from "@t3tools/shared/restartHold";
+import {
+  untilListedRestartHoldWorkEnds,
+  untilRestartHoldIsEmpty,
+} from "@t3tools/shared/restartHold";
 
 export type { ServerConfigProjection } from "./serverConfigProjection.ts";
 
@@ -879,26 +884,31 @@ export function createServerEnvironmentAtoms<R, E>(
   );
   const updateStateAtom = (environmentId: EnvironmentId | null) =>
     environmentId === null ? EMPTY_SERVER_UPDATE_STATE_ATOM : updateStateValueAtom(environmentId);
-  /** Ends when the work chats there waited on has ended, or when the user decides first. */
+  /**
+   * Ends when the work chats there waited on has ended, or when the user decides first. With
+   * `untilIdle`, as for an automatic install, it also waits for work that started meanwhile.
+   */
   const awaitRestartHoldClear = Effect.fn("ServerUpdate.awaitRestartHoldClear")(function* (
     environmentId: EnvironmentId,
     atomRegistry: AtomRegistry.AtomRegistry,
     onWaiting: (work: ReadonlyArray<OrchestrationV2RestartHoldWork>) => void,
+    untilIdle = false,
   ) {
     const environmentRegistry = yield* EnvironmentRegistry.EnvironmentRegistry;
     const decisions = restartHoldDecisions(atomRegistry, environmentId);
     const waitingOnAtom = serverRestartHoldWaitingOnAtom(environmentId);
-    const cleared = untilListedRestartHoldWorkEnds(
-      environmentRegistry.followStream(
-        environmentId,
-        subscribe(WS_METHODS.serverWatchRestartHold, {}),
-      ),
-      (work) =>
-        Effect.sync(() => {
-          atomRegistry.set(waitingOnAtom, work);
-          onWaiting(work);
-        }),
+    const holds = environmentRegistry.followStream(
+      environmentId,
+      subscribe(WS_METHODS.serverWatchRestartHold, {}),
     );
+    const record = (work: ReadonlyArray<OrchestrationV2RestartHoldWork>) =>
+      Effect.sync(() => {
+        atomRegistry.set(waitingOnAtom, work);
+        onWaiting(work);
+      });
+    const cleared = untilIdle
+      ? untilRestartHoldIsEmpty(holds, record)
+      : untilListedRestartHoldWorkEnds(holds, record);
     const outcome = yield* Stream.merge(cleared, decisions).pipe(
       Stream.runHead,
       Effect.ensuring(Effect.sync(() => atomRegistry.set(waitingOnAtom, []))),
@@ -908,14 +918,41 @@ export function createServerEnvironmentAtoms<R, E>(
   const awaitRestartHold = createRuntimeCommand<
     EnvironmentRegistry.EnvironmentRegistry | R,
     E,
-    { readonly environmentId: EnvironmentId },
+    { readonly environmentId: EnvironmentId; readonly untilIdle?: boolean },
     "clear" | RestartHoldDecision,
     unknown
   >(runtime, {
     label: "environment-data:server:await-restart-hold",
     concurrency: { mode: "singleFlight", key: ({ environmentId }) => environmentId },
     execute: (input, atomRegistry) =>
-      awaitRestartHoldClear(input.environmentId, atomRegistry, () => undefined),
+      awaitRestartHoldClear(
+        input.environmentId,
+        atomRegistry,
+        () => undefined,
+        input.untilIdle === true,
+      ),
+  });
+  /** The work chats there wait on right now, for a last check before a restart. */
+  const readRestartHold = createRuntimeCommand<
+    EnvironmentRegistry.EnvironmentRegistry | R,
+    E,
+    { readonly environmentId: EnvironmentId },
+    OrchestrationV2RestartHold,
+    unknown
+  >(runtime, {
+    label: "environment-data:server:read-restart-hold",
+    execute: Effect.fn("ServerUpdate.readRestartHold")(function* (input) {
+      const environmentRegistry = yield* EnvironmentRegistry.EnvironmentRegistry;
+      const first = yield* environmentRegistry
+        .followStream(input.environmentId, subscribe(WS_METHODS.serverWatchRestartHold, {}))
+        .pipe(Stream.runHead);
+      if (Option.isNone(first)) {
+        return yield* new OrchestrationV2RestartHoldError({
+          message: "The server stopped reporting background work before it answered.",
+        });
+      }
+      return first.value;
+    }),
   });
   const restartHold = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
     label: "environment-data:server:restart-hold",
@@ -1347,6 +1384,7 @@ export function createServerEnvironmentAtoms<R, E>(
     databaseCompactionRecommendations,
     restartHold,
     awaitRestartHold,
+    readRestartHold,
     storageCleanupReport: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:storage-cleanup-report",
       tag: WS_METHODS.serverGetStorageCleanupReport,

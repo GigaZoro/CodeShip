@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import type { ManagedPolicyDocument } from "@t3tools/contracts";
+import { type ManagedPolicyDocument, ServerSelfUpdateError } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -236,6 +236,22 @@ it.layer(NodeServices.layer)("server self update", (it) => {
       expect(result).toEqual({ targetVersion: "1.2.0", method: "desktop-app" });
       expect(stages).toEqual(["downloading", "installing"]);
       expect(order).toEqual([]);
+    }),
+  );
+
+  it.effect("hands nothing to the launcher when the last check before it fails", () =>
+    Effect.gen(function* () {
+      const { selfUpdate, order } = yield* makeHarness();
+      const refused = yield* selfUpdate
+        .update({ targetVersion: "1.1.0" }, undefined, undefined, () =>
+          Effect.fail(new ServerSelfUpdateError({ reason: "a chat started background work" })),
+        )
+        .pipe(Effect.flip);
+
+      expect(refused.reason).toBe("a chat started background work");
+      expect(order).not.toContain("accept");
+      // Not left in flight: the next update goes ahead.
+      expect((yield* selfUpdate.update({ targetVersion: "1.1.0" })).updateId).toBe("launcher-id");
     }),
   );
 

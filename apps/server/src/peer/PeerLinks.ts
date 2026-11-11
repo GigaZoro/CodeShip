@@ -73,7 +73,14 @@ export class PeerLinks extends Context.Service<
   {
     /** Whether the Linked environments beta (Settings → Machines & access → Linked environments) is on here. */
     readonly enabled: Effect.Effect<boolean>;
-    readonly link: (input: PeerLinkCreateInput) => Effect.Effect<PeerLink, PeerLinkError>;
+    /**
+     * Links the environment at `input.url`. Linking an environment again replaces its link,
+     * unless `onlyNew` is set: then a stored link to it, expired or not, refuses the call.
+     */
+    readonly link: (
+      input: PeerLinkCreateInput,
+      options?: { readonly onlyNew?: boolean },
+    ) => Effect.Effect<PeerLink, PeerLinkError>;
     readonly renew: (environmentId: EnvironmentId) => Effect.Effect<void, PeerLinkError>;
     readonly start: Effect.Effect<void, never, Scope.Scope>;
     /**
@@ -416,7 +423,14 @@ const make = Effect.gen(function* () {
     return { primary, peer: descriptor.value, origins };
   });
 
-  const link: PeerLinks["Service"]["link"] = Effect.fn("PeerLinks.link")(function* (input) {
+  const alreadyLinked = (label: string) =>
+    new PeerLinkError({
+      reason: "already_linked",
+      message: `This environment already has a link to ${label}. Unlink it here first to link it again.`,
+    });
+
+  const link: PeerLinks["Service"]["link"] = Effect.fn("PeerLinks.link")(function* (input, opts) {
+    const onlyNew = opts?.onlyNew === true;
     if (!(yield* enabled)) {
       return yield* new PeerLinkError({ reason: "disabled", message: LINKED_ENVIRONMENTS_OFF });
     }
@@ -444,6 +458,10 @@ const make = Effect.gen(function* () {
         message: `${peer.label} runs a T3.CodeShip version that cannot keep a linked agent's limits. Update it, then link again.`,
       });
     }
+    // Checked before any code is sent, and again by the insert below for a link made meanwhile.
+    if (onlyNew && Option.isSome(yield* readRow(peer.environmentId))) {
+      return yield* alreadyLinked(peer.label);
+    }
     const issued = yield* signIn(primary, input, self);
     const now = yield* DateTime.now;
     const linked: PeerLink = {
@@ -465,6 +483,22 @@ const make = Effect.gen(function* () {
     // A token no row names could never be removed.
     const previous = yield* Effect.gen(function* () {
       const urlsJson = yield* encodeUrls(origins).pipe(Effect.catch(failStorage));
+      if (onlyNew) {
+        const inserted = yield* sql<{ readonly environment_id: string }>`
+          INSERT INTO peer_environment_links (
+            environment_id, secret_name, label, urls_json, access, linked_at, expires_at,
+            last_reached_at, last_error, fenced
+          ) VALUES (
+            ${linked.environmentId}, ${secretName}, ${linked.label}, ${urlsJson}, ${linked.access},
+            ${DateTime.formatIso(linked.linkedAt)}, ${DateTime.formatIso(linked.expiresAt)},
+            ${DateTime.formatIso(now)}, NULL, 1
+          )
+          ON CONFLICT (environment_id) DO NOTHING
+          RETURNING environment_id
+        `.pipe(Effect.catch(failStorage));
+        if (inserted.length === 0) return yield* alreadyLinked(peer.label);
+        return Option.none<PeerLinkRow>();
+      }
       const previous = yield* readRow(peer.environmentId);
       yield* sql`
         INSERT INTO peer_environment_links (

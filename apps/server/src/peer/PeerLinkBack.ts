@@ -5,6 +5,8 @@
  * own grant; the code travels only over the authenticated link, once.
  */
 import {
+  type AuthEnvironmentScope,
+  type EnvironmentAuthorizationError,
   mcpClientScopes,
   OrchestratorMcpFailure,
   type OrchestratorMcpLinkBackInput,
@@ -20,9 +22,11 @@ import {
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import { rpcAuthorizationError } from "../auth/RpcAuthorization.ts";
 import * as DirectEndpoints from "../environment/DirectEndpoints.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PeerLinks from "./PeerLinks.ts";
@@ -38,12 +42,17 @@ export class PeerLinkBack extends Context.Service<
     /**
      * Links the environment at `input.url`, and when `input.reverse` is set asks it to link
      * back. The link made here stands whatever the other side answers; `back` says how that
-     * went.
+     * went. The code for linking back grants `input.reverse.access` here, so the caller must
+     * hold every scope it carries, as for any pairing code it makes.
      */
-    readonly link: (input: PeerLinkCreateInput) => Effect.Effect<PeerLinkResult, PeerLinkError>;
+    readonly link: (
+      input: PeerLinkCreateInput,
+      caller: { readonly scopes: ReadonlyArray<AuthEnvironmentScope> },
+    ) => Effect.Effect<PeerLinkResult, PeerLinkError | EnvironmentAuthorizationError>;
     /**
      * Links back to the environment that asked, with the pairing code it made for this one.
-     * The caller's access to ask is checked before this runs (`McpToolAccess.linksBack`).
+     * The caller's access to ask is checked before this runs (`McpToolAccess.linksBack`), and
+     * it only ever adds a link: one this environment already has is never replaced.
      */
     readonly accept: (
       input: OrchestratorMcpLinkBackInput,
@@ -59,7 +68,8 @@ const toFailure = (error: PeerLinkError) =>
     code:
       error.reason === "disabled" ||
       error.reason === "incompatible" ||
-      error.reason === "pairing_rejected"
+      error.reason === "pairing_rejected" ||
+      error.reason === "already_linked"
         ? "capability_denied"
         : "orchestration_error",
     message: error.message,
@@ -90,9 +100,7 @@ const make = Effect.gen(function* () {
     reverse: PeerLinkReverseRequest,
   ) {
     if (!peerLinkAccessAllowsLinkBack(forward.access)) {
-      return notLinked(
-        `${forward.label} can link back only when it is linked with auto or full access.`,
-      );
+      return notLinked(`${forward.label} can link back only when it is linked with full access.`);
     }
     const urls = yield* ownUrls(reverse);
     if (urls.length === 0) {
@@ -134,37 +142,48 @@ const make = Effect.gen(function* () {
       })
       .pipe(
         Effect.map((): PeerLinkBackOutcome => ({ status: "linked", access: reverse.access })),
+        // A code nobody redeemed must not stay valid, also when the call is interrupted.
+        Effect.onExit((exit) =>
+          Exit.isSuccess(exit)
+            ? Effect.void
+            : environmentAuth.revokePairingLink(code.value.id).pipe(Effect.ignore),
+        ),
         Effect.catch((error) =>
-          // A code nobody redeemed must not stay valid.
-          environmentAuth
-            .revokePairingLink(code.value.id)
-            .pipe(
-              Effect.ignore,
-              Effect.as(notLinked(`${forward.label} did not link back: ${error.message}`)),
-            ),
+          Effect.succeed(notLinked(`${forward.label} did not link back: ${error.message}`)),
         ),
       );
   });
 
-  const link: PeerLinkBack["Service"]["link"] = Effect.fn("PeerLinkBack.link")(function* (input) {
-    const { reverse, ...forwardInput } = input;
-    const forward = yield* peerLinks.link(forwardInput);
-    if (reverse === undefined) return forward;
-    return { ...forward, back: yield* askToLinkBack(forward, reverse) };
-  });
+  const link: PeerLinkBack["Service"]["link"] = Effect.fn("PeerLinkBack.link")(
+    function* (input, caller) {
+      const { reverse, ...forwardInput } = input;
+      // Refused before linking anything, as `/api/auth/pairing-token` refuses such a code.
+      const missing =
+        reverse === undefined
+          ? undefined
+          : mcpClientScopes(reverse.access).find((scope) => !caller.scopes.includes(scope));
+      if (missing !== undefined) return yield* rpcAuthorizationError(missing);
+      const forward = yield* peerLinks.link(forwardInput);
+      if (reverse === undefined) return forward;
+      return { ...forward, back: yield* askToLinkBack(forward, reverse) };
+    },
+  );
 
   const accept: PeerLinkBack["Service"]["accept"] = Effect.fn("PeerLinkBack.accept")(
     function* (input) {
       const [url, ...alternateUrls] = input.urls;
       const linked = yield* peerLinks
-        .link({
-          url,
-          ...(alternateUrls.length === 0 ? {} : { alternateUrls }),
-          pairingCode: input.pairingCode,
-          access: input.access,
-          expectedEnvironmentId: input.environmentId,
-          ...(input.label === undefined ? {} : { expectedLabel: input.label }),
-        })
+        .link(
+          {
+            url,
+            ...(alternateUrls.length === 0 ? {} : { alternateUrls }),
+            pairingCode: input.pairingCode,
+            access: input.access,
+            expectedEnvironmentId: input.environmentId,
+            ...(input.label === undefined ? {} : { expectedLabel: input.label }),
+          },
+          { onlyNew: true },
+        )
         .pipe(Effect.mapError(toFailure));
       return {
         environmentId: linked.environmentId,

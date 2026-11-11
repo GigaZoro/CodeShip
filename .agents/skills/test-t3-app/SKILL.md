@@ -31,9 +31,10 @@ Press `Ctrl+Alt+Shift+R` for a picker (GNOME takes that key for screen
 recording), call `window.t3dev.replay("showcase")`
 with `preview_evaluate`, or run
 `node apps/server/src/bin.ts thread start --base-dir .t3 --provider devReplay --model showcase <project> "go"`.
-Dev servers run on their own empty provider homes, so real providers show as
-signed out: your real logins use rotating refresh tokens, and a second process
-refreshing one signs the account out. When the test needs real provider
+Dev servers run on their own empty provider homes, so Claude, Codex, Grok and
+Pi show as signed out and their real logins are never refreshed: they use
+rotating refresh tokens, and a second process refreshing one signs the account
+out. Cursor and OpenCode still use the real logins. When the test needs real provider
 behavior, start with `vp run dev --real-providers` (or
 `T3CODE_DEV_REAL_PROVIDERS=1`) and use that provider's cheapest model, such as
 Haiku for Claude or Luna for Codex.
