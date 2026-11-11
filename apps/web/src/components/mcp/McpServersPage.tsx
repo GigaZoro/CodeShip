@@ -36,6 +36,7 @@ import { runsOnAnotherComputer } from "../../state/loopbackEnvironment";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { failureMessage, reportFailure } from "../extensions/commandFailure";
+import type { McpFocus } from "../extensions/extensionsSearch";
 import {
   MachinePicker,
   ProviderListSkeleton,
@@ -1455,9 +1456,22 @@ function McpMachineServers(props: {
 }
 
 /** The MCP servers tab; its machine picker and search render in `controlsSlot`, the header's right. */
-export function McpServersPanel(props: { readonly controlsSlot: HTMLElement | null }) {
+export function McpServersPanel(props: {
+  readonly controlsSlot: HTMLElement | null;
+  /** A manual step opens the tab on its machine, filtered to its server. */
+  readonly focus: McpFocus;
+}) {
   const { machines, machine, selectMachine, connecting } = useProviderTargets("supportsMcpServers");
-  const [filter, setFilter] = useState("");
+  const [filter, setFilter] = useState(props.focus.server ?? "");
+  const focusedMachine = props.focus.environmentId;
+  const appliedMachine = useRef<EnvironmentId | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- applies the step's machine once it connects; the picker owns the choice afterwards
+  useEffect(() => {
+    if (!focusedMachine || appliedMachine.current === focusedMachine) return;
+    if (!machines.some((candidate) => candidate.machine.environmentId === focusedMachine)) return;
+    appliedMachine.current = focusedMachine;
+    selectMachine(focusedMachine);
+  }, [focusedMachine, machines, selectMachine]);
   // Each machine's list starts its providers, so comparing waits until asked for.
   const [compare, setCompare] = useLocalStorage(COMPARE_MACHINES_KEY, false, Schema.Boolean);
   const needle = filter.trim().toLowerCase();

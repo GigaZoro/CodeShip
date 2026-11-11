@@ -3,6 +3,7 @@ import {
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
+import { providerLoginExpiryText } from "@t3tools/client-runtime/providerLoginExpiryText";
 import type {
   EnvironmentId,
   ProviderAuthRespondInput,
@@ -10,9 +11,12 @@ import type {
   ProviderInstanceId,
   ServerProvider,
 } from "@t3tools/contracts";
+import { providerLoginExpiry } from "@t3tools/shared/providerLoginExpiry";
 import { lazy, Suspense, useRef, useState } from "react";
 import { CopyIcon } from "lucide-react";
 
+import { useNowMinute } from "../../hooks/useNowMinute";
+import { cn } from "../../lib/utils";
 import { writeTextToClipboard } from "../../hooks/useCopyToClipboard";
 import { ensureLocalApi } from "../../localApi";
 import { useEnvironmentQuery } from "../../state/query";
@@ -24,7 +28,10 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SettingsRow } from "./settingsLayout";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
-import { t, tx } from "~/i18n";
+import { getFormattingLocale, t, tx } from "~/i18n";
+
+const formatLoginDate = (iso: string) =>
+  new Intl.DateTimeFormat(getFormattingLocale(), { dateStyle: "medium" }).format(new Date(iso));
 
 const ProviderAuthTerminal = lazy(() => import("./ProviderAuthTerminal"));
 
@@ -41,6 +48,7 @@ export function ProviderAuthenticationSection({
   readonly provider: ServerProvider;
   readonly readOnly: boolean;
 }) {
+  const nowMinute = useNowMinute();
   const target = { environmentId, input: { instanceId } };
   const query = useEnvironmentQuery(serverEnvironment.providerAuthState(target));
   const commands = { reportFailure: false, reportDefect: false };
@@ -104,6 +112,15 @@ export function ProviderAuthenticationSection({
               ? t("Connect on {environment} to load models.", { environment: environmentLabel })
               : t("Sign in on {environment}.", { environment: environmentLabel })));
   const statusMessage = auth?.phase === "failed" ? auth.message : null;
+  const loginExpiry = providerLoginExpiry(
+    provider.auth.loginExpiresAt,
+    Date.parse(`${nowMinute}:00.000Z`),
+  );
+  // A lapsed login still reads as signed in until a request fails, so it is shown whatever the status.
+  const loginText =
+    loginExpiry && !active && unavailableReason === undefined
+      ? providerLoginExpiryText(loginExpiry, formatLoginDate)
+      : null;
   const disabled = readOnly || pending || query.error !== null || isDiscovering;
   const draftId = `${auth?.flowId ?? ""}:${interaction?.id ?? ""}`;
   const values = draft.id === draftId ? draft.values : {};
@@ -197,6 +214,17 @@ export function ProviderAuthenticationSection({
           <p role="status" className="[overflow-wrap:anywhere]">
             {statusMessage}
           </p>
+        ) : loginText ? (
+          <p
+            role={loginText.tone === "quiet" ? undefined : "status"}
+            className={cn(
+              "[overflow-wrap:anywhere]",
+              loginText.tone === "warning" && "text-warning-foreground",
+              loginText.tone === "error" && "text-destructive-foreground",
+            )}
+          >
+            {loginText.text}
+          </p>
         ) : undefined
       }
       control={
@@ -288,7 +316,7 @@ export function ProviderAuthenticationSection({
             ) : !active && !needsExternalSetup && provider.setup?.canAuthenticate !== false ? (
               <Button
                 size="sm"
-                variant="outline"
+                variant={signedIn && loginText?.actionLabel ? "default" : "outline"}
                 disabled={disabled || !provider.enabled || !provider.installed || !auth}
                 onClick={() =>
                   void run(() =>
@@ -305,7 +333,7 @@ export function ProviderAuthenticationSection({
                 }
               >
                 {signedIn
-                  ? t("Change account")
+                  ? (loginText?.actionLabel ?? t("Change account"))
                   : auth?.phase === "failed" || auth?.phase === "cancelled"
                     ? usesCredentials
                       ? t("Retry connection")

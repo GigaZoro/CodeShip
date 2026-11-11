@@ -15,6 +15,7 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import * as ProviderMcp from "./ProviderMcp.ts";
@@ -131,6 +132,28 @@ it.effect("ProviderMcp lists config servers first and reads again after a change
         .list({ instanceId: ProviderInstanceId.make("cursor") })
         .pipe(Effect.flip);
       assert.equal(unsupported.reason, "unsupported");
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("ProviderMcp.listRecent reuses an old list until it ages out or a change drops it", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness;
+    yield* Effect.gen(function* () {
+      const service = yield* ProviderMcp.ProviderMcp;
+      yield* service.list({ instanceId });
+      // Past the cache's 30 s but inside the poller's allowance: no second list.
+      yield* TestClock.adjust("5 minutes");
+      yield* service.listRecent(instanceId, "15 minutes");
+      assert.equal(yield* Ref.get(harness.listReads), 1);
+
+      yield* TestClock.adjust("11 minutes");
+      yield* service.listRecent(instanceId, "15 minutes");
+      assert.equal(yield* Ref.get(harness.listReads), 2);
+
+      yield* service.setEnabled({ instanceId, name: "alpha", enabled: false });
+      yield* service.listRecent(instanceId, "15 minutes");
+      assert.equal(yield* Ref.get(harness.listReads), 3);
     }).pipe(Effect.provide(harness.layer));
   }),
 );

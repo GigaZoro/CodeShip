@@ -20,6 +20,12 @@ as ones added with `claude mcp add --scope user`, into each account. Each accoun
 signs in to those servers on its own. **Sign out** signs that account out; sign the
 first provider out with `claude auth logout` in a terminal.
 
+A Claude sign-in expires on a schedule: the access token renews by itself, but the login stops
+working a few weeks after you last signed in, and every request then fails with "Login expired".
+Under **Account**, T3.CodeShip shows **Signed in until** the date the saved login ends, a warning in
+the last 7 days, and **Login expired** after that, each with **Sign in again**. It also lists the
+account under **Manual steps**. A login held by a `CLAUDE_CODE_OAUTH_TOKEN` has no such date.
+
 A provider signed in to the same account as another provider is unavailable until
 you sign it in to a different account. A Claude provider signed in with a
 `CLAUDE_CODE_OAUTH_TOKEN` shows as **Claude token**, because a token cannot read the

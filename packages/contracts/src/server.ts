@@ -70,6 +70,11 @@ export const ServerProviderAuth = Schema.Struct({
   subscriptionSharing: Schema.optional(Schema.Boolean),
   profileId: Schema.optional(TrimmedNonEmptyString),
   workspaceId: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * When the saved login stops renewing and needs signing in again. Absent when the provider has
+   * no such date or the server could not read it; a date in the past means the login has lapsed.
+   */
+  loginExpiresAt: Schema.optional(IsoDateTime),
 });
 export type ServerProviderAuth = typeof ServerProviderAuth.Type;
 

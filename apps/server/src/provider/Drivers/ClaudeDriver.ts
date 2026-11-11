@@ -34,6 +34,7 @@ import { claudeUsageReader } from "./claudeUsage.ts";
 import { makeClaudeScopedLimitNames } from "../claudeUsageLimits.ts";
 import * as ClaudeResetCredits from "../claudeResetCredits.ts";
 import { readClaudeAutoUpdatesChannel, setClaudeSkillOverride } from "./ClaudeSkills.ts";
+import { readClaudeLoginExpiry } from "../claudeLoginExpiry.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import {
   checkClaudeProviderStatus,
@@ -263,6 +264,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         : undefined,
     );
     const claudeEnvironment = yield* makeClaudeEnvironment(effectiveConfig, processEnv);
+    const readLoginExpiry = readClaudeLoginExpiry({
+      configDir,
+      claudeConfigDirEnv: claudeEnvironment.CLAUDE_CONFIG_DIR,
+      environment: claudeEnvironment,
+    }).pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
     const auth = yield* makeClaudeAuth({
       instanceId,
       binaryPath: effectiveConfig.binaryPath,
@@ -429,6 +439,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
                   Effect.provideService(FileSystem.FileSystem, fileSystem),
                   Effect.provideService(Path.Path, path),
                 ),
+              readLoginExpiry,
             ),
           ),
           Effect.tap((provider) =>

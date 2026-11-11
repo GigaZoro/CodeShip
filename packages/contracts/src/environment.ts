@@ -142,6 +142,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadLater: Schema.optionalKey(Schema.Boolean),
   /** Serves `manualSteps.list`, the Waiting steps of ThreadPage's Machine inbox. */
   manualSteps: Schema.optionalKey(Schema.Boolean),
+  /** Serves `manualSteps.detected`, the sign-ins this machine noticed on its own. */
+  detectedManualSteps: Schema.optionalKey(Schema.Boolean),
   threadProjectFromScratch: Schema.optionalKey(Schema.Boolean),
   threadTitleRegeneration: Schema.optionalKey(Schema.Boolean),
   threadVisitedTracking: Schema.optionalKey(Schema.Boolean),

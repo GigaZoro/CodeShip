@@ -1,6 +1,8 @@
 import {
   ManualStepsListError,
   WS_METHODS,
+  type DetectedManualStep,
+  type DetectedManualStepsResult,
   type EnvironmentId,
   type ManualStep,
   type ManualStepsListFailure,
@@ -23,9 +25,28 @@ export type ManualStepsSource =
   | { readonly status: "listed"; readonly steps: ReadonlyArray<ManualStep> }
   | { readonly status: "failed"; readonly reason: ManualStepsListFailure | "offline" };
 
+/** One machine's answer to `manualSteps.detected`. */
+export type DetectedManualStepsSource =
+  | { readonly status: "loading" }
+  | {
+      readonly status: "listed";
+      readonly environmentId: EnvironmentId;
+      readonly steps: ReadonlyArray<DetectedManualStep>;
+    }
+  | { readonly status: "failed" };
+
+/** A step a machine found on its own, with the environment whose settings fix it. */
+export interface DetectedManualStepEntry {
+  readonly environmentId: EnvironmentId;
+  readonly step: DetectedManualStep;
+}
+
 export interface ManualStepGroup {
   readonly machine: string;
+  /** The Waiting steps from ThreadPage. */
   readonly steps: ReadonlyArray<ManualStep>;
+  /** Sign-ins this machine's server noticed itself, most urgent first. */
+  readonly detected: ReadonlyArray<DetectedManualStepEntry>;
 }
 
 export type ManualStepsView =
@@ -37,6 +58,8 @@ export type ManualStepsView =
       readonly status: "listed";
       readonly groups: ReadonlyArray<ManualStepGroup>;
       readonly count: number;
+      /** Why no ThreadPage steps are shown while detected ones are; absent when ThreadPage listed. */
+      readonly threadPageIssue?: ManualStepsListFailure | "offline";
     };
 
 export interface ManualStepsState {
@@ -67,24 +90,48 @@ const byUrgency = (left: ManualStep, right: ManualStep) =>
   right.updatedAt.localeCompare(left.updatedAt) ||
   left.title.localeCompare(right.title);
 
+const DETECTED_KIND_ORDER: Record<DetectedManualStep["kind"], number> = {
+  "login-expired": 0,
+  "signed-out": 1,
+  "login-expiring": 2,
+  "mcp-needs-auth": 3,
+};
+
+const byDetectedUrgency = (left: DetectedManualStepEntry, right: DetectedManualStepEntry) =>
+  DETECTED_KIND_ORDER[left.step.kind] - DETECTED_KIND_ORDER[right.step.kind] ||
+  (left.step.accountName ?? left.step.driver).localeCompare(
+    right.step.accountName ?? right.step.driver,
+  ) ||
+  (left.step.serverName ?? "").localeCompare(right.step.serverName ?? "");
+
 /**
  * Every machine reads the same ThreadPage lists, so a step can arrive from several; it shows once.
  * Machines are grouped with money decisions first, then by name; inside a group money decisions
  * come first, then the most recently updated.
  */
-function groupManualSteps(steps: ReadonlyArray<ManualStep>): ReadonlyArray<ManualStepGroup> {
+function groupManualSteps(
+  steps: ReadonlyArray<ManualStep>,
+  detected: ReadonlyArray<DetectedManualStepEntry>,
+): ReadonlyArray<ManualStepGroup> {
   const byThread = new Map<string, ManualStep>();
   for (const step of steps) {
     const known = byThread.get(step.threadId);
     if (known === undefined || step.updatedAt > known.updatedAt) byThread.set(step.threadId, step);
   }
-  const byMachine = new Map<string, ManualStep[]>();
-  for (const step of byThread.values()) {
-    byMachine.set(step.machine, [...(byMachine.get(step.machine) ?? []), step]);
-  }
-  const groups = [...byMachine].map(([machine, machineSteps]) => ({
+  const byMachine = new Map<string, { steps: ManualStep[]; detected: DetectedManualStepEntry[] }>();
+  const machineOf = (machine: string) => {
+    const known = byMachine.get(machine);
+    if (known !== undefined) return known;
+    const created = { steps: [], detected: [] };
+    byMachine.set(machine, created);
+    return created;
+  };
+  for (const step of byThread.values()) machineOf(step.machine).steps.push(step);
+  for (const entry of detected) machineOf(entry.step.machine).detected.push(entry);
+  const groups = [...byMachine].map(([machine, found]) => ({
     machine,
-    steps: machineSteps.sort(byUrgency),
+    steps: found.steps.sort(byUrgency),
+    detected: found.detected.sort(byDetectedUrgency),
   }));
   const hasMoney = (group: ManualStepGroup) =>
     group.steps.some((step) => step.kind === "needs-you");
@@ -94,20 +141,48 @@ function groupManualSteps(steps: ReadonlyArray<ManualStep>): ReadonlyArray<Manua
   );
 }
 
-/** One machine's list is enough to show; a failure shows only when no machine listed. */
-export function combineManualSteps(sources: ReadonlyArray<ManualStepsSource>): ManualStepsView {
+/** One machine can be reached through several environments; a step shows once per machine. */
+function detectedEntries(
+  sources: ReadonlyArray<DetectedManualStepsSource>,
+): ReadonlyArray<DetectedManualStepEntry> {
+  const entries = new Map<string, DetectedManualStepEntry>();
+  for (const source of sources) {
+    if (source.status !== "listed") continue;
+    for (const step of source.steps) {
+      const key = JSON.stringify([step.machine, step.id]);
+      if (!entries.has(key)) entries.set(key, { environmentId: source.environmentId, step });
+    }
+  }
+  return [...entries.values()];
+}
+
+/**
+ * One machine's ThreadPage list is enough to show, and detected steps need no ThreadPage at all.
+ * A ThreadPage failure shows alone only when nothing else is there to show.
+ */
+export function combineManualSteps(
+  sources: ReadonlyArray<ManualStepsSource>,
+  detectedSources: ReadonlyArray<DetectedManualStepsSource> = [],
+): ManualStepsView {
   const listed = sources.flatMap((source) => (source.status === "listed" ? [source.steps] : []));
-  if (listed.length > 0) {
-    const groups = groupManualSteps(listed.flat());
+  const detected = detectedEntries(detectedSources);
+  const failures = sources.flatMap((source) => (source.status === "failed" ? [source] : []));
+  const failure = failures.find((source) => source.reason !== "offline") ?? failures[0];
+  if (listed.length > 0 || detected.length > 0) {
+    const groups = groupManualSteps(listed.flat(), detected);
     return {
       status: "listed",
       groups,
-      count: groups.reduce((total, group) => total + group.steps.length, 0),
+      count: groups.reduce((total, group) => total + group.steps.length + group.detected.length, 0),
+      ...(listed.length === 0 && failure !== undefined ? { threadPageIssue: failure.reason } : {}),
     };
   }
-  if (sources.some((source) => source.status === "loading")) return { status: "loading" };
-  const failures = sources.flatMap((source) => (source.status === "failed" ? [source] : []));
-  const failure = failures.find((source) => source.reason !== "offline") ?? failures[0];
+  if (
+    sources.some((source) => source.status === "loading") ||
+    detectedSources.some((source) => source.status === "loading")
+  ) {
+    return { status: "loading" };
+  }
   return failure === undefined ? { status: "not-connected" } : failure;
 }
 
@@ -131,14 +206,37 @@ function manualStepsSource(
   };
 }
 
-/** The key of `view` for the connected servers that serve the list, or null when none does. */
+function detectedManualStepsSource(
+  environmentId: EnvironmentId,
+  result: AsyncResult.AsyncResult<DetectedManualStepsResult, unknown>,
+): DetectedManualStepsSource {
+  const value = AsyncResult.value(result);
+  if (Option.isSome(value)) {
+    return { status: "listed", environmentId, steps: value.value.steps };
+  }
+  return result._tag === "Failure" ? { status: "failed" } : { status: "loading" };
+}
+
+interface ManualStepsKey {
+  /** Environments that serve `manualSteps.list`. */
+  readonly list: ReadonlyArray<EnvironmentId>;
+  /** Environments that serve `manualSteps.detected`; older servers do not. */
+  readonly detected: ReadonlyArray<EnvironmentId>;
+}
+
+/** The key of `view` for the connected servers that serve either list, or null when none does. */
 export function manualStepsEnvironmentIdsKey(
   serverConfigs: ReadonlyMap<EnvironmentId, Pick<ServerConfig, "environment">>,
 ): string | null {
-  const environmentIds = [...serverConfigs]
-    .filter(([, config]) => config.environment.capabilities.manualSteps === true)
-    .map(([environmentId]) => environmentId);
-  return environmentIds.length === 0 ? null : JSON.stringify(environmentIds);
+  const serving = (capability: "manualSteps" | "detectedManualSteps") =>
+    [...serverConfigs]
+      .filter(([, config]) => config.environment.capabilities[capability] === true)
+      .map(([environmentId]) => environmentId);
+  const key: ManualStepsKey = {
+    list: serving("manualSteps"),
+    detected: serving("detectedManualSteps"),
+  };
+  return key.list.length === 0 && key.detected.length === 0 ? null : JSON.stringify(key);
 }
 
 export function createManualStepsEnvironmentAtoms<R, E>(
@@ -151,23 +249,79 @@ export function createManualStepsEnvironmentAtoms<R, E>(
     staleTimeMs: 60_000,
     refreshIntervalMs: 5 * 60_000,
   });
-  /** Keyed by a JSON array of the environment ids that serve `manualSteps.list`. */
+  const detected = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:manual-steps:detected",
+    tag: WS_METHODS.manualStepsDetected,
+    // Served from provider status the server already holds, so a sign-in clears within a minute.
+    staleTimeMs: 30_000,
+    refreshIntervalMs: 60_000,
+  });
+  /** Keyed by a JSON {@link ManualStepsKey}. */
   const view = Atom.family((environmentIdsKey: string) => {
-    const atoms = (JSON.parse(environmentIdsKey) as ReadonlyArray<EnvironmentId>).map(
-      (environmentId) => list({ environmentId, input: {} }),
+    const key = JSON.parse(environmentIdsKey) as ManualStepsKey;
+    const listAtoms = key.list.map((environmentId) => list({ environmentId, input: {} }));
+    const detectedAtoms = key.detected.map((environmentId) =>
+      detected({ environmentId, input: {} }),
     );
     return Atom.readable(
       (get): ManualStepsState => {
-        const results = atoms.map((atom) => get(atom));
+        const results = listAtoms.map((atom) => get(atom));
+        const detectedResults = detectedAtoms.map((atom) => get(atom));
         return {
-          view: combineManualSteps(results.map(manualStepsSource)),
-          refreshing: results.some((result) => result.waiting),
+          view: combineManualSteps(
+            results.map(manualStepsSource),
+            detectedResults.map((result, index) =>
+              detectedManualStepsSource(key.detected[index]!, result),
+            ),
+          ),
+          refreshing: [...results, ...detectedResults].some((result) => result.waiting),
         };
       },
       (refresh) => {
-        for (const atom of atoms) refresh(atom);
+        for (const atom of listAtoms) refresh(atom);
+        for (const atom of detectedAtoms) refresh(atom);
       },
     ).pipe(Atom.withLabel(`environment-data:manual-steps:view:${environmentIdsKey}`));
   });
-  return { list, view };
+  return { list, detected, view };
+}
+
+export interface DetectedManualStepText {
+  /** What to do, for the row's first line. */
+  readonly step: string;
+  /** Why, for the row's second line. */
+  readonly detail: string;
+}
+
+/** The words for a detected step; the caller names the driver and formats dates in its locale. */
+export function detectedManualStepText(
+  step: DetectedManualStep,
+  helpers: { readonly driverLabel: string; readonly formatDate: (iso: string) => string },
+): DetectedManualStepText {
+  const name = step.accountName?.trim();
+  const account =
+    name && name.toLowerCase() !== helpers.driverLabel.toLowerCase()
+      ? `${helpers.driverLabel} · ${name}`
+      : helpers.driverLabel;
+  switch (step.kind) {
+    case "signed-out":
+      return { step: t("Sign in to {account}", { account }), detail: t("Signed out") };
+    case "login-expiring":
+      return {
+        step: t("Sign in to {account} again", { account }),
+        detail: step.expiresAt
+          ? t("Login ends {date}", { date: helpers.formatDate(step.expiresAt) })
+          : t("Login ends soon"),
+      };
+    case "login-expired":
+      return { step: t("Sign in to {account} again", { account }), detail: t("Login expired") };
+    case "mcp-needs-auth":
+      return {
+        step: t("Sign in to {server} for {account}", {
+          server: step.serverDisplayName?.trim() || step.serverName || "MCP",
+          account,
+        }),
+        detail: t("MCP server needs sign-in"),
+      };
+  }
 }

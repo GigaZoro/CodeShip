@@ -390,7 +390,11 @@ import {
   ProviderConsumeResetCreditResult,
 } from "./providerUsageLimits.ts";
 import { UsagePricing, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
-import { ManualStepsListError, ManualStepsListResult } from "./manualSteps.ts";
+import {
+  DetectedManualStepsResult,
+  ManualStepsListError,
+  ManualStepsListResult,
+} from "./manualSteps.ts";
 import {
   StorageCleanupReport,
   DatabaseStorageStatus,
@@ -581,6 +585,7 @@ export const WS_METHODS = {
   serverGetStorageCleanupReport: "server.getStorageCleanupReport",
   serverGetDatabaseStorage: "server.getDatabaseStorage",
   manualStepsList: "manualSteps.list",
+  manualStepsDetected: "manualSteps.detected",
   serverWatchRestartHold: "server.watchRestartHold",
   peerLinksList: "peerLinks.list",
   peerLinksLink: "peerLinks.link",
@@ -990,6 +995,12 @@ const WsManualStepsListRpc = Rpc.make(WS_METHODS.manualStepsList, {
   payload: Schema.Struct({}),
   success: ManualStepsListResult,
   error: Schema.Union([ManualStepsListError, EnvironmentAuthorizationError]),
+});
+
+const WsManualStepsDetectedRpc = Rpc.make(WS_METHODS.manualStepsDetected, {
+  payload: Schema.Struct({}),
+  success: DetectedManualStepsResult,
+  error: EnvironmentAuthorizationError,
 });
 
 const WsPeerLinksListRpc = Rpc.make(WS_METHODS.peerLinksList, {
@@ -2299,6 +2310,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerUpdateSettingsRpc,
   WsServerUpdateProjectScriptsRpc,
   WsManualStepsListRpc,
+  WsManualStepsDetectedRpc,
   WsPeerLinksListRpc,
   WsPeerLinksLinkRpc,
   WsPeerLinksUnlinkRpc,
