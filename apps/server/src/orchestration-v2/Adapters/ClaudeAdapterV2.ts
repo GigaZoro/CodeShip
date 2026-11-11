@@ -206,6 +206,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import {
   makeProviderFailure,
   makeProviderRetryTurnItem,
+  AUTHENTICATION_FAILED_FAILURE_CODE,
 } from "@t3tools/provider-core/server/failure";
 import { turnScopedSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
 import { providerMessageTextWithAttachmentPaths } from "@t3tools/provider-core/server/attachmentPrompt";
@@ -3917,6 +3918,7 @@ function providerFailureFromResult(
   receivedAt: DateTime.Utc,
   failureHint?: string,
   usageLimited = false,
+  authenticationFailed = false,
 ): OrchestrationV2ProviderFailure | null {
   const gatewayResetAt =
     failureHint === undefined &&
@@ -3963,7 +3965,7 @@ function providerFailureFromResult(
   if (message.subtype !== "success") {
     return makeProviderFailure({
       message: listedError ?? structuredError ?? message.errors.join("\n"),
-      code: message.subtype,
+      code: authenticationFailed ? AUTHENTICATION_FAILED_FAILURE_CODE : message.subtype,
       class: failureClass,
     });
   }
@@ -3981,8 +3983,9 @@ function providerFailureFromResult(
       : undefined;
   return makeProviderFailure({
     message: listedError ?? structuredError ?? failureHint ?? message.result,
-    code:
-      apiErrorStatus === null
+    code: authenticationFailed
+      ? AUTHENTICATION_FAILED_FAILURE_CODE
+      : apiErrorStatus === null
         ? (message.terminal_reason ?? "sdk_result_error")
         : `api_error_${apiErrorStatus}`,
     class: failureClass,
@@ -4727,6 +4730,10 @@ export interface ClaudeAdapterV2Options {
   readonly queryRunner: ClaudeAgentSdkQueryRunnerShape;
   readonly scopedLimitNames?: Ref.Ref<ClaudeScopedLimitNames>;
   readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
+  /** A turn ended because Claude rejected this account's login; the account stops taking runs. */
+  readonly onAuthenticationFailed?: Effect.Effect<void>;
+  /** A turn ran on this account without a login failure, so a recorded failure no longer holds. */
+  readonly onAuthenticated?: Effect.Effect<void>;
   /** Runs before each Claude process starts, such as an added account copying shared config. */
   readonly prepareHome?: Effect.Effect<void>;
   readonly continuationRequests?: {
@@ -9754,6 +9761,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             // The CLI also labels 403 authentication_failed; show its text because login cannot grant access.
             const permissionDenied =
               message.subtype === "success" && message.api_error_status === 403;
+            // A 403 is a permission refusal; signing in again would not change it.
+            const signedOut =
+              context.authenticationFailureMessage !== undefined && !permissionDenied;
             const failureHint = permissionDenied
               ? message.result
               : (context.authenticationFailureMessage ??
@@ -9785,6 +9795,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     bufferedResultArrivals.get(message) ?? completedAt,
                     failureHint,
                     usageLimited,
+                    signedOut,
                   );
             const terminalFailure =
               resultFailure?.class === "usage_limit"
@@ -9805,6 +9816,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               result: message,
               ...(terminalFailure === null ? {} : { failure: terminalFailure }),
             });
+            if (signedOut) {
+              if (adapterOptions.onAuthenticationFailed) {
+                yield* adapterOptions.onAuthenticationFailed;
+              }
+            } else if (
+              !interrupted &&
+              (terminalFailure === null || usageLimited) &&
+              adapterOptions.onAuthenticated
+            ) {
+              yield* adapterOptions.onAuthenticated;
+            }
           }
         });
 
@@ -12029,7 +12051,14 @@ export type ClaudeAdapterV2DriverEnv =
 export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
   function* (
     input: ProviderAdapterDriverCreateInput<ClaudeSettings>,
-    hooks: Pick<ClaudeAdapterV2Options, "scopedLimitNames" | "onUsageLimits" | "prepareHome"> = {},
+    hooks: Pick<
+      ClaudeAdapterV2Options,
+      | "scopedLimitNames"
+      | "onUsageLimits"
+      | "onAuthenticationFailed"
+      | "onAuthenticated"
+      | "prepareHome"
+    > = {},
   ) {
     const { instanceId, environment, enabled, config } = input;
     const fileSystem = yield* FileSystem.FileSystem;

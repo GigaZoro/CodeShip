@@ -546,3 +546,77 @@ describe("model-scoped refusals", () => {
     assert.deepEqual(roomFor(refusal, overrides), expected);
   });
 });
+
+describe("failoverLimitedLaunch with a signed-out account", () => {
+  const codex = ProviderInstanceId.make("codex");
+  const pinned: ModelSelection = { instanceId: third, model: "claude-opus-5-5" };
+  const launch = (input: {
+    readonly providers: ReadonlyArray<ServerProvider>;
+    readonly fallback?: ModelSelection | null;
+  }) =>
+    failoverLimitedLaunch({
+      selection: pinned,
+      projectId,
+      providers: input.providers,
+      settings: {
+        ...settings([primary, second, third]),
+        fallbackModelSelection: input.fallback ?? null,
+      },
+      recordedLimits: new Map(),
+      nowMs,
+    });
+  const signedOut = provider(third, { status: "error", auth: { status: "unauthenticated" } });
+
+  it("starts on the first other account of its driver that can run", () => {
+    assert.equal(
+      launch({ providers: [signedOut, provider(second), provider(primary)] }).instanceId,
+      primary,
+    );
+  });
+
+  it("skips another signed-out account", () => {
+    const providers = [
+      signedOut,
+      provider(second),
+      provider(primary, { status: "error", auth: { status: "unauthenticated" } }),
+    ];
+    assert.equal(launch({ providers }).instanceId, second);
+  });
+
+  it("uses the fallback model when no account of its driver can run", () => {
+    const codexModel = {
+      slug: "gpt-5.5",
+      name: "GPT 5.5",
+      isCustom: false,
+      capabilities: null,
+    };
+    const providers = [
+      signedOut,
+      provider(second, { auth: { status: "unauthenticated" }, status: "error" }),
+      provider(codex, { driver: ProviderDriverKind.make("codex"), models: [codexModel] }),
+    ];
+    assert.deepEqual(launch({ providers, fallback: { instanceId: codex, model: "gpt-5.5" } }), {
+      instanceId: codex,
+      model: "gpt-5.5",
+    });
+    // Without a fallback the launch stays where it is, so the sign-in shows on the account.
+    assert.equal(launch({ providers }).instanceId, third);
+  });
+
+  it("does not hand a usage-limited account to the fallback", () => {
+    assert.equal(
+      failoverLimitedLaunch({
+        selection: pinned,
+        projectId,
+        providers: [provider(third), provider(codex, { driver: ProviderDriverKind.make("codex") })],
+        settings: {
+          ...settings([primary, second, third]),
+          fallbackModelSelection: { instanceId: codex, model: "gpt-5.5" },
+        },
+        recordedLimits: new Map([[third, [{ resetAt: null, refusedAt: "2026-11-03T11:00:00Z" }]]]),
+        nowMs,
+      }).instanceId,
+      third,
+    );
+  });
+});

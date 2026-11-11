@@ -214,6 +214,7 @@ it.effect(
           apply: () => Effect.void,
           getScheduledTaskRecoveryState: () => Effect.die("unused"),
           getLimitRecoveryCandidates: () => Effect.die("unused getLimitRecoveryCandidates"),
+          getSignedOutFailoverCandidates: () => Effect.die("unused getSignedOutFailoverCandidates"),
           getUsageLimitedProviderInstances: () =>
             Effect.die("unused getUsageLimitedProviderInstances"),
           getLimitRecoveryWakeAt: () => Effect.die("unused getLimitRecoveryWakeAt"),

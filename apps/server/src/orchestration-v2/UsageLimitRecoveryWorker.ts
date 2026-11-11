@@ -174,6 +174,59 @@ export function limitFailoverCommand(
   };
 }
 
+// A stop older than this is left to the person, as a lost connection's is.
+const MAX_SIGNED_OUT_FAILURE_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Moves a thread whose run a rejected login stopped before the agent did any work to the first
+ * other account of its driver that can run it. The agent never saw the message, so it is sent again.
+ * Only while the account still reads signed out: signing in again leaves the thread where it is.
+ */
+export function signedOutFailoverCommand(
+  input: AccountRoutingContext & {
+    readonly thread: ProjectionStore.ProjectionSignedOutCandidate;
+  },
+): Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> | null {
+  const { thread } = input;
+  if (
+    thread.archivedAt !== null ||
+    thread.settledOverride === "settled" ||
+    thread.latestRunProviderInstanceId !== thread.providerInstanceId ||
+    (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > input.nowMs)
+  )
+    return null;
+  const current = input.providers.find(
+    (provider) => provider.instanceId === thread.providerInstanceId,
+  );
+  if (current === undefined || current.auth.status !== "unauthenticated") return null;
+  const target = accountsWithRoom({
+    ...input,
+    driver: current.driver,
+    projectId: thread.projectId,
+    model: thread.modelSelection.model,
+  }).find((account) => account.instanceId !== current.instanceId);
+  if (target === undefined) return null;
+  const identity = `${thread.id}:${thread.latestRunId}:${target.instanceId}`;
+  return {
+    type: "message.dispatch",
+    commandId: CommandId.make(`signed-out-failover:${identity}`),
+    messageId: MessageId.make(`signed-out-failover:${identity}`),
+    threadId: thread.id,
+    automaticContinuationOfRunId: thread.latestRunId,
+    manualContinuationOfRunId: thread.latestRunId,
+    modelSelection: {
+      ...thread.modelSelection,
+      instanceId: target.instanceId,
+      model: target.model,
+    },
+    text: thread.messageText,
+    attachments: [],
+    dispatchMode: { type: "start_immediately" },
+    createdBy: "user",
+    creationSource: "server",
+  };
+}
+
 // Events that can make a thread a candidate or change its command; streaming items cannot.
 const affectsLimitRecovery = (event: OrchestrationV2DomainEvent) =>
   event.type.startsWith("thread.") ||
@@ -218,8 +271,14 @@ const makeSweep = Effect.gen(function* () {
       snooze: preferences.snoozeLimitedThreads,
       failover: preferences.failoverLimitedThreads,
     });
+    const signedOut = preferences.failoverLimitedThreads
+      ? yield* projections.getSignedOutFailoverCandidates({
+          now,
+          maxAgeMs: MAX_SIGNED_OUT_FAILURE_AGE_MS,
+        })
+      : [];
     const providers =
-      preferences.failoverLimitedThreads && candidates.length > 0
+      preferences.failoverLimitedThreads && (candidates.length > 0 || signedOut.length > 0)
         ? yield* providerRegistry.getProviders
         : null;
     const failover =
@@ -234,23 +293,39 @@ const makeSweep = Effect.gen(function* () {
             ),
             nowMs,
           };
+    const dispatchSwitch = (
+      command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
+      failureMessage: string,
+    ) =>
+      threads.dispatch(command).pipe(
+        Effect.as("switched" as const),
+        // This exact switch was refused on an earlier tick; warning again every tick adds nothing.
+        Effect.catchTags({
+          OrchestratorCommandPreviouslyRejectedError: () => Effect.succeed("refused" as const),
+        }),
+        Effect.catchCause((cause) =>
+          Effect.logWarning(failureMessage, { threadId: command.threadId, cause }).pipe(
+            Effect.as("failed" as const),
+          ),
+        ),
+      );
     let acted = false;
+    for (const thread of signedOut) {
+      const command = failover === null ? null : signedOutFailoverCommand({ ...failover, thread });
+      if (command === null) continue;
+      const outcome = yield* dispatchSwitch(
+        command,
+        "orchestration-v2.signed-out-failover.dispatch-failed",
+      );
+      if (outcome !== "refused") acted = true;
+    }
     for (const thread of candidates) {
       const failoverCommand =
         failover === null ? null : limitFailoverCommand({ ...failover, thread });
       if (failoverCommand !== null) {
-        const outcome = yield* threads.dispatch(failoverCommand).pipe(
-          Effect.as("switched" as const),
-          // This exact switch was refused on an earlier tick; warning again every tick adds nothing.
-          Effect.catchTags({
-            OrchestratorCommandPreviouslyRejectedError: () => Effect.succeed("refused" as const),
-          }),
-          Effect.catchCause((cause) =>
-            Effect.logWarning("orchestration-v2.limit-failover.dispatch-failed", {
-              threadId: thread.id,
-              cause,
-            }).pipe(Effect.as("failed" as const)),
-          ),
+        const outcome = yield* dispatchSwitch(
+          failoverCommand,
+          "orchestration-v2.limit-failover.dispatch-failed",
         );
         // A refused switch stays refused, so only a switch or a failed attempt re-checks next tick.
         if (outcome !== "refused") acted = true;

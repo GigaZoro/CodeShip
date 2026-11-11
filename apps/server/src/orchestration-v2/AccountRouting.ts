@@ -39,6 +39,7 @@ export interface AccountRoutingContext {
     | "failoverLimitedThreads"
     | "autoModeProvider"
     | "autoModeModels"
+    | "fallbackModelSelection"
   >;
   readonly providers: ReadonlyArray<ServerProvider>;
   /** Accounts with an uncleared usage refusal, including unknown resets. */
@@ -145,8 +146,8 @@ export function modelScopeHolds(
   return refusalEnds(provider, scoped, input.nowMs, canonicalModel(provider, model)).length > 0;
 }
 
-/** The model this subscription account would run for `model`, usage limits aside, or null when it cannot. */
-function usableModel(
+/** The model this account would run for `model`, usage limits aside, or null when it cannot. */
+function runnableModel(
   provider: ServerProvider,
   input: Pick<AccountRoutingContext, "settings"> & {
     readonly projectId: ProjectId;
@@ -158,12 +159,22 @@ function usableModel(
     !provider.installed ||
     provider.status === "error" ||
     provider.auth.status === "unauthenticated" ||
-    !isSubscriptionAccount(provider) ||
     !isProviderAvailable(provider) ||
     !resolveProjectProviderInstanceEnabled(input.settings, input.projectId, provider.instanceId)
   )
     return null;
   return resolveSelectableModel(provider.driver, input.model, provider.models);
+}
+
+/** The model this subscription account would run for `model`, usage limits aside, or null when it cannot. */
+function usableModel(
+  provider: ServerProvider,
+  input: Pick<AccountRoutingContext, "settings"> & {
+    readonly projectId: ProjectId;
+    readonly model: string;
+  },
+): string | null {
+  return isSubscriptionAccount(provider) ? runnableModel(provider, input) : null;
 }
 
 /** The model this subscription account would run for `model` now, or null when it cannot take the turn. */
@@ -267,9 +278,10 @@ export function routeAutoAccount(
 }
 
 /**
- * A new thread whose named account is out of usage starts on the first other account of its
- * provider with room. Only while account switching is on, like a thread that hits its limit;
- * Auto picks are routed when their message is sent.
+ * A new thread whose named account is out of usage or signed out starts on the first other account
+ * of its provider with room. A signed-out account with no such account hands the thread to the
+ * fallback model when that can run it. Only while account switching is on, like a thread that
+ * hits its limit; Auto picks are routed when their message is sent.
  */
 export function failoverLimitedLaunch(
   input: AccountRoutingContext & {
@@ -283,8 +295,10 @@ export function failoverLimitedLaunch(
   const current = input.providers.find(
     (provider) => provider.instanceId === input.selection.instanceId,
   );
+  if (current === undefined) return input.selection;
+  const signedOut = current.enabled && current.auth.status === "unauthenticated";
   if (
-    current === undefined ||
+    !signedOut &&
     accountLimitEnd(current, input.recordedLimits, input.nowMs, input.selection.model) === null
   ) {
     return input.selection;
@@ -294,9 +308,29 @@ export function failoverLimitedLaunch(
     driver: current.driver,
     model: input.selection.model,
   }).find((account) => account.instanceId !== current.instanceId);
-  return target === undefined
-    ? input.selection
-    : { ...input.selection, instanceId: target.instanceId, model: target.model };
+  if (target !== undefined) {
+    return { ...input.selection, instanceId: target.instanceId, model: target.model };
+  }
+  return signedOut ? (fallbackLaunch(input, current) ?? input.selection) : input.selection;
+}
+
+/** The fallback model selection, when it is another account that can take the launch now. */
+function fallbackLaunch(
+  input: AccountRoutingContext & { readonly projectId: ProjectId },
+  signedOut: ServerProvider,
+): ModelSelection | null {
+  const fallback = input.settings.fallbackModelSelection;
+  const provider = fallback
+    ? input.providers.find((candidate) => candidate.instanceId === fallback.instanceId)
+    : undefined;
+  if (!fallback || provider === undefined || provider.instanceId === signedOut.instanceId) {
+    return null;
+  }
+  const model = runnableModel(provider, { ...input, model: fallback.model });
+  return model === null ||
+    accountLimitEnd(provider, input.recordedLimits, input.nowMs, model) !== null
+    ? null
+    : { ...fallback, model };
 }
 
 export interface LaunchLimit {

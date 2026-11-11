@@ -36,6 +36,7 @@ import { makeClaudeScopedLimitNames } from "../claudeUsageLimits.ts";
 import * as ClaudeResetCredits from "../claudeResetCredits.ts";
 import { readClaudeAutoUpdatesChannel, setClaudeSkillOverride } from "./ClaudeSkills.ts";
 import { readClaudeLoginExpiry } from "../claudeLoginExpiry.ts";
+import { makeClaudeAuthenticationFailure } from "../claudeSignedOut.ts";
 import { saveClaudeOAuthToken } from "../claudeOAuthToken.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
@@ -355,6 +356,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       });
 
     const scopedLimitNames = yield* makeClaudeScopedLimitNames;
+    const authenticationFailure = yield* makeClaudeAuthenticationFailure(readLoginExpiry);
+    // The cache and snapshot below do not exist yet; the hooks run only once they do.
+    const republishAuth = Effect.suspend(() =>
+      Cache.invalidateAll(capabilitiesProbeCache).pipe(
+        Effect.andThen(snapshot.refresh),
+        Effect.ignoreCause({ log: true }),
+      ),
+    );
     const orchestrationAdapter = yield* createClaudeAdapterV2(
       {
         instanceId,
@@ -367,6 +376,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       {
         scopedLimitNames,
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+        onAuthenticationFailed: authenticationFailure.record.pipe(Effect.andThen(republishAuth)),
+        onAuthenticated: authenticationFailure.clear.pipe(
+          Effect.flatMap((hadFailure) => (hadFailure ? republishAuth : Effect.void)),
+        ),
         prepareHome: copyMcpServers,
       },
     ).pipe(
@@ -473,6 +486,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
               : Effect.void,
           ),
           Effect.map(stampIdentity),
+          Effect.flatMap(authenticationFailure.apply),
         ),
       ),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -518,8 +532,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
 
     yield* auth.controller.subscribe("claude-account-snapshot").pipe(
       Stream.filter((state) => ["idle", "succeeded", "failed", "cancelled"].includes(state.phase)),
-      Stream.runForEach(() =>
-        Cache.invalidateAll(capabilitiesProbeCache).pipe(
+      Stream.runForEach((state) =>
+        // A sign-in through T3.CodeShip ends the failure; one that failed or was cancelled leaves it.
+        (state.phase === "succeeded" ? authenticationFailure.clear : Effect.void).pipe(
+          Effect.andThen(Cache.invalidateAll(capabilitiesProbeCache)),
           Effect.andThen(snapshot.refresh),
           Effect.ignoreCause({ log: true }),
         ),

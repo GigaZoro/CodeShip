@@ -36,6 +36,9 @@ export class ContextHandoffBackgroundWorkError extends Schema.TaggedError<Contex
   }
 }
 
+/** The failure code of a turn a provider refused because the account's login no longer works. */
+export const AUTHENTICATION_FAILED_FAILURE_CODE = "authentication_failed";
+
 export const MAX_PROVIDER_FAILURE_MESSAGE_LENGTH = 4_096;
 const MAX_PROVIDER_FAILURE_CODE_LENGTH = 128;
 

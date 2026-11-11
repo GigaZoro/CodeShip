@@ -4987,6 +4987,136 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
+  it.effect("lists threads a rejected login stopped before the agent did any work", () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = yield* addRolledBackRecoveryCandidate("signed-out");
+      const previous = (yield* store.getThreadProjection(threadId)).runs[0]!;
+      const now = yield* DateTime.now;
+      const failedRunId = RunId.make("run:signed-out:failed");
+      const rootNodeId = NodeId.make("node:signed-out:failed");
+      const messageId = MessageId.make("message:signed-out:failed");
+      const run = {
+        ...previous,
+        id: failedRunId,
+        ordinal: previous.ordinal + 1,
+        rootNodeId,
+        userMessageId: messageId,
+        status: "failed" as const,
+        completedAt: DateTime.add(now, { seconds: 1 }),
+      };
+      const listed = (maxAgeMs = 60_000) =>
+        store
+          .getSignedOutFailoverCandidates({ now: DateTime.add(now, { seconds: 2 }), maxAgeMs })
+          .pipe(Effect.map((rows) => rows.find((row) => row.id === threadId)));
+      yield* store.apply({
+        id: EventId.make("event:signed-out:message"),
+        type: "message.updated",
+        threadId,
+        occurredAt: now,
+        payload: {
+          id: messageId,
+          threadId,
+          runId: failedRunId,
+          nodeId: rootNodeId,
+          createdBy: "user",
+          creationSource: "server",
+          role: "user",
+          text: "Summarise the inbox",
+          attachments: [],
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      yield* store.apply({
+        id: EventId.make("event:signed-out:run"),
+        type: "run.created",
+        threadId,
+        runId: failedRunId,
+        nodeId: rootNodeId,
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: { ...run, status: "running" as const, completedAt: null },
+      });
+      const errorItem = (code: string) => ({
+        id: TurnItemId.make("item:signed-out:error"),
+        threadId,
+        runId: failedRunId,
+        nodeId: rootNodeId,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "failed" as const,
+        title: "Claude could not authenticate",
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        type: "error" as const,
+        failure: {
+          class: "provider_error" as const,
+          message: "Claude could not authenticate.",
+          code,
+          retryable: null,
+        },
+      });
+      const withoutFailure = ({ failure: _failure, ...item }: ReturnType<typeof errorItem>) => item;
+      const applyError = (code: string) =>
+        store.apply({
+          id: EventId.make(`event:signed-out:error:${code}`),
+          type: "turn-item.updated",
+          threadId,
+          runId: failedRunId,
+          nodeId: rootNodeId,
+          driver,
+          occurredAt: now,
+          payload: errorItem(code),
+        });
+      yield* applyError("api_error_500");
+      yield* store.apply({
+        id: EventId.make("event:signed-out:failed:other"),
+        type: "run.updated",
+        threadId,
+        runId: failedRunId,
+        nodeId: rootNodeId,
+        driver,
+        occurredAt: now,
+        payload: run,
+      });
+      assert.isUndefined(yield* listed(), "another failure is not a rejected login");
+
+      yield* applyError("authentication_failed");
+      const candidate = yield* listed();
+      assert.equal(candidate?.latestRunId, failedRunId);
+      assert.equal(candidate?.latestRunProviderInstanceId, providerInstanceId);
+      assert.equal(candidate?.messageText, "Summarise the inbox");
+      assert.isUndefined(yield* listed(500), "an older failure is left alone");
+
+      yield* store.apply({
+        id: EventId.make("event:signed-out:work"),
+        type: "turn-item.updated",
+        threadId,
+        runId: failedRunId,
+        nodeId: rootNodeId,
+        driver,
+        occurredAt: now,
+        payload: {
+          ...withoutFailure(errorItem("authentication_failed")),
+          id: TurnItemId.make("item:signed-out:work"),
+          ordinal: 2,
+          status: "completed" as const,
+          type: "command_execution" as const,
+          title: "ran",
+          input: "ls",
+        },
+      });
+      assert.isUndefined(yield* listed(), "a run that did work is not repeated on a new account");
+    }),
+  );
+
   it.effect("projects only the latest failed root turn's limit into SQL and memory shells", () =>
     Effect.gen(function* () {
       const store = yield* ProjectionStore.ProjectionStoreV2;

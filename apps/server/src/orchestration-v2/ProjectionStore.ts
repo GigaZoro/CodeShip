@@ -3,6 +3,7 @@ import {
   pendingGuestMessageCount,
 } from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
+import { AUTHENTICATION_FAILED_FAILURE_CODE } from "@t3tools/provider-core/server/failure";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -166,6 +167,24 @@ export const ProjectionStoreV2Error = Schema.Union([
   ProjectionStoreReadError,
 ]);
 export type ProjectionStoreV2Error = typeof ProjectionStoreV2Error.Type;
+
+/** A thread whose latest run a failed login stopped before the agent did any work. */
+export type ProjectionSignedOutCandidate = Pick<
+  OrchestrationV2ThreadShell,
+  | "id"
+  | "projectId"
+  | "providerInstanceId"
+  | "modelSelection"
+  | "archivedAt"
+  | "settledOverride"
+  | "snoozedUntil"
+> & {
+  readonly latestRunId: RunId;
+  /** The account whose login failed; the thread may point elsewhere since. */
+  readonly latestRunProviderInstanceId: ProviderInstanceId | null;
+  /** What the person asked, which the agent never saw. */
+  readonly messageText: string;
+};
 
 export type ProjectionRecoveryKind =
   | "queued-runs"
@@ -562,6 +581,14 @@ export interface ProjectionStoreV2Shape {
     readonly snooze: boolean;
     readonly failover?: boolean;
   }) => Effect.Effect<ReadonlyArray<ProjectionLimitRecoveryCandidate>, ProjectionStoreV2Error>;
+  /**
+   * Threads whose latest run failed on a rejected login before doing any work, within `maxAgeMs`,
+   * and whose message has no attachments to resend.
+   */
+  readonly getSignedOutFailoverCandidates: (options: {
+    readonly now: DateTime.Utc;
+    readonly maxAgeMs: number;
+  }) => Effect.Effect<ReadonlyArray<ProjectionSignedOutCandidate>, ProjectionStoreV2Error>;
   /**
    * Usage refusals that can still hold an account: a reset still ahead, or an unknown reset within
    * the longest hold (five hours). A completed run on the account started after the refusal drops
@@ -4161,6 +4188,90 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
 
+    const getSignedOutFailoverCandidates = Effect.fn(
+      "ProjectionStore.getSignedOutFailoverCandidates",
+    )(
+      function* (options: Parameters<ProjectionStoreV2Shape["getSignedOutFailoverCandidates"]>[0]) {
+        const cutoff = DateTime.formatIso(
+          DateTime.subtract(options.now, { milliseconds: options.maxAgeMs }),
+        );
+        const rows = yield* sql<{
+          readonly payload_json: string;
+          readonly run_id: string;
+          readonly provider_instance_id: string | null;
+          readonly message_payload_json: string;
+        }>`
+          SELECT t.payload_json, r.run_id, r.provider_instance_id, message.payload_json AS message_payload_json
+          FROM orchestration_v2_projection_threads t
+          INNER JOIN orchestration_v2_projection_runs r ON r.run_id = (
+            SELECT latest.run_id FROM orchestration_v2_projection_runs latest
+            WHERE latest.thread_id = t.thread_id
+              AND latest.status <> 'queued'
+              AND NOT (
+                latest.status = 'cancelled'
+                AND json_extract(latest.payload_json, '$.startedAt') IS NULL
+              )
+            ORDER BY latest.completed_at IS NULL DESC, latest.completed_at DESC,
+              latest.ordinal DESC, latest.run_id DESC
+            LIMIT 1
+          ) AND r.status = 'failed' AND r.completed_at > ${cutoff}
+          INNER JOIN orchestration_v2_projection_messages message
+            ON message.message_id = json_extract(r.payload_json, '$.userMessageId')
+          WHERE t.deleted_at IS NULL
+            -- Read only the recent failures, not every error the threads ever had.
+            AND t.thread_id IN (
+              SELECT failure.thread_id FROM orchestration_v2_projection_turn_items failure
+              WHERE failure.type = 'error' AND failure.status = 'failed'
+                AND failure.updated_at > ${cutoff}
+                AND json_extract(failure.payload_json, '$.failure.code') = ${AUTHENTICATION_FAILED_FAILURE_CODE}
+            )
+            AND json_extract(t.payload_json, '$.archivedAt') IS NULL
+            AND json_extract(t.payload_json, '$.settledOverride') IS NOT 'settled'
+            AND json_array_length(message.payload_json, '$.attachments') = 0
+            AND EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_turn_items error
+              WHERE error.thread_id = t.thread_id AND error.run_id = r.run_id
+                AND error.type = 'error' AND error.status = 'failed'
+                AND error.node_id IS json_extract(r.payload_json, '$.rootNodeId')
+                AND json_extract(error.payload_json, '$.failure.code') = ${AUTHENTICATION_FAILED_FAILURE_CODE}
+            )
+            -- Work the run did means the agent saw the message, and a new account would repeat it.
+            AND NOT EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_turn_items work
+              WHERE work.thread_id = t.thread_id AND work.run_id = r.run_id
+                AND work.type NOT IN ('error', 'user_message', 'notification', 'system_notice')
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_runtime_requests request
+              WHERE request.thread_id = t.thread_id AND request.status = 'pending'
+            )
+          ORDER BY t.thread_id
+        `;
+        const candidates: Array<ProjectionSignedOutCandidate> = [];
+        for (const row of rows) {
+          const thread = yield* decodeThreadPayload(row.payload_json);
+          const message = yield* decodeMessagePayload(row.message_payload_json);
+          candidates.push({
+            id: thread.id,
+            projectId: thread.projectId,
+            providerInstanceId: thread.providerInstanceId,
+            modelSelection: thread.modelSelection,
+            archivedAt: thread.archivedAt,
+            settledOverride: thread.settledOverride,
+            snoozedUntil: thread.snoozedUntil ?? null,
+            latestRunId: RunId.make(row.run_id),
+            latestRunProviderInstanceId:
+              row.provider_instance_id === null
+                ? null
+                : ProviderInstanceId.make(row.provider_instance_id),
+            messageText: message.text,
+          });
+        }
+        return candidates;
+      },
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
     // The model-scoped refusals on one account that a completed run in their scope, started after
     // them, lifts. Reads each later model once with its latest start, from the earliest refusal.
     const liftedScopedRefusals = Effect.fn("ProjectionStore.liftedScopedRefusals")(function* <
@@ -7588,6 +7699,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getProviderControlContext: readOnReader(getProviderControlContext),
       getScheduledTaskRecoveryState: readOnReader(getScheduledTaskRecoveryState),
       getLimitRecoveryCandidates: readOnReader(getLimitRecoveryCandidates),
+      getSignedOutFailoverCandidates: readOnReader(getSignedOutFailoverCandidates),
       getUsageLimitedProviderInstances: readOnReader(getUsageLimitedProviderInstances),
       getLimitRecoveryWakeAt: readOnReader(getLimitRecoveryWakeAt),
       getNetworkRecoveryCandidates: readOnReader(getNetworkRecoveryCandidates),

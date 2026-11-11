@@ -2967,6 +2967,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
   const makeWakeHarnessWithOptions = (options?: {
     readonly onUsageLimits?: ClaudeAdapterV2.ClaudeAdapterV2Options["onUsageLimits"];
+    readonly onAuthenticationFailed?: ClaudeAdapterV2.ClaudeAdapterV2Options["onAuthenticationFailed"];
+    readonly onAuthenticated?: ClaudeAdapterV2.ClaudeAdapterV2Options["onAuthenticated"];
     readonly scopedLimitNames?: ClaudeAdapterV2.ClaudeAdapterV2Options["scopedLimitNames"];
     readonly close?: (sdkMessages: Queue.Queue<SDKMessage>) => Effect.Effect<void>;
     readonly interrupt?: Effect.Effect<void, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
@@ -3044,6 +3046,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
         settings: options?.settings ?? DEFAULT_CLAUDE_SETTINGS,
         ...(options?.onUsageLimits ? { onUsageLimits: options.onUsageLimits } : {}),
+        ...(options?.onAuthenticationFailed
+          ? { onAuthenticationFailed: options.onAuthenticationFailed }
+          : {}),
+        ...(options?.onAuthenticated ? { onAuthenticated: options.onAuthenticated } : {}),
         ...(options?.scopedLimitNames ? { scopedLimitNames: options.scopedLimitNames } : {}),
         environment: options?.environment ?? {},
         attachmentsDir,
@@ -6078,8 +6084,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const configDir = "/synthetic/Claude config";
       // The adapter resolves the cwd on the host, which adds a drive letter on Windows.
       const cwd = NodePath.resolve("/synthetic/project");
+      const reports = yield* Ref.make<ReadonlyArray<string>>([]);
       const harness = yield* makeWakeHarnessWithOptions({
         environment: { CLAUDE_CONFIG_DIR: configDir },
+        onAuthenticationFailed: Ref.update(reports, (all) => [...all, "failed"]),
+        onAuthenticated: Ref.update(reports, (all) => [...all, "authenticated"]),
       });
       const now = yield* DateTime.now;
       yield* harness.runtime.startTurn(
@@ -6116,6 +6125,41 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.include(terminal.failure.message, configDir);
       assert.include(terminal.failure.message, JSON.stringify(cwd));
       assert.notInclude(terminal.failure.message, "repeated API errors");
+      // The code tells recovery this account's login failed, whatever the CLI worded.
+      assert.equal(terminal.failure.code, "authentication_failed");
+      assert.deepEqual(yield* Ref.get(reports), ["failed"]);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
+  it.effect("tells the provider a completed turn ran on a working login", () =>
+    Effect.gen(function* () {
+      const reports = yield* Ref.make<ReadonlyArray<string>>([]);
+      const harness = yield* makeWakeHarnessWithOptions({
+        onAuthenticationFailed: Ref.update(reports, (all) => [...all, "failed"]),
+        onAuthenticated: Ref.update(reports, (all) => [...all, "authenticated"]),
+      });
+      const now = yield* DateTime.now;
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now,
+          attemptId: RunAttemptId.make("attempt-claude-login-works"),
+          text: "Continue.",
+          attachments: [],
+        }),
+      );
+      yield* Queue.offer(
+        harness.sdkMessages,
+        makeResultFrame({ uuid: "00000000-0000-4000-8000-000000000610", result: "Done." }),
+      );
+      const terminal = yield* Queue.take(harness.terminalReceipts);
+      assert.equal(terminal.status, "completed");
+      assert.deepEqual(yield* Ref.get(reports), ["authenticated"]);
     }).pipe(
       Effect.provide(
         Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
@@ -6125,7 +6169,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
   it.effect("shows a 403 permission error instead of the login hint", () =>
     Effect.gen(function* () {
-      const harness = yield* makeWakeHarness;
+      const reports = yield* Ref.make<ReadonlyArray<string>>([]);
+      const harness = yield* makeWakeHarnessWithOptions({
+        onAuthenticationFailed: Ref.update(reports, (all) => [...all, "failed"]),
+      });
       const now = yield* DateTime.now;
       yield* harness.runtime.startTurn(
         makeClaudeTestTurnInput({
@@ -6159,6 +6206,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       if (terminal.status !== "failed") return;
       assert.equal(terminal.failure.message, cliText);
       assert.equal(terminal.failure.code, "api_error_403");
+      // Signing in again would not grant access, so the account is not marked signed out.
+      assert.deepEqual(yield* Ref.get(reports), []);
     }).pipe(
       Effect.provide(
         Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),

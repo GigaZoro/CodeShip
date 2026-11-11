@@ -1,3 +1,9 @@
+## 2026-11-11 — Runs move off a Claude account whose login failed
+
+- When Claude rejects an account's login, for example after a refresh token was refused while the PC was off, that account now shows as signed out in **Providers** with its `claude auth login` command, and in **Manual steps**, as soon as the first run fails. Before, it kept reading as signed in and every run sent to it failed at once until you signed in by hand.
+- While an account is signed out, Auto, **Switch accounts at usage limits**, scheduled tasks and delegated tasks use the next Claude account that can run the model. A chat that failed on it before its agent did any work starts again on that account with the same message, unless the scheduled run's time has passed. It counts as signed in again after you sign in (in a terminal or in T3.CodeShip), or after a run on it works, with no restart.
+- A scheduled run whose account is signed out, with no other Claude account that can run it, uses your **Fallback model** from **Models** when that can run it. Known limits: other chats and agents do not use the fallback model, and a chat whose message had attachments waits for you instead of moving. With no account or fallback able to run, the run still fails, but the sign-in is already listed in **Manual steps**.
+
 ## 2026-11-11 — A restart no longer loses a chat's first message
 
 - When a restart cut a chat before its agent received the message, for example while its worktree was being prepared, a later message no longer starts without it. A message you or an agent send, **Resume** or **Send now** first sends the cut message again, in the worktree it asked for, and the new one follows. This works with **Continue threads after restarts** off too. Before, the agent got only the later message, worked in the project folder instead of the worktree, and could pick up another chat's task as its own.

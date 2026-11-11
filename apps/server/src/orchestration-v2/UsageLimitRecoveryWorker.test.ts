@@ -27,7 +27,11 @@ import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
-import { limitFailoverCommand, limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
+import {
+  limitFailoverCommand,
+  limitRecoveryCommand,
+  signedOutFailoverCommand,
+} from "./UsageLimitRecoveryWorker.ts";
 
 const now = Date.parse("2026-10-29T12:00:00.000Z");
 const resetAt = "2026-10-30T12:00:00.000Z";
@@ -256,6 +260,7 @@ it.effect("idle sweeps skip SQL until the next wake time or a relevant event", (
         Layer.mergeAll(
           Scheduler.layer,
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getSignedOutFailoverCandidates: () => Effect.succeed([]),
             getLimitRecoveryCandidates: () =>
               Clock.currentTimeMillis.pipe(
                 Effect.flatMap((nowMs) => Queue.offer(queries, nowMs - startMs)),
@@ -328,6 +333,7 @@ it.effect.each([
         Layer.mergeAll(
           Scheduler.layer,
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getSignedOutFailoverCandidates: () => Effect.succeed([]),
             getLimitRecoveryCandidates: () =>
               Clock.currentTimeMillis.pipe(
                 Effect.flatMap((nowMs) => Queue.offer(queries, nowMs - now)),
@@ -465,5 +471,85 @@ describe("limitRecoveryCommand arming", () => {
   it("does not arm a reset that is 24 hours and 1ms overdue", () => {
     const thread = failedThread(30 * HOUR_MS, 24 * HOUR_MS + 1);
     assert.isNull(limitRecoveryCommand(thread, true, nowMs));
+  });
+});
+
+describe("signedOutFailoverCommand", () => {
+  const signedOutProviders = providers.map((candidate) =>
+    candidate.instanceId === "claudeAgent"
+      ? { ...candidate, status: "error" as const, auth: { status: "unauthenticated" as const } }
+      : candidate,
+  );
+  const candidate: ProjectionStore.ProjectionSignedOutCandidate = {
+    id: thread.id,
+    projectId,
+    providerInstanceId: thread.providerInstanceId,
+    modelSelection: thread.modelSelection,
+    archivedAt: null,
+    settledOverride: null,
+    snoozedUntil: null,
+    latestRunId: runId,
+    latestRunProviderInstanceId: thread.providerInstanceId,
+    messageText: "Summarise the inbox",
+  };
+  const limitedAccount = ProviderInstanceId.make("claude_limited");
+  const refusal = [{ resetAt: null, refusedAt: "2026-10-29T11:00:00Z" }];
+  const move = (overrides: Partial<Parameters<typeof signedOutFailoverCommand>[0]> = {}) =>
+    signedOutFailoverCommand({
+      thread: candidate,
+      settings,
+      providers: signedOutProviders,
+      recordedLimits: new Map([[limitedAccount, refusal]]),
+      nowMs: now,
+      ...overrides,
+    });
+
+  it("sends the original message again on the first other account that can run it", () => {
+    assert.deepEqual(move(), {
+      type: "message.dispatch",
+      commandId: CommandId.make("signed-out-failover:thread:failover:run:failover:claude_first"),
+      messageId: MessageId.make("signed-out-failover:thread:failover:run:failover:claude_first"),
+      threadId: thread.id,
+      manualContinuationOfRunId: runId,
+      automaticContinuationOfRunId: runId,
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("claude_first"),
+        model: "claude-opus-4-1",
+        options: [{ id: "effort", value: "high" }],
+      },
+      text: "Summarise the inbox",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "server",
+    });
+  });
+
+  it("skips an account that is limited too", () => {
+    const limited = new Map([
+      [limitedAccount, refusal],
+      [ProviderInstanceId.make("claude_first"), refusal],
+    ]);
+    assert.equal(
+      move({ recordedLimits: limited })?.modelSelection?.instanceId,
+      ProviderInstanceId.make("claude_second"),
+    );
+  });
+
+  it.each([
+    ["the account signed in again", { providers }],
+    [
+      "the thread moved to another account",
+      { thread: { ...candidate, latestRunProviderInstanceId: ProviderInstanceId.make("codex") } },
+    ],
+    ["the thread is archived", { thread: { ...candidate, archivedAt: DateTime.makeUnsafe(now) } }],
+    [
+      "the thread is snoozed",
+      { thread: { ...candidate, snoozedUntil: DateTime.makeUnsafe(now + 60_000) } },
+    ],
+    ["the thread was settled", { thread: { ...candidate, settledOverride: "settled" as const } }],
+    ["no other account can run it", { providers: [signedOutProviders[0]!] }],
+  ] as const)("keeps the thread in place when %s", (_, overrides) => {
+    assert.isNull(move(overrides));
   });
 });
