@@ -1,11 +1,11 @@
 ---
 name: ship
-description: Finish a T3.CodeShip branch end to end without a PR. Commit the work, run `vp run check:changed`, land it on main with a fast-forward push, confirm it landed, then delete the branch locally and on the remote and remove its worktree. Use for "commit, push, merge to main", "ship it", "land this", "merge and delete the branch", "finish this branch" or "/ship". Not for when the developer asked for a PR or review first, or asked only to commit.
+description: Finish a T3.CodeShip branch end to end without a PR. Commit the work, run `vp run check:changed`, land it on main with a fast-forward push, confirm it landed, then delete the branch locally and on the remote and remove its worktree. Use for "commit, push, merge to main", "ship it", "land this", "merge and delete the branch", "finish this branch" or "/ship", and when a task in this repository is done (AGENTS.md, "Ship finished work"). Not for when the developer asked for a PR or review first, or asked only to commit.
 ---
 
 # Ship
 
-Invoking `/ship` is the developer's go-ahead to commit and push to the default branch. Do not ask again.
+Invoking `/ship` is the developer's go-ahead to commit and push to the default branch, and so is finishing a task in this repository ([AGENTS.md, "Ship finished work"](../../../AGENTS.md#ship-finished-work)). Do not ask again.
 `$ARGUMENTS` may carry a commit title or a branch to land on. Default to the remote's default branch.
 
 ## 1. Orient
@@ -18,7 +18,7 @@ Invoking `/ship` is the developer's go-ahead to commit and push to the default b
 ## 2. Stage deliberately
 
 - Read the diff. Stage paths by name, never `git add -A`.
-- Leave out plans, scratch files, screenshots, logs, `.env`, `.t3/`, and secrets. Ask about untracked files you cannot place.
+- Leave out plans, scratch files, screenshots, logs, `.env`, `.t3/`, and secrets. Leave out untracked files you cannot place too, and name them in your report.
 - Prepend a dated entry to `docs/release-notes.md` (`## YYYY-MM-DD — Title`, then user-facing bullets), even for docs or maintenance. See [Release notes](../../../docs/operations/release.md#release-notes-for-every-shipment).
 
 ## 3. Verify

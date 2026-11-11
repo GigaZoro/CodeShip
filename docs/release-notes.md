@@ -1,3 +1,8 @@
+## 2026-11-12 — Finished T3.CodeShip work lands by itself
+
+- Agents working on T3.CodeShip now land finished work on main once its checks pass, so fixes reach the next release without you typing `/ship`. This covers chats you start, follow-ups agents start, and requests sent from ThreadPage.
+- Work stays on its branch when you asked for a pull request, a review first or no push, when a check keeps failing, or when it waits on a money decision. The agent's report says which.
+
 ## 2026-11-12 — An agent is told when Stop, a rewind or a crashed turn ends its background work
 
 - **Stop** on a Claude chat closes its agent process, which ends the chat's background commands and monitors. The agent is now told what stopped with your next message, also when you stopped a chat that was only waiting on that work. Before, it could go on waiting for a command that no longer existed. Nothing starts by itself after a Stop.

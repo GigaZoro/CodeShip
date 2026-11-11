@@ -149,6 +149,15 @@ For mobile verification, a missing or outdated native client is an install step,
 
 `evals/` checks how real models behave with T3.CodeShip's model-facing text: agent instructions, MCP tool descriptions and schemas, and generated titles. Before you change that text, read [evals/README.md](evals/README.md) and run the evals it names. When you fix a model behavior bug, add a case that fails before the fix.
 
+## Ship finished work
+
+The developer asked on 2026-11-12 for finished work to land by itself ("automatically ship codeship tasks"). When a task changed this repository and is done, land it on `main` in the same turn as the [ship skill](.agents/skills/ship/SKILL.md) describes. That is the go-ahead `/ship` gives, so do not ask for it or wait for it. It holds in every chat, whoever started it.
+
+- Done means verified: `vp run check:changed` passes at the commit you push, and the change carries the proof [Verifying](#verifying) asks for.
+- Leave it on its branch, and say why in your report, when the developer asked for a PR, a review first, a draft, or no push; when a check still fails after you traced its cause; or when the work waits on a money decision.
+- A subagent or delegated child never ships. The chat that owns the task lands it once, after it has integrated and reviewed its children's work.
+- A scheduled task's prompt can add landing rules of its own (the upstream sync merges and never rebases).
+
 ## Pull requests
 
 - Every shipment to `main` must prepend a dated entry to `docs/release-notes.md` in the same change, including fixes, maintenance, and documentation-only work. Write concise user-facing changes; preserve older entries. `vp run check:changed` and fork release preflight enforce this. See [Release notes](docs/operations/release.md#release-notes-for-every-shipment).
