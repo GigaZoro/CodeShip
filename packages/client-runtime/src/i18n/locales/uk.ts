@@ -6351,8 +6351,8 @@ const catalog: MessageCatalog = {
   "Installing update…": "Установлення оновлення…",
   "Installing...": "Встановлення...",
   "Installing…": "Встановлення…",
-  "Installs a new CodeShip release when no chat is working. Chats cut by the restart resume on their own.":
-    "Встановлює новий випуск CodeShip, коли жоден чат не працює. Чати, перервані перезапуском, відновлюються самі.",
+  "Installs a new CodeShip release when no chat is working.":
+    "Встановлює новий випуск CodeShip, коли жоден чат не працює.",
   "Instance ID": "ID екземпляра",
   "Instance ID is required.": "Потрібен ID екземпляра.",
   "Instance ID must be 64 characters or fewer.": "ID екземпляра має містити не більше 64 символів.",
