@@ -214,15 +214,19 @@ describe("linking both ways", () => {
     expect(defaultReverseLinkAccess("approval-required")).toBe("approval-required");
   });
 
-  it("asks the machine to link back only when wanted and the link's access allows it", () => {
+  it("asks the machine to link back only when wanted and the link has full access", () => {
     const urls = ["https://here.ts.net"];
     const want = { wanted: true, access: "auto", urls } as const;
-    expect(linkReverseRequest({ ...want, forward: "auto" })).toEqual({ access: "auto", urls });
+    expect(linkReverseRequest({ ...want, forward: "full-access" })).toEqual({
+      access: "auto",
+      urls,
+    });
     expect(linkReverseRequest({ ...want, forward: "full-access", urls: [] })).toEqual({
       access: "auto",
     });
+    expect(linkReverseRequest({ ...want, forward: "auto" })).toBeUndefined();
     expect(linkReverseRequest({ ...want, forward: "approval-required" })).toBeUndefined();
-    expect(linkReverseRequest({ ...want, forward: "auto", wanted: false })).toBeUndefined();
+    expect(linkReverseRequest({ ...want, forward: "full-access", wanted: false })).toBeUndefined();
   });
 
   it("carries the request to link back in the answer, and warns unless it was made", () => {
