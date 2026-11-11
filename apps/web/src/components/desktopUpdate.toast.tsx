@@ -2,10 +2,8 @@ import { t } from "~/i18n";
 import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
 import { ArrowRightIcon } from "lucide-react";
 
-import {
-  getDesktopUpdateDownloadedVersion,
-  getDesktopUpdateReleaseUrl,
-} from "./desktopUpdate.logic";
+import { getDesktopUpdateReleaseUrl } from "./desktopUpdate.logic";
+import { getDesktopUpdateDownloadedVersion } from "@t3tools/shared/desktopAutoUpdate";
 import { toastManager } from "./ui/toast";
 
 type DesktopUpdateShell = Pick<DesktopBridge, "openExternal">;

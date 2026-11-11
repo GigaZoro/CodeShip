@@ -10,7 +10,7 @@ import {
   type AutoDesktopUpdateAttempts,
   getDesktopUpdateDownloadedVersion,
   resolveAutoDesktopUpdateStep,
-} from "../desktopUpdate.logic";
+} from "@t3tools/shared/desktopAutoUpdate";
 import { downloadLocalUpdate, installLocalUpdateAutomatically } from "../sidebar/SidebarUpdatePill";
 import { decideHostedRestartHold, usePendingLocalInstall } from "../sidebar/localInstallWait";
 import { toastManager } from "../ui/toast";

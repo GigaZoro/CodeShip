@@ -10,20 +10,22 @@ import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import {
-  type DesktopUpdateButtonAction,
   getArm64IntelBuildWarningDescription,
   getDesktopUpdateActionError,
   getDesktopUpdateButtonTooltip,
-  getDesktopUpdateDownloadedVersion,
   getDesktopUpdateInstallConfirmationMessage,
   getSafeUpdateButtonTooltip,
   isDesktopUpdateButtonDisabled,
-  resolveDesktopUpdateButtonAction,
   resolveDesktopUpdatePendingAction,
   shouldShowArm64IntelBuildWarning,
   shouldToastDesktopUpdateActionResult,
   waitToInstallAutomatically,
 } from "../desktopUpdate.logic";
+import {
+  type DesktopUpdateButtonAction,
+  getDesktopUpdateDownloadedVersion,
+  resolveDesktopUpdateButtonAction,
+} from "@t3tools/shared/desktopAutoUpdate";
 import { showDesktopUpdateDownloadedToast } from "../desktopUpdate.toast";
 import { restartHoldTooltip } from "../restartHold.logic";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";

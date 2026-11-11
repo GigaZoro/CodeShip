@@ -191,6 +191,10 @@
       "types": "./src/dpop.ts",
       "import": "./src/dpop.ts"
     },
+    "./desktopAutoUpdate": {
+      "types": "./src/desktopAutoUpdate.ts",
+      "import": "./src/desktopAutoUpdate.ts"
+    },
     "./desktopBootstrapToken": {
       "types": "./src/desktopBootstrapToken.ts",
       "import": "./src/desktopBootstrapToken.ts"

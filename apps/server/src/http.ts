@@ -2,6 +2,7 @@ import * as Mime from "effect/http/Mime";
 import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
+  DESKTOP_AUTO_INSTALL_READINESS_PATH,
   EnvironmentHttpApi,
 } from "@t3tools/contracts";
 import { isDevProxiedPath } from "@t3tools/shared/devProxy";
@@ -40,6 +41,7 @@ import {
 } from "./assets/AttachmentUpload.ts";
 import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
+import { readDesktopAutoInstallReadiness } from "./cloud/desktopAutoInstallReadiness.ts";
 import { traceRelayRequest } from "./cloud/traceRelayRequest.ts";
 import {
   annotateEnvironmentRequest,
@@ -322,6 +324,22 @@ export const layerServerEnvironmentHttpApi = HttpApiBuilder.group(
         yield* annotateEnvironmentRequest(args.endpoint.name);
         return yield* serverEnvironment.getDescriptor;
       }, traceRelayRequest),
+    );
+  }),
+);
+
+export const layerDesktopAutoInstallReadinessRoute = HttpRouter.add(
+  "GET",
+  DESKTOP_AUTO_INSTALL_READINESS_PATH,
+  Effect.gen(function* () {
+    yield* authenticateRawRouteWithScope(AuthOrchestrationReadScope);
+    return yield* readDesktopAutoInstallReadiness.pipe(
+      Effect.flatMap((readiness) => HttpServerResponse.json(readiness)),
+      Effect.catch((cause) =>
+        Effect.logWarning("Could not read automatic install readiness.", { cause }).pipe(
+          Effect.as(HttpServerResponse.text("Internal Server Error", { status: 500 })),
+        ),
+      ),
     );
   }),
 );

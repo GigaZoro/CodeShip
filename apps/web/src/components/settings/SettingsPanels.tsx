@@ -40,12 +40,14 @@ import { MobileAppSettingsRow } from "./MobileAppSettingsRow";
 import {
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateDisabledReason,
-  getDesktopUpdateDownloadedVersion,
   getDesktopUpdateInstallConfirmationMessage,
   isDesktopUpdateButtonDisabled,
-  resolveDesktopUpdateButtonAction,
   resolveDesktopUpdatePendingAction,
 } from "../../components/desktopUpdate.logic";
+import {
+  getDesktopUpdateDownloadedVersion,
+  resolveDesktopUpdateButtonAction,
+} from "@t3tools/shared/desktopAutoUpdate";
 import { isElectron } from "../../env";
 import { buildHostedChannelSelectionUrl, type HostedAppChannel } from "../../hostedPairing";
 import {

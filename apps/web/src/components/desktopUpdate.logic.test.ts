@@ -5,11 +5,13 @@ import {
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateReleaseHistoryUrl,
   getDesktopUpdateReleaseUrl,
-  resolveAutoDesktopUpdateStep,
-  resolveDesktopUpdateButtonAction,
   resolveDesktopUpdatePendingAction,
   waitToInstallAutomatically,
 } from "./desktopUpdate.logic";
+import {
+  resolveAutoDesktopUpdateStep,
+  resolveDesktopUpdateButtonAction,
+} from "@t3tools/shared/desktopAutoUpdate";
 import type { HostedWorkNow, HostedWorkWait } from "./sidebar/localInstallWait";
 
 const baseState: DesktopUpdateState = {

@@ -62,6 +62,16 @@ export const ServerInstallation = Schema.Union([
 ]);
 export type ServerInstallation = typeof ServerInstallation.Type;
 
+/** Where the desktop app asks its bundled server whether an update may install now. */
+export const DESKTOP_AUTO_INSTALL_READINESS_PATH = "/api/server/auto-install-readiness";
+
+/** "Install updates automatically when idle" as the server sees it; `idle` means a restart cuts no chat. */
+export const DesktopAutoInstallReadiness = Schema.Struct({
+  enabled: Schema.Boolean,
+  idle: Schema.Boolean,
+});
+export type DesktopAutoInstallReadiness = typeof DesktopAutoInstallReadiness.Type;
+
 export const ServerSelfUpdateCapability = Schema.Literals([
   "boot-service",
   "respawn",

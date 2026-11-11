@@ -25,7 +25,7 @@ import {
 import {
   getDesktopUpdateDownloadedVersion,
   resolveDesktopUpdateButtonAction,
-} from "../desktopUpdate.logic";
+} from "@t3tools/shared/desktopAutoUpdate";
 
 /** Keep terminal:read with terminal:operate to avoid creating unseen shells on every script run. */
 export function togglePairingScopeSelection(

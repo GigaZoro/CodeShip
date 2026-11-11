@@ -1,3 +1,7 @@
+## 2026-11-11 — Updates install when idle on a Mac with every window closed
+
+- **Install updates automatically when idle** worked only while a CodeShip window was open. On a Mac the app keeps running after its last window closes, so a closed window meant no update installed until someone opened one. With every window closed, the app now downloads a found update and installs it once no chat is answering and no background work would be cut, checked again right before the restart. With a window open nothing changes, and the update button still shows the wait.
+
 ## 2026-11-11 — Codex's own sign-in works without `codex` on PATH
 
 - A Codex account that uses Codex's own ChatGPT sign-in ("Use existing CLI") with an empty **Binary path** showed **Not found** on a machine with no `codex` on `PATH`, although T3.CodeShip had its own copy of Codex. Such an account now runs the `codex` on `PATH` when there is one and T3.CodeShip's own copy otherwise, for its status, chats, sign-in and sign-out, MCP servers and plugins, and generated titles and commit messages.
