@@ -346,7 +346,7 @@ describe("saving a change for all machines", () => {
     ]);
   });
 
-  it("sends a seed stamped older than any version, whoever stamps it", async () => {
+  it("sends a seed only for a server to stamp older than any version", async () => {
     const patch = { deviceSettingsProfile: { a: 1 } };
     const update = vi.fn(async (_request: unknown) => success(DEFAULT_SERVER_SETTINGS));
     const share = vi.fn(async (_request: unknown) =>
@@ -356,24 +356,14 @@ describe("saving a change for all machines", () => {
     expect(share.mock.calls).toEqual([
       [{ environmentId: mac.environmentId, input: { patch, seed: true } }],
     ]);
-    await persistSharedSettingsWrites(
-      plan([oldMac], patch, oldMac),
+    // Stamped here, two devices' seeds would carry one stamp, and followers keep whichever came first.
+    const outcomes = await persistSharedSettingsWrites(
+      plan([oldMac, oldPc], patch, oldMac),
       { update, share },
-      {
-        seed: true,
-      },
+      { seed: true },
     );
-    expect(update.mock.calls).toEqual([
-      [
-        {
-          environmentId: oldMac.environmentId,
-          input: {
-            patch,
-            share: { updatedAt: "1970-01-01T00:00:00.000Z", origin: oldMac.environmentId },
-          },
-        },
-      ],
-    ]);
+    expect(update).not.toHaveBeenCalled();
+    expect(settleSharedSettingsWrite(outcomes, 0)).toEqual({ _tag: "notSaved" });
   });
 
   it("says when the first follower kept a newer value of a shared setting than the one sent", async () => {

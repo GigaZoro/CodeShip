@@ -5,9 +5,11 @@ import {
   EnvironmentId,
   globalIdleCompaction,
   MACHINE_SHARED_SETTING_KEYS,
+  type ManagedPolicyDocument,
   type ManagedPolicySummary,
   ProviderDriverKind,
   ProviderInstanceId,
+  ServerSettingsError,
   type ServerSettingsPatch,
   SHARED_SETTING_VALUE_MAX_BYTES,
   SHARED_SETTINGS_RESPONSE_MAX_BYTES,
@@ -16,6 +18,7 @@ import {
   type SharedSettingVersion,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Ref from "effect/Ref";
@@ -65,33 +68,51 @@ const version = (
   origin,
 });
 
+type SettingsService = Settings.ServerSettingsService["Service"];
+
 /**
- * A machine's settings, its provider instances, and the sqlite file that holds the versions. With
- * `followingTurnedOff`, reads outside the write lock still say the machine follows shared settings,
- * as they did a moment before following was turned off.
+ * Settings whose reads outside the write lock still say the machine follows shared settings, as
+ * they did a moment before following was turned off.
+ */
+const followingTurnedOff = (real: SettingsService): SettingsService => ({
+  ...real,
+  getSettings: real.getSettings.pipe(
+    Effect.map((current) => ({ ...current, followSharedSettings: true })),
+  ),
+});
+
+/** Settings that refuse every write to a provider instance, as an administrator's policy can. */
+const refusingProviderInstances = (real: SettingsService): SettingsService => ({
+  ...real,
+  updateProviderInstance: () =>
+    Effect.fail(
+      new ServerSettingsError({
+        settingsPath: "test settings",
+        operation: "write-managed-setting",
+        managedBy: "Example Corp",
+      }),
+    ),
+});
+
+/**
+ * A machine's settings, its provider instances, and the sqlite file that holds the versions. `seen`
+ * changes how the settings service behaves for the others.
  */
 const machine = (
   overrides: Parameters<typeof Settings.layerTest>[0],
   instances: Ref.Ref<ReadonlyArray<string>>,
-  followingTurnedOff: boolean,
+  seen: ((real: SettingsService) => SettingsService) | undefined,
   managedPolicy: ManagedPolicySummary | undefined,
   environmentId: EnvironmentId,
 ) => {
   const settings = Settings.layerTest({ followSharedSettings: true, ...overrides }, managedPolicy);
-  const settingsSeen = followingTurnedOff
-    ? Layer.effect(
-        Settings.ServerSettingsService,
-        Effect.gen(function* () {
-          const real = yield* Settings.ServerSettingsService;
-          return {
-            ...real,
-            getSettings: real.getSettings.pipe(
-              Effect.map((current) => ({ ...current, followSharedSettings: true })),
-            ),
-          };
-        }),
-      ).pipe(Layer.provide(settings))
-    : settings;
+  const settingsSeen =
+    seen === undefined
+      ? settings
+      : Layer.effect(
+          Settings.ServerSettingsService,
+          Settings.ServerSettingsService.pipe(Effect.map(seen)),
+        ).pipe(Layer.provide(settings));
   return SharedSettings.layer.pipe(
     Layer.provideMerge(settingsSeen),
     Layer.provideMerge(
@@ -120,7 +141,7 @@ const run = <A, E>(
     instances: Ref.Ref<ReadonlyArray<string>>,
   ) => Effect.Effect<A, E, SqlClient.SqlClient>,
   overrides: Parameters<typeof Settings.layerTest>[0] = {},
-  followingTurnedOff = false,
+  seen?: (real: SettingsService) => SettingsService,
   managedPolicy?: ManagedPolicySummary,
   environmentId: EnvironmentId = HERE,
 ) =>
@@ -131,11 +152,7 @@ const run = <A, E>(
       const shared = yield* SharedSettings.SharedSettings;
       const settings = yield* Settings.ServerSettingsService;
       return yield* body(shared, settings, instances);
-    }).pipe(
-      Effect.provide(
-        machine(overrides, instances, followingTurnedOff, managedPolicy, environmentId),
-      ),
-    );
+    }).pipe(Effect.provide(machine(overrides, instances, seen, managedPolicy, environmentId)));
   });
 
 const served = (shared: SharedSettings.SharedSettings["Service"]) =>
@@ -298,7 +315,7 @@ it.effect("takes nothing when following is turned off while a pull waits for the
         expect(yield* shared.servedVersions).toEqual([]);
       }),
     { followSharedSettings: false },
-    true,
+    followingTurnedOff,
   ),
 );
 
@@ -493,11 +510,19 @@ it.effect("keeps only so many settings this build does not know", () =>
       // One already kept still takes newer versions.
       yield* shared.applyPulled(PEER, [version("newer00", "again", SOON)]);
       expect((yield* served(shared)).newer00?.value).toBe("again");
-      // An account is a key this build knows, even one whose version it cannot read.
+      // An account this build cannot read, or whose driver it does not share, takes room too.
+      const account = { driver: "codex", enabled: true, config: { customModels: ["g"] } };
       yield* shared.applyPulled(PEER, [
         version("providerInstance:codex_new", { driver: 7 }, LATER),
+        version("providerInstance:newerAgent_a", { driver: "newerAgent", enabled: true }, LATER),
+        version("providerInstance:codex_team", account, LATER),
       ]);
-      expect((yield* served(shared))["providerInstance:codex_new"]?.value).toEqual({ driver: 7 });
+      const versions = yield* served(shared);
+      expect([
+        versions["providerInstance:codex_new"],
+        versions["providerInstance:newerAgent_a"],
+        versions["providerInstance:codex_team"]?.value,
+      ]).toEqual([undefined, undefined, account]);
     }),
   ),
 );
@@ -745,7 +770,7 @@ it.effect(
           expect((yield* served(shared)).finalReviewByDefault?.value).toBe(true);
         }),
       {},
-      false,
+      undefined,
       { organization: "Example Corp", lockedSettings: ["finalReviewByDefault"] },
     ),
 );
@@ -961,6 +986,8 @@ const workAccount = (machineName: string) => ({
 });
 
 /** What every machine that follows holds of the work account. */
+const WORK_REMOVED = { removed: true, driver: "claudeAgent" };
+
 const WORK_SHARED = {
   driver: "claudeAgent",
   displayName: "Claude - Work",
@@ -1008,7 +1035,7 @@ it.effect("an account added on one machine reaches another with its own home and
           };
         }),
       {},
-      false,
+      undefined,
       undefined,
       PEER,
     );
@@ -1131,7 +1158,7 @@ it.effect("a built-in provider shares only its name and whether it is on", () =>
           },
         },
       },
-      false,
+      undefined,
       undefined,
       PEER,
     );
@@ -1162,7 +1189,7 @@ it.effect("a removed account leaves every machine that follows, and can be added
         }),
       { providerInstances: { [WORK]: workAccount("a") } },
     );
-    expect(removal).toEqual([version(WORK_KEY, { removed: true }, NOW, HERE)]);
+    expect(removal).toEqual([version(WORK_KEY, WORK_REMOVED, NOW, HERE)]);
     yield* run(
       (shared, settings) =>
         Effect.gen(function* () {
@@ -1177,11 +1204,45 @@ it.effect("a removed account leaves every machine that follows, and can be added
           expect(yield* instanceOf(settings, WORK)).toEqual(workArrived(OTHER));
         }),
       { providerInstances: { [WORK]: workArrived(HERE) } },
-      false,
+      undefined,
       undefined,
       PEER,
     );
   }),
+);
+
+it.effect("a removal takes only the account on its own driver under that id", () =>
+  run(
+    (shared, settings) =>
+      Effect.gen(function* () {
+        const mine = {
+          driver: CODEX,
+          displayName: "Codex - Work",
+          config: { customModels: ["g"] },
+        };
+        const pulled = (value: unknown, updatedAt: string) =>
+          shared.applyPulled(PEER, [version("providerInstance:work", value, updatedAt)]);
+        // The other machine's `work` ran Claude; this one's runs Codex.
+        yield* pulled(WORK_REMOVED, LATER);
+        expect(yield* instanceOf(settings, ProviderInstanceId.make("work"))).toEqual(mine);
+        expect((yield* served(shared))["providerInstance:work"]?.value).toEqual(WORK_REMOVED);
+        // An older build's removal names no driver, so it is only passed on.
+        yield* pulled({ removed: true }, SOON);
+        expect(yield* instanceOf(settings, ProviderInstanceId.make("work"))).toEqual(mine);
+        expect((yield* served(shared))["providerInstance:work"]?.value).toEqual({ removed: true });
+        yield* pulled({ removed: true, driver: "codex" }, "2026-11-11T14:02:00.000Z");
+        expect(yield* instanceOf(settings, ProviderInstanceId.make("work"))).toBeUndefined();
+      }),
+    {
+      providerInstances: {
+        [ProviderInstanceId.make("work")]: {
+          driver: CODEX,
+          displayName: "Codex - Work",
+          config: { customModels: ["g"] },
+        },
+      },
+    },
+  ),
 );
 
 it.effect("a machine that does not follow shared settings neither takes nor shares accounts", () =>
@@ -1233,7 +1294,7 @@ it.effect("a machine that follows shares the order of its accounts, unknown ones
           };
         }),
       { providerInstances: { [home]: { driver: CLAUDE } } },
-      false,
+      undefined,
       undefined,
       PEER,
     );
@@ -1262,9 +1323,9 @@ it.effect("takes only what an account shares from a version, whatever else it ca
           version(WORK_KEY, sent, LATER),
           // A built-in instance is never another driver's account, nor removed.
           version("providerInstance:codex", { driver: "claudeAgent", enabled: true }, LATER),
-          version("providerInstance:claudeAgent", { removed: true }, LATER),
+          version("providerInstance:claudeAgent", WORK_REMOVED, LATER),
           // An instance of a driver that is not shared is never removed by one that is.
-          version("providerInstance:devReplay", { removed: true }, LATER),
+          version("providerInstance:devReplay", WORK_REMOVED, LATER),
         ]);
         const current = yield* settings.getSettings;
         expect(current.providerInstances).toEqual({
@@ -1313,6 +1374,7 @@ it.effect(
           newerDriver,
         ]);
         expect(warnings.filter((warning) => warning.includes("cannot read"))).toHaveLength(1);
+        expect(warnings.filter((warning) => warning.includes("does not share"))).toHaveLength(1);
         // Both wait, so an update here that can take them applies them.
         const sql = yield* SqlClient.SqlClient;
         const waiting = yield* sql<{ readonly settingKey: string }>`
@@ -1397,12 +1459,15 @@ const keyedAccount = {
   config: { apiKey: "\u2022\u2022\u2022\u2022\u2022\u2022" },
 };
 
-/** A machine with the real settings file and secret store, so a removal can drop a stored secret. */
-const machineWithSecretStore = (environmentId: EnvironmentId) =>
+/**
+ * A machine with the real settings file, secret store and managed policy, so a removal can drop a
+ * stored secret and a policy vets each write.
+ */
+const machineWithSecretStore = (environmentId: EnvironmentId, policy?: ManagedPolicyDocument) =>
   SharedSettings.layer.pipe(
     Layer.provideMerge(Settings.layer),
     Layer.provide(ServerSecretStore.layer),
-    Layer.provide(ManagedPolicy.layerTest()),
+    Layer.provide(ManagedPolicy.layerTest(policy)),
     Layer.provideMerge(
       Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
     ),
@@ -1425,15 +1490,15 @@ it.effect("a removal turns off an account that holds this machine's own keys or 
     (shared, settings) =>
       Effect.gen(function* () {
         yield* shared.applyPulled(PEER, [
-          version(WORK_KEY, { removed: true }, LATER),
-          version(`providerInstance:${KEYED}`, { removed: true }, LATER),
+          version(WORK_KEY, WORK_REMOVED, LATER),
+          version(`providerInstance:${KEYED}`, { removed: true, driver: "antigravity" }, LATER),
         ]);
         const current = yield* settings.getSettings;
         expect([current.providerInstances[WORK], current.providerInstances[KEYED]]).toEqual([
           { ...workAccount("b"), enabled: false },
           { ...keyedAccount, enabled: false },
         ]);
-        expect((yield* served(shared))[WORK_KEY]?.value).toEqual({ removed: true });
+        expect((yield* served(shared))[WORK_KEY]?.value).toEqual(WORK_REMOVED);
       }),
     { providerInstances: { [WORK]: workAccount("b"), [KEYED]: keyedAccount } },
   ),
@@ -1443,7 +1508,7 @@ it.effect("a removal deletes an account that holds nothing of this machine's own
   run(
     (shared, settings) =>
       Effect.gen(function* () {
-        yield* shared.applyPulled(PEER, [version(WORK_KEY, { removed: true }, LATER)]);
+        yield* shared.applyPulled(PEER, [version(WORK_KEY, WORK_REMOVED, LATER)]);
         expect(yield* instanceOf(settings, WORK)).toBeUndefined();
       }),
     {
@@ -1470,7 +1535,7 @@ it.effect("a removal from the group keeps the secrets of an account it turns off
           environment: [{ name: "ANTHROPIC_API_KEY", value: "sk-ant-test-only", sensitive: true }],
         },
       });
-      yield* shared.applyPulled(PEER, [version(WORK_KEY, { removed: true }, LATER)]);
+      yield* shared.applyPulled(PEER, [version(WORK_KEY, WORK_REMOVED, LATER)]);
       return yield* instanceOf(settings, WORK);
     }).pipe(Effect.provide(machineWithSecretStore(PEER)));
     expect(instance).toMatchObject({
@@ -1571,7 +1636,7 @@ it.effect("leaves how an account signs in, and where its requests go, on each ma
           return yield* instanceOf(settings, KEYED);
         }),
       { providerInstances: { [KEYED]: keyedAccount } },
-      false,
+      undefined,
       undefined,
       PEER,
     );
@@ -1600,12 +1665,99 @@ it.effect("passes on an account version that would change a field a policy locks
         expect((yield* instanceOf(settings, WORK))?.displayName).toBe("Claude - Team");
       }),
     { providerInstances: { [WORK]: workArrived(OTHER) } },
-    false,
+    undefined,
     {
       organization: "Example Corp",
       lockedSettings: [],
       limits: { providers: { lockedInstanceFields: { [CLAUDE]: ["config.customModels"] } } },
     },
+  ),
+);
+
+it.effect("takes a shared account while a policy locks another account here", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse(NOW));
+    const policy: ManagedPolicyDocument = {
+      schemaVersion: 1,
+      organization: "Example Corp",
+      settings: {
+        "providerInstances.codex": { value: { driver: "codex", enabled: true }, locked: true },
+      },
+    };
+    const taken = yield* Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      // Saved here before the policy, so it is not the locked value.
+      yield* fs.writeFileString(
+        config.settingsPath,
+        JSON.stringify({
+          followSharedSettings: true,
+          providerInstances: { codex: { driver: "codex", displayName: "Codex - Mine" } },
+        }),
+      );
+      const shared = yield* SharedSettings.SharedSettings;
+      const settings = yield* Settings.ServerSettingsService;
+      const { warnings } = yield* withWarnings(
+        Effect.gen(function* () {
+          yield* shared.applyPulled(PEER, [version(WORK_KEY, WORK_SHARED, LATER)]);
+          yield* shared.applyPulled(OTHER, [version(WORK_KEY, WORK_SHARED, LATER)]);
+        }),
+      );
+      return {
+        warnings,
+        instance: yield* instanceOf(settings, WORK),
+        served: (yield* served(shared))[WORK_KEY],
+      };
+    }).pipe(Effect.provide(machineWithSecretStore(HERE, policy)));
+    expect(taken).toEqual({
+      warnings: [],
+      instance: workArrived(PEER),
+      served: version(WORK_KEY, WORK_SHARED, LATER),
+    });
+  }),
+);
+
+it.effect("passes on an account version a policy here still refuses, saying so once", () =>
+  run(
+    (shared, settings) =>
+      Effect.gen(function* () {
+        const { warnings } = yield* withWarnings(
+          Effect.gen(function* () {
+            yield* shared.applyPulled(PEER, [version(WORK_KEY, WORK_SHARED, LATER)]);
+            yield* shared.applyPulled(OTHER, [version(WORK_KEY, WORK_SHARED, LATER)]);
+          }),
+        );
+        expect(yield* instanceOf(settings, WORK)).toBeUndefined();
+        expect((yield* served(shared))[WORK_KEY]).toEqual(version(WORK_KEY, WORK_SHARED, LATER));
+        expect(warnings).toEqual([expect.stringContaining("policy")]);
+      }),
+    {},
+    refusingProviderInstances,
+  ),
+);
+
+it.effect("serves the settings it knows before accounts, and both before what it passes on", () =>
+  run((shared) =>
+    Effect.gen(function* () {
+      // Each fits, but together the accounts are more than one answer may carry.
+      const large = "z".repeat(SHARED_SETTING_VALUE_MAX_BYTES - 200);
+      const accounts = Array.from({ length: 40 }, (_, index) =>
+        version(
+          `providerInstance:codex_${String(index).padStart(2, "0")}`,
+          { driver: "codex", enabled: true, config: { customModels: [large] } },
+          LATER,
+        ),
+      );
+      yield* shared.applyPulled(PEER, accounts.slice(0, 20));
+      yield* shared.applyPulled(PEER, accounts.slice(20));
+      yield* shared.applyPulled(PEER, [
+        version("fromANewerBuild", { on: true }, LATER),
+        version("threadTitleInstructions", "Name threads plainly.", LATER),
+      ]);
+      const keys = (yield* shared.servedVersions).map(({ key }) => key);
+      expect([keys[0], keys.at(-1)]).toEqual(["threadTitleInstructions", "fromANewerBuild"]);
+      expect(keys.filter((key) => key.startsWith("providerInstance:")).length).toBeLessThan(40);
+    }),
   ),
 );
 
@@ -1652,7 +1804,7 @@ it.effect("a seed loses to a profile the group already has, and spreads where th
             return (yield* settings.getSettings).deviceSettingsProfile;
           }),
         {},
-        false,
+        undefined,
         undefined,
         PEER,
       );

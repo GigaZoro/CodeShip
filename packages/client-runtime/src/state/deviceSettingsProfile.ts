@@ -28,14 +28,20 @@ export type DeviceSettingsProfileUnavailable =
 
 /**
  * The profile of a device's primary server. The server must follow shared settings, since the
- * profile reaches the other machines as a shared setting, and must know the setting: an older one
- * drops it without saying so.
+ * profile reaches the other machines as a shared setting; must know the setting, since an older one
+ * drops it without saying so; and must stamp changes itself (`server.shareSettings`), since a device
+ * seeds an empty profile, and only a server's stamp keeps two devices' seeds apart.
  */
 export function deviceSettingsProfileAvailability(
   primary: {
     readonly connection: { readonly phase: EnvironmentConnectionPhase };
     readonly serverConfig: {
-      readonly environment: { readonly capabilities: { readonly deviceSettingsProfile?: boolean } };
+      readonly environment: {
+        readonly capabilities: {
+          readonly deviceSettingsProfile?: boolean;
+          readonly shareSettings?: boolean;
+        };
+      };
       readonly settings: {
         readonly followSharedSettings?: boolean | undefined;
         readonly deviceSettingsProfile?: DeviceSettingsProfile | undefined;
@@ -48,7 +54,8 @@ export function deviceSettingsProfileAvailability(
   if (primary === null) return { status: "no-primary" };
   const config = primary.serverConfig;
   if (primary.connection.phase !== "connected" || config === null) return { status: "offline" };
-  if (config.environment.capabilities.deviceSettingsProfile !== true) {
+  const { capabilities } = config.environment;
+  if (capabilities.deviceSettingsProfile !== true || capabilities.shareSettings !== true) {
     return { status: "unsupported" };
   }
   if (config.settings.followSharedSettings !== true) return { status: "not-following" };
@@ -119,7 +126,7 @@ function readableProfileValues(profile: DeviceSettingsProfile): Record<string, u
  * Compares the device and the server's profile with the one this device last took or sent (its
  * base). Only the profile changed: take it. Only the device: send the profile with its changes on
  * top. Both: the profile wins. No base: take it. Empty: the server may not have pulled the group's
- * yet, so the device sends all of its own as a seed, which any profile a machine holds outranks.
+ * yet, so the device sends its own as a seed, which the server stamps older than any profile held.
  */
 export function planDeviceSettingsProfileSync(
   input: DeviceSettingsProfileSyncInput,

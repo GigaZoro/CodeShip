@@ -293,8 +293,9 @@ other converge by passing versions on. This is not the list in `client-runtime`'
 - **The pulling side checks everything**: only a value that decodes as that key's setting is
   applied. A value over 64 KB as JSON, or past 2 MB for one `t3_shared_settings` answer, is left
   out where it is served, pulled or shared, and the pull reads no more of a peer's answer than that
-  allows. Each such problem, like each version this build cannot read, is logged once, not on every
-  pull. A peer whose build has no `t3_shared_settings` is skipped quietly
+  allows. An answer serves the settings this build knows first, then accounts, then what it only
+  passes on, so a full answer drops accounts before settings. Each such problem, like each version
+  this build cannot read, is logged once, not on every pull. A peer whose build has no `t3_shared_settings` is skipped quietly
   (`PeerMcpClient.callIfAvailable`).
 - **Each provider instance is its own key** (`providerInstance:<id>`), never `providerInstances`,
   so two machines changing different accounts never overwrite each other. Unlike other keys, a
@@ -311,17 +312,23 @@ other converge by passing versions on. This is not the list in `client-runtime`'
   token metadata and local choices such as how an account signs in or its cloud project and region
   never are. A follower that takes a version keeps its own value of everything else and applies
   only the allowlisted fields, ignoring others a peer sends, but passes the JSON on as it came; a
-  version that would change a field a managed policy locks here is only passed on. A new account
+  version that would change a field a managed policy locks here is only passed on. It writes a
+  taken account as a change to that one instance (`updateProviderInstance`), never the whole
+  `providerInstances` map, so a managed policy vets only that instance and a lock on another account
+  cannot refuse it; a version the policy still refuses is passed on and logged once. A new account
   gets no home, so its driver gives it a private one on that machine. Removal is a
-  `{ removed: true }` version. A follower deletes the definition only when nothing in it is its
+  `{ removed: true, driver }` version, taken only where the instance under that id runs that driver;
+  a removal from an older build names no driver and is only passed on. A follower deletes the
+  definition only when nothing in it is its
   own; one with environment variables or a non-shared config field off its default (a key in the
   secret store, a home, a binary, a mode) is turned off and kept, since deleting it would delete
   those secrets. A removal made on a machine itself always deletes. The login and folders stay
   either way. A built-in instance shares only its name and on/off, is never removed, and a version
   that names another driver under an id here is only passed on. An account version this build
   cannot decode, or one on a driver it does not share, came from a newer build: it waits like an
-  unknown key and applies once this machine is updated. Account keys do not count toward the 64
-  unknown keys. Accounts that existed before a machine followed are not shared until changed: ids
+  unknown key, is logged once, and applies once this machine is updated. Since a peer can make up
+  any number of account ids, such versions count toward the 64 unknown keys; an account this build
+  reads, on a driver it shares, does not. Accounts that existed before a machine followed are not shared until changed: ids
   made on separate machines (`codex_<uuid>`) do not line up, so sharing them all would give every
   machine a signed-out copy of every other machine's.
 
@@ -337,7 +344,8 @@ keys a newer profile dropped.
 
 A device opts in with the client setting `followDeviceSettingsProfile` and reads and writes only its
 primary server's profile, and only when that server follows shared settings and reports
-`capabilities.deviceSettingsProfile` (an older server would drop the key silently). The device keeps
+`capabilities.deviceSettingsProfile` (an older server would drop the key silently) and
+`capabilities.shareSettings`. The device keeps
 `deviceSettingsProfileBase`, the portable values it last took or sent, so a change the device made is
 told from a profile that arrived since (`planDeviceSettingsProfileSync` in `client-runtime`): the
 server's stamps order profiles, and when both sides changed, the profile wins. The base moves only
@@ -345,7 +353,10 @@ once every machine saved the device's profile; an interrupted or refused publish
 the next change or reconnect, and one that settles after the switch was turned off and on again is
 ignored. An empty profile cannot tell "no profile yet" from "this server has not pulled the group's
 yet", so a device sends it as a seed (`seed` on `server.shareSettings`): the server stamps it at the
-epoch, so it loses to any version a machine holds and spreads only where none exists. When the
+epoch, so it loses to any version a machine holds and spreads only where none exists. Only a server
+stamps a seed. A client stamps a change itself only while no follower serves `server.shareSettings`,
+and two devices' seeds stamped that way would carry one stamp, so each follower would keep whichever
+came first; that write sends no seed, and a pull fills the profile instead. When the
 primary keeps a newer profile than the one sent, the device takes that one at once. Mobile has no
 primary server and its own preference store, so it does not take part.
 

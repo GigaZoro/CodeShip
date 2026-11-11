@@ -154,8 +154,15 @@ export const SharedProviderInstanceDefinition = Schema.Struct({
 });
 export type SharedProviderInstanceDefinition = typeof SharedProviderInstanceDefinition.Type;
 
-/** An account removed from the machines that follow; each keeps its own login and folders. */
-export const SharedProviderInstanceRemoval = Schema.Struct({ removed: Schema.Literal(true) });
+/**
+ * An account removed from the machines that follow; each keeps its own login and folders. `driver`
+ * is the removed account's, so a machine with another driver's account under that id keeps it. A
+ * removal from an older build names none, and is only passed on.
+ */
+export const SharedProviderInstanceRemoval = Schema.Struct({
+  removed: Schema.Literal(true),
+  driver: Schema.optionalKey(ProviderDriverKind),
+});
 
 export const SharedProviderInstanceValue = Schema.Union([
   SharedProviderInstanceRemoval,
