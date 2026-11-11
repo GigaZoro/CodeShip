@@ -1,3 +1,8 @@
+## 2026-11-11 — Machines and projects stay in place
+
+- Machines keep one order everywhere they are listed: this machine first on web and desktop, then the rest by name. A machine going offline or reconnecting no longer drops to the bottom and jumps back.
+- Projects always keep the order you set by moving their folders, on web, desktop and mobile, in the sidebar, the Projects page, project filters, project pickers and the command palette. New activity no longer reshuffles them, and the project you are in no longer jumps to the top of a project picker. **Settings → General → Project order** is gone, since there is now only one order. Projects you have not moved show in the order they were added; drag a folder on web or desktop to arrange them.
+
 ## 2026-11-11 — Pinned threads get their own section
 
 - Pinned threads now sit under a **Pinned** header with a count, like Scheduled tasks, and list one line each instead of full cards. Click the header to collapse or expand the section; the sidebar remembers your choice. While it is collapsed, the thread you have open still shows, and dragging a thread onto the header pins it after the others.

@@ -27,8 +27,7 @@ import {
   planSidebarThreadDrop,
   resolveSidebarReorderableThreadKeys,
   sortPinnedThreadsForSidebar,
-  sortScopedProjectsForSidebar,
-  sortSidebarV2ProjectGroups,
+  sortProjectsByRecentActivity,
   shouldNavigateAfterThreadPark,
   type SidebarListItem,
   type SidebarListMarker,
@@ -558,7 +557,7 @@ describe("getFallbackThreadIdAfterDelete", () => {
   });
 });
 
-describe("sortScopedProjectsForSidebar", () => {
+describe("sortProjectsByRecentActivity", () => {
   it("keeps identical project ids in different environments separate", () => {
     const remoteEnvironmentId = EnvironmentId.make("environment-remote");
     const sharedProjectId = ProjectId.make("shared-project");
@@ -587,7 +586,7 @@ describe("sortScopedProjectsForSidebar", () => {
       }),
     ];
 
-    const sorted = sortScopedProjectsForSidebar(projects, threads, "updated_at");
+    const sorted = sortProjectsByRecentActivity(projects, threads);
 
     expect(sorted.map((project) => project.title)).toEqual(["Remote project", "Local project"]);
   });
@@ -619,58 +618,12 @@ describe("sortScopedProjectsForSidebar", () => {
       }),
     ];
 
-    const sorted = sortScopedProjectsForSidebar(projects, threads, "updated_at");
+    const sorted = sortProjectsByRecentActivity(projects, threads);
 
     expect(sorted.map((project) => project.title)).toEqual([
       "Visible project",
       "Archived-only project",
     ]);
-  });
-});
-
-describe("sortSidebarV2ProjectGroups", () => {
-  it("does not let a hidden subagent thread reorder projects", () => {
-    const olderProjectId = ProjectId.make("project-older");
-    const newerProjectId = ProjectId.make("project-newer");
-    const olderRootThreadId = ThreadId.make("thread-older-root");
-    const logical = (project: ReturnType<typeof makeProject>, projectKey: string) => ({
-      ...project,
-      projectKey,
-      memberProjectRefs: [{ environmentId: project.environmentId, projectId: project.id }],
-      memberProjects: [project],
-    });
-    const projects = [
-      logical(makeProject({ id: olderProjectId, title: "A older project" }), "logical-older"),
-      logical(makeProject({ id: newerProjectId, title: "Z newer project" }), "logical-newer"),
-    ];
-    const threads = [
-      makeThread({
-        id: olderRootThreadId,
-        projectId: olderProjectId,
-        updatedAt: "2026-03-09T10:01:00.000Z",
-      }),
-      makeThread({
-        id: ThreadId.make("thread-newer-root"),
-        projectId: newerProjectId,
-        updatedAt: "2026-03-09T10:05:00.000Z",
-      }),
-      makeThread({
-        id: ThreadId.make("thread-hidden-subagent"),
-        projectId: olderProjectId,
-        updatedAt: "2026-03-09T10:10:00.000Z",
-        lineage: {
-          rootThreadId: olderRootThreadId,
-          parentThreadId: olderRootThreadId,
-          relationshipToParent: "subagent",
-        },
-      }),
-    ];
-
-    expect(
-      sortSidebarV2ProjectGroups(projects, threads, "updated_at", new Set()).map(
-        (project) => project.projectKey,
-      ),
-    ).toEqual(["logical-newer", "logical-older"]);
   });
 });
 
@@ -1569,7 +1522,7 @@ describe("groupSidebarThreadsByProject", () => {
 });
 
 describe("groupSidebarThreadsByMachine", () => {
-  it("lists this machine first and offline ones last, dropping empty machines unless kept", () => {
+  it("lists this machine first and the rest by name, offline or not, dropping empty ones unless kept", () => {
     const machine = (id: string, label: string, disconnected = false) => ({
       environmentId: EnvironmentId.make(id),
       label,
@@ -1596,14 +1549,14 @@ describe("groupSidebarThreadsByMachine", () => {
 
     expect(summarize([])).toEqual([
       ["MacBook Pro", ["b"]],
-      ["Hetzner VPS", ["a", "d"]],
       ["Cloud sandbox", ["c"]],
+      ["Hetzner VPS", ["a", "d"]],
     ]);
     expect(summarize(["idle"])).toEqual([
       ["MacBook Pro", ["b"]],
       ["Build box", []],
-      ["Hetzner VPS", ["a", "d"]],
       ["Cloud sandbox", ["c"]],
+      ["Hetzner VPS", ["a", "d"]],
     ]);
   });
 });

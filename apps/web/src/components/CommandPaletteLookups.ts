@@ -1,3 +1,4 @@
+import { sortProjectGroupsManually } from "@t3tools/client-runtime/state/project-order";
 import { t } from "~/i18n";
 import {
   type ClientSettings,
@@ -8,10 +9,9 @@ import {
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useOrderedProjects } from "../hooks/useProjectOrder";
 import { useClientSettings } from "../hooks/useSettings";
-import { useProjects, useVisibleThreadShells } from "../state/entities";
+import { useProjects } from "../state/entities";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { buildSidebarProjectSnapshots } from "../sidebarProjectGrouping";
-import { sortLogicalProjectsForSidebar } from "./Sidebar.logic";
 
 // Each helper reads its own source hook so the compiler caches the derived value on that
 // source. Taking the source as an argument instead leaves the helper hook-free, and the
@@ -53,13 +53,11 @@ export function useProjectLookups() {
 export const selectCommandPaletteClientSettings = (settings: ClientSettings) => ({
   sidebarProjectGroupingMode: settings.sidebarProjectGroupingMode,
   sidebarProjectGroupingOverrides: settings.sidebarProjectGroupingOverrides,
-  sidebarProjectSortOrder: settings.sidebarProjectSortOrder,
   sidebarThreadSortOrder: settings.sidebarThreadSortOrder,
 });
 
 export function useSortedProjectGroups(environmentLabelById: ReadonlyMap<EnvironmentId, string>) {
   const projects = useOrderedProjects();
-  const threads = useVisibleThreadShells();
   const clientSettings = useClientSettings(selectCommandPaletteClientSettings);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const projectGroupingSettings = {
@@ -72,9 +70,5 @@ export function useSortedProjectGroups(environmentLabelById: ReadonlyMap<Environ
     primaryEnvironmentId,
     resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
   });
-  return sortLogicalProjectsForSidebar(
-    unsortedProjectGroups,
-    threads,
-    clientSettings.sidebarProjectSortOrder,
-  );
+  return sortProjectGroupsManually(unsortedProjectGroups, (group) => group.memberProjects);
 }

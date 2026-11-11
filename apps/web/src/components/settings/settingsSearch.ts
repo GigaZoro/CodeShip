@@ -437,12 +437,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
-    id: "project-order",
-    title: msg("Project order"),
-    to: "/settings/general",
-    searchTerms: ["sort projects sidebar manual created recent"],
-  },
-  {
     id: "snooze-options",
     title: msg("Snooze options"),
     to: "/settings/threads",

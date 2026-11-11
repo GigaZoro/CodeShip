@@ -54,8 +54,8 @@ function earliestMember(projects: ReadonlyArray<OrderedProject>): {
 }
 
 /**
- * The manual project order: groups moved by hand by their key, then the rest oldest first, so a
- * new project lands at the bottom. Web and mobile both sort with this, so they show one order.
+ * The project order: groups moved by hand by their key, then the rest oldest first, so a new
+ * project lands at the bottom and activity never moves one. Web and mobile both sort with this.
  */
 export function sortProjectGroupsManually<TGroup>(
   groups: ReadonlyArray<TGroup>,
@@ -85,9 +85,9 @@ export interface ProjectOrderAssignment {
 }
 
 /**
- * The keys that put `movedKey` where `orderedKeys`, one list of sibling groups, has it. When
- * `followsKeys` is false the list was in another order, so it is saved as shown. Groups outside
- * the list keep their keys and are never written; every member of a written group takes its key.
+ * The keys that put `movedKey` where `orderedKeys`, one list of sibling groups, has it. Groups
+ * outside the list keep their keys and are never written; every member of a written group takes
+ * its key.
  */
 export function planProjectGroupMove<TGroup>(input: {
   readonly groups: ReadonlyArray<TGroup>;
@@ -95,19 +95,12 @@ export function planProjectGroupMove<TGroup>(input: {
   readonly projectsOf: (group: TGroup) => ReadonlyArray<OrderedProject>;
   readonly orderedKeys: readonly string[];
   readonly movedKey: string;
-  readonly followsKeys: boolean;
 }): ProjectOrderAssignment[] {
-  const siblings = new Set(input.orderedKeys);
   const groupByKey = new Map(input.groups.map((group) => [input.keyOf(group), group]));
   const keysById = new Map(
-    input.groups.map((group) => {
-      const key = input.keyOf(group);
-      const orderKey =
-        siblings.has(key) && !input.followsKeys
-          ? null
-          : projectGroupOrderKey(input.projectsOf(group));
-      return [key, orderKey] as const;
-    }),
+    input.groups.map(
+      (group) => [input.keyOf(group), projectGroupOrderKey(input.projectsOf(group))] as const,
+    ),
   );
   return planPinnedReorder({
     orderedIds: input.orderedKeys,

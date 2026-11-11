@@ -7,23 +7,15 @@ import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
-import {
-  getThreadSortTimestamp,
-  toSortableTimestamp,
-} from "@t3tools/client-runtime/state/thread-sort";
 import type {
   EnvironmentId,
   ScopedProjectRef,
   SidebarProjectGroupingMode,
-  SidebarProjectSortOrder,
 } from "@t3tools/contracts";
 import type { SidebarGrouping } from "@t3tools/contracts/settings";
-import * as Arr from "effect/Array";
-import * as Order from "effect/Order";
 
 import { t } from "../../lib/i18n";
 import { scopedProjectKey } from "../../lib/scopedEntities";
-import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import type { WorkspaceState } from "../../state/workspaceModel";
 import type { ThreadListV2Folder, ThreadListV2Grouping } from "../threads/threadListV2";
 
@@ -35,17 +27,6 @@ export interface HomeProjectScope {
   readonly projectRefs: ReadonlyArray<ScopedProjectRef>;
   readonly pinned: boolean;
   readonly archived: boolean;
-}
-
-function getProjectSortTimestamp(
-  project: EnvironmentProject,
-  sortOrder: Exclude<SidebarProjectSortOrder, "manual">,
-): number {
-  return sortOrder === "created_at"
-    ? (toSortableTimestamp(project.createdAt) ?? Number.NEGATIVE_INFINITY)
-    : (toSortableTimestamp(project.updatedAt) ??
-        toSortableTimestamp(project.createdAt) ??
-        Number.NEGATIVE_INFINITY);
 }
 
 export function buildHomeProjectScopes(input: {
@@ -94,75 +75,17 @@ export function findHomeProjectScope(
   );
 }
 
-/** Folder order, as on web: pinned projects first and archived ones last, each in this order. */
-export function sortHomeProjectScopes(input: {
-  readonly scopes: ReadonlyArray<HomeProjectScope>;
-  readonly threads: ReadonlyArray<EnvironmentThreadShell>;
-  readonly pendingTasks: ReadonlyArray<PendingNewTask>;
-  readonly projectSortOrder: SidebarProjectSortOrder;
-}): ReadonlyArray<HomeProjectScope> {
-  const sortOrder = input.projectSortOrder;
-  if (sortOrder === "manual") {
-    return tierProjectGroups(sortProjectGroupsManually(input.scopes, (scope) => scope.projects));
-  }
-  const scopeKeyByProjectRef = new Map(
-    input.scopes.flatMap((scope) =>
-      scope.projectRefs.map(
-        (projectRef) =>
-          [scopedProjectKey(projectRef.environmentId, projectRef.projectId), scope.key] as const,
-      ),
-    ),
-  );
-  const latestActivityByScope = new Map<string, number>();
-  const recordActivity = (scopeKey: string | undefined, timestamp: number) => {
-    if (!scopeKey || !Number.isFinite(timestamp)) return;
-    latestActivityByScope.set(
-      scopeKey,
-      Math.max(latestActivityByScope.get(scopeKey) ?? Number.NEGATIVE_INFINITY, timestamp),
-    );
-  };
-
-  for (const thread of input.threads) {
-    if (thread.archivedAt !== null) continue;
-    recordActivity(
-      scopeKeyByProjectRef.get(scopedProjectKey(thread.environmentId, thread.projectId)),
-      getThreadSortTimestamp(thread, sortOrder),
-    );
-  }
-  for (const pendingTask of input.pendingTasks) {
-    recordActivity(
-      scopeKeyByProjectRef.get(scopedProjectKey(pendingTask.environmentId, pendingTask.projectId)),
-      Date.parse(pendingTask.createdAt),
-    );
-  }
-
-  return tierProjectGroups(
-    Arr.sort(
-      input.scopes,
-      Order.mapInput(
-        Order.Struct({
-          timestamp: Order.flip(Order.Number),
-          title: Order.String,
-          key: Order.String,
-        }),
-        (scope: HomeProjectScope) => ({
-          timestamp:
-            latestActivityByScope.get(scope.key) ??
-            Math.max(
-              ...scope.projects.map((project) => getProjectSortTimestamp(project, sortOrder)),
-            ),
-          title: scope.title,
-          key: scope.key,
-        }),
-      ),
-    ),
-  );
+/** Folder order, as on web: the saved project order, pinned projects first and archived ones last. */
+export function sortHomeProjectScopes(
+  scopes: ReadonlyArray<HomeProjectScope>,
+): ReadonlyArray<HomeProjectScope> {
+  return tierProjectGroups(sortProjectGroupsManually(scopes, (scope) => scope.projects));
 }
 
 /**
- * Folders for the thread list: project scopes in the order given, or machines by name with
- * offline ones last, holding a folder for each of their projects when both are on. An
- * offline machine starts closed, since its threads cannot change.
+ * Folders for the thread list: project scopes in the order given, or machines by name, holding
+ * a folder for each of their projects when both are on. Going offline never moves a machine;
+ * an offline machine starts closed, since its threads cannot change.
  */
 export function buildHomeThreadListGrouping(input: {
   readonly grouping: SidebarGrouping;
@@ -214,7 +137,8 @@ export function buildHomeThreadListGrouping(input: {
   }
   const environments = [...input.environments].sort(
     (left, right) =>
-      Number(left.offline) - Number(right.offline) || left.label.localeCompare(right.label),
+      left.label.localeCompare(right.label) ||
+      left.environmentId.localeCompare(right.environmentId),
   );
   return {
     folders: environments.map((environment): ThreadListV2Folder => {

@@ -26,13 +26,11 @@ import {
   type QuitConfirmationMode,
   offersSidebarMachineGrouping,
   resolveSidebarGrouping,
-  SidebarProjectSortOrder,
 } from "@t3tools/contracts/settings";
 import { desktopUpdateChannelOf } from "@t3tools/shared/cliRelease";
 import { createModelSelection } from "@t3tools/shared/model";
 import { resolvePastedPath } from "@t3tools/shared/path";
 import * as Equal from "effect/Equal";
-import * as Schema from "effect/Schema";
 import { APP_VERSION, HOSTED_APP_CHANNEL, HOSTED_APP_CHANNEL_LABEL } from "../../branding";
 import { AboutVersionTitle } from "./AboutVersionTitle";
 import { CliCommandSettingsRow } from "./CliCommandSettingsRow";
@@ -155,13 +153,6 @@ const RESPONSE_STREAMING_MODE_DESCRIPTIONS: Record<ResponseStreamingMode, Messag
   turn: msg("Text appears once the agent finishes its turn."),
   paragraph: msg("Each paragraph or code block appears as soon as it is complete."),
 };
-
-const SIDEBAR_PROJECT_SORT_ORDER_LABELS: Record<SidebarProjectSortOrder, Message> = {
-  updated_at: msg("Last user message"),
-  created_at: msg("Created at"),
-  manual: msg("Manual"),
-};
-const isSidebarProjectSortOrder = Schema.is(SidebarProjectSortOrder);
 
 const SIDEBAR_PROJECT_GROUPING_LABELS = { none: msg("None"), project: msg("By project") } as const;
 
@@ -811,48 +802,6 @@ export function GeneralSettingsPanel() {
               }}
               aria-label={t("Combine matching projects")}
             />
-          }
-        />
-        <SettingsRow
-          {...searchableSetting("project-order")}
-          description={t(
-            "Order of project folders, the sidebar project picker, and the command palette.",
-          )}
-          resetAction={
-            settings.sidebarProjectSortOrder !==
-            DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder ? (
-              <SettingResetButton
-                label={t("project order")}
-                onClick={() =>
-                  updateSettings({
-                    sidebarProjectSortOrder: DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={settings.sidebarProjectSortOrder}
-              onValueChange={(value) => {
-                if (isSidebarProjectSortOrder(value)) {
-                  updateSettings({ sidebarProjectSortOrder: value });
-                }
-              }}
-            >
-              <SelectTrigger size="sm" className="w-full sm:w-44" aria-label={t("Project order")}>
-                <SelectValue>
-                  {t(SIDEBAR_PROJECT_SORT_ORDER_LABELS[settings.sidebarProjectSortOrder])}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {SidebarProjectSortOrder.literals.map((sortOrder) => (
-                  <SelectItem hideIndicator key={sortOrder} value={sortOrder}>
-                    {t(SIDEBAR_PROJECT_SORT_ORDER_LABELS[sortOrder])}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
           }
         />
         <SettingsRow

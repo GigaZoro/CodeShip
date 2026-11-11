@@ -279,7 +279,7 @@ describe("environment grouping", () => {
     });
   });
 
-  it("puts the preferred project after pinned projects", () => {
+  it("keeps the preferred project in its place, after pinned projects", () => {
     const project = (title: string, pinnedAt: string | null = null) =>
       makeProject({
         id: ProjectId.make(title),
@@ -299,6 +299,10 @@ describe("environment grouping", () => {
       groups: pickableProjectGroups(groups),
       preferredProjectRef: { environmentId: current.environmentId, projectId: current.id },
     });
-    expect(entries.map((entry) => entry.group.displayName)).toEqual(["pinned", "current", "other"]);
+    expect(entries.map((entry) => [entry.group.displayName, entry.isPreferred])).toEqual([
+      ["pinned", false],
+      ["other", false],
+      ["current", true],
+    ]);
   });
 });

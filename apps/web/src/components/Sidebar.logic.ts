@@ -10,10 +10,6 @@ import { t, type Message } from "~/i18n";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
-import {
-  sortProjectGroupsManually,
-  type OrderedProject,
-} from "@t3tools/client-runtime/state/project-order";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
@@ -36,11 +32,7 @@ import {
   type EnvironmentId,
   type ThreadId,
 } from "@t3tools/contracts";
-import type {
-  SidebarGrouping,
-  SidebarProjectSortOrder,
-  SidebarThreadSortOrder,
-} from "@t3tools/contracts/settings";
+import type { SidebarGrouping, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import type { AsyncResult } from "effect/reactivity";
 import {
   effectiveSnoozed,
@@ -611,30 +603,18 @@ export function applySidebarThreadDrop<
   };
 }
 
-type SidebarProject = {
+type ScopedSidebarProject = {
   id: string;
+  environmentId: string;
   title: string;
   createdAt?: string | undefined;
   updatedAt?: string | undefined;
-};
-
-type ScopedSidebarProject = SidebarProject & {
-  environmentId: string;
 };
 
 type ScopedSidebarThread = ThreadSortInput & {
   environmentId: string;
   projectId: string;
   archivedAt: string | null;
-};
-
-type LogicalSidebarProject = SidebarProject & {
-  projectKey: string;
-  memberProjectRefs: readonly {
-    environmentId: string;
-    projectId: string;
-  }[];
-  memberProjects: readonly OrderedProject[];
 };
 
 type ThreadTraversalDirection = "previous" | "next";
@@ -1077,18 +1057,16 @@ export function resolveSidebarMachineFolderExpanded(
   );
 }
 
-/** This machine first, then the others by name, offline ones last. */
+/** This machine first, then by name. Connection state never moves a machine. */
 export function sortSidebarMachines<
-  TMachine extends {
-    readonly environmentId: EnvironmentId;
-    readonly label: string;
-    readonly disconnected: boolean;
-  },
+  TMachine extends { readonly environmentId: EnvironmentId; readonly label: string },
 >(machines: readonly TMachine[], primaryEnvironmentId: EnvironmentId | null): TMachine[] {
-  const rank = (machine: TMachine) =>
-    machine.environmentId === primaryEnvironmentId ? 0 : machine.disconnected ? 2 : 1;
+  const rank = (machine: TMachine) => (machine.environmentId === primaryEnvironmentId ? 0 : 1);
   return machines.toSorted(
-    (left, right) => rank(left) - rank(right) || left.label.localeCompare(right.label),
+    (left, right) =>
+      rank(left) - rank(right) ||
+      left.label.localeCompare(right.label) ||
+      left.environmentId.localeCompare(right.environmentId),
   );
 }
 
@@ -1431,130 +1409,43 @@ export function getFallbackThreadIdAfterDelete<
     )[0]?.id ?? null
   );
 }
-function getProjectSortTimestamp(
-  project: SidebarProject,
-  projectThreads: readonly ThreadSortInput[],
-  sortOrder: Exclude<SidebarProjectSortOrder, "manual">,
-): number {
-  if (projectThreads.length > 0) {
-    return projectThreads.reduce(
-      (latest, thread) => Math.max(latest, getThreadSortTimestamp(thread, sortOrder)),
-      Number.NEGATIVE_INFINITY,
+
+/**
+ * Projects by their latest thread activity, for choosing where a new thread starts. Project lists
+ * never use this: they keep the saved order, so activity does not move them.
+ */
+export function sortProjectsByRecentActivity<
+  TProject extends ScopedSidebarProject,
+  TThread extends ScopedSidebarThread,
+>(projects: readonly TProject[], threads: readonly TThread[]): TProject[] {
+  const scopedKey = (environmentId: string, projectId: string) =>
+    `${environmentId}\u0000${projectId}`;
+  const latestThreadAtByProject = new Map<string, number>();
+  for (const thread of threads) {
+    if (thread.archivedAt !== null) continue;
+    const key = scopedKey(thread.environmentId, thread.projectId);
+    latestThreadAtByProject.set(
+      key,
+      Math.max(
+        latestThreadAtByProject.get(key) ?? Number.NEGATIVE_INFINITY,
+        getThreadSortTimestamp(thread, "updated_at"),
+      ),
     );
   }
-
-  if (sortOrder === "created_at") {
-    return toSortableTimestamp(project.createdAt) ?? Number.NEGATIVE_INFINITY;
-  }
-  return toSortableTimestamp(project.updatedAt ?? project.createdAt) ?? Number.NEGATIVE_INFINITY;
-}
-
-function sortProjectsByActivity<TProject extends SidebarProject>(
-  projects: readonly TProject[],
-  sortOrder: Exclude<SidebarProjectSortOrder, "manual">,
-  getProjectThreads: (project: TProject) => readonly ThreadSortInput[],
-  compareTies: (left: TProject, right: TProject) => number,
-): TProject[] {
-  // Project timestamps scan all threads; compute once per project instead of per comparison.
   return projects
     .map((project) => ({
       project,
-      timestamp: getProjectSortTimestamp(project, getProjectThreads(project), sortOrder),
+      timestamp:
+        latestThreadAtByProject.get(scopedKey(project.environmentId, project.id)) ??
+        toSortableTimestamp(project.updatedAt ?? project.createdAt) ??
+        Number.NEGATIVE_INFINITY,
     }))
-    .sort((left, right) => {
-      const byTimestamp =
-        right.timestamp === left.timestamp ? 0 : right.timestamp > left.timestamp ? 1 : -1;
-      return byTimestamp || compareTies(left.project, right.project);
-    })
+    .sort(
+      (left, right) =>
+        (right.timestamp === left.timestamp ? 0 : right.timestamp > left.timestamp ? 1 : -1) ||
+        left.project.title.localeCompare(right.project.title) ||
+        left.project.environmentId.localeCompare(right.project.environmentId) ||
+        left.project.id.localeCompare(right.project.id),
+    )
     .map(({ project }) => project);
-}
-
-export function sortLogicalProjectsForSidebar<
-  TProject extends LogicalSidebarProject,
-  TThread extends ScopedSidebarThread,
->(
-  projects: readonly TProject[],
-  threads: readonly TThread[],
-  sortOrder: SidebarProjectSortOrder,
-): TProject[] {
-  if (sortOrder === "manual") {
-    return sortProjectGroupsManually(projects, (project) => project.memberProjects);
-  }
-  const groupKeyByProjectRef = new Map(
-    projects.flatMap((project) =>
-      project.memberProjectRefs.map(
-        (projectRef) =>
-          [`${projectRef.environmentId}\0${projectRef.projectId}`, project.projectKey] as const,
-      ),
-    ),
-  );
-  const threadsByProjectKey = new Map<string, TThread[]>();
-  for (const thread of threads) {
-    if (thread.archivedAt !== null) continue;
-    const projectKey = groupKeyByProjectRef.get(`${thread.environmentId}\0${thread.projectId}`);
-    if (!projectKey) continue;
-    const existing = threadsByProjectKey.get(projectKey);
-    if (existing) {
-      existing.push(thread);
-    } else {
-      threadsByProjectKey.set(projectKey, [thread]);
-    }
-  }
-
-  return sortProjectsByActivity(
-    projects,
-    sortOrder,
-    (project) => threadsByProjectKey.get(project.projectKey) ?? [],
-    (left, right) =>
-      left.title.localeCompare(right.title) || left.projectKey.localeCompare(right.projectKey),
-  );
-}
-
-export function sortSidebarV2ProjectGroups<
-  TProject extends LogicalSidebarProject,
-  TThread extends ScopedSidebarThread &
-    Pick<SidebarThreadSummary, "environmentId" | "id" | "lineage">,
->(
-  projects: readonly TProject[],
-  threads: readonly TThread[],
-  sortOrder: SidebarProjectSortOrder,
-  delegatedUnderParent: ReadonlySet<string>,
-): TProject[] {
-  return sortLogicalProjectsForSidebar(
-    projects,
-    filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent),
-    sortOrder,
-  );
-}
-
-export function sortScopedProjectsForSidebar<
-  TProject extends ScopedSidebarProject,
-  TThread extends ScopedSidebarThread,
->(
-  projects: readonly TProject[],
-  threads: readonly TThread[],
-  sortOrder: Exclude<SidebarProjectSortOrder, "manual">,
-): TProject[] {
-  const scopedKey = (environmentId: string, projectId: string) =>
-    `${environmentId}\u0000${projectId}`;
-  const threadsByProject = new Map<string, TThread[]>();
-  for (const thread of threads) {
-    if (thread.archivedAt !== null) {
-      continue;
-    }
-    const key = scopedKey(thread.environmentId, thread.projectId);
-    const existing = threadsByProject.get(key) ?? [];
-    existing.push(thread);
-    threadsByProject.set(key, existing);
-  }
-
-  return sortProjectsByActivity(
-    projects,
-    sortOrder,
-    (project) => threadsByProject.get(scopedKey(project.environmentId, project.id)) ?? [],
-    (left, right) =>
-      left.title.localeCompare(right.title) ||
-      left.environmentId.localeCompare(right.environmentId) ||
-      left.id.localeCompare(right.id),
-  );
 }

@@ -57,7 +57,6 @@ const clientSettings: ClientSettings = {
   sidebarProjectGroupingOverrides: {
     "environment-1:/tmp/project-a": "separate",
   },
-  sidebarProjectSortOrder: "manual",
   sidebarThreadSortOrder: "created_at",
   sidebarGroupByProject: true,
   sidebarGroupByMachine: true,

@@ -1,5 +1,5 @@
 import type { ProjectId } from "@t3tools/contracts";
-import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
+import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import type { EnvironmentThreadShell } from "./models.ts";
 
 export interface ThreadSortInput {
@@ -103,7 +103,7 @@ function getLatestUserMessageTimestamp(thread: ThreadSortInput): number {
 
 export function getThreadSortTimestamp(
   thread: ThreadSortInput,
-  sortOrder: SidebarThreadSortOrder | Exclude<SidebarProjectSortOrder, "manual">,
+  sortOrder: SidebarThreadSortOrder,
 ): number {
   if (sortOrder === "created_at") {
     return (

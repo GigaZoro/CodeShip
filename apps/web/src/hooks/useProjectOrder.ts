@@ -16,7 +16,6 @@ import { projectEnvironment } from "../state/projects";
 import { readEnvironmentScope } from "../state/session";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { reportProjectFailure } from "./useProjectGroupUpdate";
-import { getClientSettings, updateClientSettings } from "./useSettings";
 
 const useHeldProjectOrder = create<{ readonly held: HeldProjectOrder }>(() => ({
   held: new Map(),
@@ -43,10 +42,7 @@ function canWriteProjectOrder(environmentId: EnvironmentId): boolean {
 export const canMoveProjectGroup = (members: ReadonlyArray<OrderedProject>) =>
   members.some((member) => canWriteProjectOrder(member.environmentId));
 
-/**
- * Saves a move on every machine that has the moved projects, shows it at once, and sets Project
- * order to Manual so the order shown is the one kept.
- */
+/** Saves a move on every machine that has the moved projects, and shows it at once. */
 export function useMoveProjectGroup() {
   const updateProject = useOrchestrationCommand(projectEnvironment.update, {
     reportFailure: false,
@@ -59,15 +55,13 @@ export function useMoveProjectGroup() {
     readonly orderedKeys: readonly string[];
     readonly movedKey: string;
   }) => {
-    const manual = getClientSettings().sidebarProjectSortOrder === "manual";
-    const assignments = planProjectGroupMove({ ...input, followsKeys: manual }).filter(
-      (assignment) => canWriteProjectOrder(assignment.environmentId),
+    const assignments = planProjectGroupMove(input).filter((assignment) =>
+      canWriteProjectOrder(assignment.environmentId),
     );
     if (assignments.length === 0) return;
     useHeldProjectOrder.setState(({ held }) => ({
       held: holdProjectOrder(readProjects(), held, assignments, new Date().toISOString()),
     }));
-    if (!manual) void updateClientSettings({ sidebarProjectSortOrder: "manual" });
     const results = await Promise.all(
       assignments.map(async (assignment) => ({
         assignment,

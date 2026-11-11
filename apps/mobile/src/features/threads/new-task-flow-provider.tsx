@@ -21,7 +21,7 @@ import { threadContextsOutsideEnvironment } from "@t3tools/shared/composerContex
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
 
-import { useProjects, useServerConfigs, useThreadShells } from "../../state/entities";
+import { useProjects, useServerConfigs } from "../../state/entities";
 import type { TurnCommandMetadata } from "../../lib/commandMetadata";
 import type { DraftComposerAttachment } from "../../lib/composerImages";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
@@ -221,20 +221,16 @@ export function NewTaskFlowProvider(
   }>,
 ) {
   const projects = useProjects();
-  const threads = useThreadShells();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const groupingSettings = useMobileProjectGroupingSettings();
 
-  const projectScopes = sortHomeProjectScopes({
-    scopes: buildHomeProjectScopes({
+  const projectScopes = sortHomeProjectScopes(
+    buildHomeProjectScopes({
       projects,
       environmentId: null,
       projectGroupingMode: groupingSettings.sidebarProjectGroupingMode,
     }),
-    threads,
-    pendingTasks: [],
-    projectSortOrder: "updated_at",
-  });
+  );
 
   const flowKey = props.flowKey ?? INACTIVE_FLOW_KEY;
   const storedFlowState = useAtomValue(newTaskFlowStateAtom(flowKey));

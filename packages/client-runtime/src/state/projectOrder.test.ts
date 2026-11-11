@@ -74,7 +74,6 @@ const move = (
   projects: ReadonlyArray<EnvironmentProject>,
   shown: readonly string[],
   moved: string,
-  followsKeys: boolean,
 ) => {
   const groups = group(projects);
   const keyByLabel = new Map(groups.map((entry) => [entry.label, entry.key]));
@@ -84,7 +83,6 @@ const move = (
     projectsOf: membersOf,
     orderedKeys: shown.map((label) => keyByLabel.get(label)!),
     movedKey: keyByLabel.get(moved)!,
-    followsKeys,
   });
 };
 
@@ -115,7 +113,7 @@ describe("planProjectGroupMove", () => {
     const initial = checkouts(["api", "web", "docs"]);
     const first = apply(
       initial,
-      move(initial, ["docs", "api", "web"], "docs", false),
+      move(initial, ["docs", "api", "web"], "docs"),
       "2026-07-10T00:00:00.000Z",
     );
     expect(labels(sortProjectGroupsManually(group(first), membersOf))).toEqual([
@@ -124,7 +122,7 @@ describe("planProjectGroupMove", () => {
       "web",
     ]);
 
-    const second = move(first, ["docs", "web", "api"], "web", true);
+    const second = move(first, ["docs", "web", "api"], "web");
     expect(new Set(second.map((assignment) => assignment.projectId))).toEqual(
       new Set([ProjectId.make("web-mac"), ProjectId.make("web-vps")]),
     );
@@ -138,7 +136,7 @@ describe("planProjectGroupMove", () => {
     ).toEqual(["docs", "web", "api"]);
 
     // The VPS was offline for the next move, so only the Mac took it.
-    const third = move(first, ["web", "docs", "api"], "web", true).filter(
+    const third = move(first, ["web", "docs", "api"], "web").filter(
       (assignment) => assignment.environmentId === mac,
     );
     expect(
@@ -155,7 +153,7 @@ describe("planProjectGroupMove", () => {
     const initial = checkouts(["api", "web", "docs", "infra"]);
     const saved = apply(
       initial,
-      move(initial, ["infra", "api", "web", "docs"], "infra", false),
+      move(initial, ["infra", "api", "web", "docs"], "infra"),
       "2026-07-10T00:00:00.000Z",
     );
     // Another client lists the machines' projects in its own order before sorting.
@@ -182,7 +180,6 @@ describe("planProjectGroupMove", () => {
       projectsOf: membersOf,
       orderedKeys: [keyOf("b"), keyOf("a")],
       movedKey: keyOf("b"),
-      followsKeys: false,
     });
     expect(assignments.map((assignment) => assignment.orderKey)).not.toContain("an");
     expect(assignments).toHaveLength(2);

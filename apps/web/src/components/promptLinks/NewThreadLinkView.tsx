@@ -41,7 +41,7 @@ import { pullRequestEnvironment } from "~/state/pullRequests";
 import { useAtomCommand } from "~/state/use-atom-command";
 
 import { usePullRequestHandoffs } from "../pullRequest/usePullRequestActions";
-import { sortScopedProjectsForSidebar } from "../Sidebar.logic";
+import { sortProjectsByRecentActivity } from "../Sidebar.logic";
 import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { SidebarInset } from "../ui/sidebar";
@@ -123,10 +123,9 @@ export function NewThreadLinkView({ link }: { readonly link: NewThreadLink }) {
   const launchedRef = useRef<LinkLaunch | null>(null);
 
   const recentProjects = () =>
-    sortScopedProjectsForSidebar(
+    sortProjectsByRecentActivity(
       projects.filter((project) => project.isScratch !== true),
       threads,
-      "updated_at",
     );
 
   const lastActiveEnvironmentId = () => {

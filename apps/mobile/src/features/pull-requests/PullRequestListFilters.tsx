@@ -6,7 +6,6 @@ import { Platform, ScrollView } from "react-native";
 import type { MenuProps } from "../../components/ui/Menu.types";
 import { ListFilterMenu } from "../workspace/ListFilterMenu";
 import { environmentProjects } from "../../state/projects";
-import { environmentThreadShells } from "../../state/threads";
 import { useMobileProjectGroupingSettings } from "../../state/project-grouping";
 import { buildHomeProjectScopes, sortHomeProjectScopes } from "../home/homeThreadList";
 import { DEFAULT_PR_LIST_CONTROLS, type PullRequestListControls } from "./pullRequestList";
@@ -76,20 +75,17 @@ const sameProjectOrder = (previous: ProjectOrder, next: ProjectOrder) =>
     );
   });
 
-// Thread shells change on every agent tick, but the sidebar order they decide rarely does. The
-// equality check keeps the list screen, which builds these filters, from re-rendering on each tick.
+// Projects change for many reasons, but the sidebar order they decide rarely does. The equality
+// check keeps the list screen, which builds these filters, from re-rendering on each change.
 const sidebarProjectOrderFamily = Atom.family((mode: SidebarProjectGroupingMode) =>
   Atom.make((get) =>
-    sortHomeProjectScopes({
-      scopes: buildHomeProjectScopes({
+    sortHomeProjectScopes(
+      buildHomeProjectScopes({
         projects: get(environmentProjects.projectsAtom),
         environmentId: null,
         projectGroupingMode: mode,
       }),
-      threads: get(environmentThreadShells.threadShellsAtom),
-      pendingTasks: [],
-      projectSortOrder: "updated_at",
-    }).map((scope) => ({ memberProjectRefs: scope.projectRefs })),
+    ).map((scope) => ({ memberProjectRefs: scope.projectRefs })),
   ).pipe(Atom.withEquality(sameProjectOrder)),
 );
 

@@ -8,6 +8,7 @@ import {
   type EnvironmentThreadSearchMatch,
   type ShownOrder,
 } from "@t3tools/client-runtime/state/thread-search";
+import { sortProjectGroupsManually } from "@t3tools/client-runtime/state/project-order";
 import { isListedThreadLineage, THREAD_JUMP_KEYBINDING_COMMANDS } from "@t3tools/contracts";
 import {
   foldSearchQuery,
@@ -447,7 +448,10 @@ export function CommandPalette(props: {
         });
       }
     }
-    const openProjects = projects.filter((project) => project.archivedAt == null);
+    const openProjects = sortProjectGroupsManually(
+      projects.filter((project) => project.archivedAt == null),
+      (project) => [project],
+    );
     const projectItems: CommandPaletteItem[] = [
       ...openProjects.filter((project) => project.pinnedAt != null),
       ...openProjects.filter((project) => project.pinnedAt == null),

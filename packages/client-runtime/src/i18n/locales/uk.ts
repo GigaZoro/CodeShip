@@ -4534,7 +4534,6 @@ const catalog: MessageCatalog = {
   "Created {name} without a first commit": "Створено {name} без першого коміту",
   "Created {shortLabel}": "Створено {shortLabel}",
   "Created {shortLabel} #{number}": "Створено {shortLabel} #{number}",
-  "Created at": "Час створення",
   "Created for these cookies": "Створений для цих cookie",
   "Created from this thread": "Створено з цього чату",
   "created thread": "створено чат",
@@ -6546,7 +6545,6 @@ const catalog: MessageCatalog = {
   "Last Seen": "Востаннє",
   "last seen {time}": "востаннє в мережі {time}",
   "Last selected": "Останній вибраний",
-  "Last user message": "Останнє повідомлення користувача",
   Later: "Пізніше",
   "Later ({count})": "Пізніше ({count})",
   Latest: "Найновіший",
@@ -6936,7 +6934,6 @@ const catalog: MessageCatalog = {
   "Managed tunnel": "Керований тунель",
   "Management key": "Ключ керування",
   "manifest unavailable": "маніфест недоступний",
-  Manual: "Уручну",
   "Manual capture only. You'll choose a window each time":
     "Лише ручне захоплення. Щоразу ви обиратимете вікно",
   "Manual only": "Лише вручну",
@@ -8166,10 +8163,6 @@ const catalog: MessageCatalog = {
   "orchestration capabilities {times}": "можливості оркестрації {times}",
   "Order for {project}, used by all its one-machine tasks. The first machine that's online runs each run; the next one runs it if the first is offline or its run fails.":
     "Порядок для {project}, спільний для всіх його завдань на одному комп’ютері. Кожен запуск виконує перший комп’ютер у мережі; наступний виконує його, якщо перший не в мережі або запуск на ньому не вдався.",
-  "Order of project folders, the sidebar project picker, and the command palette.":
-    "Порядок тек проєктів, засобу вибору проєкту на бічній панелі та палітри команд.",
-  "Order of project folders. Manual is the order you set by moving project folders on web or desktop.":
-    "Порядок тек проєктів. «Уручну» – порядок, який ви задали, переміщуючи теки проєктів у вебверсії чи десктопі.",
   "Order: {machines}": "Порядок: {machines}",
   organization: "організація",
   Organization: "Організація",
@@ -8576,8 +8569,6 @@ const catalog: MessageCatalog = {
   "project name": "назва проєкту",
   "Project name": "Назва проєкту",
   "Project not added": "Проєкт не додано",
-  "project order": "порядок проєктів",
-  "Project order": "Порядок проєктів",
   "Project override": "Перевизначення проєкту",
   "Project overview": "Огляд проєкту",
   "Project scope": "Охоплення проєктів",

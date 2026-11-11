@@ -261,7 +261,9 @@ Click or tap a folder to open or close it. A closed folder shows how many thread
 thread that needs you is listed under **Needs you** instead. A machine you cannot reach shows
 **Reconnecting**, **Offline** or **Can't connect**, with how long ago it was last seen, and starts
 closed. On web and desktop, right-click its folder and choose **Reconnect** to try again now.
-When two machines share a name, their folders add the address. While threads are grouped, active
+Machine folders keep one order: this machine first on web and desktop, then the rest by name, so a
+machine going offline or reconnecting never moves. When two machines share a name, their folders
+add the address. While threads are grouped, active
 threads are ordered by their latest message, so you cannot move them by hand.
 
 Pinned projects get the top folders, and an archived project's folder comes last and shows only
@@ -281,14 +283,15 @@ and **Expand all sidebar folders** in the command palette.
 On web and desktop, drag a project folder up or down to reorder your projects, or right-click it and
 choose **Move up** or **Move down**. The list scrolls while you hold the folder near its top or
 bottom edge. Inside a machine folder, a project moves among that machine's projects, and pinned
-projects stay above the rest. Moving a folder sets **Settings → General → Project order** to
-**Manual**, so new activity no longer reshuffles your projects; choose another order there to go
-back. New projects join the bottom.
+projects stay above the rest. Projects stay where you put them: new activity never reshuffles
+them. Projects you have not moved keep the order they were added in, and new projects join the
+bottom.
 
-The order is saved on the machines that have the projects, so every device set to **Manual** shows
-the same order. On mobile, choose **Manual** under **Settings → General → Project order**; folders
-can be moved only on web and desktop. A project on a machine whose server is too old to save the
-order stays below the projects you moved.
+The order is saved on the machines that have the projects, so every device, mobile included, shows
+the same order in its folders, project filters, project pickers and the command palette. The
+project you are in stays in its place in a picker instead of moving to the top. Folders can be
+moved only on web and desktop. A project on a machine whose server is too old to save the order stays below
+the projects you moved.
 
 Use the pen button on a project folder to start a thread in that project; inside a machine folder
 it starts on that machine. The pen button on a machine folder lists that machine's projects to

@@ -403,7 +403,6 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   restorable("/settings/general", msg("Thread notifications"), ["notificationMode"]),
   restorable("/settings/general", msg("In-app notifications"), ["inAppNotificationsEnabled"]),
   restorable("/settings/general", msg("Project grouping"), ["sidebarProjectGroupingMode"]),
-  restorable("/settings/general", msg("Project order"), ["sidebarProjectSortOrder"]),
   restorable("/settings/general", msg("Working section"), ["sidebarWorkingShelfEnabled"]),
   restorable("/settings/general", msg("Manual steps"), ["sidebarManualStepsEnabled"]),
   restorable("/settings/general", msg("Unpin confirmation"), ["confirmThreadUnpin"]),

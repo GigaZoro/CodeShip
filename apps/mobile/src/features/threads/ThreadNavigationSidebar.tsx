@@ -43,7 +43,6 @@ import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
 import { useOpenArchivedThreads } from "../archive/useOpenArchivedThreads";
 import { useOpenArtifacts } from "../artifacts/useOpenArtifacts";
 import { useProjects, useNavigationThreadShells } from "../../state/entities";
-import { useMobileProjectSortOrder } from "../../state/project-grouping";
 import { useThreadSearch } from "../../state/queries";
 import { useThreadListV2ShelfPreferences } from "./use-thread-list-v2-shelf-preferences";
 import { useThreadListNow } from "./use-thread-list-now";
@@ -234,7 +233,6 @@ function ThreadNavigationSidebarPane(
   );
   const { options, setSelectedEnvironmentId, setSelectedProjectKey } =
     useHomeListOptions(availableEnvironmentIds);
-  const projectSortOrder = useMobileProjectSortOrder();
   const searchEnvironmentIds =
     options.selectedEnvironmentId === null
       ? workspaceEnvironments
@@ -255,11 +253,13 @@ function ThreadNavigationSidebarPane(
   });
   const projectScopes = useMemo(
     () =>
-      buildHomeProjectScopes({
-        projects,
-        environmentId: options.selectedEnvironmentId,
-        projectGroupingMode: options.projectGroupingMode,
-      }),
+      sortHomeProjectScopes(
+        buildHomeProjectScopes({
+          projects,
+          environmentId: options.selectedEnvironmentId,
+          projectGroupingMode: options.projectGroupingMode,
+        }),
+      ),
     [projects, options.selectedEnvironmentId, options.projectGroupingMode],
   );
   const projectFilterOptions = pickableProjectGroups(projectScopes).map((scope) => ({
@@ -341,14 +341,7 @@ function ThreadNavigationSidebarPane(
   const grouping = buildHomeThreadListGrouping({
     grouping: groupBy,
     folderExpanded,
-    projectScopes: groupBy.project
-      ? sortHomeProjectScopes({
-          scopes: projectScopes,
-          threads,
-          pendingTasks,
-          projectSortOrder,
-        })
-      : projectScopes,
+    projectScopes,
     environments: environments
       .filter(
         (environment) =>

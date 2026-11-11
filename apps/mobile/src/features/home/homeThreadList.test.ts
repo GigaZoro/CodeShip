@@ -232,7 +232,7 @@ describe("home project scopes", () => {
     expect(findHomeProjectScope(scopes, null)).toBeNull();
   });
 
-  it("orders folders like web: pinned first and archived last, in the manual order", () => {
+  it("orders folders like web: pinned first and archived last, in the saved order", () => {
     const environmentId = EnvironmentId.make("local");
     const at = "2026-06-02T00:00:00.000Z";
     const scopes = buildHomeProjectScopes({
@@ -265,12 +265,7 @@ describe("home project scopes", () => {
       environmentId: null,
       projectGroupingMode: "separate",
     });
-    const sorted = sortHomeProjectScopes({
-      scopes,
-      threads: [],
-      pendingTasks: [],
-      projectSortOrder: "manual",
-    });
+    const sorted = sortHomeProjectScopes(scopes);
     expect(sorted.map((scope) => scope.title)).toEqual([
       "Pinned",
       "First",
@@ -334,7 +329,7 @@ describe("home thread list grouping", () => {
     ]);
   });
 
-  it("orders machines by name with offline ones last, closed until the user opens one", () => {
+  it("orders machines by name, offline or not, closed until the user opens one", () => {
     const machine = (id: string, label: string, offline: boolean) => ({
       environmentId: EnvironmentId.make(id),
       label,
@@ -356,9 +351,9 @@ describe("home thread list grouping", () => {
       grouping?.folders.map((folder) => [folder.label, folder.expanded, folder.expandedByDefault]),
     ).toEqual([
       ["Desk", true, true],
-      ["VPS", true, true],
       ["Laptop", false, false],
       ["Studio", true, false],
+      ["VPS", true, true],
     ]);
   });
 
