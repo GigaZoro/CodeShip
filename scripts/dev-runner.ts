@@ -21,6 +21,10 @@ import { Argument, Command, Flag } from "effect/cli";
 import { ChildProcess } from "effect/process";
 
 import { type DevShareError, shareDevServer, unshareDevServer } from "./lib/dev-share.ts";
+import {
+  assertSettingsKeepProviderHomesIsolated,
+  isolateProviderHomes,
+} from "./lib/dev-provider-homes.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
 
 Object.assign(process.env, loadRepoEnv());
@@ -297,6 +301,8 @@ interface CreateDevRunnerEnvInput {
   readonly host: string | undefined;
   readonly port: number | undefined;
   readonly devUrl: URL | undefined;
+  /** Uses the developer's own provider logins. Off by default: see `isolateProviderHomes`. */
+  readonly realProviders?: boolean | undefined;
 }
 
 export const createDevRunnerEnv = Effect.fn("dev-runner.createDevRunnerEnv")(function* ({
@@ -311,6 +317,7 @@ export const createDevRunnerEnv = Effect.fn("dev-runner.createDevRunnerEnv")(fun
   host,
   port,
   devUrl,
+  realProviders,
 }: CreateDevRunnerEnvInput): Effect.fn.Return<NodeJS.ProcessEnv, never, Path.Path> {
   const serverPort = port ?? BASE_SERVER_PORT + serverOffset;
   const webPort = BASE_WEB_PORT + webOffset;
@@ -330,6 +337,11 @@ export const createDevRunnerEnv = Effect.fn("dev-runner.createDevRunnerEnv")(fun
     output.T3CODE_HOME = resolvedBaseDir;
   } else {
     delete output.T3CODE_HOME;
+  }
+
+  if (realProviders !== true) {
+    const path = yield* Path.Path;
+    isolateProviderHomes(output, path.join(resolvedBaseDir, "provider-homes"), path.join);
   }
 
   // Managed T3 service shells leak launcher variables that make dev servers fail version checks.
@@ -682,6 +694,7 @@ interface DevRunnerCliInput {
   readonly dryRun: boolean;
   readonly share: boolean;
   readonly seed?: boolean | undefined;
+  readonly realProviders?: boolean | undefined;
   readonly built: boolean;
   readonly runArgs: ReadonlyArray<string>;
 }
@@ -751,7 +764,9 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
     host: input.host,
     port: input.port,
     devUrl: input.devUrl,
+    realProviders: input.realProviders,
   });
+  const realProviders = input.realProviders === true;
 
   const selectionSuffix =
     serverOffset !== offset || webOffset !== offset
@@ -762,6 +777,14 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
   yield* Effect.logInfo(
     `[dev-runner] mode=${input.mode} source=${source}${selectionSuffix} serverPort=${String(env.T3CODE_PORT)} webPort=${String(env.PORT)} baseDir=${baseDir}`,
   );
+  yield* Effect.logInfo(
+    realProviders
+      ? "[dev-runner] providers=real: this dev server uses the developer's own Claude, Codex and other provider logins. Refresh tokens rotate, so it can sign them out of the real app; use it only for a test that needs a real provider."
+      : `[dev-runner] providers=isolated: provider homes are under ${baseDir}/provider-homes, so no real login is read or refreshed and providers show as signed out. Use the Replay (dev) provider, or --real-providers when a test needs a real one.`,
+  );
+  if (!realProviders) {
+    yield* assertSettingsKeepProviderHomesIsolated(baseDir);
+  }
 
   // Before the share block: --dry-run only resolves and prints. Sharing would
   // replace, then tear down, whatever mapping the port already had — a
@@ -969,6 +992,12 @@ const devRunnerCli = Command.make("dev-runner", {
       "Seed an empty worktree database from ~/.t3 on first start (read-only, via migrate-dev-db) if the source is at most 500 MiB. On by default; --no-seed or T3CODE_DEV_SEED=0 skips it.",
     ),
     Flag.withFallbackConfig(optionalBooleanConfig("T3CODE_DEV_SEED")),
+  ),
+  realProviders: Flag.Boolean("real-providers").pipe(
+    Flag.withDescription(
+      "Use the developer's real provider logins (~/.claude, ~/.codex, ...) instead of the dev server's own empty provider homes. Refresh tokens rotate, so this can sign the real app out. Also T3CODE_DEV_REAL_PROVIDERS=1.",
+    ),
+    Flag.withFallbackConfig(optionalBooleanConfig("T3CODE_DEV_REAL_PROVIDERS")),
   ),
   built: Flag.Boolean("built").pipe(
     Flag.withDescription(

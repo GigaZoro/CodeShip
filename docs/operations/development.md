@@ -73,6 +73,24 @@ Read ports from the `[dev-runner]` output. Worktrees derive stable preferences f
 but occupied ports can shift them. `T3CODE_PORT_OFFSET` or `T3CODE_DEV_INSTANCE` can select a
 different preference when needed.
 
+### Provider logins
+
+A dev server never uses the developer's real provider logins. The dev runner points the server at
+empty homes under `<home>/provider-homes` (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME`,
+`PI_CODING_AGENT_DIR`), drops `CLAUDE_CODE_OAUTH_TOKEN`, and keeps Codex MCP sign-ins in that home
+instead of the shared OS keychain. Claude and Codex key their keychain items to that folder, so
+those items are separate too. Providers show as signed out, and the runner prints
+`providers=isolated`. Claude, ChatGPT and other refresh tokens are single-use, so a dev server
+refreshing a shared login signs the real app out.
+
+For a test that needs a real provider, run `vp run dev --real-providers` or set
+`T3CODE_DEV_REAL_PROVIDERS=1`. The runner then leaves the environment as it is and prints
+`providers=real`. Prefer [Replay](#replay-provider) otherwise. If the dev home's `settings.json`
+(copied by hand) names a provider home outside the dev home, the runner refuses to start and lists
+the fields: remove them or opt in. It does not rewrite your settings. OpenCode and Cursor have no
+home the runner can redirect without moving unrelated tools, and Antigravity profiles already live
+under the dev home.
+
 ### Replay provider
 
 `vp run dev` registers `Replay (dev)`, a local ACP agent at
