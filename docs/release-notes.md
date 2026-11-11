@@ -1,3 +1,11 @@
+## 2026-11-11 — Fewer settings and fewer sign-ins by hand
+
+- **Links renew themselves.** Linked environments no longer expire every 30 days while both machines run this version and reach each other in the last 10 days before expiry. A renewed link keeps its access, and revoking it on the other machine still ends it.
+- **Sign-ins you can see coming.** Each Claude account shows when its login ends, warns a week before, and offers **Sign in again**. Signed-out accounts, ending or expired logins and MCP servers that need sign-in appear in **Manual steps** on every machine, even without ThreadPage, each with a button that opens the fix. Mobile can sign an MCP server in.
+- **One-year Claude token.** A Claude account can sign in with **One-year token** (`claude setup-token`): no renewals for a year and no lost refreshes, but no claude.ai connectors in its sessions. **Use regular sign-in instead** switches back.
+- **Models in one place.** Every model role is on one **Models** list in **Providers & models**, with "Same as default" and "Same as titles" where a role follows another.
+- **Fewer controls.** Usage limits are one choice plus a hide switch, inside one **Recovery** section on **Threads** with network and restart recovery. Provider updates are Off / Notify / Install automatically, and notifications are one row. Cleanup rules, background polling and Diagnostics each have one place on **Maintenance & about**, snooze options edit in a dialog, Appearance holds only appearance, and keybinding conditions read in words. Old links still land on the moved rows.
+
 ## 2026-11-11 — Agents run terminal commands on linked machines
 
 - An agent can now type into a terminal on a linked machine, such as your PC from your Mac, to run commands there and get back what they print. It uses a thread on that machine, so you watch the terminal in that thread's terminal panel. It needs a link paired with **Full access**, an agent thread in Full access, and **Agent terminal access** set to **Read and run commands** on the other machine; otherwise the agent is told which of these is missing.
