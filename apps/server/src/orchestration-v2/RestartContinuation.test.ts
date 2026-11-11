@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  CommandId,
   MessageId,
   NodeId,
   ProjectId,
@@ -13,6 +14,7 @@ import {
   RuntimeRequestId,
   ThreadId,
   type OrchestrationV2Command,
+  type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -24,8 +26,11 @@ import {
   restartContinuationRun,
   continueRestartedRun,
   RestartResumeRequest,
+  restartResumeRun,
+  restartRetryRun,
+  RestartRunPreparation,
 } from "./RestartContinuation.ts";
-import { continuationStartRetryDelayMs } from "./RestartBackgroundNote.ts";
+import { continuationStartRetryDelayMs, restartRetryNoticeId } from "./RestartBackgroundNote.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -1201,12 +1206,15 @@ it.effect("prepares later threads' continuations when one thread fails", () =>
   }),
 );
 
+// The restart keeps a question answerable by message, and the answer continues the thread. Every
+// other open request expires, so the resumed agent asks again.
 it.effect.each([
-  ["user_input", "pending", "live", false],
-  ["user_input", "expired", "not_resumable", false],
-  ["user_input", "cancelled", "not_resumable", false],
-  ["command", "pending", "live", false],
-  ["command", "expired", "not_resumable", false],
+  ["question", "pending", "live", false],
+  ["user_input", "pending", "live", true],
+  ["user_input", "expired", "not_resumable", true],
+  ["user_input", "cancelled", "not_resumable", true],
+  ["command", "pending", "live", true],
+  ["command", "expired", "not_resumable", true],
   ["user_input", "resolved", "live", true],
   ["command", "cancelled", "live", true],
   ["user_input", "pending", "message", true],
@@ -1214,9 +1222,21 @@ it.effect.each([
   ["auth_refresh", "pending", "live", true],
 ] as const)(
   "a %s request that is %s with %s capability allows continuation: %s",
-  ([kind, status, capability, shouldContinue]) =>
+  ([request, status, capability, shouldContinue]) =>
     Effect.gen(function* () {
-      const base = makeProjection();
+      const kind = request === "question" ? "user_input" : request;
+      const questionItems =
+        request === "question"
+          ? [
+              {
+                type: "user_input_request",
+                requestId: RuntimeRequestId.make("request:restart"),
+                nodeId: NodeId.make("node:restart-question"),
+                questions: [{ question: "Which branch?" }],
+              },
+            ]
+          : [];
+      const base = { ...makeProjection(), turnItems: questionItems };
       const runtimeRequests = [
         {
           id: RuntimeRequestId.make("request:restart"),
@@ -1237,6 +1257,7 @@ it.effect.each([
       const cut = {
         ...cutMidTurn(),
         runtimeRequests,
+        turnItems: questionItems,
       } as unknown as OrchestrationV2ThreadProjection;
       assert.lengthOf(yield* continuationTexts(cut), shouldContinue ? 1 : 0);
     }),
@@ -1258,24 +1279,19 @@ it.effect("does not wake a snoozed or settled thread, but continues once a snooz
   }),
 );
 
-it.effect("does not continue a run waiting on a secret the restart closed", () =>
+it.effect("continues a run waiting on a secret the restart closed, so the agent asks again", () =>
   Effect.gen(function* () {
     const completedAt = DateTime.makeUnsafe("2026-10-03T10:05:00.000Z");
     const secret = (secretStatus: string, at: DateTime.Utc | null) =>
       ({ type: "secret_request", runId, secretStatus, completedAt: at }) as never;
-    assert.isUndefined(
-      restartContinuationRun({ ...makeProjection(), turnItems: [secret("pending", null)] }, now),
+    assert.equal(
+      restartContinuationRun({ ...makeProjection(), turnItems: [secret("pending", null)] }, now)
+        ?.id,
+      runId,
     );
     const cut = cutMidTurn({ completedAt });
-    assert.deepEqual(
-      yield* continuationTexts({ ...cut, turnItems: [secret("cancelled", completedAt)] }),
-      [],
-    );
     assert.lengthOf(
-      yield* continuationTexts({
-        ...cut,
-        turnItems: [secret("cancelled", DateTime.subtract(completedAt, { seconds: 1 }))],
-      }),
+      yield* continuationTexts({ ...cut, turnItems: [secret("cancelled", completedAt)] }),
       1,
     );
   }),
@@ -1294,4 +1310,121 @@ it.effect.each(["completed", "failed", "interrupted"] as const)(
         [],
       );
     }),
+);
+
+// A run the provider never saw starts again with its own message: no "Continue", no copy of it.
+const cutBeforePrompt = (extra: Record<string, unknown> = {}) =>
+  ({
+    ...cutMidTurn(extra),
+    providerTurns: [],
+  }) as unknown as OrchestrationV2ThreadProjection;
+
+const resumeCommands = (projection: OrchestrationV2ThreadProjection) =>
+  Effect.gen(function* () {
+    const commands: Array<OrchestrationV2ServerCommand> = [];
+    const prepared: Array<RunId> = [];
+    yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
+      Effect.provideService(RestartRunPreparation, (input) =>
+        Effect.sync(() => {
+          prepared.push(input.runId);
+        }),
+      ),
+      Effect.provide(
+        Layer.merge(
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadRecords: () => Effect.succeed(projection),
+            recoverDelegatedTask: () => Effect.void,
+            dispatch: (command) =>
+              Effect.sync(() => {
+                commands.push(command);
+                return {} as never;
+              }),
+          }),
+          ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
+        ),
+      ),
+    );
+    return { commands, prepared };
+  });
+
+it.each(["preparing", "starting", "running"] as const)(
+  "starts again a run the restart cut while %s, before its provider took the prompt",
+  (status) => {
+    const live = makeProjection();
+    const cut = {
+      ...live,
+      runs: [{ ...live.runs[0]!, status, startedAt: null }],
+      // Before the provider created its native thread or turn.
+      providerThreads: [{ ...live.providerThreads[0]!, nativeThreadRef: null, status: "idle" }],
+      providerSessions: [{ ...live.providerSessions[0]!, status: "stopped" }],
+      providerTurns: [],
+    } as unknown as OrchestrationV2ThreadProjection;
+    assert.equal(restartResumeRun(cut, now)?.id, runId);
+    for (const blocked of [
+      { ...cut, thread: { ...cut.thread, archivedAt: now } },
+      { ...cut, thread: { ...cut.thread, settledOverride: "settled" } },
+      { ...cut, thread: { ...cut.thread, snoozedUntil: DateTime.add(now, { days: 1 }) } },
+      // A restart continuation keeps its own path.
+      { ...cut, runs: [{ ...cut.runs[0]!, restartContinuationOfRunId: RunId.make("run:older") }] },
+    ])
+      assert.isUndefined(
+        restartRetryRun(blocked as unknown as OrchestrationV2ThreadProjection, now),
+      );
+  },
+);
+
+it.effect(
+  "sends the original message again instead of continuing a run the provider never saw",
+  () =>
+    Effect.gen(function* () {
+      const { commands, prepared } = yield* resumeCommands(
+        cutBeforePrompt({ workspacePreparation: { type: "worktree", baseRef: "main" } }),
+      );
+      assert.deepEqual(commands, [
+        {
+          type: "prepared-run.retry",
+          automatic: true,
+          commandId: CommandId.make(`command:restart-retry:${runId}:1`),
+          threadId,
+          runId,
+        },
+      ]);
+      // A run back in preparation needs its workspace prepared again; others ignore the call.
+      assert.deepEqual(prepared, [runId]);
+    }),
+);
+
+it.effect("stops starting a run again after three restarts in five minutes", () =>
+  Effect.gen(function* () {
+    const notices = (minutesBefore: number) =>
+      [1, 2, 3].map((ordinal) => ({
+        id: restartRetryNoticeId(runId, ordinal, ordinal === 2 ? "unconfirmed" : "unsent"),
+        type: "system_notice",
+        runId,
+        updatedAt: DateTime.subtract(now, { minutes: minutesBefore }),
+      }));
+    const looping = yield* resumeCommands({
+      ...cutBeforePrompt({ completedAt: now }),
+      turnItems: notices(1),
+    } as unknown as OrchestrationV2ThreadProjection);
+    assert.deepEqual(looping.commands, []);
+    const later = yield* resumeCommands({
+      ...cutBeforePrompt({ completedAt: now }),
+      turnItems: notices(30),
+    } as unknown as OrchestrationV2ThreadProjection);
+    assert.deepEqual(
+      later.commands.map((command) => command.commandId),
+      [CommandId.make(`command:restart-retry:${runId}:4`)],
+    );
+  }),
+);
+
+it.effect("does not start again a run the user stopped before the restart", () =>
+  Effect.gen(function* () {
+    const { commands } = yield* resumeCommands({
+      ...cutBeforePrompt(),
+      turnItems: [{ id: "turn-item:interrupt", runId, type: "run_interrupt_request" }],
+    } as unknown as OrchestrationV2ThreadProjection);
+    assert.deepEqual(commands, []);
+  }),
 );

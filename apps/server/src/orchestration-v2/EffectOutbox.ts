@@ -414,7 +414,21 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                 ${nowIso},
                 ${nowIso}
               )
-              ON CONFLICT(effect_id) DO NOTHING
+              ON CONFLICT(effect_id) DO UPDATE SET
+                command_id = excluded.command_id,
+                payload_json = excluded.payload_json,
+                status = 'pending',
+                attempt_count = 0,
+                available_at = excluded.available_at,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                updated_at = excluded.updated_at,
+                completed_at = NULL,
+                last_error = NULL
+              -- A run a later restart cuts again needs resuming again. Its id stays the run's
+              -- so waiters on the resume find it; an unsettled one is the same resume.
+              WHERE orchestration_v2_effect_outbox.effect_type = 'provider-runtime.continue'
+                AND orchestration_v2_effect_outbox.status IN ('succeeded', 'failed', 'cancelled')
             `,
             { concurrency: 1, discard: true },
           );

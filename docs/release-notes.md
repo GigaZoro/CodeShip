@@ -1,3 +1,10 @@
+## 2026-11-11 — Restarts resume every chat they cut
+
+- A chat a restart cut before its agent received the message, while its worktree was being prepared or its agent was starting, now starts again on its own with the same message, model and worktree, instead of staying cancelled. The thread notes that the message was sent again, and no copy of it appears. When the restart came while the message was being sent, the agent is told it may have it already, so it does not repeat work; a `/goal` command in that state is not sent again. A cut delegated-task result is offered again once, as before. Scheduled runs whose window has ended, and archived, settled, snoozed or stopped chats stay as they are.
+- Messages queued behind a chat a restart cut never start ahead of its resumed turn, also when an older turn's bookkeeping finishes first. If the resumed turn fails, they wait for you, as after any failure.
+- An approval or secret request the restart cancelled no longer keeps the chat from resuming: the agent asks again. A question stays open for your answer.
+- If `settings.json` cannot be read, chats still resume after restarts unless the file sets **Continue threads after restarts** to off.
+
 ## 2026-11-11 — Queued messages run after a restart resumes the thread
 
 - When the server restarts or shuts down mid-turn, messages you queued no longer wait for you to press **Resume**. The interrupted turn resumes first, and once it finishes the queue runs in order. With **Continue threads after restarts** off, or after you press Stop, the queue stays held as before.

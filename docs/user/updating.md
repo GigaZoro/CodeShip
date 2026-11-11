@@ -100,15 +100,25 @@ different value, use **Apply to all** in Settings after it connects.
 T3.CodeShip must start again on that machine;
 the setting does not enable automatic startup. Terminal commands may still be
 interrupted, and threads without saved provider resume state need a new message.
+A message the restart cut before the agent received it, while its worktree was
+being prepared or its agent was starting, is sent again as it was, with the same
+model and worktree. When the restart came while the message was being sent, the
+agent is also told it may have it already, so it does not repeat work; a `/goal`
+command in that state is not sent again, so send it yourself if you still need it.
+Messages you queued behind a resumed turn follow once it finishes; if it fails,
+they wait for you, as after any failure.
 A thread that finished its turn to wait on a subagent, a background task, or a
 command or monitor the agent said it was waiting on is woken and told that this work
 stopped. Other background shells and monitors, such as a dev server and its
 watchdog, do not wake it; the thread learns about them with your next message.
-Messages you queued run after the resumed turn finishes, and an interrupted
-`/compact` compacts again. A thread is not resumed while it waits for your approval,
-answer, or secret, or while it is archived, snoozed, or settled. After three automatic resumes in a row,
-the thread waits for your next message. Scheduled-task runs also stay stopped when
-a newer occurrence has started or their scheduled window has ended.
+An interrupted `/compact` compacts again. An approval or secret the restart
+cancelled is asked for again when the thread resumes. A question the agent asked
+stays open for your answer, which continues the thread. A thread is not resumed
+while it is archived, snoozed, or settled, or after you stopped it. After three
+automatic resumes within five minutes, the thread waits for your next message.
+Scheduled-task runs also stay stopped when a newer occurrence has started or their
+scheduled window has ended. If `settings.json` cannot be read, threads still resume
+unless the file sets this option to `false`.
 
 Updates from the previous orchestration system preserve conversation transcripts but cannot carry
 every kind of runtime history forward. Read [Threads from older T3.CodeShip versions](./thread-migration.md)

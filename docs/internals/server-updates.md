@@ -66,15 +66,29 @@ stopped backends and replays the failure for the same token.
 ## Recovering interrupted threads
 
 Restart continuation is an environment-owned preference, on by default. A
-`settings.json` that fails to decode turns it off, since the file may hold an
-opt-out. The
+`settings.json` that fails to decode keeps the default unless its raw text still shows
+`"continueThreadsAfterServerUpdate": false`: settings writes are atomic, so only a hand
+edit or a newer version leaves the file unreadable. The
 [v2 recovery service](../../apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts)
-requires matching durable run, provider thread, session, and native resume identity.
+continues a cut turn only with matching durable run, provider thread, session, and native
+resume identity. A run cut before any provider turn recorded its prompt (preparing its
+workspace, waiting on `provider-turn.start`, or running before its first turn) needs none
+of that: `prepared-run.retry` starts the same run again with its own message, model and
+workspace, so the timeline gains no copy of the message and scheduled-occurrence links
+stay intact. The prompt is sent only after the run is persisted as `running`, so a run cut
+before that never sent it; one cut later may have, and from then until a provider turn
+records delivery each restart resends it with a note that the agent may already have it.
+An unconfirmed `/goal` is not replayed, because it reaches the provider verbatim and
+replaying it resets the goal, and a cut delegated-task result is left to delegated
+recovery, which offers it again under a new generation.
 Queued runs never started, so recovery holds them and continues the run they wait
 behind. With the preference on, the hold is marked `queueHeldByRestart`: nobody chose it,
 so the thread's next completed run releases it like an agent's held message, and the
-queue follows the continuation. Stop turns it into an ordinary hold, and every release
-drops the mark, so a later failure hold cannot inherit it. The run-update listener does
+queue follows the continuation. Nothing is released while a resume that can still run is
+pending in the outbox; a resume whose run a later run superseded will stand down and holds
+nothing. Stop, or a failure of the resumed run with no retry scheduled, turns the hold
+into an ordinary one, and every release drops the mark, so a later failure hold cannot
+inherit it. The run-update listener does
 not replay completions from before startup, so a startup pass after reconciliation applies
 the same release to threads whose latest run completed, then starts their queues. A settled run qualifies only when the restart cancels work the agent waits on
 (a subagent, a background task, or a shell or monitor the agent marked with
@@ -95,10 +109,13 @@ rechecks the preference, provider selection, newer user work, a stop the user re
 and maintenance turns before dispatching: a cut `/compact` is resumed by compacting
 again, and a cut `/logout` is not repeated, since only a person signs a provider out. Intent and delivery both
 refuse a thread that is archived, settled, or still snoozed, a cut turn whose provider
-turn already ended, and a run waiting on the user: an approval, question, or secret that was pending,
-or that recovery closed on the cut turn. Message-capable questions stay answerable, so
-they do not block. Delivery also stops after three consecutive continuations in one
-`restartContinuationOfRunId` chain, so a turn that crashes the server cannot loop. Stable
+turn already ended, and a question recovery keeps answerable by message, since the
+person's answer continues the thread. Approvals, other questions and secret requests the
+restart closes do not block: the resumed agent asks again. Delivery also stops after three
+consecutive continuations in one `restartContinuationOfRunId` chain, or three starts of the
+same run within five minutes, so a turn that crashes the server cannot loop. A later
+restart that cuts the same run again re-arms its settled resume effect, whose id stays
+the run's so delegated-task waiters keep finding it. Stable
 command and message IDs prevent duplicate submissions after an outbox retry. Codex
 resumes without adding provider prompt text unless the turn lost background work;
 other adapters receive the continuation message through their normal turn path.

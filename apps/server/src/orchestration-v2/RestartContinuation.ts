@@ -5,9 +5,12 @@ import {
   IDLE_COMPACTION_TEXT,
   isCompactionCommandMessage,
   isOrchestrationV2WorkActive,
+  isProviderNativeSubagentThread,
   latestProviderTurnForAttempt,
   MessageId,
   type OrchestrationV2Run,
+  type OrchestrationV2RuntimeRequest,
+  type OrchestrationV2TurnItem,
   type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -26,24 +29,39 @@ import {
   continuationFailedBeforePrompt,
   isAwaitedWork,
   isRestartContinuationSource,
-  cancelledBeforeStart,
   isRestartNoteSource,
   neverStarted,
+  promptNeverDelivered,
   restartCancelledBackgroundWorkNote,
   restartContinuationNote,
+  restartRetryNotices,
+  supersededRun,
 } from "./RestartBackgroundNote.ts";
 
 export const CONTINUE_PROMPT =
   "Continue where you left off. Your last turn was cut short, so a command or other action it started may have finished or may still be running. Before you repeat one that changes state, confirm it did not take effect and is not still running; if you cannot tell, say so instead of repeating it.";
 
 const MAX_CONTINUATION_CHAIN = 3;
-const CONTINUATION_LOOP_WINDOW_MS = 5 * 60 * 1_000;
+// Automatic resumes this close together point at a run that crashes the server.
+const RESTART_LOOP_WINDOW_MS = 5 * 60 * 1_000;
 
 /** True while a person asked this restart to resume running threads, overriding the setting. */
 export class RestartResumeRequest extends Context.Reference<Effect.Effect<boolean>>(
   "t3/orchestration-v2/RestartResumeRequest",
   { defaultValue: () => Effect.succeed(false) },
 ) {}
+
+/** Prepares the workspace of a run started again after a restart; the server wires ThreadLaunchService here. */
+export class RestartRunPreparation extends Context.Reference<
+  (input: {
+    readonly commandId: CommandId;
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+  }) => Effect.Effect<void>
+>("t3/orchestration-v2/RestartRunPreparation", {
+  defaultValue: () => (input) =>
+    Effect.logError("orchestration-v2.restart-retry.preparation-unavailable", input),
+}) {}
 
 /** `settings` is null when unreadable; a requested resume needs none. */
 export function continuesAfterRestart(
@@ -55,6 +73,32 @@ export function continuesAfterRestart(
     resumeRequested ||
     (settings !== null &&
       resolveProjectSettings(settings, projectId).settings.continueThreadsAfterServerUpdate)
+  );
+}
+
+/**
+ * A question the restart keeps answerable: recovery turns it into one the person answers by
+ * message, and that answer continues the thread. Other requests expire, and the resumed agent
+ * asks again.
+ */
+export function answerableAfterRestart(
+  request: OrchestrationV2RuntimeRequest,
+  thread: Parameters<typeof isProviderNativeSubagentThread>[0],
+  turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
+): boolean {
+  return (
+    request.status === "pending" &&
+    request.kind === "user_input" &&
+    request.responseCapability.type === "live" &&
+    !isProviderNativeSubagentThread(thread) &&
+    turnItems.some(
+      (item) =>
+        item.type === "user_input_request" &&
+        item.requestId === request.id &&
+        item.nodeId === request.nodeId &&
+        item.questions.length > 0 &&
+        item.questions.every((question) => question.question.trim().length > 0),
+    )
   );
 }
 
@@ -82,27 +126,8 @@ function restartContinuationBlocked(
     (turn.status === "completed" || turn.status === "failed" || turn.status === "interrupted")
   )
     return true;
-  const waitingRequest = projection.runtimeRequests.some(
-    (request) =>
-      request.kind !== "dynamic_tool_call" &&
-      request.kind !== "auth_refresh" &&
-      request.responseCapability.type !== "message" &&
-      (request.status === "pending" ||
-        ((request.status === "expired" || request.status === "cancelled") &&
-          request.responseCapability.type === "not_resumable" &&
-          turn !== undefined &&
-          turn.id === request.providerTurnId)),
-  );
-  if (waitingRequest) return true;
-  return projection.turnItems.some(
-    (item) =>
-      item.type === "secret_request" &&
-      item.runId === source.id &&
-      (item.secretStatus === "pending" ||
-        (item.secretStatus === "cancelled" &&
-          item.completedAt !== null &&
-          source.completedAt !== null &&
-          DateTime.Equivalence(item.completedAt, source.completedAt))),
+  return projection.runtimeRequests.some((request) =>
+    answerableAfterRestart(request, thread, projection.turnItems),
   );
 }
 
@@ -132,18 +157,68 @@ function hasOpenAwaitedWork(
   );
 }
 
+type ResumeProjection = Pick<
+  ProjectionRuntimeRecoveryState,
+  | "thread"
+  | "runs"
+  | "providerThreads"
+  | "providerSessions"
+  | "providerTurns"
+  | "runtimeRequests"
+  | "turnItems"
+>;
+
+/**
+ * A run a restart cuts before its provider accepted the prompt: still preparing its workspace,
+ * starting its session, or running before its first provider turn. It starts again with its own
+ * message, so the provider's session and native thread do not matter. Restart continuations keep
+ * their own path.
+ */
+export function restartRetryRun(
+  projection: ResumeProjection,
+  now: DateTime.Utc,
+): OrchestrationV2Run | undefined {
+  const run = projection.runs.reduce<OrchestrationV2Run | undefined>(
+    (latest, candidate) =>
+      (candidate.status === "preparing" ||
+        candidate.status === "starting" ||
+        candidate.status === "running") &&
+      candidate.restartContinuationOfRunId === undefined &&
+      (!latest || runRanAfter(candidate, latest))
+        ? candidate
+        : latest,
+    undefined,
+  );
+  if (
+    run === undefined ||
+    !promptNeverDelivered(run, projection.providerTurns) ||
+    restartContinuationBlocked(projection, run, now, false) ||
+    projection.thread.providerInstanceId !== run.providerInstanceId
+  )
+    return;
+  const providerThread = projection.providerThreads.find(
+    (thread) => thread.id === run.providerThreadId,
+  );
+  if (
+    providerThread === undefined ||
+    providerThread.appThreadId !== projection.thread.id ||
+    providerThread.ownerNodeId !== null
+  )
+    return;
+  return run;
+}
+
+/** The run to resume after a restart: started again, or continued where its turn was cut. */
+export function restartResumeRun(
+  projection: ResumeProjection,
+  now: DateTime.Utc,
+): OrchestrationV2Run | undefined {
+  return restartRetryRun(projection, now) ?? restartContinuationRun(projection, now);
+}
+
 /** Settled runs require a live session so stale crash records cannot wake them. */
 export function restartContinuationRun(
-  projection: Pick<
-    ProjectionRuntimeRecoveryState,
-    | "thread"
-    | "runs"
-    | "providerThreads"
-    | "providerSessions"
-    | "providerTurns"
-    | "runtimeRequests"
-    | "turnItems"
-  >,
+  projection: ResumeProjection,
   now: DateTime.Utc,
 ): OrchestrationV2Run | undefined {
   const run = projection.runs.reduce<OrchestrationV2Run | undefined>(
@@ -215,7 +290,7 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
     const projection = yield* threads.getThreadRecords(
       input.threadId,
       ["messages", "runs", "providerTurns", "attempts", "runtimeRequests", "turnItems"],
-      { messageIds: [messageId], turnItemTypes: ["secret_request"] },
+      { messageIds: [messageId], turnItemTypes: ["user_input_request"] },
     );
     if (!continuesAfterRestart(resumeRequested, enabled, projection.thread.projectId)) return;
     if (projection.messages.some((message) => message.id === messageId)) return;
@@ -234,24 +309,19 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
       )
     )
       return;
-    if (
-      projection.runs.some(
-        (run) =>
-          run.id !== source.id &&
-          run.status !== "queued" &&
-          !cancelledBeforeStart(run) &&
-          runRanAfter(run, source),
-      )
-    )
-      return;
+    if (supersededRun(source, projection.runs)) return;
     if (projection.thread.providerInstanceId !== source.providerInstanceId) return;
+    // The provider never saw this run's message, so the run starts again instead of continuing.
+    const retry =
+      source.status === "cancelled" &&
+      source.restartContinuationOfRunId === undefined &&
+      promptNeverDelivered(source, projection.providerTurns);
     // A turn that keeps crashing the server would otherwise restart it forever.
     let chainLength = 0;
     const loopWindowStart =
-      DateTime.toEpochMillis(source.completedAt ?? source.requestedAt) -
-      CONTINUATION_LOOP_WINDOW_MS;
+      DateTime.toEpochMillis(source.completedAt ?? source.requestedAt) - RESTART_LOOP_WINDOW_MS;
     for (
-      let run: OrchestrationV2Run | undefined = source;
+      let run: OrchestrationV2Run | undefined = retry ? undefined : source;
       run?.restartContinuationOfRunId !== undefined && chainLength < MAX_CONTINUATION_CHAIN;
       run = projection.runs.find((candidate) => candidate.id === run?.restartContinuationOfRunId)
     ) {
@@ -271,7 +341,7 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
       {
         messageIds: [source.userMessageId],
         turnItemRunIds: [source.id],
-        turnItemTypes: ["run_interrupt_request"],
+        turnItemTypes: ["run_interrupt_request", "system_notice"],
       },
     );
     if (
@@ -305,6 +375,55 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
         })).turnItems.length > 0
       )
         return;
+    }
+    if (retry) {
+      const retries = restartRetryNotices(source.id, sourceRecords.turnItems);
+      if (
+        retries.filter(({ at }) => DateTime.toEpochMillis(at) >= loopWindowStart).length >=
+        MAX_CONTINUATION_CHAIN
+      ) {
+        yield* Effect.logWarning("Not starting again a run restarted too many times in a row", {
+          threadId: input.threadId,
+          sourceRunId: input.sourceRunId,
+        });
+        return;
+      }
+      const target = {
+        commandId: CommandId.make(`command:restart-retry:${source.id}:${retries.length + 1}`),
+        threadId: input.threadId,
+        runId: source.id,
+      };
+      yield* threads.dispatch({ type: "prepared-run.retry", automatic: true, ...target }).pipe(
+        // Does nothing unless the retry put the run back to preparing its workspace.
+        Effect.andThen(
+          source.workspacePreparation === undefined
+            ? Effect.void
+            : (yield* RestartRunPreparation)(target),
+        ),
+        Effect.catchTags({
+          ThreadManagementProviderInstanceDisabledError: (error) =>
+            Effect.logInfo("orchestration-v2.restart-retry.instance-disabled", {
+              threadId: input.threadId,
+              sourceRunId: input.sourceRunId,
+              projectId: error.projectId,
+              instanceId: error.instanceId,
+            }),
+          // The thread moved on before this ran: the run is no longer the one the restart cut.
+          OrchestratorDispatchError: (error) =>
+            Effect.logInfo("orchestration-v2.restart-retry.refused", {
+              threadId: input.threadId,
+              sourceRunId: input.sourceRunId,
+              cause: error.cause,
+            }),
+          OrchestratorRuntimeModeAboveCeilingError: () =>
+            Effect.logInfo("orchestration-v2.restart-retry.above-ceiling", {
+              threadId: input.threadId,
+              sourceRunId: input.sourceRunId,
+            }),
+          OrchestratorCommandPreviouslyRejectedError: () => Effect.void,
+        }),
+      );
+      return;
     }
     const sourceMessage = sourceRecords.messages.find(
       (message) => message.id === source.userMessageId,

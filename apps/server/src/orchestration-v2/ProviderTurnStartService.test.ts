@@ -47,6 +47,11 @@ import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { withInlineContext } from "./ContextHandoffDelivery.ts";
+import {
+  RESTART_RESEND_NOTE,
+  type RestartRetryDelivery,
+  restartRetryNoticeId,
+} from "./RestartBackgroundNote.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -347,6 +352,8 @@ function makeLocalCommandHarness(input: {
   readonly limitsReadFailure?: boolean;
   /** The thread is a delegated task's child. */
   readonly delegatedChild?: boolean;
+  /** A restart cut this run before its provider turn was recorded, and it starts again. */
+  readonly restartRetry?: RestartRetryDelivery;
 }) {
   const settledRuns: Array<string> = [];
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
@@ -523,7 +530,29 @@ function makeLocalCommandHarness(input: {
     providerTurns: [],
     contextHandoffs: [],
     contextTransfers: [],
-    turnItems: [],
+    turnItems:
+      input.restartRetry === undefined
+        ? []
+        : [
+            {
+              id: restartRetryNoticeId(runId, 1, input.restartRetry),
+              type: "system_notice",
+              threadId,
+              runId,
+              nodeId: rootNodeId,
+              providerThreadId,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 2,
+              status: "completed",
+              title: "Message sent again",
+              message: "T3.CodeShip restarted, so it sent this message again.",
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+            },
+          ],
     visibleTurnItems: [],
     runtimeRequests: [],
     subagents: [],
@@ -1387,6 +1416,27 @@ effectIt.effect.each([
           toProviderThreadId: "new-provider-thread",
           delivery: { nativeThreadId: "side-chat-native", status: "inline" },
         },
+      ]);
+    }),
+);
+
+effectIt.effect.each([
+  { restartRetry: "unsent", note: "" },
+  { restartRetry: "unconfirmed", note: RESTART_RESEND_NOTE },
+] as const)(
+  "warns the agent when a restart may have sent this message already: %j",
+  ({ restartRetry, note }) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Rebase onto main",
+        nativeTurn: true,
+        restartRetry,
+      });
+
+      yield* harness.start;
+
+      expect(harness.startTurn.mock.calls.map(([turn]) => turn.message.text)).toEqual([
+        withInlineContext(note, "Rebase onto main"),
       ]);
     }),
 );

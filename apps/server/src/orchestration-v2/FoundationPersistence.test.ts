@@ -1526,6 +1526,48 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
     }),
   );
 
+  it.effect("re-arms a settled restart resume when a later restart cuts the same run", () =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const threadId = ThreadId.make("thread:foundation-restart-rearm");
+      const runId = RunId.make("run:foundation-restart-rearm");
+      const resume = (cut: number) => ({
+        id: `effect:restart-continuation:${runId}`,
+        commandId: CommandId.make(`command:restart-rearm:${cut}`),
+        threadId,
+        request: { type: "provider-runtime.continue" as const, sourceRunId: runId },
+      });
+      const start = (cut: number) => ({
+        id: `effect:start-rearm:${runId}`,
+        commandId: CommandId.make(`command:start-rearm:${cut}`),
+        threadId,
+        request: { type: "provider-turn.start" as const, runId },
+      });
+      const sql = yield* SqlClient.SqlClient;
+      // The worker ran both; this layer's other tests claim any pending effect.
+      const settle = sql`
+        UPDATE orchestration_v2_effect_outbox
+        SET status = 'succeeded', completed_at = updated_at
+        WHERE thread_id = ${threadId}
+      `;
+      yield* outbox.enqueue([resume(1), start(1)]);
+      yield* settle;
+      yield* outbox.enqueue([resume(2), start(2)]);
+      const rearmed = Option.getOrThrow(yield* outbox.get(resume(2).id));
+      assert.equal(rearmed.status, "pending");
+      assert.equal(rearmed.commandId, resume(2).commandId);
+      // Other effects keep one durable row per id.
+      assert.equal(Option.getOrThrow(yield* outbox.get(start(2).id)).status, "succeeded");
+      // A pending resume is the same resume, not a second one.
+      yield* outbox.enqueue([resume(3)]);
+      assert.equal(
+        Option.getOrThrow(yield* outbox.get(resume(3).id)).commandId,
+        resume(2).commandId,
+      );
+      yield* sql`DELETE FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId}`;
+    }),
+  );
+
   it.effect("does not publish a stale provider start after an interrupt wins", () =>
     Effect.gen(function* () {
       const eventSink = yield* EventSink.EventSinkV2;

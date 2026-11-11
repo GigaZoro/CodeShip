@@ -721,7 +721,7 @@ it.effect("reads the run that owns a background roster, not a queued or resumed 
   }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("wakes the run whose subagent lost its shell, past a wake cut before it started", () =>
+it.effect("sends again a wake cut before it started, which reports the subagent's lost shell", () =>
   Effect.gen(function* () {
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
@@ -750,8 +750,8 @@ it.effect("wakes the run whose subagent lost its shell, past a wake cut before i
         lastError: null,
       },
     });
-    const settledRun = yield* createRun(threadId, "completed", { providerThreadId });
-    yield* createRun(threadId, "starting", {
+    yield* createRun(threadId, "completed", { providerThreadId });
+    const cutWake = yield* createRun(threadId, "starting", {
       ordinal: 2,
       providerThreadId,
       startedAt: null,
@@ -791,7 +791,8 @@ it.effect("wakes the run whose subagent lost its shell, past a wake cut before i
     const effects = yield* sql<{ readonly effect_id: string }>`
       SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId}
     `;
-    assert.deepEqual(effects, [{ effect_id: `effect:restart-continuation:${settledRun}` }]);
+    // The provider never saw the wake. Started again, it also delivers the note recorded below.
+    assert.deepEqual(effects, [{ effect_id: `effect:restart-continuation:${cutWake}` }]);
     const projection = yield* projections.getThreadProjection(threadId);
     assert.deepEqual(projection.runs[0]?.restartCancelledBackgroundWork, [
       { kind: "subagent", label: "sleep 150 (subagent agent)", id: "agent" },

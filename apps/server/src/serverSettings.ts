@@ -77,6 +77,9 @@ const encodeServerSettings = Schema.encodeEffect(ServerSettings);
 const encodeServerSettingsJson = Schema.encodeUnknownEffect(fromJsonStringPretty(ServerSettings));
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
 
+// An opt-out still readable in a settings file that no longer decodes, global or per project.
+const RESUME_OPT_OUT = /"continueThreadsAfterServerUpdate"\s*:\s*"?false\b/;
+
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -807,8 +810,13 @@ const make = Effect.gen(function* () {
       }
       if (decoded._tag === "Failure" || legacySettings._tag === "Failure") {
         const failure = decoded._tag === "Failure" ? decoded : legacySettings;
-        // The file may hold an opt-out we can no longer read; never resume threads on a guess.
-        settings = { ...managed.defaults, continueThreadsAfterServerUpdate: false };
+        // Writes are atomic, so a crash cannot leave this file unreadable; a hand edit or a newer
+        // version can. Chats still resume after restarts unless the file visibly opts out.
+        settings = {
+          ...managed.defaults,
+          continueThreadsAfterServerUpdate:
+            managed.defaults.continueThreadsAfterServerUpdate && !RESUME_OPT_OUT.test(raw),
+        };
         if (failure._tag === "Failure") {
           parseFailure = Option.some(Cause.squash(failure.cause));
           yield* Effect.logWarning("failed to parse settings.json, using defaults", {

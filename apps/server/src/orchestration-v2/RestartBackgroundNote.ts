@@ -5,9 +5,12 @@ import type {
   OrchestrationV2Run,
   OrchestrationV2RunAttempt,
   OrchestrationV2TurnItem,
+  RunId,
 } from "@t3tools/contracts";
 import { waitsOnAnotherThread } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { latestRootProviderFailure, runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
+import { derive } from "@t3tools/provider-core/server/IdAllocator";
+import * as DateTime from "effect/DateTime";
 
 type Work = OrchestrationV2RestartCancelledBackgroundWork;
 type Attempt = Pick<OrchestrationV2RunAttempt, "id" | "runId">;
@@ -181,10 +184,81 @@ export function neverStarted(
 }
 
 /** Restart-cancelled unstarted runs supersede nothing; user-stopped unstarted runs do. */
-export function cancelledBeforeStart(
+function cancelledBeforeStart(
   run: Pick<OrchestrationV2Run, "status" | "startedAt" | "restartContinuationOfRunId">,
 ): boolean {
   return run.status === "cancelled" && neverStarted(run);
+}
+
+/**
+ * How sure a restart is that the provider never got a run's prompt. The prompt is only sent once
+ * the run is persisted as running, so a run cut before that never sent it; one cut while running,
+ * before its provider turn was recorded, may have. That doubt stays until a provider turn records
+ * delivery, across later restarts of the same run.
+ */
+export type RestartRetryDelivery = "unsent" | "unconfirmed";
+
+export function restartRetryDelivery(
+  run: Pick<OrchestrationV2Run, "startedAt">,
+  notices: ReadonlyArray<{ readonly delivery: RestartRetryDelivery }>,
+): RestartRetryDelivery {
+  return run.startedAt === null && notices.every((notice) => notice.delivery === "unsent")
+    ? "unsent"
+    : "unconfirmed";
+}
+
+/** The notice each start of a run cut before its prompt was recorded leaves in the thread. */
+export function restartRetryNoticeId(
+  runId: RunId,
+  ordinal: number,
+  delivery: RestartRetryDelivery,
+) {
+  return derive.runSignalTurnItem({
+    runId,
+    signal: delivery === "unsent" ? `restart-retry-${ordinal}` : `restart-resend-${ordinal}`,
+  });
+}
+
+/** Told to the agent with a message it may already have received before a restart. */
+export const RESTART_RESEND_NOTE =
+  "Note: the T3 server restarted while sending you the message below, so you may already have received it and started on it. If you did, continue from where you were instead of starting over, and confirm that an action which changes state did not take effect before you repeat it.";
+
+/** The notices of a run's starts after restarts, oldest first. */
+export function restartRetryNotices(
+  runId: RunId,
+  turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
+): ReadonlyArray<{ readonly delivery: RestartRetryDelivery; readonly at: DateTime.Utc }> {
+  const notices = new Map(turnItems.map((item) => [item.id, item]));
+  const found: Array<{ readonly delivery: RestartRetryDelivery; readonly at: DateTime.Utc }> = [];
+  for (;;) {
+    const ordinal = found.length + 1;
+    const unsent = notices.get(restartRetryNoticeId(runId, ordinal, "unsent"));
+    const notice = unsent ?? notices.get(restartRetryNoticeId(runId, ordinal, "unconfirmed"));
+    if (notice === undefined) return found;
+    found.push({ delivery: unsent === undefined ? "unconfirmed" : "unsent", at: notice.updatedAt });
+  }
+}
+
+/** A provider turn records that the provider accepted the prompt; without one it never saw it. */
+export function promptNeverDelivered(
+  run: Pick<OrchestrationV2Run, "activeAttemptId">,
+  providerTurns: ReadonlyArray<Pick<ProviderTurnState, "runAttemptId">>,
+): boolean {
+  return !providerTurns.some((turn) => turn.runAttemptId === run.activeAttemptId);
+}
+
+/** A later run took the thread past `run`, so resuming `run` now would reorder the work. */
+export function supersededRun(
+  run: Pick<OrchestrationV2Run, "id" | "ordinal" | "completedAt">,
+  runs: ReadonlyArray<OrchestrationV2Run>,
+): boolean {
+  return runs.some(
+    (other) =>
+      other.id !== run.id &&
+      other.status !== "queued" &&
+      !cancelledBeforeStart(other) &&
+      runRanAfter(other, run),
+  );
 }
 
 /** The provider never accepted this continuation's prompt, so starting it again repeats nothing. */
@@ -195,7 +269,7 @@ export function continuationFailedBeforePrompt(
   return (
     run.status === "failed" &&
     run.restartContinuationOfRunId !== undefined &&
-    !providerTurns.some((turn) => turn.runAttemptId === run.activeAttemptId)
+    promptNeverDelivered(run, providerTurns)
   );
 }
 

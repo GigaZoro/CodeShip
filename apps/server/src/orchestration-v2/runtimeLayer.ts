@@ -2,6 +2,7 @@ import * as GuestShareService from "../guest/GuestShareService.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as NetworkRecoveryWorker from "./NetworkRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as OrchestrationCommandReceipts from "../persistence/OrchestrationCommandReceipts.ts";
@@ -54,6 +55,7 @@ import * as ResourceCleanupService from "./ResourceCleanupService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
+import * as RestartContinuation from "./RestartContinuation.ts";
 import * as ThreadLaunchService from "./ThreadLaunchService.ts";
 import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
@@ -378,8 +380,14 @@ export const layer = Layer.mergeAll(
   layerLegacyV1ThreadImporterProvided,
 );
 
+// A run a restart cut while preparing its workspace prepares it again when it starts over.
+const layerRestartRunPreparation = Layer.effect(
+  RestartContinuation.RestartRunPreparation,
+  Effect.map(ThreadLaunchService.ThreadLaunchService, (launches) => launches.prepareRun),
+).pipe(Layer.provide(layerThreadLaunchProvided));
+
 export const layerProduction = Layer.mergeAll(
-  layer.pipe(Layer.provide(layerProjectService)),
+  layer.pipe(Layer.provide(Layer.merge(layerProjectService, layerRestartRunPreparation))),
   layerProjectService,
   layerManagedProjectFoldersProvided,
   layerThreadLaunchProvided,

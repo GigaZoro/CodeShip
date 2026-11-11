@@ -3277,6 +3277,10 @@ export const OrchestrationV2Command = Schema.Union([
     runId: RunId,
     failure: OrchestrationV2ProviderFailure,
   }),
+  /**
+   * Runs again a message its agent never received: after a failed workspace preparation, or after
+   * a server restart cut the run before its provider accepted the prompt.
+   */
   Schema.Struct({
     type: Schema.Literal("prepared-run.retry"),
     automatic: Schema.optional(Schema.Boolean),

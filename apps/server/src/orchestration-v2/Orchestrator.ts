@@ -121,11 +121,15 @@ import {
 } from "./ContextHandoffService.ts";
 import { notificationTurnItem } from "@t3tools/provider-core/server/notification";
 import {
-  cancelledBeforeStart,
   continuationFailedBeforePrompt,
   continuationStartRetryDelayMs,
   isRestartContinuationSource,
+  promptNeverDelivered,
+  restartRetryDelivery,
+  restartRetryNoticeId,
+  restartRetryNotices,
   runOutcome,
+  supersededRun,
 } from "./RestartBackgroundNote.ts";
 import {
   isBufferedProviderNotification,
@@ -1699,7 +1703,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               runId: run.id,
               providerInstanceId: run.providerInstanceId,
               occurredAt: now,
-              payload: { ...run, queueHeld: true },
+              payload: withQueueHold(run, true),
             })),
         );
         return;
@@ -2369,6 +2373,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
   });
 
+  // A run that failed after a restart leaves its queue for the person to review, like any failure,
+  // unless a retry of it is already scheduled.
+  const adoptRestartHolds = Effect.fn("Orchestrator.adoptRestartHolds")(function* (
+    threadId: ThreadId,
+    failedRun: OrchestrationV2Run,
+  ) {
+    const held = (yield* projectionStore.getHeldQueuedRuns(threadId)).filter(
+      (run) => run.queueHeldByRestart === true,
+    );
+    if (held.length === 0 || (yield* awaitsRestartContinuation(failedRun))) return;
+    const { runs } = yield* projectionStore.getThreadRecords(threadId, ["runs"]);
+    if (latestExecutedRun(runs)?.id !== failedRun.id) return;
+    const now = yield* DateTime.now;
+    yield* writeSystemEvents(
+      held.map((run) => ({
+        type: "run.updated" as const,
+        threadId,
+        runId: run.id,
+        providerInstanceId: run.providerInstanceId,
+        occurredAt: now,
+        payload: withQueueHold(run, true),
+      })),
+    );
+  });
+
   // A hold waits for a person to review what they queued. Nobody reviews messages from agents,
   // the server or scheduled tasks, or holds a restart placed, so a later completed run releases
   // those unless it was stopped.
@@ -2395,6 +2424,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       worktreeSetupPending(projection)
     )
       return;
+    // A restart's resume goes first; what the restart held waits until it has run. A resume whose
+    // run a later one superseded will stand down, so it holds nothing.
+    const resumeSources = projection.runs.filter(
+      (run) =>
+        (run.status === "cancelled" ||
+          (run.status === "failed" && run.restartContinuationOfRunId !== undefined) ||
+          ((run.status === "completed" || run.status === "waiting") &&
+            (run.restartCancelledBackgroundWork?.length ?? 0) > 0)) &&
+        !supersededRun(run, projection.runs),
+    );
+    if ((yield* Effect.forEach(resumeSources, awaitsRestartContinuation)).includes(true)) return;
     const { messages } = projection;
     const unattended = new Set(
       messages
@@ -5711,13 +5751,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection.thread.archivedAt !== null ||
         projection.thread.deletedAt !== null ||
         projection.thread.providerInstanceId !== source.providerInstanceId ||
-        projection.runs.some(
-          (run) =>
-            run.id !== source.id &&
-            run.status !== "queued" &&
-            !cancelledBeforeStart(run) &&
-            runRanAfter(run, source),
-        ) ||
+        supersededRun(source, projection.runs) ||
         (yield* stopReachedRun(command, command.threadId, source.id))
       ) {
         // Preserve the current row so stale automatic deliveries receive an
@@ -10576,15 +10610,176 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
   });
 
+  // The provider never saw the message, so the run itself starts again: same message, model and
+  // workspace, and the person's timeline gains no copy of their message.
+  const dispatchRestartCutRunRetry = Effect.fn("Orchestrator.dispatchRestartCutRunRetry")(
+    function* (
+      command: Extract<OrchestrationV2Command, { readonly type: "prepared-run.retry" }>,
+      projection: Pick<
+        OrchestrationV2ThreadProjection,
+        "thread" | "runs" | "attempts" | "nodes" | "providerTurns" | "turnItems"
+      >,
+      run: OrchestrationV2Run,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+      effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    ) {
+      const attempt = projection.attempts.find((candidate) => candidate.id === run.activeAttemptId);
+      const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
+      const runItems = projection.turnItems.filter((item) => item.runId === run.id);
+      const serverRecoveryItemId = idAllocator.derive.runSignalTurnItem({
+        runId: run.id,
+        signal: "server-recovery",
+      });
+      const preparationItem = runItems.find(
+        (
+          candidate,
+        ): candidate is Extract<OrchestrationV2TurnItem, { readonly type: "command_execution" }> =>
+          candidate.type === "command_execution" && candidate.input === WORKSPACE_PREPARATION_INPUT,
+      );
+      const prepare =
+        run.workspacePreparation !== undefined &&
+        preparationItem !== undefined &&
+        preparationItem.status !== "completed";
+      // Delegated recovery offers a cut completion again under a new generation; reviving the
+      // original run as well would deliver it twice.
+      const { messages } = yield* loadProjectionForCommand(command, ["messages"], {
+        messageIds: [run.userMessageId],
+      });
+      const notices = restartRetryNotices(run.id, runItems);
+      const delivery = restartRetryDelivery(run, notices);
+      // A /goal goes to the provider verbatim, without the note, and replaying it resets the goal.
+      const replaysGoalBlindly =
+        delivery === "unconfirmed" &&
+        messages.some((message) => parseGoalCommand(message) !== null);
+      if (
+        attempt === undefined ||
+        rootNode === undefined ||
+        run.restartContinuationOfRunId !== undefined ||
+        messages.some((message) => message.delegatedCompletion !== undefined) ||
+        replaysGoalBlindly ||
+        !runItems.some((item) => item.id === serverRecoveryItemId) ||
+        runItems.some((item) => item.type === "run_interrupt_request") ||
+        !promptNeverDelivered(run, projection.providerTurns) ||
+        (!prepare && rootNode.checkpointScopeId === null) ||
+        projection.thread.archivedAt !== null ||
+        projection.thread.deletedAt !== null
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Run ${run.id} was not cut by a restart before its agent received it.`,
+        });
+      }
+      if (
+        projection.runs.some((other) => other.id !== run.id && isActiveRun(other)) ||
+        supersededRun(run, projection.runs)
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "The thread moved on after the restart.",
+        });
+      }
+      const now = yield* DateTime.now;
+      const emitEvent = emit(events, command);
+      const scope = {
+        threadId: command.threadId,
+        runId: run.id,
+        nodeId: rootNode.id,
+        providerInstanceId: run.providerInstanceId,
+        occurredAt: now,
+      };
+      const notice =
+        delivery === "unsent"
+          ? "T3.CodeShip restarted before the agent received this message, so it sent it again."
+          : "T3.CodeShip restarted while sending this message, so it sent it again and told the agent it may have it already.";
+      yield* emitEvent({
+        ...scope,
+        type: "turn-item.updated",
+        payload: {
+          id: restartRetryNoticeId(run.id, notices.length + 1, delivery),
+          type: "system_notice",
+          threadId: command.threadId,
+          runId: run.id,
+          nodeId: rootNode.id,
+          providerThreadId: run.providerThreadId,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: yield* nextTurnItemOrdinal(projection),
+          status: "completed",
+          title: "Message sent again",
+          message: notice,
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+        },
+      });
+      if (prepare) {
+        yield* emitEvent({
+          ...scope,
+          type: "turn-item.updated",
+          payload: {
+            ...withoutPreparationResult(preparationItem),
+            status: "running",
+            title: WORKSPACE_PREPARATION_INPUT,
+            completedAt: null,
+            updatedAt: now,
+          },
+        });
+      }
+      yield* emitEvent({
+        ...scope,
+        type: "run-attempt.updated",
+        payload: { ...attempt, status: "pending", startedAt: null, completedAt: null },
+      });
+      yield* emitEvent({
+        ...scope,
+        type: "node.updated",
+        payload: { ...rootNode, status: "pending", startedAt: null, completedAt: null },
+      });
+      yield* emitEvent({
+        ...scope,
+        type: "run.updated",
+        payload: {
+          ...run,
+          status: prepare ? "preparing" : "starting",
+          queuePosition: null,
+          startedAt: null,
+          completedAt: null,
+        },
+      });
+      if (!prepare) {
+        yield* Ref.update(effects, (existing) => [
+          ...existing,
+          {
+            id: `effect:${command.commandId}:provider-turn.start:${run.id}`,
+            commandId: command.commandId,
+            threadId: command.threadId,
+            request: { type: "provider-turn.start", runId: run.id },
+          } satisfies PendingOrchestrationEffectV2,
+        ]);
+      }
+    },
+  );
+
   const dispatchPreparedRunRetry = Effect.fn("Orchestrator.dispatchPreparedRunRetry")(function* (
     command: Extract<OrchestrationV2Command, { readonly type: "prepared-run.retry" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) {
     const projection = yield* loadProjectionForCommand(
       command,
-      ["runs", "attempts", "nodes", "providerThreads", "turnItems"],
-      { turnItemTypes: ["command_execution", "error"], turnItemRunId: command.runId },
+      ["runs", "attempts", "nodes", "providerThreads", "providerTurns", "turnItems"],
+      {
+        turnItemTypes: ["command_execution", "error", "system_notice", "run_interrupt_request"],
+        turnItemRunId: command.runId,
+      },
     );
+    const cut = projection.runs.find((candidate) => candidate.id === command.runId);
+    if (cut?.status === "cancelled") {
+      return yield* dispatchRestartCutRunRetry(command, projection, cut, events, effects);
+    }
     const state = preparedRunState(command, projection);
     const failureItem = projection.turnItems.find(
       (candidate): candidate is Extract<OrchestrationV2TurnItem, { readonly type: "error" }> =>
@@ -13610,7 +13805,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             break;
           }
         }
-        yield* dispatchPreparedRunRetry(command, events);
+        yield* dispatchPreparedRunRetry(command, events, effects);
         break;
       }
       case "runtime-request.respond":
@@ -14153,7 +14348,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             threadId,
             (run.status === "completed"
               ? releaseUnattendedHolds(threadId, run.id)
-              : Effect.void
+              : run.status === "failed"
+                ? adoptRestartHolds(threadId, run)
+                : Effect.void
             ).pipe(
               Effect.andThen(
                 startNextQueuedRun(threadId, {

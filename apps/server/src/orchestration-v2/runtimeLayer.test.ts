@@ -23,6 +23,7 @@ import {
   RuntimeRequestId,
   TurnItemId,
   type ModelSelection,
+  type OrchestrationV2Command,
   type OrchestrationV2Run,
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2RuntimeRequest,
@@ -92,6 +93,12 @@ import * as ProjectStore from "./ProjectStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as RuntimeLayer from "./runtimeLayer.ts";
 import { shellStreamItemFromThreadShell } from "./ShellStream.ts";
+import { restartRetryNoticeId } from "./RestartBackgroundNote.ts";
+import {
+  CONTINUE_PROMPT,
+  continueRestartedRun,
+  RestartRunPreparation,
+} from "./RestartContinuation.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -6708,6 +6715,546 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         );
         assert.equal(resumed.runs.length, 3, "resume retries must not duplicate messages or runs");
       }),
+  );
+
+  it.effect.each(["preparing", "starting", "running"] as const)(
+    "sends a run cut while %s again after a restart, then the messages queued behind it",
+    (cutWhile) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const threadId = ThreadId.make(`restart-before-prompt-${cutWhile}`);
+        const messageId = (key: string) => MessageId.make(`${threadId}:${key}`);
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`${threadId}:create`),
+          threadId,
+          projectId: ProjectId.make(`${threadId}:project`),
+          title: "Restart before the prompt",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: process.cwd(),
+        });
+        const send = (
+          key: string,
+          dispatchMode: Extract<
+            OrchestrationV2Command,
+            { readonly type: "message.dispatch" }
+          >["dispatchMode"],
+        ) =>
+          orchestrator.dispatch({
+            type: "message.dispatch",
+            createdBy: "user",
+            creationSource: "web",
+            commandId: CommandId.make(`${threadId}:message:${key}`),
+            threadId,
+            messageId: messageId(key),
+            text: key,
+            attachments: [],
+            modelSelection,
+            dispatchMode,
+          });
+        yield* send(
+          "work",
+          cutWhile === "preparing"
+            ? { type: "defer_start", workspaceStrategy: { type: "worktree", baseRef: "main" } }
+            : { type: "start_immediately" },
+        );
+        const runFor = (key: string) =>
+          Effect.map(orchestrator.getThreadProjection(threadId), ({ runs }) => {
+            const run = runs.find((candidate) => candidate.userMessageId === messageId(key));
+            assert.isDefined(run);
+            return run;
+          });
+        const work = yield* runFor("work");
+        assert.equal(work.status, cutWhile === "preparing" ? "preparing" : "starting");
+        if (cutWhile === "running") {
+          // ProviderTurnStartService marks the run running before the provider has a native
+          // thread or a turn.
+          yield* eventSink.write({
+            events: [
+              {
+                id: EventId.make(`${threadId}:running`),
+                type: "run.updated",
+                threadId,
+                runId: work.id,
+                providerInstanceId: work.providerInstanceId,
+                occurredAt: yield* DateTime.now,
+                payload: { ...work, status: "running", startedAt: yield* DateTime.now },
+              },
+            ],
+          });
+        }
+        yield* send("queued", { type: "queue_after_active" });
+        const queued = yield* runFor("queued");
+
+        yield* recovery.reconcile("startup");
+        const cut = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(cut.runs.find((run) => run.id === work.id)?.status, "cancelled");
+        const resume = yield* outbox.get(`effect:restart-continuation:${work.id}`);
+        assert.equal(Option.getOrUndefined(resume)?.status, "pending");
+
+        const prepared: Array<RunId> = [];
+        yield* continueRestartedRun({ threadId, sourceRunId: work.id }).pipe(
+          Effect.provideService(RestartRunPreparation, (input) =>
+            Effect.sync(() => {
+              prepared.push(input.runId);
+            }),
+          ),
+          Effect.provide(ServerSettings.layerTest()),
+        );
+        const resumed = yield* orchestrator.getThreadProjection(threadId);
+        const again = resumed.runs.find((run) => run.id === work.id)!;
+        assert.equal(again.status, cutWhile === "preparing" ? "preparing" : "starting");
+        assert.equal(again.userMessageId, work.userMessageId);
+        assert.lengthOf(resumed.runs, 2, "the run starts again instead of a new one");
+        assert.isFalse(resumed.messages.some((message) => message.text === CONTINUE_PROMPT));
+        assert.isTrue(
+          resumed.turnItems.some(
+            (item) =>
+              item.id ===
+              restartRetryNoticeId(work.id, 1, cutWhile === "running" ? "unconfirmed" : "unsent"),
+          ),
+        );
+        assert.deepEqual(prepared, cutWhile === "preparing" ? [work.id] : []);
+        const start = yield* outbox.get(
+          `effect:command:restart-retry:${work.id}:1:provider-turn.start:${work.id}`,
+        );
+        assert.equal(Option.isSome(start), cutWhile !== "preparing");
+        const held = resumed.runs.find((run) => run.id === queued.id)!;
+        assert.isTrue(held.queueHeld);
+        assert.isTrue(held.queueHeldByRestart);
+
+        // The user never held their message: it follows once the resumed run completes.
+        const queuedStarts = yield* eventSink
+          .stream({ threadId, afterSequence: yield* orchestrator.getThreadEventSequence(threadId) })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "run.updated" &&
+                stored.event.payload.id === queued.id &&
+                stored.event.payload.status === "starting",
+            ),
+            Stream.runHead,
+            Effect.forkScoped,
+          );
+        yield* Effect.yieldNow;
+        const now = yield* DateTime.now;
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make(`${threadId}:completed`),
+              type: "run.updated",
+              threadId,
+              runId: again.id,
+              providerInstanceId: again.providerInstanceId,
+              occurredAt: now,
+              payload: { ...again, status: "completed", startedAt: now, completedAt: now },
+            },
+          ],
+        });
+        assert.isTrue(Option.isSome(yield* Fiber.join(queuedStarts)));
+      }),
+  );
+
+  it.effect("a Stop after a restart turns its hold into the user's own", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
+      const threadId = ThreadId.make("restart-hold-then-stop");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make(`${threadId}:create`),
+        threadId,
+        projectId: ProjectId.make(`${threadId}:project`),
+        title: "Stop after a restart",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      for (const [index, text] of ["Active", "Queued"].entries()) {
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`${threadId}:message:${index}`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:message:${index}`),
+          text,
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: index === 0 ? "start_immediately" : "queue_after_active" },
+        });
+      }
+      yield* recovery.reconcile("startup");
+      const [active, queued] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
+        OrchestrationV2Run,
+        OrchestrationV2Run,
+      ];
+      assert.isTrue(queued.queueHeldByRestart);
+      yield* continueRestartedRun({ threadId, sourceRunId: active.id }).pipe(
+        Effect.provide(ServerSettings.layerTest()),
+      );
+      yield* orchestrator.dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make(`${threadId}:interrupt`),
+        threadId,
+        runId: active.id,
+        holdQueue: true,
+      });
+      const after = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+        (run) => run.id === queued.id,
+      )!;
+      assert.isTrue(after.queueHeld);
+      assert.isUndefined(after.queueHeldByRestart);
+    }),
+  );
+
+  it.effect("keeps a restart's holds until its resume ran, past an older run's late update", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const createThread = (threadId: ThreadId) =>
+        orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`${threadId}:create`),
+          threadId,
+          projectId: ProjectId.make(`${threadId}:project`),
+          title: "Resume before the queue",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: process.cwd(),
+        });
+      const send = (threadId: ThreadId, key: string, start: boolean) =>
+        orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`${threadId}:message:${key}`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:${key}`),
+          text: key,
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: start ? "start_immediately" : "queue_after_active" },
+        });
+      const runFor = (threadId: ThreadId, key: string) =>
+        Effect.map(orchestrator.getThreadProjection(threadId), ({ runs }) => {
+          const run = runs.find(
+            (candidate) => candidate.userMessageId === MessageId.make(`${threadId}:${key}`),
+          );
+          assert.isDefined(run);
+          return run;
+        });
+      const complete = (threadId: ThreadId, run: OrchestrationV2Run, key: string) =>
+        Effect.gen(function* () {
+          const now = yield* DateTime.now;
+          yield* eventSink.write({
+            events: [
+              {
+                id: EventId.make(`${threadId}:${key}`),
+                type: "run.updated",
+                threadId,
+                runId: run.id,
+                providerInstanceId: run.providerInstanceId,
+                occurredAt: now,
+                payload: { ...run, status: "completed", startedAt: now, completedAt: now },
+              },
+            ],
+          });
+        });
+      const threadId = ThreadId.make("restart-resume-before-queue");
+      yield* createThread(threadId);
+      yield* send(threadId, "earlier", true);
+      yield* complete(threadId, yield* runFor(threadId, "earlier"), "earlier:completed");
+      yield* send(threadId, "work", true);
+      yield* send(threadId, "queued", false);
+      yield* recovery.reconcile("startup");
+
+      // A bookkeeping update to the older run, as delegated recovery writes at startup.
+      yield* complete(threadId, yield* runFor(threadId, "earlier"), "earlier:bookkeeping");
+      // Run updates are handled in order, so a queue starting after it shows it was handled.
+      const barrier = ThreadId.make("restart-resume-before-queue:barrier");
+      yield* createThread(barrier);
+      yield* send(barrier, "active", true);
+      yield* send(barrier, "next", false);
+      const next = yield* runFor(barrier, "next");
+      const nextStarted = yield* eventSink
+        .stream({
+          threadId: barrier,
+          afterSequence: yield* orchestrator.getThreadEventSequence(barrier),
+        })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "run.updated" &&
+              stored.event.payload.id === next.id &&
+              stored.event.payload.status === "starting",
+          ),
+          Stream.runHead,
+          Effect.forkScoped,
+        );
+      yield* Effect.yieldNow;
+      yield* complete(barrier, yield* runFor(barrier, "active"), "active:completed");
+      assert.isTrue(Option.isSome(yield* Fiber.join(nextStarted)));
+
+      const queued = yield* runFor(threadId, "queued");
+      assert.equal(queued.status, "queued");
+      assert.isTrue(queued.queueHeld);
+      yield* continueRestartedRun({
+        threadId,
+        sourceRunId: (yield* runFor(threadId, "work")).id,
+      }).pipe(Effect.provide(ServerSettings.layerTest()));
+      assert.equal((yield* runFor(threadId, "work")).status, "starting");
+    }),
+  );
+
+  it.effect("leaves a cut delegated completion to delegated recovery", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("restart-cut-delegated-completion");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make(`${threadId}:create`),
+        threadId,
+        projectId: ProjectId.make(`${threadId}:project`),
+        title: "Delegated completion",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "agent",
+        creationSource: "server",
+        commandId: CommandId.make(`${threadId}:delivery`),
+        threadId,
+        messageId: MessageId.make(`${threadId}:delivery`),
+        text: "Delegated task reached a terminal state.",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+      });
+      yield* recovery.reconcile("startup");
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      const [delivery] = projection.runs as [OrchestrationV2Run];
+      const message = projection.messages.find((row) => row.id === delivery.userMessageId)!;
+      const now = yield* DateTime.now;
+      // Recovery offers this completion again under a new generation.
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make(`${threadId}:delivery-message`),
+            type: "message.updated",
+            threadId,
+            runId: delivery.id,
+            occurredAt: now,
+            payload: {
+              ...message,
+              delegatedCompletion: {
+                parentRunId: delivery.id,
+                generation: 1,
+                taskIds: [NodeId.make(`${threadId}:task`)],
+              },
+            },
+          },
+        ],
+      });
+      yield* continueRestartedRun({ threadId, sourceRunId: delivery.id }).pipe(
+        Effect.provide(ServerSettings.layerTest()),
+      );
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(
+        after.runs.map((run) => run.status),
+        ["cancelled"],
+      );
+    }),
+  );
+
+  it.effect.each([
+    { text: "Rebase onto main", restarts: 2, resent: true },
+    // A /goal reaches the provider verbatim, so an unconfirmed one is not replayed.
+    { text: "/goal Ship the release", restarts: 1, resent: false },
+  ] as const)(
+    "keeps the doubt about a message the restart may have sent: %j",
+    ({ text, restarts, resent }) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const threadId = ThreadId.make(`restart-unconfirmed-${restarts}`);
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`${threadId}:create`),
+          threadId,
+          projectId: ProjectId.make(`${threadId}:project`),
+          title: "Unconfirmed delivery",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: process.cwd(),
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`${threadId}:message`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:message`),
+          text,
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: "start_immediately" },
+        });
+        const [work] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
+          OrchestrationV2Run,
+        ];
+        const now = yield* DateTime.now;
+        // Cut while running: the prompt may have reached the provider.
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make(`${threadId}:running`),
+              type: "run.updated",
+              threadId,
+              runId: work.id,
+              providerInstanceId: work.providerInstanceId,
+              occurredAt: now,
+              payload: { ...work, status: "running", startedAt: now },
+            },
+          ],
+        });
+        for (let restart = 1; restart <= restarts; restart += 1) {
+          // Later restarts cut the run again while it is starting over.
+          yield* TestClock.adjust("1 minute");
+          yield* recovery.reconcile("startup");
+          yield* continueRestartedRun({ threadId, sourceRunId: work.id }).pipe(
+            Effect.provide(ServerSettings.layerTest()),
+          );
+        }
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(after.runs[0]?.status, resent ? "starting" : "cancelled");
+        assert.deepEqual(
+          after.turnItems.flatMap((item) =>
+            item.type === "system_notice" && item.title === "Message sent again" ? [item.id] : [],
+          ),
+          resent
+            ? Array.from({ length: restarts }, (_, index) =>
+                restartRetryNoticeId(work.id, index + 1, "unconfirmed"),
+              )
+            : [],
+        );
+      }),
+  );
+
+  it.effect("turns a restart's holds into the user's own when the resumed run fails", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("restart-resumed-run-fails");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make(`${threadId}:create`),
+        threadId,
+        projectId: ProjectId.make(`${threadId}:project`),
+        title: "Resumed run fails",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      for (const [index, text] of ["Active", "Queued"].entries()) {
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`${threadId}:message:${index}`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:message:${index}`),
+          text,
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: index === 0 ? "start_immediately" : "queue_after_active" },
+        });
+      }
+      yield* recovery.reconcile("startup");
+      // The resume starts the cut run again, and its effect settles as the worker would.
+      const [cut] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
+        OrchestrationV2Run,
+      ];
+      yield* continueRestartedRun({ threadId, sourceRunId: cut.id }).pipe(
+        Effect.provide(ServerSettings.layerTest()),
+      );
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        UPDATE orchestration_v2_effect_outbox
+        SET status = 'succeeded', completed_at = updated_at
+        WHERE effect_id = ${`effect:restart-continuation:${cut.id}`}
+      `;
+      const [active, queued] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
+        OrchestrationV2Run,
+        OrchestrationV2Run,
+      ];
+      assert.equal(active.status, "starting");
+      assert.isTrue(queued.queueHeldByRestart);
+      const adopted = yield* eventSink
+        .stream({ threadId, afterSequence: yield* orchestrator.getThreadEventSequence(threadId) })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "run.updated" &&
+              stored.event.payload.id === queued.id &&
+              stored.event.payload.queueHeld === true &&
+              stored.event.payload.queueHeldByRestart === undefined,
+          ),
+          Stream.runHead,
+          Effect.forkScoped,
+        );
+      yield* Effect.yieldNow;
+      const now = yield* DateTime.now;
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make(`${threadId}:failed`),
+            type: "run.updated",
+            threadId,
+            runId: active.id,
+            providerInstanceId: active.providerInstanceId,
+            occurredAt: now,
+            payload: { ...active, status: "failed", startedAt: now, completedAt: now },
+          },
+        ],
+      });
+      assert.isTrue(Option.isSome(yield* Fiber.join(adopted)));
+    }),
   );
 
   it.effect.each([false, true])(

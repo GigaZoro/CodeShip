@@ -27,7 +27,11 @@ import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { continueRestartedRun, RestartResumeRequest } from "./RestartContinuation.ts";
+import {
+  continueRestartedRun,
+  RestartResumeRequest,
+  RestartRunPreparation,
+} from "./RestartContinuation.ts";
 
 export class OrchestrationEffectExecutionError extends Schema.TaggedError<OrchestrationEffectExecutionError>()(
   "OrchestrationEffectExecutionError",
@@ -95,6 +99,7 @@ export const layerExecutor: Layer.Layer<
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const settings = yield* ServerSettings.ServerSettingsService;
     const restartResumeRequest = yield* RestartResumeRequest;
+    const restartRunPreparation = yield* RestartRunPreparation;
     return OrchestrationEffectExecutorV2.of({
       execute: Effect.fn("OrchestrationEffectExecutorV2.execute")(function (effect, options) {
         const willRetry = options?.willRetry ?? false;
@@ -105,6 +110,7 @@ export const layerExecutor: Layer.Layer<
               Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
               Effect.provideService(ServerSettings.ServerSettingsService, settings),
               Effect.provideService(RestartResumeRequest, restartResumeRequest),
+              Effect.provideService(RestartRunPreparation, restartRunPreparation),
               Effect.tapError(() =>
                 willRetry
                   ? Effect.void

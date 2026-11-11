@@ -68,7 +68,9 @@ import * as RuntimePolicy from "./RuntimePolicy.ts";
 import {
   isRestartNoteContinuation,
   pendingRestartCancelledBackgroundWork,
+  RESTART_RESEND_NOTE,
   restartCancelledBackgroundWorkNote,
+  restartRetryNotices,
 } from "./RestartBackgroundNote.ts";
 
 export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStartError>()(
@@ -927,10 +929,16 @@ export const layer: Layer.Layer<
         run,
         attempts: projection.attempts,
       });
-      const restartNote =
+      const restartNote = [
         restartCancelledWork.length === 0
           ? ""
-          : restartCancelledBackgroundWorkNote(restartCancelledWork);
+          : restartCancelledBackgroundWorkNote(restartCancelledWork),
+        restartRetryNotices(run.id, projection.turnItems).at(-1)?.delivery === "unconfirmed"
+          ? RESTART_RESEND_NOTE
+          : "",
+      ]
+        .filter((part) => part !== "")
+        .join("\n\n");
       // Every top-level Auto turn carries the brief; adapters also restore it after native compaction.
       const autoBriefed =
         run.modelSelection.autoAccount === true &&

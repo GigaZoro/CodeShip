@@ -1,7 +1,6 @@
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import {
   CommandId,
-  isProviderNativeSubagentThread,
   type OrchestrationV2DomainEvent,
   type ProviderThreadId,
   type OrchestrationV2RestartCancelledBackgroundWork,
@@ -27,9 +26,10 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
+  answerableAfterRestart,
   continuesAfterRestart,
   RestartResumeRequest,
-  restartContinuationRun,
+  restartResumeRun,
 } from "./RestartContinuation.ts";
 import { isBufferedProviderNotification } from "./NotificationMailbox.ts";
 import {
@@ -172,19 +172,8 @@ function pendingRequestRecovery(projection: RecoveryProjection) {
   );
   // The lost provider callback cannot resume; persisted questions can be
   // answered by a new user message in threads that accept messages.
-  const questions = pendingRequests.filter(
-    (request) =>
-      request.kind === "user_input" &&
-      request.responseCapability.type === "live" &&
-      projection.turnItems.some(
-        (item) =>
-          item.type === "user_input_request" &&
-          item.requestId === request.id &&
-          item.nodeId === request.nodeId &&
-          item.questions.length > 0 &&
-          item.questions.every((question) => question.question.trim().length > 0),
-      ) &&
-      !isProviderNativeSubagentThread(projection.thread),
+  const questions = pendingRequests.filter((request) =>
+    answerableAfterRestart(request, projection.thread, projection.turnItems),
   );
   const recoveredRequestIds = new Set(questions.map((request) => request.id));
   const messageRequestNodeIds = new Set<string>(
@@ -480,6 +469,7 @@ export const make = Effect.gen(function* () {
           runs.push(run);
           continue;
         }
+        // A hold from before the restart (a Stop, a failure) stays the person's to release.
         if (run.queueHeld === true) continue;
         events.push({
           id: yield* allocateEventId(),
@@ -809,7 +799,7 @@ export const make = Effect.gen(function* () {
       }
       const continuationRun =
         continueAfterRestart && trigger === "startup"
-          ? restartContinuationRun(
+          ? restartResumeRun(
               { ...projection, providerSessions: sessionsLiveAtStart(projection, stoppedThisPass) },
               now,
             )
@@ -949,7 +939,7 @@ export const make = Effect.gen(function* () {
       yield* Effect.gen(function* () {
         const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
         if (!continuesAfterRestart(resumeRequested, enabled, projection.thread.projectId)) return;
-        const run = restartContinuationRun(projection, yield* DateTime.now);
+        const run = restartResumeRun(projection, yield* DateTime.now);
         if (!run) return;
         const commandId = CommandId.make(`command:restart-prepare:${run.id}`);
         yield* eventSink.writeWithEffects({
