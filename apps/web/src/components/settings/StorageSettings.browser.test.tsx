@@ -6,7 +6,11 @@ import { expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({
   settings: {} as typeof DEFAULT_SERVER_SETTINGS,
-  targets: [] as Array<{ environmentId: string; settings: typeof DEFAULT_SERVER_SETTINGS }>,
+  targets: [] as Array<{
+    environmentId: string;
+    settings: typeof DEFAULT_SERVER_SETTINGS;
+    sources: { worktreeCleanup: "environment" };
+  }>,
   run: vi.fn(),
   report: null as StorageCleanupReport | null,
 }));
@@ -110,6 +114,7 @@ function setup() {
   state.targets = ["env-a", "env-b"].map((environmentId) => ({
     environmentId,
     settings: state.settings,
+    sources: { worktreeCleanup: "environment" },
   }));
   state.report = null;
   state.run.mockReset();
@@ -122,6 +127,7 @@ function setRetentionValues(
 ) {
   state.targets = artifactDays.map((browserArtifactsAfterDays, index) => ({
     environmentId: environmentIds[index]!,
+    sources: { worktreeCleanup: "environment" },
     settings: {
       ...state.settings,
       storageCleanup: {

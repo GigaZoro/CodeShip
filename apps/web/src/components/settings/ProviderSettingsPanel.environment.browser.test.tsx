@@ -124,6 +124,12 @@ vi.mock(import("../../state/entities"), async (original) => ({
   ...(await original()),
   useProjects: (() => []) as never,
 }));
+vi.mock(import("./useScopedSettings"), async (original) => ({
+  ...(await original()),
+  useScopedSettings: (() => state.settings) as never,
+  useUpdateScopedSettings: (() => state.updateSettings) as never,
+  useScopedSettingsWriteAllowed: () => state.canWriteSettings,
+}));
 vi.mock(import("./settingsLayout"), async (original) => ({
   ...(await original()),
   useSettingsSearchTargetId: () => state.searchTargetId,
@@ -162,6 +168,7 @@ vi.mock(import("../ProviderUpdatesAction"), async (original) => ({
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { EnvironmentProviderSettings } from "./ProviderSettingsPanel";
+import { ProviderHealthIntervalRow } from "./BackgroundActivitySettings";
 
 const environmentId = EnvironmentId.make("remote-device");
 const codexId = ProviderInstanceId.make("codex");
@@ -359,10 +366,10 @@ describe("EnvironmentProviderSettings routing", () => {
   });
 });
 
-describe("EnvironmentProviderSettings health check interval", () => {
+describe("Background activity health check interval", () => {
   it("commits interval drafts and allows retrying rejected edits", async () => {
     await setup();
-    await using _screen = await render(panel());
+    await using _screen = await render(<ProviderHealthIntervalRow />);
     const input = page.getByRole("textbox", { name: "Provider health check interval in seconds" });
 
     await userEvent.type(input, "{ArrowUp}{ArrowDown}");
@@ -403,7 +410,7 @@ describe("EnvironmentProviderSettings health check interval", () => {
 
   it("restores the saved interval when a cleared field loses focus", async () => {
     await setup();
-    await using _screen = await render(panel());
+    await using _screen = await render(<ProviderHealthIntervalRow />);
     const input = page.getByRole("textbox", { name: "Provider health check interval in seconds" });
 
     await userEvent.type(input, "{Backspace}{Backspace}{Backspace}");

@@ -49,7 +49,7 @@ function ResetPageButton({ page, onRestored }: { page: string; onRestored: () =>
   );
 }
 
-/** Providers lists one machine's instances; its Models tab can span machines. */
+/** Providers lists one machine's instances (its Models tab can span machines); Secrets and Diagnostics also act on one. */
 function useSingleEnvironmentSettingsPage(pathname: string) {
   const providersTab = useLocation({
     select: (location) =>
@@ -57,7 +57,8 @@ function useSingleEnvironmentSettingsPage(pathname: string) {
   });
   return (
     (pathname === "/settings/providers" && providersTab === "providers") ||
-    pathname === "/settings/secrets"
+    pathname === "/settings/secrets" ||
+    pathname === "/settings/diagnostics"
   );
 }
 
@@ -143,10 +144,9 @@ function SettingsContentLayout() {
   const location = useLocation();
   const { search, environment } = useSettingsScope();
   const singleEnvironmentPage = useSingleEnvironmentSettingsPage(location.pathname);
-  const contentScopeKey =
-    location.pathname === "/settings/diagnostics" || singleEnvironmentPage
-      ? environment?.environmentId
-      : JSON.stringify(search);
+  const contentScopeKey = singleEnvironmentPage
+    ? environment?.environmentId
+    : JSON.stringify(search);
   const [restoreSignal, setRestoreSignal] = useState(0);
   // The providers reset covers Models-tab rows only.
   const showReset =

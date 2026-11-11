@@ -36,6 +36,23 @@ function visible(query: string) {
 }
 
 describe("filterSettingsSections", () => {
+  it("finds restart and network recovery on Threads rather than Maintenance", () => {
+    const recoveryPages = [
+      {
+        rows: [
+          { id: "SettingsThreads", label: msg("Threads") },
+          { id: "SettingsEnvironmentMaintenance", label: msg("Maintenance & about") },
+        ],
+      },
+    ];
+    for (const query of ["restart", "network errors", "Recovery"]) {
+      expect(
+        filterSettingsSections(recoveryPages, query).flatMap((section) =>
+          section.rows.map((row) => row.id),
+        ),
+      ).toEqual(["SettingsThreads"]);
+    }
+  });
   it.each([
     {
       query: "",

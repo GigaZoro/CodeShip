@@ -157,20 +157,7 @@ describe("page reset", () => {
     ]);
   });
 
-  it.each([
-    {
-      page: "/settings/source-control",
-      label: "Git fetch interval",
-      key: "automaticGitFetchInterval",
-      other: "providerHealthRefreshInterval",
-    },
-    {
-      page: "/settings/providers",
-      label: "Health check interval",
-      key: "providerHealthRefreshInterval",
-      other: "automaticGitFetchInterval",
-    },
-  ] as const)("resets only the $key override on $page", ({ page, label, key, other }) => {
+  it("resets background policy and both intervals only from Maintenance", () => {
     const custom = {
       ...DEFAULT_UNIFIED_SETTINGS,
       backgroundActivity: {
@@ -178,26 +165,26 @@ describe("page reset", () => {
         profile: "custom",
         baseProfile: "balanced",
         overrides: {
-          [key]: Duration.seconds(42),
-          [other]: Duration.seconds(91),
+          automaticGitFetchInterval: Duration.seconds(42),
+          providerHealthRefreshInterval: Duration.seconds(91),
           pauseWhenOnBattery: true,
         },
       },
     } as typeof DEFAULT_UNIFIED_SETTINGS;
-    const { labels, patch } = onOneMachine(custom, page);
-    expect(labels).toEqual([label]);
-    const overrides = patch.backgroundActivity?.overrides;
-    expect(overrides?.[key]).toBeUndefined();
-    expect(overrides?.[other]).toEqual(Duration.seconds(91));
-    expect(overrides?.pauseWhenOnBattery).toBe(true);
-
-    expect(onOneMachine(DEFAULT_UNIFIED_SETTINGS, page).labels).toEqual([]);
-    // A profile's own preset is what the reset restores, so it is not a change.
-    const batterySaver = {
-      ...DEFAULT_UNIFIED_SETTINGS,
-      backgroundActivity: { schemaVersion: 1, profile: "battery-saver", overrides: {} },
-    } as typeof DEFAULT_UNIFIED_SETTINGS;
-    expect(onOneMachine(batterySaver, page).labels).toEqual([]);
+    for (const page of ["/settings/source-control", "/settings/providers"]) {
+      expect(onOneMachine(custom, page)).toEqual({ labels: [], patch: {} });
+    }
+    const maintenance = onOneMachine(custom, "/settings/maintenance");
+    expect(maintenance.labels).toEqual(["Background activity"]);
+    expect(maintenance.patch.backgroundActivity).toEqual(
+      DEFAULT_UNIFIED_SETTINGS.backgroundActivity,
+    );
+    expect(maintenance.patch.automaticGitFetchInterval).toEqual(
+      DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
+    );
+    expect(maintenance.patch.providerHealthRefreshInterval).toEqual(
+      DEFAULT_UNIFIED_SETTINGS.providerHealthRefreshInterval,
+    );
   });
 
   it("lists a setting changed on any machine and restores each machine from its own values", () => {
@@ -216,34 +203,17 @@ describe("page reset", () => {
     });
   });
 
-  it("keeps each machine's other background overrides when resetting the git fetch interval", () => {
-    const withOverrides = (overrides: Record<string, unknown>) =>
-      ({
-        ...DEFAULT_UNIFIED_SETTINGS,
-        backgroundActivity: {
-          schemaVersion: 1,
-          profile: "custom",
-          baseProfile: "balanced",
-          overrides: { automaticGitFetchInterval: Duration.seconds(42), ...overrides },
-        },
-      }) as typeof DEFAULT_UNIFIED_SETTINGS;
-    const plan = pageRestorePlan(
-      [
-        {
-          environmentId: "laptop",
-          settings: withOverrides({ providerHealthRefreshInterval: Duration.seconds(61) }),
-        },
-        {
-          environmentId: "server",
-          settings: withOverrides({ providerHealthRefreshInterval: Duration.seconds(92) }),
-        },
-      ],
-      "/settings/source-control",
-    );
-    const interval = (id: string) =>
-      plan.patches.get(id)?.backgroundActivity?.overrides?.providerHealthRefreshInterval;
-    expect(interval("laptop")).toEqual(Duration.seconds(61));
-    expect(interval("server")).toEqual(Duration.seconds(92));
+  it("resets restart and network recovery from Threads, not Maintenance", () => {
+    const settings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      continueThreadsAfterServerUpdate: false,
+      retryThreadsAfterNetworkErrors: false,
+    };
+    expect(onOneMachine(settings, "/settings/maintenance")).toEqual({ labels: [], patch: {} });
+    expect(onOneMachine(settings, "/settings/threads")).toEqual({
+      labels: ["Continue threads after restarts", "Retry threads after network errors"],
+      patch: { continueThreadsAfterServerUpdate: true, retryThreadsAfterNetworkErrors: true },
+    });
   });
 
   it("covers every page when resetting everything", () => {

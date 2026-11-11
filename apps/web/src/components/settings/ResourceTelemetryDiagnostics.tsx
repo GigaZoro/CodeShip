@@ -53,6 +53,7 @@ import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import {
+  hasLiveResourceCounters,
   processIdentityKey,
   resourceHistoryBarHeight,
   resourceHistoryCpuScaleMax,
@@ -845,7 +846,11 @@ function ResourceTelemetryDiagnosticsBody({
   const signalingKeysRef = useRef<ReadonlySet<string>>(new Set());
   const [isRetrying, setIsRetrying] = useState(false);
   const snapshot = telemetry.data;
-  const allT3 = snapshot?.groups.allT3;
+  const liveCounters = hasLiveResourceCounters({
+    nativeStatus: snapshot?.health.native.status ?? null,
+    sampleIntervalMs: snapshot?.sampleIntervalMs ?? 0,
+  });
+  const allT3 = liveCounters ? snapshot?.groups.allT3 : undefined;
 
   const signalProcess = async (process: ResourceTelemetryProcess, signal: ServerProcessSignal) => {
     const targetEnvironmentId = environmentId;
@@ -1020,95 +1025,109 @@ function ResourceTelemetryDiagnosticsBody({
                 )}
               </p>
             </div>
-            <div className="flex items-center gap-2 text-3xs text-muted-foreground/65">
-              <span className="size-1.5 rounded-full bg-success" />
-              {t("Sampling every {interval}", {
-                interval: snapshot ? formatSampleInterval(snapshot.sampleIntervalMs) : "...",
-              })}
+            {liveCounters && snapshot ? (
+              <div className="flex items-center gap-2 text-3xs text-muted-foreground/65">
+                <span className="size-1.5 rounded-full bg-success" />
+                {t("Sampling every {interval}", {
+                  interval: formatSampleInterval(snapshot.sampleIntervalMs),
+                })}
+              </div>
+            ) : null}
+          </div>
+          {liveCounters ? (
+            <div className="grid grid-cols-2 divide-x divide-y divide-border/55 md:grid-cols-3">
+              <IconStat
+                icon={<CpuIcon className="size-3.5" />}
+                label={t("Current CPU")}
+                value={allT3 ? `${allT3.currentCpuPercent.toFixed(1)}%` : "..."}
+                detail={
+                  allT3
+                    ? t("{time} observed CPU time", { time: formatCpuTime(allT3.cpuTimeMs) })
+                    : undefined
+                }
+              />
+              <IconStat
+                icon={<MemoryStickIcon className="size-3.5" />}
+                label={t("Resident memory")}
+                value={allT3 ? formatBytes(allT3.currentRssBytes) : "..."}
+                detail={
+                  allT3
+                    ? t("{size} combined process peaks", { size: formatBytes(allT3.peakRssBytes) })
+                    : undefined
+                }
+              />
+              <IconStat
+                icon={<ActivityIcon className="size-3.5" />}
+                label={t("Process count")}
+                value={allT3 ? String(allT3.processCount) : "..."}
+                detail={
+                  allT3
+                    ? t("{starts} starts · {exits} exits", {
+                        starts: allT3.processStarts,
+                        exits: allT3.processExits,
+                      })
+                    : undefined
+                }
+              />
+              <IconStat
+                icon={<HardDriveIcon className="size-3.5" />}
+                label={t("Read throughput")}
+                value={allT3 ? formatRate(allT3.ioReadBytesPerSecond) : "..."}
+                detail={
+                  allT3 ? t("{size} observed", { size: formatBytes(allT3.ioReadBytes) }) : undefined
+                }
+              />
+              <IconStat
+                icon={<DatabaseIcon className="size-3.5" />}
+                label={t("Write throughput")}
+                value={allT3 ? formatRate(allT3.ioWriteBytesPerSecond) : "..."}
+                detail={
+                  allT3
+                    ? t("{size} observed", { size: formatBytes(allT3.ioWriteBytes) })
+                    : undefined
+                }
+                tone={
+                  allT3 && allT3.ioWriteBytesPerSecond >= 10 * 1_024 * 1_024
+                    ? "danger"
+                    : allT3 && allT3.ioWriteBytesPerSecond >= 1_024 * 1_024
+                      ? "warning"
+                      : "default"
+                }
+              />
+              <IconStat
+                icon={<GaugeIcon className="size-3.5" />}
+                label={t("CPU speed limit")}
+                value={
+                  snapshot
+                    ? speedLimit === null
+                      ? t("Unknown")
+                      : `${speedLimit.toFixed(0)}%`
+                    : "..."
+                }
+                detail={
+                  snapshot
+                    ? t("{state} thermal state", { state: snapshot.power.thermalState })
+                    : undefined
+                }
+                tone={speedLimit !== null && speedLimit < 80 ? "warning" : "default"}
+              />
             </div>
-          </div>
-          <div className="grid grid-cols-2 divide-x divide-y divide-border/55 md:grid-cols-3">
-            <IconStat
-              icon={<CpuIcon className="size-3.5" />}
-              label={t("Current CPU")}
-              value={allT3 ? `${allT3.currentCpuPercent.toFixed(1)}%` : "..."}
-              detail={
-                allT3
-                  ? t("{time} observed CPU time", { time: formatCpuTime(allT3.cpuTimeMs) })
-                  : undefined
-              }
-            />
-            <IconStat
-              icon={<MemoryStickIcon className="size-3.5" />}
-              label={t("Resident memory")}
-              value={allT3 ? formatBytes(allT3.currentRssBytes) : "..."}
-              detail={
-                allT3
-                  ? t("{size} combined process peaks", { size: formatBytes(allT3.peakRssBytes) })
-                  : undefined
-              }
-            />
-            <IconStat
-              icon={<ActivityIcon className="size-3.5" />}
-              label={t("Process count")}
-              value={allT3 ? String(allT3.processCount) : "..."}
-              detail={
-                allT3
-                  ? t("{starts} starts · {exits} exits", {
-                      starts: allT3.processStarts,
-                      exits: allT3.processExits,
-                    })
-                  : undefined
-              }
-            />
-            <IconStat
-              icon={<HardDriveIcon className="size-3.5" />}
-              label={t("Read throughput")}
-              value={allT3 ? formatRate(allT3.ioReadBytesPerSecond) : "..."}
-              detail={
-                allT3 ? t("{size} observed", { size: formatBytes(allT3.ioReadBytes) }) : undefined
-              }
-            />
-            <IconStat
-              icon={<DatabaseIcon className="size-3.5" />}
-              label={t("Write throughput")}
-              value={allT3 ? formatRate(allT3.ioWriteBytesPerSecond) : "..."}
-              detail={
-                allT3 ? t("{size} observed", { size: formatBytes(allT3.ioWriteBytes) }) : undefined
-              }
-              tone={
-                allT3 && allT3.ioWriteBytesPerSecond >= 10 * 1_024 * 1_024
-                  ? "danger"
-                  : allT3 && allT3.ioWriteBytesPerSecond >= 1_024 * 1_024
-                    ? "warning"
-                    : "default"
-              }
-            />
-            <IconStat
-              icon={<GaugeIcon className="size-3.5" />}
-              label={t("CPU speed limit")}
-              value={
-                snapshot
-                  ? speedLimit === null
-                    ? t("Unknown")
-                    : `${speedLimit.toFixed(0)}%`
-                  : "..."
-              }
-              detail={
-                snapshot
-                  ? t("{state} thermal state", { state: snapshot.power.thermalState })
-                  : undefined
-              }
-              tone={speedLimit !== null && speedLimit < 80 ? "warning" : "default"}
-            />
-          </div>
+          ) : (
+            <p role="status" className="px-4 py-4 text-sm text-muted-foreground sm:px-5">
+              {snapshot === null
+                ? t("Waiting for sample")
+                : t(
+                    "Live process counters come from the desktop app’s native resource monitor. They are unavailable for this environment. Available trace data is still shown.",
+                  )}
+            </p>
+          )}
           {telemetry.error ? (
             <div className="flex items-start gap-2 border-t border-destructive/20 bg-destructive/5 px-4 py-3 text-xs text-destructive-foreground sm:px-5">
               <AlertTriangleIcon className="size-3.5 h-lh shrink-0" />
               <span>{telemetry.error}</span>
             </div>
           ) : null}
-          {snapshot ? (
+          {liveCounters && snapshot ? (
             <div className="grid border-t border-border/60 bg-muted/10 md:grid-cols-3">
               <AggregateCard
                 label={t("Backend + agents")}
@@ -1223,38 +1242,42 @@ function ResourceTelemetryDiagnosticsBody({
               <>
                 <HealthSource label={t("Native process monitor")} health={snapshot.health.native} />
                 <HealthSource label={t("Electron main process")} health={snapshot.health.desktop} />
-                <DetailRow
-                  label={t("Collection time")}
-                  value={formatDurationMicros(snapshot.health.collectionDurationMicros)}
-                />
-                <DetailRow
-                  label={t("Process scan")}
-                  value={t("{retained}/{scanned} retained", {
-                    retained: snapshot.health.retainedProcessCount,
-                    scanned: snapshot.health.scannedProcessCount,
-                  })}
-                />
-                <DetailRow
-                  label={t("Inaccessible")}
-                  value={String(snapshot.health.inaccessibleProcessCount)}
-                  valueClassName={
-                    snapshot.health.inaccessibleProcessCount > 0
-                      ? "text-warning-foreground"
-                      : undefined
-                  }
-                />
-                <DetailRow
-                  label={t("Sidecar")}
-                  value={Option.match(snapshot.health.sidecarVersion, {
-                    onNone: () => t("Unavailable"),
-                    onSome: (version) =>
-                      `${version}${Option.match(snapshot.health.sidecarPid, {
-                        onNone: () => "",
-                        onSome: (pid) => ` · ${t("PID {pid}", { pid })}`,
-                      })}`,
-                  })}
-                />
-                <DetailRow label={t("Restarts")} value={String(snapshot.health.restartCount)} />
+                {liveCounters ? (
+                  <>
+                    <DetailRow
+                      label={t("Collection time")}
+                      value={formatDurationMicros(snapshot.health.collectionDurationMicros)}
+                    />
+                    <DetailRow
+                      label={t("Process scan")}
+                      value={t("{retained}/{scanned} retained", {
+                        retained: snapshot.health.retainedProcessCount,
+                        scanned: snapshot.health.scannedProcessCount,
+                      })}
+                    />
+                    <DetailRow
+                      label={t("Inaccessible")}
+                      value={String(snapshot.health.inaccessibleProcessCount)}
+                      valueClassName={
+                        snapshot.health.inaccessibleProcessCount > 0
+                          ? "text-warning-foreground"
+                          : undefined
+                      }
+                    />
+                    <DetailRow
+                      label={t("Sidecar")}
+                      value={Option.match(snapshot.health.sidecarVersion, {
+                        onNone: () => t("Unavailable"),
+                        onSome: (version) =>
+                          `${version}${Option.match(snapshot.health.sidecarPid, {
+                            onNone: () => "",
+                            onSome: (pid) => ` · ${t("PID {pid}", { pid })}`,
+                          })}`,
+                      })}
+                    />
+                    <DetailRow label={t("Restarts")} value={String(snapshot.health.restartCount)} />
+                  </>
+                ) : null}
               </>
             ) : (
               <div className="py-4 text-xs text-muted-foreground">
@@ -1265,58 +1288,62 @@ function ResourceTelemetryDiagnosticsBody({
         </div>
       </SettingsSection>
 
-      <SettingsSection
-        title={t("Resource timeline")}
-        icon={<HardDriveIcon className="size-4 text-muted-foreground" />}
-        headerAction={
-          <div className="flex items-center gap-2">
-            <HistoryWindowSelector selectedWindowMs={windowMs} onSelect={setWindowMs} />
-            <Button
-              size="icon-micro"
-              variant="ghost"
-              disabled={history.isPending}
-              onClick={history.refresh}
-              aria-label={t("Refresh resource history")}
-            >
-              <RefreshIcon size="xs" refreshing={history.isPending} />
-            </Button>
-          </div>
-        }
-      >
-        <div className="overflow-hidden rounded-[inherit]">
-          {history.error ? (
-            <div className="flex items-start gap-2 border-b border-destructive/20 bg-destructive/5 px-4 py-3 text-xs text-destructive-foreground sm:px-5">
-              <AlertTriangleIcon className="size-3.5 h-lh shrink-0" />
-              <span>{history.error}</span>
+      {liveCounters || (history.data?.buckets.length ?? 0) > 0 ? (
+        <SettingsSection
+          title={t("Resource timeline")}
+          icon={<HardDriveIcon className="size-4 text-muted-foreground" />}
+          headerAction={
+            <div className="flex items-center gap-2">
+              <HistoryWindowSelector selectedWindowMs={windowMs} onSelect={setWindowMs} />
+              <Button
+                size="icon-micro"
+                variant="ghost"
+                disabled={history.isPending}
+                onClick={history.refresh}
+                aria-label={t("Refresh resource history")}
+              >
+                <RefreshIcon size="xs" refreshing={history.isPending} />
+              </Button>
             </div>
-          ) : null}
-          <ResourceHistoryChart buckets={history.data?.buckets ?? []} />
-          <HistoryProcessTable processes={history.data?.topProcesses ?? []} />
-        </div>
-      </SettingsSection>
+          }
+        >
+          <div className="overflow-hidden rounded-[inherit]">
+            {history.error ? (
+              <div className="flex items-start gap-2 border-b border-destructive/20 bg-destructive/5 px-4 py-3 text-xs text-destructive-foreground sm:px-5">
+                <AlertTriangleIcon className="size-3.5 h-lh shrink-0" />
+                <span>{history.error}</span>
+              </div>
+            ) : null}
+            <ResourceHistoryChart buckets={history.data?.buckets ?? []} />
+            <HistoryProcessTable processes={history.data?.topProcesses ?? []} />
+          </div>
+        </SettingsSection>
+      ) : null}
 
-      <SettingsSection
-        title={t("Live process tree")}
-        icon={<CpuIcon className="size-4 text-muted-foreground" />}
-        headerAction={
-          snapshot ? (
-            <span className="text-3xs text-muted-foreground/55">
-              {tx("Identity: {identity}", {
-                identity: <span className="font-mono">{"PID + start time"}</span>,
-              })}
-            </span>
-          ) : null
-        }
-      >
-        <div className="overflow-hidden rounded-[inherit]">
-          <ProcessTable
-            processes={snapshot?.processes ?? []}
-            canMaintainEnvironment={canMaintainEnvironment}
-            signalingKeys={signalingKeys}
-            onSignal={signalProcess}
-          />
-        </div>
-      </SettingsSection>
+      {liveCounters ? (
+        <SettingsSection
+          title={t("Live process tree")}
+          icon={<CpuIcon className="size-4 text-muted-foreground" />}
+          headerAction={
+            snapshot ? (
+              <span className="text-3xs text-muted-foreground/55">
+                {tx("Identity: {identity}", {
+                  identity: <span className="font-mono">{"PID + start time"}</span>,
+                })}
+              </span>
+            ) : null
+          }
+        >
+          <div className="overflow-hidden rounded-[inherit]">
+            <ProcessTable
+              processes={snapshot?.processes ?? []}
+              canMaintainEnvironment={canMaintainEnvironment}
+              signalingKeys={signalingKeys}
+              onSignal={signalProcess}
+            />
+          </div>
+        </SettingsSection>
+      ) : null}
 
       <SettingsSection
         title={t("Instrumented application I/O")}

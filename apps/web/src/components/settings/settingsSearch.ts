@@ -214,7 +214,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "storage-worktree-keep-when",
     targetId: "storage-worktrees",
     title: msg("Keep worktrees with local changes"),
-    to: "/settings/source-control",
+    to: "/settings/maintenance",
     scope: "project-defaults",
     searchTerms: [
       "any local files uncommitted changes edited tracked files ignored env build output cleanup",
@@ -230,7 +230,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "storage-worktrees",
     title: msg("Worktree cleanup"),
-    to: "/settings/source-control",
+    to: "/settings/maintenance",
     scope: "project-defaults",
     searchTerms: [
       "disk storage automatic delete deleted archived threads old inactive merged settled unchanged worktrees retention days project inherit off custom",
@@ -673,7 +673,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "continue-threads-after-server-update",
     title: msg("Continue threads after restarts"),
-    to: "/settings/maintenance",
+    to: "/settings/threads",
     scope: "project-defaults",
     searchTerms: [
       "resume running active interrupted work restart reboot machine crash desktop update automatically",
@@ -682,7 +682,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "retry-threads-after-network-errors",
     title: msg("Retry threads after network errors"),
-    to: "/settings/maintenance",
+    to: "/settings/threads",
     searchTerms: [
       "resume continue failed work internet connection offline outage power cut wifi dns lost network automatically",
     ],
@@ -969,9 +969,10 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "provider-health-check-interval",
     title: msg("Health check interval"),
-    to: "/settings/providers",
+    to: "/settings/maintenance",
     searchTerms: ["refresh availability versions auth state models background probes seconds off"],
-    providerSettingsOnly: true,
+    environmentOnly: true,
+    scope: "environment-defaults",
   },
   {
     id: "agent-browser-access",
@@ -1144,7 +1145,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "git-fetch-interval",
     title: msg("Git fetch interval"),
-    to: "/settings/source-control",
+    to: "/settings/maintenance",
     searchTerms: [
       "automatic remote branch refresh background credentials security keys seconds off",
     ],
@@ -1443,6 +1444,9 @@ const SPLIT_SETTINGS_PATHS: ReadonlySet<string> = new Set([
 ]);
 // Section anchors that moved but are not search results themselves.
 const MOVED_SECTION_ANCHORS: Readonly<Record<string, SettingsPath>> = {
+  "storage-cleanup": "/settings/maintenance",
+  "storage-artifacts": "/settings/maintenance",
+  recovery: "/settings/threads",
   "diagnostics-section": "/settings/diagnostics",
   "authorized-clients": "/settings/connections",
   "new-thread-models": "/settings/providers",
@@ -1462,6 +1466,7 @@ const MOVED_SECTION_ANCHORS: Readonly<Record<string, SettingsPath>> = {
 };
 
 const CONSOLIDATED_SETTING_ANCHORS: Readonly<Record<string, string>> = {
+  "usage-limits": "recovery",
   "auto-resume-limited-threads": "usage-limit-recovery",
   "snooze-limited-threads": "usage-limit-recovery",
   "in-app-notifications": "thread-notifications",

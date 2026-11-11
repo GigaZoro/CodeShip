@@ -3,7 +3,10 @@ import { describe, expect, it } from "vite-plus/test";
 import type { ResourceTelemetryProcess } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { visibleResourceTelemetryProcesses } from "./ResourceTelemetryDiagnostics.logic";
+import {
+  hasLiveResourceCounters,
+  visibleResourceTelemetryProcesses,
+} from "./ResourceTelemetryDiagnostics.logic";
 
 const process = (pid: number, ppid: number, depth: number): ResourceTelemetryProcess => ({
   identity: { pid, startTimeMs: pid * 1_000 },
@@ -45,4 +48,22 @@ describe("visibleResourceTelemetryProcesses", () => {
       processes[3],
     ]);
   });
+});
+
+describe("hasLiveResourceCounters", () => {
+  it.each([
+    { nativeStatus: null, sampleIntervalMs: 0, expected: false },
+    { nativeStatus: "unavailable", sampleIntervalMs: 0, expected: false },
+    { nativeStatus: "unavailable", sampleIntervalMs: 1000, expected: false },
+    { nativeStatus: "starting", sampleIntervalMs: 1000, expected: false },
+    { nativeStatus: "stopped", sampleIntervalMs: 1000, expected: false },
+    { nativeStatus: "healthy", sampleIntervalMs: 0, expected: false },
+    { nativeStatus: "healthy", sampleIntervalMs: 1000, expected: true },
+    { nativeStatus: "degraded", sampleIntervalMs: 1000, expected: true },
+  ] as const)(
+    "distinguishes live samples from placeholders: $nativeStatus / $sampleIntervalMs",
+    ({ expected, ...input }) => {
+      expect(hasLiveResourceCounters(input)).toBe(expected);
+    },
+  );
 });

@@ -404,14 +404,16 @@ function CleanupSection() {
     ).finally(() => setPending(false));
   };
   return (
-    <SettingsSection id="storage-cleanup" title={t("Cleanup")} variant="plain">
+    <SettingsSection hideTitle id="storage-cleanup" title={t("Cleanup")} variant="plain">
       <SettingsGroup>
         <SettingsRow
           {...searchableSetting("storage-delete-now")}
           description={
             <span>
               {!hasRules
-                ? t("Turn on a cleanup rule to use this.")
+                ? t(
+                    "No automatic deletion rules are on. Enable a rule above to choose what Delete now removes; worktrees with local changes are kept according to your rules.",
+                  )
                 : summaries.map(({ environment, label, description }) => (
                     <span key={environment.environmentId} className="block">
                       {supported.length > 1 ? `${label}: ` : ""}
@@ -491,7 +493,7 @@ function StorageCleanupScopeNotice() {
   );
 }
 
-export function WorktreeCleanupSection() {
+function WorktreeCleanupSection() {
   const { scope, environments, connectedEnvironments, targets, target } = useSettingsScope();
   const scopedSettings = useScopedSettings();
   const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
@@ -534,7 +536,12 @@ export function WorktreeCleanupSection() {
     )
   ) {
     return (
-      <SettingsSection id="storage-worktrees" title={t("Cleanup")} variant="plain">
+      <SettingsSection
+        hideTitle
+        id="storage-worktrees"
+        title={t("Worktree cleanup")}
+        variant="plain"
+      >
         <SettingsScopeNotice inline target="all">
           {t("Update the selected machines to configure project worktree cleanup.")}
         </SettingsScopeNotice>
@@ -543,14 +550,19 @@ export function WorktreeCleanupSection() {
   }
   if (!supportsStorageCleanup(connectedEnvironments)) {
     return (
-      <SettingsSection id="storage-worktrees" title={t("Cleanup")} variant="plain">
+      <SettingsSection
+        hideTitle
+        id="storage-worktrees"
+        title={t("Worktree cleanup")}
+        variant="plain"
+      >
         <StorageCleanupScopeNotice />
       </SettingsSection>
     );
   }
 
   return (
-    <SettingsSection id="storage-worktrees" title={t("Cleanup")}>
+    <SettingsSection hideTitle id="storage-worktrees" title={t("Worktree cleanup")}>
       <>
         {isProjectScope && (
           <SettingsRow
@@ -781,7 +793,13 @@ export function StorageCleanupSections() {
     targets.length > 1 && settledLogsStatus === `${targetIdsKey}:true`
       ? t("Mixed across selected machines")
       : undefined;
-  if (scope.kind === "project" || scope.kind === "checkout") return null;
+  if (scope.kind === "project" || scope.kind === "checkout") {
+    return (
+      <SettingsSection id="storage" title={t("Storage & cleanup")} variant="plain">
+        <WorktreeCleanupSection />
+      </SettingsSection>
+    );
+  }
   const update = (patch: Partial<StorageCleanupSettings>) =>
     updateSettings({ storageCleanup: patch });
   const databaseStorageNotice = (
@@ -794,19 +812,25 @@ export function StorageCleanupSections() {
   );
   if (!supportsStorageCleanup(connectedEnvironments)) {
     return (
-      <>
+      <SettingsSection id="storage" title={t("Storage & cleanup")} variant="plain">
         {databaseStorageNotice}
-        <SettingsSection id="storage-artifacts" title={t("Artifacts and logs")} variant="plain">
+        <SettingsSection
+          hideTitle
+          id="storage-artifacts"
+          title={t("Artifacts and logs")}
+          variant="plain"
+        >
           <StorageCleanupScopeNotice />
         </SettingsSection>
-      </>
+      </SettingsSection>
     );
   }
 
   return (
-    <>
+    <SettingsSection id="storage" title={t("Storage & cleanup")} variant="plain">
       {databaseStorageNotice}
-      <SettingsSection id="storage-artifacts" title={t("Artifacts and logs")}>
+      <WorktreeCleanupSection />
+      <SettingsSection hideTitle id="storage-artifacts" title={t("Artifacts and logs")}>
         <AnimatedHeight>
           <SettingsRow
             title={t("Delete old browser artifacts")}
@@ -845,6 +869,6 @@ export function StorageCleanupSections() {
         </AnimatedHeight>
       </SettingsSection>
       <CleanupSection />
-    </>
+    </SettingsSection>
   );
 }

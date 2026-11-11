@@ -94,6 +94,9 @@ const SETTINGS_SEARCH_TERMS = {
     msg("snooze"),
     msg("usage limits"),
     msg("auto-resume"),
+    msg("Recovery"),
+    msg("restart"),
+    msg("Retry after network errors"),
     msg("thread behavior"),
   ],
   SettingsFollowUp: [
@@ -130,7 +133,6 @@ const SETTINGS_SEARCH_TERMS = {
   SettingsEnvironmentMaintenance: [
     msg("updates"),
     msg("provider updates"),
-    msg("restart"),
     msg("manage environments"),
     msg("linked environments"),
     msg("link machine"),

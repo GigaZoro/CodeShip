@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { t, tx } from "~/i18n";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { ChevronDownIcon } from "lucide-react";
@@ -37,11 +38,11 @@ import { SourceControlAppSignInSettings } from "./SourceControlAppSignInSettings
 import { SourceControlTokenSettings } from "./SourceControlTokenSettings";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import { SourceControlWritingSettingsSection } from "./SourceControlWritingSettings";
-import { GitFetchIntervalRow } from "./BackgroundActivitySettings";
 import { PullRequestLinksOpenInAppSetting } from "./IntegrationsSettings";
 import { WorktreesSettingsSections } from "./WorktreesSettings";
 import {
   SettingsPageContainer,
+  SettingsRow,
   SettingsSearchTarget,
   SettingsSection,
   useSettingsSearchTargetId,
@@ -546,7 +547,21 @@ export function SourceControlSettingsPanel() {
 
       <SourceControlWritingSettingsSection />
       <SettingsSection id="source-control-sync" title={t("Fetching & links")}>
-        <GitFetchIntervalRow />
+        <SettingsRow
+          title={t("Git fetch interval")}
+          description={t(
+            "Configure background fetching in Maintenance & about → Background activity.",
+          )}
+          control={
+            <Button
+              variant="outline"
+              size="sm"
+              render={<Link to="/settings/maintenance" search={{}} hash="git-fetch-interval" />}
+            >
+              {t("Open")}
+            </Button>
+          }
+        />
         <PullRequestLinksOpenInAppSetting />
       </SettingsSection>
       <WorktreesSettingsSections />

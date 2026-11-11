@@ -1,3 +1,5 @@
+import { Link } from "@tanstack/react-router";
+import { Button } from "../ui/button";
 import { t } from "~/i18n";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 
@@ -8,7 +10,7 @@ import { ScopedSwitch } from "./ScopedSwitch";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
-import { WorktreeCleanupSection, WorktreesDirectoryRow } from "./StorageSettings";
+import { WorktreesDirectoryRow } from "./StorageSettings";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 
 function StartFromRemoteRow() {
@@ -66,7 +68,23 @@ export function WorktreesSettingsSections() {
       <SettingsSection id="worktree-branches" title={t("Branches")}>
         <BranchNamingSettings />
       </SettingsSection>
-      <WorktreeCleanupSection />
+      <SettingsSection title={t("Storage & cleanup")}>
+        <SettingsRow
+          title={t("Worktree cleanup")}
+          description={t(
+            "Configure automatic deletion in Maintenance & about → Storage & cleanup.",
+          )}
+          control={
+            <Button
+              variant="outline"
+              size="sm"
+              render={<Link to="/settings/maintenance" search={{}} hash="storage-worktrees" />}
+            >
+              {t("Open")}
+            </Button>
+          }
+        />
+      </SettingsSection>
     </>
   );
 }
