@@ -469,16 +469,18 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   restorable("/settings/projects", msg("Add project base directory"), ["addProjectBaseDirectory"]),
   restorable("/settings/projects", msg("Clone into host folders"), ["ghqCloneLayout"]),
   restorable("/settings/projects", msg("Import conversations"), ["importAgentConversations"]),
-  restorable("/settings/providers", msg("Default model"), ["defaultModelSelection"]),
-  restorable("/settings/providers", msg("Use last picked model"), ["newThreadsUseLastModel"]),
+  restorable("/settings/providers", msg("Default for new threads"), ["defaultModelSelection"]),
+  restorable("/settings/providers", msg("Use the last picked model"), ["newThreadsUseLastModel"]),
   restorable("/settings/providers", msg("Fallback model"), ["fallbackModelSelection"]),
-  restorable("/settings/providers", msg("Scheduled tasks model"), ["scheduledTaskModelSelection"]),
-  restorable("/settings/providers", msg("Text generation model"), ["textGenerationModelSelection"]),
+  restorable("/settings/providers", msg("Scheduled tasks"), ["scheduledTaskModelSelection"]),
+  restorable("/settings/providers", msg("Titles and background text"), [
+    "textGenerationModelSelection",
+  ]),
   restorable("/settings/providers", msg("Thread title instructions"), ["threadTitleInstructions"]),
-  restorable("/settings/providers", msg("Source control writer model"), [
+  restorable("/settings/providers", msg("Commit and pull request writing"), [
     "sourceControlWriterModelSelection",
   ]),
-  restorable("/settings/providers", msg("Review guide model"), ["reviewGuideModelSelection"]),
+  restorable("/settings/providers", msg("Review guides"), ["reviewGuideModelSelection"]),
   backgroundIntervalEntry(
     "/settings/providers",
     msg("Health check interval"),

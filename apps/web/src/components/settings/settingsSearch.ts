@@ -267,14 +267,16 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "default-model",
-    title: msg("Default model"),
+    title: msg("Default for new threads"),
     to: "/settings/providers",
     scope: "project-defaults",
-    searchTerms: ["new thread project provider reasoning effort"],
+    searchTerms: [
+      "model new thread project provider reasoning effort fallback out of usage models role",
+    ],
   },
   {
     id: "last-picked-model",
-    title: msg("Use last picked model"),
+    title: msg("Use the last picked model"),
     to: "/settings/providers",
     scope: "environment-defaults",
     searchTerms: ["remember sticky recent previous model new threads default"],
@@ -282,10 +284,10 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "scheduled-task-model",
-    title: msg("Scheduled tasks model"),
+    title: msg("Scheduled tasks"),
     to: "/settings/providers",
     scope: "environment-defaults",
-    searchTerms: ["scheduled task automation model default all tasks same as new threads"],
+    searchTerms: ["scheduled task automation model default all tasks same as default"],
     environmentOnly: true,
   },
   {
@@ -781,10 +783,12 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "text-generation-model",
-    title: msg("Text generation model"),
+    title: msg("Titles and background text"),
     to: "/settings/providers",
     scope: "project-defaults",
-    searchTerms: ["generated thread titles source control content default provider"],
+    searchTerms: [
+      "text generation model generated thread titles source control content default provider",
+    ],
   },
   {
     id: "thread-title-instructions",
@@ -918,11 +922,20 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
-    id: "account-failover",
-    title: msg("Auto mode and accounts"),
+    id: "auto-mode",
+    title: msg("Auto mode"),
     to: "/settings/providers",
     searchTerms: [
-      "auto mode auto model coordinator cheaper model subagent primary provider default model effort switch accounts failover usage limit quota rate limit multiple accounts order priority second account continue",
+      "auto model coordinator cheaper model subagent primary provider default model effort models role",
+    ],
+    providerSettingsOnly: true,
+  },
+  {
+    id: "account-failover",
+    title: msg("Switch accounts at usage limits"),
+    to: "/settings/providers",
+    searchTerms: [
+      "failover usage limit quota rate limit multiple accounts order priority second account continue auto mode",
     ],
     providerSettingsOnly: true,
   },
@@ -931,7 +944,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Final review"),
     to: "/settings/providers",
     searchTerms: [
-      "final review reviewer cross model second opinion gates checks quality pre-merge code review after request",
+      "final review reviewer reviewers review instructions cross model second opinion gates checks quality pre-merge code review after request",
     ],
     providerSettingsOnly: true,
   },
@@ -1173,10 +1186,10 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "source-control-writer-model",
-    title: msg("Source control writer model"),
+    title: msg("Commit and pull request writing"),
     to: "/settings/providers",
     searchTerms: [
-      "override generated commit change request pr titles descriptions branch bookmark",
+      "source control writer model override generated commit change request pr titles descriptions branch bookmark",
     ],
     environmentOnly: true,
     scope: "project-defaults",
@@ -1190,11 +1203,9 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "review-guide-model",
-    title: msg("Review guide model"),
+    title: msg("Review guides"),
     to: "/settings/providers",
-    // Hidden until review guides are on, so a search lands on the switch that shows it.
-    targetId: "source-control-models",
-    searchTerms: ["pull request pr guided review guide brief maintainer"],
+    searchTerms: ["review guide model pull request pr guided review guide brief maintainer"],
     environmentOnly: true,
     scope: "project-defaults",
   },
@@ -1441,7 +1452,6 @@ const SPLIT_SETTINGS_PATHS: ReadonlySet<string> = new Set([
 // Section anchors that moved but are not search results themselves.
 const MOVED_SECTION_ANCHORS: Readonly<Record<string, SettingsPath>> = {
   "authorized-clients": "/settings/connections",
-  "text-generation": "/settings/providers",
   "new-projects": "/settings/projects",
   "agent-conversations": "/settings/projects",
   "worktree-creation": "/settings/source-control",

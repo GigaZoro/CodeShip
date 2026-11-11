@@ -232,8 +232,8 @@ snapshots are grouped at the end, and every changed file appears somewhere on th
 Conversations already resolved in review are left out. For a pull request in a stack, the guide
 covers that layer only, and may point out what a lower layer introduced or what a higher one uses.
 
-Choose **Write guide** to have the review guide model from Settings → Providers & models → Models read the
-change in a temporary checkout; without one set, the source control writer model is used. Nothing
+Choose **Write guide** to have the **Review guides** model from Settings → Providers & models → Models read the
+change in a temporary checkout; without one set, the **Commit and pull request writing** model is used, and without that the **Titles and background text** model. Nothing
 in the checkout is changed, and a large pull request takes a few minutes; you can go elsewhere in
 the app. On web, you are told when the guide is ready; on mobile, return to the guide to check
 its progress. Claude and Codex can write guides. The guide is

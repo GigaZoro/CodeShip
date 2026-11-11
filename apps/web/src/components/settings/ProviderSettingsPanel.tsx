@@ -85,8 +85,6 @@ import { ExpandableText } from "./ExpandableText";
 import { IntervalSecondsField } from "./IntervalSecondsField";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { AccountFailoverSettings } from "./AccountFailoverSettings";
-import { DelegatedTaskModelSettings } from "./DelegatedTaskModelSettings";
-import { FinalReviewSettings } from "./FinalReviewSettings";
 import { useSecretSources } from "./SecretSourceInput";
 import { UsageProviderSettings } from "./UsageProviderSettings";
 import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
@@ -435,14 +433,6 @@ export function EnvironmentProviderSettings({
   const serverSupportsAutoMode = useAtomValue(
     serverEnvironment.configValueAtom(environmentId),
     (config) => config?.environment.capabilities.autoMode === true,
-  );
-  const serverSupportsFinalReview = useAtomValue(
-    serverEnvironment.configValueAtom(environmentId),
-    (config) => config?.environment.capabilities.finalReview === true,
-  );
-  const serverSupportsDelegatedTaskModels = useAtomValue(
-    serverEnvironment.configValueAtom(environmentId),
-    (config) => config?.environment.capabilities.delegatedTaskModels === true,
   );
   // Hide overrides on older servers that silently ignore providerInstances patches.
   const supportsProjectProviderOverrides = useAtomValue(
@@ -974,24 +964,6 @@ export function EnvironmentProviderSettings({
           providers={serverProviders}
           readOnly={readOnly || !canWriteSettings}
           supportsAutoMode={serverSupportsAutoMode}
-        />
-      ) : null}
-
-      {showsModels && serverSupportsDelegatedTaskModels ? (
-        <DelegatedTaskModelSettings
-          environmentId={environmentId}
-          settings={settings}
-          providers={serverProviders}
-          readOnly={readOnly || !canWriteSettings}
-        />
-      ) : null}
-
-      {showsModels && serverSupportsFinalReview ? (
-        <FinalReviewSettings
-          environmentId={environmentId}
-          settings={settings}
-          providers={serverProviders}
-          readOnly={readOnly || !canWriteSettings}
         />
       ) : null}
 

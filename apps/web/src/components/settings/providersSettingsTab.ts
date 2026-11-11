@@ -3,15 +3,14 @@ export type ProvidersSettingsTab = (typeof PROVIDERS_SETTINGS_TABS)[number];
 
 // Anchors on the Models tab, so a search result or old link there opens that tab.
 const MODELS_TAB_TARGETS: ReadonlySet<string> = new Set([
-  "new-thread-models",
+  "models",
   "default-model",
   "last-picked-model",
-  "scheduled-task-model",
   "fallback-model",
-  "text-generation",
+  "scheduled-task-model",
+  "auto-mode",
   "text-generation-model",
   "thread-title-instructions",
-  "source-control-models",
   "source-control-writer-model",
   "review-guide-model",
   "account-failover",
