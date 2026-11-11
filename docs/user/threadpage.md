@@ -42,9 +42,9 @@ Each machine also adds the sign-ins it notices itself, with or without a ThreadP
 enabled provider account that is signed out, a Claude login that ends within 7 days or already
 ended, and an MCP server that needs signing in. Each names the machine and the account, comes
 before the ThreadPage steps, and has **Sign in**, which opens that account in **Settings →
-Providers** or that server on the **Extensions** MCP tab (on mobile, the Providers or Capabilities
-page). The step disappears by itself once the sign-in works. Servers that predate this list show
-only the ThreadPage steps.
+Providers** or that server on the **Extensions** MCP tab (on mobile, the Providers page, or
+Capabilities narrowed to that server, whose row has **Sign in**). The step disappears by itself
+once the sign-in works. Servers that predate this list show only the ThreadPage steps.
 
 To fill the list, create a token in ThreadPage under **Settings → Connections → Connect an
 automation → Script or API**, with **Read only** access to the Machine inbox folder or all threads.

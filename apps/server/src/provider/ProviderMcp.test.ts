@@ -36,11 +36,26 @@ const server = (
 
 const makeHarness = Effect.gen(function* () {
   const listReads = yield* Ref.make(0);
+  // The first list announces it started, then waits to be released.
+  const firstListStarted = yield* Deferred.make<void>();
+  const releaseFirstList = yield* Deferred.make<void>();
+  const holdFirstList = yield* Ref.make(false);
   const submitted = yield* Ref.make<ReadonlyArray<string>>([]);
   const edited = yield* Ref.make<ReadonlyArray<readonly [string, ProviderMcpServerConfig]>>([]);
   const signedIn = yield* Deferred.make<void, ProviderMcpError>();
   const mcp: ProviderMcpManagement = {
-    list: Ref.update(listReads, (count) => count + 1).pipe(
+    list: Ref.updateAndGet(listReads, (count) => count + 1).pipe(
+      Effect.tap((reads) =>
+        Ref.get(holdFirstList).pipe(
+          Effect.flatMap((hold) =>
+            hold && reads === 1
+              ? Deferred.succeed(firstListStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseFirstList)),
+                )
+              : Effect.void,
+          ),
+        ),
+      ),
       Effect.as([
         server({ name: "plugin:tools:zeta", displayName: "zeta", origin: "plugin" }),
         server({ name: "codex_apps", origin: "builtIn" }),
@@ -102,7 +117,16 @@ const makeHarness = Effect.gen(function* () {
     ),
     Layer.provide(NodeCrypto.layer),
   );
-  return { listReads, submitted, edited, signedIn, layer };
+  return {
+    listReads,
+    submitted,
+    edited,
+    signedIn,
+    layer,
+    holdFirstList,
+    firstListStarted,
+    releaseFirstList,
+  };
 });
 
 it.effect("ProviderMcp lists config servers first and reads again after a change", () =>
@@ -154,6 +178,27 @@ it.effect("ProviderMcp.listRecent reuses an old list until it ages out or a chan
       yield* service.setEnabled({ instanceId, name: "alpha", enabled: false });
       yield* service.listRecent(instanceId, "15 minutes");
       assert.equal(yield* Ref.get(harness.listReads), 3);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("ProviderMcp.listRecent does not take a list that began before a change as fresh", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness;
+    yield* Ref.set(harness.holdFirstList, true);
+    yield* Effect.gen(function* () {
+      const service = yield* ProviderMcp.ProviderMcp;
+      const early = yield* service.listRecent(instanceId, "15 minutes").pipe(Effect.forkChild);
+      yield* Deferred.await(harness.firstListStarted);
+      // The cache stores the in-flight lookup right after it starts parked on the gate.
+      yield* Effect.yieldNow;
+
+      yield* service.setEnabled({ instanceId, name: "alpha", enabled: false });
+      yield* Deferred.succeed(harness.releaseFirstList, undefined);
+      yield* Fiber.join(early);
+
+      yield* service.listRecent(instanceId, "15 minutes");
+      assert.equal(yield* Ref.get(harness.listReads), 2);
     }).pipe(Effect.provide(harness.layer));
   }),
 );

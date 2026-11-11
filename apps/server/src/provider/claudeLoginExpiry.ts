@@ -99,8 +99,8 @@ export const readClaudeLoginExpiry = Effect.fn("claudeLoginExpiry.read")(functio
     const stored = yield* readKeychainItem(claudeKeychainService(input.claudeConfigDirEnv)).pipe(
       Effect.orElseSucceed(() => Option.none<string>()),
     );
-    const expiry = Option.isSome(stored) ? parseClaudeLoginExpiry(stored.value) : undefined;
-    if (expiry !== undefined) return expiry;
+    // The Keychain holds the login Claude is using; a file left by an older login must not outvote it.
+    if (Option.isSome(stored)) return parseClaudeLoginExpiry(stored.value);
   }
   const document = yield* readCredentialsFile(input.configDir).pipe(Effect.option);
   return Option.isSome(document) ? parseClaudeLoginExpiry(document.value) : undefined;

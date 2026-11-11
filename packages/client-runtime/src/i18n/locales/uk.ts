@@ -8037,6 +8037,8 @@ const catalog: MessageCatalog = {
     "Відкрийте посилання знову після клонування, щоб отримати запит.",
   "Open the sign-in page and approve access. This dialog finishes on its own once {provider} gets the response.":
     "Відкрийте сторінку входу та схваліть доступ. Цей діалог закриється сам, щойно {provider} отримає відповідь.",
+  "Open the sign-in page and approve access. This page finishes on its own once {provider} gets the response.":
+    "Відкрийте сторінку входу та схваліть доступ. Ця сторінка закриється сама, щойно {provider} отримає відповідь.",
   "Open this {protocol} link?": "Відкрити це посилання {protocol}?",
   "Open this {term} on its provider to view the changes.":
     "Відкрийте на боці провайдера, щоб переглянути зміни: {term}.",
@@ -10326,6 +10328,7 @@ const catalog: MessageCatalog = {
   "Show all": "Показати все",
   "Show all ({count})": "Показати всі ({count})",
   "Show all {count} queued": "Показати всі ({count}) у черзі",
+  "Show all capabilities": "Показати всі можливості",
   "Show all environments": "Показати всі середовища",
   "Show all in": "Показувати всі у",
   "Show all in…": "Показувати всі у…",

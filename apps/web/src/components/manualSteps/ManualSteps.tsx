@@ -1,5 +1,6 @@
 import {
   manualStepsFailureMessage,
+  detectedManualStepKey,
   type DetectedManualStepEntry,
   type ManualStepGroup,
   type ManualStepsState,
@@ -157,7 +158,7 @@ function DetectedStepRow(props: {
       <div
         role="treeitem"
         tabIndex={-1}
-        data-sidebar-row={`detected-step:${entry.step.machine}:${entry.step.id}`}
+        data-sidebar-row={`detected-step:${detectedManualStepKey(entry)}`}
         data-sidebar-parent={props.parentRowId}
         aria-label={[text.step, text.detail, entry.step.machine].join(", ")}
         onClick={() => props.onOpen(entry)}
@@ -270,7 +271,7 @@ function ManualStepsBody(props: {
             <ul role="group" aria-label={group.machine} className="flex flex-col gap-px">
               {group.detected.map((entry) => (
                 <DetectedStepRow
-                  key={`${entry.step.machine}:${entry.step.id}`}
+                  key={detectedManualStepKey(entry)}
                   entry={entry}
                   onOpen={openDetected}
                 />
@@ -428,7 +429,7 @@ export function ManualStepsSidebarSection() {
         ? state.view.groups.flatMap((group) => [
             ...group.detected.map((entry) => (
               <DetectedStepRow
-                key={`${entry.step.machine}:${entry.step.id}`}
+                key={detectedManualStepKey(entry)}
                 entry={entry}
                 parentRowId={MANUAL_STEPS_ROW_ID}
                 onOpen={openDetected}
