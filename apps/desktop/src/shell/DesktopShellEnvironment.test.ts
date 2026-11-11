@@ -649,6 +649,29 @@ describe("DesktopShellEnvironment", () => {
     }),
   );
 
+  it.effect("adds a registry PATH folder that the inherited PATH lacks on Windows", () =>
+    Effect.gen(function* () {
+      const env: NodeJS.ProcessEnv = { PATH: "C:\\Windows\\System32" };
+      const scripts: string[] = [];
+
+      yield* runShellEnvironment({
+        env,
+        platform: "win32",
+        handler: (command) => {
+          if (command._tag !== "StandardCommand" || !command.args.includes("-NoProfile")) return "";
+          scripts.push(String(command.args.at(-1)));
+          return envOutput({
+            PATH: "C:\\Windows\\System32",
+            T3CODE_REGISTRY_PATH: "C:\\Windows\\System32;C:\\Program Files\\Tailscale\\",
+          });
+        },
+      });
+
+      assert.include(env.PATH, "C:\\Program Files\\Tailscale\\");
+      assert.include(scripts[0], "GetEnvironmentVariable('Path', $_)");
+    }),
+  );
+
   it.effect.each([false, true])(
     "leaves Windows preparation incomplete when loadProfile=%s fails",
     (loadProfile) =>

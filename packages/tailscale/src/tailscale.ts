@@ -29,6 +29,28 @@ const TAILSCALE_PROBE_TIMEOUT = Duration.millis(2_500);
 const tailscaleCommandForPlatform = (platform: NodeJS.Platform): "tailscale" | "tailscale.exe" =>
   platform === "win32" ? "tailscale.exe" : "tailscale";
 
+/**
+ * The installer's default location. A tailscale installed or upgraded after
+ * this process started is not on its inherited PATH until the app restarts.
+ */
+const windowsInstalledTailscale = (platform: NodeJS.Platform): string | undefined =>
+  platform === "win32"
+    ? `${process.env.ProgramFiles ?? "C:\\Program Files"}\\Tailscale\\tailscale.exe`
+    : undefined;
+
+const spawnTailscale = (
+  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+  platform: NodeJS.Platform,
+  args: readonly string[],
+  options?: ChildProcess.CommandOptions,
+) => {
+  const attempt = (executable: string) =>
+    spawner.spawn(ChildProcess.make(executable, [...args], options));
+  const installed = windowsInstalledTailscale(platform);
+  const first = attempt(tailscaleCommandForPlatform(platform));
+  return installed === undefined ? first : first.pipe(Effect.catchCause(() => attempt(installed)));
+};
+
 const TailscaleCommandContext = {
   executable: Schema.Literals(["tailscale", "tailscale.exe"]),
   subcommand: Schema.Literals(["status", "serve", "debug"]),
@@ -241,11 +263,10 @@ const readTailscaleOutput = Effect.fn("tailscale.readTailscaleOutput")(function*
     subcommand,
     argumentCount: args.length,
   };
-  const command = ChildProcess.make(executable, [...args], {
-    forceKillAfter: TAILSCALE_KILL_GRACE,
-  });
   return yield* Effect.gen(function* () {
-    const child = yield* spawner.spawn(command).pipe(
+    const child = yield* spawnTailscale(spawner, hostPlatform, args, {
+      forceKillAfter: TAILSCALE_KILL_GRACE,
+    }).pipe(
       Effect.mapError((cause) => new TailscaleCommandSpawnError({ ...commandContext, cause })),
       // Spawning can also fail as a defect rather than a typed error - a
       // non-directory entry on PATH makes node throw ENOTDIR synchronously.
@@ -397,7 +418,7 @@ const runTailscaleCommand = Effect.fn("tailscale.runTailscaleCommand")(function*
   };
   const timeout = Duration.fromInputUnsafe(timeoutInput);
   return yield* Effect.gen(function* () {
-    const child = yield* spawner.spawn(ChildProcess.make(executable, args)).pipe(
+    const child = yield* spawnTailscale(spawner, hostPlatform, args).pipe(
       Effect.mapError((cause) => new TailscaleCommandSpawnError({ ...commandContext, cause })),
       Effect.catchDefect((cause) =>
         Effect.fail(new TailscaleCommandSpawnError({ ...commandContext, cause })),

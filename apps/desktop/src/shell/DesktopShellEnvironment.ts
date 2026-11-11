@@ -108,6 +108,11 @@ const LOGIN_SHELL_ENV_NAMES = [
   "__MISE_DIFF",
   "JAVA_HOME",
 ] as const;
+// Pseudo-name: the registry Machine + User PATH. The child's own PATH is inherited from this
+// process, so it cannot see folders an installer added after we launched.
+const WINDOWS_REGISTRY_PATH_NAME = "T3CODE_REGISTRY_PATH";
+const WINDOWS_REGISTRY_PATH_EXPRESSION =
+  "((@('Machine','User') | ForEach-Object { [Environment]::GetEnvironmentVariable('Path', $_) } | Where-Object { $_ } | ForEach-Object { [Environment]::ExpandEnvironmentVariables($_) }) -join ';')";
 const WINDOWS_PROFILE_ENV_NAMES = ["PATH", "FNM_DIR", "FNM_MULTISHELL_PATH"] as const;
 const LOCALE_ENV_NAMES = ["LANG", "LC_ALL", "LC_CTYPE"] as const;
 const FALLBACK_LC_CTYPE = "en_US.UTF-8";
@@ -220,7 +225,9 @@ const captureWindowsEnvironmentCommand = (names: ReadonlyArray<string>) =>
     ...names.flatMap((name) => {
       return [
         `Write-Output '${startMarker(name)}'`,
-        `$value = [Environment]::GetEnvironmentVariable('${name}')`,
+        name === WINDOWS_REGISTRY_PATH_NAME
+          ? `$value = ${WINDOWS_REGISTRY_PATH_EXPRESSION}`
+          : `$value = [Environment]::GetEnvironmentVariable('${name}')`,
         "if ($null -ne $value -and $value.Length -gt 0) { Write-Output $value }",
         `Write-Output '${endMarker(name)}'`,
       ];
@@ -382,7 +389,11 @@ const installWindowsEnvironment = Effect.fn("desktop.shellEnvironment.installWin
   ): Effect.fn.Return<boolean, never, ChildProcessSpawner.ChildProcessSpawner> {
     const [noProfile, profile] = yield* Effect.all(
       [
-        readWindowsEnvironment(["PATH"], { loadProfile: false }, config.env),
+        readWindowsEnvironment(
+          ["PATH", WINDOWS_REGISTRY_PATH_NAME],
+          { loadProfile: false },
+          config.env,
+        ),
         readWindowsEnvironment(WINDOWS_PROFILE_ENV_NAMES, { loadProfile: true }, config.env),
       ],
       { concurrency: 2 },
@@ -391,6 +402,7 @@ const installWindowsEnvironment = Effect.fn("desktop.shellEnvironment.installWin
       trimNonEmpty(profile.PATH),
       trimNonEmpty(knownWindowsCliDirs(config.env).join(";")),
       trimNonEmpty(noProfile.PATH),
+      trimNonEmpty(noProfile[WINDOWS_REGISTRY_PATH_NAME]),
       readEnvPath(config.env),
     ]);
 

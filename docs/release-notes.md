@@ -1,3 +1,8 @@
+## 2026-11-11 — Tools installed after T3.CodeShip started are found on Windows
+
+- On Windows, T3.CodeShip now reads the system and user `Path` from the registry whenever it prepares its environment, so a tool installed or upgraded while the app was already running (with winget, or by an agent) is found without signing out. Before, an app started after an upgrade could keep a `Path` without the tool until you signed out.
+- The Tailscale HTTPS row finds a running Tailscale even when its folder is missing from `Path`, by also trying `Program Files\Tailscale\tailscale.exe`. Before, it kept saying **Start Tailscale** while Tailscale was connected.
+
 ## 2026-11-11 — Settings that follow your machines, and sign-ins in one pass
 
 - **Shared settings work across your machines.** Turn on **Follow shared settings** in **Settings → Machines & access** on each of your machines. Settings saved for all environments then go only to the machines that follow, including ones that were off at the time, and a machine that never opted in, such as a work machine, is never changed. Changes pass through machines that have their own newer edit, the edited machine's server stamps each change, and mobile saves the same way as web.

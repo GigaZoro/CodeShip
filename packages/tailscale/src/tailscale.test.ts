@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/process";
@@ -289,6 +290,36 @@ describe("tailscale", () => {
         Effect.provide(layer),
       );
       assert.equal(degraded, null);
+    });
+  });
+
+  it.effect("falls back to the installed tailscale.exe when Windows PATH lacks it", () => {
+    const spawned: string[] = [];
+    const layer = Layer.merge(
+      Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make((command) => {
+          const { command: executable } = command as unknown as { readonly command: string };
+          spawned.push(executable);
+          return executable === "tailscale.exe"
+            ? Effect.fail(
+                PlatformError.systemError({
+                  _tag: "NotFound",
+                  module: "ChildProcess",
+                  method: "spawn",
+                }),
+              )
+            : Effect.succeed(mockHandle({ stdout: tailscaleStatusJson }));
+        }),
+      ),
+      Layer.succeed(HostProcess.Platform, "win32"),
+    );
+
+    return Effect.gen(function* () {
+      const status = yield* readTailscaleStatus.pipe(Effect.provide(layer));
+      assert.equal(status.magicDnsName, "desktop.tail.ts.net");
+      assert.equal(spawned[0], "tailscale.exe");
+      assert.match(spawned[1] ?? "", /\\Tailscale\\tailscale\.exe$/u);
     });
   });
 
