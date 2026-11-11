@@ -499,14 +499,18 @@ export const layer: Layer.Layer<
               restartCancelledBackgroundWork: record.restartCancelledBackgroundWork,
             },
           }),
-          yield* makeDomainEvent(input, {
-            type: "turn-item.updated",
-            threadId: lost.threadId,
-            runId: run.id,
-            nodeId: run.rootNodeId,
-            occurredAt: now,
-            payload: record.notice,
-          }),
+          ...(record.notice === undefined
+            ? []
+            : [
+                yield* makeDomainEvent(input, {
+                  type: "turn-item.updated",
+                  threadId: lost.threadId,
+                  runId: run.id,
+                  nodeId: run.rootNodeId,
+                  occurredAt: now,
+                  payload: record.notice,
+                }),
+              ]),
         ];
       },
     );

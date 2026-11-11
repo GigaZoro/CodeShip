@@ -94,7 +94,11 @@ import * as ProjectStore from "./ProjectStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as RuntimeLayer from "./runtimeLayer.ts";
 import { shellStreamItemFromThreadShell } from "./ShellStream.ts";
-import { backgroundWorkStoppedNotice, restartRetryNoticeId } from "./RestartBackgroundNote.ts";
+import {
+  backgroundWorkStoppedNotice,
+  lostBackgroundWorkRecord,
+  restartRetryNoticeId,
+} from "./RestartBackgroundNote.ts";
 import { CONTINUE_PROMPT, continueRestartedRun } from "./RestartContinuation.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
@@ -9482,8 +9486,8 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
     }),
   );
 
-  it.effect.each(["still-current", "moved-on"] as const)(
-    "judges a restart continuation by when its background work stopped, not when its turn ended: %s",
+  it.effect.each(["still-current", "moved-on", "moved-on-then-lost-more"] as const)(
+    "judges a restart continuation by when its background work first stopped, not when its turn ended: %s",
     (scenario) =>
       Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -9494,9 +9498,9 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         const taskId = ScheduledTaskId.make(`restart-note-stale:task:${scenario}`);
         const turnEndedAt = yield* DateTime.now;
         const newerStartedAt = DateTime.add(turnEndedAt, { minutes: 2 });
-        const stoppedAt = DateTime.add(turnEndedAt, {
-          minutes: scenario === "moved-on" ? 1 : 5,
-        });
+        const movedOn = scenario !== "still-current";
+        const stoppedAt = DateTime.add(turnEndedAt, { minutes: movedOn ? 1 : 5 });
+        const lostMoreAt = DateTime.add(turnEndedAt, { minutes: 4 });
         yield* seedProject({
           projectId,
           title: "Restart note project",
@@ -9554,6 +9558,15 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         const work = [
           { kind: "shell" as const, label: "sleep 5400", id: "shell-1", awaited: true as const },
         ];
+        const notice = backgroundWorkStoppedNotice({
+          run: original,
+          cause: "server-restarted",
+          work,
+          stoppedAt,
+          now: stoppedAt,
+          ordinal: 5,
+        });
+        assert.isDefined(notice);
         yield* eventSink.commitCommand({
           commandId: CommandId.make(`${threadId}:reconcile`),
           threadId,
@@ -9579,18 +9592,49 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
               threadId,
               runId: original.id,
               occurredAt: stoppedAt,
-              payload: backgroundWorkStoppedNotice({
-                run: original,
-                cause: "server-restarted",
-                work,
-                stoppedAt,
-                now: stoppedAt,
-                ordinal: 5,
-              }),
+              payload: notice,
             },
           ],
           effects: [],
         });
+        if (scenario === "moved-on-then-lost-more") {
+          // A later loss on the same run, after a newer run of the task started.
+          const lostMore = lostBackgroundWorkRecord({
+            run: { ...original, restartCancelledBackgroundWork: work },
+            cause: "process-ended",
+            work: [{ kind: "monitor", label: "tail -f build.log", id: "monitor-1" }],
+            now: lostMoreAt,
+          });
+          assert.isDefined(lostMore.notice);
+          yield* eventSink.commitCommand({
+            commandId: CommandId.make(`${threadId}:lost-more`),
+            threadId,
+            commandType: "provider-runtime.reconcile",
+            acceptedAt: lostMoreAt,
+            events: [
+              {
+                id: EventId.make(`${threadId}:lost-more-run`),
+                type: "run.background-work-cancelled",
+                threadId,
+                runId: original.id,
+                occurredAt: lostMoreAt,
+                payload: {
+                  runId: original.id,
+                  restartCancelledBackgroundWork: lostMore.restartCancelledBackgroundWork,
+                },
+              },
+              {
+                id: EventId.make(`${threadId}:lost-more-notice`),
+                type: "turn-item.updated",
+                threadId,
+                runId: original.id,
+                occurredAt: lostMoreAt,
+                payload: lostMore.notice,
+              },
+            ],
+            effects: [],
+          });
+        }
         yield* TestClock.adjust("5 minutes");
         yield* orchestrator.dispatch({
           type: "message.dispatch",
@@ -9606,7 +9650,21 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
           restartContinuationOfRunId: original.id,
         });
         const after = yield* orchestrator.getThreadProjection(threadId);
-        const skipped = scenario === "moved-on";
+        assert.deepEqual(
+          after.turnItems.flatMap((item) =>
+            item.type === "system_notice" && item.message.includes("stopped background work")
+              ? [[item.title, item.startedAt && DateTime.formatIso(item.startedAt)]]
+              : [],
+          ),
+          [
+            ["Server restarted", DateTime.formatIso(stoppedAt)],
+            ...(scenario === "moved-on-then-lost-more"
+              ? [["Agent process ended", DateTime.formatIso(lostMoreAt)]]
+              : []),
+          ],
+          "each loss keeps its own notice",
+        );
+        const skipped = movedOn;
         assert.equal(
           after.thread.settledOverride,
           skipped ? "settled" : null,

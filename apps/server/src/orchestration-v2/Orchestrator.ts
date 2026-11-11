@@ -870,7 +870,7 @@ function queuedRunModelSelection(
     : run.modelSelection;
 }
 
-/** When a run stopped working: its end or when its background work was stopped, or the start of the usage-limit hold that keeps it. */
+/** When a run stopped working: its end or when its background work was first stopped, or the start of the usage-limit hold that keeps it. */
 function runStoppedAt(
   run: OrchestrationV2Run,
   turnItems: OrchestrationV2ThreadProjection["turnItems"],

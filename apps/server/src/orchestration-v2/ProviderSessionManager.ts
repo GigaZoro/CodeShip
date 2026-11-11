@@ -882,13 +882,17 @@ export const layerWithOptions = (
               restartCancelledBackgroundWork: record.restartCancelledBackgroundWork,
             },
           },
-          {
-            ...base,
-            id: yield* allocateEventId,
-            type: "turn-item.updated",
-            ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
-            payload: record.notice,
-          },
+          ...(record.notice === undefined
+            ? []
+            : [
+                {
+                  ...base,
+                  id: yield* allocateEventId,
+                  type: "turn-item.updated" as const,
+                  ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
+                  payload: record.notice,
+                },
+              ]),
         ];
         // The wake rides the record's write: the session is already stopped, so a restart
         // would not find this chat by itself.

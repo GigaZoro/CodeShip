@@ -806,6 +806,15 @@ export const make = Effect.gen(function* () {
         });
         // A cut run already explains itself with its server-recovery notice.
         if (cutRunIds.has(noteRun.id)) continue;
+        const notice = backgroundWorkStoppedNotice({
+          run: noteRun,
+          cause: trigger === "startup" ? "server-restarted" : "server-shut-down",
+          work: entries.map((entry) => entry.work),
+          stoppedAt,
+          now,
+          ordinal: noticeOrdinal(noteRun.id),
+        });
+        if (notice === undefined) continue;
         events.push({
           id: yield* allocateEventId(),
           type: "turn-item.updated",
@@ -814,14 +823,7 @@ export const make = Effect.gen(function* () {
           ...(noteRun.rootNodeId === null ? {} : { nodeId: noteRun.rootNodeId }),
           providerInstanceId: noteRun.providerInstanceId,
           occurredAt: now,
-          payload: backgroundWorkStoppedNotice({
-            run: noteRun,
-            cause: trigger === "startup" ? "server-restarted" : "server-shut-down",
-            work: entries.map((entry) => entry.work),
-            stoppedAt,
-            now,
-            ordinal: noticeOrdinal(noteRun.id),
-          }),
+          payload: notice,
         });
       }
       const continuationRun =

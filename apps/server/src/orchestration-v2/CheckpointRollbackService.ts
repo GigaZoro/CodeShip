@@ -164,7 +164,7 @@ export const layer: Layer.Layer<
         occurredAt: now,
       };
       const eventId = ids.allocate.event({ threadId: run.threadId });
-      return [
+      const events: ReadonlyArray<OrchestrationV2DomainEvent> = [
         {
           ...base,
           id: yield* eventId,
@@ -174,14 +174,19 @@ export const layer: Layer.Layer<
             restartCancelledBackgroundWork: record.restartCancelledBackgroundWork,
           },
         },
-        {
-          ...base,
-          id: yield* eventId,
-          type: "turn-item.updated",
-          ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
-          payload: record.notice,
-        },
-      ] satisfies ReadonlyArray<OrchestrationV2DomainEvent>;
+        ...(record.notice === undefined
+          ? []
+          : [
+              {
+                ...base,
+                id: yield* eventId,
+                type: "turn-item.updated" as const,
+                ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
+                payload: record.notice,
+              },
+            ]),
+      ];
+      return events;
     });
 
     /**

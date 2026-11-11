@@ -9,11 +9,13 @@ import {
 import * as DateTime from "effect/DateTime";
 
 import {
+  backgroundWorkStoppedNoticeId,
   cancelledRosterTaskWork,
   cancelledTurnItemWork,
   conversationProviderThreadIds,
   isAwaitedWork,
   isRestartNoteContinuation,
+  lostBackgroundWorkRecord,
   pendingRestartCancelledBackgroundWork,
   restartContinuationNote,
   mergeRestartCancelledBackgroundWork,
@@ -171,6 +173,29 @@ it("keeps separate cancelled tasks that share a kind and label", () => {
   assert.deepEqual(merged, [first, second]);
   const legacy = { kind: "shell" as const, label: "sleep 20" };
   assert.lengthOf(mergeRestartCancelledBackgroundWork([legacy], [legacy]), 1);
+});
+
+it("gives each loss on a run its own notice, listing only the work it adds", () => {
+  const now = DateTime.makeUnsafe("2026-11-12T10:00:00.000Z");
+  const shell = { kind: "shell" as const, label: "sleep 20", id: "task-1" };
+  const monitor = { kind: "monitor" as const, label: "tail -f log", id: "task-2" };
+  const record = (
+    current: OrchestrationV2Run,
+    work: ReadonlyArray<typeof shell | typeof monitor>,
+  ) => lostBackgroundWorkRecord({ run: current, cause: "process-ended", work, now });
+
+  const first = record(run(1, claudeThread), [shell]);
+  const lostOnce = run(1, claudeThread, {
+    restartCancelledBackgroundWork: first.restartCancelledBackgroundWork,
+  });
+  const repeated = record(lostOnce, [shell]);
+  const second = record(lostOnce, [shell, monitor]);
+
+  assert.equal(first.notice?.id, backgroundWorkStoppedNoticeId(lostOnce.id));
+  assert.isUndefined(repeated.notice, "work the run already holds adds no notice");
+  assert.notEqual(second.notice?.id, first.notice?.id);
+  assert.deepEqual(second.restartCancelledBackgroundWork, [shell, monitor]);
+  assert.notInclude(second.notice?.message ?? "", "sleep 20");
 });
 
 it("does not repeat the note when a steer restarts the run on a new attempt", () => {

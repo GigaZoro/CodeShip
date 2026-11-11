@@ -1,3 +1,7 @@
+## 2026-11-12 — Each stop of a chat's background work keeps its own notice
+
+- When a chat's background work was stopped more than once before its next turn (for example its agent process ended, then its session was closed), the thread showed only the latest notice, and a scheduled task's run took that later time as when it stopped. Such a run could then resume although a newer run of its task had already replaced it. Each stop now keeps its own notice, listing the work it stopped, and a scheduled run is judged by when its work first stopped.
+
 ## 2026-11-12 — Shipping removes the chat's worktree for good
 
 - When an agent lands finished work, it now removes the chat's worktree while it waits. Before, it removed the worktree in the background, and the notice that the removal had finished woke the chat, which rebuilt the worktree and its branch from main.

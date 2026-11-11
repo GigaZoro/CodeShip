@@ -201,25 +201,43 @@ const BACKGROUND_WORK_STOP_TEXT: Record<
 export const isSettledRun = (run: Pick<OrchestrationV2Run, "status">): boolean =>
   run.status === "completed" || run.status === "waiting";
 
-export function backgroundWorkStoppedNoticeId(runId: RunId) {
-  return derive.runSignalTurnItem({ runId, signal: "background-work-stopped" });
+/**
+ * One notice per loss. A run's first keeps the plain id, which scheduled recovery reads as when the
+ * run stopped. A later one is named by where its work starts in the run's record, which only grows
+ * on a run that can lose more, so it never replaces an earlier notice.
+ */
+export function backgroundWorkStoppedNoticeId(runId: RunId, recordedBefore = 0) {
+  return derive.runSignalTurnItem({
+    runId,
+    signal:
+      recordedBefore === 0
+        ? "background-work-stopped"
+        : `background-work-stopped-after-${recordedBefore}`,
+  });
 }
 
 /**
- * The thread's own record of background work a settled run lost, since the server log rotates.
- * Its start is when the work stopped, which scheduled recovery reads as when the run stopped.
+ * The thread's own record of background work a run lost, since the server log rotates. It lists
+ * the work the run's record does not hold yet, and is undefined when there is none. Its start is
+ * when the work stopped.
  */
 export function backgroundWorkStoppedNotice(input: {
-  readonly run: Pick<OrchestrationV2Run, "id" | "threadId" | "rootNodeId" | "providerThreadId">;
+  readonly run: Pick<
+    OrchestrationV2Run,
+    "id" | "threadId" | "rootNodeId" | "providerThreadId" | "restartCancelledBackgroundWork"
+  >;
   readonly cause: BackgroundWorkStop;
   readonly work: ReadonlyArray<Work>;
   readonly stoppedAt: DateTime.Utc;
   readonly now: DateTime.Utc;
   readonly ordinal: number;
-}): Extract<OrchestrationV2TurnItem, { readonly type: "system_notice" }> {
+}): Extract<OrchestrationV2TurnItem, { readonly type: "system_notice" }> | undefined {
+  const recorded = input.run.restartCancelledBackgroundWork ?? [];
+  const added = mergeRestartCancelledBackgroundWork(recorded, input.work).slice(recorded.length);
+  if (added.length === 0) return undefined;
   const { title, lead } = BACKGROUND_WORK_STOP_TEXT[input.cause];
   return {
-    id: backgroundWorkStoppedNoticeId(input.run.id),
+    id: backgroundWorkStoppedNoticeId(input.run.id, recorded.length),
     threadId: input.run.threadId,
     runId: input.run.id,
     nodeId: input.run.rootNodeId,
@@ -236,15 +254,16 @@ export function backgroundWorkStoppedNotice(input: {
     type: "system_notice",
     message: [
       `${lead} and stopped background work before it finished:`,
-      ...workList(input.work),
-      ...(input.work.some(isAwaitedWork) ? ["This chat was waiting on it."] : []),
+      ...workList(added),
+      ...(added.some(isAwaitedWork) ? ["This chat was waiting on it."] : []),
     ].join("\n"),
   };
 }
 
 /**
  * What a run's process lost while the server kept running: the run's merged record of it, and the
- * thread notice that explains it. EventSink places the notice after the run's existing items.
+ * thread notice that explains it, if the record did not hold all of it yet. EventSink places the
+ * notice after the run's existing items.
  */
 export function lostBackgroundWorkRecord(input: {
   readonly run: Pick<
