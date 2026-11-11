@@ -41,6 +41,11 @@ export interface McpClientCaller {
    */
   readonly linked?: boolean | undefined;
   /**
+   * The environment that link declared it signs in from. It was named by the link itself, so
+   * it narrows what the link may ask for (`t3_link_back`); it never widens access.
+   */
+  readonly linkedFrom?: EnvironmentId | undefined;
+  /**
    * Narrower modes the client asked for on this request (`T3-Mode-Limit`):
    * another environment passing on the limits of the agent it calls for.
    */

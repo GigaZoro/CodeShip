@@ -1,8 +1,14 @@
-import { AuthMcpClientAccess, EnvironmentId, type PeerLinkSummary } from "@t3tools/contracts";
+import {
+  AuthMcpClientAccess,
+  EnvironmentId,
+  type PeerLinkResult,
+  type PeerLinkSummary,
+} from "@t3tools/contracts";
 import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as Argument from "effect/cli/Argument";
@@ -11,10 +17,14 @@ import * as Flag from "effect/cli/Flag";
 import * as GlobalFlag from "effect/cli/GlobalFlag";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
+import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
+import * as DirectEndpoints from "../environment/DirectEndpoints.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as PeerLinkBack from "../peer/PeerLinkBack.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
+import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -63,6 +73,54 @@ const runWithPeerLinks = Effect.fn("environment.runWithPeerLinks")(function* <A,
   );
 });
 
+/**
+ * Links both ways from a terminal: this environment's own database mints the code the other
+ * environment links back with, so no server needs to be running here for the link itself, only
+ * for the other environment to redeem the code.
+ */
+const runLinkingBothWays = Effect.fn("environment.runLinkingBothWays")(function* <A, E>(
+  flags: CliAuthLocationFlags,
+  run: (back: PeerLinkBack.PeerLinkBack["Service"]) => Effect.Effect<A, E>,
+) {
+  const logLevel = yield* GlobalFlag.LogLevel;
+  const config = yield* resolveCliAuthConfig(flags, logLevel);
+  // The terminal has no network scan: the other environment links back at the addresses given.
+  const noDirectEndpoints = Layer.succeed(DirectEndpoints.DirectEndpoints, {
+    resolve: Effect.fn("environment.noDirectEndpoints")(() => Effect.succeed([])),
+  });
+  const peerLinks = PeerLinks.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(ServerSecretStore.layer, SqlitePersistence.layerConfig, FetchHttpClient.layer),
+    ),
+    Layer.provide(ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer))),
+    Layer.provide(
+      ServerSettings.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            ServerSecretStore.layer,
+            SqlitePersistence.layerConfig,
+            ManagedPolicy.layer,
+          ),
+        ),
+      ),
+    ),
+  );
+  return yield* PeerLinkBack.PeerLinkBack.pipe(
+    Effect.flatMap(run),
+    Effect.provide(
+      PeerLinkBack.layer.pipe(
+        Layer.provide(PeerMcpClient.layer.pipe(Layer.provideMerge(peerLinks))),
+        Layer.provide(noDirectEndpoints),
+        Layer.provide(EnvironmentAuth.layerRuntime),
+        Layer.provide(ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer))),
+        Layer.provide(FetchHttpClient.layer),
+        Layer.provide(ServerConfig.layer(config)),
+        Layer.provide(Layer.succeed(References.MinimumLogLevel, config.logLevel)),
+      ),
+    ),
+  );
+});
+
 const jsonFlag = Flag.Boolean("json").pipe(
   Flag.withDescription("Emit JSON instead of human-readable output."),
   Flag.withDefault(false),
@@ -81,6 +139,17 @@ const formatLinks = (links: ReadonlyArray<PeerLinkSummary>) =>
             `${link.label} (${link.environmentId})\n  ${link.status}, access ${link.access}, expires ${DateTime.formatIso(link.expiresAt)}\n  ${link.urls.join(", ")}${link.lastError === null ? "" : `\n  last error: ${link.lastError}`}`,
         )
         .join("\n\n")}\n`;
+
+/** The access the other environment gets here when none is chosen: the one it gave, up to auto. */
+const defaultReverseAccess = (forward: AuthMcpClientAccess): AuthMcpClientAccess =>
+  forward === "full-access" ? "auto" : forward;
+
+const formatBackOutcome = (linked: PeerLinkResult) =>
+  linked.back === undefined
+    ? ""
+    : linked.back.status === "linked"
+      ? `${linked.label} linked back with ${linked.back.access} access.\n`
+      : `${linked.label} did not link back: ${linked.back.message}\nRun \`t3 environment link\` on ${linked.label} to let it reach this machine.\n`;
 
 const environmentLinkCommand = Command.make("link", {
   ...authLocationFlags,
@@ -102,25 +171,54 @@ const environmentLinkCommand = Command.make("link", {
     ),
     Flag.withDefault("approval-required" as const),
   ),
+  bothWays: Flag.Boolean("both-ways").pipe(
+    Flag.withDescription(
+      "Also let the other environment reach this one: it links back with a pairing code this environment makes, so nothing is typed there. Needs --access auto or full-access, and --own-url.",
+    ),
+    Flag.withDefault(false),
+  ),
+  ownUrl: Flag.String("own-url").pipe(
+    Flag.withDescription(
+      "With --both-ways: an address the other environment reaches this one at (https, Tailscale). Repeat for more.",
+    ),
+    Flag.atLeast(0),
+  ),
+  reverseAccess: Flag.Literals("reverse-access", AuthMcpClientAccess.literals).pipe(
+    Flag.withDescription(
+      "With --both-ways: what the other environment's agents may do here. Defaults to the --access given, and never more than auto unless set to full-access.",
+    ),
+    Flag.optional,
+  ),
 }).pipe(
   Command.withDescription(
     "Link another T3.CodeShip environment, so agents here can work there. It shows up there under Settings → Connections, where it can be revoked.",
   ),
-  Command.withHandler((flags) =>
-    runWithPeerLinks(flags, (links) =>
-      Effect.gen(function* () {
-        const linked = yield* links.link({
-          url: flags.url,
-          alternateUrls: flags.alternateUrl,
-          pairingCode: flags.pairingCode,
-          access: flags.access,
-        });
-        yield* Console.log(
-          `Linked ${linked.label} (${linked.environmentId}) with ${linked.access} access, until ${DateTime.formatIso(linked.expiresAt)}.\n`,
-        );
-      }),
-    ),
-  ),
+  Command.withHandler((flags) => {
+    const input = {
+      url: flags.url,
+      alternateUrls: flags.alternateUrl,
+      pairingCode: flags.pairingCode,
+      access: flags.access,
+    };
+    const report = (linked: PeerLinkResult) =>
+      Console.log(
+        `Linked ${linked.label} (${linked.environmentId}) with ${linked.access} access, until ${DateTime.formatIso(linked.expiresAt)}.\n${formatBackOutcome(linked)}`,
+      );
+    if (!flags.bothWays) {
+      return runWithPeerLinks(flags, (links) => links.link(input).pipe(Effect.flatMap(report)));
+    }
+    return runLinkingBothWays(flags, (back) =>
+      back
+        .link({
+          ...input,
+          reverse: {
+            access: Option.getOrElse(flags.reverseAccess, () => defaultReverseAccess(flags.access)),
+            urls: flags.ownUrl,
+          },
+        })
+        .pipe(Effect.flatMap(report)),
+    );
+  }),
 );
 
 const environmentListCommand = Command.make("list", { ...authLocationFlags, json: jsonFlag }).pipe(

@@ -6,6 +6,7 @@ import {
   type AuthClientSession,
   type AuthEnvironmentScope,
   AuthWebSocketTicketUse,
+  EnvironmentId,
   RuntimeMode,
   type ServerAuthSessionMethod,
 } from "@t3tools/contracts";
@@ -61,6 +62,8 @@ export interface VerifiedSession {
   readonly runtimeModeCeiling?: RuntimeMode;
   /** An MCP client that is another T3.CodeShip environment's peer link. */
   readonly peerLink?: true;
+  /** The environment that peer link declared it signs in from. */
+  readonly peerEnvironmentId?: EnvironmentId;
 }
 
 export interface VerifiedWebSocketTicket extends VerifiedSession {
@@ -383,6 +386,7 @@ export class SessionStore extends Context.Service<
       readonly proofKeyThumbprint?: string;
       readonly runtimeModeCeiling?: RuntimeMode;
       readonly peerLink?: boolean;
+      readonly peerEnvironmentId?: EnvironmentId;
       readonly replaceActiveForSubjectAndMethod?: boolean;
       readonly replaceSessionId?: AuthSessionId;
     }) => Effect.Effect<IssuedSession, SessionCredentialInternalError>;
@@ -440,6 +444,8 @@ const SessionClaims = Schema.Struct({
   rtc: Schema.optionalKey(RuntimeMode),
   /** Signed, so a client cannot shed its peer link's limits. */
   plk: Schema.optionalKey(Schema.Literal(1)),
+  /** Signed with the rest, so a link cannot change which environment it signed in from. */
+  ple: Schema.optionalKey(EnvironmentId),
   iat: Schema.Number,
   exp: Schema.Number,
 });
@@ -661,6 +667,9 @@ const make = Effect.gen(function* () {
         ...(input?.proofKeyThumbprint ? { jkt: input.proofKeyThumbprint } : {}),
         ...(input?.runtimeModeCeiling ? { rtc: input.runtimeModeCeiling } : {}),
         ...(input?.peerLink === true ? { plk: 1 as const } : {}),
+        ...(input?.peerLink === true && input.peerEnvironmentId !== undefined
+          ? { ple: input.peerEnvironmentId }
+          : {}),
         iat: issuedAt.epochMilliseconds,
         exp: expiresAt.epochMilliseconds,
       };
@@ -844,6 +853,7 @@ const make = Effect.gen(function* () {
         ...(claims.jkt ? { proofKeyThumbprint: claims.jkt } : {}),
         ...(claims.rtc ? { runtimeModeCeiling: claims.rtc } : {}),
         ...(claims.plk === 1 ? { peerLink: true as const } : {}),
+        ...(claims.plk === 1 && claims.ple !== undefined ? { peerEnvironmentId: claims.ple } : {}),
       } satisfies VerifiedSession;
     },
   );

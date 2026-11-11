@@ -56,6 +56,7 @@ import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
+import * as PeerLinkBack from "./PeerLinkBack.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import {
@@ -156,6 +157,7 @@ const makeLaptop = Effect.gen(function* () {
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provideMerge(PeerLinkRequests.layer),
     Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+    Layer.provide(Layer.mock(PeerLinkBack.PeerLinkBack)({})),
     Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
     Layer.provide(Layer.succeedContext(linking)),
     Layer.provide(NodeCrypto.layer),

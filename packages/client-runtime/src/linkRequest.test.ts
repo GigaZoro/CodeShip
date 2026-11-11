@@ -8,12 +8,14 @@ import { BearerConnectionTarget, RelayConnectionTarget } from "./connection/mode
 import type { EnvironmentPresentation } from "./connection/presentation.ts";
 import type { RelayDiscoveredEnvironment } from "./relay/discovery.ts";
 import {
+  defaultReverseLinkAccess,
   linkableMachines,
   linkedEnvironmentNames,
   linkRequestAnswerInput,
   linkRequestDisplay,
   linkRequestFailureMessage,
   linkRequestInitialMachine,
+  ownLinkUrls,
   rankMachinesByHint,
 } from "./linkRequest.ts";
 
@@ -183,6 +185,32 @@ const discovered = (
           },
         } as unknown as RelayEnvironmentStatusResponse),
   error: Option.none(),
+});
+
+describe("linking both ways", () => {
+  it("offers this machine's own addresses to the other, without the ones only it can use", () => {
+    const here = presentation("environment-here", "Here", {
+      saved: ["http://localhost:3773", "https://here.example.com"],
+      reported: ["https://here.ts.net"],
+    });
+    expect(
+      ownLinkUrls({
+        environment: here,
+        connect: new Map([[here.environmentId, discovered(here.environmentId, "Here")]]),
+      }),
+    ).toEqual([
+      "https://here.ts.net",
+      "https://here.example.com",
+      "https://environment-here.t3.example",
+    ]);
+    expect(ownLinkUrls({ environment: undefined, connect: new Map() })).toEqual([]);
+  });
+
+  it("starts the other machine's access at the one given, and never above auto", () => {
+    expect(defaultReverseLinkAccess("full-access")).toBe("auto");
+    expect(defaultReverseLinkAccess("auto")).toBe("auto");
+    expect(defaultReverseLinkAccess("approval-required")).toBe("approval-required");
+  });
 });
 
 describe("linkableMachines", () => {
