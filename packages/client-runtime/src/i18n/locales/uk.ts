@@ -10869,6 +10869,10 @@ const catalog: MessageCatalog = {
   "Start side chat": "Почати побічний чат",
   "Start T3.CodeShip when you sign in to this computer.":
     "Запускати T3.CodeShip, коли ви входите в цей комп’ютер.",
+  "Tailscale CLI not found. Install Tailscale to set up HTTPS access through MagicDNS.":
+    "Tailscale CLI не знайдено. Встановіть Tailscale, щоб налаштувати HTTPS-доступ через MagicDNS.",
+  "Log in to Tailscale to set up HTTPS access through MagicDNS.":
+    "Увійдіть у Tailscale, щоб налаштувати HTTPS-доступ через MagicDNS.",
   "Start Tailscale to set up HTTPS access through MagicDNS.":
     "Запустіть Tailscale, щоб налаштувати HTTPS-доступ через MagicDNS.",
   "Start the matching WSL backend, then choose the folder again.":

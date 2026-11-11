@@ -166,12 +166,45 @@ const TailscaleStatusSelf = Schema.Struct({
 });
 
 const TailscaleStatusJson = Schema.Struct({
+  BackendState: Schema.optional(Schema.Unknown),
   Self: Schema.optional(TailscaleStatusSelf),
 });
 
 export type TailscaleStatusJson = typeof TailscaleStatusJson.Type;
 
+/** Why Tailscale cannot give this machine an HTTPS address; each reason has a different fix. */
+export const TailscaleUnavailableReason = Schema.Literals([
+  "cli-not-found",
+  "not-running",
+  "not-logged-in",
+]);
+export type TailscaleUnavailableReason = typeof TailscaleUnavailableReason.Type;
+
+const isSpawnError = Schema.is(TailscaleCommandSpawnError);
+const isExitError = Schema.is(TailscaleCommandExitError);
+
+export function tailscaleUnavailableReasonOfError(
+  error: unknown,
+): TailscaleUnavailableReason | null {
+  if (isSpawnError(error)) return "cli-not-found";
+  if (
+    isExitError(error) &&
+    (error.stderrDiagnostic === "not-running" || error.stderrDiagnostic === "not-logged-in")
+  ) {
+    return error.stderrDiagnostic;
+  }
+  return null;
+}
+
+function unavailableReasonOfBackendState(state: unknown): TailscaleUnavailableReason | null {
+  if (state === "NeedsLogin" || state === "NeedsMachineAuth") return "not-logged-in";
+  if (state === "Stopped") return "not-running";
+  return null;
+}
+
 export interface TailscaleStatus {
+  /** Set when the CLI answered but the client is stopped or logged out. */
+  readonly unavailableReason: TailscaleUnavailableReason | null;
   readonly magicDnsName: string | null;
   readonly tailnetIpv4Addresses: readonly string[];
   /**
@@ -241,6 +274,7 @@ export const parseTailscaleStatus = (
 
       const capMap = parsed.Self?.CapMap;
       return {
+        unavailableReason: unavailableReasonOfBackendState(parsed.BackendState),
         magicDnsName: normalizeMagicDnsName(parsed),
         tailnetIpv4Addresses,
         httpsServeEnabled:

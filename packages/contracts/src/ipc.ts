@@ -10,7 +10,7 @@ import type {
   BrowserImportSourceId,
 } from "./browserImport.ts";
 import { AuthAccessTokenResult, AuthSessionState } from "./auth.ts";
-import { AdvertisedEndpoint } from "./remoteAccess.ts";
+import { AdvertisedEndpoint, TailscaleUnavailableReason } from "./remoteAccess.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import { type ClientSettings, type QuitConfirmationMode, SnapShotShortcut } from "./settings.ts";
 import type { EditorId } from "./editor.ts";
@@ -510,6 +510,8 @@ export interface DesktopServerExposureState {
   advertisedHost: string | null;
   tailscaleServeEnabled: boolean;
   tailscaleServePort: number;
+  /** Null when Tailscale was not probed or is usable. */
+  tailscaleUnavailableReason: TailscaleUnavailableReason | null;
 }
 
 export const DesktopServerExposureStateSchema = Schema.Struct({
@@ -518,6 +520,7 @@ export const DesktopServerExposureStateSchema = Schema.Struct({
   advertisedHost: Schema.NullOr(Schema.String),
   tailscaleServeEnabled: Schema.Boolean,
   tailscaleServePort: Schema.Number,
+  tailscaleUnavailableReason: Schema.NullOr(TailscaleUnavailableReason),
 });
 
 export interface PickFolderOptions {

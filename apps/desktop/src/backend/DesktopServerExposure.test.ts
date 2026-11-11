@@ -147,7 +147,46 @@ const withHarness = <A, E, R>(
     );
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped);
 
+const layerMissingTailscaleCli = Layer.succeed(
+  ChildProcessSpawner.ChildProcessSpawner,
+  ChildProcessSpawner.make(() =>
+    Effect.callback<never, never>(() => {
+      throw Object.assign(new Error("spawn tailscale ENOENT"), { code: "ENOENT" });
+    }),
+  ),
+);
+
 describe("DesktopServerExposure", () => {
+  it.effect("reports why Tailscale is unavailable once network access is on", () =>
+    Effect.gen(function* () {
+      const reasonFor = (spawnerLayer: ReturnType<typeof layerMockSpawner>) =>
+        withHarness(
+          lanNetworkInterfaces,
+          Effect.gen(function* () {
+            const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
+            yield* serverExposure.configureFromSettings({ port: 4173 });
+            assert.isNull((yield* serverExposure.getState).tailscaleUnavailableReason);
+            yield* serverExposure.setMode("network-accessible");
+            return (yield* serverExposure.getState).tailscaleUnavailableReason;
+          }),
+          {},
+          spawnerLayer,
+        );
+
+      assert.equal(yield* reasonFor(layerMissingTailscaleCli), "cli-not-found");
+      assert.equal(yield* reasonFor(layerMockSpawner('{"BackendState":"Stopped"}')), "not-running");
+      assert.equal(
+        yield* reasonFor(layerMockSpawner('{"BackendState":"NeedsLogin"}')),
+        "not-logged-in",
+      );
+      assert.isNull(
+        yield* reasonFor(
+          layerMockSpawner('{"BackendState":"Running","Self":{"DNSName":"a.ts.net."}}'),
+        ),
+      );
+    }),
+  );
+
   it.effect("uses cached Tailscale identity to exclude another VPN's pairing address", () => {
     let statusReads = 0;
     return withHarness(
@@ -250,6 +289,7 @@ describe("DesktopServerExposure", () => {
           advertisedHost: "192.168.1.20",
           tailscaleServeEnabled: false,
           tailscaleServePort: 443,
+          tailscaleUnavailableReason: null,
         });
 
         const backendConfig = yield* serverExposure.backendConfig;

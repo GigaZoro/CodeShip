@@ -10,7 +10,13 @@ import {
   type DesktopServerExposureMode,
   type DesktopServerExposureState,
 } from "@t3tools/contracts";
-import { isTailscaleIpv4Address, readTailscaleStatus } from "@t3tools/tailscale";
+import {
+  isTailscaleIpv4Address,
+  readTailscaleStatus,
+  tailscaleUnavailableReasonOfError,
+  type TailscaleStatus,
+  type TailscaleUnavailableReason,
+} from "@t3tools/tailscale";
 import * as Cache from "effect/Cache";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -324,12 +330,21 @@ const initialRuntimeState = (): RuntimeState =>
     port: 0,
   });
 
-const toContractState = (state: RuntimeState): DesktopServerExposureState => ({
+interface TailscaleProbe {
+  readonly status: TailscaleStatus | null;
+  readonly unavailableReason: TailscaleUnavailableReason | null;
+}
+
+const toContractState = (
+  state: RuntimeState,
+  tailscaleUnavailableReason: TailscaleUnavailableReason | null = null,
+): DesktopServerExposureState => ({
   mode: state.mode,
   endpointUrl: Option.getOrNull(state.endpointUrl),
   advertisedHost: Option.getOrNull(state.advertisedHost),
   tailscaleServeEnabled: state.tailscaleServeEnabled,
   tailscaleServePort: state.tailscaleServePort,
+  tailscaleUnavailableReason,
 });
 
 const toBackendConfig = (state: RuntimeState): DesktopServerExposureBackendConfig => ({
@@ -479,7 +494,16 @@ export const make = Effect.gen(function* () {
     timeToLive: TAILSCALE_STATUS_CACHE_TTL,
     lookup: (_addresses: string) =>
       readTailscaleStatus.pipe(
-        Effect.orElseSucceed(() => null),
+        Effect.map((status): TailscaleProbe => ({
+          status,
+          unavailableReason: status.unavailableReason,
+        })),
+        Effect.catch((error) =>
+          Effect.succeed<TailscaleProbe>({
+            status: null,
+            unavailableReason: tailscaleUnavailableReasonOfError(error),
+          }),
+        ),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
       ),
   });
@@ -505,10 +529,19 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  const getState = readNetworkInterfaces.pipe(
-    Effect.flatMap(readCurrentState),
-    Effect.map(toContractState),
-  );
+  const getState = Effect.gen(function* () {
+    const currentNetworkInterfaces = yield* readNetworkInterfaces;
+    const state = yield* readCurrentState(currentNetworkInterfaces);
+    // Same gate as the advertised endpoints: probing can prompt for macOS TCC access.
+    if (state.mode !== "network-accessible" && !state.tailscaleServeEnabled) {
+      return toContractState(state);
+    }
+    const probe = yield* Cache.get(
+      tailscaleStatusCache,
+      tailscaleIpv4AddressKey(currentNetworkInterfaces),
+    );
+    return toContractState(state, probe.unavailableReason);
+  });
   const backendConfig = Ref.get(stateRef).pipe(Effect.map(toBackendConfig));
 
   const configureFromSettings = Effect.fn("desktop.serverExposure.configureFromSettings")(
@@ -626,7 +659,7 @@ export const make = Effect.gen(function* () {
       readStatus: Cache.get(
         tailscaleStatusCache,
         tailscaleIpv4AddressKey(currentNetworkInterfaces),
-      ),
+      ).pipe(Effect.map((probe) => probe.status)),
     }).pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
       Effect.provideService(HttpClient.HttpClient, httpClient),

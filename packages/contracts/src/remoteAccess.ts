@@ -38,6 +38,14 @@ export const AdvertisedEndpointSource = Schema.Literals([
 ]);
 export type AdvertisedEndpointSource = typeof AdvertisedEndpointSource.Type;
 
+/** Why Tailscale offers no HTTPS endpoint; each reason has a different fix. */
+export const TailscaleUnavailableReason = Schema.Literals([
+  "cli-not-found",
+  "not-running",
+  "not-logged-in",
+]);
+export type TailscaleUnavailableReason = typeof TailscaleUnavailableReason.Type;
+
 export const AdvertisedEndpointProvider = Schema.Struct({
   id: TrimmedNonEmptyString,
   label: TrimmedNonEmptyString,

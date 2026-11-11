@@ -62,11 +62,24 @@ export function isQrShareableEndpoint(endpoint: AdvertisedEndpoint): boolean {
 /** Desktop skips Tailscale probing until network/Serve is enabled to avoid macOS prompts; absence then
  * means unchecked. */
 export function missingTailscaleEndpointDescription(
-  state: Pick<DesktopServerExposureState, "mode" | "tailscaleServeEnabled"> | null,
+  state: Pick<
+    DesktopServerExposureState,
+    "mode" | "tailscaleServeEnabled" | "tailscaleUnavailableReason"
+  > | null,
 ): string {
-  return state && state.mode !== "network-accessible" && !state.tailscaleServeEnabled
-    ? t("Turn on Network access to detect Tailscale.")
-    : t("Start Tailscale to set up HTTPS access through MagicDNS.");
+  if (state && state.mode !== "network-accessible" && !state.tailscaleServeEnabled) {
+    return t("Turn on Network access to detect Tailscale.");
+  }
+  switch (state?.tailscaleUnavailableReason) {
+    case "cli-not-found":
+      return t(
+        "Tailscale CLI not found. Install Tailscale to set up HTTPS access through MagicDNS.",
+      );
+    case "not-logged-in":
+      return t("Log in to Tailscale to set up HTTPS access through MagicDNS.");
+    default:
+      return t("Start Tailscale to set up HTTPS access through MagicDNS.");
+  }
 }
 
 export function resolveTailscaleServeBaseUrl(

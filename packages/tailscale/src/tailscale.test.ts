@@ -18,6 +18,7 @@ import {
   readTailscaleStatus,
   TailscaleCommandExitError,
   TailscaleCommandSpawnError,
+  tailscaleUnavailableReasonOfError,
   TailscaleStatusParseError,
 } from "./tailscale.ts";
 
@@ -195,10 +196,45 @@ describe("tailscale", () => {
     Effect.gen(function* () {
       const status = yield* parseTailscaleStatus(tailscaleStatusJson);
       assert.deepEqual(status, {
+        unavailableReason: null,
         magicDnsName: "desktop.tail.ts.net",
         tailnetIpv4Addresses: ["100.100.100.100"],
         httpsServeEnabled: null,
       });
+    }),
+  );
+
+  it.effect("names why a stopped or logged-out client is unavailable", () =>
+    Effect.gen(function* () {
+      for (const [backendState, reason] of [
+        ["Stopped", "not-running"],
+        ["NeedsLogin", "not-logged-in"],
+        ["Running", null],
+      ] as const) {
+        const status = yield* parseTailscaleStatus(JSON.stringify({ BackendState: backendState }));
+        assert.equal(status.unavailableReason, reason);
+      }
+      const context = {
+        executable: "tailscale",
+        subcommand: "status",
+        argumentCount: 2,
+      } as const;
+      assert.equal(
+        tailscaleUnavailableReasonOfError(new TailscaleCommandSpawnError({ ...context, cause: 1 })),
+        "cli-not-found",
+      );
+      assert.equal(
+        tailscaleUnavailableReasonOfError(
+          new TailscaleCommandExitError({
+            ...context,
+            exitCode: 1,
+            stderrLength: 3,
+            stderrDiagnostic: "not-logged-in",
+          }),
+        ),
+        "not-logged-in",
+      );
+      assert.isNull(tailscaleUnavailableReasonOfError(new Error("x")));
     }),
   );
 

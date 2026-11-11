@@ -1,3 +1,7 @@
+## 2026-11-11 — The Tailscale HTTPS row says why it cannot set up
+
+- **Settings → Connections** now tells a missing Tailscale CLI (**Tailscale CLI not found. Install Tailscale…**), a logged-out client (**Log in to Tailscale…**) and a stopped one (**Start Tailscale…**) apart. Before, all three read **Start Tailscale**, even when starting it could not help.
+
 ## 2026-11-11 — Tools installed after T3.CodeShip started are found on Windows
 
 - On Windows, T3.CodeShip now reads the system and user `Path` from the registry whenever it prepares its environment, so a tool installed or upgraded while the app was already running (with winget, or by an agent) is found without signing out. Before, an app started after an upgrade could keep a `Path` without the tool until you signed out.

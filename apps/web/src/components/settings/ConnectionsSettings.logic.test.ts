@@ -2,6 +2,7 @@ import type { DesktopWslState } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   applyWslEnableSelection,
+  missingTailscaleEndpointDescription,
   resolveTailscaleServeBaseUrl,
   selectQrEndpointOption,
   togglePairingScopeSelection,
@@ -39,6 +40,28 @@ describe("togglePairingScopeSelection", () => {
     },
   ] as const)("$label", ({ current, scope, checked, expected }) => {
     expect(togglePairingScopeSelection(current, scope, checked)).toEqual(expected);
+  });
+});
+
+describe("missingTailscaleEndpointDescription", () => {
+  const networkOn = { mode: "network-accessible", tailscaleServeEnabled: false } as const;
+
+  it.each([
+    [{ ...networkOn, tailscaleUnavailableReason: "cli-not-found" }, "Tailscale CLI not found"],
+    [{ ...networkOn, tailscaleUnavailableReason: "not-running" }, "Start Tailscale"],
+    [{ ...networkOn, tailscaleUnavailableReason: "not-logged-in" }, "Log in to Tailscale"],
+    [{ ...networkOn, tailscaleUnavailableReason: null }, "Start Tailscale"],
+    [
+      {
+        mode: "local-only",
+        tailscaleServeEnabled: false,
+        tailscaleUnavailableReason: "cli-not-found",
+      },
+      "Turn on Network access",
+    ],
+    [null, "Start Tailscale"],
+  ] as const)("%j starts with %s", (state, prefix) => {
+    expect(missingTailscaleEndpointDescription(state)).toMatch(new RegExp(`^${prefix}`));
   });
 });
 
