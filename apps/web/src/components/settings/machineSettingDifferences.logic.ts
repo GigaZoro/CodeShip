@@ -7,7 +7,7 @@ import {
   type ServerSettingsPatch,
 } from "@t3tools/contracts";
 import { idleCompactionModeLabel } from "@t3tools/shared/claudeCompaction";
-import { providerUpdatesPatch, usageLimitRecoveryPatch } from "@t3tools/contracts/settings";
+import { providerUpdatesPatch } from "@t3tools/contracts/settings";
 import { t } from "~/i18n";
 import * as Equal from "effect/Equal";
 
@@ -58,7 +58,9 @@ const SHARED_SETTING_PRESENTATION: Record<
   snoozeLimitedThreads: {
     id: "usage-limit-recovery",
     resolve: (settings) =>
-      settings.snoozeLimitedThreads === undefined
+      settings.snoozeLimitedThreads === undefined ||
+      settings.autoResumeLimitedThreads === undefined ||
+      settings.failoverLimitedThreads === undefined
         ? undefined
         : {
             snoozeLimitedThreads: settings.snoozeLimitedThreads,
@@ -66,14 +68,17 @@ const SHARED_SETTING_PRESENTATION: Record<
             failoverLimitedThreads: settings.failoverLimitedThreads,
           },
     format: (value) => {
-      const settings = value as ReturnType<typeof usageLimitRecoveryPatch>;
+      const settings = value as Pick<
+        ServerSettings,
+        "snoozeLimitedThreads" | "autoResumeLimitedThreads" | "failoverLimitedThreads"
+      >;
       return t("Snooze: {snooze}; resume: {resume}; switch accounts: {switching}.", {
         snooze: settings.snoozeLimitedThreads ? t("On") : t("Off"),
         resume: settings.autoResumeLimitedThreads ? t("On") : t("Off"),
         switching: settings.failoverLimitedThreads ? t("On") : t("Off"),
       });
     },
-    patch: (value) => value as ReturnType<typeof usageLimitRecoveryPatch>,
+    patch: (value) => value as ServerSettingsPatch,
   },
   autoResumeLimitedThreads: "grouped",
   failoverLimitedThreads: "grouped",
@@ -101,10 +106,14 @@ const SHARED_SETTING_PRESENTATION: Record<
   ghqCloneLayout: { id: "ghq-clone-layout" },
   enableProviderUpdateChecks: {
     id: "provider-updates",
-    resolve: (settings) => ({
-      enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
-      autoUpdateProviders: settings.autoUpdateProviders,
-    }),
+    resolve: (settings) =>
+      settings.enableProviderUpdateChecks === undefined ||
+      settings.autoUpdateProviders === undefined
+        ? undefined
+        : {
+            enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
+            autoUpdateProviders: settings.autoUpdateProviders,
+          },
     format: (value) => {
       const settings = value as ReturnType<typeof providerUpdatesPatch>;
       return t("Checks: {checks}; automatic install: {install}.", {

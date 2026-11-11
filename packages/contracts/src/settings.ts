@@ -608,31 +608,24 @@ export const resolveSidebarGrouping = (
   machine: settings.sidebarGroupByMachine ?? false,
 });
 
-export const UsageLimitRecoveryChoice = Schema.Literals([
-  "off",
-  "snooze",
-  "resume",
-  "switch-and-resume",
-]);
+export const UsageLimitRecoveryChoice = Schema.Literals(["off", "resume", "switch-and-resume"]);
 export type UsageLimitRecoveryChoice = typeof UsageLimitRecoveryChoice.Type;
 
 export function usageLimitRecoveryPatch(choice: UsageLimitRecoveryChoice) {
   return {
-    snoozeLimitedThreads: choice === "snooze",
     autoResumeLimitedThreads: choice === "resume" || choice === "switch-and-resume",
     failoverLimitedThreads: choice === "switch-and-resume",
   };
 }
 
 export function usageLimitRecoveryChoice(
-  settings: ReturnType<typeof usageLimitRecoveryPatch>,
+  settings: ReturnType<typeof usageLimitRecoveryPatch> & {
+    readonly snoozeLimitedThreads?: boolean;
+  },
 ): UsageLimitRecoveryChoice | "custom" {
   if (settings.failoverLimitedThreads)
-    return settings.autoResumeLimitedThreads && !settings.snoozeLimitedThreads
-      ? "switch-and-resume"
-      : "custom";
-  if (settings.autoResumeLimitedThreads) return settings.snoozeLimitedThreads ? "custom" : "resume";
-  return settings.snoozeLimitedThreads ? "snooze" : "off";
+    return settings.autoResumeLimitedThreads ? "switch-and-resume" : "custom";
+  return settings.autoResumeLimitedThreads ? "resume" : "off";
 }
 
 export const ProviderUpdatesChoice = Schema.Literals(["off", "notify", "automatic"]);

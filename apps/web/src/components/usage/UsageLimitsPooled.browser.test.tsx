@@ -9,6 +9,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { render } from "../../../test/render";
 import { UsageLimitsPooled } from "./UsageLimitsPooled";
+import { AccountFailoverNotice } from "./UsageLimitsStatus";
 
 const checkedAt = "2026-10-25T16:00:00.000Z";
 
@@ -36,6 +37,38 @@ function managedChatGpt(instanceId: string, displayName: string): ServerProvider
 }
 
 describe("UsageLimitsPooled ChatGPT usage card", () => {
+  it.each(["off", "ready", "switched", "exhausted"] as const)(
+    "links the %s failover state to its owning settings",
+    async (kind) => {
+      const active = managedChatGpt("chatgpt_work", "ChatGPT Work");
+      await using screen = await render(
+        <AccountFailoverNotice
+          entries={[
+            {
+              environmentId: EnvironmentId.make("desk"),
+              environmentLabel: "Desk",
+              driver: ProviderDriverKind.make("codex"),
+              status: { kind, active, limited: [active], until: null },
+            },
+          ]}
+          now={Date.parse(checkedAt)}
+          showEnvironment={false}
+        />,
+      );
+      await expect
+        .element(
+          screen.getByRole("link", {
+            name: kind === "off" ? "Turn on in Settings" : "Account order",
+          }),
+        )
+        .toHaveAttribute(
+          "href",
+          kind === "off"
+            ? "/settings/threads?machine=desk#usage-limit-recovery"
+            : "/settings/providers?machine=desk#account-failover",
+        );
+    },
+  );
   it("lists managed connections under Codex even when no account reports a bar", async () => {
     const presentations = new Map([
       [

@@ -115,13 +115,11 @@ const readClientSettings = (
             Effect.flatMap(({ settings, migrated }) =>
               (migrated
                 ? persist(settings).pipe(
-                    Effect.mapError(
-                      (cause) =>
-                        new DesktopClientSettingsReadError({
-                          operation: "migrate-document",
-                          path: settingsPath,
-                          cause,
-                        }),
+                    Effect.catch((cause) =>
+                      Effect.logWarning(
+                        "Could not persist migrated desktop client settings.",
+                        cause,
+                      ).pipe(Effect.annotateLogs({ settingsPath })),
                     ),
                   )
                 : Effect.void

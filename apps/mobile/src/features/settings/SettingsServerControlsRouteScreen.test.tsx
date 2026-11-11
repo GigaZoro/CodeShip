@@ -123,6 +123,40 @@ vi.mock("./components/SettingsSwitchRow", () => ({
   ),
 }));
 vi.mock("./components/SettingsRow", () => ({ SettingsRow: () => null }));
+vi.mock("./components/SettingsMenuRow", () => ({
+  SettingsMenuRow: ({
+    label,
+    description,
+    value,
+    disabled,
+    options,
+    onChange,
+  }: {
+    label: string;
+    description?: string;
+    value: string | null;
+    disabled?: boolean;
+    options: readonly { value: string; label: string }[];
+    onChange: (value: string) => void;
+  }) => (
+    <label>
+      {label}
+      <span>{description}</span>
+      <select
+        aria-label={label}
+        value={value ?? ""}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  ),
+}));
 vi.mock("./components/DefaultModelSettings", () => ({ DefaultModelSettings: () => null }));
 vi.mock("./components/BranchNamingSettings", () => ({
   BranchNamingSettings: (props: { onChange: (patch: ServerSettingsPatch) => void }) => {
@@ -151,6 +185,7 @@ vi.mock("./SettingsAboutSection", () => ({ AppSettingsSection: () => null }));
 import {
   SettingsThreadsRouteScreen,
   SettingsEnvironmentSourceControlRouteScreen,
+  SettingsEnvironmentMaintenanceRouteScreen,
 } from "./SettingsServerControlsRouteScreen";
 
 function environment(environmentId: string, label: string) {
@@ -159,6 +194,7 @@ function environment(environmentId: string, label: string) {
     label,
     connection: { phase: "connected" },
     serverConfig: {
+      managedPolicy: undefined as { organization: string; lockedSettings: string[] } | undefined,
       settings: {
         ...DEFAULT_SERVER_SETTINGS,
         defaultAutoPull: false,
@@ -191,6 +227,52 @@ afterEach(() => {
 });
 
 describe("SettingsServerControlsRouteScreen", () => {
+  it("keeps hiding limited threads independent from their recovery action", async () => {
+    mocks.targets[0]!.serverConfig.settings.snoozeLimitedThreads = true;
+    act(() => root.render(<SettingsThreadsRouteScreen />));
+    const action = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="When a thread hits a usage limit"]',
+    )!;
+    const hidden = [...container.querySelectorAll<HTMLButtonElement>('[role="switch"]')].find(
+      (button) => button.textContent === "Hide limited threads until the limit resets",
+    )!;
+    expect(hidden.getAttribute("aria-checked")).toBe("true");
+    await act(async () => {
+      action.value = "resume";
+      action.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(mocks.updateSettings).toHaveBeenLastCalledWith({
+      environmentId: "local",
+      input: { patch: { autoResumeLimitedThreads: true, failoverLimitedThreads: false } },
+    });
+    await act(async () => hidden.click());
+    expect(mocks.updateSettings).toHaveBeenLastCalledWith({
+      environmentId: "local",
+      input: { patch: { snoozeLimitedThreads: false } },
+    });
+  });
+
+  it.each(["project", "enableProviderUpdateChecks", "autoUpdateProviders"])(
+    "explains why provider updates are locked for %s",
+    (lock) => {
+      mocks.projectSelected = lock === "project";
+      if (lock !== "project")
+        mocks.targets[0]!.serverConfig.managedPolicy = {
+          organization: "Example Corp",
+          lockedSettings: [lock],
+        };
+      act(() => root.render(<SettingsEnvironmentMaintenanceRouteScreen />));
+      const updates = container.querySelector<HTMLSelectElement>(
+        'select[aria-label="Provider updates"]',
+      )!;
+      expect(updates.disabled).toBe(true);
+      expect(updates.parentElement!.textContent).toContain(
+        lock === "project"
+          ? "Environment-wide setting. Select All projects to change it."
+          : "Managed by Example Corp.",
+      );
+    },
+  );
   it("sends a draft saved during a pending write once that write settles", async () => {
     const pending = Promise.withResolvers<AsyncResult.Success<void>>();
     mocks.updateSettings.mockReturnValueOnce(pending.promise);
