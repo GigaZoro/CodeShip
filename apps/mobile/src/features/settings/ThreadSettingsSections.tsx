@@ -40,9 +40,11 @@ import { planAutoSettleSettingsSync, type AutoSettleSettings } from "./autoSettl
 import { useSettingsEnvironmentFilter } from "./settings-environment-filter";
 import {
   managedSettingReason,
+  planMobileSettingsWrites,
   resolveMobileSettingsTargets,
   uniformMobileSetting,
 } from "./settings-scoped-server";
+import { useSettingsWriter } from "./useSettingsWriter";
 
 const recoveryLabels = {
   off: msg("Do nothing"),
@@ -298,19 +300,17 @@ export function WorkingSectionSettings() {
   );
 }
 
-/** General has no environment filter, so this setting always applies to every machine. */
+/** General has no environment filter, so this setting is always saved for all machines. */
 export function ScheduledTaskPlacementSettings() {
   const { availableTargets } = useSettingsEnvironmentFilter();
+  const { environments } = useEnvironments();
   const targets = resolveMobileSettingsTargets(
     availableTargets.filter(supportsSharedSettingsSync),
     null,
   );
   const writable = useEnvironmentsWithScope(availableTargets, AuthSettingsWriteScope);
   const [pending, setPending] = useState(false);
-  const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
-    label: "scheduled task default placement",
-    reportFailure: true,
-  });
+  const writeSettings = useSettingsWriter();
   const managed = managedSettingReason(targets, "scheduledTaskDefaultPlacement");
   const current = uniformMobileSetting(targets, "scheduledTaskDefaultPlacement");
   const disabled =
@@ -353,13 +353,15 @@ export function ScheduledTaskPlacementSettings() {
             )?.value;
             if (placement === undefined) return;
             setPending(true);
-            await Promise.all(
-              targets.map((target) =>
-                updateSettings({
-                  environmentId: target.environment.environmentId,
-                  input: { patch: { scheduledTaskDefaultPlacement: placement } },
-                }),
-              ),
+            await writeSettings(
+              targets,
+              planMobileSettingsWrites({
+                machines: environments,
+                targets,
+                allSelected: true,
+                projectSelected: false,
+                patch: { scheduledTaskDefaultPlacement: placement },
+              }),
             ).finally(() => {
               setPending(false);
             });

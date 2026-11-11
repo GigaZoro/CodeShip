@@ -37,7 +37,7 @@ const make = Effect.gen(function* () {
 
   const pullFrom = Effect.fn("SharedSettingsPull.pullFrom")(function* (link: PeerLink) {
     const answer = yield* client
-      .call({
+      .callIfAvailable({
         environmentId: link.environmentId,
         tool: "t3_shared_settings",
         arguments: {},
@@ -50,7 +50,13 @@ const make = Effect.gen(function* () {
         peer: link.environmentId,
       });
     }
-    yield* shared.applyPulled(link.environmentId, answer.value.versions);
+    if (Option.isNone(answer.value)) {
+      // Expected on every pull until that machine is updated, so it is not worth a warning.
+      return yield* Effect.logDebug("A linked machine cannot share settings yet", {
+        peer: link.environmentId,
+      });
+    }
+    yield* shared.applyPulled(link.environmentId, answer.value.value.versions);
   });
 
   const pullOnce = Effect.gen(function* () {

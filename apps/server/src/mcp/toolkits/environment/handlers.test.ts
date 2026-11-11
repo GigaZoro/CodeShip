@@ -388,7 +388,13 @@ it.effect.each([
           ]).pipe(Effect.as(DEFAULT_SERVER_SETTINGS)),
         updateForAllMachines: () =>
           Ref.update(writes, (all) => [...all, "all machines" as const]).pipe(
-            Effect.as(DEFAULT_SERVER_SETTINGS),
+            Effect.as({
+              settings: DEFAULT_SERVER_SETTINGS,
+              share: {
+                stamp: { updatedAt: "2026-11-11T12:00:00.000Z", origin: environmentId },
+                values: [],
+              },
+            }),
           ),
       }),
       Layer.mock(Settings.ServerSettingsService)({
