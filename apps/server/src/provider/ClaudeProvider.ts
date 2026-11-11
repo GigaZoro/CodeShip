@@ -509,6 +509,8 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   /** Shared with the adapter so turn events reuse the scoped-bucket names this probe saw. */
   scopedLimitNames?: Ref.Ref<ClaudeScopedLimitNames>,
   resolveResetCredits?: (version: string) => Effect.Effect<ServerProviderResetCredits | undefined>,
+  /** When the saved subscription login stops renewing; undefined when unknown. */
+  resolveLoginExpiry?: Effect.Effect<string | undefined>,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -664,6 +666,8 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     endpoint.hostname !== "" &&
     endpoint.hostname !== "api.anthropic.com";
   if (!customApiEndpoint && claudeAuthStatus(capabilities) === "unauthenticated") {
+    // A lapsed login reads as signed out; its date tells the person why.
+    const loginExpiresAt = resolveLoginExpiry ? yield* resolveLoginExpiry : undefined;
     return buildServerProvider({
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
@@ -676,7 +680,10 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         installed: true,
         version: parsedVersion,
         status: "error",
-        auth: { status: "unauthenticated" },
+        auth: {
+          status: "unauthenticated",
+          ...(loginExpiresAt ? { loginExpiresAt } : {}),
+        },
         message: "Claude Code is not authenticated. Run `claude auth login` and try again.",
       },
     });
@@ -724,6 +731,11 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const loginProfileId = customApiEndpoint
     ? undefined
     : yield* claudeLoginProfileId(claudeSettings, capabilities, resolvedEnvironment);
+  // Only a saved subscription login renews on a schedule; keys, tokens and other backends do not.
+  const loginExpiresAt =
+    resolveLoginExpiry && loginProfileId?.startsWith("claude.ai:")
+      ? yield* resolveLoginExpiry
+      : undefined;
   const resetCredits =
     resolveResetCredits &&
     capabilities.subscriptionType &&
@@ -747,6 +759,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         status: "authenticated",
         ...(capabilities.email ? { email: capabilities.email } : {}),
         ...(loginProfileId ? { profileId: loginProfileId } : {}),
+        ...(loginExpiresAt ? { loginExpiresAt } : {}),
         ...(capabilities.workspaceId ? { workspaceId: capabilities.workspaceId } : {}),
         ...(authMetadata ? authMetadata : {}),
       },

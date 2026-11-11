@@ -113,6 +113,7 @@ import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner
 import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
 import * as ProviderPlugins from "./provider/ProviderPlugins.ts";
 import * as ProviderSkills from "./provider/ProviderSkills.ts";
+import * as DetectedManualSteps from "./provider/DetectedManualSteps.ts";
 import * as ProviderMcp from "./provider/ProviderMcp.ts";
 import * as ProviderUsageLimitsIngestion from "./provider/ProviderUsageLimitsIngestion.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
@@ -751,6 +752,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
       EnvironmentTheme.layer,
       UsageLimitSources.layer,
       ThreadPageManualSteps.layer,
+      DetectedManualSteps.layer,
     ),
   ),
   Layer.provideMerge(ProviderPlugins.layer),

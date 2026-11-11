@@ -1,5 +1,6 @@
 import {
   manualStepsFailureMessage,
+  type DetectedManualStepEntry,
   type ManualStepGroup,
   type ManualStepsState,
   type ManualStepsView,
@@ -8,7 +9,7 @@ import { settlePromise } from "@t3tools/client-runtime/state/runtime";
 import type { ContextMenuItem, ManualStep } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
-import { CircleDollarSignIcon, HandIcon } from "lucide-react";
+import { CircleDollarSignIcon, HandIcon, KeyRoundIcon } from "lucide-react";
 import type { KeyboardEvent, MouseEvent } from "react";
 
 import { updateClientSettings, useClientSettings } from "../../hooks/useSettings";
@@ -21,6 +22,7 @@ import { useManualSteps } from "../../state/manualSteps";
 import { searchableSetting } from "../settings/settingsSearch";
 import { WaitingSinceLabel } from "../sidebar/SidebarThreadRow";
 import { openInSystemBrowser, useOpenThreadPageLink } from "../threadPage/threadPageLinks";
+import { detectedStepText, useOpenDetectedStep } from "./detectedManualStep";
 import { Button, InlineButton } from "../ui/button";
 import { CollapsibleSectionHeader } from "../ui/collapsible-section-header";
 import { MenuCheckboxItem, MenuSeparator } from "../ui/menu";
@@ -134,6 +136,70 @@ function ManualStepRow(props: {
   );
 }
 
+/** A sign-in this machine noticed itself; the button opens the account or MCP server that fixes it. */
+function DetectedStepRow(props: {
+  readonly entry: DetectedManualStepEntry;
+  readonly parentRowId?: string;
+  readonly onOpen: (entry: DetectedManualStepEntry) => void;
+}) {
+  const { entry } = props;
+  const text = detectedStepText(entry);
+  const lapsed = entry.step.kind === "login-expired";
+  const handleKeyDown = (event: KeyboardEvent) => {
+    if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) {
+      return;
+    }
+    event.preventDefault();
+    props.onOpen(entry);
+  };
+  return (
+    <li className="list-none">
+      <div
+        role="treeitem"
+        tabIndex={-1}
+        data-sidebar-row={`detected-step:${entry.step.machine}:${entry.step.id}`}
+        data-sidebar-parent={props.parentRowId}
+        aria-label={[text.step, text.detail, entry.step.machine].join(", ")}
+        onClick={() => props.onOpen(entry)}
+        onKeyDown={handleKeyDown}
+        className="cursor-pointer rounded-md px-2 py-1.5 text-left outline-none select-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      >
+        <div className="flex h-5 min-w-0 items-center gap-1.5">
+          <KeyRoundIcon
+            aria-hidden
+            className={cn(
+              "size-3.5 shrink-0",
+              lapsed ? "text-destructive-foreground" : "text-warning-foreground",
+            )}
+          />
+          <Tooltip>
+            <TooltipTrigger
+              render={<span className="min-w-0 flex-1 truncate text-sm">{text.step}</span>}
+            />
+            <TooltipPopup side="top">{text.step}</TooltipPopup>
+          </Tooltip>
+          <span className="shrink-0" onClick={stopRowActivation}>
+            <Button size="xs" variant="outline" onClick={() => props.onOpen(entry)}>
+              {t("Sign in")}
+            </Button>
+          </span>
+        </div>
+        <div className="flex min-w-0 items-center gap-1.5 ps-5 text-xs text-muted-foreground">
+          <span
+            className={cn(
+              "min-w-0 flex-1 truncate",
+              lapsed ? "font-medium text-destructive-foreground" : "",
+            )}
+          >
+            {text.detail}
+          </span>
+          <span className="max-w-[40%] shrink-0 truncate">{entry.step.machine}</span>
+        </div>
+      </div>
+    </li>
+  );
+}
+
 function ManualStepsSkeleton() {
   return (
     <div aria-hidden className="grid gap-2 px-2 py-1.5">
@@ -153,6 +219,7 @@ function ManualStepsBody(props: {
   readonly groupHeadings: boolean;
 }) {
   const openStep = useOpenManualStep();
+  const openDetected = useOpenDetectedStep();
   const { view } = props;
   if (view.status === "loading") return <ManualStepsSkeleton />;
   if (view.status === "not-connected") {
@@ -186,27 +253,43 @@ function ManualStepsBody(props: {
     );
   }
   return (
-    <ul
-      ref={attachSidebarTree}
-      role="tree"
-      aria-label={t("Manual steps")}
-      className="flex min-h-0 flex-col gap-px overflow-y-auto overscroll-contain"
-    >
-      {view.groups.map((group: ManualStepGroup) => (
-        <li key={group.machine} className="list-none" role="none">
-          {props.groupHeadings ? (
-            <h3 className="px-2 pt-2 pb-1 text-xs font-medium text-muted-foreground">
-              {group.machine}
-            </h3>
-          ) : null}
-          <ul role="group" aria-label={group.machine} className="flex flex-col gap-px">
-            {group.steps.map((step) => (
-              <ManualStepRow key={step.threadId} step={step} onOpen={openStep} />
-            ))}
-          </ul>
-        </li>
-      ))}
-    </ul>
+    <>
+      <ul
+        ref={attachSidebarTree}
+        role="tree"
+        aria-label={t("Manual steps")}
+        className="flex min-h-0 flex-col gap-px overflow-y-auto overscroll-contain"
+      >
+        {view.groups.map((group: ManualStepGroup) => (
+          <li key={group.machine} className="list-none" role="none">
+            {props.groupHeadings ? (
+              <h3 className="px-2 pt-2 pb-1 text-xs font-medium text-muted-foreground">
+                {group.machine}
+              </h3>
+            ) : null}
+            <ul role="group" aria-label={group.machine} className="flex flex-col gap-px">
+              {group.detected.map((entry) => (
+                <DetectedStepRow
+                  key={`${entry.step.machine}:${entry.step.id}`}
+                  entry={entry}
+                  onOpen={openDetected}
+                />
+              ))}
+              {group.steps.map((step) => (
+                <ManualStepRow key={step.threadId} step={step} onOpen={openStep} />
+              ))}
+            </ul>
+          </li>
+        ))}
+      </ul>
+      {view.threadPageIssue ? (
+        <p role="status" className="px-2 py-1.5 text-xs text-muted-foreground">
+          {t("ThreadPage steps are not shown. {reason}", {
+            reason: manualStepsFailureMessage(view.threadPageIssue),
+          })}
+        </p>
+      ) : null}
+    </>
   );
 }
 
@@ -321,6 +404,7 @@ export function ManualStepsBox() {
 export function ManualStepsSidebarSection() {
   const { state, refresh } = useManualSteps();
   const openStep = useOpenManualStep();
+  const openDetected = useOpenDetectedStep();
   const [expanded, setExpanded] = useManualStepsExpanded();
   const enabled = useClientSettings((s) => s.sidebarManualStepsEnabled);
   if (!enabled || !shownInPlace(state)) return null;
@@ -341,8 +425,16 @@ export function ManualStepsSidebarSection() {
         </CollapsibleSectionHeader>
       </li>
       {expanded && state.view.status === "listed"
-        ? state.view.groups.flatMap((group) =>
-            group.steps.map((step) => (
+        ? state.view.groups.flatMap((group) => [
+            ...group.detected.map((entry) => (
+              <DetectedStepRow
+                key={`${entry.step.machine}:${entry.step.id}`}
+                entry={entry}
+                parentRowId={MANUAL_STEPS_ROW_ID}
+                onOpen={openDetected}
+              />
+            )),
+            ...group.steps.map((step) => (
               <ManualStepRow
                 key={step.threadId}
                 step={step}
@@ -350,7 +442,7 @@ export function ManualStepsSidebarSection() {
                 onOpen={openStep}
               />
             )),
-          )
+          ])
         : null}
       {expanded && state.view.status === "failed" ? (
         <li className="list-none">
@@ -377,7 +469,7 @@ export function ManualStepsPageContent() {
       <div className="flex items-center justify-between gap-3">
         <p className="max-w-2xl text-sm text-muted-foreground">
           {t(
-            "Steps only you can do, from every machine's pending list in ThreadPage. Open one to see its newest note; replying there tells that machine to check it again.",
+            "Steps only you can do. Sign-ins each machine notices itself come first; the rest are every machine's pending list in ThreadPage. Open a ThreadPage step to see its newest note; replying there tells that machine to check it again.",
           )}
         </p>
         <Button size="sm" variant="outline" disabled={state.refreshing} onClick={refresh}>

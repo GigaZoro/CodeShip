@@ -1,6 +1,9 @@
 import * as Schema from "effect/Schema";
 
+import { ForwardCompatibleArray, IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ScopedThreadRef } from "./environment.ts";
+import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
+import { ProviderMcpServerName } from "./providerMcp.ts";
 
 /** `needs-you` is a money decision; `hands-on` is a step only a person can do. */
 export const ManualStepKind = Schema.Literals(["needs-you", "hands-on"]);
@@ -57,3 +60,44 @@ export class ManualStepsListError extends Schema.TaggedError<ManualStepsListErro
     return this.detail;
   }
 }
+
+/** Why a machine found a step on its own, without ThreadPage. */
+export const DetectedManualStepKind = Schema.Literals([
+  /** An enabled provider account is not signed in. */
+  "signed-out",
+  /** A saved login stops renewing within days. */
+  "login-expiring",
+  /** A saved login stopped renewing; every request fails until it is signed in again. */
+  "login-expired",
+  /** An MCP server of a provider account needs signing in. */
+  "mcp-needs-auth",
+]);
+export type DetectedManualStepKind = typeof DetectedManualStepKind.Type;
+
+/**
+ * A sign-in a server noticed on its own machine. The fix opens in that machine's settings: the
+ * account's card for the first three kinds, the server's row on the MCP page for the last.
+ */
+export const DetectedManualStep = Schema.Struct({
+  /** Unique on its machine: one per provider instance, kind and MCP server. */
+  id: TrimmedNonEmptyString,
+  kind: DetectedManualStepKind,
+  /** The machine's name, as its environment is labelled. */
+  machine: TrimmedNonEmptyString,
+  instanceId: ProviderInstanceId,
+  driver: ProviderDriverKind,
+  /** The account's name in the provider list; absent for the driver's default account. */
+  accountName: Schema.optional(TrimmedNonEmptyString),
+  /** The MCP server, for `mcp-needs-auth`. */
+  serverName: Schema.optional(ProviderMcpServerName),
+  serverDisplayName: Schema.optional(Schema.String),
+  /** When the login stops renewing, for `login-expiring` and `login-expired`. */
+  expiresAt: Schema.optional(IsoDateTime),
+});
+export type DetectedManualStep = typeof DetectedManualStep.Type;
+
+export const DetectedManualStepsResult = Schema.Struct({
+  steps: ForwardCompatibleArray(DetectedManualStep),
+  checkedAt: IsoDateTime,
+});
+export type DetectedManualStepsResult = typeof DetectedManualStepsResult.Type;

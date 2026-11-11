@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./providerLoginExpiry": {
+      "types": "./src/providerLoginExpiry.ts",
+      "import": "./src/providerLoginExpiry.ts"
+    },
     "./changedFileKind": {
       "types": "./src/changedFileKind.ts",
       "import": "./src/changedFileKind.ts"

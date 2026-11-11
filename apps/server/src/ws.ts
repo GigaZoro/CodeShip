@@ -279,6 +279,7 @@ import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
 import * as AgentConversationSync from "./project/AgentConversationSync.ts";
 import * as AgentSessionImporter from "./project/AgentSessionImporter.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
+import * as DetectedManualSteps from "./provider/DetectedManualSteps.ts";
 import * as ThreadPageManualSteps from "./threadPage/ThreadPageManualSteps.ts";
 
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
@@ -1360,6 +1361,7 @@ export const layerWsRpc = (
       const usage = yield* UsageService.UsageService;
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
       const manualSteps = yield* ThreadPageManualSteps.ThreadPageManualSteps;
+      const detectedManualSteps = yield* DetectedManualSteps.DetectedManualSteps;
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const repositoryIdentityResolver =
@@ -2603,6 +2605,7 @@ export const layerWsRpc = (
         [WS_METHODS.serverGetStorageCleanupReport]: () => storageCleanup.reports,
         [WS_METHODS.serverGetDatabaseStorage]: () => databaseStorage.status,
         [WS_METHODS.manualStepsList]: () => manualSteps.list,
+        [WS_METHODS.manualStepsDetected]: () => detectedManualSteps.list,
         [WS_METHODS.serverWatchRestartHold]: () =>
           runtimeRecovery.watchRestartHold.pipe(
             Stream.mapError(

@@ -38,6 +38,14 @@ do; reply there when you are done. When the description also has a line `Chat: <
 T3.CodeShip thread link, the step shows **Open chat**, which opens the chat that set it Waiting.
 That works when the app is connected to the machine the chat runs on.
 
+Each machine also adds the sign-ins it notices itself, with or without a ThreadPage token: an
+enabled provider account that is signed out, a Claude login that ends within 7 days or already
+ended, and an MCP server that needs signing in. Each names the machine and the account, comes
+before the ThreadPage steps, and has **Sign in**, which opens that account in **Settings →
+Providers** or that server on the **Extensions** MCP tab (on mobile, the Providers or Capabilities
+page). The step disappears by itself once the sign-in works. Servers that predate this list show
+only the ThreadPage steps.
+
 To fill the list, create a token in ThreadPage under **Settings → Connections → Connect an
 automation → Script or API**, with **Read only** access to the Machine inbox folder or all threads.
 Save it in **Settings → Threads → ThreadPage** on one machine. The token stays on that machine and
