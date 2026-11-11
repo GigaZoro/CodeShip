@@ -317,6 +317,24 @@ other converge by passing versions on. This is not the list in `client-runtime`'
   separate machines (`codex_<uuid>`) do not line up, so sharing them all would give every machine a
   signed-out copy of every other machine's.
 
+## Device settings profile
+
+Client settings are per install, so a user's devices reach the same look through one shared setting,
+`deviceSettingsProfile`: a loose, whole-value record of the keys in
+[`DEVICE_SETTINGS_PROFILE_KEYS`](../../packages/contracts/src/deviceSettingsProfile.ts) (an
+allowlist, so a new client setting is not shared until listed). To the server it is an ordinary
+shared key, stored and relayed as sent, which is why it is loose: a newer build's keys pass through
+older servers and clients. `applyServerSettingsPatch` replaces it whole, since merging would keep
+keys a newer profile dropped.
+
+A device opts in with the client setting `followDeviceSettingsProfile` and reads and writes only its
+primary server's profile, and only when that server follows shared settings and reports
+`capabilities.deviceSettingsProfile` (an older server would drop the key silently). The device keeps
+`deviceSettingsProfileBase`, the portable values it last took or sent, so a change the device made is
+told from a profile that arrived since (`planDeviceSettingsProfileSync` in `client-runtime`): the
+server's stamps order profiles, and when both sides changed, the profile wins. Mobile has no primary
+server and its own preference store, so it does not take part.
+
 ## Hosted web is a client
 
 The hosted web app stores its connection catalog in the browser and connects
