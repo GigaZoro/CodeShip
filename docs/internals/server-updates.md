@@ -81,6 +81,13 @@ records delivery each restart resends it with a note that the agent may already 
 An unconfirmed `/goal` is not replayed, because it reaches the provider verbatim and
 replaying it resets the goal, and a cut delegated-task result is left to delegated
 recovery, which offers it again under a new generation.
+The same revival runs before later work someone asks for, whatever the preference: a message
+a person or an agent sends, **Resume** or **Send now** starts the cut run again first and
+waits behind it (Send now's message next), so the agent never gets a later message without
+the one the restart kept from it. Server and provider messages (wakes, notifications,
+scheduled occurrences) do not revive it, nor does anything after a Stop, a switch to another
+provider, or a skip of a stale scheduled occurrence. A revived run that was still preparing
+its workspace queues a `workspace.prepare` effect, which runs the original preparation again.
 Queued runs never started, so recovery holds them and continues the run they wait
 behind. With the preference on, the hold is marked `queueHeldByRestart`: nobody chose it,
 so the thread's next completed run releases it like an agent's held message, and the

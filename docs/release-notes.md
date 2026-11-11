@@ -1,3 +1,7 @@
+## 2026-11-11 — A restart no longer loses a chat's first message
+
+- When a restart cut a chat before its agent received the message, for example while its worktree was being prepared, a later message no longer starts without it. A message you or an agent send, **Resume** or **Send now** first sends the cut message again, in the worktree it asked for, and the new one follows. This works with **Continue threads after restarts** off too. Before, the agent got only the later message, worked in the project folder instead of the worktree, and could pick up another chat's task as its own.
+
 ## 2026-11-11 — Scheduled-task tools say a model needs a provider
 
 - The `schedule_task` tool now advertises its `modelSelection` as it is decoded: `instanceId` (the provider instance, for example `codex`) and a non-empty `model` are required, `options` is a list of `{id, value}`, and `autoAccount` is a boolean. Agents no longer send a model without a provider and get the update rejected. The old `provider` field is no longer accepted in this tool's input; stored selections still read it.

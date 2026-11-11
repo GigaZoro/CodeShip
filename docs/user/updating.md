@@ -102,7 +102,9 @@ the setting does not enable automatic startup. Terminal commands may still be
 interrupted, and threads without saved provider resume state need a new message.
 A message the restart cut before the agent received it, while its worktree was
 being prepared or its agent was starting, is sent again as it was, with the same
-model and worktree. When the restart came while the message was being sent, the
+model and worktree. If you or an agent send that chat a new message, or press
+**Resume**, before it resumed, also with this setting off, the cut message goes
+first in its own worktree and the new one follows. When the restart came while the message was being sent, the
 agent is also told it may have it already, so it does not repeat work; a `/goal`
 command in that state is not sent again, so send it yourself if you still need it.
 Messages you queued behind a resumed turn follow once it finishes; if it fails,

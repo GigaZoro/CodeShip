@@ -812,6 +812,7 @@ it.effect(
       assert.equal(summary.retiredEffects, 2);
       assert.deepEqual(committedInput?.cancelUnsettledEffects?.effectTypes, [
         "provider-turn.start",
+        "workspace.prepare",
         "provider-turn.interrupt",
         "provider-turn.steer",
         "provider-turn.restart",

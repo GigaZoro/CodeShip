@@ -110,7 +110,6 @@ export const layerExecutor: Layer.Layer<
               Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
               Effect.provideService(ServerSettings.ServerSettingsService, settings),
               Effect.provideService(RestartResumeRequest, restartResumeRequest),
-              Effect.provideService(RestartRunPreparation, restartRunPreparation),
               Effect.tapError(() =>
                 willRetry
                   ? Effect.void
@@ -562,6 +561,12 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
+          case "workspace.prepare":
+            return restartRunPreparation({
+              commandId: effect.commandId,
+              threadId: effect.threadId,
+              runId: effect.request.runId,
+            });
           case "delegated-tasks.stop":
             return threads
               .stopDelegatedTasks({

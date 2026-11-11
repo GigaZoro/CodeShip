@@ -28,7 +28,6 @@ import {
   RestartResumeRequest,
   restartResumeRun,
   restartRetryRun,
-  RestartRunPreparation,
 } from "./RestartContinuation.ts";
 import { continuationStartRetryDelayMs, restartRetryNoticeId } from "./RestartBackgroundNote.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
@@ -1330,13 +1329,7 @@ const cutBeforePrompt = (extra: Record<string, unknown> = {}) =>
 const resumeCommands = (projection: OrchestrationV2ThreadProjection) =>
   Effect.gen(function* () {
     const commands: Array<OrchestrationV2ServerCommand> = [];
-    const prepared: Array<RunId> = [];
     yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
-      Effect.provideService(RestartRunPreparation, (input) =>
-        Effect.sync(() => {
-          prepared.push(input.runId);
-        }),
-      ),
       Effect.provide(
         Layer.merge(
           Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -1352,7 +1345,7 @@ const resumeCommands = (projection: OrchestrationV2ThreadProjection) =>
         ),
       ),
     );
-    return { commands, prepared };
+    return { commands };
   });
 
 it.each(["preparing", "starting", "running"] as const)(
@@ -1385,7 +1378,7 @@ it.effect(
   "sends the original message again instead of continuing a run the provider never saw",
   () =>
     Effect.gen(function* () {
-      const { commands, prepared } = yield* resumeCommands(
+      const { commands } = yield* resumeCommands(
         cutBeforePrompt({ workspacePreparation: { type: "worktree", baseRef: "main" } }),
       );
       assert.deepEqual(commands, [
@@ -1397,8 +1390,6 @@ it.effect(
           runId,
         },
       ]);
-      // A run back in preparation needs its workspace prepared again; others ignore the call.
-      assert.deepEqual(prepared, [runId]);
     }),
 );
 

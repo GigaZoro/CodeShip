@@ -393,13 +393,8 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
         threadId: input.threadId,
         runId: source.id,
       };
+      // A retry that puts the run back to preparing its workspace also queues that preparation.
       yield* threads.dispatch({ type: "prepared-run.retry", automatic: true, ...target }).pipe(
-        // Does nothing unless the retry put the run back to preparing its workspace.
-        Effect.andThen(
-          source.workspacePreparation === undefined
-            ? Effect.void
-            : (yield* RestartRunPreparation)(target),
-        ),
         Effect.catchTags({
           ThreadManagementProviderInstanceDisabledError: (error) =>
             Effect.logInfo("orchestration-v2.restart-retry.instance-disabled", {

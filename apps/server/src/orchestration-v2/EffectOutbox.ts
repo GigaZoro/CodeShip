@@ -119,6 +119,10 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     type: Schema.Literal("delegated-tasks.stop"),
     reason: Schema.optional(Schema.String),
   }),
+  Schema.Struct({
+    type: Schema.Literal("workspace.prepare"),
+    runId: RunId,
+  }),
 ]);
 export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.Type;
 
@@ -137,6 +141,7 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
 
 export const PROCESS_BOUND_EFFECT_TYPES = [
   "provider-turn.start",
+  "workspace.prepare",
   "provider-turn.interrupt",
   "provider-turn.steer",
   "provider-turn.restart",
