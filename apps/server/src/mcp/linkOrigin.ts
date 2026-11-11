@@ -1,10 +1,14 @@
 import {
+  type EnvironmentId,
   linkOriginIsFenced,
   OrchestratorMcpFailure,
   type OrchestrationV2LinkOrigin,
   type OrchestrationV2ThreadShell,
+  peerLinkAccessAllowsLinkBack,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+
+import { clientModeCeiling, type McpInvocationScope } from "./McpInvocationContext.ts";
 
 import type { Caller } from "./threadAccess.ts";
 
@@ -57,4 +61,42 @@ export const assertNotLinked = (caller: Pick<Caller, "scope" | "caller">, what: 
   return origin === undefined
     ? Effect.void
     : Effect.fail(outsideLink(origin, `it cannot ${what}.`));
+};
+
+const linkBackDenied = (message: string) =>
+  new OrchestratorMcpFailure({ code: "capability_denied", message });
+
+/**
+ * The one change to this environment's links a fenced link may make: linking back to the
+ * environment it signed in from. It names that environment itself at sign-in, so it can only
+ * link back to the machine whose pairing code it holds, and its access must already let it
+ * work here without approval at every step.
+ */
+export const assertMayLinkBack = (
+  scope: McpInvocationScope,
+  target: EnvironmentId,
+): Effect.Effect<void, OrchestratorMcpFailure> => {
+  const client = scope.client;
+  if (client?.linked !== true) {
+    return Effect.fail(
+      linkBackDenied("Only an environment linked to this one may ask it to link back."),
+    );
+  }
+  if (client.linkedFrom !== target) {
+    return Effect.fail(
+      linkBackDenied(
+        client.linkedFrom === undefined
+          ? `${client.label} linked this environment before linking back was possible. Link it again from there to let this environment reach it.`
+          : `${client.label} may only ask this environment to link back to itself.`,
+      ),
+    );
+  }
+  if (!peerLinkAccessAllowsLinkBack(clientModeCeiling(client).runtimeMode)) {
+    return Effect.fail(
+      linkBackDenied(
+        `${client.label} is linked with less than auto access, which is not enough to ask this environment to link back. Link it with auto or full access, or link it from here.`,
+      ),
+    );
+  }
+  return Effect.void;
 };

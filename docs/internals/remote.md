@@ -141,6 +141,22 @@ its agents can already do anything that user can, so the fence would only stop
 T3's own tools. Its work still carries `linkOrigin`, so clients show where it
 came from. A stamp without the access, from before it was recorded, is fenced.
 
+**Linking both ways is one grant made on the linking side.** A link is one-way: the linking
+environment's agents reach the other, not the reverse. When the user also lets the other
+machine reach this one, [`PeerLinkBack`](../../apps/server/src/peer/PeerLinkBack.ts) mints a
+short-lived pairing code _here_ and sends it over the new link to the other environment's
+`t3_link_back` tool, which runs its ordinary `PeerLinks.link` toward this one. The code never
+passes through a client or a log, and an unredeemed one is revoked. Linking back is the one change
+to an environment's links a fenced link may make, so the rule is narrow
+([`assertMayLinkBack`](../../apps/server/src/mcp/linkOrigin.ts)): the caller is a peer link whose
+signed session declared the environment it signed in from (`ple`, set from `peer_environment_id`
+at registration) and may link back only to that one, and its access is at least `auto`. A link
+made before sessions named their origin, or below `auto`, is refused and the user links from the
+other side. The declared environment is the link's own claim, so it narrows what the link may
+ask for without being proof of who it is: the code that makes the request useful can only come
+from an administrator of the environment it opens, and the other side still checks that the
+address answers as that environment.
+
 ## Shared scheduled tasks sync through clients
 
 A shared scheduled task has the same id on every machine, and each machine

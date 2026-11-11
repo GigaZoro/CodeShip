@@ -67,6 +67,7 @@ import * as PeerLinks from "./PeerLinks.ts";
 import * as SharedSettings from "../sharedSettings/SharedSettings.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
+import * as PeerLinkBack from "./PeerLinkBack.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
 
 // The laptop's agent delegates a task to the box through a link. The box is
@@ -500,6 +501,7 @@ const boxToolkitLayer = (thread: BoxThread) => {
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+        Layer.mock(PeerLinkBack.PeerLinkBack)({}),
         Layer.mock(SharedSettings.SharedSettings)({}),
       ),
     ),
@@ -626,6 +628,7 @@ const makeLaptop = (
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+          Layer.mock(PeerLinkBack.PeerLinkBack)({}),
           Layer.mock(SharedSettings.SharedSettings)({}),
         ),
       ),

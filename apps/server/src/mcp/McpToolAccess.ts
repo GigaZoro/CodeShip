@@ -21,7 +21,12 @@ import {
   type DispatchModeRefusal,
 } from "../orchestration-v2/DispatchModeLimit.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
-import { assertNotLinked, assertSameLink, callerLinkOrigin } from "./linkOrigin.ts";
+import {
+  assertMayLinkBack,
+  assertNotLinked,
+  assertSameLink,
+  callerLinkOrigin,
+} from "./linkOrigin.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
 import {
@@ -287,6 +292,22 @@ export const either = <P, A, E, R, A2, E2, R2>(
       ),
   );
 };
+
+/**
+ * What a linked environment may ask this one to do for the link it made: link this environment
+ * back to it. See `assertMayLinkBack`.
+ */
+export const linksBack = <P extends { readonly environmentId: EnvironmentId }, A, E, R>(
+  handle: (params: P) => Effect.Effect<A, E, R>,
+) =>
+  declare(
+    (params: P) =>
+      McpInvocationContext.McpInvocationContext.pipe(
+        Effect.flatMap((scope) => assertMayLinkBack(scope, params.environmentId)),
+        Effect.flatMap(() => handle(params)),
+      ),
+    undefined,
+  );
 
 const fullAccessRequired =
   "Changing projects or environment settings needs a live full-access/default calling thread or a full-access client.";

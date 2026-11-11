@@ -3,6 +3,7 @@ import { OrchestratorToolkit } from "./tools.ts";
 import * as Effect from "effect/Effect";
 
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
+import * as PeerLinkBack from "../../../peer/PeerLinkBack.ts";
 import * as PeerLinkRequests from "../../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../../peer/PeerLinks.ts";
 import * as SharedSettings from "../../../sharedSettings/SharedSettings.ts";
@@ -244,6 +245,14 @@ const handlers = {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const requests = yield* PeerLinkRequests.PeerLinkRequests;
       return yield* requests.request(scope, input);
+    }),
+  ),
+  // The one change to links a fenced link may make: linking back to the environment it
+  // signed in from (`McpToolAccess.linksBack`).
+  t3_link_back: McpToolAccess.linksBack((input) =>
+    Effect.gen(function* () {
+      const linkBack = yield* PeerLinkBack.PeerLinkBack;
+      return yield* linkBack.accept(input);
     }),
   ),
   t3_environment_unlink: McpToolAccess.writesEnvironment(({ environmentId }) =>

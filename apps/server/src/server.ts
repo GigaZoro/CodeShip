@@ -73,6 +73,7 @@ import * as TerminalManager from "./terminal/Manager.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as PeerForwarding from "./peer/PeerForwarding.ts";
 import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
+import * as PeerLinkBack from "./peer/PeerLinkBack.ts";
 import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
 import * as PeerLinks from "./peer/PeerLinks.ts";
 import * as SharedTaskPeerCheck from "./scheduledTasks/SharedTaskPeerCheck.ts";
@@ -893,6 +894,8 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(AccountRouting.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
   // Links agents ask for: shown in a thread from /mcp, answered over WebSocket.
   Layer.provide(PeerLinkRequests.layer),
+  // Linking both ways: asked over WebSocket, and answered when a linked machine asks this one over /mcp.
+  Layer.provide(PeerLinkBack.layer),
   // The settings shared with the user's other machines: saved over WebSocket, served to links by /mcp.
   Layer.provide(SharedSettings.layer),
   // Linked machines' last task lists, kept up to date in the background while the server runs.

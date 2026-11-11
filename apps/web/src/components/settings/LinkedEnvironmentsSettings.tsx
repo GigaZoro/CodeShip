@@ -1,11 +1,15 @@
 import type { ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";
-import { linkRequestFailureMessage } from "@t3tools/client-runtime/link-request";
+import {
+  defaultReverseLinkAccess,
+  linkRequestFailureMessage,
+} from "@t3tools/client-runtime/link-request";
 import {
   AuthAccessWriteScope,
   type AuthMcpClientAccess,
   type EnvironmentId,
   type PeerLinkSummary,
+  peerLinkAccessAllowsLinkBack,
 } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
@@ -20,13 +24,14 @@ import { useId, useRef, useState } from "react";
 
 import { requestConfirmDialog } from "~/confirmDialog";
 import { mintPairingCodeOn } from "~/state/peerPairingCode";
-import { peerLinkEnvironment, useLinkableMachines } from "~/state/peerLinks";
+import { peerLinkEnvironment, useLinkableMachines, useOwnLinkUrls } from "~/state/peerLinks";
 import { useEnvironmentQuery } from "~/state/query";
 import { useEnvironmentScope, usePreparedConnection } from "~/state/session";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { accessConfig } from "../auth/ConnectAgentSurface";
 import { ConnectionStatusDot } from "../ConnectionStatusDot";
 import { Button } from "../ui/button";
+import { Checkbox } from "../ui/checkbox";
 import {
   Dialog,
   DialogClose,
@@ -70,7 +75,14 @@ export function LinkedEnvironmentsSettings({
     <SettingsSection
       {...(isSearchTarget ? { id: search.id } : {})}
       title={environmentLabel === null ? search.title : `${search.title} · ${environmentLabel}`}
-      headerAction={canLink ? <LinkEnvironmentAction environmentId={environmentId} /> : null}
+      headerAction={
+        canLink ? (
+          <LinkEnvironmentAction
+            environmentId={environmentId}
+            environmentLabel={environmentLabel}
+          />
+        ) : null
+      }
     >
       {leading}
       {links.error ? (
@@ -177,14 +189,26 @@ function LinkedEnvironmentRow({
   );
 }
 
-function LinkEnvironmentAction({ environmentId }: { readonly environmentId: EnvironmentId }) {
+function LinkEnvironmentAction({
+  environmentId,
+  environmentLabel,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly environmentLabel: string | null;
+}) {
   const [open, setOpen] = useState(false);
   const machines = useLinkableMachines(environmentId, open);
+  const ownUrls = useOwnLinkUrls(environmentId);
   // Null until the user picks; with no other machines known, only an address is left.
   const [choice, setChoice] = useState<string | null>(null);
   const [address, setAddress] = useState("");
   const [pairingCode, setPairingCode] = useState("");
   const [access, setAccess] = useState<AuthMcpClientAccess>("approval-required");
+  // Also let the other machine reach this one. The access follows the one chosen above until
+  // it is picked on its own.
+  const [bothWays, setBothWays] = useState(false);
+  const [reverseChoice, setReverseChoice] = useState<AuthMcpClientAccess | null>(null);
+  const reverseAccess = reverseChoice ?? defaultReverseLinkAccess(access);
   const [busy, setBusy] = useState(false);
   // Machines whose minting already failed, so the dialog asks for a code instead.
   const [mintFailed, setMintFailed] = useState<ReadonlySet<EnvironmentId>>(new Set());
@@ -213,6 +237,8 @@ function LinkEnvironmentAction({ environmentId }: { readonly environmentId: Envi
       setAddress("");
       setPairingCode("");
       setAccess("approval-required");
+      setBothWays(false);
+      setReverseChoice(null);
       setMintFailed(new Set());
     }
   };
@@ -225,6 +251,9 @@ function LinkEnvironmentAction({ environmentId }: { readonly environmentId: Envi
     failureToast(t("Could not link the environment"), linkRequestFailureMessage(minted.failure));
     return null;
   };
+  const otherName = machine?.label ?? t("that machine");
+  const canLinkBack = peerLinkAccessAllowsLinkBack(access);
+  const reversing = bothWays && canLinkBack;
   const submit = async () => {
     const [url, ...alternateUrls] =
       machine === null || needsAddress ? [address.trim()] : machine.urls;
@@ -245,16 +274,38 @@ function LinkEnvironmentAction({ environmentId }: { readonly environmentId: Envi
                 : { expectedEnvironmentId: machine.environmentId, expectedLabel: machine.label }),
               pairingCode: code,
               access,
+              ...(reversing
+                ? {
+                    reverse: {
+                      access: reverseAccess,
+                      ...(ownUrls.length > 0 ? { urls: ownUrls } : {}),
+                    },
+                  }
+                : {}),
             },
           });
     inFlight.current = false;
     setBusy(false);
     if (result === null) return;
     if (result._tag === "Success") {
-      toastManager.add({
-        type: "success",
-        title: t("Linked {name}", { name: result.value.label }),
-      });
+      const name = result.value.label;
+      const back = result.value.back;
+      if (reversing && back?.status !== "linked") {
+        // The link made here stands; only the way back is missing.
+        toastManager.add({
+          type: "warning",
+          title: t("Linked {name}, but it cannot reach this machine yet", { name }),
+          description: t("Link {here} from {name} to let it reach this machine.", {
+            here: environmentLabel ?? t("this machine"),
+            name,
+          }),
+        });
+      } else {
+        toastManager.add({
+          type: "success",
+          title: reversing ? t("Linked {name} both ways", { name }) : t("Linked {name}", { name }),
+        });
+      }
       handleOpenChange(false);
     } else if (!isAtomCommandInterrupted(result)) {
       failureToast(t("Could not link the environment"), String(squashAtomCommandFailure(result)));
@@ -363,6 +414,41 @@ function LinkEnvironmentAction({ environmentId }: { readonly environmentId: Envi
               </label>
             )}
             <LinkAccessPicker value={access} onChange={setAccess} disabled={busy} />
+            <div className="space-y-3">
+              <label className="flex items-start gap-2 text-xs">
+                <Checkbox
+                  checked={reversing}
+                  disabled={busy || !canLinkBack}
+                  onCheckedChange={(checked) => setBothWays(checked === true)}
+                  className="mt-0.5"
+                />
+                <span className="space-y-1">
+                  <span className="block font-medium text-foreground">
+                    {t("Also let {name} reach this machine", { name: otherName })}
+                  </span>
+                  <span className="block text-muted-foreground">
+                    {canLinkBack
+                      ? t(
+                          "This machine links {name} back in the same step, so no second pairing code is typed there. Linked environments must be on there too.",
+                          { name: otherName },
+                        )
+                      : t(
+                          "{name} can link back only when this link has auto or full access. Otherwise link this machine from {name}.",
+                          { name: otherName },
+                        )}
+                  </span>
+                </span>
+              </label>
+              {reversing ? (
+                <LinkAccessPicker
+                  value={reverseAccess}
+                  onChange={setReverseChoice}
+                  disabled={busy}
+                  label={t("What agents there may do here")}
+                  note={t("An agent there never gets more access here than its own mode there.")}
+                />
+              ) : null}
+            </div>
           </form>
         </DialogPanel>
         <DialogFooter variant="bare">

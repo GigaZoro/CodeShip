@@ -46,6 +46,7 @@ import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as ThreadSearch from "../orchestration-v2/ThreadSearch.ts";
+import * as PeerLinkBack from "../peer/PeerLinkBack.ts";
 import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as SharedSettings from "../sharedSettings/SharedSettings.ts";
@@ -166,6 +167,7 @@ const layerTools = Layer.mergeAll(
   Layer.provide(
     Layer.mergeAll(
       Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+      Layer.mock(PeerLinkBack.PeerLinkBack)({}),
       Layer.mock(SharedSettings.SharedSettings)({}),
     ),
   ),

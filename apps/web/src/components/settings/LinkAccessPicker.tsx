@@ -10,17 +10,24 @@ export function LinkAccessPicker({
   value,
   onChange,
   disabled = false,
+  label = t("What agents here may do there"),
+  note = t(
+    "An agent never gets more access there than its own mode here. Below full access, it can change only threads this link started, not that machine's own threads, projects or settings.",
+  ),
 }: {
   readonly value: AuthMcpClientAccess;
   readonly onChange: (access: AuthMcpClientAccess) => void;
   readonly disabled?: boolean;
+  /** Which side's agents the choice is for. */
+  readonly label?: string;
+  readonly note?: string;
 }) {
   const labelId = useId();
   const selected = accessConfig[value];
   return (
     <div className="space-y-1.5">
       <span id={labelId} className="block text-xs font-medium">
-        {t("What agents here may do there")}
+        {label}
       </span>
       <Select
         value={value}
@@ -55,10 +62,7 @@ export function LinkAccessPicker({
         </SelectPopup>
       </Select>
       <p className="text-xs text-muted-foreground">
-        {t(selected.description)}{" "}
-        {t(
-          "An agent never gets more access there than its own mode here. Below full access, it can change only threads this link started, not that machine's own threads, projects or settings.",
-        )}
+        {t(selected.description)} {note}
       </p>
     </div>
   );

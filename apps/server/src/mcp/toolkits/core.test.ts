@@ -61,6 +61,7 @@ import { dispatchFailure } from "../threadAccess.ts";
 import * as EnvironmentHandlers from "./environment/handlers.ts";
 import * as AttachmentReferences from "./attachment/references.ts";
 import * as PeerForwarding from "../../peer/PeerForwarding.ts";
+import * as PeerLinkBack from "../../peer/PeerLinkBack.ts";
 import * as PeerLinkRequests from "../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 import * as SharedSettings from "../../sharedSettings/SharedSettings.ts";
@@ -86,6 +87,7 @@ const layerThreadToolkit = McpHttpServer.layerThreadToolkit.pipe(
   Layer.provide(
     Layer.mergeAll(
       Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+      Layer.mock(PeerLinkBack.PeerLinkBack)({}),
       Layer.mock(SharedSettings.SharedSettings)({}),
     ),
   ),
@@ -762,6 +764,7 @@ it.effect("refuses act-as-caller tools to a client caller", () =>
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+            Layer.mock(PeerLinkBack.PeerLinkBack)({}),
             Layer.mock(SharedSettings.SharedSettings)({}),
           ),
         ),
@@ -828,6 +831,7 @@ it.effect("a caller cannot rewrite a scheduled task that runs above its own mode
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+            Layer.mock(PeerLinkBack.PeerLinkBack)({}),
             Layer.mock(SharedSettings.SharedSettings)({}),
           ),
         ),
@@ -888,6 +892,7 @@ it.effect.each([
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+            Layer.mock(PeerLinkBack.PeerLinkBack)({}),
             Layer.mock(SharedSettings.SharedSettings)({}),
           ),
         ),
@@ -987,6 +992,7 @@ it.effect.each(["t3_thread_interrupt", "t3_workflow_stop"])(
           Layer.provide(
             Layer.mergeAll(
               Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+              Layer.mock(PeerLinkBack.PeerLinkBack)({}),
               Layer.mock(SharedSettings.SharedSettings)({}),
             ),
           ),
@@ -1085,6 +1091,7 @@ it.effect("discovers workflow stop targets and requires orchestration capability
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+            Layer.mock(PeerLinkBack.PeerLinkBack)({}),
             Layer.mock(SharedSettings.SharedSettings)({}),
           ),
         ),
@@ -1199,6 +1206,7 @@ it.effect(
           Layer.provide(
             Layer.mergeAll(
               Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+              Layer.mock(PeerLinkBack.PeerLinkBack)({}),
               Layer.mock(SharedSettings.SharedSettings)({}),
             ),
           ),

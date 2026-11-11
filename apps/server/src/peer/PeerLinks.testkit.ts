@@ -1,3 +1,4 @@
+import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentHttpApi,
@@ -134,13 +135,16 @@ export const servePeer = <E, R>(
       Layer.provide(layerEnvironment),
       Layer.provide(Layer.succeedContext(authContext)),
     );
+    // Its own socket, so two peers in one test answer at two addresses.
+    const socket = yield* Layer.build(NodeHttpServer.layerTest.pipe(Layer.fresh));
     // Fresh, so the peer never shares a toolkit or MCP server with the
     // environment that links to it in the same test.
     yield* HttpRouter.serve(layerRoutes, { disableListenLog: true, disableLogger: true }).pipe(
       Layer.fresh,
+      Layer.provide(Layer.succeedContext(socket)),
       Layer.build,
     );
-    const address = (yield* HttpServer.HttpServer).address;
+    const address = Context.get(socket, HttpServer.HttpServer).address;
     if (address._tag === "UnixPathAddress") return yield* Effect.die("expected a TCP address");
     const url = `http://127.0.0.1:${address.port}`;
     const auth = Context.get(authContext, EnvironmentAuth.EnvironmentAuth);

@@ -8,6 +8,7 @@ import {
   resolveEnvironmentMachineKind,
   type ServerConfig,
 } from "@t3tools/contracts";
+import { isLocalLoopbackHost } from "@t3tools/shared/hostClassification";
 import * as Option from "effect/Option";
 
 import type { EnvironmentPresentation } from "./connection/presentation.ts";
@@ -80,6 +81,53 @@ export interface LinkableMachine {
  * linked. `connect` is what relay discovery found, and a server reaches a machine there as a
  * browser does, so its Connect address is usable.
  */
+function environmentLinkUrls(
+  environment: EnvironmentPresentation,
+  connect: ReadonlyMap<string, RelayDiscoveredEnvironment>,
+  environmentId: EnvironmentId,
+): ReadonlyArray<string> {
+  const reported = (environment.serverConfig?.directEndpoints ?? []).map(
+    (endpoint) => endpoint.httpBaseUrl,
+  );
+  const routes = connectionRoutes(environment.entry).flatMap((route) => {
+    const url = route.target._tag === "RelayConnectionTarget" ? null : routeHttpBaseUrl(route);
+    return url === null ? [] : [url];
+  });
+  const endpoint = connect.get(environmentId)?.environment.endpoint;
+  return [
+    ...new Set([...reported, ...routes, ...(endpoint === undefined ? [] : [endpoint.httpBaseUrl])]),
+  ];
+}
+
+/**
+ * Where another machine may reach `environment`, for its link back: what
+ * `linkableMachines` knows of a machine, without addresses that only mean something on this
+ * client's own machine.
+ */
+export function ownLinkUrls(input: {
+  readonly environment:
+    | (EnvironmentPresentation & { readonly environmentId: EnvironmentId })
+    | undefined;
+  readonly connect: ReadonlyMap<string, RelayDiscoveredEnvironment>;
+}): ReadonlyArray<string> {
+  if (input.environment === undefined) return [];
+  return environmentLinkUrls(
+    input.environment,
+    input.connect,
+    input.environment.environmentId,
+  ).filter((url) => {
+    const host = URL.parse(url)?.hostname;
+    return host !== undefined && !isLocalLoopbackHost(host);
+  });
+}
+
+/**
+ * What the other machine's agents may do here when linking both ways: what this machine's agents
+ * get there, and never more than auto unless the user picks full access.
+ */
+export const defaultReverseLinkAccess = (forward: AuthMcpClientAccess): AuthMcpClientAccess =>
+  forward === "full-access" ? "auto" : forward;
+
 export function linkableMachines(input: {
   readonly environments: ReadonlyArray<
     EnvironmentPresentation & { readonly environmentId: EnvironmentId }
@@ -93,31 +141,15 @@ export function linkableMachines(input: {
   );
   const saved = input.environments
     .filter((environment) => environment.environmentId !== input.threadEnvironmentId)
-    .map((environment) => {
-      const reported = (environment.serverConfig?.directEndpoints ?? []).map(
-        (endpoint) => endpoint.httpBaseUrl,
-      );
-      const routes = connectionRoutes(environment.entry).flatMap((route) => {
-        const url = route.target._tag === "RelayConnectionTarget" ? null : routeHttpBaseUrl(route);
-        return url === null ? [] : [url];
-      });
-      const connect = input.connect.get(environment.environmentId)?.environment.endpoint;
-      return {
-        environmentId: environment.environmentId,
-        label: environment.entry.target.label,
-        machine: resolveEnvironmentMachineKind(environment.serverConfig),
-        connected: environment.connection.phase === "connected",
-        connectOnly: false,
-        linked: linkedIds.has(environment.environmentId),
-        urls: [
-          ...new Set([
-            ...reported,
-            ...routes,
-            ...(connect === undefined ? [] : [connect.httpBaseUrl]),
-          ]),
-        ],
-      };
-    });
+    .map((environment) => ({
+      environmentId: environment.environmentId,
+      label: environment.entry.target.label,
+      machine: resolveEnvironmentMachineKind(environment.serverConfig),
+      connected: environment.connection.phase === "connected",
+      connectOnly: false,
+      linked: linkedIds.has(environment.environmentId),
+      urls: environmentLinkUrls(environment, input.connect, environment.environmentId),
+    }));
   const savedIds = new Set<string>(saved.map((machine) => machine.environmentId));
   const connectOnly = [...input.connect.values()]
     .filter(

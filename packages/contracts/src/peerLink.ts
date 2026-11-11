@@ -32,6 +32,23 @@ export const PeerLinkSummary = Schema.Struct({
 });
 export type PeerLinkSummary = typeof PeerLinkSummary.Type;
 
+/**
+ * Also lets the linked environment reach this one. This environment mints the pairing code
+ * itself and hands it over the new link, so the other machine can link back without anyone
+ * typing a second code there.
+ */
+export const PeerLinkReverseRequest = Schema.Struct({
+  /** What the other environment's agents may do here. */
+  access: AuthMcpClientAccess,
+  /**
+   * Addresses the other environment can reach this one at, most preferred first. Hints only:
+   * it uses those that answer as this environment. This environment's own direct addresses
+   * follow.
+   */
+  urls: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
+});
+export type PeerLinkReverseRequest = typeof PeerLinkReverseRequest.Type;
+
 export const PeerLinkCreateInput = Schema.Struct({
   /** Where the peer answers: an https, Tailscale, LAN or loopback base URL. */
   url: TrimmedNonEmptyString,
@@ -47,8 +64,37 @@ export const PeerLinkCreateInput = Schema.Struct({
   expectedEnvironmentId: Schema.optionalKey(EnvironmentId),
   /** What the user calls that environment, to name it when it cannot be reached. */
   expectedLabel: Schema.optionalKey(TrimmedNonEmptyString),
+  /** Link the other way too, in the same step. Linking this way stands even when that fails. */
+  reverse: Schema.optionalKey(PeerLinkReverseRequest),
 });
 export type PeerLinkCreateInput = typeof PeerLinkCreateInput.Type;
+
+/**
+ * Whether a link with this access may ask the environment it links to to link back. Linking
+ * back changes that environment's own links, which a link below full access otherwise cannot
+ * do, so it is limited to links that already work there without asking at every step.
+ */
+export const peerLinkAccessAllowsLinkBack = (
+  access: AuthMcpClientAccess,
+): access is "auto" | "full-access" => access === "auto" || access === "full-access";
+
+/** How linking back from the other environment went. */
+export const PeerLinkBackOutcome = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("linked"), access: AuthMcpClientAccess }),
+  Schema.Struct({
+    status: Schema.Literal("not_linked"),
+    /** Why, in words a user can act on. */
+    message: Schema.String,
+  }),
+]);
+export type PeerLinkBackOutcome = typeof PeerLinkBackOutcome.Type;
+
+/** A new link, and when asked for, whether the other environment linked back. */
+export const PeerLinkResult = Schema.Struct({
+  ...PeerLink.fields,
+  back: Schema.optionalKey(PeerLinkBackOutcome),
+});
+export type PeerLinkResult = typeof PeerLinkResult.Type;
 
 export const PeerLinkRemoveInput = Schema.Struct({ environmentId: EnvironmentId });
 export type PeerLinkRemoveInput = typeof PeerLinkRemoveInput.Type;
@@ -92,6 +138,8 @@ export const PeerLinkRequestAnswerInput = Schema.Struct({
       urls: Schema.NonEmptyArray(TrimmedNonEmptyString),
       access: AuthMcpClientAccess,
       pairingCode: TrimmedNonEmptyString,
+      /** Link the other way too, as for `PeerLinkCreateInput`. */
+      reverse: Schema.optionalKey(PeerLinkReverseRequest),
     }),
     /** Answers with a machine this environment is already linked to, as it is. */
     Schema.Struct({ type: Schema.Literal("use-existing"), environmentId: EnvironmentId }),

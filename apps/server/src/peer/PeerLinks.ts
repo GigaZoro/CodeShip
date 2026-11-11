@@ -238,16 +238,21 @@ const make = Effect.gen(function* () {
 
   /** Signs in to the peer's `/mcp` with a pairing code: register, decide, exchange. */
   const signIn = Effect.fn("PeerLinks.signIn")(
-    function* (origin: string, input: PeerLinkCreateInput, clientName: string) {
+    function* (
+      origin: string,
+      input: PeerLinkCreateInput,
+      self: { readonly environmentId: EnvironmentId; readonly label: string },
+    ) {
       const client = yield* clientFor(origin);
       // Only the peer's own refusals are rejections. A dropped connection or
       // an answer this version cannot read is classified below.
       const registered = yield* client.mcpOAuth
         .register({
           payload: {
-            client_name: clientName,
+            client_name: `T3.CodeShip · ${self.label}`,
             redirect_uris: [LINK_REDIRECT_URI],
             software_id: MCP_PEER_LINK_SOFTWARE_ID,
+            peer_environment_id: self.environmentId,
           },
         })
         .pipe(
@@ -439,7 +444,7 @@ const make = Effect.gen(function* () {
         message: `${peer.label} runs a T3.CodeShip version that cannot keep a linked agent's limits. Update it, then link again.`,
       });
     }
-    const issued = yield* signIn(primary, input, `T3.CodeShip · ${self.label}`);
+    const issued = yield* signIn(primary, input, self);
     const now = yield* DateTime.now;
     const linked: PeerLink = {
       environmentId: peer.environmentId,
