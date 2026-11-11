@@ -131,12 +131,13 @@ function canManageProvider(provider: ServerProvider) {
 const formatLoginDate = (iso: string) =>
   new Intl.DateTimeFormat(getFormattingLocale(), { dateStyle: "medium" }).format(new Date(iso));
 
-function ProviderAccount({
+/** One provider account's sign-in: its status, the sign-in controls, and the flow's own steps. */
+export function ProviderAccount({
   environment,
   provider,
   divider,
 }: {
-  readonly environment: SettingsTarget;
+  readonly environment: Pick<SettingsTarget, "environmentId" | "label">;
   readonly provider: ServerProvider;
   readonly divider: boolean;
 }) {

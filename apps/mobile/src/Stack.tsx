@@ -100,6 +100,7 @@ import { SettingsDiagnosticsRouteScreen } from "./features/diagnostics/SettingsD
 import { SettingsCapabilitiesRouteScreen } from "./features/settings/SettingsCapabilitiesRouteScreen";
 import { SettingsMcpSignInRouteScreen } from "./features/settings/SettingsMcpSignInRouteScreen";
 import { SettingsProviderAccountsRouteScreen } from "./features/settings/SettingsProviderAccountsRouteScreen";
+import { SettingsSignInAllRouteScreen } from "./features/settings/SettingsSignInAllRouteScreen";
 import { SettingsAuthRouteScreen } from "./features/settings/SettingsAuthRouteScreen";
 import { SettingsEnvironmentDetailRouteScreen } from "./features/settings/SettingsEnvironmentDetailRouteScreen";
 import { SettingsEnvironmentsRouteScreen } from "./features/settings/SettingsEnvironmentsRouteScreen";
@@ -285,6 +286,11 @@ const SETTINGS_SCREENS = {
   SettingsMcpSignIn: createNativeStackScreen({
     screen: SettingsMcpSignInRouteScreen,
     options: () => ({ ...SETTINGS_PAGE_OPTIONS, title: t("Sign in") }),
+  }),
+  // No linking path: a link would walk sign-ins nobody asked for.
+  SettingsSignInAll: createNativeStackScreen({
+    screen: SettingsSignInAllRouteScreen,
+    options: () => ({ ...SETTINGS_PAGE_OPTIONS, title: t("Sign in to all") }),
   }),
   SettingsEnvironmentMaintenance: createNativeStackScreen({
     screen: SettingsEnvironmentMaintenanceRouteScreen,
