@@ -10,10 +10,13 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import {
   DEFAULT_SERVER_SETTINGS,
+  type EnvironmentId,
   type ProjectScopedServerSettingKey,
   type ServerSettings,
+  type ServerSettingsPatch,
   type UnifiedSettings,
 } from "@t3tools/contracts";
+import { hasSharedSettingsGroup } from "@t3tools/client-runtime/state/shared-settings";
 
 import { persistClientSettingsPatch, useMergedSettings } from "../../hooks/useSettings";
 import { serverEnvironment } from "../../state/server";
@@ -28,7 +31,6 @@ import {
   scopedSettingsAreMixed,
   scopedSettingsSource,
   sharedSaveSummary,
-  sharesWithFollowers,
   type ProjectOverrideEntry,
   type SavedScopedServerWrite,
   type ScopedSettingsPatch,
@@ -59,8 +61,29 @@ export interface ScopedSettingsWriteOptions {
   readonly onSaved?: (saved: ReadonlyArray<SavedScopedServerWrite>) => void;
 }
 
+/** Refuses a write this connection lacks the grants for before it reaches the server. */
+function missingSettingsGrant(request: {
+  readonly environmentId: EnvironmentId;
+  readonly input: { readonly patch: ServerSettingsPatch };
+}) {
+  const missing = requiredScopesForServerSettingsPatch(request.input.patch).find(
+    (scope) => !readEnvironmentScope(request.environmentId, scope),
+  );
+  return missing === undefined
+    ? undefined
+    : AsyncResult.failure(
+        Cause.fail(
+          new EnvironmentAuthorizationError({
+            requiredScope: missing,
+            message: t("This connection lacks permission to change these settings."),
+          }),
+        ),
+      );
+}
+
 export function useRunScopedSettingsPlan() {
-  const persistServer = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
+  const updateServer = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
+  const shareServer = useAtomCommand(serverEnvironment.shareSettings, { reportFailure: false });
   return (plan: ScopedSettingsPlan, options?: ScopedSettingsWriteOptions) => {
     if (plan.unavailableReason) {
       toastManager.add({
@@ -73,20 +96,9 @@ export function useRunScopedSettingsPlan() {
     }
     void persistScopedSettingsPatch(
       plan,
-      async (request) => {
-        const missing = requiredScopesForServerSettingsPatch(request.input.patch).find(
-          (scope) => !readEnvironmentScope(request.environmentId, scope),
-        );
-        if (missing)
-          return AsyncResult.failure(
-            Cause.fail(
-              new EnvironmentAuthorizationError({
-                requiredScope: missing,
-                message: t("This connection lacks permission to change these settings."),
-              }),
-            ),
-          );
-        return persistServer(request);
+      {
+        update: async (request) => missingSettingsGrant(request) ?? updateServer(request),
+        share: async (request) => missingSettingsGrant(request) ?? shareServer(request),
       },
       persistClientSettingsPatch,
     ).then(({ failedEnvironments, savedEnvironments, savedEnvironmentCount }) => {
@@ -170,7 +182,7 @@ export function useClearProjectOverrides() {
 /** Says where an all-machines save of a shared setting lands; null while it lands on every machine. */
 export function useSharedScopeNotice(): string | null {
   const context = useOptionalSettingsScope();
-  return context?.scope.kind === "all" && sharesWithFollowers(context.environments)
+  return context?.scope.kind === "all" && hasSharedSettingsGroup(context.environments)
     ? t("Shared settings are saved only on the machines that follow them.")
     : null;
 }

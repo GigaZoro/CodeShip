@@ -99,6 +99,7 @@ import {
   ThreadId,
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
+  type ServerSettingsPatch,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -1341,6 +1342,13 @@ export const layerWsRpc = (
       const deviceService = yield* DeviceService.DeviceService;
       const deviceHostContext =
         yield* Effect.context<Effect.Services<ReturnType<typeof remoteSshDeviceHosts>>>();
+      const withRemoteDeviceHosts = (patch: ServerSettingsPatch) =>
+        !patch.deviceHosts
+          ? Effect.succeed(patch)
+          : remoteSshDeviceHosts(patch.deviceHosts).pipe(
+              Effect.provide(deviceHostContext),
+              Effect.map((deviceHosts) => ({ ...patch, deviceHosts })),
+            );
       const orchestrationEngine = yield* Orchestrator.OrchestratorV2;
       const crypto = yield* Crypto.Crypto;
       // RPC client ids are only unique within one socket; terminals share viewers across sockets.
@@ -2632,16 +2640,22 @@ export const layerWsRpc = (
         [WS_METHODS.serverUpdateSettings]:
           /* Request instrumentation already owns the span; keep this helper in that context. */
           Effect.fnUntraced(function* ({ patch, providerInstanceMutation, share }) {
-            const deviceHosts = patch.deviceHosts
-              ? yield* remoteSshDeviceHosts(patch.deviceHosts).pipe(
-                  Effect.provide(deviceHostContext),
-                )
-              : undefined;
-            const nextPatch = { ...patch, ...(deviceHosts ? { deviceHosts } : {}) };
+            const nextPatch = yield* withRemoteDeviceHosts(patch);
             const settings = yield* providerInstanceMutation === undefined
               ? sharedSettings.update(nextPatch, share)
               : sharedSettings.updateProviderInstance(providerInstanceMutation, nextPatch, share);
             return ServerSettings.redactServerSettingsForClient(settings);
+          }),
+        [WS_METHODS.serverShareSettings]:
+          /* Request instrumentation already owns the span; keep this helper in that context. */
+          Effect.fnUntraced(function* ({ patch }) {
+            const saved = yield* sharedSettings.updateForAllMachines(
+              yield* withRemoteDeviceHosts(patch),
+            );
+            return {
+              settings: ServerSettings.redactServerSettingsForClient(saved.settings),
+              share: saved.share,
+            };
           }),
         [WS_METHODS.serverUpdateProjectScripts]: (mutation) =>
           serverSettings

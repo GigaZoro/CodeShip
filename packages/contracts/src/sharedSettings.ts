@@ -85,10 +85,8 @@ export const SharedSettingTimestamp = IsoDateTime.check(
 export type SharedSettingTimestamp = typeof SharedSettingTimestamp.Type;
 
 /**
- * Sent with a settings write saved for all machines, only to machines that follow shared settings.
- * Every one of them gets the same stamp and the complete value of each shared key, so they all
- * record one version with one value. `origin` is the machine the change is attributed to, which
- * breaks a tie between two changes made in the same millisecond.
+ * When a change saved for all machines was made, by the clock of the server that saved it first.
+ * `origin` is that server, which breaks a tie between two changes made in the same millisecond.
  */
 export const SharedSettingStamp = Schema.Struct({
   updatedAt: SharedSettingTimestamp,
@@ -96,17 +94,59 @@ export const SharedSettingStamp = Schema.Struct({
 });
 export type SharedSettingStamp = typeof SharedSettingStamp.Type;
 
+/** Keys whose value names a provider instance, which another machine may lack or run differently. */
+const SHARED_MODEL_SELECTION_KEYS: ReadonlySet<MachineSharedSettingKey> = new Set([
+  "defaultModelSelection",
+  "scheduledTaskModelSelection",
+  "fallbackModelSelection",
+  "textGenerationModelSelection",
+  "sourceControlWriterModelSelection",
+  "reviewGuideModelSelection",
+]);
+
+/** The provider instance a shared model selection names, if `value` is one. */
+export function sharedSelectionInstanceId(key: string, value: unknown): string | undefined {
+  if (!SHARED_MODEL_SELECTION_KEYS.has(key as MachineSharedSettingKey)) return undefined;
+  if (typeof value !== "object" || value === null) return undefined;
+  const instanceId = (value as { readonly instanceId?: unknown }).instanceId;
+  return typeof instanceId === "string" ? instanceId : undefined;
+}
+
+/** The driver an instance runs on a machine; an unconfigured built-in instance is its own driver. */
+export const providerInstanceDriver = (settings: ServerSettings, instanceId: string): string =>
+  settings.providerInstances[instanceId as keyof ServerSettings["providerInstances"]]?.driver ??
+  instanceId;
+
 /**
- * A shared setting as a machine knows it. `key` and `value` stay loose on the wire: a newer machine
- * may share a key this build does not know, and the receiver checks both before it applies either.
+ * One shared setting's whole value, loose on the wire: a newer machine may share a key or field this
+ * build does not know, so the JSON is passed on as sent and decoded only to apply it. For a model
+ * selection, `instanceDriver` is its instance's driver where it was saved.
  */
-export const SharedSettingVersion = Schema.Struct({
+export const SharedSettingValue = Schema.Struct({
   key: Schema.String.check(Schema.isMaxLength(128)),
   value: Schema.Unknown,
+  instanceDriver: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(128))),
+});
+export type SharedSettingValue = typeof SharedSettingValue.Type;
+
+/** A shared setting as a machine knows it and passes it on. */
+export const SharedSettingVersion = Schema.Struct({
+  ...SharedSettingValue.fields,
   updatedAt: SharedSettingTimestamp,
   origin: EnvironmentId,
 });
 export type SharedSettingVersion = typeof SharedSettingVersion.Type;
+
+/**
+ * A change saved for all machines, as sent to each machine that follows shared settings after the
+ * first one saved and stamped it: one stamp, and the whole value of each shared setting it set.
+ * Every machine records the same version with the same value.
+ */
+export const SharedSettingsShare = Schema.Struct({
+  stamp: SharedSettingStamp,
+  values: Schema.Array(SharedSettingValue).check(Schema.isMaxLength(256)),
+});
+export type SharedSettingsShare = typeof SharedSettingsShare.Type;
 
 /** Whether `candidate` replaces `known`: newest first, then the larger origin id. */
 export const isNewerSharedSetting = (

@@ -10,6 +10,13 @@ import {
   type ServerSettingsPatch,
 } from "@t3tools/contracts";
 import {
+  type MachineSettingsWrite,
+  plainSettingsWrites,
+  planSharedSettingsWrites,
+  type SharedSettingsMachine,
+  type SharedSettingsPlan,
+} from "@t3tools/client-runtime/state/shared-settings";
+import {
   clearProjectSettingsOverrides,
   resolveProjectSettings,
 } from "@t3tools/shared/projectSettings";
@@ -134,4 +141,49 @@ export function planMobileScopedSettingsClear(
     environmentId,
     patch: { projectSettingsOverrides } as ServerSettingsPatch,
   }));
+}
+
+export type MobileSettingsWritePlan = SharedSettingsPlan<MachineSettingsWrite>;
+
+/** Writes for machines chosen by name or for a project, which never save anything for the group. */
+export function plainMobileSettingsWrites(
+  targets: readonly ScopedMobileSettingsTarget[],
+  writes: readonly { readonly environmentId: EnvironmentId; readonly patch: ServerSettingsPatch }[],
+): MobileSettingsWritePlan {
+  return plainSettingsWrites(
+    writes.map((write) => ({
+      ...write,
+      label:
+        targets.find((target) => target.environment.environmentId === write.environmentId)
+          ?.environment.label ?? write.environmentId,
+    })),
+  );
+}
+
+/**
+ * The writes for a change of `targets`. With every machine selected and no project, it is a change
+ * for all machines, planned as on web: once any of `machines` is known to follow shared settings,
+ * the shared settings reach only the followers, saved first by the machine shown or another
+ * connected follower, and machines outside the group get only the rest.
+ */
+export function planMobileSettingsWrites(input: {
+  /** Every machine this device knows, connected now or not. */
+  readonly machines: readonly SharedSettingsMachine[];
+  readonly targets: readonly ScopedMobileSettingsTarget[];
+  readonly allSelected: boolean;
+  readonly projectSelected: boolean;
+  readonly patch: ServerSettingsPatch;
+}): MobileSettingsWritePlan {
+  const plain = plainMobileSettingsWrites(
+    input.targets,
+    planMobileScopedSettingsPatch(input.targets, input.projectSelected, input.patch),
+  );
+  if (!input.allSelected || input.projectSelected) return plain;
+  return planSharedSettingsWrites({
+    machines: input.machines,
+    writes: plain.writes,
+    origin: input.targets[0]?.environment.environmentId ?? null,
+    sharedPatch: () => input.patch,
+    writeFor: ({ environmentId, label }) => ({ environmentId, label, patch: {} }),
+  });
 }

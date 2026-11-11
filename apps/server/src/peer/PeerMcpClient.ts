@@ -9,10 +9,12 @@ import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as HttpBody from "effect/http/HttpBody";
 import * as HttpClient from "effect/http/HttpClient";
+import type * as HttpClientError from "effect/http/HttpClientError";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
@@ -41,19 +43,33 @@ export const PEER_READ_TIMEOUT = Duration.seconds(20);
  * agent. Each call carries the calling agent's limits in `T3-Mode-Limit`, so
  * the peer enforces the narrower of those and the link's own access.
  */
+interface PeerCallInput<S extends Schema.Decoder<unknown>> {
+  readonly environmentId: EnvironmentId;
+  readonly tool: string;
+  readonly arguments: Record<string, unknown>;
+  readonly limits: PeerCallLimits;
+  readonly success: S;
+}
+
 export class PeerMcpClient extends Context.Service<
   PeerMcpClient,
   {
     /** Calls `tool` on the peer and decodes its structured result with `success`. */
-    readonly call: <S extends Schema.Decoder<unknown>>(input: {
-      readonly environmentId: EnvironmentId;
-      readonly tool: string;
-      readonly arguments: Record<string, unknown>;
-      readonly limits: PeerCallLimits;
-      readonly success: S;
-    }) => Effect.Effect<S["Type"], OrchestratorMcpFailure>;
+    readonly call: <S extends Schema.Decoder<unknown>>(
+      input: PeerCallInput<S>,
+    ) => Effect.Effect<S["Type"], OrchestratorMcpFailure>;
+    /**
+     * `call` for the server's own background work, which skips a peer that does not have `tool`,
+     * such as one running an older version: none then, and the link counts as answering.
+     */
+    readonly callIfAvailable: <S extends Schema.Decoder<unknown>>(
+      input: PeerCallInput<S>,
+    ) => Effect.Effect<Option.Option<S["Type"]>, OrchestratorMcpFailure>;
   }
 >()("t3/peer/PeerMcpClient") {}
+
+/** JSON-RPC's invalid params, which an MCP server answers for a tool it does not have. */
+const INVALID_PARAMS = -32602;
 
 const ToolCallResponse = Schema.Struct({
   result: Schema.optional(
@@ -162,113 +178,144 @@ const make = Effect.gen(function* () {
     return sessionId;
   });
 
-  const call: PeerMcpClient["Service"]["call"] = Effect.fn("PeerMcpClient.call")(
-    function* (input) {
-      const resolved = yield* links
-        .resolve(input.environmentId)
-        .pipe(Effect.mapError(fromLinkError));
-      const limitHeader = {
-        [McpInvocationContext.MODE_LIMIT_HEADER]: `${input.limits.runtimeMode}/${input.limits.interactionMode}`,
-      };
-      const sessionKey = `${input.environmentId} ${resolved.url}`;
-      const callOnce = (sessionId: string) =>
-        post(
-          resolved.url,
-          resolved.token,
-          {
-            jsonrpc: "2.0",
-            id: 1,
-            method: "tools/call",
-            params: { name: input.tool, arguments: input.arguments },
-          },
-          { ...limitHeader, "mcp-session-id": sessionId, "mcp-protocol-version": PROTOCOL_VERSION },
-        );
-      const existing = (yield* Ref.get(sessions)).get(sessionKey);
-      const sessionId = existing ?? (yield* openSession(resolved.url, resolved.token, limitHeader));
-      // The initialized session outlives a tool request, including a long wait or cancellation.
-      if (existing === undefined) {
-        yield* Ref.update(sessions, (current) => new Map(current).set(sessionKey, sessionId));
-      }
-      let response = yield* callOnce(sessionId);
-      if (response.status === 404) {
-        const renewed = yield* openSession(resolved.url, resolved.token, limitHeader);
-        yield* Ref.update(sessions, (current) => new Map(current).set(sessionKey, renewed));
-        response = yield* callOnce(renewed);
-      }
-      if (response.status === 401) {
-        return yield* new OrchestratorMcpFailure({
-          code: "capability_denied",
-          message:
-            "The linked environment no longer accepts this link. It may have been revoked there; link it again.",
-        });
-      }
-      if (response.status === 403) return yield* linkedEnvironmentsOffThere;
-      if (response.status !== 200) {
-        return yield* new OrchestratorMcpFailure({
-          code: "orchestration_error",
-          message: `The linked environment answered HTTP ${response.status}.`,
-        });
-      }
-      const body = yield* decodeToolCallResponse(
-        responseJson(response.headers["content-type"], yield* response.text),
-      ).pipe(
-        Effect.mapError(
-          () =>
-            new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message: "The linked environment answered in an unexpected shape.",
-            }),
-        ),
+  /**
+   * The text of the peer's result, or none when the peer has no such tool. Its callers own the span
+   * and record the outcome on the link.
+   */
+  const request = Effect.fnUntraced(function* (input: PeerCallInput<Schema.Decoder<unknown>>) {
+    const resolved = yield* links.resolve(input.environmentId).pipe(Effect.mapError(fromLinkError));
+    const limitHeader = {
+      [McpInvocationContext.MODE_LIMIT_HEADER]: `${input.limits.runtimeMode}/${input.limits.interactionMode}`,
+    };
+    const sessionKey = `${input.environmentId} ${resolved.url}`;
+    const callOnce = (sessionId: string) =>
+      post(
+        resolved.url,
+        resolved.token,
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: input.tool, arguments: input.arguments },
+        },
+        { ...limitHeader, "mcp-session-id": sessionId, "mcp-protocol-version": PROTOCOL_VERSION },
       );
-      if (body.error !== undefined || body.result === undefined) {
-        return yield* new OrchestratorMcpFailure({
-          code: "invalid_request",
-          message: body.error?.message ?? "The linked environment returned no result.",
-        });
-      }
-      const text = body.result.content.map((part) => part.text ?? "").join("");
-      if (body.result.isError === true) {
-        // A refusal keeps the peer's own code, so the agent sees why it was refused.
-        const refused = decodeFailure(text);
-        return yield* refused._tag === "Some"
-          ? new OrchestratorMcpFailure({ code: refused.value.code, message: refused.value.message })
-          : new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message: text || "The linked environment refused the call.",
-            });
-      }
-      const success = Schema.fromJsonString(input.success);
-      return yield* Schema.decodeEffect(success)(text).pipe(
-        Effect.mapError(
-          () =>
-            new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message:
-                "The linked environment's answer did not match this version. Update both environments.",
-            }),
-        ),
-      );
-    },
-    (effect, input) =>
-      effect.pipe(
-        Effect.tapError((error) =>
-          links.recordOutcome(input.environmentId, { error: error.message }),
-        ),
-        Effect.tap(() => links.recordOutcome(input.environmentId, { error: null })),
-        // Recorded above with the transport's own message; the agent hears it plainly.
-        Effect.catchTags({
-          HttpClientError: () =>
-            Effect.fail(
-              new OrchestratorMcpFailure({
-                code: "orchestration_error",
-                message: "The linked environment stopped answering.",
-              }),
-            ),
-        }),
+    const existing = (yield* Ref.get(sessions)).get(sessionKey);
+    const sessionId = existing ?? (yield* openSession(resolved.url, resolved.token, limitHeader));
+    // The initialized session outlives a tool request, including a long wait or cancellation.
+    if (existing === undefined) {
+      yield* Ref.update(sessions, (current) => new Map(current).set(sessionKey, sessionId));
+    }
+    let response = yield* callOnce(sessionId);
+    if (response.status === 404) {
+      const renewed = yield* openSession(resolved.url, resolved.token, limitHeader);
+      yield* Ref.update(sessions, (current) => new Map(current).set(sessionKey, renewed));
+      response = yield* callOnce(renewed);
+    }
+    if (response.status === 401) {
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message:
+          "The linked environment no longer accepts this link. It may have been revoked there; link it again.",
+      });
+    }
+    if (response.status === 403) return yield* linkedEnvironmentsOffThere;
+    if (response.status !== 200) {
+      return yield* new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message: `The linked environment answered HTTP ${response.status}.`,
+      });
+    }
+    const body = yield* decodeToolCallResponse(
+      responseJson(response.headers["content-type"], yield* response.text),
+    ).pipe(
+      Effect.mapError(
+        () =>
+          new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "The linked environment answered in an unexpected shape.",
+          }),
       ),
-  );
+    );
+    if (
+      body.error?.code === INVALID_PARAMS &&
+      body.error.message === `Tool '${input.tool}' not found`
+    ) {
+      return Option.none<string>();
+    }
+    if (body.error !== undefined || body.result === undefined) {
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: body.error?.message ?? "The linked environment returned no result.",
+      });
+    }
+    const text = body.result.content.map((part) => part.text ?? "").join("");
+    if (body.result.isError === true) {
+      // A refusal keeps the peer's own code, so the agent sees why it was refused.
+      const refused = decodeFailure(text);
+      return yield* refused._tag === "Some"
+        ? new OrchestratorMcpFailure({ code: refused.value.code, message: refused.value.message })
+        : new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: text || "The linked environment refused the call.",
+          });
+    }
+    return Option.some(text);
+  });
 
-  return PeerMcpClient.of({ call });
+  const decodeResult = <S extends Schema.Decoder<unknown>>(success: S, text: string) =>
+    Schema.decodeEffect(Schema.fromJsonString(success))(text).pipe(
+      Effect.mapError(
+        () =>
+          new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message:
+              "The linked environment's answer did not match this version. Update both environments.",
+          }),
+      ),
+    );
+
+  const recorded = <A>(
+    effect: Effect.Effect<A, OrchestratorMcpFailure | HttpClientError.HttpClientError>,
+    input: { readonly environmentId: EnvironmentId },
+  ) =>
+    effect.pipe(
+      Effect.tapError((error) =>
+        links.recordOutcome(input.environmentId, { error: error.message }),
+      ),
+      Effect.tap(() => links.recordOutcome(input.environmentId, { error: null })),
+      // Recorded above with the transport's own message; the agent hears it plainly.
+      Effect.catchTags({
+        HttpClientError: () =>
+          Effect.fail(
+            new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "The linked environment stopped answering.",
+            }),
+          ),
+      }),
+    );
+
+  const call: PeerMcpClient["Service"]["call"] = Effect.fn("PeerMcpClient.call")(function* (input) {
+    const text = yield* request(input);
+    if (Option.isNone(text)) {
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: `Tool '${input.tool}' not found`,
+      });
+    }
+    return yield* decodeResult(input.success, text.value);
+  }, recorded);
+
+  const callIfAvailable: PeerMcpClient["Service"]["callIfAvailable"] = Effect.fn(
+    "PeerMcpClient.callIfAvailable",
+  )(function* (input) {
+    const text = yield* request(input);
+    if (Option.isNone(text)) return Option.none();
+    return Option.some(yield* decodeResult(input.success, text.value));
+  }, recorded);
+
+  return PeerMcpClient.of({ call, callIfAvailable });
 });
 
 export const layer = Layer.effect(PeerMcpClient, make);

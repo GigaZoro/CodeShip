@@ -11,6 +11,7 @@ import {
   managedSettingReason,
   planMobileScopedSettingsClear,
   planMobileScopedSettingsPatch,
+  planMobileSettingsWrites,
   resolveMobileSettingsTargets,
   uniformMobileSetting,
 } from "./settings-scoped-server";
@@ -202,5 +203,50 @@ describe("managed settings across environments", () => {
     expect(managedSettingReason(targets, "skillAvailability")).toBe("Managed by Example Corp.");
     expect(managedSettingReason(targets, "defaultAutoPull")).toBeUndefined();
     expect(managedSettingReason(targets.slice(0, 1), "storageCleanup")).toBeUndefined();
+  });
+});
+
+describe("mobile settings saved for all machines", () => {
+  const followerId = "follower" as EnvironmentId;
+  const asleepId = "asleep" as EnvironmentId;
+  const follower = environment(followerId, {
+    ...DEFAULT_SERVER_SETTINGS,
+    followSharedSettings: true,
+  });
+  const loner = environment(firstId, DEFAULT_SERVER_SETTINGS);
+  const machines = [
+    { ...loner, label: "Loner", connection: { phase: "connected" as const } },
+    { ...follower, label: "Follower", connection: { phase: "connected" as const } },
+    {
+      ...environment(asleepId, { ...DEFAULT_SERVER_SETTINGS, followSharedSettings: true }),
+      label: "Asleep",
+      connection: { phase: "offline" as const },
+    },
+  ];
+  const targets = resolveMobileSettingsTargets([loner, follower], null);
+  const planned = (allSelected: boolean, projectSelected = false) =>
+    planMobileSettingsWrites({
+      machines,
+      targets,
+      allSelected,
+      projectSelected,
+      patch: { finalReviewByDefault: true },
+    });
+
+  it("writes a shared setting only to the machines that follow, saved first by one of them", () => {
+    const plan = planned(true);
+    expect(plan.writes.map(({ environmentId, patch }) => ({ environmentId, patch }))).toEqual([
+      { environmentId: followerId, patch: { finalReviewByDefault: true } },
+    ]);
+    expect(plan.share?.authority).toBe(followerId);
+    expect(plan.offlineFollowers).toEqual(["Asleep"]);
+  });
+
+  it("writes the machines chosen by name as they are, with no stamp", () => {
+    expect(planned(false).share).toBeNull();
+    expect(planned(false).writes.map(({ environmentId }) => environmentId)).toEqual([
+      firstId,
+      followerId,
+    ]);
   });
 });

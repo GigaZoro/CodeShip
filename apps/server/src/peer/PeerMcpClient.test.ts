@@ -6,6 +6,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
@@ -89,6 +90,44 @@ it.effect.each([false, true])(
         if (!cancelFirst) expect(yield* Fiber.join(held)).toEqual({ modes: "auto/default" });
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("tells a peer without a tool, such as an older version, from a failed call", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const handlers = McpToolAccess.toLayer(toolkit, {
+        probe: McpToolAccess.reads(() => Effect.succeed({ modes: "probe" })),
+        hold: McpToolAccess.reads(() => Effect.succeed({ modes: "hold" })),
+      });
+      const box = descriptorOf("environment-box", "Box");
+      const b = yield* servePeer(box, McpHttpServer.toolkitRegistration(toolkit, handlers));
+      const context = yield* Layer.build(
+        layerLinkingEnvironment(descriptorOf("environment-a", "A")),
+      );
+      const links = Context.get(context, PeerLinks.PeerLinks);
+      const client = Context.get(context, PeerMcpClient.PeerMcpClient);
+      yield* linkTo(links, b);
+      const request = (tool: string) => ({
+        environmentId: box.environmentId,
+        tool,
+        arguments: {},
+        limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
+        success: Result,
+      });
+      expect(yield* client.callIfAvailable(request("t3_from_a_newer_version"))).toEqual(
+        Option.none(),
+      );
+      expect(yield* client.callIfAvailable(request("probe"))).toEqual(
+        Option.some({ modes: "probe" }),
+      );
+      // The link still counts as answering.
+      expect(
+        (yield* links.list).find((link) => link.environmentId === box.environmentId)?.lastError,
+      ).toBeNull();
+      const missing = yield* Effect.flip(client.call(request("t3_from_a_newer_version")));
+      expect(missing.code).toBe("invalid_request");
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("renews a missing peer session once and reuses its replacement", () =>

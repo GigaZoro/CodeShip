@@ -46,8 +46,9 @@ import { useReportConversationImport } from "./useReportConversationImport";
 import { useSettingsWriter } from "./useSettingsWriter";
 import {
   managedSettingReason,
+  plainMobileSettingsWrites,
   planMobileScopedSettingsClear,
-  planMobileScopedSettingsPatch,
+  planMobileSettingsWrites,
   resolveMobileSettingsTargets,
   uniformMobileSetting,
   type ScopedMobileSettingsTarget,
@@ -59,7 +60,8 @@ import {
 } from "./ThreadSettingsSections";
 import { AppSettingsSection } from "./SettingsAboutSection";
 import { FollowSharedSettingsSection } from "./FollowSharedSettingsSection";
-import { supportsSharedSettingsSync } from "@t3tools/client-runtime/state/shared-settings";
+import { hasSharedSettingsGroup } from "@t3tools/client-runtime/state/shared-settings";
+import { useEnvironments } from "../../state/environments";
 
 type SettingsPage = "threads" | "source-control" | "maintenance";
 
@@ -191,33 +193,6 @@ const STREAMING_CHOICES: ReadonlyArray<{
   },
 ];
 
-// Only servers with thread auto-settlement store these, so other targets get the rest of a patch.
-const AUTO_SETTLE_SETTING_KEYS: ReadonlySet<string> = new Set([
-  "sidebarAutoSettleOnMerge",
-  "sidebarAutoSettleAfterDays",
-  "autoResumeLimitedThreads",
-  "snoozeLimitedThreads",
-  "failoverLimitedThreads",
-]);
-
-function planServerSettingsWrites(
-  targets: readonly ScopedMobileSettingsTarget[],
-  projectSelected: boolean,
-  patch: ServerSettingsPatch,
-) {
-  const capable = targets.filter((target) => supportsSharedSettingsSync(target.environment));
-  const others = targets.filter((target) => !supportsSharedSettingsSync(target.environment));
-  const othersPatch = Object.fromEntries(
-    Object.entries(patch).filter(([key]) => !AUTO_SETTLE_SETTING_KEYS.has(key)),
-  ) as ServerSettingsPatch;
-  return [
-    ...planMobileScopedSettingsPatch(capable, projectSelected, patch),
-    ...(Object.keys(othersPatch).length > 0
-      ? planMobileScopedSettingsPatch(others, projectSelected, othersPatch)
-      : []),
-  ];
-}
-
 export function SettingsThreadsRouteScreen() {
   return <ServerSettingsDetail page="threads" />;
 }
@@ -233,10 +208,13 @@ export function SettingsEnvironmentMaintenanceRouteScreen() {
 function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
-  const { selectedTargets, projectGroups, selectedProjectKey } = useSettingsEnvironmentFilter();
+  const { selectedTargets, selectedIds, projectGroups, selectedProjectKey } =
+    useSettingsEnvironmentFilter();
+  const { environments } = useEnvironments();
   const selectedProject = projectGroups.find((group) => group.key === selectedProjectKey);
   const writableEnvironments = useEnvironmentsWithScope(selectedTargets, AuthSettingsWriteScope);
   const projectSelected = selectedProjectKey !== null;
+  const allMachines = selectedIds === null && !projectSelected;
   const targets = resolveMobileSettingsTargets(
     selectedTargets,
     projectSelected ? (selectedProject?.members.map((member) => member.project) ?? []) : null,
@@ -281,12 +259,18 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
       )
     )
       return;
-    const writes = planServerSettingsWrites(targets, projectSelected, patch);
-    if (writes.length === 0) return;
+    const plan = planMobileSettingsWrites({
+      machines: environments,
+      targets,
+      allSelected: selectedIds === null,
+      projectSelected,
+      patch,
+    });
+    if (plan.writes.length === 0 && !plan.noFollowerConnected) return;
     writeInFlight.current = true;
     setPendingTargets(targets);
     setPendingWrites((count) => count + 1);
-    void writeSettings(targets, writes)
+    void writeSettings(targets, plan)
       .then((saved) => {
         if (patch.importAgentConversations === true) void reportImport(saved);
       })
@@ -314,7 +298,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
     writeInFlight.current = true;
     setPendingTargets(targets);
     setPendingWrites((count) => count + 1);
-    void writeSettings(targets, writes).finally(() => {
+    void writeSettings(targets, plainMobileSettingsWrites(targets, writes)).finally(() => {
       writeInFlight.current = false;
       // Resending a draft over these pre-clear targets would undo the clear.
       queuedPatch.current = null;
@@ -368,6 +352,11 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
           ) : (
             <>
               <ManagedPolicyNotice targets={targets} />
+              {allMachines && hasSharedSettingsGroup(environments) ? (
+                <Text className="px-2 text-sm text-foreground-muted">
+                  {t("Shared settings are saved only on the machines that follow them.")}
+                </Text>
+              ) : null}
               {projectSelected ? (
                 <SettingsProjectOverridesSection
                   projectLabel={selectedProject?.label ?? t("Unavailable project")}

@@ -394,8 +394,9 @@ Machines that follow shared settings keep the same settings. A shared setting sa
 environments** at the top of a Settings page is saved on the connected machines that follow, and a
 following machine that was off takes it when it is back: it copies the change from the machines it
 is linked to, and passes it on to the rest. A machine that does not follow changes only when you
-choose it by name. With no following machine connected, **All environments** edits every connected
-machine as before.
+choose it by name, even while the following machines are offline: then the change waits until you
+connect one of them. With no machine following, **All environments** edits every connected machine
+as before.
 
 Turn it on for each machine in **Settings → Machines & access → Follow shared settings**; on
 mobile, **Settings → Maintenance & about**. It needs Linked environments on, here and on the
@@ -410,8 +411,11 @@ separate, such as a work machine: it neither gives nor takes shared settings.
 - A change for one environment or one project stays there. A later change saved for all
   environments sets that setting on the following machines again.
 - When two changes to one setting meet, the newest wins, including a change made on one machine
-  alone. A machine whose clock is more than five minutes ahead cannot save for all machines until
-  its clock is corrected.
+  alone, which that machine keeps while still passing the shared change on. Changes are timed by
+  the following machine that saves them first, so the clock of the phone or browser you use does
+  not matter.
+- A default model that a machine cannot run yet, because it lacks that provider instance, runs it
+  with another provider, or has it turned off, waits there until it can.
 - A model that names a provider account a machine does not have is not applied there. It waits,
   and applies once the account exists. **Differences between machines** shows the gap.
 - **Use everywhere** in **Differences between machines** shares that machine's value the same way.
