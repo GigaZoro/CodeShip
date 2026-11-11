@@ -3179,6 +3179,7 @@ const catalog: MessageCatalog = {
   Cite: "Цитувати",
   "Cite selection in composer": "Цитувати виділене в полі повідомлення",
   claude: "claude",
+  "Claude account": "Обліковий запис Claude",
   "Claude and Codex keep their own MCP servers. Turn one on in Settings to add servers and sign in to them here.":
     "Claude і Codex мають власні сервери MCP. Увімкніть одного з них у Налаштуваннях, щоб додавати сервери та входити в них тут.",
   "Claude Code": "Claude Code",
@@ -7802,6 +7803,7 @@ const catalog: MessageCatalog = {
     "Один зі спільних елементів не є підтримуваним зображенням.",
   "One tab open": "Відкрита одна вкладка",
   "One UI": "One UI",
+  "One-year token": "Токен на один рік",
   "Ongoing activity enabled": "Поточну активність ввімкнено",
   "Ongoing activity unavailable": "Поточна активність недоступна",
   "Ongoing Agent Activity": "Поточна активність агента",
@@ -10551,6 +10553,7 @@ const catalog: MessageCatalog = {
   "Signed-in GitHub account": "Обліковий запис GitHub, у який виконано вхід",
   "Signing in...": "Вхід...",
   "Signing secret is required": "Потрібен секрет підпису",
+  "Signs in with `claude auth login`.": "Вхід за допомогою `claude auth login`.",
   "Simlock device hosts": "Хости пристроїв Simlock",
   "Simlock device hosts (alpha)": "Хости пристроїв Simlock (альфа)",
   "Simlock host not removed everywhere": "Хост Simlock видалено не скрізь",
@@ -10831,6 +10834,8 @@ const catalog: MessageCatalog = {
   Status: "Стан",
   "status pending": "стан очікує",
   "Status unknown": "Стан невідомий",
+  "Stays signed in for a year with no renewals. Suits accounts that run scheduled tasks. Requires Pro, Max, Ultra, Team or Enterprise. Sessions on this account cannot use Remote Control or claude.ai connectors; MCP servers configured on this machine still work.":
+    "Вхід діє протягом року без поновлень. Підходить для облікових записів, що виконують заплановані завдання. Потрібен план Pro, Max, Ultra, Team або Enterprise. Сеанси цього облікового запису не можуть використовувати Remote Control чи конектори claude.ai; налаштовані на цьому комп’ютері MCP-сервери й далі працюють.",
   steer: "скерувати",
   Steer: "Скерування",
   "Steer message": "Скерувати повідомленням",
@@ -13234,6 +13239,7 @@ const catalog: MessageCatalog = {
     "Використовуйте лише літери, цифри, дефіси та підкреслення.",
   "Use only WSL": "Використовувати лише WSL",
   "Use regular expression": "Використати регулярний вираз",
+  "Use regular sign-in instead": "Натомість використовувати звичайний вхід",
   "Use remote version of {ref}": "Використати віддалену версію {ref}",
   "Use reset": "Скинути",
   "Use skills available to the selected provider.":

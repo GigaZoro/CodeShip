@@ -12,6 +12,7 @@ import * as Queue from "effect/Queue";
 
 import { resolveClaudeSdkExecutablePath } from "./ClaudeExecutable.ts";
 import { CLAUDE_TERMS_REVIEW_MESSAGE } from "./ClaudeHome.ts";
+import { ClaudeOAuthTokenOutput } from "../claudeOAuthToken.ts";
 
 const TRANSCRIPT_LIMIT = 16_384;
 
@@ -27,6 +28,14 @@ const LOGIN_METHOD: ProviderAuthMethod = {
   type: "terminal",
 };
 
+const TOKEN_METHOD: ProviderAuthMethod = {
+  id: "setup-token",
+  name: "One-year token",
+  description:
+    "Stays signed in for a year with no renewals. Suits accounts that run scheduled tasks. Requires Pro, Max, Ultra, Team or Enterprise. Sessions on this account cannot use Remote Control or claude.ai connectors; MCP servers configured on this machine still work.",
+  type: "terminal",
+};
+
 /** Signs a Claude config folder in and out with the CLI's own login, which also reports the account's email and plan. */
 export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: {
   readonly instanceId: ProviderInstanceId;
@@ -38,6 +47,7 @@ export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: {
   /** Links the shared Claude files into the account's folder before Claude writes to it. */
   readonly prepare: Effect.Effect<void>;
   readonly canLogout: boolean;
+  readonly saveToken: (token: string | undefined) => Effect.Effect<void, ProviderSetupError>;
   /** True while Claude refuses to start until this account reviews Anthropic's updated Consumer Terms. */
   readonly needsTermsReview: Effect.Effect<boolean>;
 }) {
@@ -63,8 +73,9 @@ export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: {
       ? { shell: "node", args: [executable, ...args] }
       : { shell: executable, args: [...args] };
     const exited = yield* Deferred.make<number>();
+    const { CLAUDE_CODE_OAUTH_TOKEN: _token, ...environment } = options.environment;
     const process = yield* pty.value
-      .spawn({ ...launch, cwd: options.cwd, ...size, env: options.environment })
+      .spawn({ ...launch, cwd: options.cwd, ...size, env: environment })
       .pipe(Effect.mapError((cause) => failure("start", "Could not start Claude sign-in.", cause)));
     const detachData = process.onData(onOutput);
     const detachExit = process.onExit(({ exitCode }) => {
@@ -82,22 +93,33 @@ export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: {
     return { process, exitCode: Deferred.await(exited) };
   });
 
+  let pendingToken: string | undefined;
+  let tokenMethod = false;
   const authenticate = Effect.fn("ClaudeAuth.authenticate")(function* (
-    _methodId: string,
+    methodId: string,
     context: ProviderAuthFlow.ProviderAuthFlowContext,
   ) {
     const output = yield* Queue.sliding<string>(64);
-    const print = (data: string) => Queue.offerUnsafe(output, data.slice(-TRANSCRIPT_LIMIT));
+    const print = (data: string) => {
+      if (data) Queue.offerUnsafe(output, data.slice(-TRANSCRIPT_LIMIT));
+    };
+    const redactor = new ClaudeOAuthTokenOutput();
+    pendingToken = undefined;
+    tokenMethod = methodId === TOKEN_METHOD.id;
     // One terminal for the whole sign-in: the terms review reuses it at the size the client last set.
     let size = DEFAULT_TERMINAL_SIZE;
     let current: PtyAdapter.PtyProcess | undefined;
     /** Starts one Claude command in the sign-in terminal; the result waits for its exit code. */
     const startInTerminal = Effect.fnUntraced(function* (args: ReadonlyArray<string>) {
-      const { process, exitCode } = yield* runClaude(args, print, size);
+      const { process, exitCode } = yield* runClaude(
+        args,
+        (data) => print(redactor.write(data)),
+        tokenMethod ? { ...size, cols: Math.max(size.cols, 4096) } : size,
+      );
       current = process;
       return exitCode;
     });
-    const login = yield* startInTerminal(["auth", "login"]);
+    const login = yield* startInTerminal(tokenMethod ? ["setup-token"] : ["auth", "login"]);
     let transcript = "";
     let outputOffset = 0;
     const update = (): Effect.Effect<void> =>
@@ -110,7 +132,10 @@ export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: {
                 try: () => {
                   if (response.size) {
                     size = response.size;
-                    current?.resize(response.size.cols, response.size.rows);
+                    current?.resize(
+                      tokenMethod ? Math.max(response.size.cols, 4096) : response.size.cols,
+                      response.size.rows,
+                    );
                   }
                   if (response.data) current?.write(response.data);
                 },
@@ -130,6 +155,18 @@ export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: {
     );
     if ((yield* login) !== 0)
       return yield* failure("start", "Claude sign-in did not finish. Start sign-in again.");
+    const captured = redactor.finish();
+    print(captured.output);
+    if (tokenMethod) {
+      if (!captured.token)
+        return yield* failure(
+          "start",
+          "Claude did not return a one-year token. Start sign-in again.",
+        );
+      pendingToken = captured.token;
+      yield* context.verifying;
+      return;
+    }
     // The terms answer is the account owner's own (it includes whether chats help train models),
     // so the sign-in hands them Claude's prompt instead of answering it for them.
     if (yield* options.needsTermsReview) {
@@ -142,29 +179,36 @@ export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: {
     yield* context.verifying;
   });
 
+  const usesToken = Boolean(options.environment.CLAUDE_CODE_OAUTH_TOKEN?.trim());
   const logout = Effect.scoped(
     Effect.gen(function* () {
       const { exitCode } = yield* runClaude(["auth", "logout"], () => {});
       if ((yield* exitCode) !== 0)
         return yield* failure("logout", "Claude could not sign this account out. Try again.");
+      if (usesToken) yield* options.saveToken(undefined);
       return "Signed this Claude account out.";
     }),
   );
 
-  // Claude uses this token ahead of its saved login, so a sign-in would not change the account.
-  const usesToken = Boolean(options.environment.CLAUDE_CODE_OAUTH_TOKEN?.trim());
-  const canAuthenticate = Option.isSome(pty) && !usesToken;
+  const canAuthenticate = Option.isSome(pty);
   const controller = yield* ProviderAuthFlow.make({
     instanceId: options.instanceId,
     // The Claude CLI owns the login, and every instance on this folder shares it.
     credentialBinding: { owner: "provider", key: `claude:home:${options.configDir}` },
-    methods: usesToken
-      ? failure(
-          "start",
-          "This provider uses CLAUDE_CODE_OAUTH_TOKEN instead of a sign-in. Remove the token to sign in.",
-        )
-      : Effect.succeed(canAuthenticate ? [LOGIN_METHOD] : []),
+    methods: Effect.succeed(
+      canAuthenticate
+        ? usesToken
+          ? [TOKEN_METHOD, { ...LOGIN_METHOD, name: "Use regular sign-in instead" }]
+          : [LOGIN_METHOD, TOKEN_METHOD]
+        : [],
+    ),
+    defaultMethodId: usesToken ? TOKEN_METHOD.id : LOGIN_METHOD.id,
     authenticate,
+    commitCredentials: Effect.suspend(() => {
+      const token = pendingToken;
+      pendingToken = undefined;
+      return tokenMethod || usesToken ? options.saveToken(token) : Effect.void;
+    }),
     logout: options.canLogout
       ? logout
       : failure("logout", "Sign out of the Claude CLI's own login in a terminal."),

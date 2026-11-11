@@ -247,6 +247,10 @@
       "types": "./src/state/deviceHubAccess.ts",
       "default": "./src/state/deviceHubAccess.ts"
     },
+    "./providerAuthMethodText": {
+      "types": "./src/providerAuthMethodText.ts",
+      "default": "./src/providerAuthMethodText.ts"
+    },
     "./providerLoginExpiryText": {
       "types": "./src/providerLoginExpiryText.ts",
       "default": "./src/providerLoginExpiryText.ts"

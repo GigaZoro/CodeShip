@@ -837,6 +837,13 @@ const InstanceIdleCompaction = Schema.Literals(
 
 export const ClaudeSettings = makeProviderSettingsSchema(
   {
+    oauthToken: Schema.optionalKey(
+      Schema.Struct({
+        issuedAt: Schema.String,
+        expiresAt: Schema.String,
+        fingerprint: Schema.String,
+      }).pipe(Schema.annotateKey({ providerSettingsForm: { hidden: true } })),
+    ),
     enabled: Schema.Boolean.pipe(
       Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),

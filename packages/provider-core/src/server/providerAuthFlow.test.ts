@@ -20,6 +20,82 @@ import * as ProviderAuthFlow from "./providerAuthFlow.ts";
 const instanceId = ProviderInstanceId.make("auth-flow-test");
 const method = { id: "browser", name: "Browser", description: null, type: "agent" as const };
 
+it.effect(
+  "reports success only after credential persistence and reports a failed save as failed sign-in",
+  () =>
+    Effect.gen(function* () {
+      for (const saveFails of [false, true]) {
+        const saving = yield* Deferred.make<void>();
+        const saved = yield* Deferred.make<void, ProviderSetupError>();
+        const controller = yield* ProviderAuthFlow.make({
+          instanceId,
+          credentialBinding: { owner: "provider", key: "token-account" },
+          methods: Effect.succeed([method]),
+          authenticate: (_, context) => context.verifying,
+          commitCredentials: Deferred.succeed(saving, undefined).pipe(
+            Effect.andThen(Deferred.await(saved)),
+          ),
+          logout: Effect.void,
+        });
+        yield* controller.start("owner");
+        yield* Deferred.await(saving);
+        const pending = yield* controller
+          .subscribe("owner")
+          .pipe(Stream.runHead, Effect.map(Option.getOrThrow));
+        assert.equal(pending.phase, "verifying");
+        if (saveFails)
+          yield* Deferred.fail(
+            saved,
+            new ProviderSetupError({
+              instanceId,
+              operation: "save-token",
+              detail: "Could not save sign-in.",
+            }),
+          );
+        else yield* Deferred.succeed(saved, undefined);
+        const finished = yield* controller.subscribe("owner").pipe(
+          Stream.filter((state) => state.phase === "succeeded" || state.phase === "failed"),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        assert.equal(finished.phase, saveFails ? "failed" : "succeeded");
+        if (saveFails) assert.equal(finished.message, "Could not save sign-in.");
+      }
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "finishes credential persistence when the resulting settings change retires the provider",
+  () =>
+    Effect.gen(function* () {
+      const providerScope = yield* Scope.make();
+      const saving = yield* Deferred.make<void>();
+      const saved = yield* Deferred.make<void>();
+      const retiring = yield* Deferred.make<void>();
+      const controller = yield* ProviderAuthFlow.make({
+        instanceId,
+        credentialBinding: { owner: "provider", key: "token-account" },
+        methods: Effect.succeed([method]),
+        authenticate: (_, context) => context.verifying,
+        commitCredentials: Deferred.succeed(saving, undefined).pipe(
+          Effect.andThen(Deferred.await(saved)),
+        ),
+        logout: Effect.void,
+      }).pipe(Effect.provideService(Scope.Scope, providerScope));
+      yield* controller.start("owner");
+      yield* Deferred.await(saving);
+      yield* Scope.addFinalizer(providerScope, Deferred.succeed(retiring, undefined));
+      const closing = yield* Scope.close(providerScope, Exit.void).pipe(Effect.forkScoped);
+      yield* Deferred.await(retiring);
+      yield* Deferred.succeed(saved, undefined);
+      yield* Fiber.join(closing);
+      const state = yield* controller
+        .subscribe("owner")
+        .pipe(Stream.runHead, Effect.map(Option.getOrThrow));
+      assert.equal(state.phase, "succeeded");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 it.effect("distinguishes pending method discovery from an agent with no sign-in methods", () =>
   Effect.gen(function* () {
     const discovered = yield* Deferred.make<ReadonlyArray<typeof method>>();
