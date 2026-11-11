@@ -22,27 +22,39 @@ describe("machineSettingDifferences", () => {
     ]);
     expect(differences).toEqual([
       expect.objectContaining({
-        id: "snooze-limited-threads",
-        title: "Snooze until limits reset",
+        id: "usage-limit-recovery",
+        title: "When a thread hits a usage limit",
         page: "/settings/threads",
         values: [
           {
             environmentId: "Laptop",
             label: "Laptop",
-            display: "On",
-            patch: { snoozeLimitedThreads: true },
+            display: "Snooze: On; resume: Off; switch accounts: Off.",
+            patch: {
+              snoozeLimitedThreads: true,
+              autoResumeLimitedThreads: false,
+              failoverLimitedThreads: false,
+            },
           },
           {
             environmentId: "Server",
             label: "Server",
-            display: "Off",
-            patch: { snoozeLimitedThreads: false },
+            display: "Snooze: Off; resume: Off; switch accounts: Off.",
+            patch: {
+              snoozeLimitedThreads: false,
+              autoResumeLimitedThreads: false,
+              failoverLimitedThreads: false,
+            },
           },
           {
             environmentId: "Desktop",
             label: "Desktop",
-            display: "On",
-            patch: { snoozeLimitedThreads: true },
+            display: "Snooze: On; resume: Off; switch accounts: Off.",
+            patch: {
+              snoozeLimitedThreads: true,
+              autoResumeLimitedThreads: false,
+              failoverLimitedThreads: false,
+            },
           },
         ],
       }),

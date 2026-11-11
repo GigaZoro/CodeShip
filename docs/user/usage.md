@@ -140,7 +140,7 @@ Filter with the environment dropdown to see what a single machine has.
 Each provider says when its limits were last checked, going by its oldest reading; on web, hover
 it for the exact time. An account read only on an environment that isn't connected keeps its last
 reading, and the provider names that environment and how old the reading is until it reconnects. For a provider with two or more accounts, a line under its name says
-whether **Switch accounts at usage limits** is on and which account a limited thread continues
+whether account switching is enabled under **Settings → Threads → When a thread hits a usage limit** and which account a limited thread continues
 on, judged from the last reading. On web and desktop, its link opens that setting.
 
 When a Claude or Codex account has no overall weekly quota left, its pooled session contribution

@@ -30,6 +30,7 @@ import {
   getThreadAutoSettlementSearchAvailability,
   isSettingsSearchScopeAvailable,
   movedSettingsPath,
+  consolidatedSettingsAnchor,
 } from "../components/settings/settingsSearch";
 
 import { t } from "~/i18n";
@@ -226,7 +227,9 @@ export const Route = createFileRoute("/_chat/settings")({
       throw redirect({ to: "/settings/general", replace: true });
     }
     const moved = movedSettingsPath(location.pathname, location.hash);
-    if (moved) throw redirect({ to: moved, search: true, hash: true, replace: true });
+    const hash = consolidatedSettingsAnchor(location.hash);
+    if (moved || hash !== location.hash)
+      throw redirect({ to: moved ?? location.pathname, search: true, hash, replace: true });
   },
   component: SettingsRouteLayout,
 });

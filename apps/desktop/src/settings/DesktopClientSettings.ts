@@ -1,4 +1,8 @@
-import { ClientSettingsSchema, type ClientSettings } from "@t3tools/contracts";
+import {
+  ClientSettingsSchema,
+  StoredClientSettingsSchema,
+  type ClientSettings,
+} from "@t3tools/contracts";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import { resolveSymlinkTarget } from "@t3tools/shared/symlink";
 import * as Context from "effect/Context";
@@ -9,6 +13,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Ref from "effect/Ref";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -17,20 +22,26 @@ const ClientSettingsJson = fromLenientJson(ClientSettingsSchema);
 const decodeClientSettingsDocument = Schema.decodeEffect(
   fromLenientJson(Schema.Record(Schema.String, Schema.Unknown)),
 );
-const decodeClientSettingsValue = Schema.decodeUnknownEffect(ClientSettingsSchema);
+const decodeClientSettingsValue = Schema.decodeUnknownEffect(StoredClientSettingsSchema);
 const decodeClientSettingsJson = Effect.fnUntraced(function* (raw: string) {
   const document = yield* decodeClientSettingsDocument(raw);
   // Select the shape before validation so invalid legacy settings cannot become defaults.
-  return yield* decodeClientSettingsValue(
-    Object.hasOwn(document, "settings") ? document.settings : document,
-  );
+  const value = Object.hasOwn(document, "settings") ? document.settings : document;
+  const settings = yield* decodeClientSettingsValue(value);
+  return {
+    settings,
+    migrated:
+      typeof value === "object" &&
+      value !== null &&
+      (Object.hasOwn(value, "sidebarGroupBy") || Object.hasOwn(value, "legacySidebarEnabled")),
+  };
 });
 const encodeClientSettingsJson = Schema.encodeEffect(ClientSettingsJson);
 
 export class DesktopClientSettingsReadError extends Schema.TaggedError<DesktopClientSettingsReadError>()(
   "DesktopClientSettingsReadError",
   {
-    operation: Schema.Literals(["read-file", "decode-document"]),
+    operation: Schema.Literals(["read-file", "decode-document", "migrate-document"]),
     path: Schema.String,
     cause: Schema.Defect(),
   },
@@ -75,6 +86,7 @@ export class DesktopClientSettings extends Context.Service<
 const readClientSettings = (
   fileSystem: FileSystem.FileSystem,
   settingsPath: string,
+  persist: (settings: ClientSettings) => Effect.Effect<void, DesktopClientSettingsWriteError>,
 ): Effect.Effect<Option.Option<ClientSettings>, DesktopClientSettingsReadError> =>
   fileSystem.readFileString(settingsPath).pipe(
     Effect.asSome,
@@ -100,6 +112,21 @@ const readClientSettings = (
         onNone: () => Effect.succeed(Option.none<ClientSettings>()),
         onSome: (raw) =>
           decodeClientSettingsJson(raw).pipe(
+            Effect.flatMap(({ settings, migrated }) =>
+              (migrated
+                ? persist(settings).pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new DesktopClientSettingsReadError({
+                          operation: "migrate-document",
+                          path: settingsPath,
+                          cause,
+                        }),
+                    ),
+                  )
+                : Effect.void
+              ).pipe(Effect.as(settings)),
+            ),
             Effect.asSome,
             Effect.catchTags({
               SchemaError: (cause) =>
@@ -189,33 +216,36 @@ export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
+  const mutex = yield* Semaphore.make(1);
 
+  const persist = Effect.fn("desktop.clientSettings.persist")(function (settings: ClientSettings) {
+    return crypto.randomUUIDv4().pipe(
+      Effect.map((uuid) => uuid.replace(/-/g, "")),
+      Effect.mapError(
+        (cause) =>
+          new DesktopClientSettingsWriteError({
+            operation: "create-temporary-file-name",
+            path: environment.clientSettingsPath,
+            cause,
+          }),
+      ),
+      Effect.flatMap((suffix) =>
+        writeClientSettings({
+          fileSystem,
+          path,
+          settingsPath: environment.clientSettingsPath,
+          settings,
+          suffix,
+        }),
+      ),
+    );
+  });
   return DesktopClientSettings.of({
-    get: readClientSettings(fileSystem, environment.clientSettingsPath).pipe(
+    get: readClientSettings(fileSystem, environment.clientSettingsPath, persist).pipe(
+      mutex.withPermits(1),
       Effect.withSpan("desktop.clientSettings.get"),
     ),
-    set: Effect.fn("desktop.clientSettings.set")(function (settings) {
-      return crypto.randomUUIDv4().pipe(
-        Effect.map((uuid) => uuid.replace(/-/g, "")),
-        Effect.mapError(
-          (cause) =>
-            new DesktopClientSettingsWriteError({
-              operation: "create-temporary-file-name",
-              path: environment.clientSettingsPath,
-              cause,
-            }),
-        ),
-        Effect.flatMap((suffix) =>
-          writeClientSettings({
-            fileSystem,
-            path,
-            settingsPath: environment.clientSettingsPath,
-            settings,
-            suffix,
-          }),
-        ),
-      );
-    }),
+    set: Effect.fn("desktop.clientSettings.set")(persist, mutex.withPermits(1)),
   });
 });
 

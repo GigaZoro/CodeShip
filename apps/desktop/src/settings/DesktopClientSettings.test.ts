@@ -60,12 +60,10 @@ const clientSettings: ClientSettings = {
   sidebarThreadSortOrder: "created_at",
   sidebarGroupByProject: true,
   sidebarGroupByMachine: true,
-  sidebarGroupBy: null,
   boringSidebarEnabled: false,
   boringSidebarMultilineRows: false,
   threadDetailsUsageEnabled: false,
   threadDetailsItems: {},
-  legacySidebarEnabled: false,
   sidebarWorkingShelfEnabled: false,
   sidebarManualStepsEnabled: true,
   loadBalancingEnabled: false,
@@ -225,6 +223,8 @@ describe("DesktopClientSettings", () => {
           environment.clientSettingsPath,
           `{
             "settings": {
+              "sidebarGroupBy": "machine",
+              "legacySidebarEnabled": true,
               "timestampFormat": "12-hour"
             }
           }\n`,
@@ -234,6 +234,13 @@ describe("DesktopClientSettings", () => {
         assert.isTrue(Option.isSome(persisted));
         if (Option.isSome(persisted)) {
           assert.equal(persisted.value.timestampFormat, "12-hour");
+          assert.equal(persisted.value.sidebarGroupByMachine, true);
+          assert.equal(persisted.value.sidebarGroupByProject, false);
+          const saved = yield* fileSystem.readFileString(environment.clientSettingsPath);
+          assert.notProperty(JSON.parse(saved), "sidebarGroupBy");
+          assert.notProperty(JSON.parse(saved), "legacySidebarEnabled");
+          assert.deepEqual(yield* settings.get, persisted);
+          assert.equal(yield* fileSystem.readFileString(environment.clientSettingsPath), saved);
         }
       }),
     ),

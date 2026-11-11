@@ -447,16 +447,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "environment-defaults",
   },
   {
-    id: "snooze-limited-threads",
-    title: msg("Snooze until limits reset"),
+    id: "usage-limit-recovery",
+    title: msg("When a thread hits a usage limit"),
     to: "/settings/threads",
-    searchTerms: ["usage quota rate limit reset wake recover continue"],
-  },
-  {
-    id: "auto-resume-limited-threads",
-    title: msg("Resume after usage limits"),
-    to: "/settings/threads",
-    searchTerms: ["usage quota rate limit reset recover continue"],
+    searchTerms: [
+      "snooze resume failover switch accounts usage quota rate limit reset wake recover continue",
+    ],
   },
   {
     id: "threadpage-token",
@@ -576,13 +572,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "thread-notifications",
     title: msg("Thread notifications"),
     to: "/settings/general",
-    searchTerms: ["notification sound alert completion input approval desktop"],
-  },
-  {
-    id: "in-app-notifications",
-    title: msg("In-app notifications"),
-    to: "/settings/general",
-    searchTerms: ["notification toast popup completion input approval failure"],
+    searchTerms: ["notification sound alert completion input approval desktop in-app toasts popup"],
   },
   {
     id: "language",
@@ -659,17 +649,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["queue steer stop and send restart interrupt running turn default composer"],
   },
   {
-    id: "provider-update-checks",
-    title: msg("Provider update checks"),
+    id: "provider-updates",
+    title: msg("Provider updates"),
     to: "/settings/maintenance",
-    searchTerms: ["installed cli versions newer available codex claude cursor grok fx opencode"],
-    scope: "environment-defaults",
-  },
-  {
-    id: "auto-update-providers",
-    title: msg("Update providers automatically"),
-    to: "/settings/maintenance",
-    searchTerms: ["auto update provider cli launch startup install latest version"],
+    searchTerms: [
+      "check notify automatically install update provider cli launch startup model catalog versions",
+    ],
     scope: "environment-defaults",
   },
   {
@@ -842,7 +827,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "diagnostics",
     title: msg("Diagnostics"),
-    to: "/settings/maintenance",
+    to: "/settings/diagnostics",
     searchTerms: ["logs traces processes resource history failures spans cpu memory"],
   },
   {
@@ -926,10 +911,10 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "account-failover",
-    title: msg("Switch accounts at usage limits"),
+    title: msg("Account order"),
     to: "/settings/providers",
     searchTerms: [
-      "failover usage limit quota rate limit multiple accounts order priority second account continue auto mode",
+      "account order failover switch accounts usage limit quota multiple accounts priority second account auto mode",
     ],
     providerSettingsOnly: true,
   },
@@ -1445,6 +1430,7 @@ const SPLIT_SETTINGS_PATHS: ReadonlySet<string> = new Set([
 ]);
 // Section anchors that moved but are not search results themselves.
 const MOVED_SECTION_ANCHORS: Readonly<Record<string, SettingsPath>> = {
+  "diagnostics-section": "/settings/diagnostics",
   "authorized-clients": "/settings/connections",
   "new-thread-models": "/settings/providers",
   "text-generation": "/settings/providers",
@@ -1462,9 +1448,21 @@ const MOVED_SECTION_ANCHORS: Readonly<Record<string, SettingsPath>> = {
   "pull-requests": "/settings/chat",
 };
 
+const CONSOLIDATED_SETTING_ANCHORS: Readonly<Record<string, string>> = {
+  "auto-resume-limited-threads": "usage-limit-recovery",
+  "snooze-limited-threads": "usage-limit-recovery",
+  "in-app-notifications": "thread-notifications",
+  "provider-update-checks": "provider-updates",
+  "auto-update-providers": "provider-updates",
+};
+
+export const consolidatedSettingsAnchor = (hash: string) =>
+  CONSOLIDATED_SETTING_ANCHORS[hash] ?? hash;
+
 /** Where an old settings link now lives. Its anchor finds the page its row moved to. */
 export function movedSettingsPath(pathname: string, hash: string): SettingsPath | null {
   if (!SPLIT_SETTINGS_PATHS.has(pathname)) return null;
+  hash = consolidatedSettingsAnchor(hash);
   const items: readonly SettingsPageSearchItem[] = SETTINGS_SEARCH_ITEMS;
   const anchored = hash
     ? (items.find((item) => item.id === hash) ?? items.find((item) => item.targetId === hash))
@@ -1475,6 +1473,7 @@ export function movedSettingsPath(pathname: string, hash: string): SettingsPath 
 }
 
 export function getSettingsSearchTargetScope(targetId: string) {
+  targetId = consolidatedSettingsAnchor(targetId);
   const items: readonly SettingsPageSearchItem[] = SETTINGS_SEARCH_ITEMS;
   const item =
     items.find((candidate) => candidate.id === targetId) ??

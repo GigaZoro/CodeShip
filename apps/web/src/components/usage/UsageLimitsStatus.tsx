@@ -129,9 +129,9 @@ export function AccountFailoverNotice({
             <InlineButton
               render={
                 <Link
-                  to="/settings/providers"
+                  to="/settings/threads"
                   search={{ machine: entry.environmentId }}
-                  hash="account-failover"
+                  hash="usage-limit-recovery"
                 />
               }
             >

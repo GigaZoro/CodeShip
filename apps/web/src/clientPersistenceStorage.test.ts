@@ -38,6 +38,34 @@ afterEach(() => {
 });
 
 describe("clientPersistenceStorage", () => {
+  it("persists sidebar grouping migration once without losing other preferences", async () => {
+    const testWindow = getTestWindow();
+    testWindow.localStorage.setItem(
+      "t3code:client-settings:v1",
+      JSON.stringify({
+        sidebarGroupBy: "machine",
+        legacySidebarEnabled: true,
+        sidebarGroupByProject: true,
+        timestampFormat: "24-hour",
+      }),
+    );
+    const write = vi.spyOn(testWindow.localStorage, "setItem");
+    const { readBrowserClientSettings } = await import("./clientPersistenceStorage");
+    const settings = readBrowserClientSettings();
+    expect(settings).toMatchObject({
+      sidebarGroupByProject: true,
+      sidebarGroupByMachine: true,
+      timestampFormat: "24-hour",
+    });
+    expect(settings).not.toHaveProperty("sidebarGroupBy");
+    expect(settings).not.toHaveProperty("legacySidebarEnabled");
+    expect(JSON.parse(testWindow.localStorage.getItem("t3code:client-settings:v1")!)).toEqual(
+      settings,
+    );
+    expect(readBrowserClientSettings()).toEqual(settings);
+    expect(write).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["not-json", '{"wordWrap":"invalid"}'])(
     "does not treat invalid saved settings as absent: %s",
     async (value) => {
