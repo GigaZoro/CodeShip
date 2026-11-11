@@ -1377,8 +1377,6 @@ const catalog: MessageCatalog = {
   "{name} {state}": "{name}: {state}",
   "{name} account options": "Параметри облікового запису {name}",
   "{name} added": "{name} додано",
-  "{name} can link back only when this link has auto or full access. Otherwise link this machine from {name}.":
-    "{name} може пов’язатися у зворотний бік, лише якщо цей зв’язок має автоматичний або повний доступ. Інакше пов’яжіть цей комп’ютер із {name}.",
   "{name} enablement": "Увімкнення {name}",
   "{name} is a guest": "{name} – гість",
   "{name} is a guest. A new link ends their access.":
