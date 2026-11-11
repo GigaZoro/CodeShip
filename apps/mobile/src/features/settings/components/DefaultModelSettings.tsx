@@ -16,17 +16,17 @@ import { SettingsSwitchRow } from "./SettingsSwitchRow";
 
 const MODEL_SETTINGS = {
   defaultModelSelection: {
-    title: msg("Default model"),
+    title: msg("Default for new threads"),
     unsetLabel: msg("Automatic"),
     footer: msg(
       "Automatically use an available provider, or choose a model for new threads and new scheduled tasks.",
     ),
   },
   scheduledTaskModelSelection: {
-    title: msg("Scheduled tasks model"),
-    unsetLabel: msg("Same as new threads"),
+    title: msg("Scheduled tasks"),
+    unsetLabel: msg("Same as default"),
     footer: msg(
-      "Runs scheduled tasks that use the default model. Same as new threads follows the default model above.",
+      "Runs scheduled tasks that use the default model. Same as default follows the model for new threads above.",
     ),
   },
 } as const;
@@ -193,7 +193,7 @@ export function DefaultModelSettings(props: {
       ) : null}
       {props.lastPicked ? (
         <SettingsSwitchRow
-          label={t("Use last picked model")}
+          label={t("Use the last picked model")}
           subtitle={t(
             "New threads start on the model you last picked on this device, Auto included. Until you pick one, they use the model above. Scheduled tasks are not affected.",
           )}

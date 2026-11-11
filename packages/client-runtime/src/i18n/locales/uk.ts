@@ -1458,6 +1458,7 @@ const catalog: MessageCatalog = {
   "{provider} {version} update failed": "Не вдалося оновити {provider} {version}",
   "{provider} account order": "Порядок облікових записів {provider}",
   "{provider} base URL": "Базовий URL {provider}",
+  "{provider} coordinator": "Координатор {provider}",
   "{provider} coordinator model": "Модель-координатор {provider}",
   "{provider} includes this server.": "{provider} містить цей сервер.",
   "{provider} instance '{id}' was added.": "Екземпляр {provider} «{id}» додано.",
@@ -1523,12 +1524,6 @@ const catalog: MessageCatalog = {
   "{reviewer}, Review requested": "{reviewer}, запрошено рев’ю",
   "{role} model": "Модель: {role}",
   "{rows} · {columns}": "{rows} · {columns}",
-  "{runsModel} Accounts are tried from the top, and a limited thread continues on the highest one with usage left.":
-    "{runsModel} Облікові записи пробуються зверху, а чат, що досяг ліміту, продовжується на найвищому з вільним лімітом.",
-  "{runsModel} Add a second account to switch accounts at usage limits.":
-    "{runsModel} Додайте другий обліковий запис, щоб перемикатися між ними на лімітах використання.",
-  "{runsModel} New Auto chats start on the top account.":
-    "{runsModel} Нові чати Auto запускаються на верхньому обліковому записі.",
   "{schedule} · {policy}": "{schedule} · {policy}",
   "{schedule} · {status}": "{schedule} · {status}",
   "{schedule} · next {when} ({time})": "{schedule} · наступний {when} ({time})",
@@ -1854,6 +1849,8 @@ const catalog: MessageCatalog = {
   "Account order": "Порядок облікових записів",
   "Account-specific home sharing the Codex state above.":
     "Домашня папка облікового запису, що ділить стан Codex зверху.",
+  "Accounts are tried from the top, and a limited thread continues on the highest one with usage left.":
+    "Облікові записи пробуються згори, а чат, що досяг ліміту, продовжується на найвищому з тих, де ще є використання.",
   "ACP provider configured": "Провайдера ACP налаштовано",
   "ACP provider disabled": "Провайдера ACP вимкнено",
   "ACP session already imported": "Сеанс ACP уже імпортовано",
@@ -2484,7 +2481,6 @@ const catalog: MessageCatalog = {
   "Auto balance": "Автобаланс",
   "Auto balance unavailable": "Автобалансування недоступне",
   "Auto mode": "Режим Auto",
-  "Auto mode and accounts": "Автоматичний режим і облікові записи",
   "Auto mode is off": "Режим «Авто» вимкнено",
   "Auto mode primary provider": "Основний провайдер режиму Auto",
   "Auto mode, delegated tasks, and final review use one machine's providers and accounts. Choose a machine to set them.":
@@ -3494,6 +3490,11 @@ const catalog: MessageCatalog = {
   "Commit & push": "Закомітити й надіслати",
   "Commit & push to {branch}": "Закомітити й надіслати в {branch}",
   "Commit & push to default ref?": "Закомітити й надіслати в типове посилання?",
+  "Commit and pull request writing": "Написання комітів і пул-реквестів",
+  "commit and pull request writing model": "модель написання комітів і пул-реквестів",
+  "Commit and pull request writing model": "Модель написання комітів і пул-реквестів",
+  "Commit and pull request writing model not saved":
+    "Модель написання комітів і пул-реквестів не збережено",
   "Commit changes": "Закомітити зміни",
   "Commit message": "Повідомлення коміту",
   "Commit message (optional)": "Повідомлення коміту (необов’язково)",
@@ -3600,10 +3601,10 @@ const catalog: MessageCatalog = {
     "Підключіть середовище, щоб змінювати комбінації клавіш.",
   "Connect an environment to choose its review guide model.":
     "Підключіть середовище, щоб вибрати його модель посібника з рев’ю.",
-  "Connect an environment to choose its source control writer model.":
-    "Підключіть середовище, щоб вибрати його модель автора для системи керування версіями.",
-  "Connect an environment to choose its text generation model.":
-    "Підключіть середовище, щоб вибрати його модель генерування тексту.",
+  "Connect an environment to choose its titles model.":
+    "Підключіть середовище, щоб вибрати його модель назв.",
+  "Connect an environment to choose its writing model.":
+    "Підключіть середовище, щоб вибрати його модель написання.",
   "Connect an environment to create a scheduled task.":
     "Підключіть середовище, щоб створити заплановане завдання.",
   "Connect an environment to inspect its version control tools and hosting integrations.":
@@ -4640,16 +4641,11 @@ const catalog: MessageCatalog = {
   "default diff file state": "стан файлів у змінах за замовчуванням",
   "Default diff file state": "Стан файлів у змінах за замовчуванням",
   "Default distro": "Типовий дистрибутив",
+  "Default for new threads": "За замовчуванням для нових чатів",
   "default merge method": "спосіб злиття за замовчуванням",
   "Default merge method": "Спосіб злиття за замовчуванням",
   "default model": "модель за замовчуванням",
   "Default model": "Модель за замовчуванням",
-  "Default model for new threads, following the default saved on another machine. Projects can override it.":
-    "Модель за замовчуванням для нових чатів, відповідно до значення, збереженого на іншому комп’ютері. Проєкти можуть це змінити.",
-  "Default model for new threads, selected automatically. Projects can override it.":
-    "Модель за замовчуванням для нових чатів, вибирається автоматично. Проєкти можуть це змінити.",
-  "Default model for new threads. Projects can override it.":
-    "Модель за замовчуванням для нових чатів. Проєкти можуть це змінити.",
   "Default model not saved": "Модель за замовчуванням не збережено",
   "default permissions": "дозволи за замовчуванням",
   "Default permissions": "Дозволи за замовчуванням",
@@ -6527,7 +6523,6 @@ const catalog: MessageCatalog = {
   "Large paste attached as {name}": "Великий фрагмент додано як {name}",
   "Largest shown": "Спочатку більші",
   "Last connected at {time}": "Востаннє підключено {time}",
-  "last picked model": "остання вибрана модель",
   "last project": "останній проєкт",
   "Last run": "Останній запуск",
   "last run {ago}": "останній запуск {ago}",
@@ -7092,8 +7087,12 @@ const catalog: MessageCatalog = {
   "Model and reasoning settings": "Налаштування моделі та міркування",
   "Model filters": "Фільтри моделей",
   "Model for new threads in this project.": "Модель для нових чатів у цьому проєкті.",
-  "Model for source control text and branch or bookmark names. When disabled, use the text generation model configured for this environment.":
-    "Модель для тексту системи керування версіями та назв гілок чи закладок. Якщо вимкнено, використовується модель генерування тексту, налаштована для цього середовища.",
+  "Model for new threads, following the default saved on another machine. Projects can override it.":
+    "Модель для нових чатів: береться та, що збережена на іншому комп’ютері. Проєкти можуть її перевизначити.",
+  "Model for new threads, selected automatically. Projects can override it.":
+    "Модель для нових чатів, вибрана автоматично. Проєкти можуть її перевизначити.",
+  "Model for new threads. Projects can override it.":
+    "Модель для нових чатів. Проєкти можуть її перевизначити.",
   "Model ID": "ID моделі",
   "Model mappings cannot form a cycle on {target}.":
     "Зіставлення моделей не можуть утворювати цикл у {target}.",
@@ -7104,8 +7103,6 @@ const catalog: MessageCatalog = {
   "Model prices": "Ціни моделей",
   "Model slugs must be {max} characters or less.":
     "Ідентифікатор моделі має містити не більше {max} символів.",
-  "Model that reads a pull request to write its review guide. It reads the change itself over many steps, so a stronger model helps. Off uses the source control writer model.":
-    "Модель, що читає пул-реквест, щоб написати його посібник з рев’ю. Вона вивчає саму зміну за багато кроків, тому краще підійде потужніша модель. Якщо вимкнено, використовується модель автора для системи керування версіями.",
   "Model turned off for this project": "Модель вимкнено для цього проєкту",
   "Model unavailable": "Модель недоступна",
   "Model unavailable. Open model settings.": "Модель недоступна. Відкрийте налаштування моделі.",
@@ -7113,7 +7110,6 @@ const catalog: MessageCatalog = {
   "Model: {model}": "Модель: {model}",
   "Model: {name}": "Модель: {name}",
   Models: "Моделі",
-  "Models by role": "Моделі за ролями",
   Modified: "Змінено",
   "Modifier-pair shortcuts aren't available in this Wayland session. Choose another shortcut or use Take snapshot from the command palette.":
     "Скорочення з парою модифікаторів недоступні в цьому сеансі Wayland. Виберіть інше скорочення або скористайтеся командою «Зробити знімок» у палітрі команд.",
@@ -7229,6 +7225,8 @@ const catalog: MessageCatalog = {
   "New {provider} sessions use the change.": "Нові сеанси {provider} використовуватимуть зміну.",
   "New agent sessions can open and drive these devices. agent-device: {versions}":
     "Нові сесії агентів можуть відкривати ці пристрої та керувати ними. agent-device: {versions}",
+  "New Auto chats start on the top account.":
+    "Нові чати в Auto починаються на верхньому обліковому записі.",
   "New branch": "Нова гілка",
   "New branch name": "Назва нової гілки",
   "New changes since this guide": "Нові зміни після цього посібника",
@@ -7949,6 +7947,7 @@ const catalog: MessageCatalog = {
   "Open Machines & access": "Відкрити «Комп’ютери та доступ»",
   "Open MCP servers": "Відкрити сервери MCP",
   "Open microphone settings": "Відкрити налаштування мікрофона",
+  "Open Models": "Відкрити моделі",
   "Open new terminal": "Відкрити новий термінал",
   "Open on {host}": "Відкрити на {host}",
   "Open on {label}": "Відкрити на {label}",
@@ -8852,6 +8851,8 @@ const catalog: MessageCatalog = {
   "Reading its settings…": "Читання налаштувань…",
   "Reading the change...": "Читання змін...",
   "Reading…": "Читання…",
+  "Reads a pull request over many steps to write its review guide, so a stronger model helps.":
+    "Читає пул-реквест за багато кроків, щоб написати посібник з рев’ю, тож сильніша модель допомагає.",
   "Reads ThreadPage again.": "Знову читає ThreadPage.",
   ready: "готово",
   Ready: "Готово",
@@ -9555,6 +9556,7 @@ const catalog: MessageCatalog = {
   "Review guide failed": "Не вдалося створити посібник рев’ю",
   "review guide instructions": "інструкції посібника з рев’ю",
   "Review guide instructions": "Інструкції посібника з рев’ю",
+  "review guide model": "модель посібника з рев’ю",
   "Review guide model": "Модель посібника з рев’ю",
   "Review guide model not saved": "Модель посібника з рев’ю не збережено",
   "Review guide ready": "Посібник рев’ю готовий",
@@ -9563,6 +9565,8 @@ const catalog: MessageCatalog = {
   "Review guides (beta)": "Посібники з рев’ю (бета)",
   "review guides {times}": "посібники з рев’ю {times}",
   "Review guides are disabled for this server.": "Посібники з рев’ю вимкнено для цього сервера.",
+  "Review guides are off. Turn them on in Source control & worktrees.":
+    "Посібники з рев’ю вимкнено. Увімкніть їх у розділі «Система керування версіями й worktree».",
   "Review instructions": "Інструкції для рев’ю",
   "Review link…": "Переглянути зв’язок…",
   "Review new threads": "Рев’ю нових чатів",
@@ -9735,10 +9739,10 @@ const catalog: MessageCatalog = {
   "Runs on its own": "Працює самостійно",
   "Runs only when every filter matches. Other requests are logged as filtered. Separate “is one of” values with commas; a value can't contain a comma.":
     "Запускається, лише коли збігаються всі фільтри. Інші запити записуються як відфільтровані. Розділяйте значення «є одним із» комами; значення не може містити коми.",
-  "Runs scheduled tasks that use the default model. Same as new threads follows the default model above.":
-    "Виконує заплановані завдання, що використовують модель за замовчуванням. Варіант «Як у нових чатів» відповідає моделі за замовчуванням вище.",
-  "Runs scheduled tasks that use the default model. Same as new threads follows the model above, including project overrides.":
-    "Виконує заплановані завдання, що використовують модель за замовчуванням. «Як для нових чатів» відповідає моделі вище, зокрема перевизначенням у проєктах.",
+  "Runs scheduled tasks that use the default model. Same as default follows the model for new threads above.":
+    "Виконує заплановані завдання, що використовують модель за замовчуванням. Те саме, що за замовчуванням: бере модель для нових чатів вище.",
+  "Runs scheduled tasks that use the default model. Same as default follows the model for new threads, including project overrides.":
+    "Виконує заплановані завдання, що використовують модель за замовчуванням. Те саме, що за замовчуванням: бере модель для нових чатів, зокрема перевизначення проєктів.",
   "Runs the default model here": "Тут використовує модель за замовчуванням",
   "Runs the default model on {machine}: the task's own model isn't set up there.":
     "На {machine} запускається модель за замовчуванням: власну модель завдання там не налаштовано.",
@@ -9753,8 +9757,10 @@ const catalog: MessageCatalog = {
   "Safe update to {version}?": "Безпечно оновити до {version}?",
   "Safe update?": "Безпечне оновлення?",
   "Same as /side": "Те саме, що /side",
-  "Same as new threads": "Як для нових чатів",
+  "Same as default": "Як за замовчуванням",
   "Same as the thread": "Як у чаті",
+  "Same as titles": "Як для назв",
+  "Same as writing": "Як для написання",
   "Same on all machines": "Однаково на всіх комп’ютерах",
   "Same repository": "Той самий репозиторій",
   "Same repository and path": "Той самий репозиторій і шлях",
@@ -10645,9 +10651,6 @@ const catalog: MessageCatalog = {
   "Source control providers": "Провайдери системи керування версіями",
   "Source control settings": "Налаштування керування кодом",
   "Source control writer model": "Модель автора для системи керування версіями",
-  "Source control writer model not saved":
-    "Модель автора для системи керування версіями не збережено",
-  "Source control writing": "Написання для системи керування версіями",
   "source control writing style": "стиль написання для системи керування версіями",
   "Source control writing style": "Стиль написання для системи керування версіями",
   Sources: "Джерела",
@@ -10731,7 +10734,6 @@ const catalog: MessageCatalog = {
     "Починати нові чати в наявному робочому просторі.",
   "Start new threads in the last project you used on this device.":
     "Починати нові чати в проєкті, який ви використовували останнім на цьому пристрої.",
-  "Start new threads on the model above": "Починати нові чати з моделі вище",
   "Start new worktrees from remote by default":
     "За замовчуванням створювати нові worktree з віддаленої гілки",
   "Start or reconnect an environment before adding a project.":
@@ -11187,9 +11189,7 @@ const catalog: MessageCatalog = {
     "Текст і зображення. Макет і вбудовані об’єкти можуть відрізнятися від оригіналу.",
   "Text appears once the agent finishes its turn.":
     "Текст з’являється, коли агент завершує свій хід.",
-  "text generation model": "модель генерування тексту",
   "Text generation model": "Модель генерування тексту",
-  "Text generation model not saved": "Модель генерування тексту не збережено",
   "text size": "розмір тексту",
   "Text size": "Розмір тексту",
   Th: "Чт",
@@ -11558,6 +11558,10 @@ const catalog: MessageCatalog = {
   "The microphone on this device": "Мікрофон цього пристрою",
   "The model chooses a prefix that describes the work, such as feat/add-search, fix/login-timeout, or refactor/auth.":
     "Модель вибирає префікс, що описує роботу, наприклад feat/add-search, fix/login-timeout або refactor/auth.",
+  "The model for new threads and scheduled tasks is set in Providers & models.":
+    "Модель для нових чатів і запланованих завдань налаштовується в розділі «Провайдери й моделі».",
+  "The model that writes commit and pull request text, and review guides, is set in Providers & models.":
+    "Модель, що пише текст комітів і пул-реквестів та посібники з рев’ю, налаштовується в розділі «Провайдери й моделі».",
   "The most recent matching binding wins when both conditions can apply.":
     "Якщо можуть діяти обидві умови, перемагає найновіша відповідна комбінація.",
   "The name is chosen by the agent. Approval gives access to whoever runs {host}. Only approve a sign-in you just started there.":
@@ -12479,6 +12483,8 @@ const catalog: MessageCatalog = {
   "Thread title cannot be empty.": "Назва чату не може бути порожньою.",
   "thread title instructions": "інструкції для назв чатів",
   "Thread title instructions": "Інструкції для назв чатів",
+  "Thread titles and other generated text on connected devices with this provider. Commit and pull request writing and review guides follow it until they pick their own.":
+    "Назви чатів та інший згенерований текст на підключених пристроях із цим провайдером. Написання комітів і пул-реквестів та посібники з рев’ю використовують її, доки не оберуть власну.",
   "thread transfers {times}": "перенесення чатів {times}",
   "Thread unavailable": "Чат недоступний",
   "Thread, {title}": "Чат, {title}",
@@ -12532,6 +12538,10 @@ const catalog: MessageCatalog = {
   Tinted: "Тонований",
   Tip: "Порада",
   Title: "Назва",
+  "Titles and background text": "Назви й фоновий текст",
+  "titles and background text model": "модель назв і фонового тексту",
+  "Titles and background text model": "Модель назв і фонового тексту",
+  "Titles and background text model not saved": "Модель назв і фонового тексту не збережено",
   "To do": "До виконання",
   "To edit these settings, pair this connection with both View relay and Manage relay permissions.":
     "Щоб змінити ці налаштування, зв’яжіть це підключення з дозволами «Перегляд ретранслятора» та «Керування ретранслятором».",
@@ -13156,9 +13166,6 @@ const catalog: MessageCatalog = {
   "Use a different account": "Використати інший обліковий запис",
   "Use a pull request URL, 123, or #123.": "Використайте URL пул-реквесту, 123 або #123.",
   "Use a reset credit?": "Використати кредит скидання?",
-  "Use a separate review guide model": "Використовувати окрему модель посібника з рев’ю",
-  "Use a separate source control writer model":
-    "Використовувати окрему модель автора для системи керування версіями",
   "Use a specific checkout": "Використовувати конкретну робочу копію",
   "Use active login": "Використовувати активний вхід",
   "Use advanced theme colors": "Використовувати розширені кольори теми",
@@ -13225,6 +13232,7 @@ const catalog: MessageCatalog = {
     "Скористайтеся фільтром вище, щоб вибрати підключене середовище.",
   "Use the first variants for light and dark":
     "Використовувати перші варіанти для світлого й темного режимів",
+  "Use the last picked model": "Використовувати останню вибрану модель",
   "Use the project checkout": "Використовувати робочу копію проєкту",
   "Use the repository's t3.json, or initialize recursively.":
     "Використовувати t3.json репозиторію або ініціалізувати рекурсивно.",
@@ -13275,8 +13283,6 @@ const catalog: MessageCatalog = {
   },
   "Used for new threads when the default model's provider is out of usage.":
     "Використовується для нових чатів, коли в провайдера моделі за замовчуванням вичерпано ліміт використання.",
-  "Used for thread titles and other generated text on connected devices with this provider. Source control can override it.":
-    "Використовується для назв чатів та іншого згенерованого тексту на підключених пристроях із цим провайдером. Система керування версіями може це перевизначити.",
   "User input needed": "Потрібне введення",
   "User message": "Повідомлення користувача",
   "User-configured endpoint for this desktop backend.":
@@ -13675,7 +13681,8 @@ const catalog: MessageCatalog = {
   'Write-only headers JSON, e.g. {"Authorization":"Bearer …"}':
     'JSON заголовків лише для запису, напр. {"Authorization":"Bearer …"}',
   "Write/s": "Запис/с",
-  Writing: "Написання",
+  "Writes commit messages, pull request titles and descriptions, and branch or bookmark names.":
+    "Пише повідомлення комітів, назви й описи пул-реквестів та імена гілок або закладок.",
   "Writing & review": "Написання й рев’ю",
   "Writing a guide requires a connection and write access.":
     "Для написання посібника потрібні з’єднання та право запису.",

@@ -212,8 +212,8 @@ To generate a fresh title from the conversation, open a thread's menu and choose
 **Regenerate title**. The action is unavailable while title generation is in progress
 or when the connected environment needs a server update.
 
-To change how titles are written, add **Thread title instructions** in **Settings → Providers & models →
-Models → Writing**, such as a length limit or an identifier to put first. They apply to new and
+To change how titles are written, add **Thread title instructions** under **Advanced** in **Settings → Providers & models →
+Models**, such as a length limit or an identifier to put first. They apply to new and
 regenerated titles. Select a project to give it its own instructions.
 
 Agents connected through T3.CodeShip can use the same server-owned metadata workflow to
@@ -484,7 +484,7 @@ its **Run history** says which account it used. **Usage → Limits** shows which
 account a limited thread continues on right now.
 
 **Auto** picks the model and the account for you. Set it up in **Settings →
-Providers** on web or desktop: pick a primary provider under **Auto mode**, and
+Providers & models → Models** on web or desktop: pick a primary provider under **Auto mode**, and
 choose the coordinator model and effort for each provider. Auto keeps these choices
 for the coordinator. Then pick **Auto** at the top of the model picker, or turn on **Auto** under
 the default model in settings for new threads. A scheduled task's model can be Auto
@@ -513,13 +513,13 @@ When the other provider cannot run, it delegates routine work to cheaper models 
 its own provider.
 
 To run delegated work on other models, set **Delegated tasks** in **Settings →
-Providers** on web or desktop. Each role, such as implementation or review, can
+Providers & models → Models** on web or desktop. Each role, such as implementation or review, can
 have its own model, including Auto. When an agent hands off a task
 without naming a model, the task runs on the model set for its role; unset roles
 use the thread's model.
 
 **Final review** has other models check what a request changed. Add reviewers
-under **Final review** in **Settings → Providers & models** on web or desktop, and turn on
+under **Final review** in **Settings → Providers & models → Models** on web or desktop, and turn on
 **Review new threads** to review every thread. Turn it on or off for one thread
 from the thread's menu on web and desktop, or its settings sheet on mobile. After
 a request you send changes files, the thread's agent starts one read-only review

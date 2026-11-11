@@ -3,7 +3,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { NotificationSettings } from "./NotificationSettings";
 import { PRIVACY_POLICY_URL } from "../../legalLinks";
 import { CheckIcon } from "lucide-react";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import {
   DEFAULT_SERVER_SETTINGS,
@@ -11,8 +11,6 @@ import {
   type EnvironmentId,
   IDLE_COMPACTION_MODES,
   globalIdleCompaction,
-  ProviderDriverKind,
-  type ProviderInstanceId,
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
 import { idleCompactionModeLabel } from "@t3tools/shared/claudeCompaction";
@@ -28,9 +26,9 @@ import {
   resolveSidebarGrouping,
 } from "@t3tools/contracts/settings";
 import { desktopUpdateChannelOf } from "@t3tools/shared/cliRelease";
-import { createModelSelection } from "@t3tools/shared/model";
 import { resolvePastedPath } from "@t3tools/shared/path";
 import * as Equal from "effect/Equal";
+import * as Schema from "effect/Schema";
 import { APP_VERSION, HOSTED_APP_CHANNEL, HOSTED_APP_CHANNEL_LABEL } from "../../branding";
 import { AboutVersionTitle } from "./AboutVersionTitle";
 import { CliCommandSettingsRow } from "./CliCommandSettingsRow";
@@ -45,8 +43,6 @@ import {
   resolveDesktopUpdateButtonAction,
   resolveDesktopUpdatePendingAction,
 } from "../../components/desktopUpdate.logic";
-import { ProviderModelPicker } from "../chat/ProviderModelPicker";
-import { TraitsPicker } from "../chat/TraitsPicker";
 import { isElectron } from "../../env";
 import { buildHostedChannelSelectionUrl, type HostedAppChannel } from "../../hostedPairing";
 import {
@@ -61,7 +57,6 @@ import {
   useScopedSettingsMixed,
   useUpdateScopedSettings,
 } from "./useScopedSettings";
-import { useScopedModelDisabledReason } from "./useScopedModelAvailability";
 import {
   getClientSettings,
   mergeEnvironmentSettings,
@@ -80,19 +75,12 @@ import {
   scopedIdleCompaction,
 } from "./scopedSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
-import { ThreadTitleInstructionsSettings } from "./ThreadTitleInstructionsSettings";
 import { SnoozePresetsRow } from "./SnoozePresetsSettings";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import { managedTelemetryOffMessage, usePrimaryManagedPolicy } from "../../state/managedPolicy";
-import {
-  getCustomModelOptionsByInstance,
-  resolveAppModelSelectionState,
-} from "../../modelSelection";
-import { providerInstanceEntriesFor } from "../../providerInstances";
 import { ensureLocalApi, readLocalApi } from "../../localApi";
 import { isMacPlatform, isWindowsPlatform } from "../../lib/utils";
-import { useEnvironmentProviders, useEnvironments } from "../../state/environments";
-import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
+import { useEnvironments } from "../../state/environments";
 import { Button, InlineButton } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
@@ -112,7 +100,6 @@ import {
   projectScopedRestorePlan,
 } from "./SettingsPanels.logic";
 import {
-  SETTINGS_PICKER_TRIGGER_CLASSNAME,
   SettingResetButton,
   SettingsPageContainer,
   SettingsRow,
@@ -173,7 +160,6 @@ const QUIT_CONFIRMATION_MODE_LABELS: Record<QuitConfirmationMode, Message> = {
   "double-click": msg("Double press"),
 };
 
-const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
 function AboutVersionSection() {
   const updateState = useDesktopUpdateState();
   const [switchChannel, setSwitchChannel] = useState<DesktopUpdateChannel | null>(null);
@@ -1926,168 +1912,6 @@ export function ThreadsSettingsPanel() {
       </SettingsSection>
       {!isProjectScope ? <ThreadPageTokenSettings /> : null}
     </SettingsPageContainer>
-  );
-}
-
-/** Text generation model and thread title instructions, shown under Providers & models. */
-export function TextGenerationSettingsSection() {
-  const settings = useScopedSettings();
-  const updateSettings = useUpdateScopedSettings();
-  const navigate = useNavigate();
-  const { environment, connectedEnvironments, target } = useSettingsScope();
-  const environmentId = environment?.environmentId ?? null;
-  const hasServerTargets = connectedEnvironments.length > 0;
-  const providersByEnvironment = useEnvironmentProviders();
-  const serverProviders =
-    (environment?.serverConfig
-      ? providersByEnvironment.get(environment.environmentId)
-      : undefined) ?? EMPTY_SERVER_PROVIDERS;
-  const textGenerationProviders = serverProviders.filter(
-    (provider) => provider.supportsTextGeneration !== false,
-  );
-  const textGenerationModelSelection = resolveAppModelSelectionState(
-    settings,
-    textGenerationProviders,
-  );
-  const textGenInstanceId = textGenerationModelSelection.instanceId;
-  const textGenModel = textGenerationModelSelection.model;
-  const textGenModelOptions = textGenerationModelSelection.options;
-  const textGenerationModelInstanceEntries = providerInstanceEntriesFor(
-    textGenerationProviders,
-    settings,
-    target?.projectId ?? null,
-  );
-  const hasTextGenerationProvider = textGenerationModelInstanceEntries.some(
-    (entry) => entry.enabled && entry.isAvailable,
-  );
-  const textGenInstanceEntry = textGenerationModelInstanceEntries.find(
-    (entry) => entry.instanceId === textGenInstanceId,
-  );
-  const textGenProvider: ProviderDriverKind =
-    textGenInstanceEntry?.driverKind ?? DEFAULT_DRIVER_KIND;
-  const textGenerationModelOptionsByInstance = getCustomModelOptionsByInstance(
-    settings,
-    textGenerationProviders,
-    textGenInstanceId,
-    textGenModel,
-  );
-  const isTextGenerationModelDirty = !Equal.equals(
-    settings.textGenerationModelSelection ?? null,
-    DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection ?? null,
-  );
-  const textGenerationModelDisabledReason = useScopedModelDisabledReason(
-    settings,
-    textGenerationModelInstanceEntries,
-  );
-  const mixedTextGenerationModel = useScopedSettingsMixed(["textGenerationModelSelection"]);
-
-  return (
-    <SettingsSection id="text-generation" title={t("Writing")}>
-      <SettingsRow
-        serverScoped
-        settingKeys={["textGenerationModelSelection"]}
-        {...searchableSetting("text-generation-model")}
-        description={t(
-          "Used for thread titles and other generated text on connected devices with this provider. Source control can override it.",
-        )}
-        resetAction={
-          hasServerTargets && isTextGenerationModelDirty ? (
-            <SettingResetButton
-              label={t("text generation model")}
-              onClick={() =>
-                updateSettings({
-                  textGenerationModelSelection:
-                    DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
-                })
-              }
-            />
-          ) : null
-        }
-        control={
-          !hasServerTargets ? (
-            <span className="text-sm text-muted-foreground">
-              {t("Connect an environment to choose its text generation model.")}
-            </span>
-          ) : !hasTextGenerationProvider ? (
-            <span className="text-sm text-muted-foreground">
-              {t("No text generation providers available.")}
-            </span>
-          ) : (
-            <div className="flex flex-wrap items-center justify-end gap-1.5">
-              <ProviderModelPicker
-                environmentId={environmentId}
-                activeInstanceId={textGenInstanceId}
-                model={textGenModel}
-                lockedProvider={null}
-                instanceEntries={textGenerationModelInstanceEntries}
-                modelOptionsByInstance={textGenerationModelOptionsByInstance}
-                triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                {...(mixedTextGenerationModel ? { triggerLabel: t("Mixed") } : {})}
-                getModelDisabledReason={textGenerationModelDisabledReason}
-                {...(environmentId
-                  ? {
-                      onOpenProviderSetup: (instanceId: ProviderInstanceId) => {
-                        void navigate({
-                          to: "/settings/providers",
-                          search: { environmentId, instanceId },
-                        });
-                      },
-                    }
-                  : {})}
-                onInstanceModelChange={(instanceId, model) => {
-                  const reason = textGenerationModelDisabledReason(instanceId, model);
-                  if (reason) {
-                    toastManager.add({
-                      type: "error",
-                      title: t("Text generation model not saved"),
-                      description: reason,
-                    });
-                    return;
-                  }
-                  updateSettings({
-                    textGenerationModelSelection: resolveAppModelSelectionState(
-                      {
-                        ...settings,
-                        textGenerationModelSelection: createModelSelection(instanceId, model),
-                      },
-                      textGenerationProviders,
-                    ),
-                  });
-                }}
-              />
-              {textGenInstanceEntry ? (
-                <TraitsPicker
-                  provider={textGenProvider}
-                  models={textGenInstanceEntry?.models ?? []}
-                  model={textGenModel}
-                  modelOptions={textGenModelOptions}
-                  allowPromptInjectedEffort={false}
-                  triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                  onModelOptionsChange={(nextOptions) => {
-                    updateSettings({
-                      textGenerationModelSelection: resolveAppModelSelectionState(
-                        {
-                          ...settings,
-                          textGenerationModelSelection: createModelSelection(
-                            textGenInstanceId,
-                            textGenModel,
-                            nextOptions,
-                          ),
-                        },
-                        textGenerationProviders,
-                      ),
-                    });
-                  }}
-                />
-              ) : null}
-            </div>
-          )
-        }
-      />
-      <AdvancedSettings targetIds={[searchableSetting("thread-title-instructions").id]}>
-        <ThreadTitleInstructionsSettings />
-      </AdvancedSettings>
-    </SettingsSection>
   );
 }
 

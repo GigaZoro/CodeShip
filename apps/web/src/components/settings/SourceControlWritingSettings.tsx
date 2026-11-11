@@ -1,46 +1,21 @@
 import { msg, t, type Message } from "~/i18n";
-import { useNavigate } from "@tanstack/react-router";
 import { useRef, useState } from "react";
-import type {
-  ProviderInstanceId,
-  ServerSettings,
-  SourceControlWritingStyleMode,
-} from "@t3tools/contracts";
+import type { ServerSettings, SourceControlWritingStyleMode } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
-import { createModelSelection } from "@t3tools/shared/model";
-import {
-  resolveReviewGuideModelSelection,
-  resolveSourceControlWriterModelSelection,
-} from "@t3tools/shared/serverSettings";
 
 import {
   useScopedSettings,
   useScopedSettingsMixed,
   useUpdateScopedSettings,
 } from "./useScopedSettings";
-import { useScopedModelDisabledReason } from "./useScopedModelAvailability";
 import { useSettingsScope } from "./SettingsScopeContext";
-import { providerInstanceEntriesFor } from "../../providerInstances";
-import {
-  getCustomModelOptionsByInstance,
-  resolveAppModelSelectionState,
-} from "../../modelSelection";
-import { useEnvironmentProviders } from "../../state/environments";
-import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
-import { ProviderModelPicker } from "../chat/ProviderModelPicker";
-import { TraitsPicker } from "../chat/TraitsPicker";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
-import { toastManager } from "../ui/toast";
 import { Button } from "../ui/button";
-import {
-  SETTINGS_PICKER_TRIGGER_CLASSNAME,
-  SettingResetButton,
-  SettingsRow,
-  SettingsSection,
-} from "./settingsLayout";
+import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
 import { AdvancedSettings } from "./AdvancedSettings";
+import { ModelsLinkRow } from "./ProjectDefaultsSettings";
 import { searchableSetting } from "./settingsSearch";
 
 const MODE_OPTIONS: Record<
@@ -65,24 +40,11 @@ const MODE_OPTIONS: Record<
   },
 };
 
-/** "models" renders only the writer and review guide model rows, for Providers & models. */
-export function SourceControlWritingSettingsSection({
-  part = "writing",
-}: {
-  readonly part?: "writing" | "models";
-}) {
+export function SourceControlWritingSettingsSection() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const mixedReviewGuidesEnabled = useScopedSettingsMixed(["reviewGuidesEnabled"]);
-  const navigate = useNavigate();
-  const { environment, connectedEnvironments, targets, target } = useSettingsScope();
-  const environmentId = environment?.environmentId ?? null;
-  const hasServerTargets = connectedEnvironments.length > 0;
-  const providersByEnvironment = useEnvironmentProviders();
-  const serverProviders =
-    (environment?.serverConfig
-      ? providersByEnvironment.get(environment.environmentId)
-      : undefined) ?? EMPTY_SERVER_PROVIDERS;
+  const { targets } = useSettingsScope();
   const styleFieldMixed = (field: keyof ServerSettings["sourceControlWritingStyle"]) => {
     const first = targets[0];
     return (
@@ -98,8 +60,6 @@ export function SourceControlWritingSettingsSection({
   const instructionsMixed = styleFieldMixed("customInstructions");
   const templatesMixed = styleFieldMixed("followChangeRequestTemplates");
   const writingStyleMixed = modeMixed || instructionsMixed;
-  const mixedWriterModel = useScopedSettingsMixed(["sourceControlWriterModelSelection"]);
-  const mixedReviewGuideModel = useScopedSettingsMixed(["reviewGuideModelSelection"]);
   const mixedReviewGuideInstructions = useScopedSettingsMixed(["reviewGuideInstructions"]);
   const reviewGuideInstructionsEdited = useRef(false);
   const scopeKey = targets.map((target) => `${target.environmentId}:${target.projectId}`).join(",");
@@ -113,282 +73,7 @@ export function SourceControlWritingSettingsSection({
     style.mode !== defaults.mode ||
     style.customInstructions !== defaults.customInstructions;
 
-  const textGenerationProviders = serverProviders.filter(
-    (provider) => provider.supportsTextGeneration !== false,
-  );
-  const instanceEntries = providerInstanceEntriesFor(
-    textGenerationProviders,
-    settings,
-    target?.projectId ?? null,
-  );
-  const projectEnabledInstanceIds = new Set(
-    instanceEntries
-      .filter((entry) => entry.enabled && entry.isAvailable)
-      .map((entry) => entry.instanceId),
-  );
-  const projectEffectiveTextGenerationProviders = textGenerationProviders.filter((provider) =>
-    projectEnabledInstanceIds.has(provider.instanceId),
-  );
-  const defaultModelSelection = resolveAppModelSelectionState(
-    settings,
-    projectEffectiveTextGenerationProviders,
-  );
-  const usesDedicatedModel = settings.sourceControlWriterModelSelection !== null;
-  const activeSelection = resolveAppModelSelectionState(
-    {
-      ...settings,
-      textGenerationModelSelection: resolveSourceControlWriterModelSelection(
-        settings,
-        projectEffectiveTextGenerationProviders,
-        target?.projectId ?? null,
-      ),
-    },
-    projectEffectiveTextGenerationProviders,
-  );
-  const canEnableDedicatedModel = instanceEntries.some(
-    (entry) =>
-      entry.instanceId === defaultModelSelection.instanceId && entry.enabled && entry.isAvailable,
-  );
-  const modelOptionsByInstance = getCustomModelOptionsByInstance(
-    settings,
-    projectEffectiveTextGenerationProviders,
-    activeSelection.instanceId,
-    activeSelection.model,
-  );
-  const writerModelDisabledReason = useScopedModelDisabledReason(settings, instanceEntries);
-  const writerInstanceEntry = instanceEntries.find(
-    (entry) => entry.instanceId === activeSelection.instanceId,
-  );
-  const usesReviewGuideModel = settings.reviewGuideModelSelection !== null;
-  const reviewGuideSelection = resolveAppModelSelectionState(
-    {
-      ...settings,
-      textGenerationModelSelection: resolveReviewGuideModelSelection(
-        settings,
-        textGenerationProviders,
-        target?.projectId ?? null,
-      ),
-    },
-    textGenerationProviders,
-  );
-  const reviewGuideModelOptionsByInstance = getCustomModelOptionsByInstance(
-    settings,
-    textGenerationProviders,
-    reviewGuideSelection.instanceId,
-    reviewGuideSelection.model,
-  );
-  const reviewGuideInstanceEntry = instanceEntries.find(
-    (entry) => entry.instanceId === reviewGuideSelection.instanceId,
-  );
-
   const reviewGuidesShown = settings.reviewGuidesEnabled || mixedReviewGuidesEnabled;
-
-  if (part === "models") {
-    return (
-      <SettingsSection id="source-control-models" title={t("Source control writing")}>
-        <SettingsRow
-          serverScoped
-          settingKeys={["sourceControlWriterModelSelection"]}
-          {...searchableSetting("source-control-writer-model")}
-          description={t(
-            "Model for source control text and branch or bookmark names. When disabled, use the text generation model configured for this environment.",
-          )}
-          control={
-            !hasServerTargets ? (
-              <span className="text-sm text-muted-foreground">
-                {t("Connect an environment to choose its source control writer model.")}
-              </span>
-            ) : (
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                {usesDedicatedModel && !canEnableDedicatedModel ? (
-                  <span className="text-sm text-muted-foreground">
-                    {t("No text generation providers available.")}
-                  </span>
-                ) : null}
-                {usesDedicatedModel && canEnableDedicatedModel ? (
-                  <ProviderModelPicker
-                    environmentId={environmentId}
-                    activeInstanceId={activeSelection.instanceId}
-                    model={activeSelection.model}
-                    lockedProvider={null}
-                    instanceEntries={instanceEntries}
-                    modelOptionsByInstance={modelOptionsByInstance}
-                    triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                    triggerAriaLabel={t("Source control writer model")}
-                    {...(mixedWriterModel ? { triggerLabel: t("Mixed") } : {})}
-                    {...(environmentId
-                      ? {
-                          onOpenProviderSetup: (instanceId: ProviderInstanceId) => {
-                            void navigate({
-                              to: "/settings/providers",
-                              search: { environmentId, instanceId },
-                            });
-                          },
-                        }
-                      : {})}
-                    getModelDisabledReason={writerModelDisabledReason}
-                    onInstanceModelChange={(instanceId, model) => {
-                      const reason = writerModelDisabledReason(instanceId, model);
-                      if (reason) {
-                        toastManager.add({
-                          type: "error",
-                          title: t("Source control writer model not saved"),
-                          description: reason,
-                        });
-                        return;
-                      }
-                      updateSettings({
-                        sourceControlWriterModelSelection: createModelSelection(instanceId, model),
-                      });
-                    }}
-                  />
-                ) : null}
-                {usesDedicatedModel &&
-                canEnableDedicatedModel &&
-                !mixedWriterModel &&
-                writerInstanceEntry ? (
-                  <TraitsPicker
-                    provider={writerInstanceEntry.driverKind}
-                    models={writerInstanceEntry.models}
-                    model={activeSelection.model}
-                    modelOptions={activeSelection.options ?? []}
-                    allowPromptInjectedEffort={false}
-                    triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                    onModelOptionsChange={(options) =>
-                      updateSettings({
-                        sourceControlWriterModelSelection: createModelSelection(
-                          activeSelection.instanceId,
-                          activeSelection.model,
-                          options,
-                        ),
-                      })
-                    }
-                  />
-                ) : null}
-                <Switch
-                  checked={usesDedicatedModel}
-                  disabled={!usesDedicatedModel && !canEnableDedicatedModel}
-                  onCheckedChange={(checked) =>
-                    updateSettings({
-                      sourceControlWriterModelSelection: checked
-                        ? createModelSelection(
-                            defaultModelSelection.instanceId,
-                            defaultModelSelection.model,
-                            defaultModelSelection.options,
-                          )
-                        : null,
-                    })
-                  }
-                  aria-label={t("Use a separate source control writer model")}
-                />
-              </div>
-            )
-          }
-        />
-        {reviewGuidesShown ? (
-          <SettingsRow
-            serverScoped
-            settingKeys={["reviewGuideModelSelection"]}
-            {...searchableSetting("review-guide-model")}
-            description={t(
-              "Model that reads a pull request to write its review guide. It reads the change itself over many steps, so a stronger model helps. Off uses the source control writer model.",
-            )}
-            control={
-              !hasServerTargets ? (
-                <span className="text-sm text-muted-foreground">
-                  {t("Connect an environment to choose its review guide model.")}
-                </span>
-              ) : (
-                <div className="flex flex-wrap items-center justify-end gap-2">
-                  {(usesReviewGuideModel || mixedReviewGuideModel) && canEnableDedicatedModel ? (
-                    <ProviderModelPicker
-                      environmentId={environmentId}
-                      activeInstanceId={reviewGuideSelection.instanceId}
-                      model={reviewGuideSelection.model}
-                      lockedProvider={null}
-                      instanceEntries={instanceEntries}
-                      modelOptionsByInstance={reviewGuideModelOptionsByInstance}
-                      triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                      triggerAriaLabel={t("Review guide model")}
-                      {...(mixedReviewGuideModel ? { triggerLabel: t("Mixed") } : {})}
-                      getModelDisabledReason={writerModelDisabledReason}
-                      onInstanceModelChange={(instanceId, model) => {
-                        const reason = writerModelDisabledReason(instanceId, model);
-                        if (reason) {
-                          toastManager.add({
-                            type: "error",
-                            title: t("Review guide model not saved"),
-                            description: reason,
-                          });
-                          return;
-                        }
-                        updateSettings({
-                          reviewGuideModelSelection: createModelSelection(instanceId, model),
-                        });
-                      }}
-                    />
-                  ) : null}
-                  {usesReviewGuideModel &&
-                  canEnableDedicatedModel &&
-                  !mixedReviewGuideModel &&
-                  reviewGuideInstanceEntry ? (
-                    <TraitsPicker
-                      provider={reviewGuideInstanceEntry.driverKind}
-                      models={reviewGuideInstanceEntry.models}
-                      model={reviewGuideSelection.model}
-                      modelOptions={reviewGuideSelection.options ?? []}
-                      allowPromptInjectedEffort={false}
-                      triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                      onModelOptionsChange={(options) =>
-                        updateSettings({
-                          reviewGuideModelSelection: createModelSelection(
-                            reviewGuideSelection.instanceId,
-                            reviewGuideSelection.model,
-                            options,
-                          ),
-                        })
-                      }
-                    />
-                  ) : null}
-                  <Switch
-                    mixed={mixedReviewGuideModel}
-                    checked={mixedReviewGuideModel ? false : usesReviewGuideModel}
-                    disabled={!usesReviewGuideModel && !canEnableDedicatedModel}
-                    onCheckedChange={(checked) => {
-                      if (!checked) {
-                        updateSettings({ reviewGuideModelSelection: null });
-                        return;
-                      }
-                      const reason = writerModelDisabledReason(
-                        activeSelection.instanceId,
-                        activeSelection.model,
-                      );
-                      if (reason) {
-                        toastManager.add({
-                          type: "error",
-                          title: t("Review guide model not saved"),
-                          description: reason,
-                        });
-                        return;
-                      }
-                      updateSettings({
-                        reviewGuideModelSelection: createModelSelection(
-                          activeSelection.instanceId,
-                          activeSelection.model,
-                          activeSelection.options,
-                        ),
-                      });
-                    }}
-                    aria-label={t("Use a separate review guide model")}
-                  />
-                </div>
-              )
-            }
-          />
-        ) : null}
-      </SettingsSection>
-    );
-  }
 
   return (
     <SettingsSection id="source-control-text-generation" title={t("Writing & review")}>
@@ -573,6 +258,11 @@ export function SourceControlWritingSettingsSection({
           </div>
         </SettingsRow>
       ) : null}
+      <ModelsLinkRow
+        description={t(
+          "The model that writes commit and pull request text, and review guides, is set in Providers & models.",
+        )}
+      />
       <AdvancedSettings targetIds={[searchableSetting("follow-change-request-templates").id]}>
         <SettingsRow
           serverScoped

@@ -46,20 +46,46 @@ Settings that are environment-wide stay read-only while a project is selected. W
 targets disagree, a control shows **Mixed** until you choose one value. Appearance, keyboard,
 and other phone-only settings ignore the filter.
 
-Choose a provider and model for new threads in **Settings → Providers & models → Models → New threads** on web or desktop,
-or **Settings → Threads → Default model** on mobile. A machine with no saved choice uses the
+## Models
+
+**Settings → Providers & models → Models** lists every model role in one section, in this order. Each
+row shows its role, the model and effort it runs, and an editor right there:
+
+| Row                                 | What it sets                                                                                          |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| **Default for new threads**         | The model new threads start on, with **Use the last picked model** and a **Fallback model** under it. |
+| **Scheduled tasks**                 | The model scheduled tasks use by default.                                                             |
+| **Auto mode**                       | Auto's primary provider and the coordinator model each provider runs.                                 |
+| **Titles and background text**      | Thread titles and other generated text.                                                               |
+| **Commit and pull request writing** | Commit messages, pull request text, and branch or bookmark names.                                     |
+| **Review guides**                   | The model that reads a pull request to write its review guide.                                        |
+| **Final review**                    | Whether new threads are reviewed, the reviewers' models, and their instructions.                      |
+| **Delegated tasks**                 | The model each role runs when an agent hands off work without naming one.                             |
+
+A role you have not set shows the role it follows instead of a duplicate model: **Same as default**
+for scheduled tasks, **Same as titles** for commit and pull request writing, and **Same as writing**
+(or **Same as titles**, while writing is also unset) for review guides. Delegated tasks show **Same
+as the thread**. Reset a row to return it to following. Titles and background text always has a model;
+its reset restores the built-in one. Auto mode, Final review and Delegated tasks belong to one
+machine's providers and accounts, so select a machine to edit them. The other rows follow the settings
+scope picker: select a project to give it its own default model, titles, commit and pull request
+writing, and review guide models. Scheduled tasks, Auto mode, Final review and Delegated tasks apply to
+the whole machine.
+
+Choose a provider and model for new threads in **Default for new threads** on web or desktop,
+or **Settings → Threads → Default for new threads** on mobile. A machine with no saved choice uses the
 default saved on another connected machine, with its effort level, when it has that provider;
 otherwise T3.CodeShip automatically uses an available provider. Reset the web or desktop model
 setting, or select **Automatic** on mobile, to restore that behavior. A saved choice stays selected
 if its provider becomes unavailable; set up that provider again or choose another model.
 
-Turn on **Use last picked model** under the model to start each new thread on the model you
+Turn on **Use the last picked model** under the default model to start each new thread on the model you
 last picked on that device, Auto included. Until you pick one there, new threads use the default
 model. Scheduled tasks and threads that agents start are not affected.
 
-Scheduled tasks have their own default in **Settings → Providers & models → Models → New threads** on web or
-desktop, or **Scheduled tasks model** on mobile: Auto, a model, or **Same as new threads**, which
-follows the model above and its project overrides. A task with **Use default model** turned on,
+Scheduled tasks have their own default in **Settings → Providers & models → Models → Scheduled tasks** on web or
+desktop, or **Scheduled tasks** on mobile: Auto, a model, or **Same as default**, which
+follows the model for new threads and its project overrides. A task with **Use default model** turned on,
 which is how new tasks start, runs this model on every run, so changing it here changes all of
 them. Turn the switch off in a task to pick a model for that task alone. Tasks an agent schedules
 use the default too, unless you ask the agent to choose a model for that task. Agents
