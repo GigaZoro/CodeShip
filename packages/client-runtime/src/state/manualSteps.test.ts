@@ -118,16 +118,12 @@ describe("combineManualSteps with detected steps", () => {
     ).toEqual([["Mac", ["gone", "soon", "mcp"]]]);
   });
 
-  it("shows a machine reached through two environments once and keeps ThreadPage steps", () => {
+  it("keeps ThreadPage steps and groups findings by machine label, whatever its spelling", () => {
     const view = combineManualSteps(
       [{ status: "listed", steps: [step("xcode", "Mac"), step("disk", "Zoro-VPS")] }],
       [
         { status: "listed", environmentId: mac, steps: [detected("a", "Mac")] },
-        {
-          status: "listed",
-          environmentId: vps,
-          steps: [detected("a", "Mac"), detected("a", "zoro-vps")],
-        },
+        { status: "listed", environmentId: vps, steps: [detected("a", "zoro-vps")] },
       ],
     );
     expect(view.status === "listed" ? view.count : null).toBe(4);
@@ -143,6 +139,24 @@ describe("combineManualSteps with detected steps", () => {
       ["Mac", 1, [mac]],
       ["Zoro-VPS", 1, [vps]],
     ]);
+  });
+
+  it("keeps the same step from two servers that share a label, and merges one server's repeats", () => {
+    const dev = "mac-dev-env" as EnvironmentId;
+    const view = combineManualSteps(
+      [{ status: "not-connected" }],
+      [
+        { status: "listed", environmentId: mac, steps: [detected("a", "Mac")] },
+        { status: "listed", environmentId: dev, steps: [detected("a", "Mac")] },
+        { status: "listed", environmentId: mac, steps: [detected("a", "Mac")] },
+      ],
+    );
+    expect(
+      view.status === "listed"
+        ? view.groups.map((group) => group.detected.map((entry) => entry.environmentId))
+        : view,
+    ).toEqual([[mac, dev]]);
+    expect(view.status === "listed" ? view.count : null).toBe(2);
   });
 
   it("names a ThreadPage failure beside findings, and fails alone only with nothing else", () => {
