@@ -2,6 +2,7 @@ import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  AuthEnvironmentScope,
   CommandId,
   EventId,
   MessageId,
@@ -74,6 +75,9 @@ import * as RemoteDelegation from "./RemoteDelegation.ts";
 // The laptop's agent asks the user to link the box. The laptop is its real
 // orchestrator and toolkit; the box is its real descriptor and MCP OAuth on a
 // socket. The user's answer goes through PeerLinkRequests, as the card's does.
+
+// The user's own session answers the card, so it holds every scope a link back could grant.
+const OWNER = { scopes: AuthEnvironmentScope.literals };
 
 const laptop = descriptorOf("environment-laptop", "Laptop");
 const box = descriptorOf("environment-box", "Box");
@@ -567,11 +571,14 @@ it.live("the agent asks without waiting, and the user links the box after its tu
 
       // The user's client mints a code on the box and picks more than the agent suggested.
       const pairing = yield* b.auth.issuePairingCredential();
-      yield* a.requests.answer({
-        threadId,
-        turnItemId: card.id,
-        answer: { type: "link", urls: [b.url], access: "auto", pairingCode: pairing.credential },
-      });
+      yield* a.requests.answer(
+        {
+          threadId,
+          turnItemId: card.id,
+          answer: { type: "link", urls: [b.url], access: "auto", pairingCode: pairing.credential },
+        },
+        OWNER,
+      );
 
       const link = yield* a.links.get(box.environmentId);
       expect(Option.getOrUndefined(link)?.access).toBe("auto");
@@ -603,7 +610,7 @@ it.live("the agent asks without waiting, and the user links the box after its tu
 
       // A card is answered once.
       const again = yield* a.requests
-        .answer({ threadId, turnItemId: card.id, answer: { type: "decline" } })
+        .answer({ threadId, turnItemId: card.id, answer: { type: "decline" } }, OWNER)
         .pipe(Effect.flip);
       expect(again.reason).toBe("already_answered");
 
@@ -666,7 +673,10 @@ it.live("a declined request links nothing and tells the agent", () =>
       yield* seedThread(a);
       yield* a.call({ url: b.url });
       const card = yield* pendingCard(a);
-      yield* a.requests.answer({ threadId, turnItemId: card.id, answer: { type: "decline" } });
+      yield* a.requests.answer(
+        { threadId, turnItemId: card.id, answer: { type: "decline" } },
+        OWNER,
+      );
       expect(Option.isNone(yield* a.links.get(box.environmentId))).toBe(true);
       expect(yield* cardOf(a)).toMatchObject({ status: "cancelled", linkStatus: "declined" });
       const { messages } = yield* outcomeMessages(a);
@@ -692,11 +702,14 @@ it.live("stopping the thread closes its open card, which then takes no answer", 
       });
       expect(yield* cardOf(a)).toMatchObject({ status: "cancelled", linkStatus: "cancelled" });
       const late = yield* a.requests
-        .answer({
-          threadId,
-          turnItemId: card.id,
-          answer: { type: "link", urls: [b.url], access: "auto", pairingCode: "late-code" },
-        })
+        .answer(
+          {
+            threadId,
+            turnItemId: card.id,
+            answer: { type: "link", urls: [b.url], access: "auto", pairingCode: "late-code" },
+          },
+          OWNER,
+        )
         .pipe(Effect.flip);
       expect(late.reason).toBe("already_answered");
       expect(Option.isNone(yield* a.links.get(box.environmentId))).toBe(true);
@@ -758,7 +771,10 @@ it.live("a card shows up only while its run is going, and takes an answer after"
       yield* endRun(a);
       const late = yield* recordPendingCard(a, "after-end").pipe(Effect.flip);
       expect(String(late.cause)).toContain("not active");
-      yield* a.requests.answer({ threadId, turnItemId: card.id, answer: { type: "decline" } });
+      yield* a.requests.answer(
+        { threadId, turnItemId: card.id, answer: { type: "decline" } },
+        OWNER,
+      );
       expect(yield* cardOf(a)).toMatchObject({ linkStatus: "declined" });
     }),
   ),
@@ -772,11 +788,14 @@ it.live("a steer that restarts the turn leaves its open card answerable", () =>
       const card = yield* pendingCard(a);
       yield* restartRun(a);
       const pairing = yield* b.auth.issuePairingCredential();
-      yield* a.requests.answer({
-        threadId,
-        turnItemId: card.id,
-        answer: { type: "link", urls: [b.url], access: "auto", pairingCode: pairing.credential },
-      });
+      yield* a.requests.answer(
+        {
+          threadId,
+          turnItemId: card.id,
+          answer: { type: "link", urls: [b.url], access: "auto", pairingCode: pairing.credential },
+        },
+        OWNER,
+      );
       // The card keeps the node it was asked from, and the agent hears the answer.
       expect(yield* cardOf(a)).toMatchObject({
         linkStatus: "linked",
@@ -826,16 +845,22 @@ it.live("a slow machine holds up only its own card's answer", () =>
         )!;
 
         const slowAnswer = yield* a.requests
-          .answer({
-            threadId,
-            turnItemId: slowCard.id,
-            answer: { type: "link", urls: [slowUrl], access: "auto", pairingCode: "code" },
-          })
+          .answer(
+            {
+              threadId,
+              turnItemId: slowCard.id,
+              answer: { type: "link", urls: [slowUrl], access: "auto", pairingCode: "code" },
+            },
+            OWNER,
+          )
           .pipe(Effect.forkChild);
         yield* Deferred.await(reached);
 
         // While the slow machine holds its card, the user answers the other one.
-        yield* a.requests.answer({ threadId, turnItemId: boxCard.id, answer: { type: "decline" } });
+        yield* a.requests.answer(
+          { threadId, turnItemId: boxCard.id, answer: { type: "decline" } },
+          OWNER,
+        );
         const items = (yield* a.orchestrator.getThreadProjection(threadId)).turnItems;
         expect(items.find((item) => item.id === boxCard.id)).toMatchObject({
           linkStatus: "declined",
@@ -878,16 +903,19 @@ it.live("a code the box refuses fails the request with its reason, and links not
       yield* seedThread(a);
       yield* a.call({ url: b.url });
       const card = yield* pendingCard(a);
-      yield* a.requests.answer({
-        threadId,
-        turnItemId: card.id,
-        answer: {
-          type: "link",
-          urls: [b.url],
-          access: "auto",
-          pairingCode: "not-a-real-code",
+      yield* a.requests.answer(
+        {
+          threadId,
+          turnItemId: card.id,
+          answer: {
+            type: "link",
+            urls: [b.url],
+            access: "auto",
+            pairingCode: "not-a-real-code",
+          },
         },
-      });
+        OWNER,
+      );
       const failed = yield* cardOf(a);
       expect(failed).toMatchObject({ status: "failed", linkStatus: "failed" });
       const reason = failed?.type === "link_request" ? failed.failure : undefined;
@@ -942,18 +970,21 @@ it.live(
 
         // The user picks the box; their client knows a stale address for it first.
         const pairing = yield* b.auth.issuePairingCredential();
-        yield* a.requests.answer({
-          threadId,
-          turnItemId: card.id,
-          answer: {
-            type: "link",
-            environmentId: box.environmentId,
-            label: "Box",
-            urls: ["http://127.0.0.1:9", b.url],
-            access: "auto",
-            pairingCode: pairing.credential,
+        yield* a.requests.answer(
+          {
+            threadId,
+            turnItemId: card.id,
+            answer: {
+              type: "link",
+              environmentId: box.environmentId,
+              label: "Box",
+              urls: ["http://127.0.0.1:9", b.url],
+              access: "auto",
+              pairingCode: pairing.credential,
+            },
           },
-        });
+          OWNER,
+        );
         expect(Option.getOrUndefined(yield* a.links.get(box.environmentId))).toMatchObject({
           urls: [b.url],
           access: "auto",
@@ -1029,11 +1060,14 @@ it.live("a link that expired goes through the card, so the user can link it agai
 
       // Keeping the expired link is no answer: the card fails and says why.
       yield* a.requests
-        .answer({
-          threadId,
-          turnItemId: card.id,
-          answer: { type: "use-existing", environmentId: box.environmentId },
-        })
+        .answer(
+          {
+            threadId,
+            turnItemId: card.id,
+            answer: { type: "use-existing", environmentId: box.environmentId },
+          },
+          OWNER,
+        )
         .pipe(afterLinksExpire);
       expect(yield* cardOf(a)).toMatchObject({ linkStatus: "failed" });
       expect((yield* outcomeMessages(a)).messages[0]!.text).toContain("expired");
@@ -1066,11 +1100,14 @@ it.live(
         // Linked from Settings meanwhile; the card answers with that link.
         const pairing = yield* b.auth.issuePairingCredential();
         yield* a.links.link({ url: b.url, pairingCode: pairing.credential, access: "read-only" });
-        yield* a.requests.answer({
-          threadId,
-          turnItemId: card.id,
-          answer: { type: "use-existing", environmentId: box.environmentId },
-        });
+        yield* a.requests.answer(
+          {
+            threadId,
+            turnItemId: card.id,
+            answer: { type: "use-existing", environmentId: box.environmentId },
+          },
+          OWNER,
+        );
         expect(yield* cardOf(a)).toMatchObject({
           linkStatus: "linked",
           linkedAccess: "read-only",
@@ -1091,17 +1128,20 @@ it.live(
         const pairing = yield* b.auth.issuePairingCredential();
         const reverse = { access: "auto", urls: ["https://laptop.example.ts.net"] } as const;
 
-        const result = yield* a.requests.answer({
-          threadId,
-          turnItemId: card.id,
-          answer: {
-            type: "link",
-            urls: [b.url],
-            access: "full-access",
-            pairingCode: pairing.credential,
-            reverse,
+        const result = yield* a.requests.answer(
+          {
+            threadId,
+            turnItemId: card.id,
+            answer: {
+              type: "link",
+              urls: [b.url],
+              access: "full-access",
+              pairingCode: pairing.credential,
+              reverse,
+            },
           },
-        });
+          OWNER,
+        );
 
         expect(result).toEqual({ linked: true, back: { status: "linked", access: "auto" } });
         const [asked] = yield* Ref.get(a.linkAsked);
@@ -1127,17 +1167,20 @@ it.live("a link back the box does not make still links it, and the agent hears t
       yield* Ref.set(a.backOutcome, { status: "not_linked", message: "Box has links off." });
       const pairing = yield* b.auth.issuePairingCredential();
 
-      const result = yield* a.requests.answer({
-        threadId,
-        turnItemId: card.id,
-        answer: {
-          type: "link",
-          urls: [b.url],
-          access: "auto",
-          pairingCode: pairing.credential,
-          reverse: { access: "auto" },
+      const result = yield* a.requests.answer(
+        {
+          threadId,
+          turnItemId: card.id,
+          answer: {
+            type: "link",
+            urls: [b.url],
+            access: "auto",
+            pairingCode: pairing.credential,
+            reverse: { access: "auto" },
+          },
         },
-      });
+        OWNER,
+      );
 
       expect(result).toEqual({
         linked: true,
@@ -1157,17 +1200,20 @@ it.live("a refused link tells a client that asked to link back it was not linked
       yield* a.call({ url: b.url });
       const card = yield* pendingCard(a);
 
-      const result = yield* a.requests.answer({
-        threadId,
-        turnItemId: card.id,
-        answer: {
-          type: "link",
-          urls: [b.url],
-          access: "auto",
-          pairingCode: "not-a-real-code",
-          reverse: { access: "auto" },
+      const result = yield* a.requests.answer(
+        {
+          threadId,
+          turnItemId: card.id,
+          answer: {
+            type: "link",
+            urls: [b.url],
+            access: "auto",
+            pairingCode: "not-a-real-code",
+            reverse: { access: "auto" },
+          },
         },
-      });
+        OWNER,
+      );
 
       expect(result).toEqual({ linked: false });
       const { messages } = yield* outcomeMessages(a);
@@ -1184,11 +1230,14 @@ it.live("an answer that does not ask to link back returns nothing and says nothi
       const card = yield* pendingCard(a);
       const pairing = yield* b.auth.issuePairingCredential();
 
-      const result = yield* a.requests.answer({
-        threadId,
-        turnItemId: card.id,
-        answer: { type: "link", urls: [b.url], access: "auto", pairingCode: pairing.credential },
-      });
+      const result = yield* a.requests.answer(
+        {
+          threadId,
+          turnItemId: card.id,
+          answer: { type: "link", urls: [b.url], access: "auto", pairingCode: pairing.credential },
+        },
+        OWNER,
+      );
 
       // Nothing is what an older client decodes.
       expect(result).toBeUndefined();
