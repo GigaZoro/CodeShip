@@ -36,6 +36,7 @@ import {
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
+  RunAttemptId,
   RunId,
   ScheduledTaskId,
   type ServerProvider,
@@ -8988,6 +8989,8 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
     "manual-expired",
     "reset-expired",
     "restart-expired",
+    "overlapped",
+    "held-expired",
     "setup-expired",
   ] as const)("recovers only the current scheduled occurrence: %s", (scenario) =>
     Effect.gen(function* () {
@@ -9061,14 +9064,28 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
       const [source] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
         OrchestrationV2Run,
       ];
+      // A newer run started while this one worked on, and the occurrence's window passed.
+      if (scenario === "overlapped") {
+        yield* sql`UPDATE scheduled_tasks SET last_run_at = ${DateTime.formatIso(DateTime.add(now, { minutes: 2 }))} WHERE task_id = ${taskId}`;
+        yield* TestClock.adjust("5 minutes");
+      }
+      const stoppedAt = yield* DateTime.now;
+      // The provider holds the turn until the reset instead of failing it.
+      const held = scenario === "held-expired";
       yield* events.write({
         events: [
           {
             id: EventId.make(`limit-failover:stop:${scenario}`),
             type: "run.updated",
             threadId,
-            occurredAt: now,
-            payload: { ...source, status: "failed", completedAt: now },
+            occurredAt: stoppedAt,
+            payload: held
+              ? {
+                  ...source,
+                  status: "running",
+                  activeAttemptId: RunAttemptId.make(`limit-failover:attempt:${scenario}`),
+                }
+              : { ...source, status: "failed", completedAt: stoppedAt },
           },
           {
             id: EventId.make(`limit-failover:error:${scenario}`),
@@ -9086,23 +9103,23 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
               nativeItemRef: null,
               parentItemId: null,
               ordinal: 2,
-              status: "failed",
+              status: held ? "running" : "failed",
               title: "Usage limit reached",
               startedAt: now,
-              completedAt: now,
+              completedAt: held ? null : now,
               updatedAt: now,
               failure: {
                 class: "usage_limit",
                 message: "Plan limit reached.",
                 code: "usageLimitExceeded",
                 retryable: null,
-                resetAt: DateTime.formatIso(DateTime.add(now, { days: 1 })),
+                resetAt: DateTime.formatIso(DateTime.add(now, { days: held ? 2 : 1 })),
               },
             },
           },
         ],
       });
-      const sweep = { now, autoResume: false, snooze: false, failover: true };
+      const sweep = { now: stoppedAt, autoResume: false, snooze: false, failover: true };
       const candidate = (yield* projections.getLimitRecoveryCandidates(sweep)).find(
         (row) => row.id === threadId,
       )!;
@@ -9134,7 +9151,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
           now,
           completedRunLiftsScope(providers),
         ),
-        nowMs: DateTime.toEpochMillis(now),
+        nowMs: DateTime.toEpochMillis(stoppedAt),
       });
       assert.isNotNull(failover);
       if (scenario === "superseded" || scenario === "bound-superseded") {
@@ -9255,7 +9272,13 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         assert.notEqual(after.runs[1]?.status, "cancelled");
         return;
       }
-      const skipped = !["ordinary", "fresh", "fixed-fresh", "manual-expired"].includes(scenario);
+      const skipped = ![
+        "ordinary",
+        "fresh",
+        "fixed-fresh",
+        "manual-expired",
+        "overlapped",
+      ].includes(scenario);
       assert.equal(after.thread.settledOverride, skipped ? "settled" : null);
       if (skipped) {
         assert.lengthOf(after.runs, scenario.endsWith("chain-expired") ? 2 : 1);

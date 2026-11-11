@@ -1494,6 +1494,10 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       });
 
       assert.isTrue(first.committed);
+      assert.equal(
+        DateTime.toEpochMillis((yield* eventSink.lastCommittedAt) ?? DateTime.makeUnsafe(0)),
+        DateTime.toEpochMillis(now),
+      );
       assert.isFalse(retry.committed);
       assert.equal(retry.receipt.resultSequence, first.receipt.resultSequence);
       assert.lengthOf(retry.storedEvents, 1);

@@ -116,8 +116,9 @@ cancelled is asked for again when the thread resumes. A question the agent asked
 stays open for your answer, which continues the thread. A thread is not resumed
 while it is archived, snoozed, or settled, or after you stopped it. After three
 automatic resumes within five minutes, the thread waits for your next message.
-Scheduled-task runs also stay stopped when a newer occurrence has started or their
-scheduled window has ended. If `settings.json` cannot be read, threads still resume
+Scheduled-task runs also stay stopped when a newer run of their task started, or its
+next scheduled time came, while they were stopped. After a crash, that counts from the
+server's last activity, not from when it came back. If `settings.json` cannot be read, threads still resume
 unless the file sets this option to `false`.
 
 Updates from the previous orchestration system preserve conversation transcripts but cannot carry

@@ -327,11 +327,18 @@ function sameRestartHold(left: OrchestrationV2RestartHold, right: OrchestrationV
 
 const cancelledItem = (
   item: OrchestrationV2ThreadProjection["turnItems"][number],
+  stoppedAt: DateTime.Utc,
   now: DateTime.Utc,
 ): OrchestrationV2ThreadProjection["turnItems"][number] =>
   item.type === "secret_request" && item.secretStatus === "pending"
-    ? { ...item, status: "cancelled", secretStatus: "cancelled", completedAt: now, updatedAt: now }
-    : { ...item, status: "cancelled", completedAt: now, updatedAt: now };
+    ? {
+        ...item,
+        status: "cancelled",
+        secretStatus: "cancelled",
+        completedAt: stoppedAt,
+        updatedAt: now,
+      }
+    : { ...item, status: "cancelled", completedAt: stoppedAt, updatedAt: now };
 
 function latestStartedRun(
   projection: ProjectionStore.ProjectionRuntimeRecoveryState,
@@ -410,9 +417,12 @@ export const make = Effect.gen(function* () {
       projection: ProjectionStore.ProjectionRuntimeRecoveryState,
       trigger: "startup" | "shutdown",
       continueAfterRestart: boolean,
+      lastCommittedAt: DateTime.Utc | null,
       stoppedThisPass: ReadonlyMap<string, RecoverySession> = new Map(),
     ) {
       const now = yield* DateTime.now;
+      // Cut work stopped with the server, not when this pass noticed; scheduled recovery reads it.
+      const stoppedAt = lastCommittedAt === null ? now : DateTime.min(lastCommittedAt, now);
       const runs = yield* cutRuns(projection);
       const { questions, messageRequestNodeIds, requests } = pendingRequestRecovery(projection);
       const cancelledBackgroundWork = restartCancelledBackgroundWork(
@@ -522,7 +532,7 @@ export const make = Effect.gen(function* () {
           runId: run.id,
           providerInstanceId: run.providerInstanceId,
           occurredAt: now,
-          payload: { ...run, status: "cancelled", queuePosition: null, completedAt: now },
+          payload: { ...run, status: "cancelled", queuePosition: null, completedAt: stoppedAt },
         });
         for (const attempt of projection.attempts.filter(
           (candidate) =>
@@ -537,7 +547,7 @@ export const make = Effect.gen(function* () {
             nodeId: attempt.rootNodeId,
             providerInstanceId: run.providerInstanceId,
             occurredAt: now,
-            payload: { ...attempt, status: "cancelled", completedAt: now },
+            payload: { ...attempt, status: "cancelled", completedAt: stoppedAt },
           });
         }
         for (const node of projection.nodes.filter(
@@ -557,7 +567,7 @@ export const make = Effect.gen(function* () {
             nodeId: node.id,
             providerInstanceId: run.providerInstanceId,
             occurredAt: now,
-            payload: { ...node, status: "cancelled", completedAt: now },
+            payload: { ...node, status: "cancelled", completedAt: stoppedAt },
           });
         }
         for (const providerTurn of projection.providerTurns.filter(
@@ -576,7 +586,7 @@ export const make = Effect.gen(function* () {
             nodeId: providerTurn.nodeId,
             providerInstanceId: run.providerInstanceId,
             occurredAt: now,
-            payload: { ...providerTurn, status: "cancelled", completedAt: now },
+            payload: { ...providerTurn, status: "cancelled", completedAt: stoppedAt },
           });
         }
         for (const message of projection.messages.filter(
@@ -612,7 +622,7 @@ export const make = Effect.gen(function* () {
             ...(item.nodeId === null ? {} : { nodeId: item.nodeId }),
             providerInstanceId: run.providerInstanceId,
             occurredAt: now,
-            payload: cancelledItem(item, now),
+            payload: cancelledItem(item, stoppedAt, now),
           });
         }
         // A queued run never did provider work, so there is nothing to explain.
@@ -696,7 +706,7 @@ export const make = Effect.gen(function* () {
           ...(item.nodeId === null || item.nodeId === undefined ? {} : { nodeId: item.nodeId }),
           providerInstanceId,
           occurredAt: now,
-          payload: cancelledItem(item, now),
+          payload: cancelledItem(item, stoppedAt, now),
         });
         if (item.nodeId !== null && item.nodeId !== undefined) {
           const staleItemNode = projection.nodes.find(
@@ -713,7 +723,7 @@ export const make = Effect.gen(function* () {
               nodeId: staleItemNode.id,
               providerInstanceId,
               occurredAt: now,
-              payload: { ...staleItemNode, status: "cancelled", completedAt: now },
+              payload: { ...staleItemNode, status: "cancelled", completedAt: stoppedAt },
             });
           }
         }
@@ -877,6 +887,16 @@ export const make = Effect.gen(function* () {
   ) {
     const continueAfterRestart = yield* settings.getSettings.pipe(Effect.orElseSucceed(() => null));
     const resumeRequested = yield* restartResumeRequest;
+    // Shutdown runs while the server is alive. A crash leaves no shutdown time, so startup reads
+    // the previous server's last commit before this pass commits its own.
+    const lastCommittedAt =
+      trigger === "startup"
+        ? yield* eventSink.lastCommittedAt.pipe(
+            Effect.mapError(
+              (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
+            ),
+          )
+        : null;
     const threadIds = yield* projections
       .getRecoveryThreadIds("runtime")
       .pipe(
@@ -905,7 +925,13 @@ export const make = Effect.gen(function* () {
         continueAfterRestart,
         projection.thread.projectId,
       );
-      const result = yield* reconcileProjection(projection, trigger, enabled, stoppedThisPass);
+      const result = yield* reconcileProjection(
+        projection,
+        trigger,
+        enabled,
+        lastCommittedAt,
+        stoppedThisPass,
+      );
       for (const session of projection.providerSessions) {
         if (session.status !== "stopped" && session.status !== "error") {
           stoppedThisPass.set(session.id, session);

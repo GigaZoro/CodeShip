@@ -64,7 +64,10 @@ it.effect("expires orphaned runtime requests before command readiness", () => {
           getRecoveryThreadIds: () => Effect.succeed([threadId]),
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
         }),
-        Layer.mock(EventSink.EventSinkV2)({ commitCommand: committed }),
+        Layer.mock(EventSink.EventSinkV2)({
+          lastCommittedAt: Effect.succeed(null),
+          commitCommand: committed,
+        }),
         IdAllocator.layer,
         Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
           runRecoveryOnce: Effect.succeed(false),
@@ -116,7 +119,7 @@ it.effect("preserves async questions across startup and shutdown", () => {
           getRecoveryThreadIds: () => Effect.succeed([threadId]),
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
         }),
-        Layer.mock(EventSink.EventSinkV2)({ commitCommand }),
+        Layer.mock(EventSink.EventSinkV2)({ lastCommittedAt: Effect.succeed(null), commitCommand }),
         IdAllocator.layer,
         Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
           runRecoveryOnce: Effect.succeed(false),
@@ -187,6 +190,7 @@ it.effect(
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({
+            lastCommittedAt: Effect.succeed(null),
             commitCommand: (input) => {
               committedInput = input;
               return Effect.succeed({
@@ -332,6 +336,7 @@ it.effect(
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({
+            lastCommittedAt: Effect.succeed(null),
             commitCommand: (input) => {
               committedInput = input;
               return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -398,6 +403,7 @@ it.effect("cancels a stale waiting run when no checkpoint capture can finish it"
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
         }),
         Layer.mock(EventSink.EventSinkV2)({
+          lastCommittedAt: Effect.succeed(null),
           commitCommand: (input) => {
             committedInput = input;
             return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -424,7 +430,7 @@ it.effect("cancels a stale waiting run when no checkpoint capture can finish it"
   }).pipe(Effect.provide(layer));
 });
 
-it.effect("tells the thread a running run stopped because the server restarted", () => {
+it.effect("tells the thread a running run stopped when the server went down", () => {
   const threadId = ThreadId.make("thread_restart_notice");
   const runId = RunId.make("run_restart_notice");
   const rootNodeId = NodeId.make("node_restart_notice");
@@ -459,6 +465,8 @@ it.effect("tells the thread a running run stopped because the server restarted",
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
         }),
         Layer.mock(EventSink.EventSinkV2)({
+          // The crashed server's last commit, an hour before this restart.
+          lastCommittedAt: Effect.succeed(DateTime.makeUnsafe(0)),
           commitCommand: (input) => {
             committedInput = input;
             return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -476,9 +484,18 @@ it.effect("tells the thread a running run stopped because the server restarted",
   );
 
   return Effect.gen(function* () {
+    yield* TestClock.adjust("1 hour");
     const summary =
       yield* (yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService).reconcile("startup");
     assert.equal(summary.terminalizedRuns, 1);
+    const run = committedInput?.events.find((event) => event.type === "run.updated");
+    assert.equal(
+      run?.type === "run.updated" && run.payload.completedAt !== null
+        ? DateTime.toEpochMillis(run.payload.completedAt)
+        : null,
+      0,
+      "a crash-cut run stops at the old server's last commit, not at this restart",
+    );
     const notices = (committedInput?.events ?? []).flatMap((event) =>
       event.type === "turn-item.updated" &&
       event.payload.type === "system_notice" &&
@@ -542,6 +559,7 @@ it.effect("recovery closes a secret card's form but leaves a link card open", ()
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
         }),
         Layer.mock(EventSink.EventSinkV2)({
+          lastCommittedAt: Effect.succeed(null),
           commitCommand: (input) => {
             committedInput = input;
             return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -638,6 +656,7 @@ it.effect.each([
           getThreadRecords: () => Effect.succeed(projection),
         }),
         Layer.mock(EventSink.EventSinkV2)({
+          lastCommittedAt: Effect.succeed(null),
           commitCommand: (input) => {
             committedInput = input;
             return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -768,6 +787,7 @@ it.effect(
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({
+            lastCommittedAt: Effect.succeed(null),
             commitCommand: (input) => {
               committedInput = input;
               return Effect.succeed({ committed: true, cancelledEffectCount: 2 } as never);
@@ -877,6 +897,7 @@ it.effect("cancels workflow members and child roots without run ids after restar
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
         }),
         Layer.mock(EventSink.EventSinkV2)({
+          lastCommittedAt: Effect.succeed(null),
           commitCommand: (input) => {
             committed.push(input);
             return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -1041,6 +1062,7 @@ it.effect(
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({
+            lastCommittedAt: Effect.succeed(null),
             commitCommand: (input) => {
               committedInput = input;
               return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -1198,6 +1220,7 @@ it.effect(
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({
+            lastCommittedAt: Effect.succeed(null),
             commitCommand: (input) => {
               committedInput = input;
               return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -1328,6 +1351,7 @@ it.effect(
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({
+            lastCommittedAt: Effect.succeed(null),
             commitCommand: (input) => {
               committedInput = input;
               return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -1485,6 +1509,7 @@ it.effect("leaves delegated tasks to their own child threads after process loss"
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
         }),
         Layer.mock(EventSink.EventSinkV2)({
+          lastCommittedAt: Effect.succeed(null),
           commitCommand: (input) => {
             committedInput = input;
             return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -1613,6 +1638,7 @@ function restartHoldLayer(input: {
           getRuntimeRecoveryProjection: () => Effect.sync(input.projection),
         }),
         Layer.mock(EventSink.EventSinkV2)({
+          lastCommittedAt: Effect.succeed(null),
           latestSequence: () => Effect.succeed(0),
           stream: () => input.live ?? Stream.never,
           commitCommand: (committed) => {

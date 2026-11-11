@@ -191,6 +191,8 @@ export interface EventSinkV2Shape {
   readonly latestSequence: (input?: {
     readonly threadId?: ThreadId;
   }) => Effect.Effect<number, EventSinkV2Error>;
+  /** When events last committed; read at startup, about when the previous server stopped. */
+  readonly lastCommittedAt: Effect.Effect<DateTime.Utc | null, EventSinkV2Error>;
   readonly readByCommandId: (input: {
     readonly commandId: CommandId;
   }) => Stream.Stream<OrchestrationV2StoredEvent, EventSinkV2Error>;
@@ -987,6 +989,16 @@ const layerBase: Layer.Layer<
               }),
           ),
         ),
+      lastCommittedAt: sql<{ readonly updated_at: string }>`
+        SELECT updated_at FROM orchestration_v2_projection_metadata
+        WHERE projection_name = 'thread-projections'
+      `.pipe(
+        Effect.map(([row]) =>
+          row === undefined ? null : Option.getOrNull(DateTime.make(row.updated_at)),
+        ),
+        Effect.mapError((cause) => new EventSinkStreamError({ cause })),
+        Effect.withSpan("EventSink.lastCommittedAt"),
+      ),
       readByCommandId: (input) =>
         eventStore.readByCommandId(input).pipe(
           Stream.mapError(

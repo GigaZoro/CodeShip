@@ -857,6 +857,23 @@ function queuedRunModelSelection(
     : run.modelSelection;
 }
 
+/** When a run stopped working: its end, or the start of the usage-limit hold that keeps it. */
+function runStoppedAt(
+  run: OrchestrationV2Run,
+  turnItems: OrchestrationV2ThreadProjection["turnItems"],
+): DateTime.Utc {
+  if (run.completedAt !== null) return run.completedAt;
+  const hold = turnItems.find(
+    (item) =>
+      item.type === "error" &&
+      item.runId === run.id &&
+      item.nodeId === run.rootNodeId &&
+      item.status === "running" &&
+      item.failure.class === "usage_limit",
+  );
+  return hold?.startedAt ?? hold?.updatedAt ?? orchestrationV2RunWorkStartedAt(run);
+}
+
 function usageLimitHoldsQueue(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "turnItems" | "providerSessions">,
   providerInstanceId: ModelSelection["instanceId"],
@@ -5485,7 +5502,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         { readonly type: "message.dispatch" | "prepared-run.retry" }
       >,
       sourceRunId: RunId,
-      projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "messages">,
+      projection: Pick<
+        OrchestrationV2ThreadProjection,
+        "thread" | "runs" | "messages" | "turnItems"
+      >,
       events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
       effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
     ) {
@@ -5543,20 +5563,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ),
         );
       const now = yield* DateTime.now;
-      const sourceMs = DateTime.toEpochMillis(source.requestedAt);
+      // Runs of one task overlap, so only what happened while this one was stopped makes it stale.
+      const stoppedMs = DateTime.toEpochMillis(runStoppedAt(candidate, projection.turnItems));
       let notice: string | undefined;
       if (task === null) notice = "Skipped: the scheduled task no longer exists.";
-      else if (task.lastRunAt !== null && Date.parse(task.lastRunAt) > sourceMs) {
+      else if (task.lastRunAt !== null && Date.parse(task.lastRunAt) > stoppedMs) {
         notice = `Skipped: a newer run of ${task.title} replaced this one.`;
       } else {
-        const following = nextScheduledRunAt(
+        let following = nextScheduledRunAt(
           task.schedule,
           DateTime.makeZonedUnsafe(task.scheduledFor ?? source.requestedAt, {
             timeZone: DateTime.zoneMakeLocal(),
           }),
         );
-        const end = following === null ? Infinity : DateTime.toEpochMillis(following);
-        if (DateTime.toEpochMillis(now) >= end)
+        while (following !== null && DateTime.toEpochMillis(following) <= stoppedMs)
+          following = nextScheduledRunAt(task.schedule, following);
+        if (following !== null && DateTime.toEpochMillis(now) >= DateTime.toEpochMillis(following))
           notice = `Skipped: the run window for ${task.title} has ended.`;
       }
       if (notice === undefined) return null;
@@ -13792,7 +13814,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "prepared-run.retry": {
         if (command.automatic === true) {
-          const projection = yield* loadProjectionForCommand(command, ["runs", "messages"]);
+          const projection = yield* loadProjectionForCommand(
+            command,
+            ["runs", "messages", "turnItems"],
+            { turnItemRunIds: [command.runId], turnItemTypes: ["error"] },
+          );
           const skipped = yield* skipStaleScheduledRecovery(
             command,
             command.runId,

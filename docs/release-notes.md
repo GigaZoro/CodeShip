@@ -1,3 +1,8 @@
+## 2026-11-11 — Restarts resume every scheduled run they cut
+
+- A scheduled task whose runs overlap, such as one that starts every 30 minutes while earlier runs are still working, no longer loses its older runs to a restart. A restart used to resume only the newest run and settle the rest with "Skipped: a newer run … replaced this one", which also stopped their delegated tasks. Now each run resumes unless a newer run of the task started, or its next scheduled time came, while it was stopped.
+- After a crash, a cut run counts as stopped from the server's last activity, not from when it came back, so runs cut by a long outage still stay stopped.
+
 ## 2026-11-11 — Fewer settings and fewer sign-ins by hand
 
 - **Links renew themselves.** Linked environments no longer expire every 30 days while both machines run this version and reach each other in the last 10 days before expiry. A renewed link keeps its access, and revoking it on the other machine still ends it.
