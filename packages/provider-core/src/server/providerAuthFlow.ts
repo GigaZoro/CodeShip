@@ -63,6 +63,7 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
   readonly methods: Effect.Effect<ReadonlyArray<ProviderAuthMethod>, ProviderSetupError>;
   readonly defaultMethodId?: string;
   readonly refreshMethodsAfterAuth?: boolean;
+  readonly commitCredentials?: Effect.Effect<void, ProviderSetupError>;
   /** Fail with ProviderSetupError containing safe text for the user, never native token data. */
   readonly authenticate: (
     methodId: string,
@@ -332,24 +333,28 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
                 );
                 if (!finishing) return;
                 if (flow.responseFiber) yield* Fiber.interrupt(flow.responseFiber);
+                const committed =
+                  Exit.isSuccess(result) && options.commitCredentials
+                    ? yield* Effect.exit(options.commitCredentials)
+                    : result;
                 yield* lock.withPermit(
                   Effect.gen(function* () {
                     if (active !== flow) return;
                     if (options.refreshMethodsAfterAuth) yield* refreshMethods;
                     yield* publish(flow, {
-                      phase: Exit.isSuccess(result) ? "succeeded" : "failed",
+                      phase: Exit.isSuccess(committed) ? "succeeded" : "failed",
                       interaction: null,
                       authorizationUrl: null,
                       expiresAt: null,
-                      message: Exit.isSuccess(result)
+                      message: Exit.isSuccess(committed)
                         ? "Sign-in complete."
-                        : failureMessage(result.cause),
+                        : failureMessage(committed.cause),
                     });
                     active = undefined;
                     operation = "idle";
                   }),
                 );
-              }),
+              }).pipe(Effect.uninterruptible),
             ),
             Effect.interruptible,
             Effect.forkIn(scope),

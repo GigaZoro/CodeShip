@@ -296,9 +296,11 @@ function makeMutableServerSettingsService(
       updateProviderInstance: (mutation, patch = {}) =>
         Effect.gen(function* () {
           const current = yield* Ref.get(settingsRef);
+          const resolved = typeof mutation === "function" ? mutation(current) : mutation;
+          if (resolved === undefined) return yield* Effect.die("Invalid provider mutation");
           const next = ServerSettingsModule.applyProviderInstanceMutation(
             applyServerSettingsPatch(current, patch),
-            mutation,
+            resolved,
           );
           encodeServerSettings(next);
           yield* Ref.set(settingsRef, next);

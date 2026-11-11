@@ -24,7 +24,7 @@ A Claude sign-in expires on a schedule: the access token renews by itself, but t
 working a few weeks after you last signed in, and every request then fails with "Login expired".
 Under **Account**, T3.CodeShip shows **Signed in until** the date the saved login ends, a warning in
 the last 7 days, and **Login expired** after that, each with **Sign in again**. It also lists the
-account under **Manual steps**. A login held by a `CLAUDE_CODE_OAUTH_TOKEN` has no such date.
+account under **Manual steps**. A token you paste yourself has no known expiry date.
 
 A provider signed in to the same account as another provider is unavailable until
 you sign it in to a different account. A Claude provider signed in with a
@@ -32,10 +32,10 @@ you sign it in to a different account. A Claude provider signed in with a
 account's email or plan. Claude uses a token ahead of a sign-in, so a
 `CLAUDE_CODE_OAUTH_TOKEN` set on the machine applies only to the first Claude
 provider. To give another provider a token, add it to that provider's
-**Environment variables**. Choose **Remove token** under **Account** to sign that
-provider in instead. When the first provider's token comes from the machine, choose
-**Ignore token**: it adds a blank `CLAUDE_CODE_OAUTH_TOKEN` to that provider's
-**Environment variables**, and deleting that variable uses the machine's token again.
+**Environment variables**. Choose **Use regular sign-in instead** under **Account** to
+sign that provider in instead. For the first provider, switching back adds a blank
+`CLAUDE_CODE_OAUTH_TOKEN` to its environment so it ignores a machine-wide token.
+Deleting that blank variable uses the machine's token again.
 
 To keep an account's settings and local conversation state separate too, give the
 instance its own **CLAUDE_CONFIG_DIR path** and sign that directory in on the
@@ -56,6 +56,26 @@ For presets that differ only in API keys or endpoints, use the instance's
 Claude Code's verbose mode can stay enabled when you use Claude for text generation, including
 thread titles, branch names, commit messages, and pull request descriptions. On a remote connection,
 T3.CodeShip uses the Claude configuration on the connected server.
+
+## One-year token
+
+For an account that runs scheduled tasks, choose **One-year token** as its sign-in method,
+then **Sign in** (or **Change account**). T3.CodeShip runs `claude setup-token` for that
+account and opens the usual browser approval. This requires Pro, Max, Ultra, Team or
+Enterprise. It saves the token in the environment's secret store, never in plain text in
+settings or the sign-in terminal, and uses it only for that provider.
+
+The token stays valid for one year without renewals or competing refreshes. T3.CodeShip
+records its issue date and shows the same expiry warnings and manual steps before the
+year ends. Choose **One-year token** again to replace it. Sessions using this token cannot
+use Remote Control or claude.ai connectors; MCP servers configured on the environment's
+machine still work.
+
+Choose **Use regular sign-in instead** and complete the browser sign-in to remove the
+saved token and its secret. If sign-in fails or is cancelled, the existing token stays in
+place. For added accounts, **Sign out** also removes the saved token and the CLI login.
+A machine-wide token is ignored for this provider when switching back, without changing
+other accounts.
 
 ## Compact long conversations
 

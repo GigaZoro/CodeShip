@@ -243,7 +243,9 @@ export class ServerSettingsService extends Context.Service<
     ) => Effect.Effect<ServerSettings, ServerSettingsError>;
 
     readonly updateProviderInstance: (
-      mutation: ProviderInstanceMutation,
+      mutation:
+        | ProviderInstanceMutation
+        | ((current: ServerSettings) => ProviderInstanceMutation | undefined),
       patch?: ServerSettingsPatch,
     ) => Effect.Effect<ServerSettings, ServerSettingsError>;
 
@@ -329,9 +331,15 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
     updateProviderInstance: (mutation, patch = {}) =>
       updateTestSettings((currentSettings) =>
         Effect.gen(function* () {
-          yield* ensureProviderInstanceMutationAllowed(currentSettings, mutation, "test settings");
+          const resolved = typeof mutation === "function" ? mutation(currentSettings) : mutation;
+          if (resolved === undefined)
+            return yield* new ServerSettingsError({
+              settingsPath: "test settings",
+              operation: "write-file",
+            });
+          yield* ensureProviderInstanceMutationAllowed(currentSettings, resolved, "test settings");
           const patched = applyServerSettingsPatch(currentSettings, patch);
-          return applyProviderInstanceMutation(patched, mutation);
+          return applyProviderInstanceMutation(patched, resolved);
         }),
       ),
     updateProjectScripts: (mutation) =>
@@ -1347,9 +1355,12 @@ const make = Effect.gen(function* () {
       updateAndPersistSettings((current) =>
         Effect.gen(function* () {
           yield* ensureSecretProviderWritesAllowed(patch, settingsPath);
-          yield* ensureProviderInstanceMutationAllowed(current, mutation, settingsPath);
+          const resolved = typeof mutation === "function" ? mutation(current) : mutation;
+          if (resolved === undefined)
+            return yield* new ServerSettingsError({ settingsPath, operation: "write-file" });
+          yield* ensureProviderInstanceMutationAllowed(current, resolved, settingsPath);
           const patched = applyServerSettingsPatch(current, patch);
-          return { patch, settings: applyProviderInstanceMutation(patched, mutation) };
+          return { patch, settings: applyProviderInstanceMutation(patched, resolved) };
         }),
       ),
     updateProjectScripts: (mutation) =>
