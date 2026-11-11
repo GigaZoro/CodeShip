@@ -701,6 +701,19 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       }))}
                       onChange={(value) => write(providerUpdatesPatch(value))}
                     />
+                    <SettingsSwitchRow
+                      icon="arrow.down.circle"
+                      label={t("Install updates automatically when idle")}
+                      subtitle={managedSubtitle(
+                        "installUpdatesAutomatically",
+                        t(
+                          "Installs a new CodeShip release when no chat is working. Chats cut by the restart resume on their own.",
+                        ),
+                      )}
+                      value={uniform("installUpdatesAutomatically")}
+                      disabled={disabledFor("installUpdatesAutomatically")}
+                      onValueChange={(value) => write({ installUpdatesAutomatically: value })}
+                    />
                   </SettingsSection>
                 </>
               ) : null}

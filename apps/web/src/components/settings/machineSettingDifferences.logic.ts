@@ -123,6 +123,7 @@ const SHARED_SETTING_PRESENTATION: Record<
     patch: (value) => value as ReturnType<typeof providerUpdatesPatch>,
   },
   autoUpdateProviders: "grouped",
+  installUpdatesAutomatically: { id: "install-updates-automatically" },
   continueThreadsAfterServerUpdate: { id: "continue-threads-after-server-update" },
   backgroundActivity: { id: "background-activity" },
 };
