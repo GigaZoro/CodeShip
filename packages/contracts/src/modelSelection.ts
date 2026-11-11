@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { ProviderOptionSelections } from "./model.ts";
+import { ProviderOptionSelection, ProviderOptionSelections } from "./model.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 const ModelSelectionWire = Schema.Struct({
@@ -58,3 +58,18 @@ export const ModelSelection = ModelSelectionSource.pipe(
   ),
 );
 export type ModelSelection = typeof ModelSelection.Type;
+
+/**
+ * Strict input shape for MCP tools. `ModelSelection` also decodes the legacy `provider` field and
+ * option objects for stored data; advertising that would hide the identity every caller must send.
+ */
+const AdvertisedNonEmptyString = Schema.String.check(Schema.isMinLength(1)).pipe(
+  Schema.decodeTo(TrimmedNonEmptyString),
+);
+
+export const CanonicalModelSelection = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  model: AdvertisedNonEmptyString,
+  options: Schema.optionalKey(Schema.Array(ProviderOptionSelection)),
+  autoAccount: Schema.optionalKey(Schema.Boolean),
+});

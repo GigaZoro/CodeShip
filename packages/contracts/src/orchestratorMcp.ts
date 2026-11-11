@@ -45,7 +45,7 @@ import {
   OrchestrationV2RunStatus,
   OrchestrationV2TurnItemStatus,
 } from "./orchestrationV2.ts";
-import { ModelSelection } from "./modelSelection.ts";
+import { CanonicalModelSelection, ModelSelection } from "./modelSelection.ts";
 import { SharedSettingVersion } from "./sharedSettings.ts";
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
@@ -668,7 +668,7 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
 export type OrchestratorMcpCapabilitiesResult = typeof OrchestratorMcpCapabilitiesResult.Type;
 
 const scheduledTaskModelFields = {
-  modelSelection: Schema.optional(ModelSelection).annotate({
+  modelSelection: Schema.optional(CanonicalModelSelection).annotate({
     description:
       "Own model for new-thread runs; autoAccount:true selects Auto. Not for a bound task.",
   }),

@@ -1,3 +1,7 @@
+## 2026-11-11 — Scheduled-task tools say a model needs a provider
+
+- The `schedule_task` tool now advertises its `modelSelection` as it is decoded: `instanceId` (the provider instance, for example `codex`) and a non-empty `model` are required, `options` is a list of `{id, value}`, and `autoAccount` is a boolean. Agents no longer send a model without a provider and get the update rejected. The old `provider` field is no longer accepted in this tool's input; stored selections still read it.
+
 ## 2026-11-11 — Manual steps get an AI review with suggested solutions
 
 - Every manual step from ThreadPage now gets an AI review on its own: whether it really needs you or an agent could do it, a short summary, and up to three ways to get it done, best first, with the exact command to copy when there is one. Open a step from the details column or the sidebar to see its review on the Manual steps page; on mobile, tap a step. A bot icon marks steps the review says an agent can do.

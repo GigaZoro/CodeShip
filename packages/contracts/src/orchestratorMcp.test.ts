@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
 import {
+  OrchestratorMcpSaveScheduledTaskInput,
   OrchestratorMcpScheduledTask,
   OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpDelegateTaskResult,
@@ -87,4 +88,24 @@ it.each([
     ...modelFields,
   };
   expect(decodeScheduledTask(task)).toEqual(task);
+});
+
+describe("scheduled task model selection input", () => {
+  const decode = Schema.decodeUnknownSync(OrchestratorMcpSaveScheduledTaskInput);
+  const base = { environmentId: "local", projectId: "project-1", prompt: "go" };
+
+  it("accepts a canonical selection", () => {
+    expect(
+      decode({ ...base, modelSelection: { instanceId: "codex", model: "gpt-5" } }).modelSelection,
+    ).toEqual({ instanceId: "codex", model: "gpt-5" });
+  });
+
+  it.each([
+    ["no provider identity", { model: "gpt-5" }],
+    ["the legacy provider field alone", { provider: "codex", model: "gpt-5" }],
+    ["a blank model", { instanceId: "codex", model: "  " }],
+    ["a non-boolean autoAccount", { instanceId: "codex", model: "gpt-5", autoAccount: "yes" }],
+  ])("rejects %s", (_name, modelSelection) => {
+    expect(() => decode({ ...base, modelSelection })).toThrow();
+  });
 });

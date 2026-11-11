@@ -2,6 +2,8 @@ import { expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 import { Tool } from "effect/ai";
 
+import { OrchestratorMcpSaveScheduledTaskInput } from "@t3tools/contracts";
+
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
 
 it("drops JSON noise, merges tagged unions, and keeps null and per-tag requirements", () => {
@@ -45,5 +47,23 @@ it("drops JSON noise, merges tagged unions, and keeps null and per-tag requireme
       },
     },
     required: ["beforeRunId", "every"],
+  });
+});
+
+it("advertises the model selection the scheduled-task decoder requires", () => {
+  const tool = Tool.make("schedule_task", { parameters: OrchestratorMcpSaveScheduledTaskInput });
+  const advertised = advertisedJsonSchema(tool) as {
+    properties: { modelSelection: Record<string, unknown> };
+  };
+
+  expect(advertised.properties.modelSelection).toMatchObject({
+    type: "object",
+    required: ["instanceId", "model"],
+    properties: {
+      instanceId: { type: "string" },
+      model: { type: "string", minLength: 1 },
+      options: { type: "array" },
+      autoAccount: { type: "boolean" },
+    },
   });
 });
