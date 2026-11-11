@@ -164,6 +164,21 @@ describe("readClaudeLoginExpiry", () => {
     ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("trusts the Keychain record over an older login file, even without an expiry", () =>
+    withConfigDir((configDir) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        yield* fileSystem.writeFileString(
+          path.join(configDir, ".credentials.json"),
+          login({ refreshTokenExpiresAt: Date.parse("2026-01-01T00:00:00.000Z") }),
+        );
+        const { spawner } = keychain({ stdout: login({ accessToken: TOKEN }), code: 0 });
+        assert.equal(yield* read({ configDir, spawner, os: "darwin" }), undefined);
+      }),
+    ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("reads the login file on other systems without running anything", () =>
     withConfigDir((configDir) =>
       Effect.gen(function* () {

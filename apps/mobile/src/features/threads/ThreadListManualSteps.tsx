@@ -4,6 +4,7 @@ import { useNavigation } from "@react-navigation/native";
 import {
   detectedManualStepText,
   manualStepsFailureMessage,
+  detectedManualStepKey,
   type DetectedManualStepEntry,
   type ManualStepsState,
 } from "@t3tools/client-runtime/state/manualSteps";
@@ -204,12 +205,13 @@ const DetectedStepRow = memo(function DetectedStepRow(props: {
         interactionClassName={appearance.interactionClassName}
         interactionOpacity={appearance.interactionOpacity}
         onPress={() =>
-          openSettings(
-            navigation,
-            entry.step.kind === "mcp-needs-auth"
-              ? "SettingsCapabilities"
-              : "SettingsProviderAccounts",
-          )
+          entry.step.kind === "mcp-needs-auth"
+            ? openSettings(navigation, "SettingsCapabilities", {
+                environmentId: entry.environmentId,
+                instanceId: entry.step.instanceId,
+                ...(entry.step.serverName !== undefined ? { server: entry.step.serverName } : {}),
+              })
+            : openSettings(navigation, "SettingsProviderAccounts")
         }
         style={appearance.cardStyle}
       >
@@ -277,11 +279,7 @@ export function ThreadListManualSteps(props: {
       {expanded && state.view.status === "listed"
         ? state.view.groups.flatMap((group) => [
             ...group.detected.map((entry) => (
-              <DetectedStepRow
-                key={`${entry.step.machine}:${entry.step.id}`}
-                entry={entry}
-                pane={props.pane}
-              />
+              <DetectedStepRow key={detectedManualStepKey(entry)} entry={entry} pane={props.pane} />
             )),
             ...group.steps.map((step) => (
               <ManualStepRow

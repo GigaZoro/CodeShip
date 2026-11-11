@@ -118,14 +118,28 @@ const make = Effect.gen(function* () {
     { readonly servers: ReadonlyArray<ProviderMcpServer>; readonly at: number }
   >();
 
+  // A list that began before a change describes the old servers; it must not become `loaded`.
+  const generations = new Map<ProviderInstanceId, number>();
+  const generationOf = (instanceId: ProviderInstanceId) => generations.get(instanceId) ?? 0;
+
   const lists = yield* Cache.makeWith(
     (instanceId: ProviderInstanceId) =>
-      management(instanceId, "list").pipe(
-        Effect.flatMap((mcp) => mcp.list),
-        Effect.map(sortProviderMcpServers),
-        Effect.tap((servers) =>
-          Clock.currentTimeMillis.pipe(
-            Effect.tap((at) => Effect.sync(() => loaded.set(instanceId, { servers, at }))),
+      Effect.sync(() => generationOf(instanceId)).pipe(
+        Effect.flatMap((started) =>
+          management(instanceId, "list").pipe(
+            Effect.flatMap((mcp) => mcp.list),
+            Effect.map(sortProviderMcpServers),
+            Effect.tap((servers) =>
+              Clock.currentTimeMillis.pipe(
+                Effect.tap((at) =>
+                  Effect.sync(() => {
+                    if (generationOf(instanceId) === started) {
+                      loaded.set(instanceId, { servers, at });
+                    }
+                  }),
+                ),
+              ),
+            ),
           ),
         ),
       ),
@@ -136,9 +150,10 @@ const make = Effect.gen(function* () {
   );
 
   const invalidateList = (instanceId: ProviderInstanceId) =>
-    Effect.sync(() => loaded.delete(instanceId)).pipe(
-      Effect.andThen(Cache.invalidate(lists, instanceId)),
-    );
+    Effect.sync(() => {
+      generations.set(instanceId, generationOf(instanceId) + 1);
+      loaded.delete(instanceId);
+    }).pipe(Effect.andThen(Cache.invalidate(lists, instanceId)));
 
   const change = (
     instanceId: ProviderInstanceId,

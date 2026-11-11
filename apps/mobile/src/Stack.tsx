@@ -97,6 +97,7 @@ import { SettingsAppearanceRouteScreen } from "./features/settings/SettingsAppea
 import { SettingsClientStorageRouteScreen } from "./features/settings/SettingsClientStorageRouteScreen";
 import { SettingsDiagnosticsRouteScreen } from "./features/diagnostics/SettingsDiagnosticsRouteScreen";
 import { SettingsCapabilitiesRouteScreen } from "./features/settings/SettingsCapabilitiesRouteScreen";
+import { SettingsMcpSignInRouteScreen } from "./features/settings/SettingsMcpSignInRouteScreen";
 import { SettingsProviderAccountsRouteScreen } from "./features/settings/SettingsProviderAccountsRouteScreen";
 import { SettingsAuthRouteScreen } from "./features/settings/SettingsAuthRouteScreen";
 import { SettingsEnvironmentDetailRouteScreen } from "./features/settings/SettingsEnvironmentDetailRouteScreen";
@@ -278,6 +279,11 @@ const SETTINGS_SCREENS = {
     screen: SettingsCapabilitiesRouteScreen,
     linking: "settings/capabilities",
     options: () => ({ ...SETTINGS_PAGE_OPTIONS, title: t("Capabilities") }),
+  }),
+  // No linking path: a link would open a sign-in that nobody started.
+  SettingsMcpSignIn: createNativeStackScreen({
+    screen: SettingsMcpSignInRouteScreen,
+    options: () => ({ ...SETTINGS_PAGE_OPTIONS, title: t("Sign in") }),
   }),
   SettingsEnvironmentMaintenance: createNativeStackScreen({
     screen: SettingsEnvironmentMaintenanceRouteScreen,

@@ -147,7 +147,14 @@ function groupManualSteps(
   );
 }
 
-/** One machine can be reached through several environments; a step shows once per machine. */
+/**
+ * Identifies a detected step: the server that found it plus its id. Two servers can share a
+ * display label (a production and a development server on one machine), so the label is no identity.
+ */
+export const detectedManualStepKey = (entry: DetectedManualStepEntry) =>
+  `${entry.environmentId}:${entry.step.id}`;
+
+/** A server reached through several connections is one environment, so its steps show once. */
 function detectedEntries(
   sources: ReadonlyArray<DetectedManualStepsSource>,
 ): ReadonlyArray<DetectedManualStepEntry> {
@@ -155,8 +162,9 @@ function detectedEntries(
   for (const source of sources) {
     if (source.status !== "listed") continue;
     for (const step of source.steps) {
-      const key = JSON.stringify([step.machine, step.id]);
-      if (!entries.has(key)) entries.set(key, { environmentId: source.environmentId, step });
+      const entry = { environmentId: source.environmentId, step };
+      const key = detectedManualStepKey(entry);
+      if (!entries.has(key)) entries.set(key, entry);
     }
   }
   return [...entries.values()];

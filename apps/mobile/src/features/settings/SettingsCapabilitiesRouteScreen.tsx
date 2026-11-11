@@ -1,5 +1,6 @@
 import { msg, t } from "../../lib/i18n";
 import { useAtomValue } from "@effect/atom-react";
+import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -10,7 +11,7 @@ import {
   type ServerProvider,
   type ServerProviderSkill,
 } from "@t3tools/contracts";
-import { useState, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -28,6 +29,12 @@ import {
   AndroidSettingsEnvironmentFilter,
   SettingsEnvironmentFilterHeader,
 } from "./components/SettingsEnvironmentFilterHeader";
+import {
+  focusedServerFirst,
+  isCapabilitiesFocused,
+  matchesCapabilitiesFocus,
+  type CapabilitiesFocus,
+} from "./capabilities-focus";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
 import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
@@ -44,14 +51,23 @@ const MCP_STATUS_LABELS = {
   notConfigured: msg("Not set up"),
 } as const satisfies Record<ProviderMcpServer["status"], string>;
 
+type Props = StaticScreenProps<CapabilitiesFocus | undefined>;
+
 /**
- * What each agent on an environment can reach. MCP servers can be turned off and on here; other
- * changes are made in web or desktop.
+ * What each agent on an environment can reach. MCP servers can be turned off, on and signed in
+ * here; other changes are made in web or desktop. A detected sign-in opens it narrowed to the one
+ * account and server, whatever the environment filter says.
  */
-export function SettingsCapabilitiesRouteScreen() {
-  const { selectedTargets } = useSettingsEnvironmentFilter();
+export function SettingsCapabilitiesRouteScreen({ route }: Props) {
+  const { selectedTargets, availableTargets } = useSettingsEnvironmentFilter();
   const providersByEnvironment = useAtomValue(environmentPresentations.providersByEnvironmentAtom);
   const insets = useSafeAreaInsets();
+  const [showAll, setShowAll] = useState(false);
+  const focus = showAll ? undefined : route.params;
+  const focused = isCapabilitiesFocused(focus);
+  const targets = focused
+    ? availableTargets.filter((entry) => matchesCapabilitiesFocus(focus, entry))
+    : selectedTargets;
   return (
     <>
       <SettingsEnvironmentFilterHeader />
@@ -62,17 +78,21 @@ export function SettingsCapabilitiesRouteScreen() {
           contentContainerClassName="gap-6 px-5 pt-4"
           contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
         >
-          {selectedTargets.length === 0 ? (
+          {targets.length === 0 ? (
             <Text className="text-foreground-muted">{t("Select a connected environment.")}</Text>
           ) : (
-            selectedTargets.flatMap((environment) => {
+            targets.flatMap((environment) => {
               const providers = (
                 providersByEnvironment.get(environment.environmentId) ?? []
               ).filter(
                 (provider) =>
                   provider.enabled &&
                   provider.installed &&
-                  isManagedDriverAllowed(environment.serverConfig.managedPolicy, provider.driver),
+                  isManagedDriverAllowed(environment.serverConfig.managedPolicy, provider.driver) &&
+                  matchesCapabilitiesFocus(focus, {
+                    environmentId: environment.environmentId,
+                    instanceId: provider.instanceId,
+                  }),
               );
               return providers.length === 0
                 ? [
@@ -87,10 +107,16 @@ export function SettingsCapabilitiesRouteScreen() {
                       key={`${environment.environmentId}:${provider.instanceId}`}
                       environment={environment}
                       provider={provider}
+                      focus={focus}
                     />
                   ));
             })
           )}
+          {focused ? (
+            <SettingsSection>
+              <ListActionRow label={t("Show all capabilities")} onPress={() => setShowAll(true)} />
+            </SettingsSection>
+          ) : null}
         </ScreenScrollView>
       </SettingsScreen>
     </>
@@ -100,6 +126,7 @@ export function SettingsCapabilitiesRouteScreen() {
 function ProviderCapabilities(props: {
   readonly environment: SettingsTarget;
   readonly provider: ServerProvider;
+  readonly focus: CapabilitiesFocus | undefined;
 }) {
   const { environment, provider } = props;
   const name = provider.displayName ?? provider.driver;
@@ -114,6 +141,7 @@ function ProviderCapabilities(props: {
         <McpServerRows
           environment={environment}
           provider={provider}
+          focus={props.focus}
           hasSkills={skills.length > 0}
         />
       ) : null}
@@ -142,8 +170,10 @@ function ProviderCapabilities(props: {
 function McpServerRows(props: {
   readonly environment: SettingsTarget;
   readonly provider: ServerProvider;
+  readonly focus: CapabilitiesFocus | undefined;
   readonly hasSkills: boolean;
 }) {
+  const navigation = useNavigation();
   const { environmentId } = props.environment;
   const instanceId = props.provider.instanceId;
   const servers = useEnvironmentQuery(
@@ -216,29 +246,45 @@ function McpServerRows(props: {
   }
   return (
     <>
-      {servers.data.servers.map((server) => {
+      {focusedServerFirst(servers.data.servers, props.focus).map((server) => {
         const label = server.displayName ?? server.name;
         const pending = wanted.get(server.name)?.listAt === null;
         // Servers from older environments, plugins and policies have no switch.
         return (
-          <CapabilityRow
-            key={server.name}
-            icon="server.rack"
-            label={label}
-            description={server.message ?? server.plugin}
-            detail={t(MCP_STATUS_LABELS[server.status])}
-            accessory={
-              server.canToggle === true ? (
-                <ThemedSwitch
-                  accessibilityLabel={t("Enable {name}", { name: label })}
-                  accessibilityHint={t("Turning it off keeps its settings.")}
-                  disabled={!canManage || pending}
-                  value={isOn(server)}
-                  onValueChange={(enabled) => void toggle(server, enabled)}
-                />
-              ) : undefined
-            }
-          />
+          <Fragment key={server.name}>
+            <CapabilityRow
+              icon="server.rack"
+              label={label}
+              description={server.message ?? server.plugin}
+              detail={t(MCP_STATUS_LABELS[server.status])}
+              accessory={
+                server.canToggle === true ? (
+                  <ThemedSwitch
+                    accessibilityLabel={t("Enable {name}", { name: label })}
+                    accessibilityHint={t("Turning it off keeps its settings.")}
+                    disabled={!canManage || pending}
+                    value={isOn(server)}
+                    onValueChange={(enabled) => void toggle(server, enabled)}
+                  />
+                ) : undefined
+              }
+            />
+            {server.canSignIn && isOn(server) ? (
+              <ListActionRow
+                icon={{ ios: "key", android: "lock" }}
+                label={t("Sign in to {server}", { server: label })}
+                onPress={() =>
+                  navigation.navigate("SettingsMcpSignIn", {
+                    environmentId,
+                    instanceId,
+                    name: server.name,
+                    serverLabel: label,
+                    providerLabel: props.provider.displayName ?? props.provider.driver,
+                  })
+                }
+              />
+            ) : null}
+          </Fragment>
         );
       })}
     </>

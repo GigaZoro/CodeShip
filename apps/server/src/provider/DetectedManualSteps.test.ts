@@ -1,13 +1,24 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
+import * as Ref from "effect/Ref";
+import * as TestClock from "effect/testing/TestClock";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderMcpError,
+  type ProviderMcpListResult,
   type ProviderMcpServer,
   type ServerProvider,
 } from "@t3tools/contracts";
 
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as DetectedManualSteps from "./DetectedManualSteps.ts";
 import { selectDetectedManualSteps } from "./DetectedManualSteps.ts";
+import * as ProviderMcp from "./ProviderMcp.ts";
+import * as ProviderRegistry from "./ProviderRegistry.ts";
 
 const NOW = Date.parse("2026-11-11T12:00:00.000Z");
 const IN_DAYS = (days: number) => DateTime.formatIso(DateTime.makeUnsafe(NOW + days * 86_400_000));
@@ -139,4 +150,88 @@ describe("selectDetectedManualSteps", () => {
       [],
     );
   });
+});
+
+describe("DetectedManualSteps discovery", () => {
+  const claude = ProviderInstanceId.make("claudeAgent");
+
+  const harness = (
+    listRecent: (starts: Ref.Ref<number>) => Effect.Effect<ProviderMcpListResult, ProviderMcpError>,
+  ) =>
+    Effect.gen(function* () {
+      const starts = yield* Ref.make(0);
+      const layer = DetectedManualSteps.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(ProviderRegistry.ProviderRegistry)({
+              getProviders: Effect.succeed([provider("claudeAgent")]),
+            }),
+            Layer.mock(ProviderMcp.ProviderMcp)({
+              listRecent: () =>
+                Ref.update(starts, (count) => count + 1).pipe(Effect.andThen(listRecent(starts))),
+            }),
+            Layer.mock(ServerEnvironment.ServerEnvironment)({
+              getDescriptor: Effect.succeed({ label: "Mac" } as never),
+            }),
+          ),
+        ),
+      );
+      return { starts, layer };
+    });
+
+  const mcpStepIds = (service: DetectedManualSteps.DetectedManualSteps["Service"]) =>
+    service.list.pipe(Effect.map((result) => result.steps.map((step) => step.id)));
+
+  it.effect(
+    "keeps a slow discovery running after a request gives up and joins it on the next poll",
+    () =>
+      Effect.gen(function* () {
+        const { starts, layer } = yield* harness(() =>
+          Effect.sleep("50 seconds").pipe(Effect.as({ servers: [server("threadpage")] })),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* DetectedManualSteps.DetectedManualSteps;
+          const first = yield* mcpStepIds(service).pipe(Effect.forkChild);
+          yield* TestClock.adjust("26 seconds");
+          assert.deepEqual(yield* Fiber.join(first), []);
+
+          // Past the 20 s answer cache; the discovery from the first request is still running.
+          yield* TestClock.adjust("21 seconds");
+          const second = yield* mcpStepIds(service).pipe(Effect.forkChild);
+          yield* TestClock.adjust("5 seconds");
+          assert.deepEqual(yield* Fiber.join(second), ["mcp-needs-auth:claudeAgent:threadpage"]);
+          assert.equal(yield* Ref.get(starts), 1);
+        }).pipe(Effect.provide(layer));
+      }),
+  );
+
+  it.effect(
+    "does not start a provider that failed to list again until the retry delay has passed",
+    () =>
+      Effect.gen(function* () {
+        const { starts, layer } = yield* harness(() =>
+          Effect.fail(
+            new ProviderMcpError({
+              operation: "list",
+              instanceId: claude,
+              reason: "providerFailed",
+            }),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* DetectedManualSteps.DetectedManualSteps;
+          yield* mcpStepIds(service);
+          // Past the 20 s answer cache, so each poll below looks at the provider again.
+          yield* TestClock.adjust("1 minute");
+          yield* mcpStepIds(service);
+          yield* TestClock.adjust("1 minute");
+          assert.deepEqual(yield* mcpStepIds(service), []);
+          assert.equal(yield* Ref.get(starts), 1);
+
+          yield* TestClock.adjust("4 minutes");
+          yield* mcpStepIds(service);
+          assert.equal(yield* Ref.get(starts), 2);
+        }).pipe(Effect.provide(layer));
+      }),
+  );
 });
