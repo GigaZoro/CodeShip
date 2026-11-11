@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
@@ -11,6 +12,7 @@ import {
   SHARED_SETTING_VALUE_MAX_BYTES,
   SHARED_SETTINGS_RESPONSE_MAX_BYTES,
   type SharedSettingsShare,
+  type SharedSettingsWriteShare,
   type SharedSettingVersion,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -20,8 +22,11 @@ import * as Ref from "effect/Ref";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Settings from "../serverSettings.ts";
 import * as SharedSettings from "./SharedSettings.ts";
@@ -1379,4 +1384,282 @@ it.effect("a change to an account here outranks a version from a clock a little 
       expect((yield* instanceOf(settings, WORK))?.displayName).toBe("Claude - Office");
     }),
   ),
+);
+
+const GROK = ProviderDriverKind.make("grok");
+const GROK_WORK = ProviderInstanceId.make("grok_work");
+const CODEX_WORK = ProviderInstanceId.make("codex_work");
+const KEYED = ProviderInstanceId.make("antigravity_keyed");
+
+/** An account whose only part of its own here is a key kept in this machine's secret store. */
+const keyedAccount = {
+  driver: ProviderDriverKind.make("antigravity"),
+  config: { apiKey: "\u2022\u2022\u2022\u2022\u2022\u2022" },
+};
+
+/** A machine with the real settings file and secret store, so a removal can drop a stored secret. */
+const machineWithSecretStore = (environmentId: EnvironmentId) =>
+  SharedSettings.layer.pipe(
+    Layer.provideMerge(Settings.layer),
+    Layer.provide(ServerSecretStore.layer),
+    Layer.provide(ManagedPolicy.layerTest()),
+    Layer.provideMerge(
+      Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+    ),
+    Layer.provideMerge(
+      Layer.mock(ServerEnvironment.ServerEnvironment)({
+        getEnvironmentId: Effect.succeed(environmentId),
+      }),
+    ),
+    Layer.provideMerge(Layer.fresh(SqlitePersistence.layerMemory)),
+    Layer.provideMerge(
+      Layer.fresh(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3code-shared-settings-test-" }),
+      ),
+    ),
+    Layer.provideMerge(NodeServices.layer),
+  );
+
+it.effect("a removal turns off an account that holds this machine's own keys or paths", () =>
+  run(
+    (shared, settings) =>
+      Effect.gen(function* () {
+        yield* shared.applyPulled(PEER, [
+          version(WORK_KEY, { removed: true }, LATER),
+          version(`providerInstance:${KEYED}`, { removed: true }, LATER),
+        ]);
+        const current = yield* settings.getSettings;
+        expect([current.providerInstances[WORK], current.providerInstances[KEYED]]).toEqual([
+          { ...workAccount("b"), enabled: false },
+          { ...keyedAccount, enabled: false },
+        ]);
+        expect((yield* served(shared))[WORK_KEY]?.value).toEqual({ removed: true });
+      }),
+    { providerInstances: { [WORK]: workAccount("b"), [KEYED]: keyedAccount } },
+  ),
+);
+
+it.effect("a removal deletes an account that holds nothing of this machine's own", () =>
+  run(
+    (shared, settings) =>
+      Effect.gen(function* () {
+        yield* shared.applyPulled(PEER, [version(WORK_KEY, { removed: true }, LATER)]);
+        expect(yield* instanceOf(settings, WORK)).toBeUndefined();
+      }),
+    {
+      providerInstances: {
+        // Only shared fields, and local ones still at their defaults.
+        [WORK]: { ...workArrived(HERE), config: { ...WORK_SHARED.config, homePath: "" } },
+      },
+    },
+  ),
+);
+
+it.effect("a removal from the group keeps the secrets of an account it turns off", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse(NOW));
+    const instance = yield* Effect.gen(function* () {
+      const shared = yield* SharedSettings.SharedSettings;
+      const settings = yield* Settings.ServerSettingsService;
+      yield* settings.updateSettings({ followSharedSettings: true });
+      yield* settings.updateProviderInstance({
+        operation: "create",
+        instanceId: WORK,
+        instance: {
+          driver: CLAUDE,
+          environment: [{ name: "ANTHROPIC_API_KEY", value: "sk-ant-test-only", sensitive: true }],
+        },
+      });
+      yield* shared.applyPulled(PEER, [version(WORK_KEY, { removed: true }, LATER)]);
+      return yield* instanceOf(settings, WORK);
+    }).pipe(Effect.provide(machineWithSecretStore(PEER)));
+    expect(instance).toMatchObject({
+      enabled: false,
+      environment: [{ name: "ANTHROPIC_API_KEY", value: "sk-ant-test-only", sensitive: true }],
+    });
+  }),
+);
+
+it.effect("an account of a driver without a private login per account is not shared", () =>
+  run((shared, settings) =>
+    Effect.gen(function* () {
+      // Grok gets another login only through GROK_HOME, so a copy would run on the default one.
+      yield* shared.updateProviderInstance(
+        {
+          operation: "create",
+          instanceId: GROK_WORK,
+          instance: { driver: GROK, displayName: "Grok - Work", config: { customModels: ["g"] } },
+        },
+        {},
+        undefined,
+      );
+      yield* shared.updateProviderInstance(
+        {
+          operation: "upsert",
+          instanceId: ProviderInstanceId.make("grok"),
+          instance: { driver: GROK, displayName: "Grok - Mine", enabled: false },
+        },
+        {},
+        undefined,
+      );
+      expect(yield* shared.servedVersions).toEqual([]);
+      // An older build's version of one is passed on, never applied.
+      const sent = { driver: "grok", displayName: "Grok - Team", enabled: true };
+      yield* shared.applyPulled(PEER, [version("providerInstance:grok_team", sent, LATER)]);
+      expect(Object.hasOwn((yield* settings.getSettings).providerInstances, "grok_team")).toBe(
+        false,
+      );
+      expect((yield* served(shared))["providerInstance:grok_team"]?.value).toEqual(sent);
+    }),
+  ),
+);
+
+it.effect("leaves how an account signs in, and where its requests go, on each machine", () =>
+  Effect.gen(function* () {
+    const versions = yield* run((shared) =>
+      Effect.gen(function* () {
+        yield* shared.updateProviderInstance(
+          {
+            operation: "create",
+            instanceId: CODEX_WORK,
+            instance: { driver: CODEX, config: { setupMode: "managed", customModels: ["gpt-x"] } },
+          },
+          {},
+          undefined,
+        );
+        yield* shared.updateProviderInstance(
+          {
+            operation: "create",
+            instanceId: KEYED,
+            instance: { ...keyedAccount, config: { ...keyedAccount.config, customModels: ["g"] } },
+          },
+          {},
+          undefined,
+        );
+        return yield* served(shared);
+      }),
+    );
+    expect([
+      versions[`providerInstance:${CODEX_WORK}`]?.value,
+      versions[`providerInstance:${KEYED}`]?.value,
+    ]).toEqual([
+      { driver: "codex", enabled: true, config: { customModels: ["gpt-x"] } },
+      // Antigravity is off until turned on.
+      { driver: "antigravity", enabled: false, config: { customModels: ["g"] } },
+    ]);
+    // An older build still sends them; a machine keeps its own.
+    const taken = yield* run(
+      (shared, settings) =>
+        Effect.gen(function* () {
+          yield* shared.applyPulled(HERE, [
+            version(
+              `providerInstance:${KEYED}`,
+              {
+                driver: "antigravity",
+                enabled: true,
+                config: {
+                  authMethod: "agent-platform",
+                  gcpProject: "elsewhere",
+                  gcpLocation: "attacker.example",
+                  customModels: ["g"],
+                },
+              },
+              LATER,
+              HERE,
+            ),
+          ]);
+          return yield* instanceOf(settings, KEYED);
+        }),
+      { providerInstances: { [KEYED]: keyedAccount } },
+      false,
+      undefined,
+      PEER,
+    );
+    expect(taken?.config).toEqual({ ...keyedAccount.config, customModels: ["g"] });
+  }),
+);
+
+it.effect("passes on an account version that would change a field a policy locks here", () =>
+  run(
+    (shared, settings) =>
+      Effect.gen(function* () {
+        const local = workArrived(OTHER);
+        yield* shared.applyPulled(PEER, [
+          version(
+            WORK_KEY,
+            { ...WORK_SHARED, config: { ...WORK_SHARED.config, customModels: ["other"] } },
+            LATER,
+          ),
+        ]);
+        expect(yield* instanceOf(settings, WORK)).toEqual(local);
+        expect((yield* served(shared))[WORK_KEY]?.updatedAt).toBe(LATER);
+        // One that leaves the locked field as it is here applies.
+        yield* shared.applyPulled(PEER, [
+          version(WORK_KEY, { ...WORK_SHARED, displayName: "Claude - Team" }, SOON),
+        ]);
+        expect((yield* instanceOf(settings, WORK))?.displayName).toBe("Claude - Team");
+      }),
+    { providerInstances: { [WORK]: workArrived(OTHER) } },
+    false,
+    {
+      organization: "Example Corp",
+      lockedSettings: [],
+      limits: { providers: { lockedInstanceFields: { [CLAUDE]: ["config.customModels"] } } },
+    },
+  ),
+);
+
+it.effect("a seed loses to a profile the group already has, and spreads where there is none", () =>
+  Effect.gen(function* () {
+    const mine = { chatWidth: "wide" };
+    const group = { chatWidth: "full" };
+    const lost = yield* run((shared) =>
+      Effect.gen(function* () {
+        yield* shared.applyPulled(PEER, [version("deviceSettingsProfile", group, EARLIER)]);
+        return yield* shared.updateForAllMachines({ deviceSettingsProfile: mine }, { seed: true });
+      }),
+    );
+    expect([lost.settings.deviceSettingsProfile, lost.share.values]).toEqual([group, []]);
+
+    const seeded = yield* run((shared) =>
+      Effect.gen(function* () {
+        const saved = yield* shared.updateForAllMachines(
+          { deviceSettingsProfile: mine },
+          { seed: true },
+        );
+        return { saved, served: (yield* served(shared)).deviceSettingsProfile };
+      }),
+    );
+    expect(seeded.saved.settings.deviceSettingsProfile).toEqual(mine);
+    expect(seeded.served).toEqual(
+      version("deviceSettingsProfile", mine, "1970-01-01T00:00:00.000Z", HERE),
+    );
+    // Another follower takes the seed only while it holds no profile of its own, whether a server
+    // stamped it or a client did, for a machine without `server.shareSettings`.
+    const clientSeed = {
+      patch: { deviceSettingsProfile: mine },
+      share: { updatedAt: "1970-01-01T00:00:00.000Z", origin: HERE },
+    };
+    const elsewhere = (
+      pulled: ReadonlyArray<SharedSettingVersion>,
+      write: { readonly patch: ServerSettingsPatch; readonly share: SharedSettingsWriteShare },
+    ) =>
+      run(
+        (shared, settings) =>
+          Effect.gen(function* () {
+            yield* shared.applyPulled(OTHER, pulled);
+            yield* shared.update(write.patch, write.share);
+            return (yield* settings.getSettings).deviceSettingsProfile;
+          }),
+        {},
+        false,
+        undefined,
+        PEER,
+      );
+    const held = [version("deviceSettingsProfile", group, EARLIER, OTHER)];
+    for (const write of [{ patch: {}, share: seeded.saved.share }, clientSeed]) {
+      expect(yield* elsewhere([], write)).toEqual(mine);
+      expect(yield* elsewhere(held, write)).toEqual(group);
+    }
+  }),
 );

@@ -1367,8 +1367,6 @@ const catalog: MessageCatalog = {
   "{model}, {effort}": "{model}, {effort}",
   "{modifier} + Enter always": "Завжди {modifier} + Enter",
   "{modifier} + Enter for multiline prompts": "{modifier} + Enter для багаторядкових запитів",
-  "{name} can link back only when this link has full access. Otherwise link this machine from {name}.":
-    "{name} може з'єднатися у відповідь лише тоді, коли це з'єднання має повний доступ. Інакше з'єднайте цю машину з {name}.",
   "{name} · Archived": "{name} · Архів",
   "{name} ({count} rows)": {
     one: "{name} ({count} рядок)",
@@ -1381,8 +1379,8 @@ const catalog: MessageCatalog = {
   "{name} {state}": "{name}: {state}",
   "{name} account options": "Параметри облікового запису {name}",
   "{name} added": "{name} додано",
-  "{name} can link back only when this link has auto or full access. Otherwise link this machine from {name}.":
-    "{name} може підключитися у відповідь, лише якщо це підключення має автоматичний або повний доступ. Інакше підключіть цю машину з {name}.",
+  "{name} can link back only when this link has full access. Otherwise link this machine from {name}.":
+    "{name} може з'єднатися у відповідь лише тоді, коли це з'єднання має повний доступ. Інакше з'єднайте цю машину з {name}.",
   "{name} enablement": "Увімкнення {name}",
   "{name} is a guest": "{name} – гість",
   "{name} is a guest. A new link ends their access.":
@@ -2264,8 +2262,8 @@ const catalog: MessageCatalog = {
   "Another copy is in progress.": "Інше копіювання вже виконується.",
   "Another desktop entry uses the capture helper's name. Rename it before continuing.":
     "Інший запис робочого стола використовує ім’я помічника захоплення. Перейменуйте його, перш ніж продовжити.",
-  "Another device changed the shared appearance and layout while this one was offline, so its version replaced the changes made here.":
-    "Інший пристрій змінив спільний вигляд і розташування, поки цей був офлайн, тому його версія замінила зміни, зроблені тут.",
+  "Another device saved newer shared appearance and layout settings before the changes made here were saved, so its version replaced them.":
+    "Інший пристрій зберіг новіші спільні налаштування вигляду й розташування раніше, ніж збереглися зміни, зроблені тут, тому його версія їх замінила.",
   "Another machine ran it.": "Його виконав інший комп’ютер.",
   "Another t3 at {path} runs first in a new terminal. Remove it to use T3.CodeShip's.":
     "Інший t3 у {path} запускається першим у новому терміналі. Видаліть його, щоб використовувати t3 з T3.CodeShip.",
@@ -6577,6 +6575,7 @@ const catalog: MessageCatalog = {
   "Landscape right": "Альбомна праворуч",
   language: "мова",
   Language: "Мова",
+  "Language changed on your other devices": "Мову змінено на ваших інших пристроях",
   "Language: {language}": "Мова: {language}",
   Laptop: "Ноутбук",
   "Laptop stand": "Режим ноутбука",
@@ -9232,6 +9231,8 @@ const catalog: MessageCatalog = {
   "Reload changes": "Перезавантажити зміни",
   "Reload page": "Перезавантажити сторінку",
   "Reload stream": "Перезавантажити потік",
+  "Reload to use it on this device too.":
+    "Перезавантажте, щоб використовувати її й на цьому пристрої.",
   "Remember my choice": "Запам’ятати мій вибір",
   Reminders: "Нагадування",
   remote: "віддалений",
@@ -13990,8 +13991,8 @@ const catalog: MessageCatalog = {
   "Your organization's policy adds this server.": "Цей сервер додає політика вашої організації.",
   "Your organization's policy does not allow the {label} provider.":
     "Політика вашої організації не дозволяє провайдера {label}.",
-  "Your other machines that follow shared settings remove it too. Each keeps its sign-in and folders.":
-    "Ваші інші комп’ютери, які приймають спільні налаштування, теж його видалять. Кожен зберігає свій вхід і папки.",
+  "Your other machines that follow shared settings remove it too. One where it has its own key, variables or folder paths turns it off and keeps them instead. Each keeps its sign-in.":
+    "Ваші інші комп’ютери, які приймають спільні налаштування, теж його видалять. Той, де в нього є власний ключ, змінні чи шляхи до папок, натомість вимкне його й збереже їх. Кожен зберігає свій вхід.",
   "Your other review comments will be kept.": "Решту ваших коментарів до рев’ю буде збережено.",
   "Your permissions": "Ваші дозволи",
   "Your preferences for review guides: what to show first, dwell on, or skip. The guide's format and coverage stay the same.":

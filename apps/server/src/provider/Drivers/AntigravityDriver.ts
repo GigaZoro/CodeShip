@@ -90,7 +90,12 @@ export const AntigravityDriver: ProviderDriver<
   AntigravityUsage.AntigravityUsage
 > = {
   driverKind: DRIVER,
-  metadata: { displayName: "Antigravity", supportsMultipleInstances: true },
+  // Every instance signs in to its own profile under resolveAntigravityInstanceDirectories.
+  metadata: {
+    displayName: "Antigravity",
+    supportsMultipleInstances: true,
+    privateAccountHomes: true,
+  },
   configSchema: AntigravitySettings,
   defaultConfig: () => decodeSettings({}),
   usage: AntigravityUsage.antigravityUsageReader,

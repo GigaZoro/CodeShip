@@ -55,8 +55,27 @@ export function deviceSettingsProfileAvailability(
   return { status: "ready", source: { profile: config.settings.deviceSettingsProfile ?? {} } };
 }
 
+/** The client settings the profile sync reads: the portable ones, the switch and the base. */
+export type DeviceSettingsProfileLocal = Pick<
+  ClientSettings,
+  DeviceSettingsProfileKey | "followDeviceSettingsProfile" | "deviceSettingsProfileBase"
+>;
+
+export function selectDeviceSettingsProfileLocal(
+  settings: ClientSettings,
+): DeviceSettingsProfileLocal {
+  return {
+    ...(Object.fromEntries(DEVICE_SETTINGS_PROFILE_KEYS.map((key) => [key, settings[key]])) as Pick<
+      ClientSettings,
+      DeviceSettingsProfileKey
+    >),
+    followDeviceSettingsProfile: settings.followDeviceSettingsProfile,
+    deviceSettingsProfileBase: settings.deviceSettingsProfileBase,
+  };
+}
+
 export interface DeviceSettingsProfileSyncInput {
-  readonly local: ClientSettings;
+  readonly local: DeviceSettingsProfileLocal;
   /** Null while the primary server is offline, does not follow shared settings, or cannot hold a profile. */
   readonly source: DeviceSettingsProfileSource | null;
 }
@@ -72,10 +91,14 @@ export type DeviceSettingsProfileSyncPlan =
       readonly conflict: boolean;
     }
   | {
-      /** Saves the whole profile for all machines; `base` is kept once it is saved. */
+      /**
+       * Saves the whole profile for all machines; `base` is kept once it is saved. A `seed` goes to
+       * a server that holds no profile: it is saved only where no machine holds one yet.
+       */
       readonly kind: "publish";
       readonly profile: DeviceSettingsProfile;
       readonly base: DeviceSettingsProfile;
+      readonly seed: boolean;
     };
 
 const IDLE: DeviceSettingsProfileSyncPlan = { kind: "idle" };
@@ -93,9 +116,10 @@ function readableProfileValues(profile: DeviceSettingsProfile): Record<string, u
 }
 
 /**
- * Compares the device and the server's profile with the profile this device last took or sent (its
- * base). Only the profile changed: take it. Only the device: send the whole profile with its changes
- * on top, keeping keys a newer build wrote. Both: the profile wins. No base: seed or take the profile.
+ * Compares the device and the server's profile with the one this device last took or sent (its
+ * base). Only the profile changed: take it. Only the device: send the profile with its changes on
+ * top. Both: the profile wins. No base: take it. Empty: the server may not have pulled the group's
+ * yet, so the device sends all of its own as a seed, which any profile a machine holds outranks.
  */
 export function planDeviceSettingsProfileSync(
   input: DeviceSettingsProfileSyncInput,
@@ -125,11 +149,10 @@ export function planDeviceSettingsProfileSync(
     };
   };
 
-  if (base === null) {
-    return Object.keys(source.profile).length === 0
-      ? { kind: "publish", profile: own, base: own }
-      : take([]);
+  if (Object.keys(source.profile).length === 0) {
+    return { kind: "publish", profile: own, base: own, seed: true };
   }
+  if (base === null) return take([]);
 
   // A key the base lacks was added by a newer build of this app: it counts as unchanged from its default.
   const baseValue = (key: DeviceSettingsProfileKey) =>
@@ -149,5 +172,50 @@ export function planDeviceSettingsProfileSync(
       ...Object.fromEntries(changedHere.map((key) => [key, own[key]])),
     },
     base: own,
+    seed: false,
+  };
+}
+
+/** One publish of a device's profile, from the switch's generation it was sent in. */
+export interface DeviceSettingsProfilePublish {
+  readonly generation: number;
+  /** The profile the server held when it was sent. */
+  readonly replaced: DeviceSettingsProfile;
+}
+
+/**
+ * A device's publishes of its profile. One is in flight at a time. Once saved, the server still
+ * reports the profile it replaced until the saved one reaches it, so planning against that would
+ * undo the change just sent. Turning the switch off or on starts a new generation: a publish that
+ * settles after that must not write its base over the fresh start.
+ */
+export function makeDeviceSettingsProfilePublishes() {
+  let generation = 0;
+  let inFlight: DeviceSettingsProfilePublish | null = null;
+  let replaced: DeviceSettingsProfile | null = null;
+  return {
+    restart: () => {
+      generation += 1;
+      inFlight = null;
+      replaced = null;
+    },
+    /** Whether to plan against `profile` now. */
+    canPlan: (profile: DeviceSettingsProfile | null): boolean => {
+      if (inFlight !== null) return false;
+      if (profile !== null && replaced !== null && Equal.equals(profile, replaced)) return false;
+      replaced = null;
+      return true;
+    },
+    begin: (profile: DeviceSettingsProfile): DeviceSettingsProfilePublish => {
+      inFlight = { generation, replaced: profile };
+      return inFlight;
+    },
+    /** Ends a publish; false when the switch was turned off or on since it was sent. */
+    settle: (publish: DeviceSettingsProfilePublish, saved: boolean): boolean => {
+      if (publish.generation !== generation) return false;
+      inFlight = null;
+      if (saved) replaced = publish.replaced;
+      return true;
+    },
   };
 }

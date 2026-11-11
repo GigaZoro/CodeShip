@@ -68,6 +68,8 @@ export const CursorDriver: ProviderDriver<
   metadata: {
     displayName: "Cursor",
     supportsMultipleInstances: true,
+    // Every instance keeps its sign-in in its own credential store, keyed by instance id.
+    privateAccountHomes: true,
   },
   configSchema: CursorSettings,
   defaultConfig: (): CursorSettings => decodeCursorSettings({}),

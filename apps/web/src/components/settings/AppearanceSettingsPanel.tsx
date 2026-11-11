@@ -20,17 +20,14 @@ import {
 } from "../SidebarStageBackdrop";
 import { useCustomThemes } from "../../hooks/useCustomThemes";
 import { msg, t, type Message } from "~/i18n";
-import {
-  updateClientSettings,
-  useClientSettings,
-  useEnvironmentIdentificationMode,
-} from "../../hooks/useSettings";
+import { useClientSettings, useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { usePrimaryEnvironment } from "../../state/environments";
 import { deviceSettingsProfileAvailability } from "@t3tools/client-runtime/state/device-settings-profile";
 import { useTheme } from "../../hooks/useTheme";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { setFollowDeviceSettingsProfile } from "./DeviceSettingsProfileCoordinator";
 import { ThemeLibrary } from "./ThemeSettings";
 import {
   SettingResetButton,
@@ -134,12 +131,7 @@ function DeviceSettingsProfileRow() {
           disabled={blocked && !follows}
           // A fresh start each time: turning it on takes the shared profile, and a device that was
           // off must not carry old changes back into it.
-          onCheckedChange={(checked) =>
-            void updateClientSettings({
-              followDeviceSettingsProfile: Boolean(checked),
-              deviceSettingsProfileBase: null,
-            })
-          }
+          onCheckedChange={(checked) => void setFollowDeviceSettingsProfile(Boolean(checked))}
           aria-label={t("Use the same appearance and layout on all my devices")}
         />
       }

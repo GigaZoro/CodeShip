@@ -36,6 +36,12 @@ export interface ProviderDriverMetadata {
   /** Defaults to true; false rejects multiple instances of a global resource. */
   readonly supportsMultipleInstances?: boolean;
   readonly hasDefaultInstance?: boolean;
+  /**
+   * Set only where `create` gives an added (non-default) instance its own login on each machine
+   * without any setting, so an account shared from another machine never runs on this one's
+   * default login. Shared settings share accounts of these drivers alone.
+   */
+  readonly privateAccountHomes?: boolean;
 }
 
 export type ProviderWorkspaceSnapshot = ServerProvider &
@@ -49,6 +55,8 @@ export interface ProviderInstance {
   readonly accentColor?: string | undefined;
   readonly enabled: boolean;
   readonly snapshot: ManagedServerProvider;
+  /** Set by the registry from its driver's `privateAccountHomes`; clients read it on the snapshot. */
+  readonly sharesAddedAccounts?: boolean;
   readonly snapshotForCwd?: (
     cwd: string,
   ) => Effect.Effect<ProviderWorkspaceSnapshot, ProviderDriverError>;

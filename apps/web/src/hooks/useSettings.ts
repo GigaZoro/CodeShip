@@ -34,6 +34,7 @@ import {
   type MachineSettingsWrite,
   persistSharedSettingsWrites,
   planSharedSettingsWrites,
+  settleSharedSettingsWrite,
   splitSharedServerPatch,
   supportsSharedSettingsSync,
 } from "@t3tools/client-runtime/state/shared-settings";
@@ -652,6 +653,13 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
       readonly onFailed?: () => void;
       /** Runs once every machine the shared part of the patch was sent to has saved it. */
       readonly onSaved?: () => void;
+      /**
+       * Runs when the machine that saves the shared part first kept its own value of a setting in
+       * it, because the version it held was newer, with that machine's settings.
+       */
+      readonly onSuperseded?: (settings: ServerSettings) => void;
+      /** Sends the shared part as a seed, saved only where no machine holds a version of it. */
+      readonly seed?: boolean;
     },
   ) => {
     const { serverPatch, clientPatch } = splitPatch(patch);
@@ -767,49 +775,44 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
                   : undefined,
           );
         } else {
-          void persistSharedSettingsWrites(plan, { update: persist, share: persistShare }).then(
-            (outcomes) => {
-              if (
-                deniedLabels.length > 0 ||
-                outcomes.some(({ result }) => result._tag === "Failure")
-              ) {
-                options?.onFailed?.();
-              }
-              const failures = outcomes.flatMap(({ write, result }) => {
-                if (result._tag !== "Failure" || Cause.hasInterruptsOnly(result.cause)) return [];
-                const error = squashAtomCommandFailure(result);
-                return [
-                  t("Could not save on {label}: {error}", {
-                    label: write.label,
-                    error:
-                      error instanceof Error
-                        ? error.message
-                        : t("The save failed. Try reconnecting and saving again."),
-                  }),
-                ];
-              });
-              if (failures.length === 0) {
-                if (deniedLabels.length === 0) options?.onSaved?.();
-                return;
-              }
-              const saved = outcomes
-                .filter(({ result }) => result._tag === "Success")
-                .map(({ write }) => write.label);
-              toastManager.add({
-                type: "error",
-                title:
-                  saved.length > 0
-                    ? t("Setting saved on some environments")
-                    : t("Setting not saved"),
-                description: [
-                  ...failures,
-                  ...(saved.length > 0
-                    ? [t("Saved on {environments}.", { environments: saved.join(", ") })]
-                    : []),
-                ].join("\n"),
-              });
-            },
-          );
+          void persistSharedSettingsWrites(
+            plan,
+            { update: persist, share: persistShare },
+            { seed: options?.seed === true },
+          ).then((outcomes) => {
+            const settled = settleSharedSettingsWrite(outcomes, deniedLabels.length);
+            if (settled._tag === "notSaved") options?.onFailed?.();
+            else if (settled._tag === "superseded") options?.onSuperseded?.(settled.settings);
+            else options?.onSaved?.();
+            const failures = outcomes.flatMap(({ write, result }) => {
+              if (result._tag !== "Failure" || Cause.hasInterruptsOnly(result.cause)) return [];
+              const error = squashAtomCommandFailure(result);
+              return [
+                t("Could not save on {label}: {error}", {
+                  label: write.label,
+                  error:
+                    error instanceof Error
+                      ? error.message
+                      : t("The save failed. Try reconnecting and saving again."),
+                }),
+              ];
+            });
+            if (failures.length === 0) return;
+            const saved = outcomes
+              .filter(({ result }) => result._tag === "Success")
+              .map(({ write }) => write.label);
+            toastManager.add({
+              type: "error",
+              title:
+                saved.length > 0 ? t("Setting saved on some environments") : t("Setting not saved"),
+              description: [
+                ...failures,
+                ...(saved.length > 0
+                  ? [t("Saved on {environments}.", { environments: saved.join(", ") })]
+                  : []),
+              ].join("\n"),
+            });
+          });
         }
       }
     }

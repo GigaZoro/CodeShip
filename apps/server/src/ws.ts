@@ -2649,9 +2649,10 @@ export const layerWsRpc = (
           }),
         [WS_METHODS.serverShareSettings]:
           /* Request instrumentation already owns the span; keep this helper in that context. */
-          Effect.fnUntraced(function* ({ patch }) {
+          Effect.fnUntraced(function* ({ patch, seed }) {
             const saved = yield* sharedSettings.updateForAllMachines(
               yield* withRemoteDeviceHosts(patch),
+              { seed: seed === true },
             );
             return {
               settings: ServerSettings.redactServerSettingsForClient(saved.settings),

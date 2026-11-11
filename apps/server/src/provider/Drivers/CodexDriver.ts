@@ -136,6 +136,8 @@ export const CodexDriver: ProviderDriver<
   metadata: {
     displayName: "Codex",
     supportsMultipleInstances: true,
+    // An added account without a home of its own signs in under codexAccountShadowHomePath.
+    privateAccountHomes: true,
   },
   configSchema: CodexSettings,
   defaultConfig: (): CodexSettings => decodeCodexSettings({}),

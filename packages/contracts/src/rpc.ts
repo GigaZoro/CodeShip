@@ -1076,7 +1076,14 @@ export const ServerShareSettingsResult = Schema.Struct({
 export type ServerShareSettingsResult = typeof ServerShareSettingsResult.Type;
 
 const WsServerShareSettingsRpc = Rpc.make(WS_METHODS.serverShareSettings, {
-  payload: Schema.Struct({ patch: ServerSettingsPatch }),
+  payload: Schema.Struct({
+    patch: ServerSettingsPatch,
+    /**
+     * A first value for settings the group may already hold: the server stamps it older than any
+     * version, so whatever a machine already has wins, and it spreads only where none exists.
+     */
+    seed: Schema.optionalKey(Schema.Boolean),
+  }),
   success: ServerShareSettingsResult,
   error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
 });

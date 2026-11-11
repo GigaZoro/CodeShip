@@ -7,6 +7,7 @@ import { describe, expect, it } from "@effect/vitest";
 
 import {
   deviceSettingsProfileAvailability,
+  makeDeviceSettingsProfilePublishes,
   planDeviceSettingsProfileSync,
 } from "./deviceSettingsProfile.ts";
 
@@ -40,14 +41,18 @@ describe("planDeviceSettingsProfileSync", () => {
     ).toEqual({ kind: "idle" });
   });
 
-  it("makes the first device to follow the source of an empty profile", () => {
-    const local = device({ chatWidth: "wide", language: "uk" });
-    const plan = planDeviceSettingsProfileSync({ local, source: { profile: {} } });
-    expect(plan).toEqual({
-      kind: "publish",
-      profile: deviceSettingsProfileOf(local),
-      base: deviceSettingsProfileOf(local),
-    });
+  it("seeds an empty profile with the whole of its own, synced before or not", () => {
+    for (const local of [
+      device({ chatWidth: "wide", language: "uk" }),
+      synced({ chatWidth: "wide", language: "uk" }, { chatWidth: "full" }),
+    ]) {
+      expect(planDeviceSettingsProfileSync({ local, source: { profile: {} } })).toEqual({
+        kind: "publish",
+        profile: deviceSettingsProfileOf(local),
+        base: deviceSettingsProfileOf(local),
+        seed: true,
+      });
+    }
   });
 
   it("takes a profile that has values over a device that never synced", () => {
@@ -94,6 +99,7 @@ describe("planDeviceSettingsProfileSync", () => {
       kind: "publish",
       profile: { ...profile, fontSizeCode: 16 },
       base: deviceSettingsProfileOf(synced({ fontSizeCode: 16 })),
+      seed: false,
     });
   });
 
@@ -135,8 +141,33 @@ describe("planDeviceSettingsProfileSync", () => {
       deviceSettingsProfileBase: withoutChatWidth,
     });
     expect(
-      planDeviceSettingsProfileSync({ local: changed, source: { profile: {} } }),
-    ).toMatchObject({ kind: "publish", profile: { chatWidth: "full" } });
+      planDeviceSettingsProfileSync({ local: changed, source: { profile: profileOf({}) } }),
+    ).toMatchObject({ kind: "publish", profile: { chatWidth: "full" }, seed: false });
+  });
+});
+
+describe("makeDeviceSettingsProfilePublishes", () => {
+  const before = profileOf({ chatWidth: "wide" });
+
+  it("waits for a publish, then for the profile it replaced to be replaced", () => {
+    const publishes = makeDeviceSettingsProfilePublishes();
+    const publish = publishes.begin(before);
+    expect(publishes.canPlan(before)).toBe(false);
+    expect(publishes.settle(publish, true)).toBe(true);
+    expect(publishes.canPlan(before)).toBe(false);
+    expect(publishes.canPlan(profileOf({ chatWidth: "full" }))).toBe(true);
+  });
+
+  it("ignores a publish that settles after the switch was turned off and on", () => {
+    const publishes = makeDeviceSettingsProfilePublishes();
+    const late = publishes.begin(before);
+    publishes.restart();
+    // Its base would undo the fresh start, and it no longer holds back the next publish.
+    expect(publishes.settle(late, true)).toBe(false);
+    expect(publishes.canPlan(before)).toBe(true);
+    const next = publishes.begin(before);
+    expect(publishes.settle(next, false)).toBe(true);
+    expect(publishes.canPlan(before)).toBe(true);
   });
 });
 

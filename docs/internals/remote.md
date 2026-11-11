@@ -301,21 +301,29 @@ other converge by passing versions on. This is not the list in `client-runtime`'
   follower shares every change it makes to an account's shared part, and to
   `providerInstanceFailoverOrder`, with a server stamp (`ownStamp` keeps it newer than any version
   it knows), because accounts are edited one machine at a time. They travel only by pull, never in
-  a stamped write. What is shared is an allowlist per driver
-  (`SHARED_PROVIDER_CONFIG_FIELDS`): a new config field stays on its machine until listed, and a
-  driver not listed, such as a registry agent, is not shared. Homes, binaries, launch arguments,
-  `environment` and token metadata never are, since a login copied between machines breaks when its
-  refresh token rotates. A follower that takes a version keeps its own value of everything else and
-  applies only the allowlisted fields, ignoring others a peer sends, but passes the JSON on as it
-  came. A new account gets no home, so its driver gives it a private one on that machine. Removal
-  is a `{ removed: true }` version that drops only the definition, never the login or folders; a
-  built-in instance shares only its name and on/off, is never removed, and a version that names
-  another driver under an id here is only passed on. An account version this build cannot decode,
-  or one on a driver it does not share, came from a newer build: it waits like an unknown key and
-  applies once this machine is updated. Account keys do not count toward the 64 unknown keys.
-  Accounts that existed before a machine followed are not shared until changed: ids made on
-  separate machines (`codex_<uuid>`) do not line up, so sharing them all would give every machine a
-  signed-out copy of every other machine's.
+  a stamped write. Only drivers whose metadata sets `privateAccountHomes` are shared: their
+  `create` gives an added account its own login on each machine with no setting, so a copy never
+  runs on that machine's default login (Grok, for one, gets another login only through
+  `GROK_HOME`, and two instances on one rotating-token login sign each other out). The config
+  fields shared are an allowlist per driver in
+  [`sharedProviderInstances.ts`](../../apps/server/src/sharedSettings/sharedProviderInstances.ts):
+  a new field stays on its machine until listed. Homes, binaries, launch arguments, `environment`,
+  token metadata and local choices such as how an account signs in or its cloud project and region
+  never are. A follower that takes a version keeps its own value of everything else and applies
+  only the allowlisted fields, ignoring others a peer sends, but passes the JSON on as it came; a
+  version that would change a field a managed policy locks here is only passed on. A new account
+  gets no home, so its driver gives it a private one on that machine. Removal is a
+  `{ removed: true }` version. A follower deletes the definition only when nothing in it is its
+  own; one with environment variables or a non-shared config field off its default (a key in the
+  secret store, a home, a binary, a mode) is turned off and kept, since deleting it would delete
+  those secrets. A removal made on a machine itself always deletes. The login and folders stay
+  either way. A built-in instance shares only its name and on/off, is never removed, and a version
+  that names another driver under an id here is only passed on. An account version this build
+  cannot decode, or one on a driver it does not share, came from a newer build: it waits like an
+  unknown key and applies once this machine is updated. Account keys do not count toward the 64
+  unknown keys. Accounts that existed before a machine followed are not shared until changed: ids
+  made on separate machines (`codex_<uuid>`) do not line up, so sharing them all would give every
+  machine a signed-out copy of every other machine's.
 
 ## Device settings profile
 
@@ -332,8 +340,14 @@ primary server's profile, and only when that server follows shared settings and 
 `capabilities.deviceSettingsProfile` (an older server would drop the key silently). The device keeps
 `deviceSettingsProfileBase`, the portable values it last took or sent, so a change the device made is
 told from a profile that arrived since (`planDeviceSettingsProfileSync` in `client-runtime`): the
-server's stamps order profiles, and when both sides changed, the profile wins. Mobile has no primary
-server and its own preference store, so it does not take part.
+server's stamps order profiles, and when both sides changed, the profile wins. The base moves only
+once every machine saved the device's profile; an interrupted or refused publish stays unsent until
+the next change or reconnect, and one that settles after the switch was turned off and on again is
+ignored. An empty profile cannot tell "no profile yet" from "this server has not pulled the group's
+yet", so a device sends it as a seed (`seed` on `server.shareSettings`): the server stamps it at the
+epoch, so it loses to any version a machine holds and spreads only where none exists. When the
+primary keeps a newer profile than the one sent, the device takes that one at once. Mobile has no
+primary server and its own preference store, so it does not take part.
 
 ## Hosted web is a client
 

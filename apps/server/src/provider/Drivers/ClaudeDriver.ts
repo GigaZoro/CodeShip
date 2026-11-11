@@ -171,6 +171,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
   metadata: {
     displayName: "Claude",
     supportsMultipleInstances: true,
+    // An added account without a home of its own signs in under claudeAccountHomePath.
+    privateAccountHomes: true,
   },
   configSchema: ClaudeSettings,
   defaultConfig: (): ClaudeSettings => decodeClaudeSettings({}),
