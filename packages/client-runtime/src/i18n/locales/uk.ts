@@ -1314,6 +1314,8 @@ const catalog: MessageCatalog = {
   "{left}% left": "Залишилось {left}%",
   "{login} · Team": "{login} · Команда",
   "{machine} · {status}": "{machine} · {status}",
+  "{machine} could not save this change first, so it was not sent here.":
+    "{machine} не вдалося першим зберегти цю зміну, тому її сюди не надіслано.",
   "{machine} couldn't check {other}: {reason}": "{machine} не вдалося перевірити {other}: {reason}",
   "{machine} is offline. Its MCP servers show up once it reconnects.":
     "{machine} не в мережі. Її MCP-сервери з’являться після повторного підключення.",
@@ -3602,6 +3604,8 @@ const catalog: MessageCatalog = {
     "Підключіть {environment}, щоб зберегти цей параметр.",
   "Connect {name}": "Підключити {name}",
   "Connect {server} on claude.ai": "Підключити {server} на claude.ai",
+  "Connect a machine that follows shared settings to save this for all machines.":
+    "Підключіть комп’ютер, який приймає спільні налаштування, щоб зберегти це для всіх комп’ютерів.",
   "Connect an environment": "Підключити середовище",
   "Connect an environment first.": "Спершу підключіть середовище.",
   "Connect an environment to change its settings.":
