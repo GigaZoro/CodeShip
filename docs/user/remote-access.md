@@ -420,6 +420,10 @@ separate, such as a work machine: it neither gives nor takes shared settings.
   The built-in providers share only their name and whether they are on. Removing an account
   removes it from the other machines too, but each keeps its login and folders. An account added
   before the machine followed stays where it is until you change it.
+- Appearance and layout can follow you too: turn on **Use the same appearance and layout on all
+  my devices** in **Settings → Appearance** on each desktop app or web browser. The machine you
+  use there must follow shared settings, and its profile reaches the others through them; the
+  switch tells you when it does not. See [Appearance](appearance.md#the-same-look-on-all-your-devices).
 - A change for one environment or one project stays there. A later change saved for all
   environments sets that setting on the following machines again.
 - When two changes to one setting meet, the newest wins, including a change made on one machine

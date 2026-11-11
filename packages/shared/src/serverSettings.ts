@@ -724,6 +724,10 @@ export function applyServerSettingsPatch(
     ...(patch.defaultProjectScripts !== undefined
       ? { defaultProjectScripts: patch.defaultProjectScripts }
       : {}),
+    // One version is one whole value; merging would keep keys a newer profile no longer holds.
+    ...(patch.deviceSettingsProfile !== undefined
+      ? { deviceSettingsProfile: patch.deviceSettingsProfile }
+      : {}),
     ...(usageLimitSourcesPatch !== undefined
       ? {
           usageLimitSources: mergeSettingsEntries(
