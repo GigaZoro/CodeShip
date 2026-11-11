@@ -32,7 +32,8 @@ switch says what is missing when it cannot be turned on.
 With it on, this device takes the shared profile when it starts and whenever it changes, and every
 change you make here is saved to the profile, so your other devices that turned it on take it too.
 Turning it on takes the profile as it is, so changes you made here before are replaced; the first
-device to turn it on makes its own settings the profile.
+device to turn it on makes its own settings the profile. When the profile brings another language,
+a message offers to reload, since the app shows a new language only after a reload.
 
 The profile holds fonts and sizes, word wrap, sidebar grouping and sorting, the Working and manual
 steps shelves, confirmations, diff preferences, chat width, effort display, glass opacity, contrast,
@@ -40,8 +41,9 @@ panel animations, time format, language, composer and send behavior, math render
 notifications. Themes, window sizes, browser settings, model favorites and per-project choices stay
 on each device.
 
-If you change something while this device cannot reach its machine and another device changes the
-profile meanwhile, the newer profile wins and a message says so. A device with the switch off is
+If you change something while another device changes the profile, or while this device cannot
+reach its machine, the newer profile wins and a message says so. A change that could not be saved
+is sent again with your next change or when the connection is back. A device with the switch off is
 never changed. Mobile does not take part.
 
 ## Language

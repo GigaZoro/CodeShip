@@ -16,6 +16,7 @@ import {
   type MachineSettingsWrite,
   persistSharedSettingsWrites,
   planSharedSettingsWrites,
+  settleSharedSettingsWrite,
 } from "./sharedSettings.ts";
 
 describe("filterSharedServerPatch", () => {
@@ -328,7 +329,7 @@ describe("saving a change for all machines", () => {
         oldMac,
       ),
       { update, share },
-      () => now,
+      { now: () => now },
     );
     const stamp = { updatedAt: "2026-11-11T12:00:00.000Z", origin: oldMac.environmentId };
     expect(share).not.toHaveBeenCalled();
@@ -343,6 +344,75 @@ describe("saving a change for all machines", () => {
       },
       { environmentId: cpc.environmentId, input: { patch: { worktreesDirectory: "/work" } } },
     ]);
+  });
+
+  it("sends a seed stamped older than any version, whoever stamps it", async () => {
+    const patch = { deviceSettingsProfile: { a: 1 } };
+    const update = vi.fn(async (_request: unknown) => success(DEFAULT_SERVER_SETTINGS));
+    const share = vi.fn(async (_request: unknown) =>
+      success({ settings: DEFAULT_SERVER_SETTINGS, share: stamped }),
+    );
+    await persistSharedSettingsWrites(plan([mac], patch, mac), { update, share }, { seed: true });
+    expect(share.mock.calls).toEqual([
+      [{ environmentId: mac.environmentId, input: { patch, seed: true } }],
+    ]);
+    await persistSharedSettingsWrites(
+      plan([oldMac], patch, oldMac),
+      { update, share },
+      {
+        seed: true,
+      },
+    );
+    expect(update.mock.calls).toEqual([
+      [
+        {
+          environmentId: oldMac.environmentId,
+          input: {
+            patch,
+            share: { updatedAt: "1970-01-01T00:00:00.000Z", origin: oldMac.environmentId },
+          },
+        },
+      ],
+    ]);
+  });
+
+  it("says when the first follower kept a newer value of a shared setting than the one sent", async () => {
+    const held: ServerSettings = { ...DEFAULT_SERVER_SETTINGS, deviceSettingsProfile: { a: 1 } };
+    const update = vi.fn(async (_request: { environmentId: EnvironmentId }) => success(held));
+    const outcomes = await persistSharedSettingsWrites(
+      plan([mac, pc], { deviceSettingsProfile: { a: 2 } }, mac),
+      {
+        update,
+        share: async () => success({ settings: held, share: { ...stamped, values: [] } }),
+      },
+    );
+    expect(settleSharedSettingsWrite(outcomes, 0)).toEqual({
+      _tag: "superseded",
+      keys: ["deviceSettingsProfile"],
+      settings: held,
+    });
+  });
+
+  it("counts a write as saved only when every machine saved it and none refused it", async () => {
+    const saved = (settings: ServerSettings) =>
+      persistSharedSettingsWrites(plan([mac, pc], { deviceSettingsProfile: { a: 2 } }, mac), {
+        update: async () => success(settings),
+        share: async () =>
+          success({
+            settings,
+            share: { ...stamped, values: [{ key: "deviceSettingsProfile", value: { a: 2 } }] },
+          }),
+      });
+    const outcomes = await saved(DEFAULT_SERVER_SETTINGS);
+    expect(settleSharedSettingsWrite(outcomes, 0)).toEqual({ _tag: "saved" });
+    expect(settleSharedSettingsWrite(outcomes, 1)).toEqual({ _tag: "notSaved" });
+    // A reconnect interrupts a request without an error to show; it still saved nothing.
+    const interrupted = outcomes.map((outcome, index) =>
+      index === 1
+        ? { ...outcome, result: { _tag: "Failure" as const, cause: Cause.interrupt() } }
+        : outcome,
+    );
+    expect(settleSharedSettingsWrite(interrupted, 0)).toEqual({ _tag: "notSaved" });
   });
 
   it("fails the other followers, and only them, when the first one cannot save", async () => {

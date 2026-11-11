@@ -323,7 +323,8 @@ const correlateSnapshotWithSource = (
     !source.supportsPlugins &&
     !source.supportsMcpServers &&
     !source.supportsSkillInstall &&
-    !source.supportsSkillToggle
+    !source.supportsSkillToggle &&
+    !source.sharesAddedAccounts
   ) {
     return Effect.succeed(snapshot);
   }
@@ -333,6 +334,7 @@ const correlateSnapshotWithSource = (
     ...(source.supportsMcpServers ? { supportsMcpServers: true } : {}),
     ...(source.supportsSkillInstall ? { supportsSkillInstall: true } : {}),
     ...(source.supportsSkillToggle ? { supportsSkillToggle: true } : {}),
+    ...(source.sharesAddedAccounts ? { sharesAddedAccounts: true } : {}),
   });
 };
 
@@ -351,6 +353,7 @@ const buildSnapshotSource = (instance: ProviderInstance): ProviderSnapshotSource
   supportsMcpServers: instance.mcp !== undefined,
   supportsSkillInstall: instance.personalSkillsDirectory !== undefined,
   supportsSkillToggle: instance.setSkillEnabled !== undefined,
+  sharesAddedAccounts: instance.sharesAddedAccounts === true,
 });
 
 export const layer = Layer.effect(

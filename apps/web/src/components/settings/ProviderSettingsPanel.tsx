@@ -28,7 +28,6 @@ import {
   resolveEnvironmentMachineKind,
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
-  SHARED_PROVIDER_CONFIG_FIELDS,
 } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t3tools/contracts/settings";
 import * as Arr from "effect/Array";
@@ -696,7 +695,11 @@ export function EnvironmentProviderSettings({
   );
 
   const deleteInstance = useStableCallback(
-    async (instanceId: ProviderInstanceId, instance: ProviderInstanceConfig) => {
+    async (
+      instanceId: ProviderInstanceId,
+      instance: ProviderInstanceConfig,
+      sharesAddedAccounts: boolean,
+    ) => {
       const updateResult = await persistProviderInstance({
         operation: "remove",
         instanceId,
@@ -711,15 +714,12 @@ export function EnvironmentProviderSettings({
         return;
       }
       // The removal reaches the other machines that follow, which a one-click delete does not show.
-      if (
-        settings.followSharedSettings &&
-        Object.hasOwn(SHARED_PROVIDER_CONFIG_FIELDS, instance.driver)
-      ) {
+      if (settings.followSharedSettings && sharesAddedAccounts) {
         toastManager.add({
           type: "success",
           title: t("Account removed"),
           description: t(
-            "Your other machines that follow shared settings remove it too. Each keeps its sign-in and folders.",
+            "Your other machines that follow shared settings remove it too. One where it has its own key, variables or folder paths turns it off and keeps them instead. Each keeps its sign-in.",
           ),
         });
       }
@@ -1039,6 +1039,7 @@ interface ProviderInstanceRowActions {
   readonly deleteInstance: (
     instanceId: ProviderInstanceId,
     instance: ProviderInstanceConfig,
+    sharesAddedAccounts: boolean,
   ) => Promise<void>;
   readonly resetDefaultInstance: (driverKind: ProviderDriverKind) => Promise<void>;
   readonly writeProjectOverride: (
@@ -1303,7 +1304,12 @@ function ProviderInstanceRow({
       onUpdate={(next) => actions.updateInstance(instanceId, instance, next)}
       onDelete={
         mode === "editor" && !isDefault
-          ? () => actions.deleteInstance(instanceId, instance)
+          ? () =>
+              actions.deleteInstance(
+                instanceId,
+                instance,
+                liveProvider?.sharesAddedAccounts === true,
+              )
           : undefined
       }
       headerAction={

@@ -12,4 +12,5 @@ export type ProviderSnapshotSource = {
   readonly supportsMcpServers?: boolean;
   readonly supportsSkillInstall?: boolean;
   readonly supportsSkillToggle?: boolean;
+  readonly sharesAddedAccounts?: boolean;
 };

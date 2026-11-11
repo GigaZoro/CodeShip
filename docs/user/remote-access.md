@@ -417,9 +417,12 @@ separate, such as a work machine: it neither gives nor takes shared settings.
   Each machine signs in on its own: a new account shows as signed out there and appears under
   **Sign in to all**. Its name, color, whether it is on and its models are shared; its home
   folder, binary, launch arguments, environment variables and sign-in never leave the machine.
-  The built-in providers share only their name and whether they are on. Removing an account
-  removes it from the other machines too, but each keeps its login and folders. An account added
-  before the machine followed stays where it is until you change it.
+  The built-in providers share only their name and whether they are on. Claude, Codex,
+  Antigravity and Cursor accounts are shared; other providers' accounts are not, since they would
+  sign in with each machine's default login. Removing an account removes it from the other
+  machines too. A machine where that account has its own key, environment variables or folder
+  paths turns it off instead and keeps them. Each machine keeps its login either way. An account
+  added before the machine followed stays where it is until you change it.
 - Appearance and layout can follow you too: turn on **Use the same appearance and layout on all
   my devices** in **Settings → Appearance** on each desktop app or web browser. The machine you
   use there must follow shared settings, and its profile reaches the others through them; the

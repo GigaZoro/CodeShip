@@ -392,10 +392,21 @@ const makeReconcile = <R>(input: {
           entry,
           deferSecrets,
         });
+        // Clients say which removals reach the other machines that follow shared settings.
+        const sharesAddedAccounts =
+          driversById.get(entry.driver)?.metadata.privateAccountHomes === true;
         if (result.kind === "live") {
-          builtEntries.set(instanceId, result.live);
+          builtEntries.set(
+            instanceId,
+            sharesAddedAccounts
+              ? { ...result.live, instance: { ...result.live.instance, sharesAddedAccounts } }
+              : result.live,
+          );
         } else {
-          builtUnavailable.set(instanceId, result.snapshot);
+          builtUnavailable.set(
+            instanceId,
+            sharesAddedAccounts ? { ...result.snapshot, sharesAddedAccounts } : result.snapshot,
+          );
         }
       }
 

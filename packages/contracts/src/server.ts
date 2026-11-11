@@ -230,6 +230,8 @@ export const ServerProvider = Schema.Struct({
   supportsSkillInstall: Schema.optional(Schema.Boolean),
   /** This instance can turn a skill on or off, so clients show the switch. */
   supportsSkillToggle: Schema.optional(Schema.Boolean),
+  /** Accounts added on this driver reach the user's other machines that follow shared settings. */
+  sharesAddedAccounts: Schema.optional(Schema.Boolean),
   setup: Schema.optional(
     Schema.Struct({
       canAuthenticate: Schema.Boolean,
