@@ -361,7 +361,11 @@ and the access, then approve.
 - The link shows up in that machine's **Settings → Machines & access** like any
   outside agent. Revoke it there to end it. **Forget** on this machine only
   removes it here.
-- Links last 30 days. Link again with a new pairing code to renew one.
+- Link credentials last 30 days and renew automatically while both machines run
+  a version that supports renewal and can reach each other in the last 10 days
+  before expiry. Renewal keeps the same access. Revoking the session on the
+  other machine still ends the link. If it expires, link again with a new
+  pairing code.
 
 An agent can also hand a task to a linked machine with `delegate_task`: it runs
 there as an ordinary thread, in the project with the same repository (or the

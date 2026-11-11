@@ -492,8 +492,38 @@ const make = Effect.gen(function* () {
     function* ({ request, urls, token }) {
       const fail = (error: AuthMcpTokenError["error"], description: string) =>
         new AuthMcpTokenError({ error, error_description: description });
+      if (token.grant_type === "urn:ietf:params:oauth:grant-type:token-exchange") {
+        if (
+          !(yield* linksEnabled) ||
+          !token.subject_token ||
+          token.subject_token_type !== "urn:ietf:params:oauth:token-type:access_token" ||
+          token.resource === undefined ||
+          !sameResource(urls, token.resource)
+        ) {
+          return yield* fail("invalid_grant", "The linked environment session cannot be renewed.");
+        }
+        const now = yield* Clock.currentTimeMillis;
+        const issued = yield* environmentAuth
+          .renewMcpClientSession(Redacted.value(token.subject_token))
+          .pipe(
+            Effect.mapError(() =>
+              fail("invalid_grant", "The linked environment session is invalid or expired."),
+            ),
+          );
+        yield* Effect.logInfo("A linked environment's session was renewed.", {
+          label: issued.client.label,
+          access: issued.access,
+        });
+        return {
+          access_token: issued.token,
+          token_type: "Bearer",
+          issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+          expires_in: Math.max(0, Math.floor((issued.expiresAt.epochMilliseconds - now) / 1000)),
+          scope: encodeOAuthScope(issued.scopes),
+        };
+      }
       if (token.grant_type !== "authorization_code") {
-        return yield* fail("unsupported_grant_type", "Only authorization_code is supported.");
+        return yield* fail("unsupported_grant_type", "The requested grant type is not supported.");
       }
       const { redirect_uri: redirectUri, client_id: clientId } = token;
       const code = token.code && Redacted.value(token.code);

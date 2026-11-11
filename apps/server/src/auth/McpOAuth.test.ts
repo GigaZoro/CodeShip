@@ -9,6 +9,8 @@ import {
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Etag from "effect/http/Etag";
@@ -18,6 +20,8 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as Schema from "effect/Schema";
+import * as Redacted from "effect/Redacted";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -74,6 +78,110 @@ const ORIGIN = "https://box.example.ts.net";
 const REDIRECT = "http://localhost/callback";
 const verifier = "a".repeat(43) + "-verifier-for-tests";
 const challenge = "DeB41nTVkPwpbbYecrnqtVq7VXLezustdHAK4SWt13c";
+
+const layerRenewal = McpOAuth.layer.pipe(
+  Layer.provideMerge(layerEnvironmentAuth),
+  Layer.provideMerge(ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })),
+  Layer.provide(NodeServices.layer),
+);
+
+it.effect("renews peer sessions without changing their access, metadata or old token", () =>
+  Effect.gen(function* () {
+    const auth = yield* EnvironmentAuth.EnvironmentAuth;
+    const oauth = yield* McpOAuth.McpOAuth;
+    for (const access of AuthMcpClientAccess.literals) {
+      const original = yield* auth.issueMcpClientSession({
+        label: "T3.CodeShip · Laptop",
+        access,
+        peerLink: true,
+        client: { userAgent: "original-client", deviceType: "bot" },
+      });
+      yield* TestClock.adjust(Duration.days(1));
+      const renewed = yield* oauth.exchangeCode({
+        request: HttpServerRequest.fromWeb(new Request(`${ORIGIN}/oauth/mcp/token`)),
+        urls: { issuer: ORIGIN, resource: `${ORIGIN}/mcp` },
+        token: {
+          grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+          subject_token: Redacted.make(original.token),
+          subject_token_type: "urn:ietf:params:oauth:token-type:access_token",
+          resource: `${ORIGIN}/mcp`,
+        },
+      });
+      expect(renewed.scope.split(" ")).toEqual([...mcpClientScopes(access)]);
+      expect(renewed.expires_in).toBe(30 * 24 * 60 * 60);
+      for (const token of [original.token, renewed.access_token]) {
+        expect(
+          yield* auth.authenticateMcpClient(
+            HttpServerRequest.fromWeb(
+              new Request(`${ORIGIN}/mcp`, {
+                headers: { authorization: `Bearer ${token}` },
+              }),
+            ),
+          ),
+        ).toMatchObject({ label: "T3.CodeShip · Laptop", access, peerLink: true });
+      }
+      const sessions = yield* auth.listSessions();
+      const oldSession = sessions.find((session) => session.sessionId === original.sessionId)!;
+      const newSession = sessions.find(
+        (session) =>
+          session.sessionId !== original.sessionId &&
+          session.client.userAgent === "original-client" &&
+          DateTime.isGreaterThan(session.expiresAt!, original.expiresAt),
+      )!;
+      expect(newSession.client).toEqual(oldSession.client);
+      expect(newSession.scopes).toEqual(oldSession.scopes);
+    }
+  }).pipe(Effect.provide(layerRenewal)),
+);
+
+it.effect("refuses expired, revoked, non-peer, wrong-resource and disabled peer renewal", () =>
+  Effect.gen(function* () {
+    const auth = yield* EnvironmentAuth.EnvironmentAuth;
+    const oauth = yield* McpOAuth.McpOAuth;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const issue = (peerLink = true) =>
+      auth.issueMcpClientSession({
+        label: "Laptop",
+        access: "read-only",
+        peerLink,
+        client: { deviceType: "bot" },
+      });
+    const exchange = (
+      token: string,
+      resource = `${ORIGIN}/mcp`,
+      subjectType = "urn:ietf:params:oauth:token-type:access_token",
+    ) =>
+      oauth
+        .exchangeCode({
+          request: HttpServerRequest.fromWeb(new Request(`${ORIGIN}/oauth/mcp/token`)),
+          urls: { issuer: ORIGIN, resource: `${ORIGIN}/mcp` },
+          token: {
+            grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+            subject_token: Redacted.make(token),
+            subject_token_type: subjectType,
+            resource,
+          },
+        })
+        .pipe(Effect.flip);
+    const expired = yield* issue();
+    yield* TestClock.adjust(Duration.days(30));
+    expect(yield* exchange(expired.token)).toMatchObject({ error: "invalid_grant" });
+    const revoked = yield* issue();
+    yield* auth.revokeSession(revoked.sessionId);
+    expect(yield* exchange(revoked.token)).toMatchObject({ error: "invalid_grant" });
+    expect(yield* exchange((yield* issue(false)).token)).toMatchObject({ error: "invalid_grant" });
+    const valid = yield* issue();
+    expect(yield* exchange(valid.token, "https://wrong.example/mcp")).toMatchObject({
+      error: "invalid_grant",
+    });
+    expect(yield* exchange(valid.token, `${ORIGIN}/mcp`, "wrong-type")).toMatchObject({
+      error: "invalid_grant",
+    });
+    expect(yield* exchange("not-a-token")).toMatchObject({ error: "invalid_grant" });
+    yield* settings.updateSettings({ linkedEnvironmentsEnabled: false });
+    expect(yield* exchange(valid.token)).toMatchObject({ error: "invalid_grant" });
+  }).pipe(Effect.provide(layerRenewal)),
+);
 
 const at = (path: string, init?: RequestInit) =>
   new Request(`http://127.0.0.1${path}`, {
