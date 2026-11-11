@@ -145,9 +145,7 @@ export function InstallUpdatesAutomaticallySetting() {
       {...searchableSetting("install-updates-automatically")}
       serverScoped
       settingKeys={["installUpdatesAutomatically"]}
-      description={t(
-        "Installs a new CodeShip release when no chat is working. Chats cut by the restart resume on their own.",
-      )}
+      description={t("Installs a new CodeShip release when no chat is working.")}
       control={
         <ScopedSwitch
           settingKeys={["installUpdatesAutomatically"]}
