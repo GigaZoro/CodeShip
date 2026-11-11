@@ -1,6 +1,8 @@
 import {
   globalIdleCompaction,
+  MACHINE_SHARED_SETTING_KEYS,
   type EnvironmentId,
+  type MachineSharedSettingKey,
   type ServerSettings,
   type ServerSettingsPatch,
 } from "@t3tools/contracts";
@@ -17,9 +19,9 @@ import {
 } from "./settingsSearch";
 import { formatSettingValue } from "./settingValueFormat";
 
-interface ComparedSetting {
+/** How a shared setting is compared and shown; its key set comes from `MACHINE_SHARED_SETTING_KEYS`. */
+interface SettingPresentation {
   readonly id: SettingsSearchItemId;
-  readonly key: keyof ServerSettings;
   /** For settings each server version stores differently, compares what they resolve to. */
   readonly resolve?: (settings: ServerSettings) => unknown;
   readonly format?: (value: unknown) => string;
@@ -27,33 +29,34 @@ interface ComparedSetting {
 }
 
 /**
- * Settings that people keep the same on every machine. Paths, accounts, provider instances, devices,
- * and per-project overrides belong to one machine, so they are left out.
+ * Every shared key needs an entry here, so a key added to the shared list cannot go uncompared.
+ * `"grouped"` marks a key compared inside another key's combined row.
  */
-const COMPARED_SETTINGS: ReadonlyArray<ComparedSetting> = [
-  { id: "default-model", key: "defaultModelSelection" },
-  { id: "last-picked-model", key: "newThreadsUseLastModel" },
-  { id: "scheduled-task-model", key: "scheduledTaskModelSelection" },
-  { id: "fallback-model", key: "fallbackModelSelection" },
-  { id: "text-generation-model", key: "textGenerationModelSelection" },
-  { id: "thread-title-instructions", key: "threadTitleInstructions" },
-  { id: "source-control-writer-model", key: "sourceControlWriterModelSelection" },
-  { id: "review-guide-model", key: "reviewGuideModelSelection" },
-  { id: "final-review", key: "finalReviewByDefault" },
-  { id: "default-permissions", key: "defaultRuntimeMode" },
-  { id: "new-threads", key: "defaultThreadEnvMode" },
-  { id: "response-streaming", key: "responseStreamingMode" },
-  {
+const SHARED_SETTING_PRESENTATION: Record<
+  MachineSharedSettingKey,
+  SettingPresentation | "grouped"
+> = {
+  defaultModelSelection: { id: "default-model" },
+  newThreadsUseLastModel: { id: "last-picked-model" },
+  scheduledTaskModelSelection: { id: "scheduled-task-model" },
+  fallbackModelSelection: { id: "fallback-model" },
+  textGenerationModelSelection: { id: "text-generation-model" },
+  threadTitleInstructions: { id: "thread-title-instructions" },
+  sourceControlWriterModelSelection: { id: "source-control-writer-model" },
+  reviewGuideModelSelection: { id: "review-guide-model" },
+  finalReviewByDefault: { id: "final-review" },
+  defaultRuntimeMode: { id: "default-permissions" },
+  defaultThreadEnvMode: { id: "new-threads" },
+  responseStreamingMode: { id: "response-streaming" },
+  idleCompaction: {
     id: "compact-idle-threads",
-    key: "idleCompaction",
     resolve: globalIdleCompaction,
     format: (mode) => idleCompactionModeLabel(mode as ReturnType<typeof globalIdleCompaction>),
     patch: (mode) => ({ idleCompaction: mode as ReturnType<typeof globalIdleCompaction> }),
   },
-  { id: "snooze-options", key: "snoozePresets" },
-  {
+  snoozePresets: { id: "snooze-options" },
+  snoozeLimitedThreads: {
     id: "usage-limit-recovery",
-    key: "snoozeLimitedThreads",
     resolve: (settings) =>
       settings.snoozeLimitedThreads === undefined
         ? undefined
@@ -72,31 +75,32 @@ const COMPARED_SETTINGS: ReadonlyArray<ComparedSetting> = [
     },
     patch: (value) => value as ReturnType<typeof usageLimitRecoveryPatch>,
   },
-  { id: "days-before-auto-settle", key: "sidebarAutoSettleAfterDays" },
-  { id: "auto-settle-merged-threads", key: "sidebarAutoSettleOnMerge" },
-  { id: "keep-threads-with-pull-requests", key: "sidebarAutoSettleKeepPullRequests" },
-  { id: "auto-settle-opens-pull-requests", key: "sidebarAutoSettleOpensPullRequests" },
-  { id: "scheduled-task-default-placement", key: "scheduledTaskDefaultPlacement" },
-  { id: "skill-availability", key: "skillAvailability" },
-  { id: "agent-browser-access", key: "enableAgentBrowserAccess" },
-  { id: "agent-device-access", key: "enableAgentDeviceAccess" },
-  { id: "agent-terminal-access", key: "agentTerminalAccess" },
-  { id: "worktree-submodules", key: "worktreeSubmodules" },
-  { id: "start-from-origin", key: "newWorktreesStartFromOrigin" },
-  { id: "automatic-pull", key: "defaultAutoPull" },
-  { id: "storage-worktrees", key: "worktreeCleanup" },
-  { id: "worktree-branch-naming", key: "branchNamingMode" },
-  { id: "source-control-writing-style", key: "sourceControlWritingStyle" },
-  { id: "remove-agent-credits-on-merge", key: "removeAgentCreditsOnMerge" },
-  { id: "pull-request-merge-method", key: "pullRequestMergeMethod" },
-  { id: "review-guides", key: "reviewGuidesEnabled" },
-  { id: "review-guide-instructions", key: "reviewGuideInstructions" },
-  { id: "project-actions", key: "defaultProjectScripts" },
-  { id: "import-agent-conversations", key: "importAgentConversations" },
-  { id: "ghq-clone-layout", key: "ghqCloneLayout" },
-  {
+  autoResumeLimitedThreads: "grouped",
+  failoverLimitedThreads: "grouped",
+  sidebarAutoSettleAfterDays: { id: "days-before-auto-settle" },
+  sidebarAutoSettleOnMerge: { id: "auto-settle-merged-threads" },
+  sidebarAutoSettleKeepPullRequests: { id: "keep-threads-with-pull-requests" },
+  sidebarAutoSettleOpensPullRequests: { id: "auto-settle-opens-pull-requests" },
+  scheduledTaskDefaultPlacement: { id: "scheduled-task-default-placement" },
+  skillAvailability: { id: "skill-availability" },
+  enableAgentBrowserAccess: { id: "agent-browser-access" },
+  enableAgentDeviceAccess: { id: "agent-device-access" },
+  agentTerminalAccess: { id: "agent-terminal-access" },
+  worktreeSubmodules: { id: "worktree-submodules" },
+  newWorktreesStartFromOrigin: { id: "start-from-origin" },
+  defaultAutoPull: { id: "automatic-pull" },
+  worktreeCleanup: { id: "storage-worktrees" },
+  branchNamingMode: { id: "worktree-branch-naming" },
+  sourceControlWritingStyle: { id: "source-control-writing-style" },
+  removeAgentCreditsOnMerge: { id: "remove-agent-credits-on-merge" },
+  pullRequestMergeMethod: { id: "pull-request-merge-method" },
+  reviewGuidesEnabled: { id: "review-guides" },
+  reviewGuideInstructions: { id: "review-guide-instructions" },
+  defaultProjectScripts: { id: "project-actions" },
+  importAgentConversations: { id: "import-agent-conversations" },
+  ghqCloneLayout: { id: "ghq-clone-layout" },
+  enableProviderUpdateChecks: {
     id: "provider-updates",
-    key: "enableProviderUpdateChecks",
     resolve: (settings) => ({
       enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
       autoUpdateProviders: settings.autoUpdateProviders,
@@ -110,8 +114,26 @@ const COMPARED_SETTINGS: ReadonlyArray<ComparedSetting> = [
     },
     patch: (value) => value as ReturnType<typeof providerUpdatesPatch>,
   },
-  { id: "continue-threads-after-server-update", key: "continueThreadsAfterServerUpdate" },
-  { id: "background-activity", key: "backgroundActivity" },
+  autoUpdateProviders: "grouped",
+  continueThreadsAfterServerUpdate: { id: "continue-threads-after-server-update" },
+  backgroundActivity: { id: "background-activity" },
+};
+
+interface ComparedSetting extends SettingPresentation {
+  readonly key: keyof ServerSettings;
+}
+
+/**
+ * Settings that people keep the same on every machine. Paths, accounts, provider instances, devices,
+ * and per-project overrides belong to one machine, so they are left out. The last two belong to one
+ * machine too, and are listed so a one-off bulk edit can still make them match; saving them never
+ * becomes a shared version.
+ */
+const COMPARED_SETTINGS: ReadonlyArray<ComparedSetting> = [
+  ...MACHINE_SHARED_SETTING_KEYS.flatMap((key) => {
+    const presentation = SHARED_SETTING_PRESENTATION[key];
+    return presentation === "grouped" ? [] : [{ key, ...presentation }];
+  }),
   { id: "guest-links", key: "guestSharingEnabled" },
   { id: "linked-environments-beta", key: "linkedEnvironmentsEnabled" },
 ];
@@ -144,9 +166,8 @@ export function machineSettingDifferences(
 ): MachineSettingDifference[] {
   return COMPARED_SETTINGS.flatMap((setting) => {
     const values = machines.flatMap((machine) => {
-      const value = setting.resolve
-        ? setting.resolve(machine.settings)
-        : machine.settings[setting.key];
+      if (setting.resolve) return [{ machine, value: setting.resolve(machine.settings) }];
+      const value = machine.settings[setting.key];
       return value === undefined ? [] : [{ machine, value }];
     });
     const first = values[0];

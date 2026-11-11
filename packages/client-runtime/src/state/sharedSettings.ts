@@ -1,5 +1,12 @@
-import type { ServerSettings, ServerSettingsPatch } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  isMachineSharedSettingKey,
+  type ServerSettings,
+  type ServerSettingsPatch,
+  type SharedSettingStamp,
+} from "@t3tools/contracts";
 import { isModelSelectionProviderEnabled } from "@t3tools/shared/serverSettings";
+import * as DateTime from "effect/DateTime";
 import * as Struct from "effect/Struct";
 
 import type { EnvironmentConnectionPhase } from "../connection/presentation.ts";
@@ -69,4 +76,23 @@ export function supportsSharedSettingsSync(environment: {
   readonly serverConfig: object | null;
 }): boolean {
   return environment.connection.phase === "connected" && environment.serverConfig !== null;
+}
+
+/**
+ * The stamp for a write saved for all machines, sent to each machine so they all record one
+ * version. `origin` is the machine the change is attributed to.
+ */
+export function sharedSettingStamp(
+  origin: EnvironmentId,
+  now: DateTime.Utc = DateTime.nowUnsafe(),
+): SharedSettingStamp {
+  return { updatedAt: DateTime.formatIso(now), origin };
+}
+
+/** Whether a write sets a setting that machines share, so it is worth stamping. */
+export function patchSetsMachineSharedSetting(patch: ServerSettingsPatch): boolean {
+  return Object.entries(patch).some(
+    ([key, value]) =>
+      value !== undefined && (isMachineSharedSettingKey(key) || key === "compactIdleThreads"),
+  );
 }

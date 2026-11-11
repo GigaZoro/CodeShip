@@ -5737,6 +5737,7 @@ const catalog: MessageCatalog = {
   "Folders can only be referenced on a server running on this computer":
     "Посилатися на папки можна лише на сервері, що працює на цьому комп’ютері",
   "Follow change request templates": "Дотримуватися шаблонів запитів на зміни",
+  "Follow shared settings": "Приймати спільні налаштування",
   "Follow system": "Як у системі",
   "Follow the system appearance": "Як у системі",
   "follow-up behavior": "поведінка наступних повідомлень",
@@ -7733,6 +7734,8 @@ const catalog: MessageCatalog = {
     "Записи офлайн-кешу з’являться тут після використання середовищ.",
   "Offline for a while, so its T3 Connect tunnel was removed. Start T3.CodeShip on that computer and update it to the latest version to reconnect.":
     "Був офлайн тривалий час, тому його тунель T3 Connect видалено. Запустіть T3.CodeShip на тому комп’ютері й оновіть до найновішої версії, щоб підключитися знову.",
+  "Offline machines that follow shared settings will take it when they are back: {machines}.":
+    "Комп’ютери не в мережі, які приймають спільні налаштування, застосують це після повернення: {machines}.",
   "Offline machines will not get this setting": "Офлайн-комп’ютери не отримають цей параметр",
   "Offline. Its skills show up once it reconnects.":
     "Не в мережі. Його навички з’являться після повторного підключення.",
@@ -9821,6 +9824,7 @@ const catalog: MessageCatalog = {
   "Saved comments are private until you submit your review.":
     "Збережені коментарі приватні, доки ви не надішлете рев’ю.",
   "Saved for {hosts}.": "Збережено для {hosts}.",
+  "Saved for all machines": "Збережено для всіх комп’ютерів",
   "Saved on {environments}.": "Збережено для: {environments}.",
   "Saved outputs only. Code is never executed.":
     "Лише збережені результати. Код ніколи не виконується.",
@@ -10189,6 +10193,10 @@ const catalog: MessageCatalog = {
   "Settings sections": "Розділи налаштувань",
   "Settings that belong to one machine, such as paths and accounts, are not compared.":
     "Налаштування окремого комп’ютера, як-от шляхи й облікові записи, не порівнюються.",
+  "Settings you save for all machines also reach a machine that follows them, even if it was off at the time. Turn it on for each machine.":
+    "Налаштування, які ви зберігаєте для всіх комп’ютерів, потрапляють і на комп’ютер, що їх приймає, навіть якщо він був вимкнений. Увімкніть це для кожного комп’ютера.",
+  "Settings you save for all machines also reach this machine, even if it was off at the time.":
+    "Налаштування, які ви зберігаєте для всіх комп’ютерів, потрапляють і на цей комп’ютер, навіть якщо він був вимкнений.",
   "Settings: {count} providers need attention: {names}": {
     one: "Налаштування: {count} провайдер потребує уваги: {names}",
     few: "Налаштування: {count} провайдери потребують уваги: {names}",

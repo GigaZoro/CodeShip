@@ -9,7 +9,7 @@ import { ScopedSwitch } from "./ScopedSwitch";
 import { SettingsRow } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
-import { useOptionalSettingsScope } from "./SettingsScopeContext";
+import { useOptionalSettingsScope, useSettingsScope } from "./SettingsScopeContext";
 import { firstManagedDenial, usePrimaryManagedPolicy } from "~/state/managedPolicy";
 import { t, tx } from "~/i18n";
 
@@ -115,6 +115,39 @@ export function LinkedEnvironmentsRow() {
             updateSettings({ linkedEnvironmentsEnabled: Boolean(checked) })
           }
           aria-label={t("Linked environments")}
+        />
+      }
+    />
+  );
+}
+
+/** Shown only where every machine in scope can follow shared settings. */
+export function FollowSharedSettingsRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const { connectedEnvironments } = useSettingsScope();
+  if (
+    connectedEnvironments.length === 0 ||
+    !connectedEnvironments.every(
+      (environment) => environment.serverConfig?.environment.capabilities.sharedSettings === true,
+    )
+  ) {
+    return null;
+  }
+  return (
+    <SettingsRow
+      serverScoped
+      {...searchableSetting("follow-shared-settings")}
+      settingKeys={["followSharedSettings"]}
+      description={t(
+        "Settings you save for all machines also reach this machine, even if it was off at the time.",
+      )}
+      control={
+        <ScopedSwitch
+          settingKeys={["followSharedSettings"]}
+          checked={settings.followSharedSettings}
+          onCheckedChange={(checked) => updateSettings({ followSharedSettings: Boolean(checked) })}
+          aria-label={t("Follow shared settings")}
         />
       }
     />

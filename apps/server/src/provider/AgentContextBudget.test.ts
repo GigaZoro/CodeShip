@@ -35,6 +35,7 @@ import { ProjectSetupScriptRunner } from "../project/ProjectSetupScriptRunner.ts
 import { PullRequestReviewGuideService } from "../pullRequest/PullRequestReviewGuideService.ts";
 import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts";
 import { SecretRequests } from "../secrets/SecretRequests.ts";
+import { SharedSettings } from "../sharedSettings/SharedSettings.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { SourceControlRepositoryService } from "../sourceControl/SourceControlRepositoryService.ts";
 import { TerminalManager } from "../terminal/Manager.ts";
@@ -72,6 +73,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(RemoteDelegation)({}),
   Layer.mock(ScheduledTaskService)({}),
   Layer.mock(SecretRequests)({}),
+  Layer.mock(SharedSettings)({}),
   ServerConfig.layerTest(process.cwd(), { prefix: "t3-agent-context-budget-" }),
   Layer.mock(ServerEnvironment)({}),
   Layer.mock(ServerSecretStore)({}),
@@ -114,7 +116,10 @@ const codexAdditionalContext = () =>
 // CI rejects a PR that raises any value above main's agentContextBudget.json, so growth
 // needs the agent-context-increase label. Lower the values when the text shrinks.
 // Only another environment's peer link sees these, never an agent.
-const PEER_LINK_ONLY_TOOLS: ReadonlySet<string> = new Set(["t3_shared_scheduled_tasks"]);
+const PEER_LINK_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  "t3_shared_scheduled_tasks",
+  "t3_shared_settings",
+]);
 
 it.effect("agent context matches the committed budget", () =>
   Effect.gen(function* () {
