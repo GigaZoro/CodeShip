@@ -64,6 +64,30 @@ Updating a server on another machine waits the same way for the work its chats
 are waiting on, and shows **Waiting for background work** with **Update now**
 and **Cancel**.
 
+## Install updates automatically
+
+Turn on **Settings → Maintenance & about → Updates → Install updates automatically when
+idle** on a machine to have it install each new release itself. The setting belongs to each machine
+and can be shared like other settings. It is off by default.
+
+A machine installs only once no chat on it waits on background work that a restart would stop,
+using the same rule as **Update when it finishes** above. Work that starts after the wait begins
+does not extend it. Chats that a restart cuts resume afterwards.
+
+- **Desktop app (Mac, Windows, Linux).** While the app is open, it downloads a new release in the
+  background and installs it through a Safe update, so cut chats resume whatever **Continue threads
+  after restarts** says. The update button shows the wait, and **Stop waiting** cancels it. The
+  app does not retry a release it failed to download or install; the update button stays available.
+  After the restart a notice says "Updated to …". Updates turned off by your administrator or by
+  `T3CODE_DISABLE_AUTO_UPDATE` stay off.
+- **Background service (a server running under systemd or launchd).** The server checks for a new
+  release every 30 minutes, then installs it exactly as **Update server** does: it stages the
+  release, checks it, and hands it to the service launcher, which can roll back. Cut chats resume
+  according to **Continue threads after restarts**. A release that rolled back is not tried again;
+  the next release is. Other failures are retried after 15 minutes, then 30, and so on up to 6
+  hours. Each attempt is in the server log as "Automatic update".
+- **A server you started by hand** (`t3 serve`) never updates itself.
+
 ## Switch between Stable and Nightly
 
 In the desktop app, change **Settings → Maintenance & about → Update track**. T3.CodeShip shows each

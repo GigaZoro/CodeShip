@@ -27,7 +27,6 @@ import {
   isLegacyUpdateHandoffLoss,
   type RestartHoldDecision,
   resolveServerUpdateProgressResult,
-  untilListedRestartHoldWorkEnds,
 } from "../state/server.ts";
 import * as RelayEnvironmentDiscovery from "../relay/discovery.ts";
 import * as ConnectionResolver from "./resolver.ts";
@@ -40,6 +39,7 @@ import {
   usableRoutes,
 } from "./routes.ts";
 import { t } from "@t3tools/shared/i18n";
+import { untilListedRestartHoldWorkEnds } from "@t3tools/shared/restartHold";
 
 // A v1 host restarting into v2 runs migrations before its descriptor answers again.
 const OUTDATED_HOST_RESTART_TIMEOUT = Duration.minutes(4);

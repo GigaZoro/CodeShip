@@ -1,6 +1,5 @@
 import {
   type EnvironmentId,
-  type OrchestrationV2RestartHold,
   type OrchestrationV2RestartHoldWork,
   type ProviderInstanceId,
   type ServerConfig,
@@ -63,6 +62,7 @@ import {
   withoutEnvironmentThemes,
 } from "./serverConfigProjection.ts";
 import { t } from "@t3tools/shared/i18n";
+import { untilListedRestartHoldWorkEnds } from "@t3tools/shared/restartHold";
 
 export type { ServerConfigProjection } from "./serverConfigProjection.ts";
 
@@ -118,32 +118,6 @@ export function decideRestartHold(
 ): void {
   // A fresh object, so a repeated decision still reaches the wait.
   atomRegistry.set(serverRestartHoldDecisionAtom(environmentId), { decision });
-}
-
-// Servers that predate hold ids name the work by its kind and label.
-const restartHoldWorkKey = (work: OrchestrationV2RestartHoldWork): string =>
-  `${work.threadId}\u0000${work.id ?? `${work.kind}\u0000${work.label}`}`;
-
-/**
- * "clear" once the work in the first hold has ended. Work that starts later does not extend the
- * wait; the restart stops it, and its chat restarts it. `onWaiting` gets the listed work left.
- */
-export function untilListedRestartHoldWorkEnds<E, R>(
-  holds: Stream.Stream<OrchestrationV2RestartHold, E, R>,
-  onWaiting: (work: ReadonlyArray<OrchestrationV2RestartHoldWork>) => Effect.Effect<void>,
-): Stream.Stream<"clear", E, R> {
-  return holds.pipe(
-    Stream.mapAccum(
-      (): ReadonlySet<string> | null => null,
-      (listed, hold) => {
-        const keys = listed ?? new Set(hold.work.map(restartHoldWorkKey));
-        return [keys, [hold.work.filter((work) => keys.has(restartHoldWorkKey(work)))]] as const;
-      },
-    ),
-    Stream.tap((work) => (work.length === 0 ? Effect.void : onWaiting(work))),
-    Stream.filter((work) => work.length === 0),
-    Stream.as("clear" as const),
-  );
 }
 
 /** What an update of this server still waits on; empty while it waits on nothing. */

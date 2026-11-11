@@ -6328,6 +6328,8 @@ const catalog: MessageCatalog = {
     "Установити оновлення {version} і перезапустити T3.CodeShip?\n\nУсі запущені завдання буде перервано. Переконайтеся, що ви готові, перш ніж продовжувати.",
   "Install update and restart T3.CodeShip?\n\nAny running tasks will be interrupted. Make sure you're ready before continuing.":
     "Установити оновлення й перезапустити T3.CodeShip?\n\nУсі запущені завдання буде перервано. Переконайтеся, що ви готові, перш ніж продовжувати.",
+  "Install updates automatically when idle":
+    "Встановлювати оновлення автоматично, коли немає роботи",
   Installed: "Встановлено",
   "Installed · Sign-in not checked": "Встановлено · Вхід не перевірено",
   "Installed {plugin}": "{plugin} встановлено",
@@ -6349,6 +6351,8 @@ const catalog: MessageCatalog = {
   "Installing update…": "Установлення оновлення…",
   "Installing...": "Встановлення...",
   "Installing…": "Встановлення…",
+  "Installs a new CodeShip release when no chat is working. Chats cut by the restart resume on their own.":
+    "Встановлює новий випуск CodeShip, коли жоден чат не працює. Чати, перервані перезапуском, відновлюються самі.",
   "Instance ID": "ID екземпляра",
   "Instance ID is required.": "Потрібен ID екземпляра.",
   "Instance ID must be 64 characters or fewer.": "ID екземпляра має містити не більше 64 символів.",

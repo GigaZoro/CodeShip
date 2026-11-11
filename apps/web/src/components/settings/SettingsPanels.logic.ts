@@ -422,6 +422,9 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
     "enableProviderUpdateChecks",
     "autoUpdateProviders",
   ]),
+  restorable("/settings/maintenance", msg("Install updates automatically when idle"), [
+    "installUpdatesAutomatically",
+  ]),
   restorable("/settings/threads", msg("Continue threads after restarts"), [
     "continueThreadsAfterServerUpdate",
   ]),
