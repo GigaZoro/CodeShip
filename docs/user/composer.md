@@ -242,7 +242,7 @@ its own once the connection is back, for failures up to a day old. A new thread 
 could not be set up because Git could not reach the remote is set up again the same way, and
 then your message is sent. If it fails again right away three times, the thread stays failed
 for you to look at. Turn this off with **Retry threads after network errors** in
-**Settings → Maintenance & about**.
+**Settings → Threads → Recovery**.
 
 The pencil on a queued message opens it in the composer for editing. The original message
 stays in the queue until you save, and it is highlighted while you edit. The message's

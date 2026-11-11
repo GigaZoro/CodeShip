@@ -426,7 +426,7 @@ describe("movedSettingsPath", () => {
     expect(movedSettingsPath("/settings/appearance", "math-rendering")).toBe("/settings/chat");
     expect(movedSettingsPath("/settings/access", "network-access")).toBe("/settings/connections");
     expect(movedSettingsPath("/settings/storage", "storage-worktrees")).toBe(
-      "/settings/source-control",
+      "/settings/maintenance",
     );
     expect(movedSettingsPath("/settings/storage", "")).toBe("/settings/maintenance");
     expect(movedSettingsPath("/settings/integrations", "devices")).toBe("/settings/browser");
@@ -438,6 +438,28 @@ describe("movedSettingsPath", () => {
     expect(movedSettingsPath("/settings/providers", "compact-idle-threads")).toBe(
       "/settings/threads",
     );
+    for (const anchor of [
+      "continue-threads-after-server-update",
+      "retry-threads-after-network-errors",
+    ]) {
+      expect(movedSettingsPath("/settings/maintenance", anchor)).toBe("/settings/threads");
+    }
+    for (const anchor of [
+      "storage-worktrees",
+      "storage-worktree-keep-when",
+      "storage-cleanup",
+      "storage-artifacts",
+    ]) {
+      expect(movedSettingsPath("/settings/source-control", anchor)).toBe("/settings/maintenance");
+    }
+    expect(movedSettingsPath("/settings/providers", "provider-health-check-interval")).toBe(
+      "/settings/maintenance",
+    );
+    expect(movedSettingsPath("/settings/source-control", "git-fetch-interval")).toBe(
+      "/settings/maintenance",
+    );
+    expect(movedSettingsPath("/settings/threads", "usage-limits")).toBeNull();
+    expect(consolidatedSettingsAnchor("usage-limits")).toBe("recovery");
   });
 
   it("leaves current pages alone", () => {

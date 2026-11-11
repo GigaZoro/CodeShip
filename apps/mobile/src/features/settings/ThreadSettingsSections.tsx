@@ -91,6 +91,8 @@ export function AutoSettleSettingsRows(props: {
       autoResumeLimitedThreads?: boolean;
       snoozeLimitedThreads?: boolean;
       failoverLimitedThreads?: boolean;
+      continueThreadsAfterServerUpdate?: boolean;
+      retryThreadsAfterNetworkErrors?: boolean;
     },
   ) => props.write(patch);
 
@@ -119,32 +121,56 @@ export function AutoSettleSettingsRows(props: {
 
   return (
     <View className="gap-6">
-      {!projectSelected ? (
-        <SettingsSection title={t("Usage limits")}>
-          <SettingsMenuRow
-            icon="clock"
-            label={t("When a thread hits a usage limit")}
-            description={t(
-              "Switching uses another subscription account of the same provider. Some providers' terms forbid using extra accounts to get around limits. Custom keeps account switching without automatic resume until you choose an action.",
-            )}
-            value={recoveryMixed ? null : recoveryChoice}
-            currentLabel={recoveryMixed ? t("Mixed") : t(recoveryLabels[recoveryChoice])}
-            disabled={disabledFor("autoResumeLimitedThreads", "failoverLimitedThreads")}
-            options={UsageLimitRecoveryChoice.literals.map((value) => ({
-              value,
-              label: t(recoveryLabels[value]),
-            }))}
-            onChange={(value) => writeToAll(usageLimitRecoveryPatch(value))}
-          />
-          <SettingsSwitchRow
-            icon="clock"
-            label={t("Hide limited threads until the limit resets")}
-            value={uniformMobileSetting(displayTargets, "snoozeLimitedThreads")}
-            disabled={disabledFor("snoozeLimitedThreads")}
-            onValueChange={(value) => writeToAll({ snoozeLimitedThreads: value })}
-          />
-        </SettingsSection>
-      ) : null}
+      <SettingsSection title={t("Recovery")}>
+        {!projectSelected ? (
+          <>
+            <SettingsMenuRow
+              icon="clock"
+              label={t("When a thread hits a usage limit")}
+              description={t(
+                "Switching uses another subscription account of the same provider. Some providers' terms forbid using extra accounts to get around limits. Custom keeps account switching without automatic resume until you choose an action.",
+              )}
+              value={recoveryMixed ? null : recoveryChoice}
+              currentLabel={recoveryMixed ? t("Mixed") : t(recoveryLabels[recoveryChoice])}
+              disabled={disabledFor("autoResumeLimitedThreads", "failoverLimitedThreads")}
+              options={UsageLimitRecoveryChoice.literals.map((value) => ({
+                value,
+                label: t(recoveryLabels[value]),
+              }))}
+              onChange={(value) => writeToAll(usageLimitRecoveryPatch(value))}
+            />
+            <SettingsSwitchRow
+              icon="clock"
+              label={t("Hide limited threads until the limit resets")}
+              value={uniformMobileSetting(displayTargets, "snoozeLimitedThreads")}
+              disabled={disabledFor("snoozeLimitedThreads")}
+              onValueChange={(value) => writeToAll({ snoozeLimitedThreads: value })}
+            />
+            <SettingsSwitchRow
+              icon="wifi"
+              label={t("Retry after network errors")}
+              subtitle={
+                managedSettingReason(displayTargets, "retryThreadsAfterNetworkErrors") ??
+                t("Resume threads stopped by a lost connection once it is back.")
+              }
+              value={uniformMobileSetting(displayTargets, "retryThreadsAfterNetworkErrors")}
+              disabled={disabledFor("retryThreadsAfterNetworkErrors")}
+              onValueChange={(value) => writeToAll({ retryThreadsAfterNetworkErrors: value })}
+            />
+          </>
+        ) : null}
+        <SettingsSwitchRow
+          icon="arrow.uturn.forward"
+          label={t("Continue after restart")}
+          subtitle={
+            managedSettingReason(displayTargets, "continueThreadsAfterServerUpdate") ??
+            t("Resume interrupted threads after an update or restart.")
+          }
+          value={uniformMobileSetting(displayTargets, "continueThreadsAfterServerUpdate")}
+          disabled={disabledFor("continueThreadsAfterServerUpdate")}
+          onValueChange={(value) => writeToAll({ continueThreadsAfterServerUpdate: value })}
+        />
+      </SettingsSection>
       <SettingsSection title={t("Auto-settle")}>
         <SettingsSwitchRow
           icon="arrow.triangle.branch"

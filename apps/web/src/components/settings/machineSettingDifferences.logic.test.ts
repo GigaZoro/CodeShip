@@ -59,6 +59,16 @@ describe("machineSettingDifferences", () => {
         ],
       }),
     ]);
+    const recovery = machineSettingDifferences([
+      machine("Laptop", { continueThreadsAfterServerUpdate: true }),
+      machine("Server", { continueThreadsAfterServerUpdate: false }),
+    ]);
+    expect(recovery).toEqual([
+      expect.objectContaining({
+        id: "continue-threads-after-server-update",
+        page: "/settings/threads",
+      }),
+    ]);
   });
 
   it("finds nothing to compare on a single machine or when every machine matches", () => {

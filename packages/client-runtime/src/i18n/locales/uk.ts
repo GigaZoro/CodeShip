@@ -3559,10 +3559,16 @@ const catalog: MessageCatalog = {
   "Configure a provider with in-app sign-in in web or desktop Settings.":
     "Налаштуйте провайдера з входом у застосунку в налаштуваннях вебверсії чи десктопу.",
   "Configure advanced background activity": "Налаштувати розширену фонову активність",
+  "Configure automatic deletion in Maintenance & about → Storage & cleanup.":
+    "Налаштуйте автоматичне видалення в розділі «Обслуговування та відомості → Сховище та очищення».",
   "Configure background activity": "Налаштувати фонову активність",
+  "Configure background fetching in Maintenance & about → Background activity.":
+    "Налаштуйте фонове отримання змін у розділі «Обслуговування та відомості → Фонова активність».",
   "Configure manually": "Налаштувати вручну",
   "Configure non-secret routing. Headers are write-only.":
     "Налаштуйте несекретну маршрутизацію. Заголовки лише для запису.",
+  "Configure provider polling in Maintenance & about → Background activity.":
+    "Налаштуйте перевірки провайдерів у розділі «Обслуговування та відомості → Фонова активність».",
   "Configure the capture shortcut in your Niri config, not in T3.CodeShip.":
     "Налаштуйте скорочення захоплення в конфігурації Niri, а не в T3.CodeShip.",
   "Configure, install, sign in to, and update providers and usage sources.":
@@ -6729,6 +6735,8 @@ const catalog: MessageCatalog = {
     "Оновлення Live Activity потребують T3 Connect, щоб ретранслятор міг доставляти оновлення на цей пристрій.",
   "Live native counters for the server, providers, terminals, desktop processes, and the monitor itself.":
     "Живі нативні лічильники для сервера, провайдерів, терміналів, процесів застосунку та самого монітора.",
+  "Live process counters come from the desktop app’s native resource monitor. They are unavailable for this environment. Available trace data is still shown.":
+    "Поточні показники процесів надходять із нативного монітора ресурсів настільного застосунку. Вони недоступні для цього середовища. Наявні дані трасування й далі відображаються.",
   "Live process tree": "Живе дерево процесів",
   "Live Processes": "Живі процеси",
   "Live Update Settings": "Налаштування живих оновлень",
@@ -7406,6 +7414,8 @@ const catalog: MessageCatalog = {
   "No artifacts match “{query}”.": "Немає артефактів за запитом «{query}».",
   "No artifacts yet": "Артефактів ще немає",
   "No authors found": "Авторів не знайдено",
+  "No automatic deletion rules are on. Enable a rule above to choose what Delete now removes; worktrees with local changes are kept according to your rules.":
+    "Автоматичне видалення вимкнено. Увімкніть правило вище, щоб вибрати, що видалятиме кнопка «Видалити зараз»; робочі дерева з локальними змінами зберігаються відповідно до ваших правил.",
   "No available models": "Немає доступних моделей",
   "No branches available": "Немає доступних гілок",
   "No cached data": "Немає кешованих даних",
@@ -9030,6 +9040,7 @@ const catalog: MessageCatalog = {
   "Recording preview": "Перегляд запису",
   "Recording saved": "Запис збережено",
   Recordings: "Записи",
+  Recovery: "Відновлення",
   recurring: "повторювані",
   Recursive: "Рекурсивно",
   Red: "Червоний",
@@ -9064,13 +9075,13 @@ const catalog: MessageCatalog = {
   "Refresh provider availability, versions, and auth state. Model catalog updates follow Provider update checks.":
     "Оновлює доступність провайдерів, версії та стан автентифікації. Оновлення каталогу моделей відбуваються за перевірками оновлень провайдерів.",
   "Refresh provider status": "Оновити стан провайдерів",
-  "Refresh provider status, versions, and models in the background. Set to 0 to disable.":
-    "Оновлювати стан провайдерів, версії та моделі у фоні. Встановіть 0, щоб вимкнути.",
+  "Refresh provider status, versions, and models in the background. Set to 0 to disable. The Background activity policy decides when probes may run.":
+    "Оновлювати стан провайдерів, версії та моделі у фоні. Значення 0 вимикає перевірки. Політика фонової активності визначає, коли їх можна виконувати.",
   "Refresh providers": "Оновити провайдерів",
   "Refresh pull requests": "Оновити пул-реквести",
   "Refresh remote branch status in the background.": "Оновлювати стан віддалених гілок у фоні.",
-  "Refresh remote branch status in the background. Set to 0 to turn it off. The Background activity policy in Maintenance still decides when fetches may run.":
-    "Оновлює стан віддалених гілок у фоні. Установіть 0, щоб вимкнути. Політика фонової активності в розділі «Обслуговування» усе одно визначає, коли можна виконувати fetch.",
+  "Refresh remote branch status in the background. Set to 0 to turn it off. The Background activity policy decides when fetches may run.":
+    "Оновлювати стан віддалених гілок у фоні. Значення 0 вимикає оновлення. Політика фонової активності визначає, коли можна отримувати зміни.",
   "Refresh repository status": "Оновити стан репозиторію",
   "Refresh resource history": "Оновити історію ресурсів",
   "Refresh resource telemetry": "Оновити телеметрію ресурсів",
@@ -10497,6 +10508,7 @@ const catalog: MessageCatalog = {
   "Showing {count} of {total} refs": "Показано {count} із {total} посилань",
   "showing {shown} of {total} diff lines": "показано {shown} із {total} рядків змін",
   "Showing archived threads for": "Показано архівні чати для",
+  "Showing diagnostics for": "Показано діагностику для",
   "Showing latest {count} commits": "Показано останні коміти: {count}",
   "Showing tasks for": "Показано завдання для",
   "Showing the first {count} files.": "Показано перші {count} файлів.",
@@ -10958,6 +10970,7 @@ const catalog: MessageCatalog = {
   "Stopping workflow {label}": "Зупинка робочого процесу {label}",
   "Stopping...": "Зупинка...",
   "Stopping…": "Зупинка…",
+  "Storage & cleanup": "Сховище та очищення",
   "Storage bytes": "Байти сховища",
   "Storage unavailable": "Сховище недоступне",
   "Stored secret, enter a new value to replace":
@@ -12262,8 +12275,6 @@ const catalog: MessageCatalog = {
     "Цей екземпляр використовує {driver}, недоступний у цій збірці. Його конфігурацію збережено.",
   "This instance uses the shared Codex home directly.":
     "Цей екземпляр напряму використовує спільну домашню папку Codex.",
-  "This interval is configured here, then the shared Background activity policy decides whether provider probes may run when the timer fires. Custom intervals appear as Advanced in Maintenance settings.":
-    "Цей інтервал налаштовується тут, а потім спільна політика фонової активності вирішує, чи можуть перевірки провайдерів запускатися, коли спрацьовує таймер. Власні інтервали відображаються як «Розширені» в налаштуваннях обслуговування.",
   "This key isn't supported as a Wayland capture shortcut. Choose another key.":
     "Ця клавіша не підтримується як скорочення захоплення Wayland. Виберіть іншу клавішу.",
   "This license notice is unavailable.": "Це ліцензійне повідомлення недоступне.",
@@ -12776,7 +12787,6 @@ const catalog: MessageCatalog = {
   "Turn off WSL and switch back to Windows?": "Вимкнути WSL і повернутися на Windows?",
   "Turn off; its settings are kept": "Вимкнути, зберігши налаштування",
   "Turn on": "Увімкнути",
-  "Turn on a cleanup rule to use this.": "Увімкніть правило очищення, щоб користуватися цим.",
   "Turn on automatic date and time on this device and on {host}, then retry.":
     "Увімкніть автоматичне визначення дати й часу на цьому пристрої та на {host}, потім повторіть.",
   "Turn on in Settings": "Увімкнути в налаштуваннях",

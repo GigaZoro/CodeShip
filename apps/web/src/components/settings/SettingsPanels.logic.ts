@@ -288,8 +288,6 @@ interface RestorableSettings {
   readonly changedLabels: (settings: UnifiedSettings) => ReadonlyArray<string>;
   /** Replaces "every key to its default" for entries that restore only part of a key. */
   readonly patch?: (settings: UnifiedSettings) => ScopedSettingsPatch;
-  /** Already restored by another entry's full reset, so a reset of every page skips it. */
-  readonly partOfAnotherEntry?: true;
 }
 
 function entryPatch(entry: RestorableSettings, settings: UnifiedSettings): ScopedSettingsPatch {
@@ -313,27 +311,6 @@ export function isBackgroundIntervalOverridden(
     durationToSeconds(resolved[key]) !==
     durationToSeconds(getBackgroundActivityPresetSettings(resolved.profile)[key])
   );
-}
-
-/** Only this interval's override clears; the rest of the background policy stays. */
-function backgroundIntervalEntry(
-  page: SettingsPath,
-  label: Message,
-  key: BackgroundIntervalKey,
-): RestorableSettings {
-  return {
-    page,
-    keys: ["backgroundActivity"],
-    label,
-    partOfAnotherEntry: true,
-    changedLabels: (settings) => (isBackgroundIntervalOverridden(settings, key) ? [t(label)] : []),
-    patch: (settings) =>
-      backgroundActivityOverrideSettings(
-        settings.backgroundActivity,
-        resolveServerBackgroundActivitySettings(settings),
-        { [key]: undefined },
-      ),
-  };
 }
 
 function restorable(
@@ -446,10 +423,10 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
     "enableProviderUpdateChecks",
     "autoUpdateProviders",
   ]),
-  restorable("/settings/maintenance", msg("Continue threads after restarts"), [
+  restorable("/settings/threads", msg("Continue threads after restarts"), [
     "continueThreadsAfterServerUpdate",
   ]),
-  restorable("/settings/maintenance", msg("Retry threads after network errors"), [
+  restorable("/settings/threads", msg("Retry threads after network errors"), [
     "retryThreadsAfterNetworkErrors",
   ]),
   {
@@ -464,11 +441,6 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   restorable("/settings/source-control", msg("Open pull requests in T3.CodeShip"), [
     "pullRequestLinksOpenInApp",
   ]),
-  backgroundIntervalEntry(
-    "/settings/source-control",
-    msg("Git fetch interval"),
-    "automaticGitFetchInterval",
-  ),
   restorable("/settings/projects", msg("Add project base directory"), ["addProjectBaseDirectory"]),
   restorable("/settings/projects", msg("Clone into host folders"), ["ghqCloneLayout"]),
   restorable("/settings/projects", msg("Import conversations"), ["importAgentConversations"]),
@@ -484,11 +456,6 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
     "sourceControlWriterModelSelection",
   ]),
   restorable("/settings/providers", msg("Review guides"), ["reviewGuideModelSelection"]),
-  backgroundIntervalEntry(
-    "/settings/providers",
-    msg("Health check interval"),
-    "providerHealthRefreshInterval",
-  ),
   {
     page: "/settings/browser",
     keys: BROWSER_DEFAULT_KEYS,
@@ -508,7 +475,7 @@ function restorableSettingsFor(
 ): ReadonlyArray<RestorableSettings> {
   const onPage =
     page === null
-      ? RESTORABLE_SETTINGS.filter((entry) => !entry.partOfAnotherEntry)
+      ? RESTORABLE_SETTINGS
       : RESTORABLE_SETTINGS.filter((entry) => entry.page === page);
   return projectScoped
     ? onPage.filter((entry) => entry.keys.every(isStorableInProjectScope))

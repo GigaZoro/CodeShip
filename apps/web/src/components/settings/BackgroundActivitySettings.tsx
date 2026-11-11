@@ -444,7 +444,54 @@ export function BackgroundActivitySettingsRow() {
   );
 }
 
-/** The same interval as the Background activity dialog, shown with the other git settings. */
+export function ProviderHealthIntervalRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const canWriteSettings = useScopedSettingsWriteAllowed();
+  const resolved = resolveServerBackgroundActivitySettings(settings);
+  const setInterval = (
+    providerHealthRefreshInterval: Duration.Duration | undefined,
+    options?: Parameters<typeof updateSettings>[1],
+  ) =>
+    updateSettings(
+      backgroundActivityOverrideSettings(settings.backgroundActivity, resolved, {
+        providerHealthRefreshInterval,
+      }),
+      options,
+    );
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["backgroundActivity"]}
+      {...searchableSetting("provider-health-check-interval")}
+      description={t(
+        "Refresh provider status, versions, and models in the background. Set to 0 to disable. The Background activity policy decides when probes may run.",
+      )}
+      resetAction={
+        canWriteSettings &&
+        isBackgroundIntervalOverridden(settings, "providerHealthRefreshInterval") ? (
+          <SettingResetButton
+            label={t("provider health check interval")}
+            onClick={() => setInterval(undefined)}
+          />
+        ) : null
+      }
+      control={
+        <div inert={!canWriteSettings} className="flex shrink-0 items-center gap-2">
+          <IntervalSecondsField
+            label={t("provider health check interval")}
+            value={durationToSeconds(resolved.providerHealthRefreshInterval)}
+            min={0}
+            step={PROVIDER_HEALTH_INTERVAL_STEP_SECONDS}
+            onCommit={(seconds, options) => setInterval(Duration.seconds(seconds), options)}
+          />
+          <span className="text-xs text-muted-foreground">{t("seconds")}</span>
+        </div>
+      }
+    />
+  );
+}
+
 export function GitFetchIntervalRow() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
@@ -467,7 +514,7 @@ export function GitFetchIntervalRow() {
       settingKeys={["backgroundActivity"]}
       {...searchableSetting("git-fetch-interval")}
       description={t(
-        "Refresh remote branch status in the background. Set to 0 to turn it off. The Background activity policy in Maintenance still decides when fetches may run.",
+        "Refresh remote branch status in the background. Set to 0 to turn it off. The Background activity policy decides when fetches may run.",
       )}
       resetAction={
         isBackgroundIntervalOverridden(settings, "automaticGitFetchInterval") &&

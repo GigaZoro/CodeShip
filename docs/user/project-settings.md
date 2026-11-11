@@ -329,7 +329,7 @@ are, and cleanup covers both the default folder and the custom one.
 
 ## Storage cleanup
 
-Open **Settings → Source control & worktrees → Cleanup** to enable automatic cleanup on one machine or all connected
+Open **Settings → Maintenance & about → Storage & cleanup** to enable automatic cleanup on one machine or all connected
 environments. Policies are off by default and run on the server at startup, when changed, and
 hourly. Offline machines keep their existing policies.
 

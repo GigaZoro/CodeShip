@@ -113,7 +113,11 @@ import {
 } from "@t3tools/client-runtime/state/composer-dispatch";
 import { searchableSetting } from "./settingsSearch";
 import { LanguageSettingsRow } from "./LanguageSettingsRow";
-import { BackgroundActivitySettingsRow } from "./BackgroundActivitySettings";
+import {
+  BackgroundActivitySettingsRow,
+  GitFetchIntervalRow,
+  ProviderHealthIntervalRow,
+} from "./BackgroundActivitySettings";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { AgentActionsSettings } from "./AgentActionsSettings";
 import { ThreadDetailsItemsRow } from "./ThreadDetailsItemsRow";
@@ -1761,8 +1765,65 @@ export function ThreadsSettingsPanel() {
         </SettingsSection>
       ) : null}
 
-      <SettingsSection id="usage-limits" title={t("Usage limits")}>
+      <SettingsSection id="recovery" title={t("Recovery")}>
         <UsageLimitRecoverySettings />
+        <SettingsRow
+          {...searchableSetting("retry-threads-after-network-errors")}
+          serverScoped
+          settingKeys={["retryThreadsAfterNetworkErrors"]}
+          description={t(
+            "Automatically resume threads stopped by a lost internet connection once the connection is back.",
+          )}
+          control={
+            <ScopedSwitch
+              settingKeys={["retryThreadsAfterNetworkErrors"]}
+              checked={settings.retryThreadsAfterNetworkErrors}
+              onCheckedChange={(checked) =>
+                updateSettings({ retryThreadsAfterNetworkErrors: Boolean(checked) })
+              }
+              aria-label={t("Retry threads after network errors")}
+            />
+          }
+        />
+        <SettingsRow
+          {...searchableSetting("continue-threads-after-server-update")}
+          serverScoped
+          settingKeys={["continueThreadsAfterServerUpdate"]}
+          description={t(
+            "Automatically resume interrupted threads after an update, crash, or machine restart on the selected environments.",
+          )}
+          status={
+            !hasServerTargets
+              ? t("All selected connected environments must support restart continuation.")
+              : undefined
+          }
+          resetAction={
+            hasServerTargets &&
+            settings.continueThreadsAfterServerUpdate !==
+              DEFAULT_UNIFIED_SETTINGS.continueThreadsAfterServerUpdate ? (
+              <SettingResetButton
+                label={t("continue threads after restarts")}
+                onClick={() =>
+                  updateSettings({
+                    continueThreadsAfterServerUpdate:
+                      DEFAULT_UNIFIED_SETTINGS.continueThreadsAfterServerUpdate,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <ScopedSwitch
+              settingKeys={["continueThreadsAfterServerUpdate"]}
+              checked={settings.continueThreadsAfterServerUpdate}
+              disabled={!hasServerTargets}
+              onCheckedChange={(checked) =>
+                updateSettings({ continueThreadsAfterServerUpdate: Boolean(checked) })
+              }
+              aria-label={t("Continue threads after restarts")}
+            />
+          }
+        />
       </SettingsSection>
 
       {hasServerTargets ? (
@@ -2052,8 +2113,6 @@ export function MaintenanceSettingsPanel() {
   const openSetupWizard = useOpenSetupWizard();
   const primaryPolicy = usePrimaryManagedPolicy();
   const telemetryOff = managedTelemetryOffMessage(primaryPolicy);
-  const settings = useScopedSettings();
-  const updateSettings = useUpdateScopedSettings();
   const { scope, environment, connectedEnvironments } = useSettingsScope();
   const environmentId = environment?.environmentId ?? null;
   const isEnvironmentScope = scope.environmentIds.length === 1 && environmentId !== null;
@@ -2078,67 +2137,19 @@ export function MaintenanceSettingsPanel() {
         <>
           <SettingsSection id="updates" title={t("Updates")}>
             <ProviderUpdatesSettings />
-            <SettingsRow
-              {...searchableSetting("continue-threads-after-server-update")}
-              serverScoped
-              settingKeys={["continueThreadsAfterServerUpdate"]}
-              description={t(
-                "Automatically resume interrupted threads after an update, crash, or machine restart on the selected environments.",
-              )}
-              status={
-                !hasServerTargets
-                  ? t("All selected connected environments must support restart continuation.")
-                  : undefined
-              }
-              resetAction={
-                hasServerTargets &&
-                settings.continueThreadsAfterServerUpdate !==
-                  DEFAULT_UNIFIED_SETTINGS.continueThreadsAfterServerUpdate ? (
-                  <SettingResetButton
-                    label={t("continue threads after restarts")}
-                    onClick={() =>
-                      updateSettings({
-                        continueThreadsAfterServerUpdate:
-                          DEFAULT_UNIFIED_SETTINGS.continueThreadsAfterServerUpdate,
-                      })
-                    }
-                  />
-                ) : null
-              }
-              control={
-                <ScopedSwitch
-                  settingKeys={["continueThreadsAfterServerUpdate"]}
-                  checked={settings.continueThreadsAfterServerUpdate}
-                  disabled={!hasServerTargets}
-                  onCheckedChange={(checked) =>
-                    updateSettings({ continueThreadsAfterServerUpdate: Boolean(checked) })
-                  }
-                  aria-label={t("Continue threads after restarts")}
-                />
-              }
-            />
-            <SettingsRow
-              {...searchableSetting("retry-threads-after-network-errors")}
-              serverScoped
-              settingKeys={["retryThreadsAfterNetworkErrors"]}
-              description={t(
-                "Automatically resume threads stopped by a lost internet connection once the connection is back.",
-              )}
-              control={
-                <ScopedSwitch
-                  settingKeys={["retryThreadsAfterNetworkErrors"]}
-                  checked={settings.retryThreadsAfterNetworkErrors}
-                  onCheckedChange={(checked) =>
-                    updateSettings({ retryThreadsAfterNetworkErrors: Boolean(checked) })
-                  }
-                  aria-label={t("Retry threads after network errors")}
-                />
-              }
-            />
           </SettingsSection>
 
           <SettingsSection id="background" title={t("Background activity")}>
             <BackgroundActivitySettingsRow />
+            <AdvancedSettings
+              targetIds={[
+                searchableSetting("provider-health-check-interval").id,
+                searchableSetting("git-fetch-interval").id,
+              ]}
+            >
+              <ProviderHealthIntervalRow />
+              <GitFetchIntervalRow />
+            </AdvancedSettings>
           </SettingsSection>
 
           <StorageCleanupSections />
