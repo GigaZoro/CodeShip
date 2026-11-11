@@ -16,6 +16,7 @@ import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
 import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as Settings from "../../../serverSettings.ts";
+import * as SharedSettings from "../../../sharedSettings/SharedSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const PreferenceFields = {
@@ -44,6 +45,7 @@ const shared = {
     ThreadManagementService.ThreadManagementService,
     ServerEnvironment.ServerEnvironment,
     Settings.ServerSettingsService,
+    SharedSettings.SharedSettings,
     ProviderRegistry.ProviderRegistry,
     ThreadCommandExecutor.ThreadCommandExecutor,
   ],
@@ -66,7 +68,7 @@ const EnvironmentReadTool = Tool.make("t3_environment_read", {
 const EnvironmentPreferencesTool = Tool.make("t3_environment_preferences_update", {
   ...shared,
   description:
-    "Update environment-wide preferences and model defaults, including on a full-access linked machine. Live full-access or default caller thread only. Omitted fields are unchanged; null clears a delegated-task role; `customInstructions: ''` clears it. `providerUpdates`: off, notify, automatic (also enables checks). Prefer it to the legacy enableProviderUpdateChecks flag; it takes precedence. `usageLimitRecovery`: off, snooze, resume, switch-and-resume. Switching is opt-in: some providers forbid using extra accounts to get around limits. Existing custom combinations are preserved until a choice is supplied.",
+    "Update environment-wide preferences and model defaults, including on a full-access linked machine. Live full-access or default caller thread only. Omitted fields are unchanged; null clears a delegated-task role; `customInstructions: ''` clears it. `providerUpdates`: off, notify, automatic (also enables checks). Prefer it to the legacy enableProviderUpdateChecks flag; it takes precedence. `usageLimitRecovery`: off, snooze, resume, switch-and-resume. Switching is opt-in: some providers forbid using extra accounts to get around limits. Existing custom combinations are preserved until a choice is supplied. `allMachines: true` shares the change: machines that follow shared settings take it over, even if off now.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     defaultModelSelection: ServerSettingsPatch.fields.defaultModelSelection,
@@ -80,6 +82,7 @@ const EnvironmentPreferencesTool = Tool.make("t3_environment_preferences_update"
     usageLimitRecovery: Schema.optionalKey(UsageLimitRecoveryChoice),
     backgroundActivity: Schema.optionalKey(Schema.Struct({ profile: BackgroundActivityProfile })),
     sourceControlWritingStyle: ServerSettingsPatch.fields.sourceControlWritingStyle,
+    allMachines: Schema.optionalKey(Schema.Boolean),
   }),
   success: Schema.Struct(PreferenceFields),
 }).annotate(Tool.Destructive, true);

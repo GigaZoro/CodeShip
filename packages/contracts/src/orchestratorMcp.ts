@@ -46,6 +46,7 @@ import {
   OrchestrationV2TurnItemStatus,
 } from "./orchestrationV2.ts";
 import { ModelSelection } from "./modelSelection.ts";
+import { SharedSettingVersion } from "./sharedSettings.ts";
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 
@@ -792,6 +793,12 @@ export const OrchestratorMcpSharedScheduledTasksResult = Schema.Struct({
 });
 export type OrchestratorMcpSharedScheduledTasksResult =
   typeof OrchestratorMcpSharedScheduledTasksResult.Type;
+
+/** For a linked machine: the shared settings this machine knows, so it can catch up with no client open. */
+export const OrchestratorMcpSharedSettingsResult = Schema.Struct({
+  versions: Schema.Array(SharedSettingVersion),
+});
+export type OrchestratorMcpSharedSettingsResult = typeof OrchestratorMcpSharedSettingsResult.Type;
 
 export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   ...scheduledTaskModelFields,

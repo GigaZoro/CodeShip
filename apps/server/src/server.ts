@@ -77,6 +77,8 @@ import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
 import * as PeerLinks from "./peer/PeerLinks.ts";
 import * as SharedTaskPeerCheck from "./scheduledTasks/SharedTaskPeerCheck.ts";
 import * as SharedTaskPull from "./scheduledTasks/SharedTaskPull.ts";
+import * as SharedSettings from "./sharedSettings/SharedSettings.ts";
+import * as SharedSettingsPull from "./sharedSettings/SharedSettingsPull.ts";
 import * as LinkedScheduledTasks from "./scheduledTasks/LinkedScheduledTasks.ts";
 import * as PeerMcpClient from "./peer/PeerMcpClient.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
@@ -702,6 +704,10 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   SharedTaskPull.layerWorker.pipe(
     Layer.provide(PeerMcpClient.layer.pipe(Layer.provideMerge(PeerLinks.layer))),
   ),
+  SharedSettingsPull.layerWorker.pipe(
+    Layer.provide(SharedSettings.layer),
+    Layer.provide(PeerMcpClient.layer.pipe(Layer.provideMerge(PeerLinks.layer))),
+  ),
   DelegatedTaskAnalytics.layer,
   Layer.effectDiscard(
     Effect.gen(function* () {
@@ -880,6 +886,8 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(AccountRouting.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
   // Links agents ask for: shown in a thread from /mcp, answered over WebSocket.
   Layer.provide(PeerLinkRequests.layer),
+  // The settings shared with the user's other machines: saved over WebSocket, served to links by /mcp.
+  Layer.provide(SharedSettings.layer),
   // Linked machines' last task lists, kept up to date in the background while the server runs.
   Layer.provide(
     LinkedScheduledTasks.layer.pipe(

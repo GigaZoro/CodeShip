@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../../peer/PeerLinks.ts";
+import * as SharedSettings from "../../../sharedSettings/SharedSettings.ts";
 import { readCaller } from "../../threadAccess.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -146,6 +147,18 @@ const handlers = {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
       return yield* service.sharedScheduledTasks(scope, input);
+    }),
+  ),
+  t3_shared_settings: McpToolAccess.reads(() =>
+    Effect.gen(function* () {
+      const shared = yield* SharedSettings.SharedSettings;
+      const versions = yield* shared.servedVersions.pipe(
+        Effect.mapError(
+          (error) =>
+            new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
+        ),
+      );
+      return { versions };
     }),
   ),
   delete_scheduled_task: McpToolAccess.writes((input) =>

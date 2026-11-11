@@ -23,6 +23,7 @@ import {
   OrchestratorMcpListScheduledTasksResult,
   OrchestratorMcpSharedScheduledTasksInput,
   OrchestratorMcpSharedScheduledTasksResult,
+  OrchestratorMcpSharedSettingsResult,
   OrchestratorMcpSaveScheduledTaskInput,
   OrchestratorMcpScheduleTaskResult,
   OrchestratorMcpTaskCancelInput,
@@ -50,6 +51,7 @@ import * as ThreadManagementService from "../../../orchestration-v2/ThreadManage
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../../peer/PeerLinks.ts";
+import * as SharedSettings from "../../../sharedSettings/SharedSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
 import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
@@ -67,6 +69,8 @@ const linkingDependencies = [
   PeerLinkRequests.PeerLinkRequests,
   PeerLinks.PeerLinks,
 ];
+/** Serving the settings shared with other machines. */
+const sharedSettingsDependencies = [...dependencies, SharedSettings.SharedSettings];
 const threadMetadataDependencies = [
   McpInvocationContext.McpInvocationContext,
   ThreadManagementService.ThreadManagementService,
@@ -197,6 +201,20 @@ const SharedScheduledTasksTool = Tool.make("t3_shared_scheduled_tasks", {
   dependencies,
 })
   .annotate(Tool.Title, "Read shared scheduled tasks")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.visibleToPeerLinks);
+
+const SharedSettingsTool = Tool.make("t3_shared_settings", {
+  description:
+    "For a linked machine: the settings this environment shares across the user's machines, with the version of each. Empty unless this environment follows shared settings.",
+  success: OrchestratorMcpSharedSettingsResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies: sharedSettingsDependencies,
+})
+  .annotate(Tool.Title, "Read shared settings")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
@@ -389,6 +407,7 @@ export const OrchestratorToolkit = Toolkit.make(
   ScheduleTaskTool,
   ListScheduledTasksTool,
   SharedScheduledTasksTool,
+  SharedSettingsTool,
   DeleteScheduledTaskTool,
   RequestSecretTool,
   AskUserTool,

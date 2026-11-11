@@ -36,7 +36,11 @@ import {
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 import { ManagedByOrganization } from "../ManagedPolicy";
 import { LocalEnvironmentSetting } from "./LocalEnvironmentSetting";
-import { GuestLinksSetting, LinkedEnvironmentsRow } from "./OptInFeatureRows";
+import {
+  FollowSharedSettingsRow,
+  GuestLinksSetting,
+  LinkedEnvironmentsRow,
+} from "./OptInFeatureRows";
 import { searchableSetting } from "./settingsSearch";
 import { EnvironmentIconMenu } from "./EnvironmentIconPicker";
 import { FoldedSettingsSection } from "./FoldedSettingsSection";
@@ -1588,6 +1592,7 @@ export function ConnectionsSettings() {
       {peerLinkHosts.length === 0 ? (
         <SettingsSection id="linked-environments-toggle" title={t("Linked environments")}>
           <LinkedEnvironmentsRow />
+          <FollowSharedSettingsRow />
         </SettingsSection>
       ) : null}
       {peerLinkHosts.map((environment, index) => (
@@ -1596,7 +1601,14 @@ export function ConnectionsSettings() {
           environmentId={environment.environmentId}
           environmentLabel={peerLinkHosts.length > 1 ? environment.label : null}
           isSearchTarget={index === 0}
-          leading={index === 0 ? <LinkedEnvironmentsRow /> : null}
+          leading={
+            index === 0 ? (
+              <>
+                <LinkedEnvironmentsRow />
+                <FollowSharedSettingsRow />
+              </>
+            ) : null
+          }
         />
       ))}
       <LoadBalancingSettings environments={loadBalancingEnvironments} />

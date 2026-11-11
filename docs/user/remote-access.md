@@ -374,6 +374,29 @@ ends, as for any delegated task. It keeps following the task across restarts.
 If the other machine revokes the link, or the link is removed here, the task
 fails with that reason.
 
+### Shared settings
+
+A change saved with **All environments** at the top of a Settings page is written to every machine
+connected now. A machine that follows shared settings also takes it later if it was off: when it
+is back, it copies the change from the machines it is linked to, and passes it on to the rest.
+
+Turn it on for each machine in **Settings → Machines & access → Follow shared settings**; on
+mobile, **Settings → Maintenance & about**. It needs Linked environments on, here and on the
+machine it copies from. Leave it off on a machine that must stay separate, such as a work machine:
+it neither gives nor takes shared settings.
+
+- Only settings people keep the same everywhere are shared, such as models, thread, worktree,
+  source-control and review defaults. Paths, accounts, providers, devices, secrets and project
+  overrides stay on one machine, and so do **Allow linked environments**, **Guest links** and
+  **Follow shared settings** itself.
+- A change for one environment or one project stays there. The next change saved for all
+  environments sets that setting everywhere again.
+- When two changes to one setting meet, the newest wins.
+- A model that names a provider account a machine does not have is not applied there. It waits,
+  and applies once the account exists. **Differences between machines** shows the gap.
+- **Use everywhere** in **Differences between machines** shares that machine's value the same way.
+- Agents can share a preference change with `allMachines` on `t3_environment_preferences_update`.
+
 ## Manage or revoke access
 
 On the host, **Settings → Machines & access** lets authorized administrators create

@@ -519,6 +519,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["beta link another machine vps peer agents work there delegate"],
   },
   {
+    id: "follow-shared-settings",
+    title: msg("Follow shared settings"),
+    to: "/settings/connections",
+    scope: "connections",
+    searchTerms: ["sync all machines catch up offline same settings every machine global default"],
+  },
+  {
     id: "simlock-hosts",
     title: msg("Simlock device hosts (alpha)"),
     to: "/settings/browser",

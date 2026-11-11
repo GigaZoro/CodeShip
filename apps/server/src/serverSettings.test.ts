@@ -24,6 +24,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -198,6 +199,33 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           assert.deepEqual(migrated.providerModelPreferences, {});
         }),
       ).pipe(Effect.provide(layerServerSettings())),
+  );
+  it.effect(
+    "runs write hooks under the lock: a failed guard stores nothing, persisted sees what was",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const seen = yield* Ref.make<ReadonlyArray<boolean>>([]);
+        const skipped = yield* service.updateSettings(
+          { finalReviewByDefault: true },
+          {
+            when: Effect.succeed(false),
+            persisted: () => Ref.update(seen, (all) => [...all, true]),
+          },
+        );
+        assert.equal(skipped.finalReviewByDefault, false);
+        assert.deepEqual(yield* Ref.get(seen), []);
+        assert.equal((yield* service.getSettings).finalReviewByDefault, false);
+        const saved = yield* service.updateSettings(
+          { finalReviewByDefault: true },
+          {
+            when: Effect.succeed(true),
+            persisted: (stored) => Ref.update(seen, (all) => [...all, stored.finalReviewByDefault]),
+          },
+        );
+        assert.equal(saved.finalReviewByDefault, true);
+        assert.deepEqual(yield* Ref.get(seen), [true]);
+      }).pipe(Effect.provide(layerServerSettings())),
   );
   it.effect("migrates saved token delivery to paragraph buffering without resetting settings", () =>
     Effect.gen(function* () {

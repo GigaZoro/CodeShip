@@ -481,7 +481,7 @@ export function useSettingsRestore(page: string | null, onRestored?: () => void)
   } = useTheme();
   const clientSettings = useClientSettings();
   const runPlan = useRunScopedSettingsPlan();
-  const { scope, environments, targets, target } = useSettingsScope();
+  const { scope, environments, environment, targets, target } = useSettingsScope();
   const projectScope = scope.kind === "project" || scope.kind === "checkout" ? scope : null;
   const projectPlan = projectScope
     ? projectScopedRestorePlan(
@@ -529,7 +529,14 @@ export function useSettingsRestore(page: string | null, onRestored?: () => void)
           planScopedSettingsPatch(scope, environments, projectPlan.devicePatch),
         ]
       : machinePlan
-        ? [planPerEnvironmentSettingsPatch(scope, environments, machinePlan.patches)]
+        ? [
+            planPerEnvironmentSettingsPatch(
+              scope,
+              environments,
+              machinePlan.patches,
+              environment?.environmentId ?? null,
+            ),
+          ]
         : [];
 
   const restoreDefaults = async () => {
