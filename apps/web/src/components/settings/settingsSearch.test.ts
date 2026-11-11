@@ -388,6 +388,9 @@ describe("movedSettingsPath", () => {
       "/settings/providers",
     );
     expect(movedSettingsPath("/settings/threads", "default-model")).toBe("/settings/providers");
+    expect(movedSettingsPath("/settings/source-control", "source-control-models")).toBe(
+      "/settings/providers",
+    );
     expect(movedSettingsPath("/settings/access", "authorized-clients")).toBe(
       "/settings/connections",
     );

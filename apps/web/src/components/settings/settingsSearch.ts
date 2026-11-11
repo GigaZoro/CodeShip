@@ -1446,6 +1446,9 @@ const SPLIT_SETTINGS_PATHS: ReadonlySet<string> = new Set([
 // Section anchors that moved but are not search results themselves.
 const MOVED_SECTION_ANCHORS: Readonly<Record<string, SettingsPath>> = {
   "authorized-clients": "/settings/connections",
+  "new-thread-models": "/settings/providers",
+  "text-generation": "/settings/providers",
+  "source-control-models": "/settings/providers",
   "new-projects": "/settings/projects",
   "agent-conversations": "/settings/projects",
   "worktree-creation": "/settings/source-control",
