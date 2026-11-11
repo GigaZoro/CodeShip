@@ -131,7 +131,7 @@ export const makeCodexCliAuth = Effect.fn("makeCodexCliAuth")(function* (options
   /** An initialized app server for this instance's Codex home, closed with the scope. */
   readonly openClient: Effect.Effect<
     CodexClient.CodexAppServerClient["Service"],
-    CodexErrors.CodexAppServerError,
+    CodexErrors.CodexAppServerError | ProviderSetupError,
     Scope.Scope
   >;
   readonly canLogout: boolean;

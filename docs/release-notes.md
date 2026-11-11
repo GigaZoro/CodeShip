@@ -1,3 +1,9 @@
+## 2026-11-11 — Codex's own sign-in works without `codex` on PATH
+
+- A Codex account that uses Codex's own ChatGPT sign-in ("Use existing CLI") with an empty **Binary path** showed **Not found** on a machine with no `codex` on `PATH`, although T3.CodeShip had its own copy of Codex. Such an account now runs the `codex` on `PATH` when there is one and T3.CodeShip's own copy otherwise, for its status, chats, sign-in and sign-out, MCP servers and plugins, and generated titles and commit messages.
+- When the machine has neither, the account's settings offer **Install Codex**, which downloads T3.CodeShip's copy; nothing is downloaded until you choose it.
+- A **Binary path** you set yourself is used as before, and still reports **Could not start Codex CLI** with that path when it cannot run.
+
 ## 2026-11-11 — An agent can hand a child a worktree of another local repository
 
 - `delegate_task` with `isolation: "worktree"` and `target.projectId` of another project on the same machine now starts the child in a new worktree of that project's repository, from its default branch. Before, such a task was refused and coordinators fell back to making checkouts in the shell. Without `isolation: "worktree"` the refusal now names this option.

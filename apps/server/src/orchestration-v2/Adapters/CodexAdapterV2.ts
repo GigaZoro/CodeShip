@@ -1667,7 +1667,11 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
   { instanceId, environment, enabled, config }: ProviderAdapterDriverCreateInput<CodexSettings>,
   hooks: Pick<
     CodexAdapterV2Options,
-    "onUsageLimits" | "resolveRuntime" | "compatibility" | "chatGptSharingLimitResetAt"
+    | "onUsageLimits"
+    | "resolveRuntime"
+    | "resolveBinaryPath"
+    | "compatibility"
+    | "chatGptSharingLimitResetAt"
   > = {},
 ) {
   const clientFactory = yield* CodexAppServerClientFactory;
@@ -1722,6 +1726,8 @@ export interface CodexAdapterV2Options {
   /** When a ChatGPT-shared account hits its usage limit: its reset, read now, or null if unknown. */
   readonly chatGptSharingLimitResetAt?: Effect.Effect<string | null>;
   readonly resolveRuntime?: Effect.Effect<CodexEffectiveRuntime, ProviderSetupError, Scope.Scope>;
+  /** The program a session starts when no runtime is resolved; absent, `settings.binaryPath`. */
+  readonly resolveBinaryPath?: Effect.Effect<string, ProviderSetupError, Scope.Scope>;
   /** Keeps this account's MCP sign-ins in its own home. A resolved runtime already carries the flag. */
   readonly privateMcpSignIns?: boolean;
   readonly compatibility?: (
@@ -1831,12 +1837,25 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                 ),
               );
+        const binaryPath =
+          resolvedRuntime !== undefined || adapterOptions.resolveBinaryPath === undefined
+            ? adapterOptions.settings.binaryPath
+            : yield* adapterOptions.resolveBinaryPath.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapter.ProviderAdapterOpenSessionError({
+                      driver: CODEX_PROVIDER,
+                      providerSessionId: input.providerSessionId,
+                      cause,
+                    }),
+                ),
+              );
         const client = yield* clientFactory.open({
           instanceId: adapterOptions.instanceId,
           threadId: input.threadId,
           providerSessionId: input.providerSessionId,
           runtimePolicy: input.runtimePolicy,
-          settings: resolvedRuntime?.config ?? adapterOptions.settings,
+          settings: resolvedRuntime?.config ?? { ...adapterOptions.settings, binaryPath },
           environment: resolvedRuntime?.environment ?? adapterOptions.environment,
           privateMcpSignIns:
             resolvedRuntime === undefined && adapterOptions.privateMcpSignIns === true,

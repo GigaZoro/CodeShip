@@ -770,6 +770,29 @@ const makePendingCodexProvider = Effect.fn("CodexProvider.makePendingCodexProvid
   });
 });
 
+export const CODEX_NOT_FOUND_MESSAGE =
+  "Codex CLI (`codex`) is not on the server's PATH. Install Codex in Settings → Providers & models → Codex, or set its Binary path there. Installing ChatGPT or Codex desktop may not add codex to PATH.";
+
+/** The default binary path found no `codex` on PATH and no copy installed by T3.CodeShip. */
+export const makeMissingCodexProvider = Effect.fn("CodexProvider.makeMissingCodexProvider")(
+  function* (codexSettings: CodexSettings): Effect.fn.Return<ServerProviderDraft> {
+    return buildServerProvider({
+      presentation: CODEX_PRESENTATION,
+      enabled: codexSettings.enabled,
+      checkedAt: yield* Effect.map(DateTime.now, DateTime.formatIso),
+      models: emptyCodexModelsFromSettings(codexSettings),
+      skills: [],
+      probe: {
+        installed: false,
+        version: null,
+        status: "error",
+        auth: { status: "unknown" },
+        message: CODEX_NOT_FOUND_MESSAGE,
+      },
+    });
+  },
+);
+
 function accountProbeStatus({ account, rateLimits, storedLogin }: CodexAppServerProviderSnapshot): {
   readonly status: Exclude<ServerProviderState, "disabled">;
   readonly auth: ServerProvider["auth"];
@@ -801,7 +824,8 @@ function accountProbeStatus({ account, rateLimits, storedLogin }: CodexAppServer
     return {
       status: "error",
       auth: { status: "unauthenticated" },
-      message: "Codex CLI is not authenticated. Run `codex login` and try again.",
+      message:
+        "Codex CLI is not authenticated. Sign in in Settings → Providers & models → Codex, or run `codex login`.",
     };
   }
 
@@ -886,10 +910,10 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         auth: { status: "unknown" },
         message: installed
           ? `Codex app-server provider probe failed: ${error.message}.`
-          : `Could not start Codex CLI (\`${codexSettings.binaryPath}\`). Check Settings → Providers → Codex → Binary path on the server.` +
+          : `Could not start Codex CLI (\`${codexSettings.binaryPath}\`). ` +
             (codexSettings.binaryPath === "codex"
-              ? " Installing ChatGPT or Codex desktop may not add codex to PATH."
-              : " Make sure the configured executable exists and can be run."),
+              ? "The codex on the server's PATH could not be run. Reinstall it, or set Settings → Providers & models → Codex → Binary path."
+              : "Check Settings → Providers & models → Codex → Binary path on the server. Make sure the configured executable exists and can be run."),
       },
     });
   }

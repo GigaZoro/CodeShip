@@ -87,7 +87,11 @@ import { useSecretSources } from "./SecretSourceInput";
 import { UsageProviderSettings } from "./UsageProviderSettings";
 import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
 import { ProviderAuthenticationSection } from "./ProviderAuthenticationSection";
-import { CodexSetupSection, CodexManagedRuntimeFields } from "./CodexSetupSection";
+import {
+  CodexSetupSection,
+  CodexManagedRuntimeFields,
+  CodexRuntimeInstallRow,
+} from "./CodexSetupSection";
 import { readCodexSetupMode } from "./CodexSetupSection.logic";
 import { providerClients } from "./providerDriverMeta";
 import { searchableSetting } from "./settingsSearch";
@@ -1271,14 +1275,21 @@ function ProviderInstanceRow({
           liveProvider &&
           (liveProvider.setup?.canAuthenticate ||
             (liveProvider.driver === "acpRegistry" && liveProvider.installed)) ? (
-          <ProviderAuthenticationSection
-            key={`${environmentId}:${instanceId}`}
-            environmentId={environmentId}
-            environmentLabel={environmentLabel}
-            instanceId={instanceId}
-            provider={liveProvider}
-            readOnly={readOnly}
-          />
+          <>
+            {codexSetupMode === "existing" &&
+            !liveProvider.installed &&
+            liveProvider.setup?.canInstall ? (
+              <CodexRuntimeInstallRow environmentId={environmentId} instanceId={instanceId} />
+            ) : null}
+            <ProviderAuthenticationSection
+              key={`${environmentId}:${instanceId}`}
+              environmentId={environmentId}
+              environmentLabel={environmentLabel}
+              instanceId={instanceId}
+              provider={liveProvider}
+              readOnly={readOnly}
+            />
+          </>
         ) : mode === "editor" &&
           !readOnly &&
           driver === "cursor" &&

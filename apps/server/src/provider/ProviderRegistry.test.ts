@@ -549,11 +549,12 @@ it.layer(
         assert.strictEqual(status.auth.status, "unauthenticated");
         assert.strictEqual(
           status.message,
-          "Codex CLI is not authenticated. Run `codex login` and try again.",
+          "Codex CLI is not authenticated. Sign in in Settings → Providers & models → Codex, or run `codex login`.",
         );
         assert.deepStrictEqual(status.usageLimits?.unavailable, {
           reason: "probeFailed",
-          message: "Codex CLI is not authenticated. Run `codex login` and try again.",
+          message:
+            "Codex CLI is not authenticated. Sign in in Settings → Providers & models → Codex, or run `codex login`.",
         });
       }),
     );

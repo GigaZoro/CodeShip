@@ -6316,6 +6316,7 @@ const catalog: MessageCatalog = {
   "Install Antigravity in provider settings before sending.":
     "Установіть Antigravity в налаштуваннях провайдера, перш ніж надсилати.",
   "Install automatically": "Встановлювати автоматично",
+  "Install Codex": "Встановити Codex",
   "Install extension": "Встановити розширення",
   "Install failed for {version}. Click to retry.":
     "Не вдалося установити {version}. Натисніть, щоб повторити.",
@@ -7476,6 +7477,8 @@ const catalog: MessageCatalog = {
   "No changes to commit": "Немає змін для коміту",
   "No checks reported": "Перевірок немає",
   "No checks reported.": "Перевірок немає.",
+  "No Codex CLI was found in this environment. T3.CodeShip can download its own copy.":
+    "У цьому середовищі не знайдено Codex CLI. T3.CodeShip може завантажити власну копію.",
   "No comments yet.": "Коментарів ще немає.",
   "No commits on this branch.": "У цій гілці немає комітів.",
   "No compatible agents found": "Сумісних агентів не знайдено",

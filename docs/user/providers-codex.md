@@ -26,6 +26,10 @@ T3.CodeShip can use your installed Codex and its existing login. Run `codex logi
 on the environment's machine to sign in. [Provider setup](./install.md#providers)
 covers installation and custom configuration.
 
+With **Binary path** left empty, T3.CodeShip runs the `codex` on that machine's `PATH`.
+When there is none, it runs its own copy of Codex with the same login. If it has no
+copy yet, the provider's settings offer **Install Codex**; then sign in there.
+
 ## Use multiple accounts
 
 Add another ChatGPT account in **Settings → Providers & models**, then select the account

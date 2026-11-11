@@ -35,6 +35,7 @@ import {
   createProviderVersionAdvisory,
   resolveLatestProviderVersion,
 } from "@t3tools/provider-core/server/maintenanceResolver";
+import { CODEX_NOT_FOUND_MESSAGE } from "../CodexProvider.ts";
 import { CodexDriver } from "./CodexDriver.ts";
 import * as CodexAdapterV2 from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -340,6 +341,126 @@ it.layer(layerTest)("CodexDriver", (it) => {
   it.effect.each(["unchanged", "during-probe"] as const)(
     "managed catalog keeps its account label and token together: %s",
     checkManagedAccount,
+  );
+
+  // regression: an existing-CLI account with the default path reported "Not found" on a machine
+  // with no `codex` on PATH, although T3.CodeShip had a copy of its own.
+  it.effect.each([
+    { name: "own copy", onPath: false, ownCopy: true, explicit: false },
+    { name: "codex on PATH", onPath: true, ownCopy: true, explicit: false },
+    { name: "nothing installed", onPath: false, ownCopy: false, explicit: false },
+    { name: "explicit path", onPath: true, ownCopy: true, explicit: true },
+  ])(
+    "starts the default binary path from PATH, else from T3.CodeShip's own copy: $name",
+    (fixture) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const tempDir = yield* fs
+          .makeTempDirectoryScoped({ prefix: "t3-codex-default-binary-" })
+          .pipe(Effect.flatMap((directory) => fs.realPath(directory)));
+        const pathDir = NodePath.join(tempDir, "bin");
+        yield* fs.makeDirectory(pathDir, { recursive: true });
+        if (fixture.onPath) {
+          yield* fs.writeFileString(NodePath.join(pathDir, "codex"), "#!/bin/sh\n");
+          yield* fs.chmod(NodePath.join(pathDir, "codex"), 0o755);
+        }
+        const ownCopyPath = NodePath.join(tempDir, "tools", "codex", "0.156.1", "bin", "codex");
+        const explicitPath = NodePath.join(tempDir, "missing", "codex");
+        const expected = fixture.explicit ? explicitPath : fixture.onPath ? "codex" : ownCopyPath;
+        const ownCopy = () =>
+          fixture.explicit || fixture.onPath
+            ? Effect.die("A Codex on PATH or an explicit path must not use T3.CodeShip's copy")
+            : fixture.ownCopy
+              ? Effect.succeed({
+                  executablePath: ownCopyPath,
+                  managedVersionDirectory: NodePath.dirname(NodePath.dirname(ownCopyPath)),
+                  source: "managed" as const,
+                  version: "0.156.1",
+                })
+              : Effect.fail(
+                  new CodexInstallation.CodexInstallationError({
+                    operation: "resolve",
+                    detail: "Codex is not installed in T3.CodeShip.",
+                  }),
+                );
+        const spawned: Array<string> = [];
+        const launches: Array<string> = [];
+        const instanceId = ProviderInstanceId.make("codex-default-binary");
+        const instance = yield* CodexDriver.create({
+          instanceId,
+          displayName: "Codex default binary",
+          enabled: true,
+          environment: [{ name: "PATH", value: pathDir, sensitive: false }],
+          config: {
+            ...CodexDriver.defaultConfig(),
+            setupMode: "existing",
+            homePath: NodePath.join(tempDir, "codex-home"),
+            shadowHomePath: NodePath.join(tempDir, "codex-shadow"),
+            ...(fixture.explicit ? { binaryPath: explicitPath } : {}),
+          },
+        }).pipe(
+          Effect.provideService(
+            CodexAdapterV2.CodexAppServerClientFactory,
+            CodexAdapterV2.CodexAppServerClientFactory.of({
+              open: (launch) =>
+                Effect.sync(() => launches.push(launch.settings.binaryPath)).pipe(
+                  Effect.andThen(Effect.die("The fixture stops after recording the launch")),
+                ),
+            }),
+          ),
+          Effect.provideService(
+            CodexInstallation.CodexInstallation,
+            CodexInstallation.CodexInstallation.of({
+              ...(yield* CodexInstallation.CodexInstallation),
+              resolve: ownCopy,
+              acquire: ownCopy,
+            }),
+          ),
+          Effect.provideService(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make((command) =>
+              Effect.gen(function* () {
+                if (ChildProcess.isStandardCommand(command)) spawned.push(command.command);
+                return yield* PlatformError.badArgument({
+                  module: "ChildProcessSpawner",
+                  method: "spawn",
+                  description: "The fixture cannot start a process",
+                });
+              }),
+            ),
+          ),
+        );
+
+        const status = yield* instance.snapshot.refresh;
+        expect(status.installed).toBe(false);
+        expect(status.setup?.canInstall).toBe(!fixture.explicit);
+        yield* instance.orchestrationAdapter
+          .openSession({
+            threadId: ThreadId.make("default-binary-thread"),
+            providerSessionId: ProviderSessionId.make("default-binary-session"),
+            modelSelection: { instanceId, model: "gpt-5.4" },
+            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: tempDir,
+            }),
+          })
+          .pipe(Effect.scoped, Effect.exit);
+        // Sign-out opens the app server the same way sign-in does.
+        yield* instance.auth!.logout(Effect.void).pipe(Effect.exit);
+
+        if (!fixture.onPath && !fixture.ownCopy) {
+          expect(status.message).toBe(CODEX_NOT_FOUND_MESSAGE);
+          expect(spawned).toEqual([]);
+          expect(launches).toEqual([]);
+          return;
+        }
+        expect(status.message).toContain(`Could not start Codex CLI (\`${expected}\`)`);
+        expect(new Set(spawned)).toEqual(new Set([expected]));
+        expect(spawned.length).toBeGreaterThan(1);
+        expect(launches).toEqual([expected]);
+      }).pipe(Effect.scoped),
+    { skip: windowsHost },
   );
 
   it.effect.skipIf(windowsHost)(

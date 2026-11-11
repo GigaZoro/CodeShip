@@ -2,6 +2,7 @@ import {
   CodexSettings,
   defaultInstanceIdForDriver,
   ProviderDriverKind,
+  ProviderSetupError,
   ProviderSkillError,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
@@ -29,6 +30,8 @@ import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import { makeCodexConsumeResetCredit } from "../codexResetCredit.ts";
 import {
   checkCodexProviderStatus,
+  CODEX_NOT_FOUND_MESSAGE,
+  makeMissingCodexProvider,
   makePendingCodexProvider,
   probeCodexSkillsForCwd,
   runCodexCli,
@@ -72,7 +75,9 @@ import * as CodexManagedTokenBroker from "../CodexManagedTokenBroker.ts";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { resolveCommandPath } from "@t3tools/shared/shell";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
+const DEFAULT_BINARY_PATH = decodeCodexSettings({}).binaryPath;
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
 const CODEX_STANDALONE_HOME_PATTERN = /^(.*)\/packages\/standalone\//is;
@@ -197,10 +202,12 @@ export const CodexDriver: ProviderDriver<
       continuationGroupKey: continuationIdentity.continuationKey,
     });
     const canLogout = homeLayout.mode === "authOverlay";
+    // The default path means this machine's Codex: `codex` on PATH, else T3.CodeShip's own copy.
+    const usesDefaultBinary = config.binaryPath === DEFAULT_BINARY_PATH;
     const stampIdentity: typeof stampBaseIdentity = (draft) =>
       stampBaseIdentity({
         ...draft,
-        setup: { canInstall: false, ...draft.setup, canAuthenticate: true },
+        setup: { ...draft.setup, canInstall: usesDefaultBinary, canAuthenticate: true },
         // The default instance uses the Codex CLI's own login, which a terminal shares.
         auth: { ...draft.auth, canLogout },
       });
@@ -223,14 +230,54 @@ export const CodexDriver: ProviderDriver<
       binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
       homePath: homeLayout.effectiveHomePath ?? "",
     } satisfies CodexSettings;
-    const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
+    const platform = yield* HostProcess.Platform;
+    const codexOnPath = resolveCommandPath(DEFAULT_BINARY_PATH, { env: processEnv }).pipe(
+      Effect.provideService(HostProcess.Platform, platform),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, pathService),
+    );
+    const binaryPathFrom = <R>(
+      ownCopy: () => Effect.Effect<
+        CodexInstallation.CodexExecutable,
+        CodexInstallation.CodexInstallationError,
+        R
+      >,
+    ) =>
+      usesDefaultBinary
+        ? codexOnPath.pipe(
+            Effect.flatMap((found) =>
+              found === null
+                ? Effect.map(ownCopy(), (codex) => codex.executablePath)
+                : Effect.succeed(DEFAULT_BINARY_PATH),
+            ),
+            Effect.mapError(
+              (cause) =>
+                new ProviderSetupError({
+                  instanceId,
+                  operation: "install",
+                  detail: CODEX_NOT_FOUND_MESSAGE,
+                  cause,
+                }),
+            ),
+          )
+        : Effect.succeed(effectiveConfig.binaryPath);
+    const resolveBinaryPath = binaryPathFrom(() => installation.resolve());
+    // A lease keeps T3.CodeShip's copy from being removed under a running session or sign-in.
+    const acquireBinaryPath = binaryPathFrom(() => installation.acquire());
+    const maintenanceFor = (binaryPath: string) =>
       resolveProviderMaintenanceCapabilitiesEffect(
         makeCodexMaintenanceResolver(homeLayout.sharedHomePath),
-        {
-          binaryPath: effectiveConfig.binaryPath,
-          env: processEnv,
-        },
-      ).pipe(
+        { binaryPath, env: processEnv },
+      );
+    const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
+      resolveBinaryPath.pipe(
+        Effect.orElseSucceed(() => DEFAULT_BINARY_PATH),
+        Effect.flatMap((binaryPath) =>
+          usesDefaultBinary && binaryPath !== DEFAULT_BINARY_PATH
+            ? // T3.CodeShip installs and updates its own copy; npm and `codex update` do not own it.
+              Effect.succeed({ provider: DRIVER_KIND, packageName: null, update: null })
+            : maintenanceFor(binaryPath),
+        ),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, pathService),
@@ -249,6 +296,7 @@ export const CodexDriver: ProviderDriver<
       {
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
         compatibility: installation.compatibility,
+        resolveBinaryPath: acquireBinaryPath,
       },
     ).pipe(
       Effect.mapError(
@@ -267,7 +315,19 @@ export const CodexDriver: ProviderDriver<
     const checkProvider = modelCatalog.refreshInBackground.pipe(
       Effect.andThen(
         Effect.zipWith(
-          checkCodexProviderStatus(effectiveConfig, undefined, processEnv),
+          effectiveConfig.enabled
+            ? resolveBinaryPath.pipe(
+                Effect.matchEffect({
+                  onFailure: () => makeMissingCodexProvider(effectiveConfig),
+                  onSuccess: (binaryPath) =>
+                    checkCodexProviderStatus(
+                      { ...effectiveConfig, binaryPath },
+                      undefined,
+                      processEnv,
+                    ),
+                }),
+              )
+            : checkCodexProviderStatus(effectiveConfig, undefined, processEnv),
           currentCatalog,
           (draft, catalog) => stampIdentity(applyCodexModelCatalog(draft, catalog)),
           { concurrent: true },
@@ -316,19 +376,24 @@ export const CodexDriver: ProviderDriver<
       effectiveConfig,
       processEnv,
       snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
+      undefined,
+      resolveBinaryPath,
     );
     const snapshotForCwd = (cwd: string) =>
       !effectiveConfig.enabled
         ? snapshot.getSnapshot
         : Effect.all([
             snapshot.getSnapshot,
-            probeCodexSkillsForCwd({
-              binaryPath: effectiveConfig.binaryPath,
-              homePath: effectiveConfig.homePath,
-              launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
-              cwd,
-              environment: processEnv,
-            }).pipe(
+            acquireBinaryPath.pipe(
+              Effect.flatMap((binaryPath) =>
+                probeCodexSkillsForCwd({
+                  binaryPath,
+                  homePath: effectiveConfig.homePath,
+                  launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+                  cwd,
+                  environment: processEnv,
+                }),
+              ),
               Effect.scoped,
               Effect.timeout("20 seconds"),
               Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -346,16 +411,19 @@ export const CodexDriver: ProviderDriver<
             ),
           );
 
-    const openAppServerClient = withCodexAppServerClient({
-      binaryPath: effectiveConfig.binaryPath,
-      homePath: effectiveConfig.homePath,
-      launchArgs: withPrivateMcpSignIns(
-        resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
-        privateMcpSignIns,
+    const openAppServerClient = acquireBinaryPath.pipe(
+      Effect.flatMap((binaryPath) =>
+        withCodexAppServerClient({
+          binaryPath,
+          homePath: effectiveConfig.homePath,
+          launchArgs: withPrivateMcpSignIns(
+            resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+            privateMcpSignIns,
+          ),
+          cwd: process.cwd(),
+          environment: processEnv,
+        }),
       ),
-      cwd: process.cwd(),
-      environment: processEnv,
-    }).pipe(
       Effect.map(({ client }) => client),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     );
@@ -367,15 +435,20 @@ export const CodexDriver: ProviderDriver<
       instanceId,
       openClient: openAppServerClient,
       runCli: (args) =>
-        runCodexCli(
-          {
-            binaryPath: effectiveConfig.binaryPath,
-            homePath: effectiveConfig.homePath,
-            cwd: process.cwd(),
-            environment: processEnv,
-          },
-          [...privateMcpSignInArgs(privateMcpSignIns), ...args],
-        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+        resolveBinaryPath.pipe(
+          Effect.flatMap((binaryPath) =>
+            runCodexCli(
+              {
+                binaryPath,
+                homePath: effectiveConfig.homePath,
+                cwd: process.cwd(),
+                environment: processEnv,
+              },
+              [...privateMcpSignInArgs(privateMcpSignIns), ...args],
+            ),
+          ),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        ),
     }).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
 
     const auth = yield* makeCodexCliAuth({

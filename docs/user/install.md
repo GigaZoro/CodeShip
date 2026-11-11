@@ -182,8 +182,8 @@ computer.
 Provider CLIs must be on the server's `PATH`. If T3.CodeShip cannot find one, set its
 **Binary path** in provider settings, especially when using a version manager.
 Cursor's executable is `cursor-agent`, although its login command is
-`agent login`. Codex connected through ChatGPT and Antigravity can use their
-managed runtimes without a `PATH` entry.
+`agent login`. Codex and Antigravity can use the runtimes T3.CodeShip installs,
+without a `PATH` entry.
 
 T3.CodeShip warns when a provider version has known compatibility problems with your
 release. Check **Settings → Providers & models** on that environment for the recommended

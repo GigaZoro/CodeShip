@@ -10,6 +10,7 @@ import type {
   ChatGptHandoffInput,
   ChatGptTransferredProfile,
   EnvironmentId,
+  ProviderInstallState,
   ProviderInstanceId,
   ServerProvider,
 } from "@t3tools/contracts";
@@ -57,6 +58,24 @@ import {
 } from "./CodexSetupSection.logic";
 
 const noop = () => undefined;
+
+/** What a running Codex install is doing, or null when none runs. */
+function codexInstallProgress(installation: ProviderInstallState | null | undefined) {
+  return installation?.phase === "downloading"
+    ? installation.totalBytes === null
+      ? t("Downloading {downloaded} MB.", {
+          downloaded: (installation.downloadedBytes / 1_000_000).toFixed(1),
+        })
+      : t("Downloading {downloaded} of {total} MB.", {
+          downloaded: (installation.downloadedBytes / 1_000_000).toFixed(1),
+          total: (installation.totalBytes / 1_000_000).toFixed(1),
+        })
+    : installation?.phase === "extracting"
+      ? t("Installing Codex.")
+      : installation?.phase === "verifying"
+        ? t("Checking Codex.")
+        : null;
+}
 
 const CODEX_NAME = "Codex";
 
@@ -599,35 +618,23 @@ function ManagedCodexSetup({
   }, [clientCallback, url]);
 
   const runtimeDescription =
-    installation?.phase === "downloading"
-      ? installation.totalBytes === null
-        ? t("Downloading {downloaded} MB.", {
-            downloaded: (installation.downloadedBytes / 1_000_000).toFixed(1),
+    codexInstallProgress(installation) ??
+    (installed
+      ? installation?.installedVersion
+        ? t("{status} · v{version}.", {
+            status:
+              installation.source === "local"
+                ? t("Using your installed Codex")
+                : t("Managed by T3.CodeShip"),
+            version: installation.installedVersion,
           })
-        : t("Downloading {downloaded} of {total} MB.", {
-            downloaded: (installation.downloadedBytes / 1_000_000).toFixed(1),
-            total: (installation.totalBytes / 1_000_000).toFixed(1),
+        : t("{status}.", {
+            status:
+              installation?.source === "local"
+                ? t("Using your installed Codex")
+                : t("Managed by T3.CodeShip"),
           })
-      : installation?.phase === "extracting"
-        ? t("Installing Codex.")
-        : installation?.phase === "verifying"
-          ? t("Checking Codex.")
-          : installed
-            ? installation?.installedVersion
-              ? t("{status} · v{version}.", {
-                  status:
-                    installation.source === "local"
-                      ? t("Using your installed Codex")
-                      : t("Managed by T3.CodeShip"),
-                  version: installation.installedVersion,
-                })
-              : t("{status}.", {
-                  status:
-                    installation?.source === "local"
-                      ? t("Using your installed Codex")
-                      : t("Managed by T3.CodeShip"),
-                })
-            : (installation?.message ?? t("T3.CodeShip downloads and manages Codex for you."));
+      : (installation?.message ?? t("T3.CodeShip downloads and manages Codex for you.")));
   const accountDescription = finishingSignIn
     ? t("Finishing sign-in...")
     : installActive
@@ -1137,6 +1144,82 @@ export function CodexManagedRuntimeFields({
         }
       />
     </>
+  );
+}
+
+/** Offers T3.CodeShip's own Codex to an existing-CLI account on a machine that has no `codex`. */
+export function CodexRuntimeInstallRow({
+  environmentId,
+  instanceId,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly instanceId: ProviderInstanceId;
+}) {
+  const target = { environmentId, input: { instanceId } };
+  const installQuery = useEnvironmentQuery(serverEnvironment.providerInstallState(target));
+  const installation = installQuery.data;
+  const options = { reportFailure: false, reportDefect: false };
+  const startInstall = useAtomCommand(serverEnvironment.startProviderInstall, options);
+  const cancelInstall = useAtomCommand(serverEnvironment.cancelProviderInstall, options);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const progress = codexInstallProgress(installation);
+  const run = async <A, E>(request: () => Promise<AtomCommandResult<A, E>>) => {
+    setPending(true);
+    setError(null);
+    try {
+      const result = await request();
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const failure = squashAtomCommandFailure(result);
+        setError(failure instanceof Error ? failure.message : t("Codex setup failed. Try again."));
+      }
+    } catch {
+      setError(t("Codex setup failed. Try again."));
+    }
+    setPending(false);
+  };
+  const description =
+    progress ??
+    error ??
+    installQuery.error ??
+    (installation?.phase === "failed" || installation?.phase === "cancelled"
+      ? installation.message
+      : null) ??
+    t("No Codex CLI was found in this environment. T3.CodeShip can download its own copy.");
+  return (
+    <SettingsRow
+      title={t("Codex runtime")}
+      description={<span role="status">{description}</span>}
+      control={
+        progress !== null && installation?.operationId ? (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={pending}
+            onClick={() => {
+              const operationId = installation.operationId;
+              if (operationId)
+                void run(() =>
+                  cancelInstall({ environmentId, input: { instanceId, operationId } }),
+                );
+            }}
+          >
+            {t("Cancel installation")}
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={pending || progress !== null || installQuery.error !== null}
+            onClick={() => void run(() => startInstall(target))}
+          >
+            {installation?.phase === "failed" || installation?.phase === "cancelled"
+              ? t("Retry installation")
+              : t("Install Codex")}
+          </Button>
+        )
+      }
+    />
   );
 }
 

@@ -145,6 +145,29 @@ describe("provider installation routing", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("installs Codex for an existing-CLI account only on the default binary path", () =>
+    Effect.gen(function* () {
+      const codex = ProviderDriverKind.make("codex");
+      const codexId = ProviderInstanceId.make("codex");
+      const harnessFor = (config: Record<string, string>) =>
+        makeHarness({
+          instance: instance(codex, codexId),
+          settings: { providerInstances: { [codexId]: { driver: codex, config } } },
+        });
+      const defaultPath = yield* harnessFor({ setupMode: "existing" });
+      yield* defaultPath.router.start({ instanceId: codexId });
+      assert.deepEqual(defaultPath.calls, ["codex-start"]);
+
+      const customPath = yield* harnessFor({
+        setupMode: "existing",
+        binaryPath: "/external/codex",
+      });
+      const start = yield* Effect.flip(customPath.router.start({ instanceId: codexId }));
+      assert.include(start.detail, "custom executable");
+      assert.deepEqual(customPath.calls, []);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("protects another instance's binary found through its own PATH", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
