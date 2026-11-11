@@ -2,7 +2,9 @@ import { t } from "~/i18n";
 import { pipe } from "effect/Function";
 import { useAtomValue } from "@effect/atom-react";
 import {
+  defaultReverseLinkAccess,
   type LinkableMachine,
+  linkedWithoutLinkBack,
   linkRequestAnswerInput,
   linkRequestDefaultAccess,
   linkRequestDisplay,
@@ -10,6 +12,7 @@ import {
   linkRequestInitialMachine,
   type LinkRequestItem,
   linkRequestTargetName,
+  linkReverseRequest,
   rankMachinesByHint,
 } from "@t3tools/client-runtime/link-request";
 import {
@@ -27,13 +30,15 @@ import * as Result from "effect/Result";
 import { CheckIcon, LinkIcon, MinusIcon, XIcon } from "lucide-react";
 import { useId, useRef, useState } from "react";
 
+import { useEnvironment } from "../../state/environments";
 import { useEnvironmentScope, usePreparedConnection } from "../../state/session";
 import { mintPairingCodeOn } from "../../state/peerPairingCode";
-import { peerLinkEnvironment, useLinkableMachines } from "../../state/peerLinks";
+import { peerLinkEnvironment, useLinkableMachines, useOwnLinkUrls } from "../../state/peerLinks";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { accessConfig } from "../auth/ConnectAgentSurface";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { LinkAccessPicker } from "../settings/LinkAccessPicker";
+import { LinkBackOption, toastLinkBackMissing } from "../settings/LinkBackOption";
 import { ANOTHER_ADDRESS, LinkMachineBadge } from "../settings/LinkMachineSelect";
 import { Button } from "../ui/button";
 import { Dialog } from "../ui/dialog";
@@ -216,6 +221,12 @@ function LinkRequestDialog(props: {
   const [address, setAddress] = useState(item.url ?? "");
   const [access, setAccess] = useState<AuthMcpClientAccess>(() => linkRequestDefaultAccess(item));
   const [pairingCode, setPairingCode] = useState("");
+  // Also let the machine reach this one; its access follows the one above until picked on its own.
+  const [bothWays, setBothWays] = useState(false);
+  const [reverseChoice, setReverseChoice] = useState<AuthMcpClientAccess | null>(null);
+  const reverseAccess = reverseChoice ?? defaultReverseLinkAccess(access);
+  const ownUrls = useOwnLinkUrls(props.environmentId);
+  const hereLabel = useEnvironment(props.environmentId)?.entry.target.label ?? null;
   const [step, setStep] = useState<LinkStep>("machine");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -257,6 +268,8 @@ function LinkRequestDialog(props: {
     setAddress(item.url ?? "");
     setAccess(linkRequestDefaultAccess(item));
     setPairingCode("");
+    setBothWays(false);
+    setReverseChoice(null);
     setStep("machine");
     setError(null);
   };
@@ -266,6 +279,13 @@ function LinkRequestDialog(props: {
     props.onOpenChange(false);
     reset();
   };
+
+  const reverse = linkReverseRequest({
+    wanted: bothWays,
+    forward: access,
+    access: reverseAccess,
+    urls: ownUrls,
+  });
 
   // Settles to the answer to send, an error to show, or nothing to do.
   const prepareAnswer = async () => {
@@ -294,6 +314,7 @@ function LinkRequestDialog(props: {
           : { ...target, urls: needsAddress ? [address.trim()] : target.urls },
       access,
       pairingCode: code,
+      ...(reverse === undefined ? {} : { reverse }),
     });
   };
 
@@ -309,6 +330,10 @@ function LinkRequestDialog(props: {
     setBusy(false);
     if (result === null) return;
     if (result._tag === "Success") {
+      // The link stands; only the way back is missing. The card's row cannot say so.
+      if (linkedWithoutLinkBack(reverse !== undefined, result.value)) {
+        toastLinkBackMissing(targetName, hereLabel);
+      }
       // The card switches to its answered row once the item updates.
       close();
     } else if (!isAtomCommandInterrupted(result)) {
@@ -428,6 +453,15 @@ function LinkRequestDialog(props: {
                       </label>
                     )}
                     <LinkAccessPicker value={access} onChange={setAccess} disabled={busy} />
+                    <LinkBackOption
+                      name={targetName}
+                      forwardAccess={access}
+                      checked={bothWays}
+                      onCheckedChange={setBothWays}
+                      reverseAccess={reverseAccess}
+                      onReverseAccessChange={setReverseChoice}
+                      disabled={busy}
+                    />
                   </>
                 )}
               </>
