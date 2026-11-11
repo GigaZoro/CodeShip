@@ -1,3 +1,12 @@
+## 2026-11-11 — Settings that follow your machines, and sign-ins in one pass
+
+- **Shared settings work across your machines.** Turn on **Follow shared settings** in **Settings → Machines & access** on each of your machines. Settings saved for all environments then go only to the machines that follow, including ones that were off at the time, and a machine that never opted in, such as a work machine, is never changed. Changes pass through machines that have their own newer edit, the edited machine's server stamps each change, and mobile saves the same way as web.
+- **Sign in to all.** When a machine has several sign-ins waiting in **Manual steps**, **Sign in to all** walks through them in one window, accounts before their MCP servers, on web and mobile.
+- **Updates install themselves when idle (optional).** **Install updates automatically when idle** in **Maintenance & about → Updates** installs a new release once no chat is answering and no background work runs, on the desktop app and on servers run as a service.
+- **Link machines both ways.** Linking a machine with full access can also let it reach this machine in the same step, from **Linked environments** or from an agent's link card.
+- **Scheduled tasks leave machines out reliably.** Agents can set which machines a shared task skips, and changing a task no longer clears its excluded machines.
+- **Development servers keep your logins safe.** A dev server uses its own provider folders, so it never refreshes your real Claude, Codex, Grok or Pi login.
+
 ## 2026-11-11 — Runs move off a Claude account whose login failed
 
 - When Claude rejects an account's login, for example after a refresh token was refused while the PC was off, that account now shows as signed out in **Providers** with its `claude auth login` command, and in **Manual steps**, as soon as the first run fails. Before, it kept reading as signed in and every run sent to it failed at once until you signed in by hand.
