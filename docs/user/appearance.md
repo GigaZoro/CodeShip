@@ -3,7 +3,7 @@
 On web and desktop, open **Settings → Appearance** to choose a theme and follow the system
 appearance or stay in light or dark mode. To use different themes for light and dark mode, select
 the corresponding preview within each theme. Appearance preferences are saved separately on each
-device or browser. Each Settings page has a **Reset page** button in its header to restore that page's defaults.
+device or browser, unless you [use the same look on all your devices](#the-same-look-on-all-your-devices). Each Settings page has a **Reset page** button in its header to restore that page's defaults.
 
 On web and desktop, use **Change theme** in the command palette to select a theme without leaving chat.
 Press **Cmd+Option+A** on macOS or **Ctrl+Alt+A** on Windows/Linux to open the theme picker directly.
@@ -20,6 +20,29 @@ can be selected separately for light and dark appearances.
 Android uses **Material You Layout** by default unless you have turned it off in Appearance.
 It changes shapes, spacing, and controls independently
 of the selected theme.
+
+## The same look on all your devices
+
+Appearance preferences are saved separately on each device, unless you turn on **Use the same
+appearance and layout on all my devices** at the top of **Settings → Appearance** on web and
+desktop. The machine that app is connected to must follow shared settings (**Settings → Machines &
+access → Follow shared settings**), and the machines you want to share between must be linked. The
+switch says what is missing when it cannot be turned on.
+
+With it on, this device takes the shared profile when it starts and whenever it changes, and every
+change you make here is saved to the profile, so your other devices that turned it on take it too.
+Turning it on takes the profile as it is, so changes you made here before are replaced; the first
+device to turn it on makes its own settings the profile.
+
+The profile holds fonts and sizes, word wrap, sidebar grouping and sorting, the Working and manual
+steps shelves, confirmations, diff preferences, chat width, effort display, glass opacity, contrast,
+panel animations, time format, language, composer and send behavior, math rendering and
+notifications. Themes, window sizes, browser settings, model favorites and per-project choices stay
+on each device.
+
+If you change something while this device cannot reach its machine and another device changes the
+profile meanwhile, the newer profile wins and a message says so. A device with the switch off is
+never changed. Mobile does not take part.
 
 ## Language
 

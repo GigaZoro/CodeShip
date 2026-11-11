@@ -20,10 +20,17 @@ import {
 } from "../SidebarStageBackdrop";
 import { useCustomThemes } from "../../hooks/useCustomThemes";
 import { msg, t, type Message } from "~/i18n";
-import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
+import {
+  updateClientSettings,
+  useClientSettings,
+  useEnvironmentIdentificationMode,
+} from "../../hooks/useSettings";
+import { usePrimaryEnvironment } from "../../state/environments";
+import { deviceSettingsProfileAvailability } from "@t3tools/client-runtime/state/device-settings-profile";
 import { useTheme } from "../../hooks/useTheme";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { Switch } from "../ui/switch";
 import { ThemeLibrary } from "./ThemeSettings";
 import {
   SettingResetButton,
@@ -82,6 +89,63 @@ const EFFORT_DISPLAY_LABELS: Record<EffortDisplay, Message> = {
   label: msg("Word"),
   bars: msg("Bars"),
 };
+
+/** Why this device cannot follow its profile now, or null when it can. */
+function deviceSettingsProfileProblem(
+  status: ReturnType<typeof deviceSettingsProfileAvailability>["status"],
+  machine: string,
+): string | null {
+  switch (status) {
+    case "ready":
+      return null;
+    case "offline":
+      return t("{machine} is not connected. Changes sync when it is back.", { machine });
+    case "no-primary":
+      return t("Open this from the desktop app or a server's own address to use this.");
+    case "unsupported":
+      return t("{machine} is on a version that cannot hold these settings. Update it.", {
+        machine,
+      });
+    case "not-following":
+      return t("Turn on Follow shared settings for {machine} under Connections first.", {
+        machine,
+      });
+  }
+}
+
+function DeviceSettingsProfileRow() {
+  const follows = useClientSettings((settings) => settings.followDeviceSettingsProfile);
+  const primary = usePrimaryEnvironment();
+  const { status } = deviceSettingsProfileAvailability(primary);
+  const problem = deviceSettingsProfileProblem(status, primary?.label ?? "");
+  const blocked = status === "no-primary" || status === "unsupported" || status === "not-following";
+  return (
+    <SettingsRow
+      {...searchableSetting("device-settings-profile")}
+      description={
+        problem ??
+        t(
+          "Fonts, sidebar, confirmations, diffs, language and more follow what you set on your other devices that use this.",
+        )
+      }
+      control={
+        <Switch
+          checked={follows}
+          disabled={blocked && !follows}
+          // A fresh start each time: turning it on takes the shared profile, and a device that was
+          // off must not carry old changes back into it.
+          onCheckedChange={(checked) =>
+            void updateClientSettings({
+              followDeviceSettingsProfile: Boolean(checked),
+              deviceSettingsProfileBase: null,
+            })
+          }
+          aria-label={t("Use the same appearance and layout on all my devices")}
+        />
+      }
+    />
+  );
+}
 
 export function AppearanceSettingsPanel() {
   const {
@@ -162,6 +226,7 @@ export function AppearanceSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection id="appearance-interface" title={t("Interface")}>
+        <DeviceSettingsProfileRow />
         <SettingsRow
           {...searchableSetting("setting-appearance-contrast")}
           description={t("Adjust the contrast of colors and borders across the interface.")}

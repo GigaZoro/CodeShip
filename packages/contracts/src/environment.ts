@@ -129,6 +129,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * Where absent, a client stamps a change for all machines itself and sends the values in the patch.
    */
   shareSettings: Schema.optionalKey(Schema.Boolean),
+  /** Stores `deviceSettingsProfile`; devices publish and take their profile only where it is present. */
+  deviceSettingsProfile: Schema.optionalKey(Schema.Boolean),
   /** Serves `scheduledTasks.listRuns` and honors a task's `catchUpMissedRun`; hide both where absent. */
   scheduledTaskRunHistory: Schema.optionalKey(Schema.Boolean),
   /** Serves `scheduledTasks.subscribeLinked`: the last task list of each machine it links to. */

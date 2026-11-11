@@ -648,7 +648,11 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
   const sharedSettingsSyncTargetIds = useSharedSettingsSyncTargetIds(true);
   const updateSettings = (
     patch: UnifiedSettingsPatch,
-    options?: { readonly onFailed?: () => void },
+    options?: {
+      readonly onFailed?: () => void;
+      /** Runs once every machine the shared part of the patch was sent to has saved it. */
+      readonly onSaved?: () => void;
+    },
   ) => {
     const { serverPatch, clientPatch } = splitPatch(patch);
 
@@ -784,7 +788,10 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
                   }),
                 ];
               });
-              if (failures.length === 0) return;
+              if (failures.length === 0) {
+                if (deniedLabels.length === 0) options?.onSaved?.();
+                return;
+              }
               const saved = outcomes
                 .filter(({ result }) => result._tag === "Success")
                 .map(({ write }) => write.label);

@@ -15,9 +15,8 @@ import {
 
 /**
  * Settings kept the same on every machine. Out: one machine's paths, devices, secrets and project
- * maps; `linkedEnvironmentsEnabled` (sharing could cut the channel); `guestSharingEnabled`; and
- * `defaultProjectScripts`, saved through its own call and shortcuts. Each provider instance is shared
- * under its own key (`sharedProviderInstanceKey`), never as `providerInstances`.
+ * maps, `linkedEnvironmentsEnabled`, `guestSharingEnabled` and `defaultProjectScripts`. Each
+ * provider instance has its own key (`sharedProviderInstanceKey`); the device profile is one whole.
  */
 export const MACHINE_SHARED_SETTING_KEYS = [
   "defaultModelSelection",
@@ -64,6 +63,7 @@ export const MACHINE_SHARED_SETTING_KEYS = [
   "continueThreadsAfterServerUpdate",
   "backgroundActivity",
   "providerInstanceFailoverOrder",
+  "deviceSettingsProfile",
 ] as const satisfies ReadonlyArray<keyof ServerSettings & keyof ServerSettingsPatch>;
 
 export type MachineSharedSettingKey = (typeof MACHINE_SHARED_SETTING_KEYS)[number];

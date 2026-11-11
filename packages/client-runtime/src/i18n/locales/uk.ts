@@ -1323,8 +1323,12 @@ const catalog: MessageCatalog = {
   "{machine} could not save this change first, so it was not sent here.":
     "{machine} не вдалося першим зберегти цю зміну, тому її сюди не надіслано.",
   "{machine} couldn't check {other}: {reason}": "{machine} не вдалося перевірити {other}: {reason}",
+  "{machine} is not connected. Changes sync when it is back.":
+    "{machine} не підключено. Зміни синхронізуються, коли воно повернеться.",
   "{machine} is offline. Its MCP servers show up once it reconnects.":
     "{machine} не в мережі. Її MCP-сервери з’являться після повторного підключення.",
+  "{machine} is on a version that cannot hold these settings. Update it.":
+    "{machine} має версію, яка не може зберігати ці налаштування. Оновіть її.",
   "{machine} pull request routing": "Маршрутизація пул-реквестів для {machine}",
   "{machine} ran it last, at {time}": "Востаннє запущено на {machine} о {time}",
   "{machine} ran it.": "Його виконав {machine}.",
@@ -1377,6 +1381,8 @@ const catalog: MessageCatalog = {
   "{name} {state}": "{name}: {state}",
   "{name} account options": "Параметри облікового запису {name}",
   "{name} added": "{name} додано",
+  "{name} can link back only when this link has auto or full access. Otherwise link this machine from {name}.":
+    "{name} може підключитися у відповідь, лише якщо це підключення має автоматичний або повний доступ. Інакше підключіть цю машину з {name}.",
   "{name} enablement": "Увімкнення {name}",
   "{name} is a guest": "{name} – гість",
   "{name} is a guest. A new link ends their access.":
@@ -2258,6 +2264,8 @@ const catalog: MessageCatalog = {
   "Another copy is in progress.": "Інше копіювання вже виконується.",
   "Another desktop entry uses the capture helper's name. Rename it before continuing.":
     "Інший запис робочого стола використовує ім’я помічника захоплення. Перейменуйте його, перш ніж продовжити.",
+  "Another device changed the shared appearance and layout while this one was offline, so its version replaced the changes made here.":
+    "Інший пристрій змінив спільний вигляд і розташування, поки цей був офлайн, тому його версія замінила зміни, зроблені тут.",
   "Another machine ran it.": "Його виконав інший комп’ютер.",
   "Another t3 at {path} runs first in a new terminal. Remove it to use T3.CodeShip's.":
     "Інший t3 у {path} запускається першим у новому терміналі. Видаліть його, щоб використовувати t3 з T3.CodeShip.",
@@ -5787,6 +5795,8 @@ const catalog: MessageCatalog = {
   "Font size": "Розмір шрифту",
   "font smoothing": "згладжування шрифту",
   "Font smoothing": "Згладжування шрифту",
+  "Fonts, sidebar, confirmations, diffs, language and more follow what you set on your other devices that use this.":
+    "Шрифти, бічна панель, підтвердження, відмінності, мова та інше відповідають тому, що ви задали на інших пристроях, які це використовують.",
   "For {mode} mode": "Для режиму {mode}",
   "for {time}": "на {time}",
   "For example, t3 or t3/ produces t3/add-search. Leave empty for no prefix.":
@@ -8137,6 +8147,8 @@ const catalog: MessageCatalog = {
   "Open this {term} on its provider to view the changes.":
     "Відкрийте на боці провайдера, щоб переглянути зміни: {term}.",
   "Open this {term} to merge its stack": "Відкрийте цей {term}, щоб злити його стек",
+  "Open this from the desktop app or a server's own address to use this.":
+    "Щоб користуватися цим, відкрийте застосунок на комп’ютері або власну адресу сервера.",
   "Open this link again when the clone finishes.":
     "Відкрийте це посилання знову, коли клонування завершиться.",
   "Open this prompt": "Відкрити цей запит",
@@ -10361,6 +10373,7 @@ const catalog: MessageCatalog = {
   "Shared Codex config, sessions, and state.": "Спільна конфігурація, сеанси та стан Codex.",
   "Shared policy": "Спільна політика",
   "Shared secret": "Спільний секрет",
+  "Shared settings applied": "Спільні налаштування застосовано",
   "Shared settings are saved only on the machines that follow them.":
     "Спільні налаштування зберігаються лише на комп’ютерах, які їх приймають.",
   "Shared settings require permission to change every checkout in this group.":
@@ -12854,6 +12867,8 @@ const catalog: MessageCatalog = {
   "Turn on": "Увімкнути",
   "Turn on automatic date and time on this device and on {host}, then retry.":
     "Увімкніть автоматичне визначення дати й часу на цьому пристрої та на {host}, потім повторіть.",
+  "Turn on Follow shared settings for {machine} under Connections first.":
+    "Спершу ввімкніть «Приймати спільні налаштування» для {machine} у розділі «Підключення».",
   "Turn on in Settings": "Увімкнути в налаштуваннях",
   "Turn on local environment?": "Увімкнути локальне середовище?",
   "Turn on Network access to detect Tailscale.":
@@ -13397,6 +13412,8 @@ const catalog: MessageCatalog = {
     "Використовувати t3.json репозиторію або поточну робочу копію.",
   "Use the repository's template for change request descriptions when available.":
     "Використовувати шаблон репозиторію для описів запитів на зміни, коли він є.",
+  "Use the same appearance and layout on all my devices":
+    "Однаковий вигляд і розташування на всіх моїх пристроях",
   "Use the thread's model": "Використовувати модель чату",
   "Use these rules for this project.": "Використовувати ці правила для цього проєкту.",
   "Use thinner grayscale text smoothing instead of the macOS default.":

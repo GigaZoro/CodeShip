@@ -30,13 +30,12 @@ interface SettingPresentation {
 
 /**
  * Every shared key needs an entry here, so a key added to the shared list cannot go uncompared.
- * `"grouped"` marks a key compared inside another key's combined row. `"accounts"` marks one that
- * names each machine's own accounts: machines that follow shared settings keep it the same with
- * their accounts, and on any other machine it rightly differs.
+ * Non-presentations are never compared: `"grouped"` keys sit in another key's row, `"accounts"`
+ * name a machine's own accounts, and `"devices"` is the profile devices apply.
  */
 const SHARED_SETTING_PRESENTATION: Record<
   MachineSharedSettingKey,
-  SettingPresentation | "grouped" | "accounts"
+  SettingPresentation | "grouped" | "accounts" | "devices"
 > = {
   defaultModelSelection: { id: "default-model" },
   newThreadsUseLastModel: { id: "last-picked-model" },
@@ -129,6 +128,7 @@ const SHARED_SETTING_PRESENTATION: Record<
   continueThreadsAfterServerUpdate: { id: "continue-threads-after-server-update" },
   backgroundActivity: { id: "background-activity" },
   providerInstanceFailoverOrder: "accounts",
+  deviceSettingsProfile: "devices",
 };
 
 interface ComparedSetting extends SettingPresentation {

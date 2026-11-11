@@ -768,6 +768,30 @@ it.effect("passes on the JSON a version came as, with parts this build does not 
   ),
 );
 
+it.effect(
+  "the device settings profile is one whole value, passed on as sent and replaced whole",
+  () =>
+    run((shared, settings) =>
+      Effect.gen(function* () {
+        const pulled = { chatWidth: "wide", fontSizeCode: 14, fromANewerClient: { kept: true } };
+        yield* shared.applyPulled(PEER, [version("deviceSettingsProfile", pulled, LATER)]);
+        expect((yield* settings.getSettings).deviceSettingsProfile).toEqual(pulled);
+        expect((yield* served(shared)).deviceSettingsProfile?.value).toEqual(pulled);
+
+        // A newer change saved here carries the whole next profile: keys it leaves out are gone.
+        const next = { chatWidth: "full" };
+        const saved = yield* shared.updateForAllMachines({ deviceSettingsProfile: next });
+        expect(saved.settings.deviceSettingsProfile).toEqual(next);
+        expect(saved.share.values).toEqual([{ key: "deviceSettingsProfile", value: next }]);
+        expect((yield* served(shared)).deviceSettingsProfile?.value).toEqual(next);
+
+        // An older version from a peer changes nothing.
+        yield* shared.applyPulled(PEER, [version("deviceSettingsProfile", pulled, EARLIER)]);
+        expect((yield* settings.getSettings).deviceSettingsProfile).toEqual(next);
+      }),
+    ),
+);
+
 it.effect("keeps a model selection a direct write names until this machine has its instance", () =>
   run((shared, settings, instances) =>
     Effect.gen(function* () {

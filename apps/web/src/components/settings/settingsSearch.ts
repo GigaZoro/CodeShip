@@ -322,6 +322,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     targetId: "appearance",
   },
   {
+    id: "device-settings-profile",
+    title: msg("Use the same appearance and layout on all my devices"),
+    to: "/settings/appearance",
+    searchTerms: [
+      "sync share follow profile fonts sidebar confirmations diff language this device other devices",
+    ],
+  },
+  {
     // Prefixed because the slider control already owns the `appearance-contrast` id.
     id: "setting-appearance-contrast",
     title: msg("Contrast"),
