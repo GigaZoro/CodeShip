@@ -26,7 +26,10 @@ import {
   resolveModePortOffsets,
   runDevRunnerWithInput,
 } from "./dev-runner.ts";
-import { DevRunnerRealProviderHomesError } from "./lib/dev-provider-homes.ts";
+import {
+  DevRunnerRealProviderHomesError,
+  ensureIsolatedProviderHomes,
+} from "./lib/dev-provider-homes.ts";
 
 const emptyConfigLayer = ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }));
 const netServiceLayer = Layer.succeed(NetService.NetService, {
@@ -343,6 +346,20 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
       Effect.gen(function* () {
         const root = yield* makeWorktreeWithSettings(settingsWithHomes);
         yield* runInWorktree(root, true);
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("creates the isolated provider homes a provider would refuse when missing", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const root = yield* fileSystem.makeTempDirectoryScoped();
+        const env: NodeJS.ProcessEnv = {
+          CLAUDE_CONFIG_DIR: NodePath.join(root, "claude"),
+          CODEX_HOME: NodePath.join(root, "codex"),
+        };
+        yield* ensureIsolatedProviderHomes(env);
+        assert.isTrue(NodeFS.statSync(NodePath.join(root, "codex")).isDirectory());
+        assert.isTrue(NodeFS.statSync(NodePath.join(root, "claude")).isDirectory());
       }).pipe(Effect.scoped),
     );
 
@@ -1022,13 +1039,16 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
       it.effect("falls back to an ambient T3CODE_HOME outside a worktree", () =>
         Effect.gen(function* () {
           const path = yield* Path.Path;
+          const fileSystem = yield* FileSystem.FileSystem;
+          // A real folder: the run creates its isolated provider homes under the T3 home.
+          const ambientHome = path.join(yield* fileSystem.makeTempDirectoryScoped(), ".t3");
           const home = yield* spawnedHome({
             t3Home: undefined,
             cwd: NodeOS.tmpdir(),
-            ambientHome: "/home/user/.t3",
+            ambientHome,
           });
-          assert.equal(home, path.resolve("/home/user/.t3"));
-        }),
+          assert.equal(home, path.resolve(ambientHome));
+        }).pipe(Effect.scoped),
       );
     });
   });
