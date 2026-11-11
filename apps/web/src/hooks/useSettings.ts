@@ -567,6 +567,28 @@ export function usePrimarySettingsAvailable(): boolean {
   return primaryEnvironment !== null || !isHostedStaticApp();
 }
 
+/**
+ * Where an edit of a synced setting goes. Once any machine follows shared settings, those
+ * machines are the group: an edit on a follower reaches the other followers, and an edit on a
+ * machine outside the group stays there, so a machine that never opted in is never changed.
+ */
+export function sharedSettingsSyncTargets(
+  environments: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly serverConfig: {
+      readonly settings: { readonly followSharedSettings?: boolean | undefined };
+    } | null;
+  }>,
+  candidateIds: ReadonlyArray<EnvironmentId>,
+  sourceId: EnvironmentId | null,
+): ReadonlyArray<EnvironmentId> {
+  const follows = (id: EnvironmentId | null) =>
+    environments.find((environment) => environment.environmentId === id)?.serverConfig?.settings
+      .followSharedSettings === true;
+  if (!environments.some((environment) => follows(environment.environmentId))) return candidateIds;
+  return follows(sourceId) ? candidateIds.filter(follows) : [];
+}
+
 function useSharedSettingsSyncTargetIds(includePending = false): ReadonlyArray<EnvironmentId> {
   const { environments } = useEnvironments();
   const targetIds = environments
@@ -666,7 +688,9 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
       if (Object.keys(sharedPatch).length > 0) {
         const sourceSettings = environments.find((target) => target.environmentId === environmentId)
           ?.serverConfig?.settings;
-        const targets = new Set(sharedSettingsSyncTargetIds);
+        const targets = new Set(
+          sharedSettingsSyncTargets(environments, sharedSettingsSyncTargetIds, environmentId),
+        );
         if (environmentId) {
           targets.add(environmentId);
         }
