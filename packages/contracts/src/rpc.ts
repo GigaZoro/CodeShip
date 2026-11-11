@@ -22,6 +22,7 @@ import {
   PeerLinkRemoveInput,
   PeerLinkRemoveResult,
   PeerLinkRequestAnswerInput,
+  PeerLinkRequestAnswerResult,
   PeerLinkRequestError,
   PeerLinkResult,
   PeerLinkSummary,
@@ -1024,6 +1025,7 @@ const WsPeerLinksUnlinkRpc = Rpc.make(WS_METHODS.peerLinksUnlink, {
 
 const WsPeerLinksAnswerRequestRpc = Rpc.make(WS_METHODS.peerLinksAnswerRequest, {
   payload: PeerLinkRequestAnswerInput,
+  success: PeerLinkRequestAnswerResult,
   error: Schema.Union([PeerLinkRequestError, EnvironmentAuthorizationError]),
 });
 

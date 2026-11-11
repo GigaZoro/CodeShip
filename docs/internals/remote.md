@@ -157,6 +157,10 @@ ask for without being proof of who it is: the code that makes the request useful
 from an administrator of the environment it opens, and the other side still checks that the
 address answers as that environment.
 
+A link card an agent asked for goes through the same service: `peerLinks.answerRequest` returns
+how linking back went only to a client that asked for it. An older server answers with nothing, so
+a client treats nothing as "not linked back".
+
 ## Shared scheduled tasks sync through clients
 
 A shared scheduled task has the same id on every machine, and each machine

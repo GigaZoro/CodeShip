@@ -15,9 +15,11 @@ import {
   type OrchestratorMcpEnvironmentLinkResult,
   OrchestratorMcpFailure,
   type PeerLink,
+  type PeerLinkBackOutcome,
   PeerLinkError,
   PeerLinkRequestError,
   type PeerLinkRequestAnswerInput,
+  type PeerLinkRequestAnswerResult,
   type RunId,
   type ThreadId,
   TurnItemId,
@@ -32,6 +34,7 @@ import * as KeyedLock from "@t3tools/shared/KeyedLock";
 
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as PeerLinkBack from "./PeerLinkBack.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 
 type LinkRequestItem = Extract<OrchestrationV2TurnItem, { readonly type: "link_request" }>;
@@ -55,6 +58,12 @@ type LinkRequestOutcome = Pick<
   "linkStatus" | "linkedEnvironmentId" | "linkedLabel" | "linkedAccess" | "failure"
 >;
 
+/** How an answer ended the card, and when the user asked to link back, how that went. */
+type AnswerResult = {
+  readonly outcome: LinkRequestOutcome;
+  readonly back?: PeerLinkBackOutcome;
+};
+
 const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : typeof error === "string" ? error : "unknown error";
 
@@ -73,17 +82,19 @@ export class PeerLinkRequests extends Context.Service<
     /**
      * Answers a pending card and tells the agent. Linking uses the pairing
      * code once; a link the other environment refuses closes the card as
-     * failed, with its reason.
+     * failed, with its reason. When the user also asked the machine to link
+     * back, the result says how that went: the link stands whatever it answers.
      */
     readonly answer: (
       input: PeerLinkRequestAnswerInput,
-    ) => Effect.Effect<void, PeerLinkRequestError>;
+    ) => Effect.Effect<PeerLinkRequestAnswerResult, PeerLinkRequestError>;
   }
 >()("t3/peer/PeerLinkRequests") {}
 
 const make = Effect.gen(function* () {
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const peerLinks = yield* PeerLinks.PeerLinks;
+  const peerLinkBack = yield* PeerLinkBack.PeerLinkBack;
   const crypto = yield* Crypto.Crypto;
 
   const readCard = (threadId: ThreadId, turnItemId: TurnItemId) =>
@@ -294,10 +305,10 @@ const make = Effect.gen(function* () {
   /** Links the machine the user picked, or finds the link they chose to keep. */
   const answerOutcome = (
     answer: PeerLinkRequestAnswerInput["answer"],
-  ): Effect.Effect<LinkRequestOutcome> => {
+  ): Effect.Effect<AnswerResult> => {
     switch (answer.type) {
       case "decline":
-        return Effect.succeed({ linkStatus: "declined" });
+        return Effect.succeed({ outcome: { linkStatus: "declined" } });
       case "use-existing":
         return usableLink(answer.environmentId).pipe(
           Effect.flatMap(
@@ -310,16 +321,18 @@ const make = Effect.gen(function* () {
                       "That environment is no longer linked here, or its link expired. Link it again.",
                   }),
                 ),
-              onSome: (linked) => Effect.succeed(linkedOutcome(linked)),
+              onSome: (linked) => Effect.succeed<AnswerResult>({ outcome: linkedOutcome(linked) }),
             }),
           ),
           Effect.catch((error) =>
-            Effect.succeed<LinkRequestOutcome>({ linkStatus: "failed", failure: error.message }),
+            Effect.succeed<AnswerResult>({
+              outcome: { linkStatus: "failed", failure: error.message },
+            }),
           ),
         );
       case "link": {
         const [url, ...alternateUrls] = answer.urls;
-        return peerLinks
+        return peerLinkBack
           .link({
             url,
             ...(alternateUrls.length === 0 ? {} : { alternateUrls }),
@@ -329,11 +342,17 @@ const make = Effect.gen(function* () {
               ? {}
               : { expectedEnvironmentId: answer.environmentId }),
             ...(answer.label === undefined ? {} : { expectedLabel: answer.label }),
+            ...(answer.reverse === undefined ? {} : { reverse: answer.reverse }),
           })
           .pipe(
-            Effect.map(linkedOutcome),
+            Effect.map((linked): AnswerResult => ({
+              outcome: linkedOutcome(linked),
+              ...(linked.back === undefined ? {} : { back: linked.back }),
+            })),
             Effect.catch((error) =>
-              Effect.succeed<LinkRequestOutcome>({ linkStatus: "failed", failure: error.message }),
+              Effect.succeed<AnswerResult>({
+                outcome: { linkStatus: "failed", failure: error.message },
+              }),
             ),
           );
       }
@@ -357,7 +376,7 @@ const make = Effect.gen(function* () {
       if (card.linkStatus !== "pending") {
         return yield* new PeerLinkRequestError({ reason: "already_answered" });
       }
-      const outcome = yield* answerOutcome(input.answer);
+      const { outcome, back } = yield* answerOutcome(input.answer);
       // If Stop closed the card while linking, the card keeps that; the link
       // itself stands and Settings lists it.
       yield* record(
@@ -366,11 +385,15 @@ const make = Effect.gen(function* () {
         CommandId.make(`link-request:${card.id}:${outcome.linkStatus}`),
         {
           messageId: MessageId.make(`message:link-request:${card.id}`),
-          ...outcomeNotice(card, outcome),
+          ...outcomeNotice(card, outcome, back),
         },
       ).pipe(
         Effect.mapError((cause) => new PeerLinkRequestError({ reason: "record_failed", cause })),
       );
+      // Only a client that asked to link back can read more than "answered".
+      return input.answer.type === "link" && input.answer.reverse !== undefined
+        ? { linked: outcome.linkStatus === "linked", ...(back === undefined ? {} : { back }) }
+        : undefined;
     },
     (effect, input) =>
       effect.pipe(
@@ -420,6 +443,14 @@ const resultOf = (card: LinkRequestItem): OrchestratorMcpEnvironmentLinkResult =
 const linkTarget = (card: Pick<LinkRequestItem, "url" | "label" | "environmentId">) =>
   card.label ?? card.url ?? card.environmentId ?? "a machine";
 
+/** One clause on whether the machine now reaches this one too, when the user asked for that. */
+const backNotice = (label: string, back: PeerLinkBackOutcome | undefined) => {
+  if (back === undefined) return "";
+  return back.status === "linked"
+    ? ` ${label} was also linked back to this machine with ${back.access} access.`
+    : ` ${label} could not be linked back to this machine.`;
+};
+
 /**
  * The notification an answer sends the agent: what the card says, and what
  * to do next. It carries the outcome only, never the pairing code.
@@ -427,13 +458,14 @@ const linkTarget = (card: Pick<LinkRequestItem, "url" | "label" | "environmentId
 const outcomeNotice = (
   card: Pick<LinkRequestItem, "url" | "label" | "environmentId">,
   outcome: LinkRequestOutcome,
+  back: PeerLinkBackOutcome | undefined,
 ): Omit<LinkRequestWake, "messageId"> => {
   const target = linkTarget(card);
   switch (outcome.linkStatus) {
     case "linked": {
       const label = outcome.linkedLabel ?? target;
       return {
-        text: `The user linked ${label} with ${outcome.linkedAccess} access. Pass environmentId ${outcome.linkedEnvironmentId} to act there.`,
+        text: `The user linked ${label} with ${outcome.linkedAccess} access. Pass environmentId ${outcome.linkedEnvironmentId} to act there.${backNotice(label, back)}`,
         notification: {
           source: { kind: "background_task" },
           outcome: "completed",
