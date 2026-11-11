@@ -703,6 +703,12 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
         "With shared: each run happens on one machine, the first available in the project's machine order.",
     }),
   ),
+  excludedMachines: Schema.optional(
+    Schema.Array(EnvironmentId).check(Schema.isMaxLength(50)),
+  ).annotate({
+    description:
+      "With shared: machines (t3_environment_links ids) that keep no copy. Replaces the list; omit to keep it.",
+  }),
   placement: Schema.optional(ScheduledTaskPlacement).annotate({
     description:
       "Where it shows in the user's thread list: none (hidden), chat (runs as normal chats), pinned (a task row). Omit to keep the current one, or for new tasks the user's default.",
@@ -744,6 +750,7 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   placement: Schema.optional(ScheduledTaskPlacement),
   shared: Schema.optional(Schema.Boolean),
   oneMachine: Schema.optional(Schema.Boolean),
+  excludedMachines: Schema.optional(Schema.Array(EnvironmentId)),
   lastRun: Schema.optional(
     Schema.NullOr(
       Schema.Struct({
@@ -811,6 +818,12 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   bindToCurrentThread: Schema.optional(Schema.Boolean),
   shared: Schema.optional(Schema.Boolean),
   oneMachine: Schema.optional(Schema.Boolean),
+  excludedMachines: Schema.optional(
+    Schema.Array(EnvironmentId).check(Schema.isMaxLength(50)),
+  ).annotate({
+    description:
+      "With shared: machines (t3_environment_links ids) that keep no copy. Replaces the list; omit to keep it.",
+  }),
   placement: Schema.optional(ScheduledTaskPlacement),
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
