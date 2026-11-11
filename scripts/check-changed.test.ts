@@ -16,6 +16,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as TestClock from "effect/testing/TestClock";
 
 import {
+  adapterReplayTests,
   comparisonBase,
   defaultConcurrency,
   docReaderTests,
@@ -47,6 +48,17 @@ describe("check:changed", () => {
     ]);
     assert.deepStrictEqual(decide(["docs/user/install.md"], packages, false).affected, []);
     assert.isTrue(decide(["docs/release-notes.md"], packages, false).outputs.test_web);
+  });
+
+  it("runs the replay fixtures of a changed adapter", () => {
+    assert.deepStrictEqual(
+      adapterReplayTests([
+        "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+        "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/ClaudeTaskOutputTail.ts",
+      ]),
+      ["apps/server/src/orchestration-v2/testkit/ClaudeReplayFixtures.integration.test.ts"],
+    );
   });
 
   it.effect(

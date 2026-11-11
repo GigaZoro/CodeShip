@@ -208,6 +208,19 @@ export const docReaderTests = (files: ReadonlyArray<string>) =>
     ? ["apps/server/src/cloud/ConnectReachability.test.ts"]
     : [];
 
+// Replay fixtures run an adapter against recorded sessions from testkit, not from beside it.
+export const adapterReplayTests = (files: ReadonlyArray<string>) =>
+  files.flatMap((file) => {
+    const adapter = /^apps\/server\/src\/orchestration-v2\/Adapters\/(\w+)AdapterV2\.ts$/.exec(
+      file,
+    );
+    return adapter === null
+      ? []
+      : [
+          `apps/server/src/orchestration-v2/testkit/${adapter[1]}ReplayFixtures.integration.test.ts`,
+        ];
+  });
+
 const checkChanged = Effect.fn("checkChanged")(function* (input: {
   readonly ref: Option.Option<string>;
   readonly concurrency: Option.Option<number>;
@@ -328,6 +341,9 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     }
   }
   for (const test of docReaderTests(files)) tests.add(test);
+  for (const test of adapterReplayTests(files)) {
+    if (yield* fs.exists(inRoot(test))) tests.add(test);
+  }
   // It reads files other than the ones beside it, so no changed file selects it.
   if (affected.includes("t3")) tests.add("apps/server/src/provider/AgentContextBudget.test.ts");
   const { vitestTests, nodeTests } = splitTests(tests);
