@@ -5,6 +5,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import { assert, describe, it } from "@effect/vitest";
 import * as ByteSize from "effect/ByteSize";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -25,6 +26,7 @@ import {
   resolveModePortOffsets,
   runDevRunnerWithInput,
 } from "./dev-runner.ts";
+import { DevRunnerRealProviderHomesError } from "./lib/dev-provider-homes.ts";
 
 const emptyConfigLayer = ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }));
 const netServiceLayer = Layer.succeed(NetService.NetService, {
@@ -188,6 +190,176 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
 
         assert.equal(env.HOST, undefined);
       }),
+    );
+  });
+
+  describe("provider homes", () => {
+    const realLogins = {
+      CLAUDE_CONFIG_DIR: "/home/dev/.claude_personal",
+      CODEX_HOME: "/home/dev/.codex",
+      GROK_HOME: "/home/dev/.grok",
+      PI_CODING_AGENT_DIR: "/home/dev/.pi/agent",
+      CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-real",
+      T3CODE_CODEX_LAUNCH_ARGS: "--search",
+    } as const;
+    const input = {
+      mode: "dev",
+      serverOffset: 0,
+      webOffset: 0,
+      t3Home: "/tmp/t3-dev",
+      browser: undefined,
+      autoBootstrapProjectFromCwd: undefined,
+      logWebSocketEvents: undefined,
+      host: undefined,
+      port: undefined,
+      devUrl: undefined,
+    } as const;
+
+    it.effect("gives the server its own provider homes by default", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const root = path.join(path.resolve("/tmp/t3-dev"), "provider-homes");
+        const env = yield* createDevRunnerEnv({ ...input, baseEnv: realLogins });
+
+        assert.equal(env.CLAUDE_CONFIG_DIR, path.join(root, "claude"));
+        assert.equal(env.CODEX_HOME, path.join(root, "codex"));
+        assert.equal(env.GROK_HOME, path.join(root, "grok"));
+        assert.equal(env.PI_CODING_AGENT_DIR, path.join(root, "pi"));
+      }),
+    );
+
+    it.effect("drops the machine's Claude token and keeps Codex MCP sign-ins in its own home", () =>
+      Effect.gen(function* () {
+        const env = yield* createDevRunnerEnv({ ...input, baseEnv: realLogins });
+
+        assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
+        assert.deepStrictEqual(tokenizeCliArgs(env.T3CODE_CODEX_LAUNCH_ARGS), [
+          "--search",
+          "-c",
+          'mcp_oauth_credentials_store="file"',
+        ]);
+      }),
+    );
+
+    it.effect("uses the real homes when a test opts in, leaving explicit variables alone", () =>
+      Effect.gen(function* () {
+        const env = yield* createDevRunnerEnv({
+          ...input,
+          baseEnv: realLogins,
+          realProviders: true,
+        });
+
+        assert.deepStrictEqual(
+          [
+            env.CLAUDE_CONFIG_DIR,
+            env.CODEX_HOME,
+            env.GROK_HOME,
+            env.PI_CODING_AGENT_DIR,
+            env.CLAUDE_CODE_OAUTH_TOKEN,
+            env.T3CODE_CODEX_LAUNCH_ARGS,
+          ],
+          [
+            realLogins.CLAUDE_CONFIG_DIR,
+            realLogins.CODEX_HOME,
+            realLogins.GROK_HOME,
+            realLogins.PI_CODING_AGENT_DIR,
+            realLogins.CLAUDE_CODE_OAUTH_TOKEN,
+            realLogins.T3CODE_CODEX_LAUNCH_ARGS,
+          ],
+        );
+      }),
+    );
+
+    it.effect("sets no provider home in the real mode when the developer set none", () =>
+      Effect.gen(function* () {
+        const env = yield* createDevRunnerEnv({ ...input, baseEnv: {}, realProviders: true });
+
+        assert.equal(env.CLAUDE_CONFIG_DIR, undefined);
+        assert.equal(env.CODEX_HOME, undefined);
+      }),
+    );
+
+    const makeWorktreeWithSettings = (settings: unknown) =>
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-devrunner-"));
+          NodeFS.writeFileSync(
+            NodePath.join(root, ".git"),
+            "gitdir: /elsewhere/.git/worktrees/x\n",
+          );
+          NodeFS.mkdirSync(NodePath.join(root, ".t3", "userdata"), { recursive: true });
+          NodeFS.writeFileSync(
+            NodePath.join(root, ".t3", "userdata", "settings.json"),
+            JSON.stringify(settings),
+          );
+          return root;
+        }),
+        (root) => Effect.sync(() => NodeFS.rmSync(root, { recursive: true, force: true })),
+      );
+
+    const runInWorktree = (root: string, realProviders: boolean | undefined) =>
+      runDevRunnerWithInput({ ...devServerInput, t3Home: undefined, realProviders }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            emptyConfigLayer,
+            netServiceLayer,
+            Layer.succeed(
+              ChildProcessSpawner.ChildProcessSpawner,
+              ChildProcessSpawner.make(() => Effect.succeed(mockProcess(0))),
+            ),
+          ),
+        ),
+        Effect.provideService(HostProcess.Platform, "linux"),
+        Effect.provideService(HostProcess.WorkingDirectory, root),
+        // No ~/.t3 here, so these runs never seed from this machine's install.
+        Effect.provideService(HostProcess.HomeDirectory, root),
+        Effect.provideService(HostProcess.Environment, {}),
+      );
+
+    const settingsWithHomes = {
+      providerInstances: {
+        claudeAgent: { driver: "claudeAgent", config: { homePath: "~/.claude_personal" } },
+        codex_work: {
+          driver: "codex",
+          environment: [{ name: "CODEX_HOME", value: "/home/dev/.codex_work" }],
+        },
+      },
+    };
+
+    it.effect("refuses stored settings that point an instance at a real home", () =>
+      Effect.gen(function* () {
+        const root = yield* makeWorktreeWithSettings(settingsWithHomes);
+        const error = yield* runInWorktree(root, undefined).pipe(Effect.flip);
+
+        assert.instanceOf(error, DevRunnerRealProviderHomesError);
+        assert.deepStrictEqual(
+          (error as DevRunnerRealProviderHomesError).homes.map((home) => home.instanceId),
+          ["claudeAgent", "codex_work"],
+        );
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("starts with the same settings once a test opts in to real providers", () =>
+      Effect.gen(function* () {
+        const root = yield* makeWorktreeWithSettings(settingsWithHomes);
+        yield* runInWorktree(root, true);
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("starts when stored settings keep every home inside the dev state", () =>
+      Effect.gen(function* () {
+        const root = yield* makeWorktreeWithSettings({ providerInstances: {} });
+        const inside = NodePath.join(root, ".t3", "provider-homes", "claude");
+        NodeFS.writeFileSync(
+          NodePath.join(root, ".t3", "userdata", "settings.json"),
+          JSON.stringify({
+            providerInstances: {
+              claude_dev: { driver: "claudeAgent", config: { homePath: inside } },
+            },
+          }),
+        );
+        yield* runInWorktree(root, undefined);
+      }).pipe(Effect.scoped),
     );
   });
 

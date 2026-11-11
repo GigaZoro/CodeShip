@@ -31,8 +31,12 @@ Press `Ctrl+Alt+Shift+R` for a picker (GNOME takes that key for screen
 recording), call `window.t3dev.replay("showcase")`
 with `preview_evaluate`, or run
 `node apps/server/src/bin.ts thread start --base-dir .t3 --provider devReplay --model showcase <project> "go"`.
-When the test needs real provider behavior, use that provider's cheapest
-model, such as Haiku for Claude or Luna for Codex.
+Dev servers run on their own empty provider homes, so real providers show as
+signed out: your real logins use rotating refresh tokens, and a second process
+refreshing one signs the account out. When the test needs real provider
+behavior, start with `vp run dev --real-providers` (or
+`T3CODE_DEV_REAL_PROVIDERS=1`) and use that provider's cheapest model, such as
+Haiku for Claude or Luna for Codex.
 
 ## Use the Browser panel
 
