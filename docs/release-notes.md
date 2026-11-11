@@ -1,3 +1,8 @@
+## 2026-11-12 — Checks before landing run the tests that exercise a change
+
+- Before T3.CodeShip work lands on main, its checks now also run the tests that reach a changed file through test helpers, such as an agent's recorded replay tests when that agent's adapter changes. Before, only the tests next to a changed file ran, so a replay test that no longer matched the adapter reached main unseen and failed on every later run.
+- A check run whose changed files are edited while it runs now fails and asks to run again, instead of passing on code it never saw in its final state. Files the checks generate themselves only keep that run out of the cache.
+
 ## 2026-11-12 — A scheduled task's check can read and write ThreadPage
 
 - A **Check before running** command can now use the machine's ThreadPage connection without seeing its token. While the check runs it gets `T3CODE_THREADPAGE_URL`, an address on the machine's own T3.CodeShip server, and `T3CODE_THREADPAGE_TOKEN`, a token that stops working when the check ends. With them it can list a folder's active threads with their status, description and last activity (`GET …/threads?folder_id=`) and add a note to a thread (`POST …/notes`). A check can now decide from ThreadPage whether there is work, and write a note on every run.

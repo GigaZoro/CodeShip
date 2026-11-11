@@ -1,11 +1,13 @@
-// @effect-diagnostics nodeBuiltinImport:off - hashes inputs with node:crypto and sizes the budget with node:os.
+// @effect-diagnostics nodeBuiltinImport:off - hashes inputs with node:crypto, sizes the budget with node:os, and resolves test imports with node:path.
 // Runs CI's fast checks for this branch's changes: format and lint of the
 // changed files, knip, generated GraphQL operations, typecheck of the affected
-// packages and their dependents, the test files beside the changed files, and
-// the cross-file checks those miss (agent context budget, React Compiler
-// coverage of the changed client files).
+// packages and their dependents, the test files beside the changed files and
+// those that import them directly or through test-support code, and the
+// cross-file checks those miss (agent context budget, React Compiler coverage
+// of the changed client files).
 // A dependency change also gets the unused-patch install check below. CI still
-// runs the full test suites and the jobs listed in the summary.
+// runs the full test suites and the jobs listed in the summary; the fork's CI
+// does not, so these tests are the last ones a change meets before main.
 //
 //   vp run check:changed                  compare against the closest merge base with any remote main
 //   vp run check:changed <ref>            compare against the merge base with <ref>
@@ -20,6 +22,7 @@
 // run's summary.
 import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -42,6 +45,8 @@ import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
 
 const GiB = 1024 ** 3;
+// The test step's limit grows by this much per selected file: server tests run one at a time.
+const TEST_FILE_SECONDS = 120;
 
 // A typecheck or test step can take several cores and gigabytes of memory, so
 // allow one step per two cores and per 6 GiB of available memory.
@@ -57,6 +62,8 @@ export interface Step<R> {
   readonly weight?: number;
   // Vitest runs started together race to rebuild node_modules/.vitest-cache (ENOTEMPTY).
   readonly serial?: boolean;
+  // Replaces the run's timeout for a step whose work grows with its input.
+  readonly timeoutSeconds?: number;
 }
 
 // Interrupting a step at its timeout closes the scopes of the processes it
@@ -74,17 +81,16 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
     steps,
     (step) => {
       const timed = Effect.gen(function* () {
+        const timeoutSeconds = step.timeoutSeconds ?? options.timeoutSeconds;
         const started = yield* Clock.currentTimeMillis;
-        const result = yield* Effect.timeoutOption(step.run, `${options.timeoutSeconds} seconds`);
+        const result = yield* Effect.timeoutOption(step.run, `${timeoutSeconds} seconds`);
         const seconds = ((yield* Clock.currentTimeMillis) - started) / 1000;
         const outcome: Outcome = Option.match(result, {
           onNone: () => "TIMEOUT",
           onSome: ({ ok }) => (ok ? "pass" : "FAIL"),
         });
         const time =
-          outcome === "TIMEOUT"
-            ? `killed after ${options.timeoutSeconds}s`
-            : `${seconds.toFixed(1)}s`;
+          outcome === "TIMEOUT" ? `killed after ${timeoutSeconds}s` : `${seconds.toFixed(1)}s`;
         yield* Console.log(`\n> vp ${step.name}  ${outcome}  ${time}`);
         const output = Option.getOrUndefined(result)?.output.trimEnd();
         if (output) yield* Console.log(output);
@@ -187,6 +193,115 @@ export const splitTests = (tests: Iterable<string>) => {
 };
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+// Harnesses, fakes and fixtures: code that exists to drive tests.
+const SUPPORT_DIR =
+  /^(?:testkit|testing|test|tests|__tests__|fixtures|testUtils|testFixtures|[\w.-]+-testing)$/;
+const SUPPORT_FILE = /(?:^|\.)(?:testkit|testing|fixture)\.[cm]?[jt]sx?$/;
+const isTestSupport = (file: string) => {
+  const parts = file.split("/");
+  return (
+    CODE.test(file) &&
+    !TEST.test(file) &&
+    (SUPPORT_FILE.test(parts.at(-1) ?? "") ||
+      parts.slice(0, -1).some((part) => SUPPORT_DIR.test(part)))
+  );
+};
+const isTestCode = (file: string) =>
+  !file.startsWith(".repos/") && (TEST.test(file) || isTestSupport(file));
+// Relative paths in any string count, so `new URL("./x.ndjson", import.meta.url)` reaches data files.
+const RELATIVE_REFERENCE = /["'`](\.\.?\/[^"'`\s$]+)["'`]/g;
+const PACKAGE_IMPORT = /\b(?:from|import|import\s*\(|vi\.mock\()\s*["']([^"'./][^"']*)["']/g;
+const RE_EXPORT =
+  /export\s+(?:type\s+)?(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s+from\s+["'][^"']+["'];?/g;
+const COMMENT = /\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
+const SOURCE_SUFFIXES = ["", ".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", "/index.ts"];
+
+const exportTarget = (exports: unknown, subpath: string) => {
+  const entry =
+    typeof exports === "object" && exports !== null
+      ? Reflect.get(exports, subpath)
+      : subpath === "."
+        ? exports
+        : undefined;
+  const target =
+    typeof entry === "object" && entry !== null
+      ? (Reflect.get(entry, "import") ??
+        Reflect.get(entry, "default") ??
+        Reflect.get(entry, "types"))
+      : entry;
+  return typeof target === "string" ? target : undefined;
+};
+
+/**
+ * Tests that import a changed file directly or through test-support code. A
+ * production importer ends the walk: Vitest's full import graph pulled 252 of
+ * 406 server test files in for one leaf file. A barrel that only re-exports
+ * selects nothing; typecheck covers it.
+ */
+export const testsReaching = (input: {
+  readonly changed: ReadonlyArray<string>;
+  readonly files: ReadonlySet<string>;
+  readonly packages: ReadonlyArray<{
+    readonly name: string;
+    readonly dir: string;
+    readonly exports: unknown;
+  }>;
+  readonly read: (file: string) => string;
+}) => {
+  const resolvePath = (base: string) => {
+    const normalized = NodePath.posix.normalize(base);
+    for (const suffix of SOURCE_SUFFIXES) {
+      if (input.files.has(normalized + suffix)) return normalized + suffix;
+    }
+    const typescript = normalized.replace(/\.([cm]?)js$/, ".$1ts");
+    return input.files.has(typescript) ? typescript : undefined;
+  };
+  const byLongestName = input.packages.toSorted((a, b) => b.name.length - a.name.length);
+  const resolvePackage = (specifier: string) => {
+    const pkg = byLongestName.find(
+      ({ name }) => specifier === name || specifier.startsWith(`${name}/`),
+    );
+    if (pkg === undefined) return undefined;
+    const subpath = `.${specifier.slice(pkg.name.length)}`;
+    const target = exportTarget(pkg.exports, subpath) ?? subpath;
+    return resolvePath(NodePath.posix.join(pkg.dir, target));
+  };
+
+  const importers = new Map<string, Array<string>>();
+  for (const file of input.files) {
+    if (!isTestCode(file)) continue;
+    const text = input.read(file);
+    const targets = new Set([
+      ...[...text.matchAll(RELATIVE_REFERENCE)].map(([, specifier]) =>
+        resolvePath(NodePath.posix.join(NodePath.posix.dirname(file), specifier!)),
+      ),
+      ...[...text.matchAll(PACKAGE_IMPORT)].map(([, specifier]) => resolvePackage(specifier!)),
+    ]);
+    for (const target of targets) {
+      if (target === undefined || target === file) continue;
+      const known = importers.get(target);
+      if (known === undefined) importers.set(target, [file]);
+      else known.push(file);
+    }
+  }
+
+  const isBarrel = (file: string) =>
+    CODE.test(file) &&
+    input.read(file).replace(COMMENT, "").replace(RE_EXPORT, "").trim().length === 0;
+  const queue = input.changed.filter((file) => !isBarrel(file));
+  const seen = new Set(queue);
+  const tests = new Set<string>();
+  for (let index = 0; index < queue.length; index += 1) {
+    for (const importer of importers.get(queue[index]!) ?? []) {
+      if (seen.has(importer)) continue;
+      seen.add(importer);
+      if (TEST.test(importer)) tests.add(importer);
+      else queue.push(importer);
+    }
+  }
+  return [...tests].sort();
+};
+
 // A flag wins over its environment variable; either must be a positive integer.
 const override = Effect.fn("checkChanged.override")(function* (
   flagName: string,
@@ -207,19 +322,6 @@ export const docReaderTests = (files: ReadonlyArray<string>) =>
   files.includes("docs/user/t3-connect-troubleshooting.md")
     ? ["apps/server/src/cloud/ConnectReachability.test.ts"]
     : [];
-
-// Replay fixtures run an adapter against recorded sessions from testkit, not from beside it.
-export const adapterReplayTests = (files: ReadonlyArray<string>) =>
-  files.flatMap((file) => {
-    const adapter = /^apps\/server\/src\/orchestration-v2\/Adapters\/(\w+)AdapterV2\.ts$/.exec(
-      file,
-    );
-    return adapter === null
-      ? []
-      : [
-          `apps/server/src/orchestration-v2/testkit/${adapter[1]}ReplayFixtures.integration.test.ts`,
-        ];
-  });
 
 const checkChanged = Effect.fn("checkChanged")(function* (input: {
   readonly ref: Option.Option<string>;
@@ -262,12 +364,27 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   }
   yield* Console.log(`check:changed: ${files.length} files since ${base.slice(0, 12)} (${ref})`);
 
-  // Ignored generated sources, declarations, env files, and install state affect check results.
-  // Include them in the key, but skip large ignored folders that no check reads.
-  // Recompute after a passing run so edits made during it are never cached as passing.
+  // `source` hashes the change's own files. `inputs` adds the ignored generated sources,
+  // declarations, env files, and install state that affect results but that no large
+  // ignored folder holds. The checks write some of those (typecheck writes
+  // apps/marketing/.astro), so they key the cache but never fail a run.
   const ci = Option.getOrElse(yield* Config.option(Config.String("CI")), () => "");
-  const inputKey = Effect.gen(function* () {
+  const fingerprints = Effect.gen(function* () {
     const hash = NodeCrypto.createHash("sha256");
+    const add = (paths: ReadonlyArray<string>) =>
+      Effect.forEach(
+        paths,
+        (file) =>
+          Effect.gen(function* () {
+            hash.update(`\0${file}\0`);
+            // Untracked nested repositories are listed as directories.
+            const info = yield* Effect.option(fs.stat(inRoot(file)));
+            if (Option.isSome(info) && info.value.type === "File") {
+              hash.update(yield* fs.readFile(inRoot(file)));
+            }
+          }),
+        { discard: true },
+      );
     // CI changes test behavior (vite.config.ts rejects .only under CI).
     hash.update(`${process.version}\0${base}\0${ci}\0`);
     hash.update(
@@ -281,37 +398,30 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
         "--",
       ]),
     );
-    const ignored = yield* lines(
-      "ls-files",
-      "--others",
-      "--ignored",
-      "--exclude-standard",
-      "--",
-      ":(glob)**/.generated/**",
-      ":(glob)**/.astro/**",
-      ":(glob)**/*.d.ts",
-      ":(glob)**/.env*",
-      ":(exclude,glob)**/node_modules/**",
-    );
-    for (const file of [
-      // Raw bytes of changed files too: .gitattributes normalizes line endings in
-      // the diff, but the formatter reads the file as it is on disk.
-      ...(yield* changedFiles),
-      ...(yield* untrackedFiles),
-      ...ignored,
+    // Raw bytes of changed files too: .gitattributes normalizes line endings in
+    // the diff, but the formatter reads the file as it is on disk.
+    yield* add([...(yield* changedFiles), ...(yield* untrackedFiles)]);
+    const source = hash.copy().digest("hex");
+    yield* add([
+      ...(yield* lines(
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "--",
+        ":(glob)**/.generated/**",
+        ":(glob)**/.astro/**",
+        ":(glob)**/*.d.ts",
+        ":(glob)**/.env*",
+        ":(exclude,glob)**/node_modules/**",
+      )),
       "node_modules/.modules.yaml",
       "node_modules/.pnpm/lock.yaml",
-    ]) {
-      hash.update(`\0${file}\0`);
-      // Untracked nested repositories are listed as directories.
-      const info = yield* Effect.option(fs.stat(inRoot(file)));
-      if (Option.isSome(info) && info.value.type === "File") {
-        hash.update(yield* fs.readFile(inRoot(file)));
-      }
-    }
-    return hash.digest("hex");
+    ]);
+    return { source, inputs: hash.digest("hex") };
   });
-  const key = yield* inputKey;
+  const before = yield* fingerprints;
+  const key = before.inputs;
   const cachePath = inRoot("node_modules/.cache/check-changed.json");
   // A missing or unreadable cache is a miss, never a failure.
   const cached = yield* fs
@@ -328,10 +438,10 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const packages = readWorkspace();
   const { affected, outputs } = decide(files, packages, false);
 
-  // Changed test files, and the test files beside a changed source file
-  // (foo.ts -> foo.test.ts, foo.browser.test.tsx). Vitest's import-graph
-  // `related` reaches most of a package: one leaf server file pulled in 252 of
-  // 406 server test files and took 7 minutes. CI runs the rest.
+  // Changed test files, the test files beside a changed source file
+  // (foo.ts -> foo.test.ts, foo.browser.test.tsx), and the tests that reach a
+  // changed file through test code, such as a provider's replay fixtures
+  // through its adapter's testkit.
   const tests = new Set(code.filter((file) => TEST.test(file)));
   for (const file of code) {
     const dir = path.dirname(file);
@@ -340,10 +450,27 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       if (entry.startsWith(prefix) && TEST.test(entry)) tests.add(path.join(dir, entry));
     }
   }
-  for (const test of docReaderTests(files)) tests.add(test);
-  for (const test of adapterReplayTests(files)) {
-    if (yield* fs.exists(inRoot(test))) tests.add(test);
+  const workspaceFiles = new Set([...(yield* lines("ls-files")), ...(yield* untrackedFiles)]);
+  const contents = new Map<string, string>();
+  yield* Effect.forEach(
+    [...workspaceFiles].filter((file) => isTestCode(file) || code.includes(file)),
+    (file) =>
+      Effect.gen(function* () {
+        // A tracked file deleted in the working tree references nothing.
+        if (!(yield* fs.exists(inRoot(file)))) return;
+        contents.set(file, yield* fs.readFileString(inRoot(file)).pipe(Effect.orDie));
+      }),
+    { concurrency: 64, discard: true },
+  );
+  for (const test of testsReaching({
+    changed: present,
+    files: workspaceFiles,
+    packages,
+    read: (file) => contents.get(file) ?? "",
+  })) {
+    tests.add(test);
   }
+  for (const test of docReaderTests(files)) tests.add(test);
   // It reads files other than the ones beside it, so no changed file selects it.
   if (affected.includes("t3")) tests.add("apps/server/src/provider/AgentContextBudget.test.ts");
   const { vitestTests, nodeTests } = splitTests(tests);
@@ -527,6 +654,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
               ...vitestTests,
             ]),
             serial: true,
+            timeoutSeconds: Math.max(timeoutSeconds, TEST_FILE_SECONDS * vitestTests.length),
           },
         ]
       : []),
@@ -564,7 +692,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   }
   if (results.some((result) => result.outcome === "TIMEOUT")) {
     summary.push(
-      `  TIMEOUT: ran past ${timeoutSeconds}s and was killed; this is not a check failure. ` +
+      "  TIMEOUT: ran past its time limit and was killed; this is not a check failure. " +
         "Raise --timeout or lower --concurrency.",
     );
   }
@@ -580,9 +708,18 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   if (!runKnip) summary.push("  knip skipped: no code or manifest changed");
   yield* Console.log(`\n${summary.join("\n")}`);
 
+  // A test run keeps the version of each file it loaded first, so its result
+  // can mix two versions of the code, and a pass would not describe these files.
+  const after = yield* fingerprints;
+  if (after.source !== before.source) {
+    yield* Console.log(
+      "  FAIL  files changed while the checks ran, so their results can mix old and new code. Run again.",
+    );
+    return false;
+  }
   if (results.some((result) => result.outcome !== "pass")) return false;
-  if ((yield* inputKey) !== key) {
-    yield* Console.log("  pass not cached: files changed during the run");
+  if (after.inputs !== key) {
+    yield* Console.log("  pass not cached: generated files changed during the run");
     return true;
   }
   // Write then rename, so a concurrent run never reads half a file.

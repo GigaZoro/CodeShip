@@ -3,6 +3,7 @@ interface WorkspacePackage {
   readonly dir: string;
   readonly hasTest: boolean;
   readonly deps: ReadonlyArray<string>;
+  readonly exports: unknown;
 }
 
 export function readWorkspace(): Array<WorkspacePackage>;

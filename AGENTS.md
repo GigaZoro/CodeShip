@@ -102,8 +102,9 @@ An empty database is a bad test. Seed your worktree's `.t3` with a copy of real 
 
 ## Verifying
 
-- Before you push, run `vp run check:changed`. It runs CI's fast checks for changed files: format, lint, knip, typecheck of affected packages and dependents, tests beside changes, and the cross-file checks those miss. CI still runs the full test suites.
+- Before you push, run `vp run check:changed`. It runs CI's fast checks for changed files: format, lint, knip, typecheck of affected packages and dependents, the tests beside changes and those that import them directly or through test-support code (testkits, fixtures), and the cross-file checks those miss. Upstream CI still runs the full test suites; the fork's CI does not, so these are the last tests before main.
 - While you iterate, run `vp test run <files>`. For big files, add `-t "<name>"`.
+- A test run keeps the version of each file it loaded first. Do not edit files while a run that reads them is in flight, and run again after an edit before you trust its pass or failure. `check:changed` fails a run whose files changed while it ran.
 - Use `vp run typecheck`, not `npx tsc`; it caches per package. Both run tsc-rs (`typescript` is the `@tsc-rs/typescript` drop-in).
 - Run `node -e` snippets from `apps/server` or the owning package. `effect` does not resolve from the repo root.
 - Test behavior that can break, such as orchestration and event-sourcing, provider protocol translation, auth and permission guards, persistence and migrations, external-format parsing, race fixes, and the logic a bug fix changed. Leave out tests for what types already guarantee, trivial logic, copy text, smoke runs, mock-call mirrors, callback wiring, and props rendered to static markup.

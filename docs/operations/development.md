@@ -214,12 +214,15 @@ for the security model.
 
 `vp run check:changed` runs CI's fast checks for your branch's changes: format and lint of the
 changed files, `knip:check` when code or a manifest changes, the generated GraphQL checks, typecheck
-of the affected packages and their dependents, and the test files beside the changed files. It also
-runs the checks that read other files: the agent context budget when the server is affected, and
-React Compiler coverage for only the changed web and mobile files. It maps
+of the affected packages and their dependents, the test files beside the changed files, and the
+test files that import a changed file directly or through test-support code (a `*.testkit.ts`, a
+`testkit/`, `testing/`, `test/` or `fixtures/` folder). The walk stops at production code, so a
+provider's replay suites run when its adapter changes, but not every test that loads the server.
+It also runs the checks that read other files: the agent context budget when the server is
+affected, and React Compiler coverage for only the changed web and mobile files. It maps
 files to packages with [ci-changes.cjs](../../.github/scripts/ci-changes.cjs), as CI does. It
 compares against the closest merge base with any remote's `main`, so a fork whose `main` lags
-upstream still compares against upstream, or with a ref you pass. CI still runs the full
+upstream still compares against upstream, or with a ref you pass. Upstream CI still runs the full
 test suites and the jobs the summary lists, so a local pass does not promise a green CI run.
 
 The steps run side by side, as many at once as the machine allows: one per two cores and per 6 GiB
@@ -229,7 +232,10 @@ change the limit (`1` runs the steps one by one). A step that runs past `--timeo
 `CHECK_CHANGED_TIMEOUT` (default 900) is killed with every process it started and reported as
 `TIMEOUT`, not as a failing check. When the files are exactly those of the last passing run, it prints that
 run's summary instead of running again. Any change to a file, the install, or a generated file runs
-the checks again.
+the checks again. Editing a file of the change while the checks run fails the run: a test run keeps
+the version of each file it loaded first, so its result would mix old and new code. A generated
+file that the checks themselves rewrite only keeps that pass out of the cache. The test step's
+limit grows by two minutes per selected test file, because server test files run one at a time.
 
 While you iterate, run single checks:
 

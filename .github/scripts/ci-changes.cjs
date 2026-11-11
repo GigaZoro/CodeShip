@@ -84,6 +84,7 @@ function readWorkspace() {
       name: manifest.name,
       dir,
       hasTest: Boolean(manifest.scripts?.test),
+      exports: manifest.exports,
       deps: Object.keys(deps).filter(
         (dep) =>
           String(deps[dep]).startsWith("workspace:") &&

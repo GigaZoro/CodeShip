@@ -16,7 +16,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as TestClock from "effect/testing/TestClock";
 
 import {
-  adapterReplayTests,
   comparisonBase,
   defaultConcurrency,
   docReaderTests,
@@ -24,6 +23,7 @@ import {
   runSteps,
   splitTests,
   type Step,
+  testsReaching,
 } from "./check-changed.ts";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 
@@ -48,17 +48,6 @@ describe("check:changed", () => {
     ]);
     assert.deepStrictEqual(decide(["docs/user/install.md"], packages, false).affected, []);
     assert.isTrue(decide(["docs/release-notes.md"], packages, false).outputs.test_web);
-  });
-
-  it("runs the replay fixtures of a changed adapter", () => {
-    assert.deepStrictEqual(
-      adapterReplayTests([
-        "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
-        "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/ClaudeTaskOutputTail.ts",
-      ]),
-      ["apps/server/src/orchestration-v2/testkit/ClaudeReplayFixtures.integration.test.ts"],
-    );
   });
 
   it.effect(
@@ -136,21 +125,24 @@ describe("check:changed", () => {
           },
           { name: "fails", run: Effect.succeed({ ok: false, output: "error" }) },
           { name: "passes", run: Effect.succeed({ ok: true, output: "" }) },
+          { name: "allowed longer", run: Effect.never, timeoutSeconds: 20 },
         ],
-        { concurrency: 3, timeoutSeconds: 10 },
+        { concurrency: 4, timeoutSeconds: 10 },
       ).pipe(Effect.forkChild);
       yield* TestClock.adjust("9 seconds");
       assert.isFalse(interrupted);
       yield* TestClock.adjust("1 second");
+      assert.isTrue(interrupted);
+      yield* TestClock.adjust("10 seconds");
       const results = yield* Fiber.join(fiber);
 
-      assert.isTrue(interrupted);
       assert.deepStrictEqual(
         results.map(({ name, outcome, time }) => [name, outcome, time]),
         [
           ["hangs", "TIMEOUT", "killed after 10s"],
           ["fails", "FAIL", "0.0s"],
           ["passes", "pass", "0.0s"],
+          ["allowed longer", "TIMEOUT", "killed after 20s"],
         ],
       );
     }),
@@ -209,6 +201,52 @@ describe("check:changed", () => {
         "check:changed: git ls-files exited with 128: fatal: index file corrupt",
       );
     });
+  });
+
+  // A provider's replay suite reaches its adapter through the adapter's testkit
+  // and the fixture index, which is how 40b1b72673 broke one unseen.
+  const reachSources: Record<string, string> = {
+    "server/Adapter.ts": "export const run = 1;\n",
+    "server/Adapter.testkit.ts": 'import { run } from "./Adapter.ts";\n',
+    "server/testkit/fixtures/index.ts": [
+      'import "../../Adapter.testkit.ts";',
+      'export const transcript = new URL("./case/transcript.ndjson", import.meta.url);',
+    ].join("\n"),
+    "server/testkit/fixtures/case/transcript.ndjson": "{}\n",
+    "server/testkit/Replay.integration.test.ts":
+      'import { transcript } from "./fixtures/index.ts";\n',
+    "server/Service.ts": 'import { run } from "./Adapter.ts";\n',
+    "server/Service.test.ts": 'import { service } from "./Service.ts";\n',
+    "core/src/failure.ts": "export const code = 1;\n",
+    "core/src/index.ts":
+      '// Public API.\nexport * from "./failure.ts";\nexport { type A } from "./a.ts";\n',
+    "server/Failure.test.ts": 'import { code } from "@t3/core/failure";\n',
+    "server/Barrel.test.ts": 'import { code } from "@t3/core";\n',
+  };
+  it.each([
+    ["server/Adapter.ts", ["server/testkit/Replay.integration.test.ts"]],
+    [
+      "server/testkit/fixtures/case/transcript.ndjson",
+      ["server/testkit/Replay.integration.test.ts"],
+    ],
+    ["core/src/failure.ts", ["server/Failure.test.ts"]],
+    ["core/src/index.ts", []],
+  ])("selects the tests that reach %s through test code", (changed, expected) => {
+    assert.deepStrictEqual(
+      testsReaching({
+        changed: [changed],
+        files: new Set(Object.keys(reachSources)),
+        packages: [
+          {
+            name: "@t3/core",
+            dir: "core",
+            exports: { ".": "./src/index.ts", "./failure": { import: "./src/failure.ts" } },
+          },
+        ],
+        read: (file) => reachSources[file] ?? "",
+      }),
+      expected,
+    );
   });
 
   it.each([
@@ -321,7 +359,7 @@ function launcherFixture() {
   ]) {
     write(file, NodeFS.readFileSync(NodePath.join(import.meta.dirname, "..", file), "utf8"));
   }
-  write(".gitignore", "node_modules/\nrecords/\n");
+  write(".gitignore", "node_modules/\nrecords/\n.generated/\n");
   write("pnpm-workspace.yaml", "packages:\n  - packages/*\n");
   write(
     "package.json",
@@ -343,6 +381,7 @@ function launcherFixture() {
     fs.writeFileSync(path.join(process.env.RECORDS, process.pid + '.json'), JSON.stringify({ args, cwd: process.cwd() }));
     console.log('fixture stdout: ' + args[0]);
     console.error('fixture stderr: ' + args[0]);
+    if (args[0] === process.env.EDIT_STEP) fs.appendFileSync(process.env.EDIT_FILE, "// edited\\n");
     process.exit(args[0] === process.env.FAIL_STEP ? 23 : 0);
   `,
   );
@@ -386,11 +425,18 @@ function launcherFixture() {
     root,
     source,
     write,
-    run(failStep = "") {
+    run(failStep = "", editStep = "", editFile = source) {
       return NodeChildProcess.spawnSync(process.execPath, ["scripts/check-changed.ts", "HEAD"], {
         cwd: root,
         encoding: "utf8",
-        env: { ...env, TEMP: NodeOS.tmpdir(), RECORDS: records, FAIL_STEP: failStep },
+        env: {
+          ...env,
+          TEMP: NodeOS.tmpdir(),
+          RECORDS: records,
+          FAIL_STEP: failStep,
+          EDIT_STEP: editStep,
+          EDIT_FILE: NodePath.join(root, editFile),
+        },
       });
     },
     calls: (): Array<{ args: Array<string>; cwd: string }> =>
@@ -418,6 +464,24 @@ it("checks changed source paths through the Windows launcher", () => {
   expect(calls.some(({ args }) => args[0] === "install")).toBe(false);
   expect(result.stdout).toContain("fixture stdout: lint");
   expect(result.stdout).toContain("fixture stderr: lint");
+});
+
+it("fails a run whose files changed while its checks ran", () => {
+  using project = launcherFixture();
+  project.write(project.source, "export const value = 2;\n");
+  const result = project.run("", "lint");
+  expect(result.status, result.stdout + result.stderr).toBe(1);
+  expect(result.stdout).toContain("pass  lint");
+  expect(result.stdout).toContain("files changed while the checks ran");
+});
+
+it("passes uncached when a check rewrites a generated file", () => {
+  using project = launcherFixture();
+  project.write(project.source, "export const value = 2;\n");
+  project.write("packages/example/.generated/types.d.ts", "export {};\n");
+  const result = project.run("", "lint", "packages/example/.generated/types.d.ts");
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  expect(result.stdout).toContain("pass not cached: generated files changed during the run");
 });
 
 it.each(["install", "lint"])("reports a failing %s step with its output", (step) => {
