@@ -63,6 +63,18 @@ could lose the only successful RPC result. The client must then observe the
 prepared version after reconnecting. If installation fails, desktop restarts the
 stopped backends and replays the failure for the same token.
 
+## Automatic installs
+
+With `installUpdatesAutomatically` on, a launcher-managed server starts the same update a client
+would, once `untilListedRestartHoldWorkEnds` (shared by clients and
+[the server](../../apps/server/src/cloud/autoUpdate.ts)) says the work listed at that moment has
+ended. Nothing about the update is special: staging, preflight, trial and rollback all apply. The
+back-off for a release that rolled back reads the launcher's settled outcome, which survives the
+restart that the failed attempt's process did not. Failures before the handoff are remembered only
+in memory, because the process that made them is still running. The desktop app does not use this
+path: its renderer starts the existing safe-update install, because the app, not the server, owns
+the restart and the install.
+
 ## Recovering interrupted threads
 
 Restart continuation is an environment-owned preference, on by default. A

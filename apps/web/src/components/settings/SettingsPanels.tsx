@@ -1,6 +1,10 @@
 import { ThreadPageTokenSettings } from "./ThreadPageTokenSettings";
 import { useAtomValue } from "@effect/atom-react";
-import { UsageLimitRecoverySettings, ProviderUpdatesSettings } from "./RecoverySettings";
+import {
+  InstallUpdatesAutomaticallySetting,
+  ProviderUpdatesSettings,
+  UsageLimitRecoverySettings,
+} from "./RecoverySettings";
 import { NotificationSettings } from "./NotificationSettings";
 import { PRIVACY_POLICY_URL } from "../../legalLinks";
 import { CheckIcon } from "lucide-react";
@@ -2086,6 +2090,7 @@ export function MaintenanceSettingsPanel() {
         <>
           <SettingsSection id="updates" title={t("Updates")}>
             <ProviderUpdatesSettings />
+            <InstallUpdatesAutomaticallySetting />
           </SettingsSection>
 
           <SettingsSection id="background" title={t("Background activity")}>

@@ -136,3 +136,26 @@ export function ProviderUpdatesSettings() {
     />
   );
 }
+
+export function InstallUpdatesAutomaticallySetting() {
+  const settings = useScopedSettings();
+  const update = useUpdateScopedSettings();
+  return (
+    <SettingsRow
+      {...searchableSetting("install-updates-automatically")}
+      serverScoped
+      settingKeys={["installUpdatesAutomatically"]}
+      description={t(
+        "Installs a new CodeShip release when no chat is working. Chats cut by the restart resume on their own.",
+      )}
+      control={
+        <ScopedSwitch
+          settingKeys={["installUpdatesAutomatically"]}
+          checked={settings.installUpdatesAutomatically}
+          onCheckedChange={(checked) => update({ installUpdatesAutomatically: Boolean(checked) })}
+          aria-label={t("Install updates automatically when idle")}
+        />
+      }
+    />
+  );
+}

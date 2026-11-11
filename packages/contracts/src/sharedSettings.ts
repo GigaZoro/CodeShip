@@ -49,6 +49,7 @@ export const MACHINE_SHARED_SETTING_KEYS = [
   "ghqCloneLayout",
   "enableProviderUpdateChecks",
   "autoUpdateProviders",
+  "installUpdatesAutomatically",
   "continueThreadsAfterServerUpdate",
   "backgroundActivity",
 ] as const satisfies ReadonlyArray<keyof ServerSettings & keyof ServerSettingsPatch>;

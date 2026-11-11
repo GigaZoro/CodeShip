@@ -97,6 +97,11 @@ export class ServiceLauncherClient extends Context.Service<
   ServiceLauncherClient,
   {
     readonly managed: boolean;
+    /**
+     * The update the launcher settled before this server started, such as one that rolled back to
+     * it. Survives restarts until the next update request, so it outlives the process that asked.
+     */
+    readonly settledOutcome: ServerSelfUpdateOutcome | undefined;
     readonly requestUpdate: (input: {
       readonly targetVersion: string;
       readonly dbPath: string;
@@ -240,6 +245,7 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
 
   return ServiceLauncherClient.of({
     managed,
+    settledOutcome: outcome,
     requestUpdate,
     prepareTrial,
   });

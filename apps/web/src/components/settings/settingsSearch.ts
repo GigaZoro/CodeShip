@@ -665,6 +665,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "environment-defaults",
   },
   {
+    id: "install-updates-automatically",
+    title: msg("Install updates automatically when idle"),
+    to: "/settings/maintenance",
+    searchTerms: [
+      "automatic auto install update release restart idle background service server desktop",
+    ],
+    scope: "environment-defaults",
+  },
+  {
     id: "continue-threads-after-server-update",
     title: msg("Continue threads after restarts"),
     to: "/settings/threads",
