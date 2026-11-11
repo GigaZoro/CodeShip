@@ -51,6 +51,17 @@ export function isolateProviderHomes(
     .join(" ");
 }
 
+/** Creates the isolated provider homes `env` points at; a provider may refuse a missing one. */
+export const ensureIsolatedProviderHomes = Effect.fn("devProviderHomes.ensureIsolated")(function* (
+  env: NodeJS.ProcessEnv,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  for (const variable of DEV_PROVIDER_HOME_VARIABLES) {
+    const home = env[variable];
+    if (home !== undefined) yield* fileSystem.makeDirectory(home, { recursive: true });
+  }
+});
+
 export interface SettingsProviderHome {
   readonly instanceId: string;
   readonly field: string;

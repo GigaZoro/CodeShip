@@ -24,6 +24,7 @@ import { type DevShareError, shareDevServer, unshareDevServer } from "./lib/dev-
 import {
   assertSettingsKeepProviderHomesIsolated,
   isolateProviderHomes,
+  ensureIsolatedProviderHomes,
 } from "./lib/dev-provider-homes.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
 
@@ -791,6 +792,10 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
   // surprising side effect from a command documented as inert.
   if (input.dryRun) {
     return;
+  }
+  if (!realProviders) {
+    // Codex refuses a CODEX_HOME that does not exist, so the isolated homes are made up front.
+    yield* ensureIsolatedProviderHomes(env);
   }
 
   const sharedWebPort = BASE_WEB_PORT + webOffset;
