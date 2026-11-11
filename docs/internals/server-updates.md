@@ -71,7 +71,12 @@ opt-out. The
 [v2 recovery service](../../apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts)
 requires matching durable run, provider thread, session, and native resume identity.
 Queued runs never started, so recovery holds them and continues the run they wait
-behind. A settled run qualifies only when the restart cancels work the agent waits on
+behind. With the preference on, the hold is marked `queueHeldByRestart`: nobody chose it,
+so the thread's next completed run releases it like an agent's held message, and the
+queue follows the continuation. Stop turns it into an ordinary hold, and every release
+drops the mark, so a later failure hold cannot inherit it. The run-update listener does
+not replay completions from before startup, so a startup pass after reconciliation applies
+the same release to threads whose latest run completed, then starts their queues. A settled run qualifies only when the restart cancels work the agent waits on
 (a subagent, a background task, or a shell or monitor the agent marked with
 `t3_background_wait`) and its session was live, so stale records from an older crash
 never wake it. Its continuation prompt is the note of what will not report back. An
@@ -87,7 +92,8 @@ cannot be overwritten by a stale cancellation.
 
 The [continuation handler](../../apps/server/src/orchestration-v2/RestartContinuation.ts)
 rechecks the preference, provider selection, newer user work, a stop the user requested,
-and maintenance turns such as `/compact` before dispatching. Intent and delivery both
+and maintenance turns before dispatching: a cut `/compact` is resumed by compacting
+again, and a cut `/logout` is not repeated, since only a person signs a provider out. Intent and delivery both
 refuse a thread that is archived, settled, or still snoozed, a cut turn whose provider
 turn already ended, and a run waiting on the user: an approval, question, or secret that was pending,
 or that recovery closed on the cut turn. Message-capable questions stay answerable, so

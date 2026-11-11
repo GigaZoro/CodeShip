@@ -1,3 +1,8 @@
+## 2026-11-11 — Queued messages run after a restart resumes the thread
+
+- When the server restarts or shuts down mid-turn, messages you queued no longer wait for you to press **Resume**. The interrupted turn resumes first, and once it finishes the queue runs in order. With **Continue threads after restarts** off, or after you press Stop, the queue stays held as before.
+- An interrupted `/compact` now compacts again after the restart instead of being dropped, so a message queued behind it still gets the compacted context.
+
 ## 2026-11-11 — Machines and projects stay in place
 
 - Machines keep one order everywhere they are listed: this machine first on web and desktop, then the rest by name. A machine going offline or reconnecting no longer drops to the bottom and jumps back.

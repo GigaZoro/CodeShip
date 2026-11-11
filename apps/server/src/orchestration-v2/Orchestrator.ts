@@ -822,6 +822,12 @@ function worktreeSetupPending(
   );
 }
 
+/** Lifting a hold, or a person placing one, ends a restart's claim on it. */
+function withQueueHold(run: OrchestrationV2Run, queueHeld: boolean): OrchestrationV2Run {
+  const { queueHeldByRestart: _byRestart, ...rest } = run;
+  return { ...rest, queueHeld };
+}
+
 function nextQueuedRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
 ): OrchestrationV2Run | undefined {
@@ -2364,7 +2370,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   });
 
   // A hold waits for a person to review what they queued. Nobody reviews messages from agents,
-  // the server or scheduled tasks, so a later completed run releases those unless it was stopped.
+  // the server or scheduled tasks, or holds a restart placed, so a later completed run releases
+  // those unless it was stopped.
   const releaseUnattendedHolds = Effect.fn("Orchestrator.releaseUnattendedHolds")(function* (
     threadId: ThreadId,
     completedRunId: RunId,
@@ -2395,7 +2402,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         .map((message) => message.id),
     );
     const now = yield* DateTime.now;
-    const released = held.filter((run) => unattended.has(run.userMessageId));
+    const released = held.filter(
+      (run) => run.queueHeldByRestart === true || unattended.has(run.userMessageId),
+    );
     if (released.length === 0) return;
     yield* writeSystemEvents(
       released.map((run) => ({
@@ -2404,7 +2413,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         runId: run.id,
         providerInstanceId: run.providerInstanceId,
         occurredAt: now,
-        payload: { ...run, queueHeld: false },
+        payload: withQueueHold(run, false),
       })),
     );
   });
@@ -2413,18 +2422,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const threadIds = yield* projectionStore.getRecoveryThreadIds("queued-runs");
     let resumed = 0;
     for (const threadId of threadIds) {
-      const resumedThread = yield* Effect.gen(function* () {
-        if (!(yield* projectionStore.canStartQueuedRun(threadId))) return false;
-        yield* threadDispatch.withLock(threadId, startNextQueuedRun(threadId));
-        return true;
-      }).pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("Failed to resume queued V2 run after recovery", {
-            threadId,
-            cause,
-          }).pipe(Effect.as(false)),
-        ),
-      );
+      const resumedThread = yield* threadDispatch
+        .withLock(
+          threadId,
+          Effect.gen(function* () {
+            // The run-update listener does not replay completions a restart cut it off from.
+            const { runs } = yield* projectionStore.getThreadRecords(threadId, ["runs"]);
+            const latest = latestExecutedRun(runs);
+            if (latest?.status === "completed") yield* releaseUnattendedHolds(threadId, latest.id);
+            if (!(yield* projectionStore.canStartQueuedRun(threadId))) return false;
+            yield* startNextQueuedRun(threadId);
+            return true;
+          }),
+        )
+        .pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Failed to resume queued V2 run after recovery", {
+              threadId,
+              cause,
+            }).pipe(Effect.as(false)),
+          ),
+        );
       if (resumedThread) {
         resumed += 1;
       }
@@ -5541,7 +5559,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             threadId: command.threadId,
             runId: run.id,
             occurredAt: now,
-            payload: { ...run, ...(unattended ? { queueHeld: false } : {}) },
+            // The skip's Stop is not the user's: their messages keep the hold they had.
+            payload: unattended ? withQueueHold(run, false) : run,
           });
         }
       }
@@ -6134,7 +6153,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         runId: held.id,
         providerInstanceId: held.providerInstanceId,
         occurredAt: releasedAt,
-        payload: { ...held, queueHeld: false },
+        payload: withQueueHold(held, false),
       });
     }
     if (shouldQueue) {
@@ -10644,7 +10663,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         runId: run.id,
         providerInstanceId: run.providerInstanceId,
         occurredAt: now,
-        payload: { ...run, queueHeld: false },
+        payload: withQueueHold(run, false),
       });
     }
   });
@@ -11210,14 +11229,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         );
         continue;
       }
-      if (run.queueHeld === true) continue;
+      // Stop makes a restart's hold the user's, so a later run cannot release it.
+      if (run.queueHeld === true && run.queueHeldByRestart !== true) continue;
       yield* emitEvent({
         type: "run.updated",
         threadId: thread.id,
         runId: run.id,
         providerInstanceId: run.providerInstanceId,
         occurredAt: input.now,
-        payload: { ...run, queueHeld: true },
+        payload: withQueueHold(run, true),
       });
     }
     const pullRequests = thread.pullRequests ?? [];
@@ -13704,7 +13724,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             runId: run.id,
             providerInstanceId: run.providerInstanceId,
             occurredAt: now,
-            payload: { ...run, queueHeld: false },
+            payload: withQueueHold(run, false),
           });
         }
         if (queued.length === 0) {

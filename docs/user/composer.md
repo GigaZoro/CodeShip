@@ -232,7 +232,9 @@ images. **Send now** sends a message right away, into the running turn if there 
 also edit or remove it. On web and desktop, **Undo** in the notice after removing a message
 queues it again, at the end of the queue.
 
-If you stop the agent or the server restarts, queued messages keep their order and are held.
+If you stop the agent, queued messages keep their order and are held. After a server
+restart they are held until the interrupted turn resumes and finishes, then they run in
+order; with **Continue threads after restarts** off, they stay held.
 Press **Resume** in an empty composer to continue. **Resume** also continues a stopped
 run or one that hit a usage limit or lost its connection, even with nothing queued. Sending a new message also resumes the queue, unless it steers a turn that is already
 running. You can edit or remove held messages without starting them.

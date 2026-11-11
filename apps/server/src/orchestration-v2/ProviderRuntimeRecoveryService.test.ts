@@ -575,7 +575,11 @@ it.effect("recovery closes a secret card's form but leaves a link card open", ()
   }).pipe(Effect.provide(layer));
 });
 
-it.effect.each(["queued", "preparing"] as const)("recovers $0 work after restart", (status) => {
+it.effect.each([
+  ["queued", true],
+  ["queued", false],
+  ["preparing", true],
+] as const)("recovers %s work after restart (continuation on: %s)", ([status, continues]) => {
   const threadId = ThreadId.make("thread_queued_restart");
   const runId = RunId.make("run_queued_restart");
   const attemptId = RunAttemptId.make("attempt_queued_restart");
@@ -625,7 +629,7 @@ it.effect.each(["queued", "preparing"] as const)("recovers $0 work after restart
     turnItems: [],
   } as unknown as OrchestrationV2ThreadProjection;
   const layer = ProviderRuntimeRecovery.layer.pipe(
-    Layer.provide(ServerSettings.layerTest()),
+    Layer.provide(ServerSettings.layerTest({ continueThreadsAfterServerUpdate: continues })),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
@@ -677,6 +681,11 @@ it.effect.each(["queued", "preparing"] as const)("recovers $0 work after restart
     } else {
       assert.equal(runEvent?.type === "run.updated" ? runEvent.payload.queuePosition : null, 1);
       assert.equal(runEvent?.type === "run.updated" ? runEvent.payload.queueHeld : false, true);
+      // Only a restart that continues the thread lets the queue follow without a person.
+      assert.equal(
+        runEvent?.type === "run.updated" ? runEvent.payload.queueHeldByRestart : undefined,
+        continues ? true : undefined,
+      );
       assert.isUndefined(attemptEvent);
       assert.isUndefined(nodeEvent);
     }

@@ -435,7 +435,7 @@ Press **Resume** in an empty composer to continue a limited or interrupted turn
 manually. Do this when the provider reports no reset time, because nothing
 continues the turn on its own.
 Queued messages stay saved while the limit blocks the thread. They run after
-the continuation finishes. If the queue was held by a restart, resume it then.
+the continuation finishes.
 
 When the provider reports a reset time, choose **Resume at reset** to schedule a
 continuation. You can cancel it from the thread. Enable **Resume after

@@ -488,7 +488,12 @@ export const make = Effect.gen(function* () {
           runId: run.id,
           providerInstanceId: run.providerInstanceId,
           occurredAt: now,
-          payload: { ...run, queueHeld: true },
+          // Held so nothing starts ahead of the continuation; with continuation on, the queue follows it.
+          payload: {
+            ...run,
+            queueHeld: true,
+            ...(continueAfterRestart ? { queueHeldByRestart: true } : {}),
+          },
         });
       }
       for (const question of questions) {

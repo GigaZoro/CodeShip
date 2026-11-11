@@ -2,6 +2,8 @@ import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
+  IDLE_COMPACTION_TEXT,
+  isCompactionCommandMessage,
   isOrchestrationV2WorkActive,
   latestProviderTurnForAttempt,
   MessageId,
@@ -307,17 +309,22 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
     const sourceMessage = sourceRecords.messages.find(
       (message) => message.id === source.userMessageId,
     );
-    if (sourceMessage !== undefined && isNativeMaintenanceCommand(sourceMessage)) return;
     const note = restartContinuationNote(
       source,
       projection.runs,
       projection.providerTurns,
       projection.attempts,
     );
+    // A cut compaction resumes by compacting again; only a person signs a provider out.
+    const recompact =
+      sourceMessage !== undefined && !note.settled && isCompactionCommandMessage(sourceMessage);
+    if (sourceMessage !== undefined && isNativeMaintenanceCommand(sourceMessage) && !recompact)
+      return;
     const noteText =
       note.work.length === 0 ? undefined : restartCancelledBackgroundWorkNote(note.work);
-    const text =
-      noteText === undefined
+    const text = recompact
+      ? IDLE_COMPACTION_TEXT
+      : noteText === undefined
         ? CONTINUE_PROMPT
         : note.settled
           ? noteText

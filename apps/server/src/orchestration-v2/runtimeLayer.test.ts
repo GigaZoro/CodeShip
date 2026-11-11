@@ -310,7 +310,7 @@ const layerTest = Layer.mergeAll(
   Layer.provideMerge(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStoreTest),
   Layer.provide(layerServerConfig),
-  Layer.provide(ServerSettings.layerTest()),
+  Layer.provideMerge(ServerSettings.layerTest()),
   Layer.provide(layerTestProviderInstanceRegistry),
   Layer.provide(layerGitWorkflowTest),
   Layer.provide(layerProjectServiceTest),
@@ -5778,6 +5778,92 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
+  it.effect.each(["listener", "startup", "stop"] as const)(
+    "starts the user's restart-held queue once the continuation completes, unless Stop took the hold (%s)",
+    (path) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const threadId = ThreadId.make(`runtime-layer-restart-held-queue-${path}`);
+        const { send, runFor, end, startedRunIds, releasedAfter } =
+          yield* queueTestThread(threadId);
+        yield* send("cut", "agent", true);
+        yield* send("queued", "user", false);
+        // Recovery cuts the running turn and holds the queue behind its continuation.
+        const [cut, queued] = [yield* runFor("cut"), yield* runFor("queued")];
+        const now = yield* DateTime.now;
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make(`${threadId}:cut:cancelled`),
+              type: "run.updated",
+              threadId,
+              runId: cut.id,
+              providerInstanceId: cut.providerInstanceId,
+              occurredAt: now,
+              payload: { ...cut, status: "cancelled", completedAt: now },
+            },
+            {
+              id: EventId.make(`${threadId}:queued:restart-hold`),
+              type: "run.updated",
+              threadId,
+              runId: queued.id,
+              providerInstanceId: queued.providerInstanceId,
+              occurredAt: now,
+              payload: { ...queued, queueHeld: true, queueHeldByRestart: true },
+            },
+          ],
+        });
+        if (path === "stop") {
+          yield* orchestrator.dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make(`${threadId}:stop`),
+            threadId,
+          });
+          const held = yield* runFor("queued");
+          assert.isTrue(held.queueHeld);
+          assert.isUndefined(held.queueHeldByRestart);
+          return;
+        }
+        yield* send("continuation", "agent", true);
+        if (path === "listener") {
+          yield* end("continuation", "completed");
+        } else {
+          // The server stopped before the run-update listener saw the completion.
+          const continuation = yield* runFor("continuation");
+          const completedAt = yield* DateTime.now;
+          yield* eventSink.commitCommand({
+            commandId: CommandId.make(`command:runtime-reconcile:${threadId}`),
+            threadId,
+            commandType: "provider-runtime.reconcile",
+            acceptedAt: completedAt,
+            events: [
+              {
+                id: EventId.make(`${threadId}:continuation:completed`),
+                type: "run.updated",
+                threadId,
+                runId: continuation.id,
+                providerInstanceId: continuation.providerInstanceId,
+                occurredAt: completedAt,
+                payload: {
+                  ...continuation,
+                  status: "completed",
+                  startedAt: completedAt,
+                  completedAt,
+                },
+              },
+            ],
+            effects: [],
+          });
+          assert.isTrue((yield* runFor("queued")).queueHeld);
+          yield* orchestrator.resumeQueuedRuns;
+        }
+        assert.equal(yield* Queue.take(startedRunIds), queued.id);
+        yield* releasedAfter("queued", "continuation");
+        assert.isUndefined((yield* runFor("queued")).queueHeldByRestart);
+      }),
+  );
+
   it.effect("keeps held agent messages while the thread's worktree setup is unresolved", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -6576,7 +6662,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         for (const run of queued) {
           assert.deepEqual(
             held.runs.find((row) => row.id === run.id),
-            { ...run, queueHeld: true },
+            { ...run, queueHeld: true, queueHeldByRestart: true },
           );
           assert.deepEqual(
             held.messages.find((row) => row.id === run.userMessageId),
@@ -6624,79 +6710,96 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       }),
   );
 
-  it.effect("starts a provider wake queued beside a held queue", () =>
-    Effect.gen(function* () {
-      const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
-      const events = yield* EventSink.EventSinkV2;
-      const threadId = ThreadId.make("queue-hold-provider-wake");
-      yield* orchestrator.dispatch({
-        type: "thread.create",
-        createdBy: "user",
-        creationSource: "web",
-        commandId: CommandId.make(`${threadId}:create`),
-        threadId,
-        projectId: ProjectId.make(`${threadId}:project`),
-        title: "Wake beside a held queue",
-        modelSelection,
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        branch: null,
-        worktreePath: process.cwd(),
-      });
-      const send = (index: number, text: string, source: "web" | "provider" | "server" = "web") =>
-        orchestrator.dispatch({
-          type: "message.dispatch",
-          createdBy: source === "web" ? "user" : "agent",
-          creationSource: source,
-          commandId: CommandId.make(`${threadId}:message:${index}`),
+  it.effect.each([false, true])(
+    "starts a provider wake queued beside a held queue (continuation on: %s)",
+    (continues) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
+        const events = yield* EventSink.EventSinkV2;
+        const settings = yield* ServerSettings.ServerSettingsService;
+        const previous = (yield* settings.getSettings).continueThreadsAfterServerUpdate;
+        yield* Effect.acquireRelease(
+          settings.updateSettings({ continueThreadsAfterServerUpdate: continues }),
+          () =>
+            settings
+              .updateSettings({ continueThreadsAfterServerUpdate: previous })
+              .pipe(Effect.orDie),
+        );
+        const threadId = ThreadId.make(`queue-hold-provider-wake-${continues}`);
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`${threadId}:create`),
           threadId,
-          messageId: MessageId.make(`${threadId}:message:${index}`),
-          text,
-          attachments: [],
+          projectId: ProjectId.make(`${threadId}:project`),
+          title: "Wake beside a held queue",
           modelSelection,
-          dispatchMode: { type: index === 0 ? "start_immediately" : "queue_after_active" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: process.cwd(),
         });
-      yield* send(0, "Active");
-      yield* send(1, "Queued before the restart");
-      yield* recovery.reconcile("startup");
-      yield* send(2, "First background task completed.", "provider");
-      yield* send(3, "Background task completed.", "provider");
-      yield* send(4, "Continue after the command completed.", "server");
-      const queued = yield* orchestrator.getThreadProjection(threadId);
-      const [held, active, wake] = [queued.runs[1]!, queued.runs[2]!, queued.runs[3]!];
-      assert.equal(active.status, "starting");
-      assert.isTrue(held.queueHeld);
-      assert.equal(wake.status, "queued");
-      assert.notEqual(wake.queueHeld, true);
-      const textContinuation = queued.runs[4]!;
-      assert.isTrue(textContinuation.queueHeld);
-      const now = yield* DateTime.now;
-      yield* events.write({
-        events: [
-          {
-            id: EventId.make(`${threadId}:active-done`),
-            type: "run.updated",
+        const send = (index: number, text: string, source: "web" | "provider" | "server" = "web") =>
+          orchestrator.dispatch({
+            type: "message.dispatch",
+            createdBy: source === "web" ? "user" : "agent",
+            creationSource: source,
+            commandId: CommandId.make(`${threadId}:message:${index}`),
             threadId,
-            runId: active.id,
-            occurredAt: now,
-            payload: { ...active, status: "completed", completedAt: now },
-          },
-        ],
-      });
-      yield* orchestrator.resumeQueuedRuns;
-      const after = yield* orchestrator.getThreadProjection(threadId);
-      assert.equal(after.runs.find((run) => run.id === wake.id)?.status, "starting");
-      assert.deepEqual(
-        after.runs.find((run) => run.id === held.id),
-        held,
-      );
-      // Nobody will resume a server message, so the completed run released it behind the wake.
-      assert.deepEqual(
-        after.runs.find((run) => run.id === textContinuation.id),
-        { ...textContinuation, queueHeld: false },
-      );
-    }),
+            messageId: MessageId.make(`${threadId}:message:${index}`),
+            text,
+            attachments: [],
+            modelSelection,
+            dispatchMode: { type: index === 0 ? "start_immediately" : "queue_after_active" },
+          });
+        yield* send(0, "Active");
+        yield* send(1, "Queued before the restart");
+        yield* recovery.reconcile("startup");
+        yield* send(2, "First background task completed.", "provider");
+        yield* send(3, "Background task completed.", "provider");
+        yield* send(4, "Continue after the command completed.", "server");
+        const queued = yield* orchestrator.getThreadProjection(threadId);
+        const [held, active, wake] = [queued.runs[1]!, queued.runs[2]!, queued.runs[3]!];
+        assert.equal(active.status, "starting");
+        assert.isTrue(held.queueHeld);
+        assert.equal(wake.status, "queued");
+        assert.notEqual(wake.queueHeld, true);
+        const textContinuation = queued.runs[4]!;
+        assert.isTrue(textContinuation.queueHeld);
+        const now = yield* DateTime.now;
+        yield* events.write({
+          events: [
+            {
+              id: EventId.make(`${threadId}:active-done`),
+              type: "run.updated",
+              threadId,
+              runId: active.id,
+              occurredAt: now,
+              payload: { ...active, status: "completed", completedAt: now },
+            },
+          ],
+        });
+        yield* orchestrator.resumeQueuedRuns;
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        if (continues) {
+          // A restart's hold ends once the thread completes a run, so the queue resumes in order.
+          assert.equal(after.runs.find((run) => run.id === held.id)?.status, "starting");
+          assert.equal(after.runs.find((run) => run.id === wake.id)?.status, "queued");
+        } else {
+          assert.equal(after.runs.find((run) => run.id === wake.id)?.status, "starting");
+          assert.deepEqual(
+            after.runs.find((run) => run.id === held.id),
+            held,
+          );
+        }
+        // Nobody will resume a server message, so the completed run released it behind the wake.
+        assert.deepEqual(
+          after.runs.find((run) => run.id === textContinuation.id),
+          { ...textContinuation, queueHeld: false },
+        );
+      }),
   );
 
   it.effect("edits and removes queued runs", () =>

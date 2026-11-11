@@ -20,6 +20,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ServerSettings from "../serverSettings.ts";
 import {
+  CONTINUE_PROMPT,
   restartContinuationRun,
   continueRestartedRun,
   RestartResumeRequest,
@@ -1097,20 +1098,30 @@ it.effect("does not continue a run the user asked to stop before the restart", (
   }),
 );
 
-it.effect("does not continue a cut /compact or /logout turn", () =>
+it.effect("compacts again after a cut /compact but does not repeat a cut /logout", () =>
   Effect.gen(function* () {
-    for (const text of ["/compact", " /LOGOUT "]) {
+    for (const [text, expected] of [
+      [" /COMPACT ", ["/compact"]],
+      [" /LOGOUT ", []],
+    ] satisfies ReadonlyArray<readonly [string, Array<string>]>) {
       const texts = yield* continuationTexts({
         ...cutMidTurn(),
-        messages: [{ id: MessageId.make("message:user"), text, attachments: [] }],
+        messages: [{ id: MessageId.make("message:user"), role: "user", text, attachments: [] }],
       } as unknown as OrchestrationV2ThreadProjection);
-      assert.deepEqual(texts, [], text);
+      assert.deepEqual(texts, expected, text);
     }
     const texts = yield* continuationTexts({
       ...cutMidTurn(),
-      messages: [{ id: MessageId.make("message:user"), text: "/compact later", attachments: [] }],
+      messages: [
+        {
+          id: MessageId.make("message:user"),
+          role: "user",
+          text: "/compact later",
+          attachments: [],
+        },
+      ],
     } as unknown as OrchestrationV2ThreadProjection);
-    assert.lengthOf(texts, 1);
+    assert.deepEqual(texts, [CONTINUE_PROMPT]);
   }),
 );
 
