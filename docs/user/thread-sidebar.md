@@ -146,6 +146,11 @@ starts a new thread for each run marks only the thread from its latest run.
 Pin a thread from its menu to keep it above your active work. The command palette offers the same
 actions for the open thread: Pin or Unpin, Settle or Un-settle, Snooze, Rename, and Archive.
 
+On web and desktop, pinned threads list one line each under a **Pinned** header with their count,
+like scheduled tasks. Click the header to collapse or expand the section; the sidebar remembers
+your choice, and a collapsed section still shows the thread you have open. Hover a pinned row and
+click its pin to unpin it.
+
 On web and desktop, unpinning, settling, snoozing, and archiving a thread each show
 a notification with **Undo** for five seconds. Undo restores the thread's previous
 state, including its pinned position, and reopens an archived thread you were
@@ -169,7 +174,8 @@ list to unpin it. Dragging a thread onto the **Settled** header settles it, and 
 thread into the active list un-settles it. A snoozed thread can be dragged out of the snoozed
 shelf, which wakes it, but threads cannot be dragged into the shelf because snoozing needs a wake
 time. Dragging a pinned thread out of the pinned section does not ask for unpin confirmation.
-Pinned and active boundary labels appear only while dragging, without moving the rows. The
+The **Active** boundary label appears only while dragging, as does the **Pinned** label when
+there are no pins. Dropping a thread on a collapsed **Pinned** header pins it after the others. The
 other rows slide aside to show where the thread will land. When you cross into another section,
 the dragged thread shows the action the drop performs, with its icon: **Pin**, **Unpin**,
 **Settle**, **Un-settle**, or **Wake**. Its status and hover actions hide during the drag. A pinned

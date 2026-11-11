@@ -79,13 +79,18 @@ export function SidebarDragBoundary(props: {
   label: string;
   visible: boolean;
   isDropTarget: boolean;
+  /** Draws a rule while no drag shows the label, for a boundary that ends a listed section. */
+  rule?: boolean;
 }) {
   return (
     <SortableSidebarMarker
       marker={props.marker}
       data-testid={`sidebar-${props.marker}`}
-      className="pointer-events-none relative mx-0.5 -mb-px h-0"
+      className={cn("pointer-events-none relative mx-0.5", props.rule ? "h-3" : "-mb-px h-0")}
     >
+      {props.rule && !props.visible ? (
+        <span aria-hidden className="absolute inset-x-2 top-1/2 h-px bg-sidebar-border/60" />
+      ) : null}
       {props.visible ? (
         <div className="sidebar-drag-boundary-label absolute inset-x-2 top-1 flex h-4 items-center gap-2">
           <span
@@ -140,7 +145,7 @@ export function SidebarNeedsYouLaterHeader(props: { count: number }) {
 }
 
 export function SidebarSectionHeader(props: {
-  marker: "working-header" | "snoozed-header" | "settled-header";
+  marker: "pinned-header" | "working-header" | "snoozed-header" | "settled-header";
   label: string;
   /** A muted trailing count. */
   count: number;
@@ -149,12 +154,7 @@ export function SidebarSectionHeader(props: {
   isDropTarget?: boolean;
   toggle: { expanded: boolean; onToggle: () => void };
 }) {
-  const shelf =
-    props.marker === "working-header"
-      ? "working"
-      : props.marker === "snoozed-header"
-        ? "snoozed"
-        : "settled";
+  const shelf = props.marker.slice(0, -"-header".length);
   return (
     <SortableSidebarMarker
       marker={props.marker}

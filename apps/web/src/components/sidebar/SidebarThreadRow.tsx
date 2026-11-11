@@ -1356,7 +1356,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {title}
               {multiline ? titleLineIcons : null}
               {scheduledIndicator}
-              {pinIndicator}
+              {variant === "line" && pinIndicator !== null ? (
+                // One-line pinned rows sit under the Pinned header, so the pin shows as Unpin on hover.
+                <span className="inline-flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-any-hover/sidebar-row:opacity-100 motion-reduce:transition-none">
+                  {pinIndicator}
+                </span>
+              ) : (
+                pinIndicator
+              )}
               {inFolder && !multiline && isRemote && !props.inMachineFolder ? (
                 <MachineBadge
                   environmentId={thread.environmentId}

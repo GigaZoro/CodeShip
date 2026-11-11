@@ -1042,6 +1042,37 @@ describe("Working shelf (beta)", () => {
       expect(resolveSidebarDropVerb("active", "working")).toBeNull();
     });
 
+    it("pins after a closed Pinned shelf's rows, and keeps a listed pin where it is", () => {
+      const closed: readonly SidebarListItem[] = [
+        marker("pinned-header"),
+        row("p2", "pinned"),
+        marker("pinned-divider"),
+        row("a1", "active"),
+        row("a2", "active"),
+      ];
+      const pinnedKeysById = new Map([
+        ["p1", "f"],
+        ["p2", "m"],
+      ]);
+      const plan = (activeKey: string, activeSection: SidebarSection) =>
+        planSidebarThreadDrop({
+          activeKey,
+          activeSection,
+          target: resolveSidebarDropTarget(closed, activeKey, "sidebar-marker-pinned-header", [
+            "p1",
+            "p2",
+          ])!,
+          pinnedOrder: ["p1", "p2"],
+          pinnedKeysById,
+          activeOrder: ["a1", "a2"],
+          activeKeysById: new Map(),
+        });
+      const pin = plan("a2", "active");
+      expect(pin.kind === "pin" && pin.order).toEqual(["p1", "p2", "a2"]);
+      expect(pin.kind === "pin" && pin.orderKey! > "m").toBe(true);
+      expect(plan("p2", "pinned")).toEqual({ kind: "none" });
+    });
+
     it.each([
       ["pinned", "p1"],
       ["active", "a2"],

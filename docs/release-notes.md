@@ -1,3 +1,8 @@
+## 2026-11-11 — Pinned threads get their own section
+
+- Pinned threads now sit under a **Pinned** header with a count, like Scheduled tasks, and list one line each instead of full cards. Click the header to collapse or expand the section; the sidebar remembers your choice. While it is collapsed, the thread you have open still shows, and dragging a thread onto the header pins it after the others.
+- A thin rule separates pinned threads from active ones. The pin icon on each row now appears on hover, where clicking it unpins the thread.
+
 ## 2026-11-11 — Old releases repository retired
 
 - The temporary second releases repository used for a few builds on 2026-11-07 and 2026-11-08 is retired. Releases are published only to GigaZoro/CodeShip, and nothing changes for users.

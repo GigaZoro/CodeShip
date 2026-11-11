@@ -375,6 +375,7 @@ const EMPTY_THREADS: readonly EnvironmentThreadShell[] = [];
 
 const SETTLED_TAIL_INITIAL_COUNT = 10;
 const SETTLED_TAIL_PAGE_COUNT = 25;
+const PINNED_SHELF_EXPANDED_KEY = "t3code:sidebar:pinned-expanded";
 const SNOOZED_SHELF_EXPANDED_KEY = "t3code:sidebar:snoozed-expanded";
 const WORKING_SHELF_EXPANDED_KEY = "t3code:sidebar:working-expanded";
 
@@ -562,6 +563,11 @@ function useSidebarThreads(input: {
     false,
     Schema.Boolean,
   );
+  const [pinnedShelfExpanded, setPinnedShelfExpanded] = useLocalStorage(
+    PINNED_SHELF_EXPANDED_KEY,
+    true,
+    Schema.Boolean,
+  );
   const [snoozedShelfExpanded, setSnoozedShelfExpanded] = useLocalStorage(
     SNOOZED_SHELF_EXPANDED_KEY,
     false,
@@ -634,6 +640,9 @@ function useSidebarThreads(input: {
   const renderedSettledThreads = settledShelfExpanded
     ? visibleSettledThreads
     : routeThreadOnly(visibleSettledThreads, routeRowThreadKey);
+  const visiblePinnedThreads = pinnedShelfExpanded
+    ? pinnedThreads
+    : routeThreadOnly(pinnedThreads, routeRowThreadKey);
   const visibleSnoozedThreads = snoozedShelfExpanded
     ? snoozedThreads
     : routeThreadOnly(snoozedThreads, routeRowThreadKey);
@@ -797,7 +806,7 @@ function useSidebarThreads(input: {
   );
   const orderedThreads = [
     ...needsYouThreads,
-    ...pinnedThreads,
+    ...visiblePinnedThreads,
     ...(folderList === null ? activeThreads : folderList.flatMap((folder) => folder.threads)),
     ...visibleWorkingThreads.filter((thread) => !workingCopyKeys.has(threadShellKey(thread))),
     ...visibleSnoozedThreads,
@@ -836,6 +845,8 @@ function useSidebarThreads(input: {
       })),
     settledShelfExpanded,
     toggleSettledShelf: () => setSettledShelfExpanded((value) => !value),
+    pinnedShelfExpanded,
+    togglePinnedShelf: () => setPinnedShelfExpanded((value) => !value),
     snoozedShelfExpanded,
     toggleSnoozedShelf: () => setSnoozedShelfExpanded((value) => !value),
     workingShelfExpanded,
@@ -892,6 +903,7 @@ function useSidebarThreads(input: {
         return next;
       }),
     renderedSettledThreads,
+    visiblePinnedThreads,
     visibleSnoozedThreads,
     visibleWorkingThreads,
     workingCopyKeys,
@@ -1685,6 +1697,8 @@ export default function Sidebar({
     showMoreSettled,
     settledShelfExpanded,
     toggleSettledShelf,
+    pinnedShelfExpanded,
+    togglePinnedShelf,
     snoozedShelfExpanded,
     toggleSnoozedShelf,
     workingShelfExpanded,
@@ -1698,6 +1712,7 @@ export default function Sidebar({
     setAllFoldersExpanded,
     toggleFolderOverflow,
     renderedSettledThreads,
+    visiblePinnedThreads,
     visibleSnoozedThreads,
     visibleWorkingThreads,
     workingCopyKeys,
@@ -2644,8 +2659,11 @@ export default function Sidebar({
     if (list && header) {
       const listRect = list.getBoundingClientRect();
       const scale = list.offsetWidth > 0 ? listRect.width / list.offsetWidth : 1;
+      const headerRect = header.getBoundingClientRect();
+      // A listed Pinned header is taller than the label an empty one shows while dragging.
       dragLabelOffsetRef.current =
-        header.getBoundingClientRect().top - listRect.top + SIDEBAR_DRAG_LABEL_HEIGHT * scale;
+        Math.max(headerRect.bottom, headerRect.top + SIDEBAR_DRAG_LABEL_HEIGHT * scale) -
+        listRect.top;
     } else {
       dragLabelOffsetRef.current = 0;
     }
@@ -2688,7 +2706,7 @@ export default function Sidebar({
       return [];
     }
     const items: SidebarListItem[] = [{ kind: "marker", marker: "pinned-header" }];
-    const pinnedRows = rowsOf(pinnedThreads, "pinned");
+    const pinnedRows = rowsOf(visiblePinnedThreads, "pinned");
     items.push(...pinnedRows);
     items.push({ kind: "marker", marker: "pinned-divider" });
     const activeRows = rowsOf(activeThreads, "active");
@@ -2743,9 +2761,12 @@ export default function Sidebar({
     needsYouThreads.length + sidebarListItems.length + visibleDraftSessionCount > 0;
   // Cache on both fields so layout-key changes trigger the effect even when animate is unchanged.
   const listMotionPass = { layoutKey: listMotionLayoutKey, animate: listMotionAnimate };
-  const shelfExpansionKey = [workingShelfExpanded, snoozedShelfExpanded, settledShelfExpanded].join(
-    ":",
-  );
+  const shelfExpansionKey = [
+    pinnedShelfExpanded,
+    workingShelfExpanded,
+    snoozedShelfExpanded,
+    settledShelfExpanded,
+  ].join(":");
   const previousShelfExpansionKeyRef = useRef(shelfExpansionKey);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the list motion controller to animate or not after each layout-affecting commit
   useLayoutEffect(() => {
@@ -2754,9 +2775,16 @@ export default function Sidebar({
     previousShelfExpansionKeyRef.current = shelfExpansionKey;
     listMotionRef.current?.update(listMotionPass.animate && shelvesUnchanged);
   }, [listMotionPass, shelfExpansionKey]);
+  const resolveDropTarget = (activeKey: string, overId: string) =>
+    resolveSidebarDropTarget(
+      sidebarListItems,
+      activeKey,
+      overId,
+      pinnedShelfExpanded ? undefined : pinnedKeys,
+    );
   const handleThreadDragOver = (event: DragOverEvent) => {
     const target = event.over
-      ? resolveSidebarDropTarget(sidebarListItems, String(event.active.id), String(event.over.id))
+      ? resolveDropTarget(String(event.active.id), String(event.over.id))
       : null;
     setDragState((current) =>
       current === null || current.activeKey !== String(event.active.id)
@@ -2783,6 +2811,7 @@ export default function Sidebar({
     settledOrder: draggedSettledOrder,
     ...(draggedActiveOrder === undefined ? {} : { activeOrder: draggedActiveOrder }),
     settledExpanded: settledShelfExpanded,
+    pinnedExpanded: pinnedShelfExpanded,
     settledVisibleCount,
     routeThreadKey: routeRowThreadKey,
     snoozedThreadCount: snoozedThreads.length,
@@ -2797,7 +2826,7 @@ export default function Sidebar({
     if (source === undefined) return createSidebarCollisionDetection(() => false);
     return createSidebarCollisionDetection(
       (id) => {
-        const target = resolveSidebarDropTarget(sidebarListItems, draggedThreadKey, id);
+        const target = resolveDropTarget(draggedThreadKey, id);
         if (target === null) return false;
         return (
           planSidebarThreadDrop({
@@ -2827,10 +2856,7 @@ export default function Sidebar({
     if (folders !== null) return;
     const activeKey = String(event.active.id);
     const activeSection = sectionByThreadKey.get(activeKey);
-    const target =
-      event.over === null
-        ? null
-        : resolveSidebarDropTarget(sidebarListItems, activeKey, String(event.over.id));
+    const target = event.over === null ? null : resolveDropTarget(activeKey, String(event.over.id));
     const activeThread = threadByKey.get(activeKey);
     if (activeSection === undefined || target === null || activeThread === undefined) return;
     const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
@@ -4244,17 +4270,15 @@ export default function Sidebar({
                         const isRenaming =
                           renamingThreadKey === threadKey &&
                           (copy ? renamingCopy : !renamingCopy || !workingCopyKeys.has(threadKey));
-                        const isCard =
-                          needsYou ||
-                          section === "active" ||
-                          section === "pinned" ||
-                          section === "working";
-                        // Beside one-line folder rows, the Working shelf lists one line each too.
+                        const isCard = needsYou || section === "active" || section === "working";
+                        // Pinned rows list one line each, as pinned tasks do; so does the Working
+                        // shelf beside one-line folder rows.
                         const rowVariant = folderRow
                           ? folderRowsMultiline
                             ? "folder-multiline"
                             : "folder"
-                          : section === "working" && folders !== null && !folderRowsMultiline
+                          : section === "pinned" ||
+                              (section === "working" && folders !== null && !folderRowsMultiline)
                             ? "line"
                             : isCard
                               ? "card"
@@ -4277,7 +4301,8 @@ export default function Sidebar({
                             inProjectFolder={folder?.kind === "project"}
                             navigationParent={
                               folderRow ??
-                              (section === "working" ||
+                              (section === "pinned" ||
+                              section === "working" ||
                               section === "snoozed" ||
                               section === "settled"
                                 ? `shelf:${section}`
@@ -4554,14 +4579,30 @@ export default function Sidebar({
                         }
                         switch (item.marker) {
                           case "pinned-header":
+                            // With no pins, the header shows only while a drag offers to pin.
                             items.push(
-                              <SidebarDragBoundary
-                                key="pinned-header"
-                                marker="pinned-header"
-                                label={t("Pinned")}
-                                visible={from !== null}
-                                isDropTarget={dragTargetSection === "pinned"}
-                              />,
+                              pinnedThreads.length > 0 ? (
+                                <SidebarSectionHeader
+                                  key="pinned-header"
+                                  marker="pinned-header"
+                                  label={t("Pinned")}
+                                  count={pinnedThreads.length}
+                                  dragging={from !== null}
+                                  isDropTarget={dragTargetSection === "pinned"}
+                                  toggle={{
+                                    expanded: pinnedShelfExpanded,
+                                    onToggle: togglePinnedShelf,
+                                  }}
+                                />
+                              ) : (
+                                <SidebarDragBoundary
+                                  key="pinned-header"
+                                  marker="pinned-header"
+                                  label={t("Pinned")}
+                                  visible={from !== null}
+                                  isDropTarget={dragTargetSection === "pinned"}
+                                />
+                              ),
                             );
                             break;
                           case "pinned-divider":
@@ -4572,6 +4613,7 @@ export default function Sidebar({
                                 label={t("Active")}
                                 visible={from !== null}
                                 isDropTarget={dragTargetSection === "active"}
+                                rule={pinnedThreads.length > 0}
                               />,
                             );
                             break;

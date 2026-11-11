@@ -288,6 +288,8 @@ export function resolveSidebarDropTarget(
   items: readonly SidebarListItem[],
   activeKey: string,
   overId: string,
+  /** The whole pinned order while the Pinned shelf is closed and lists none of it. */
+  closedPinnedOrder?: readonly string[],
 ): SidebarDropTarget | null {
   const activeIndex = items.findIndex((item) => sidebarListItemId(item) === activeKey);
   const overIndex = items.findIndex((item) => sidebarListItemId(item) === overId);
@@ -310,6 +312,16 @@ export function resolveSidebarDropTarget(
         break;
     } else if (currentSection === "pinned") pinnedOrder.push(item.key);
     else activeOrder.push(item.key);
+  }
+  if (closedPinnedOrder !== undefined) {
+    // A closed shelf shows no slot, so a pin keeps its place and a newcomer goes last.
+    return {
+      section,
+      pinnedOrder: closedPinnedOrder.includes(activeKey)
+        ? closedPinnedOrder
+        : [...closedPinnedOrder, activeKey],
+      activeOrder,
+    };
   }
   return { section, pinnedOrder, activeOrder };
 }

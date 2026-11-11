@@ -95,6 +95,7 @@ export function createSidebarSortingStrategy(input: {
   settledOrder: readonly string[];
   activeOrder?: readonly string[];
   settledExpanded: boolean;
+  pinnedExpanded?: boolean;
   settledVisibleCount?: number;
   routeThreadKey?: string | null;
   snoozedThreadCount?: number;
@@ -132,7 +133,7 @@ export function createSidebarSortingStrategy(input: {
         }
         continue;
       }
-      if (item.section === "pinned" || item.section === "active" || item.section === "working")
+      if (item.section === "active" || item.section === "working")
         cardHeight ??= rects[index]?.height;
       else slimHeight ??= rects[index]?.height;
       if (item.key !== active.key) groups[item.section].push(item);
@@ -154,7 +155,10 @@ export function createSidebarSortingStrategy(input: {
     const index = group.findIndex(
       (item) => (ranks.get(item.key) ?? Number.POSITIVE_INFINITY) > rank,
     );
-    group.splice(index < 0 ? group.length : index, 0, { ...active, section: target.section });
+    // A closed Pinned shelf takes the drop without opening a row for it, as a closed Settled one does.
+    if (target.section !== "pinned" || input.pinnedExpanded !== false) {
+      group.splice(index < 0 ? group.length : index, 0, { ...active, section: target.section });
+    }
     const settledOrder = (
       input.settledOrder.length > 0 ? input.settledOrder : groups.settled.map((item) => item.key)
     ).filter((key) => key !== active.key || target.section === "settled");
@@ -194,14 +198,14 @@ export function createSidebarSortingStrategy(input: {
       const index = indices.get(sidebarListItemId(item));
       const rect = index === undefined ? undefined : rects[index];
       const fallback =
-        item.kind === "thread" &&
-        (item.section === "pinned" || item.section === "active" || item.section === "working")
+        item.kind === "thread" && (item.section === "active" || item.section === "working")
           ? cardHeight
           : slimHeight;
       const moved = item.kind === "thread" && item.key === active.key;
+      // A boundary that already shows its header or rule keeps that height when taller than the label.
       return item.kind === "marker" &&
         (item.marker === "pinned-header" || item.marker === "pinned-divider")
-        ? labelHeight
+        ? Math.max(rect?.height ?? 0, labelHeight)
         : item.kind === "marker" && item.marker.endsWith("placeholder")
           ? slimHeight
           : moved
