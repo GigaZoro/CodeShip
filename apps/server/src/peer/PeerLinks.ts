@@ -24,6 +24,7 @@ import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
@@ -34,6 +35,7 @@ import { isLocalLoopbackHost, isTailnetHost } from "@t3tools/shared/hostClassifi
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { forkParked } from "../serverActivation.ts";
 
 const PeerHttpApi = HttpApi.make(EnvironmentHttpApi.identifier)
   .add(EnvironmentHttpApi.groups.metadata)
@@ -72,6 +74,8 @@ export class PeerLinks extends Context.Service<
     /** Whether the Linked environments beta (Settings → Machines & access → Linked environments) is on here. */
     readonly enabled: Effect.Effect<boolean>;
     readonly link: (input: PeerLinkCreateInput) => Effect.Effect<PeerLink, PeerLinkError>;
+    readonly renew: (environmentId: EnvironmentId) => Effect.Effect<void, PeerLinkError>;
+    readonly start: Effect.Effect<void, never, Scope.Scope>;
     /**
      * The environment answering at `url`, or nothing when it is not a usable
      * address or does not answer as T3.CodeShip. Sends no credential.
@@ -617,9 +621,124 @@ const make = Effect.gen(function* () {
       Effect.ignoreCause({ log: true }),
     );
 
+  const renew: PeerLinks["Service"]["renew"] = Effect.fn("PeerLinks.renew")(
+    function* (environmentId) {
+      if (!(yield* enabled)) return;
+      const row = yield* readRow(environmentId);
+      if (Option.isNone(row)) return;
+      const link = yield* toLink(row.value);
+      const now = yield* DateTime.now;
+      if (
+        DateTime.isLessThanOrEqualTo(link.expiresAt, now) ||
+        DateTime.isGreaterThan(link.expiresAt, DateTime.add(now, { days: 10 }))
+      )
+        return;
+      const { primary, peer } = yield* answeringAs(link.urls, environmentId, link.label);
+      if (!linkLimitsHold(peer)) {
+        return yield* new PeerLinkError({
+          reason: "incompatible",
+          message: `${link.label} cannot keep a linked agent's limits. Update it, then link again.`,
+        });
+      }
+      const stored = yield* secrets.get(row.value.secret_name).pipe(Effect.catch(failStorage));
+      if (Option.isNone(stored)) return;
+      const client = yield* clientFor(primary);
+      const issued = yield* client.mcpOAuth
+        .token({
+          payload: {
+            grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+            subject_token: Redacted.make(new TextDecoder().decode(stored.value)),
+            subject_token_type: "urn:ietf:params:oauth:token-type:access_token",
+            resource: `${primary}/mcp`,
+          },
+        })
+        .pipe(
+          Effect.timeout(probeTimeout(primary)),
+          Effect.asSome,
+          Effect.catchIf(Schema.is(AuthMcpTokenError), (error) =>
+            Effect.gen(function* () {
+              if (error.error === "unsupported_grant_type") {
+                yield* sql`
+            UPDATE peer_environment_links
+            SET last_error = ${`Update ${link.label} so this link can renew itself.`}
+            WHERE environment_id = ${environmentId} AND secret_name = ${row.value.secret_name}
+          `.pipe(Effect.catch(failStorage));
+              }
+              return Option.none();
+            }),
+          ),
+          Effect.mapError(
+            () =>
+              new PeerLinkError({
+                reason: "unreachable",
+                message: `${link.label} did not answer the link renewal.`,
+              }),
+          ),
+        );
+      if (Option.isNone(issued)) return;
+      if (!Number.isFinite(issued.value.expires_in) || issued.value.expires_in <= 0) {
+        return yield* new PeerLinkError({
+          reason: "incompatible",
+          message: `${link.label} returned an invalid link expiry.`,
+        });
+      }
+      const expiresAt = DateTime.add(now, { seconds: issued.value.expires_in });
+      if (!DateTime.isGreaterThan(expiresAt, link.expiresAt)) {
+        return yield* new PeerLinkError({
+          reason: "incompatible",
+          message: `${link.label} returned an invalid link expiry.`,
+        });
+      }
+      yield* Effect.gen(function* () {
+        const secretName = yield* newSecretName;
+        yield* secrets
+          .set(secretName, new TextEncoder().encode(issued.value.access_token))
+          .pipe(Effect.catch(failStorage));
+        const updated = yield* sql<{ environment_id: string }>`
+        UPDATE peer_environment_links SET
+          secret_name = ${secretName}, expires_at = ${DateTime.formatIso(expiresAt)}, last_error = NULL
+        WHERE environment_id = ${environmentId} AND secret_name = ${row.value.secret_name}
+        RETURNING environment_id
+      `.pipe(
+          Effect.catch(failStorage),
+          Effect.onError(() => secrets.remove(secretName).pipe(Effect.ignore)),
+        );
+        yield* secrets
+          .remove(updated.length > 0 ? row.value.secret_name : secretName)
+          .pipe(Effect.catch(failStorage));
+      }).pipe(Effect.uninterruptible);
+    },
+  );
+
+  const renewOnce = Effect.fn("PeerLinks.renewOnce")(
+    function* () {
+      if (!(yield* enabled)) return;
+      yield* Effect.forEach(
+        yield* listStored,
+        (link) =>
+          renew(link.environmentId).pipe(
+            Effect.catch((error) =>
+              Effect.logDebug("Could not renew a linked environment", {
+                environmentId: link.environmentId,
+                reason: error.reason,
+              }),
+            ),
+          ),
+        { concurrency: 4, discard: true },
+      );
+    },
+    Effect.catchCause(() => Effect.logWarning("Could not renew linked environments.")),
+  );
+
+  const start = forkParked(
+    renewOnce().pipe(Effect.andThen(Effect.sleep(Duration.hours(1))), Effect.forever),
+  );
+
   return PeerLinks.of({
     enabled,
     link,
+    renew,
+    start,
     describe: describeUrl,
     list,
     listStored,
@@ -631,3 +750,7 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(PeerLinks, make);
+
+export const layerWorker = Layer.effectDiscard(
+  PeerLinks.pipe(Effect.flatMap((links) => links.start)),
+).pipe(Layer.provide(layer));

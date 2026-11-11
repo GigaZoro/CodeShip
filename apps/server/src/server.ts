@@ -697,6 +697,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
     ),
   ),
   layerThreadPullRequestWorker,
+  PeerLinks.layerWorker,
   SharedTaskPull.layerWorker.pipe(
     Layer.provide(PeerMcpClient.layer.pipe(Layer.provideMerge(PeerLinks.layer))),
   ),

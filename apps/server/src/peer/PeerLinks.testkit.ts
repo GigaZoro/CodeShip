@@ -3,6 +3,7 @@ import {
   EnvironmentHttpApi,
   EnvironmentId,
   type AuthMcpClientAccess,
+  type AuthMcpTokenError,
   type ExecutionEnvironmentDescriptor,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -13,6 +14,7 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServer from "effect/http/HttpServer";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
@@ -67,6 +69,7 @@ export const servePeer = <E, R>(
     const descriptor = yield* Ref.make(initial);
     const bearers = yield* Ref.make<ReadonlyArray<string>>([]);
     const probes = yield* Ref.make(0);
+    const renewalError = yield* Ref.make<AuthMcpTokenError["error"] | undefined>(undefined);
     const layerEnvironment = Layer.succeed(ServerEnvironment.ServerEnvironment, {
       getEnvironmentId: Ref.get(descriptor).pipe(Effect.map((current) => current.environmentId)),
       getDescriptor: Ref.get(descriptor),
@@ -86,6 +89,19 @@ export const servePeer = <E, R>(
       (httpEffect) =>
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
+          if (request.url === "/oauth/mcp/token") {
+            const error = yield* Ref.get(renewalError);
+            if (
+              error !== undefined &&
+              new URLSearchParams(yield* request.text).get("grant_type") ===
+                "urn:ietf:params:oauth:grant-type:token-exchange"
+            ) {
+              return yield* HttpServerResponse.json(
+                { error, error_description: "Renewal refused." },
+                { status: 400 },
+              );
+            }
+          }
           if (request.url.startsWith("/.well-known/t3/environment")) {
             yield* Ref.update(probes, (count) => count + 1);
           }
@@ -135,6 +151,7 @@ export const servePeer = <E, R>(
       settings: Context.get(authContext, ServerSettings.ServerSettingsService),
       descriptor,
       bearers,
+      renewalError,
       /** How often its descriptor was asked for, as a probe of whether it answers. */
       probes,
       /** The sessions linking created there, which its Connections lists. */
@@ -162,7 +179,7 @@ export const layerLinkingEnvironment = (
     Layer.provideMerge(PeerLinks.layer),
     Layer.provideMerge(ServerSettings.layerTest({ linkedEnvironmentsEnabled: true })),
     Layer.provideMerge(Sqlite.layerMemory),
-    Layer.provide(Layer.mergeAll(secrets, FetchHttpClient.layer)),
+    Layer.provideMerge(Layer.mergeAll(secrets, FetchHttpClient.layer)),
     // Services that act for this environment, such as delegation, name it too.
     Layer.provideMerge(
       Layer.succeed(ServerEnvironment.ServerEnvironment, {
