@@ -240,6 +240,64 @@ const DetectedStepRow = memo(function DetectedStepRow(props: {
   );
 });
 
+/** A machine with several sign-ins to do gets one place to walk through all of them. */
+const SignInAllRow = memo(function SignInAllRow(props: {
+  readonly machine: string;
+  readonly count: number;
+  readonly pane: "screen" | "sidebar";
+}) {
+  const navigation = useNavigation();
+  const theme = useUniwindTheme();
+  const sidebarPane = props.pane === "sidebar";
+  const appearance = getThreadListV2RowAppearance(theme, sidebarPane, false);
+  const label = t("Sign in to all ({count})", { count: props.count });
+  const content = (
+    <View className="flex-row items-center gap-1.5">
+      <SymbolView
+        name={{ ios: "key", android: "lock" }}
+        size={14}
+        tintColorClassName={appearance.mutedIconTintClassName}
+        type="monochrome"
+      />
+      <Text
+        className={cn("flex-1 text-base font-t3-medium", appearance.foregroundClassName)}
+        numberOfLines={1}
+      >
+        {label}
+      </Text>
+      <Text
+        className={cn("max-w-[40%] shrink-0 text-xs", appearance.mutedForegroundClassName)}
+        numberOfLines={1}
+      >
+        {props.machine}
+      </Text>
+    </View>
+  );
+  return (
+    <View style={appearance.swipeContainerStyle}>
+      <RowPressable
+        accessibilityRole="button"
+        accessibilityLabel={[label, props.machine].join(", ")}
+        accessibilityHint={t("Walks through every sign-in on this machine, one after another.")}
+        className={appearance.className}
+        interactionClassName={appearance.interactionClassName}
+        interactionOpacity={appearance.interactionOpacity}
+        onPress={() => openSettings(navigation, "SettingsSignInAll", { machine: props.machine })}
+        style={appearance.cardStyle}
+      >
+        {sidebarPane ? (
+          content
+        ) : (
+          <View>
+            <View className={THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME}>{content}</View>
+            {THREAD_LIST_V2_ROW_DIVIDERS ? <View className="ml-5 h-px bg-border-subtle" /> : null}
+          </View>
+        )}
+      </RowPressable>
+    </View>
+  );
+});
+
 function useManualStepsExpanded() {
   const preferences = useAtomValue(mobilePreferencesAtom);
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
@@ -292,6 +350,16 @@ export function ThreadListManualSteps(props: {
       />
       {expanded && state.view.status === "listed"
         ? state.view.groups.flatMap((group) => [
+            ...(group.detected.length >= 2
+              ? [
+                  <SignInAllRow
+                    key={`sign-in-all:${group.machine}`}
+                    machine={group.machine}
+                    count={group.detected.length}
+                    pane={props.pane}
+                  />,
+                ]
+              : []),
             ...group.detected.map((entry) => (
               <DetectedStepRow key={detectedManualStepKey(entry)} entry={entry} pane={props.pane} />
             )),

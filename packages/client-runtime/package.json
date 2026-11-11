@@ -259,6 +259,14 @@
       "types": "./src/state/manualSteps.ts",
       "default": "./src/state/manualSteps.ts"
     },
+    "./state/manualStepsSignIn": {
+      "types": "./src/state/manualStepsSignIn.ts",
+      "default": "./src/state/manualStepsSignIn.ts"
+    },
+    "./state/manualStepsSignIn.logic": {
+      "types": "./src/state/manualStepsSignIn.logic.ts",
+      "default": "./src/state/manualStepsSignIn.logic.ts"
+    },
     "./state/peerLinks": {
       "types": "./src/state/peerLinks.ts",
       "default": "./src/state/peerLinks.ts"
