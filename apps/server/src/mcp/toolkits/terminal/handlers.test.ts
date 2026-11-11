@@ -2,6 +2,7 @@ import { expect, it } from "@effect/vitest";
 import {
   type AgentTerminalAccess,
   DEFAULT_SERVER_SETTINGS,
+  type Project,
   EnvironmentId,
   ProjectId,
   ProviderInstanceId,
@@ -9,13 +10,16 @@ import {
   type TerminalEvent,
   ThreadId,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as ProjectService from "../../../project/ProjectService.ts";
 import * as Settings from "../../../serverSettings.ts";
 import * as TerminalManager from "../../../terminal/Manager.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -25,6 +29,18 @@ import * as TerminalHandlers from "./handlers.ts";
 import { TerminalToolkit } from "./tools.ts";
 
 const threadId = ThreadId.make("thread:terminal");
+
+/** An agent on another machine, through that machine's link to this one. */
+const link = (
+  access: McpInvocationContext.McpClientCaller["access"],
+  narrowedTo?: McpInvocationContext.ClientModes,
+): McpInvocationContext.McpClientCaller => ({
+  sessionId: "session:link",
+  label: "Laptop",
+  access,
+  linked: true,
+  ...(narrowedTo === undefined ? {} : { narrowedTo }),
+});
 
 const HISTORY =
   "\x1b[32mready\x1b[0m in 80ms\r\nbuilding 50%\rbuilding 100%\r\nError: \x1b[31mboom\x1b[0m\r\n$ ";
@@ -36,13 +52,27 @@ const fakeTerminal = (
   userInput: TerminalManager.TerminalThreadRead["userInput"] = null,
   /** What the OS reports while output pauses; null when it cannot tell. */
   commandRunning: boolean | null = null,
+  /** No terminal until one is opened. */
+  startsEmpty = false,
 ) => {
   let history = initial;
+  let exists = !startsEmpty;
+  let terminalId = "term-1";
   const writes: Array<string> = [];
+  const opens: Array<object> = [];
+  /** What reached the terminal, in order: "prompt" for a new shell's first prompt, else input. */
+  const order: Array<string> = [];
   const listeners = new Set<(event: TerminalEvent) => Effect.Effect<void>>();
+  const print = (data: string) =>
+    Effect.gen(function* () {
+      history += data;
+      for (const listener of listeners) {
+        yield* listener({ type: "output", threadId, terminalId, data });
+      }
+    });
   const read = (): TerminalManager.TerminalThreadRead => ({
     threadId,
-    terminalId: "term-1",
+    terminalId,
     cwd: "/home/user/app",
     worktreePath: null,
     status: "running",
@@ -59,23 +89,34 @@ const fakeTerminal = (
   });
   const service = {
     commandRunning: () => Effect.succeed(commandRunning),
-    readThread: (id: string) => Effect.sync(() => (id === threadId ? [read()] : [])),
+    readThread: (id: string) => Effect.sync(() => (id === threadId && exists ? [read()] : [])),
+    open: (input: { readonly terminalId: string }) =>
+      Effect.gen(function* () {
+        opens.push(input);
+        exists = true;
+        terminalId = input.terminalId;
+        // A shell with a slow profile prints its first prompt well after it starts.
+        yield* Effect.forkDetach(
+          Effect.sleep("800 millis").pipe(
+            Effect.andThen(Effect.sync(() => order.push("prompt"))),
+            Effect.andThen(print("\x1b[?2004h$ ")),
+          ),
+        );
+        return {} as never;
+      }),
     subscribe: (listener: (event: TerminalEvent) => Effect.Effect<void>) =>
       Effect.sync(() => {
         listeners.add(listener);
         return () => void listeners.delete(listener);
       }),
     write: (input: { readonly data: string }) =>
-      Effect.gen(function* () {
+      Effect.suspend(() => {
         writes.push(input.data);
-        const data = input.data.replace(/\r$/, "\r\n") + reply;
-        history += data;
-        for (const listener of listeners) {
-          yield* listener({ type: "output", threadId, terminalId: "term-1", data });
-        }
+        order.push(input.data);
+        return print(input.data.replace(/\r$/, "\r\n") + reply);
       }),
   };
-  return { service, writes };
+  return { service, writes, opens, order };
 };
 
 const callTool = (
@@ -85,6 +126,10 @@ const callTool = (
     readonly access: AgentTerminalAccess;
     readonly runtimeMode?: RuntimeMode;
     readonly terminal?: ReturnType<typeof fakeTerminal>;
+    /** An MCP client calling instead of an agent in this thread, such as another machine's link. */
+    readonly client?: McpInvocationContext.McpClientCaller;
+    /** Threads other than this one are archived. */
+    readonly archived?: boolean;
   },
 ) => {
   const terminal = world.terminal ?? fakeTerminal();
@@ -93,7 +138,7 @@ const callTool = (
     const result = yield* toolkit
       .handle(call.tool, call.params as never)
       .pipe(Stream.unwrap, Stream.runCollect);
-    return { result: result.at(-1)?.result, writes: terminal.writes };
+    return { result: result.at(-1)?.result, writes: terminal.writes, opens: terminal.opens };
   }).pipe(
     Effect.provide(
       McpToolAccess.HandlersLayer.layer(TerminalHandlers.layer).pipe(
@@ -102,20 +147,28 @@ const callTool = (
             Layer.succeed(McpInvocationContext.McpInvocationContext, {
               environmentId: EnvironmentId.make("environment:terminal"),
               requestNamespace: "provider:terminal",
-              thread: {
-                threadId,
-                providerSessionId: "provider:terminal",
-                providerInstanceId: ProviderInstanceId.make("codex"),
-              },
-              client: undefined,
+              ...(world.client === undefined
+                ? {
+                    thread: {
+                      threadId,
+                      providerSessionId: "provider:terminal",
+                      providerInstanceId: ProviderInstanceId.make("codex"),
+                    },
+                    client: undefined,
+                  }
+                : { thread: undefined, client: world.client }),
               capabilities: new Set(["orchestration" as const]),
               issuedAt: 0,
             }),
             Layer.mock(ThreadManagement.ThreadManagementService)({
-              getThreadShell: () =>
-                Effect.succeed(
-                  liveThreadShell(threadId, { runtimeMode: world.runtimeMode ?? "full-access" }),
-                ),
+              getThreadShell: (id) =>
+                Effect.succeed({
+                  ...liveThreadShell(id, { runtimeMode: world.runtimeMode ?? "full-access" }),
+                  archivedAt:
+                    world.archived === true && id !== threadId
+                      ? DateTime.makeUnsafe("2026-01-02T00:00:00.000Z")
+                      : null,
+                }),
             }),
             Layer.mock(Settings.ServerSettingsService)({
               getSettings: Effect.succeed({
@@ -126,6 +179,10 @@ const callTool = (
               }),
             }),
             Layer.mock(TerminalManager.TerminalManager)(terminal.service),
+            Layer.mock(ProjectService.ProjectService)({
+              getById: () => Effect.succeedSome({ workspaceRoot: "/home/user/app" } as Project),
+            }),
+            NodeCrypto.layer,
           ),
         ),
       ),
@@ -200,6 +257,47 @@ it.effect("types a command and returns its output once the prompt is back", () =
   }),
 );
 
+it.effect("opens a terminal in the thread's folder and types once its shell shows a prompt", () =>
+  Effect.gen(function* () {
+    // The OS sees no command while the profile loads, which must not count as ready.
+    const terminal = fakeTerminal("\x1b[?2004lsrc\r\n\x1b[?2004h$ ", "", null, false, true);
+    const call = yield* callTool(
+      { tool: "terminal_write", params: { input: "ls" } },
+      { access: "read-write", terminal },
+    ).pipe(Effect.forkChild);
+    yield* TestClock.adjust("2 seconds");
+    const { result, opens } = yield* Fiber.join(call);
+    expect(terminal.order).toEqual(["prompt", "ls\r"]);
+    const terminalId = expect.stringMatching(/^term-1-/);
+    expect(opens).toEqual([
+      {
+        threadId,
+        terminalId,
+        cwd: "/home/user/app",
+        worktreePath: null,
+        env: { T3CODE_PROJECT_ROOT: "/home/user/app" },
+      },
+    ]);
+    expect(result).toMatchObject({
+      terminalId,
+      waitEnded: "command_finished",
+      output: "$ ls\nsrc\n$",
+    });
+  }),
+);
+
+it.effect("types into a thread's terminal for an agent on a full-access linked machine", () =>
+  Effect.gen(function* () {
+    const terminal = fakeTerminal("\x1b[?2004lclean\r\n\x1b[?2004h$ ");
+    const { result, writes } = yield* callTool(
+      { tool: "terminal_write", params: { threadId, input: "git status --short" } },
+      { access: "read-write", terminal, client: link("full-access") },
+    );
+    expect(writes).toEqual(["git status --short\r"]);
+    expect(result).toMatchObject({ terminalId: "term-1", waitEnded: "command_finished" });
+  }),
+);
+
 it.effect("returns once a shell that never announces its prompt runs no command", () =>
   Effect.gen(function* () {
     // bash 3.2 has no bracketed paste, so only the OS can tell the command is done.
@@ -254,17 +352,69 @@ it.effect.each([
     access: "read-write" as const,
     userInput: { at: -60_000, lineDirty: true },
   },
-])("refuses $name", ({ tool, access, runtimeMode, userInput = null }) =>
-  Effect.gen(function* () {
-    const { result, writes } = yield* callTool(
-      { tool, params: tool === "terminal_write" ? { input: "rm -rf build" } : {} },
-      {
-        access,
-        terminal: fakeTerminal("", HISTORY, userInput),
-        ...(runtimeMode === undefined ? {} : { runtimeMode }),
-      },
-    );
-    expect(result).toMatchObject({ code: "capability_denied" });
-    expect(writes).toEqual([]);
-  }),
+  {
+    name: "typing in an archived thread",
+    tool: "terminal_write" as const,
+    access: "read-write" as const,
+    target: ThreadId.make("thread:archived"),
+    archived: true,
+    code: "invalid_request",
+  },
+  {
+    name: "typing through a link paired below full access",
+    tool: "terminal_write" as const,
+    access: "read-write" as const,
+    client: link("auto"),
+  },
+  {
+    name: "typing through a full-access link for an agent that runs below it",
+    tool: "terminal_write" as const,
+    access: "read-write" as const,
+    client: link("full-access", { runtimeMode: "auto", interactionMode: "default" }),
+  },
+  {
+    name: "typing for a linked machine where agents may only read",
+    tool: "terminal_write" as const,
+    access: "read" as const,
+    client: link("full-access"),
+  },
+  {
+    name: "typing for an outside client, even one approved for full access",
+    tool: "terminal_write" as const,
+    access: "read-write" as const,
+    client: { sessionId: "session:outside", label: "Desktop app", access: "full-access" as const },
+    code: "thread_credential_required",
+  },
+])(
+  "refuses $name",
+  ({
+    tool,
+    access,
+    runtimeMode,
+    userInput = null,
+    client,
+    target = client === undefined ? undefined : threadId,
+    archived,
+    code = "capability_denied",
+  }) =>
+    Effect.gen(function* () {
+      const { result, writes, opens } = yield* callTool(
+        {
+          tool,
+          params: {
+            ...(target === undefined ? {} : { threadId: target }),
+            ...(tool === "terminal_write" ? { input: "rm -rf build" } : {}),
+          },
+        },
+        {
+          access,
+          terminal: fakeTerminal("", HISTORY, userInput),
+          ...(runtimeMode === undefined ? {} : { runtimeMode }),
+          ...(client === undefined ? {} : { client }),
+          ...(archived === undefined ? {} : { archived }),
+        },
+      );
+      expect(result).toMatchObject({ code });
+      expect([...writes, ...opens]).toEqual([]);
+    }),
 );

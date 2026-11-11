@@ -358,6 +358,9 @@ and the access, then approve.
   access, the link's agents can change only threads it started, not that
   machine's own threads, projects or settings, and they skip its project setup
   scripts.
+- Agents can run commands in a terminal there only through a full-access link,
+  and only where that machine lets agents run commands. See
+  [terminals on another machine](./terminal.md#terminals-on-another-machine).
 - The link shows up in that machine's **Settings → Machines & access** like any
   outside agent. Revoke it there to end it. **Forget** on this machine only
   removes it here.

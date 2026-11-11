@@ -2079,8 +2079,6 @@ const catalog: MessageCatalog = {
   "Agent work in progress": "Агент працює",
   "Agent:": "Агент:",
   Agents: "Агенти",
-  "Agents can also type commands into their threads' terminals, in threads with Full access.":
-    "Агенти також можуть вводити команди в термінали своїх чатів, якщо чат має повний доступ.",
   "Agents can read the output of their threads' terminals.":
     "Агенти можуть читати вивід терміналів своїх чатів.",
   "Agents can use devices": "Агенти можуть використовувати пристрої",
@@ -2091,6 +2089,8 @@ const catalog: MessageCatalog = {
     "Тоді агенти тут зможуть запускати чати там, надсилати повідомлення й чекати на них. Зв’язок з’явиться в розділі «З’єднання» на тому комп’ютері, де його можна відкликати.",
   "Agents here can then launch, message and wait on threads there. Revoke it in that machine's Connections.":
     "Тоді агенти тут зможуть запускати чати там, надсилати повідомлення й очікувати на них. Скасувати зв’язок можна в розділі «Підключення» на тому комп’ютері.",
+  "Agents with Full access can also type commands into thread terminals and open one when none is running, including agents on machines linked to this one with Full access.":
+    "Агенти з повним доступом також можуть вводити команди в термінали чатів і відкривати термінал, якщо жоден не працює. Це стосується й агентів на комп’ютерах, пов’язаних із цим комп’ютером з повним доступом.",
   ago: "тому",
   "ahead of pace": "випереджає темп",
   "Ahead of pace": "Випереджає темп",

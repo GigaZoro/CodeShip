@@ -169,8 +169,10 @@ export const TERMINAL_TOOL_DEFAULT_WAIT_SECONDS = 30;
 const TERMINAL_TOOL_MAX_WAIT_SECONDS = 120;
 
 export const TerminalToolWriteInput = Schema.Struct({
+  environmentId: OrchestratorMcpEnvironmentTarget,
+  threadId: Schema.optional(ThreadId),
   terminalId: Schema.optional(
-    TerminalIdSchema.annotate({ description: "Omit when the thread has one terminal." }),
+    TerminalIdSchema.annotate({ description: "Omit when the thread has one terminal running." }),
   ),
   input: Schema.String.check(Schema.isNonEmpty())
     .check(Schema.isMaxLength(16_384))

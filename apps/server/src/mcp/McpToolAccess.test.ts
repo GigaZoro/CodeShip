@@ -22,6 +22,7 @@ import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import { liveThreadShell } from "./McpToolAccess.testkit.ts";
+import { assertFullAccess } from "./threadAccess.ts";
 
 const supervisedThreadId = ThreadId.make("thread:supervised");
 const planThreadId = ThreadId.make("thread:plan");
@@ -374,6 +375,7 @@ const LinkedProbeToolkit = Toolkit.make(
   Tool.make("writes", linkedProbe),
   Tool.make("writes_with_capability", linkedProbe),
   Tool.make("writes_threads", linkedProbe),
+  Tool.make("writes_threads_full_access", linkedProbe),
   Tool.make("starts_threads", linkedProbe),
   Tool.make("writes_environment", linkedProbe),
 );
@@ -388,6 +390,9 @@ const linkedProbeServer = McpHttpServer.toolkitRegistration(
     writes: McpToolAccess.writes(ranHere),
     writes_with_capability: McpToolAccess.writesWithCapability(ranHere),
     writes_threads: McpToolAccess.writesThreads((input) => [input.threadId], ranHere),
+    writes_threads_full_access: McpToolAccess.writesThreads((input) => [input.threadId], ranHere, {
+      caller: (caller) => assertFullAccess(caller, "Needs full access."),
+    }),
     starts_threads: McpToolAccess.startsThreads((input) => input, ranHere, "stamped"),
     writes_environment: McpToolAccess.writesEnvironment(ranHere),
   }),
@@ -445,6 +450,25 @@ it.effect.each([
     supervised,
     { environmentId: here, threadId: fullAccessThreadId },
     "runtime_mode_escalation_denied",
+  ],
+  // Its own caller check runs here first, ahead of the thread checks.
+  [
+    "writes_threads_full_access",
+    supervised,
+    { environmentId: box, threadId: fullAccessThreadId },
+    "capability_denied",
+  ],
+  [
+    "writes_threads_full_access",
+    supervised,
+    { environmentId: here, threadId: fullAccessThreadId },
+    "capability_denied",
+  ],
+  [
+    "writes_threads_full_access",
+    fullAccess,
+    { environmentId: box, threadId: fullAccessThreadId },
+    "writes_threads_full_access in environment-box",
   ],
 ] as const)("a linked %s from %o with %o: %s", ([tool, scope, args, expected]) =>
   call(tool, scope, args).pipe(

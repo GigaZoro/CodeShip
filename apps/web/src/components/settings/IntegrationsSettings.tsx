@@ -1099,7 +1099,7 @@ const AGENT_TERMINAL_ACCESS_DESCRIPTIONS: Record<AgentTerminalAccess, Message> =
   none: msg("Agents can't see their threads' terminals."),
   read: msg("Agents can read the output of their threads' terminals."),
   "read-write": msg(
-    "Agents can also type commands into their threads' terminals, in threads with Full access.",
+    "Agents with Full access can also type commands into thread terminals and open one when none is running, including agents on machines linked to this one with Full access.",
   ),
 };
 

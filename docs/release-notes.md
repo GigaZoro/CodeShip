@@ -1,3 +1,8 @@
+## 2026-11-11 — Agents run terminal commands on linked machines
+
+- An agent can now type into a terminal on a linked machine, such as your PC from your Mac, to run commands there and get back what they print. It uses a thread on that machine, so you watch the terminal in that thread's terminal panel. It needs a link paired with **Full access**, an agent thread in Full access, and **Agent terminal access** set to **Read and run commands** on the other machine; otherwise the agent is told which of these is missing.
+- An agent allowed to run commands no longer asks you to open a terminal first: when the thread has none running, it opens one in the thread's folder.
+
 ## 2026-11-11 — Restarts resume every chat they cut
 
 - A chat a restart cut before its agent received the message, while its worktree was being prepared or its agent was starting, now starts again on its own with the same message, model and worktree, instead of staying cancelled. The thread notes that the message was sent again, and no copy of it appears. When the restart came while the message was being sent, the agent is told it may have it already, so it does not repeat work; a `/goal` command in that state is not sent again. A cut delegated-task result is offered again once, as before. Scheduled runs whose window has ended, and archived, settled, snoozed or stopped chats stay as they are.

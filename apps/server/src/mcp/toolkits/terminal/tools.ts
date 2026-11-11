@@ -5,10 +5,12 @@ import {
   TerminalToolWriteInput,
   TerminalToolWriteResult,
 } from "@t3tools/contracts";
+import * as Crypto from "effect/Crypto";
 import { Tool, Toolkit } from "effect/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as Project from "../../../project/ProjectService.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as TerminalManager from "../../../terminal/Manager.ts";
 
@@ -22,6 +24,8 @@ const shared = {
     TerminalManager.TerminalManager,
   ],
 };
+
+const writeDependencies = [...shared.dependencies, Project.ProjectService, Crypto.Crypto];
 
 const TerminalReadTool = Tool.make("terminal_read", {
   description:
@@ -38,10 +42,11 @@ const TerminalReadTool = Tool.make("terminal_read", {
 
 const TerminalWriteTool = Tool.make("terminal_write", {
   description:
-    "Type into one of this thread's terminals in the terminal panel, where the user watches, such as to restart their dev server. Input goes to whatever runs there; send \\u0003 first to stop it. Returns what it printed once the command finishes, output pauses for 3s, or `waitSeconds` pass; pass the `cursor` as `after` to `terminal_read` for later output. Use your own shell for ordinary commands.",
+    "Type into a thread's terminal in the terminal panel, where the user watches, such as to restart their dev server. Omit `threadId` for this thread. To run commands on a linked machine, pass its `environmentId` and a thread there. Opens a terminal in the thread's folder when none is running. Input goes to whatever runs there; send \\u0003 first to stop it. Returns what it printed once the command finishes, output pauses for 3s, or `waitSeconds` pass; pass the `cursor` as `after` to `terminal_read` for later output. For ordinary commands on this machine, use your own shell.",
   parameters: TerminalToolWriteInput,
   success: TerminalToolWriteResult,
   ...shared,
+  dependencies: writeDependencies,
 })
   .annotate(Tool.Title, "Type in a terminal")
   .annotate(Tool.Readonly, false)

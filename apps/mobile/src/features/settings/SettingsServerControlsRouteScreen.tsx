@@ -155,7 +155,7 @@ const TERMINAL_ACCESS_CHOICES: ReadonlyArray<{
     level: "read-write",
     label: msg("Read and run commands"),
     description: msg(
-      "Agents can also type commands into their threads' terminals, in threads with Full access.",
+      "Agents with Full access can also type commands into thread terminals and open one when none is running, including agents on machines linked to this one with Full access.",
     ),
   },
 ];

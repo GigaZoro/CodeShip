@@ -30,14 +30,28 @@ may do:
 - **Read output** (the default): agents read output but can't type.
 - **Read and run commands**: agents can also type into a thread's terminal,
   such as to restart your dev server, and see what it prints. You see what
-  they type. This works only in threads with Full access permissions, since a
-  command typed there skips approval. An agent won't type into a terminal you
-  typed in during the last few seconds, or where you left a command unsent;
-  it asks you instead. While an agent typed last, the terminal's name ends in
-  "· agent".
+  they type. When the thread has no terminal running, the agent opens one in
+  the thread's folder. This works only in threads with Full access permissions,
+  since a command typed there skips approval. An agent won't type into a
+  terminal you typed in during the last few seconds, or where you left a
+  command unsent; it asks you instead. While an agent typed last, the
+  terminal's name ends in "· agent".
 
 After T3.CodeShip restarts, agents can read a terminal's saved output before
-you open the terminal panel again. Typing needs the terminal running again.
+you open the terminal panel again.
+
+### Terminals on another machine
+
+An agent can also run commands in a terminal on a
+[linked machine](./remote-access.md#link-another-environment), such as your PC
+from your Mac. It types into the terminal of a thread on that machine, so you
+can watch it in that thread's terminal panel. Both have to allow it:
+
+- the link from this machine was paired with **Full access**, and the agent's
+  thread here runs in Full access;
+- the other machine's **Agent terminal access** is **Read and run commands**.
+
+Reading a linked machine's terminals needs only **Read output** there.
 
 Pick a project in the "Applying settings for …" sentence to change it for that
 project only. Changes apply right away, including to agents that are already

@@ -102,7 +102,9 @@ Unlinking on the linking side only forgets the token.
   leave. Without that, two agents reusing a key would collide on the far side.
 - **A forwarded wait is split into calls of at most 50 s**, because the
   receiving `/mcp` sends nothing while a wait is open and T3 Connect's edge
-  drops idle requests after about 100 s.
+  drops idle requests after about 100 s. A link's `terminal_write` instead
+  watches a command for at most 50 s, after up to 15 s for a shell it opens to
+  start, and the agent reads the rest with its cursor.
 
 **Work a link paired below full access starts stays within that link.** The
 receiving environment knows a session is a peer link because the linking side
