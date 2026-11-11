@@ -1,3 +1,8 @@
+## 2026-11-11 — Accounts and device settings follow your machines
+
+- **Add an account once.** On machines that follow shared settings, adding, renaming, recoloring, turning off or removing a Claude, Codex, Antigravity or Cursor account reaches your other following machines, where it shows **Sign in** in **Manual steps**. Sign-ins, keys, folders and other local details never travel. An account removed elsewhere is deleted here only when it holds nothing of this machine's own; otherwise it is turned off and kept.
+- **Device settings follow you (optional).** Turn on **Use the same appearance and layout on all my devices** in **Settings → Appearance** on each desktop or browser. Fonts, sizes, sidebar layout, confirmations, diff and chat preferences, language and notifications then match across them. A device turning it on for the first time takes the settings the others already share.
+
 ## 2026-11-11 — The Tailscale HTTPS row says why it cannot set up
 
 - **Settings → Connections** now tells a missing Tailscale CLI (**Tailscale CLI not found. Install Tailscale…**), a logged-out client (**Log in to Tailscale…**) and a stopped one (**Start Tailscale…**) apart. Before, all three read **Start Tailscale**, even when starting it could not help.
