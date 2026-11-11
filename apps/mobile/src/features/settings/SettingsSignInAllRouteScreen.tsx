@@ -16,11 +16,14 @@ import {
   mcpSignInProgress,
   outcomeOfProgress,
   providerReadsSignedIn,
+  providerSignInBaseline,
+  providerSignInFlowToCancel,
   providerSignInProgress,
   providerSignInUnsupportedOnPhone,
   recordSignInOutcome,
   startSignInSession,
   summarizeSignIns,
+  type ProviderSignInBaseline,
   type SignInOutcome,
   type SignInProgress,
   type SignInSession,
@@ -142,15 +145,12 @@ function ProviderStep(props: StepProps) {
     reportDefect: false,
   });
   const auth = query.data ?? undefined;
-  // The flow the account had when the step began; only a later one answers for this step.
-  const [baseline, setBaseline] = useState<{ readonly flowId: string | null } | null>(null);
-  if (baseline === null && auth !== undefined) setBaseline({ flowId: auth.flowId });
+  // How the account's sign-in stood when the step began.
+  const [baseline, setBaseline] = useState<ProviderSignInBaseline | null>(null);
+  if (baseline === null && auth !== undefined) setBaseline(providerSignInBaseline(auth));
 
-  // Leaving the step (Skip, Next or backing out) ends the sign-in the server still runs for it.
-  const active =
-    auth?.phase === "starting" || auth?.phase === "waiting" || auth?.phase === "verifying"
-      ? auth.flowId
-      : null;
+  // Leaving the step (Skip, Next or backing out) ends the sign-in this step started there.
+  const active = providerSignInFlowToCancel(baseline, auth);
   const activeFlow = useRef<string | null>(null);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the id of the running server flow where the unmount cleanup below can read it
   useEffect(() => {
@@ -182,7 +182,7 @@ function ProviderStep(props: StepProps) {
         ? { state: "pending" }
         : providerSignInProgress({
             kind: step.kind,
-            baselineFlowId: baseline.flowId,
+            baselineFlowId: baseline.finishedFlowId,
             signedIn: providerReadsSignedIn(provider, auth?.phase),
             flow: auth,
           });

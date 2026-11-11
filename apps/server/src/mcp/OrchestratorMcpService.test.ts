@@ -3669,11 +3669,14 @@ describe("OrchestratorMcpService provider resolution", () => {
         shared,
       });
       // Stores what the service saves, so a later call reads it back the way the real one does.
+      // Reached without a link from here: in the project's machine order, or pulling from here.
+      const cpc = EnvironmentId.make("environment:cpc");
       const storeFor = (initial: ReadonlyArray<ScheduledTask>) =>
         Effect.gen(function* () {
           const stored = yield* Ref.make(initial);
           const saves = yield* Ref.make<ReadonlyArray<ScheduledTaskUpsertInput>>([]);
           const tasks: Partial<ScheduledTaskService.ScheduledTaskService["Service"]> = {
+            knownMachineIds: () => Effect.succeed([cpc]),
             list: () => Ref.get(stored).pipe(Effect.map((listed) => ({ tasks: listed }))),
             upsert: (input) =>
               Ref.update(saves, (all) => [...all, input]).pipe(
@@ -3833,10 +3836,10 @@ describe("OrchestratorMcpService provider resolution", () => {
           message: `excludedMachines includes this machine (${client.environmentId}). A task can't be excluded from the machine it is saved on.`,
         },
         {
-          name: "a machine this one does not link to",
-          machines: [work, EnvironmentId.make("environment:stranger")],
+          name: "a machine no copy reaches",
+          machines: [work, cpc, EnvironmentId.make("environment:stranger")],
           message:
-            "excludedMachines names environment:stranger, which this environment does not link to. Use environmentId values from t3_environment_links.",
+            "excludedMachines names environment:stranger, which no copy of this task reaches: this environment does not link to it, it is not in the project's machine order, and it never pulled shared tasks from here. Use environmentId values from t3_environment_links.",
         },
       ])("refuses to exclude $name", ({ machines, message }) =>
         run([sharedTask(sharing([work], "one"))], (mcp, saves) =>
@@ -3863,6 +3866,28 @@ describe("OrchestratorMcpService provider resolution", () => {
               errors.map(() => ({ code: "invalid_request", message })),
             );
             assert.deepEqual(yield* Ref.get(saves), []);
+          }),
+        ),
+      );
+
+      it.effect("excludes a machine this one does not link to but whose copies it serves", () =>
+        run([sharedTask(sharing([]))], (mcp, saves) =>
+          Effect.gen(function* () {
+            yield* mcp.scheduleTask(client, {
+              projectId,
+              prompt: "Check the build",
+              schedule,
+              shared: true,
+              excludedMachines: [cpc],
+            });
+            yield* mcp.updateScheduledTask(client, {
+              scheduledTaskId: existing.id,
+              excludedMachines: [cpc, work],
+            });
+            assert.deepEqual(sharedAs(yield* Ref.get(saves)), [
+              { excludedEnvironmentIds: [cpc] },
+              { excludedEnvironmentIds: [cpc, work] },
+            ]);
           }),
         ),
       );

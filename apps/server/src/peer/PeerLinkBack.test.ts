@@ -2,14 +2,22 @@ import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  AuthAccessWriteScope,
   type AuthMcpClientAccess,
+  AuthStandardClientScopes,
+  EnvironmentAuthorizationError,
+  mcpClientScopes,
   OrchestratorMcpFailure,
   OrchestratorMcpLinkBackResult,
+  type PeerLink,
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
@@ -20,7 +28,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
 import * as DirectEndpoints from "../environment/DirectEndpoints.ts";
-import type * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import type * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { assertMayLinkBack } from "../mcp/linkOrigin.ts";
@@ -54,6 +62,8 @@ const box = descriptorOf("environment-box", "Box");
 const desk = descriptorOf("environment-desk", "Desk");
 
 const limits = { runtimeMode: "full-access", interactionMode: "default" } as const;
+/** Whoever links from this machine's own Settings: its owner. */
+const owner = { scopes: AuthStandardClientScopes };
 
 type LinkingContext = Context.Context<
   PeerLinks.PeerLinks | PeerMcpClient.PeerMcpClient | ServerEnvironment.ServerEnvironment
@@ -170,13 +180,16 @@ const linkBoth = (
 ) =>
   b.served.auth.issuePairingCredential().pipe(
     Effect.flatMap((pairing) =>
-      l.back.link({
-        url: b.served.url,
-        pairingCode: pairing.credential,
-        access,
-        expectedEnvironmentId: box.environmentId,
-        reverse: { access: reverse },
-      }),
+      l.back.link(
+        {
+          url: b.served.url,
+          pairingCode: pairing.credential,
+          access,
+          expectedEnvironmentId: box.environmentId,
+          reverse: { access: reverse },
+        },
+        owner,
+      ),
     ),
   );
 
@@ -223,14 +236,14 @@ it.effect("links both ways in one step, with the access chosen for the other mac
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect("does not ask Box to link back below auto access, and makes no code", () =>
+it.effect("does not ask Box to link back below full access, and makes no code", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const l = yield* makeLaptop;
       const b = yield* makeBox;
-      const linked = yield* linkBoth(l, b, "approval-required", "approval-required");
+      const linked = yield* linkBoth(l, b, "auto", "auto");
 
-      expect(linked.access).toBe("approval-required");
+      expect(linked.access).toBe("auto");
       expect(linked.back?.status).toBe("not_linked");
       expect(yield* Ref.get(l.minted)).toEqual([]);
       expect(yield* b.links.get(laptop.environmentId)).toEqual(Option.none());
@@ -244,7 +257,11 @@ it.effect("still names where it signed in from after the link renews", () =>
       const l = yield* makeLaptop;
       const b = yield* makeBox;
       const pairing = yield* b.served.auth.issuePairingCredential();
-      yield* l.links.link({ url: b.served.url, pairingCode: pairing.credential, access: "auto" });
+      yield* l.links.link({
+        url: b.served.url,
+        pairingCode: pairing.credential,
+        access: "full-access",
+      });
       yield* TestClock.adjust(Duration.days(21));
       yield* l.links.renew(box.environmentId);
       const code = yield* l.served.auth.issuePairingCredential();
@@ -311,12 +328,15 @@ it.effect("keeps the link made here when Box is an older version without link ba
       const oldBox = yield* servePeer(box, Layer.empty);
       const pairing = yield* oldBox.auth.issuePairingCredential();
       const { result: linked, logs } = yield* withLogs(
-        l.back.link({
-          url: oldBox.url,
-          pairingCode: pairing.credential,
-          access: "full-access",
-          reverse: { access: "auto" },
-        }),
+        l.back.link(
+          {
+            url: oldBox.url,
+            pairingCode: pairing.credential,
+            access: "full-access",
+            reverse: { access: "auto" },
+          },
+          owner,
+        ),
       );
 
       expect(Option.isSome(yield* l.links.get(box.environmentId))).toBe(true);
@@ -343,19 +363,22 @@ it.effect("reports that Box has Linked environments off and keeps the link made 
       const forward = yield* l.links.link({
         url: b.served.url,
         pairingCode: pairing.credential,
-        access: "auto",
+        access: "full-access",
       });
       yield* b.settings.updateSettings({ linkedEnvironmentsEnabled: false });
       const back = yield* l.back
-        .link({
-          url: b.served.url,
-          pairingCode: (yield* b.served.auth.issuePairingCredential()).credential,
-          access: "auto",
-          reverse: { access: "auto" },
-        })
+        .link(
+          {
+            url: b.served.url,
+            pairingCode: (yield* b.served.auth.issuePairingCredential()).credential,
+            access: "full-access",
+            reverse: { access: "auto" },
+          },
+          owner,
+        )
         .pipe(Effect.map((linked) => linked.back));
 
-      expect(forward.access).toBe("auto");
+      expect(forward.access).toBe("full-access");
       expect(back?.status).toBe("not_linked");
       expect(back?.status === "not_linked" ? back.message : "").toContain(
         "Linked environments is off",
@@ -363,6 +386,130 @@ it.effect("reports that Box has Linked environments off and keeps the link made 
       expect(yield* b.links.get(laptop.environmentId)).toEqual(Option.none());
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("never replaces a link Box already has to Laptop, even an expired one", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const l = yield* makeLaptop;
+      const b = yield* makeBox;
+      // Box linked Laptop by hand long ago; that link has expired since.
+      const existing = yield* linkTo(b.links, l.served, "approval-required");
+      yield* TestClock.adjust(Duration.days(31));
+      const linked = yield* linkBoth(l, b, "full-access", "full-access");
+
+      expect(linked.access).toBe("full-access");
+      expect(linked.back?.status).toBe("not_linked");
+      expect(linked.back?.status === "not_linked" ? linked.back.message : "").toContain(
+        "already has a link",
+      );
+      const kept = Option.getOrThrow(yield* b.links.get(laptop.environmentId));
+      expect(kept.access).toBe("approval-required");
+      expect(kept.linkedAt).toEqual(existing.linkedAt);
+      // The code Box never redeemed is revoked.
+      const [code] = yield* Ref.get(l.minted);
+      const unused = yield* l.served.auth
+        .consumeMcpApprovalCode(code!.credential, "full-access")
+        .pipe(Effect.result);
+      expect(Result.isFailure(unused)).toBe(true);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("refuses access for Box that the caller here could not grant, before linking", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const l = yield* makeLaptop;
+      const b = yield* makeBox;
+      const pairing = yield* b.served.auth.issuePairingCredential();
+      // A session that may link and grant auto, but not full access.
+      const caller = { scopes: [...mcpClientScopes("auto"), AuthAccessWriteScope] };
+      const refused = yield* l.back
+        .link(
+          {
+            url: b.served.url,
+            pairingCode: pairing.credential,
+            access: "full-access",
+            reverse: { access: "full-access" },
+          },
+          caller,
+        )
+        .pipe(Effect.flip);
+
+      expect(refused).toBeInstanceOf(EnvironmentAuthorizationError);
+      expect(yield* l.links.get(box.environmentId)).toEqual(Option.none());
+      expect(yield* Ref.get(l.minted)).toEqual([]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("revokes the code when the call carrying it is interrupted", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const forward: PeerLink = {
+      environmentId: box.environmentId,
+      label: "Box",
+      urls: ["https://box.example.ts.net"],
+      access: "full-access",
+      linkedAt: now,
+      expiresAt: DateTime.add(now, { days: 30 }),
+      lastReachedAt: now,
+      lastError: null,
+    };
+    const calling = yield* Deferred.make<void>();
+    const revoked = yield* Ref.make<ReadonlyArray<string>>([]);
+    const back = yield* Layer.build(
+      PeerLinkBack.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(PeerLinks.PeerLinks)({ link: () => Effect.succeed(forward) }),
+            Layer.mock(PeerMcpClient.PeerMcpClient)({
+              call: () => Deferred.succeed(calling, undefined).pipe(Effect.andThen(Effect.never)),
+            }),
+            Layer.succeed(ServerEnvironment.ServerEnvironment, {
+              getEnvironmentId: Effect.succeed(laptop.environmentId),
+              getDescriptor: Effect.succeed(laptop),
+            }),
+            Layer.mock(EnvironmentAuth.EnvironmentAuth)({
+              createPairingLink: () =>
+                Effect.succeed({
+                  id: "code-1",
+                  credential: "secret-code",
+                  scopes: mcpClientScopes("auto"),
+                  subject: "one-time-token",
+                  createdAt: now,
+                  expiresAt: DateTime.add(now, { minutes: 2 }),
+                }),
+              revokePairingLink: (id) =>
+                Ref.update(revoked, (all) => [...all, id]).pipe(Effect.as(true)),
+            }),
+            Layer.succeed(DirectEndpoints.DirectEndpoints, {
+              resolve: Effect.fn("test.directEndpoints")(() =>
+                Effect.succeed([
+                  { kind: "tailnet" as const, httpBaseUrl: "https://laptop.ts.net" },
+                ]),
+              ),
+            }),
+          ),
+        ),
+      ),
+    ).pipe(Effect.map((context) => Context.get(context, PeerLinkBack.PeerLinkBack)));
+    const linking = yield* Effect.forkChild(
+      back.link(
+        {
+          url: forward.urls[0]!,
+          pairingCode: "box-code",
+          access: "full-access",
+          reverse: { access: "auto" },
+        },
+        owner,
+      ),
+    );
+    yield* Deferred.await(calling);
+    yield* Fiber.interrupt(linking);
+
+    expect(yield* Ref.get(revoked)).toEqual(["code-1"]);
+  }).pipe(Effect.scoped),
 );
 
 const scopeOf = (
@@ -380,14 +527,14 @@ const linkedClient = (
 ): McpInvocationContext.McpClientCaller => ({
   sessionId: "session",
   label: "T3.CodeShip · Laptop",
-  access: "auto",
+  access: "full-access",
   linked: true,
   linkedFrom: laptop.environmentId,
   ...overrides,
 });
 
 it.effect(
-  "allows linking back only to the environment a link signed in from, with auto access",
+  "allows linking back only to the environment a link signed in from, with full access",
   () =>
     Effect.gen(function* () {
       const verdict = (scope: McpInvocationContext.McpInvocationScope) =>
@@ -396,7 +543,6 @@ it.effect(
         );
 
       expect(yield* verdict(scopeOf(linkedClient()))).toBe("allowed");
-      expect(yield* verdict(scopeOf(linkedClient({ access: "full-access" })))).toBe("allowed");
       // Not a peer link, such as Claude Code signed in from outside.
       expect(yield* verdict(scopeOf(linkedClient({ linked: false })))).toContain(
         "Only an environment linked",
@@ -409,22 +555,23 @@ it.effect(
       expect(yield* verdict(scopeOf(linkedClient({ linkedFrom: undefined })))).toContain(
         "before linking back was possible",
       );
-      // Too little access, whether approved so or narrowed for this call.
-      expect(yield* verdict(scopeOf(linkedClient({ access: "auto-accept-edits" })))).toContain(
-        "less than auto access",
+      // Too little access, whether approved so or narrowed for this call. Auto is not enough:
+      // only full access already lets a link do anything here.
+      expect(yield* verdict(scopeOf(linkedClient({ access: "auto" })))).toContain(
+        "less than full access",
       );
       expect(yield* verdict(scopeOf(linkedClient({ access: "read-only" })))).toContain(
-        "less than auto access",
+        "less than full access",
       );
       expect(
         yield* verdict(
           scopeOf(
             linkedClient({
               access: "full-access",
-              narrowedTo: { runtimeMode: "approval-required", interactionMode: "default" },
+              narrowedTo: { runtimeMode: "auto", interactionMode: "default" },
             }),
           ),
         ),
-      ).toContain("less than auto access");
+      ).toContain("less than full access");
     }),
 );

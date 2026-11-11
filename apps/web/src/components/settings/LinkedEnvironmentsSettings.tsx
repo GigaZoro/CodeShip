@@ -414,41 +414,46 @@ function LinkEnvironmentAction({
               </label>
             )}
             <LinkAccessPicker value={access} onChange={setAccess} disabled={busy} />
-            <div className="space-y-3">
-              <label className="flex items-start gap-2 text-xs">
-                <Checkbox
-                  checked={reversing}
-                  disabled={busy || !canLinkBack}
-                  onCheckedChange={(checked) => setBothWays(checked === true)}
-                  className="mt-0.5"
-                />
-                <span className="space-y-1">
-                  <span className="block font-medium text-foreground">
-                    {t("Also let {name} reach this machine", { name: otherName })}
+            {/* Only a full-access link may ask the other machine to link back. */}
+            {canLinkBack ? (
+              <div className="space-y-3">
+                <label className="flex items-start gap-2 text-xs">
+                  <Checkbox
+                    checked={reversing}
+                    disabled={busy}
+                    onCheckedChange={(checked) => setBothWays(checked === true)}
+                    className="mt-0.5"
+                  />
+                  <span className="space-y-1">
+                    <span className="block font-medium text-foreground">
+                      {t("Also let {name} reach this machine", { name: otherName })}
+                    </span>
+                    <span className="block text-muted-foreground">
+                      {t(
+                        "This machine links {name} back in the same step, so no second pairing code is typed there. Linked environments must be on there too.",
+                        { name: otherName },
+                      )}
+                    </span>
                   </span>
-                  <span className="block text-muted-foreground">
-                    {canLinkBack
-                      ? t(
-                          "This machine links {name} back in the same step, so no second pairing code is typed there. Linked environments must be on there too.",
-                          { name: otherName },
-                        )
-                      : t(
-                          "{name} can link back only when this link has auto or full access. Otherwise link this machine from {name}.",
-                          { name: otherName },
-                        )}
-                  </span>
-                </span>
-              </label>
-              {reversing ? (
-                <LinkAccessPicker
-                  value={reverseAccess}
-                  onChange={setReverseChoice}
-                  disabled={busy}
-                  label={t("What agents there may do here")}
-                  note={t("An agent there never gets more access here than its own mode there.")}
-                />
-              ) : null}
-            </div>
+                </label>
+                {reversing ? (
+                  <LinkAccessPicker
+                    value={reverseAccess}
+                    onChange={setReverseChoice}
+                    disabled={busy}
+                    label={t("What agents there may do here")}
+                    note={t("An agent there never gets more access here than its own mode there.")}
+                  />
+                ) : null}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                {t("Link {here} from {name} to let it reach this machine.", {
+                  here: environmentLabel ?? t("this machine"),
+                  name: otherName,
+                })}
+              </p>
+            )}
           </form>
         </DialogPanel>
         <DialogFooter variant="bare">

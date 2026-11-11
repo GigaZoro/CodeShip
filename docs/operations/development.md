@@ -75,21 +75,26 @@ different preference when needed.
 
 ### Provider logins
 
-A dev server never uses the developer's real provider logins. The dev runner points the server at
-empty homes under `<home>/provider-homes` (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME`,
-`PI_CODING_AGENT_DIR`), drops `CLAUDE_CODE_OAUTH_TOKEN`, and keeps Codex MCP sign-ins in that home
-instead of the shared OS keychain. Claude and Codex key their keychain items to that folder, so
-those items are separate too. Providers show as signed out, and the runner prints
+A dev server never refreshes the developer's real Claude, Codex, Grok or Pi login. The dev runner
+points the server at empty homes under `<home>/provider-homes` (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+`GROK_HOME`, `PI_CODING_AGENT_DIR`), drops `CLAUDE_CODE_OAUTH_TOKEN`, and keeps Codex MCP sign-ins
+in that home instead of the shared OS keychain. Claude and Codex key their keychain items to that
+folder, so those items are separate too. These providers show as signed out, and the runner prints
 `providers=isolated`. Claude, ChatGPT and other refresh tokens are single-use, so a dev server
 refreshing a shared login signs the real app out.
+
+Two providers are not isolated: Cursor keeps its login in the OS keychain, and OpenCode in
+`auth.json` under its XDG data folder. Neither has a variable of its own for that place, and moving
+`XDG_DATA_HOME` for the whole dev server would also move the tools its terminals run. A dev server
+uses their real logins. Anonymous telemetry also reads `~/.codex/auth.json` and `~/.claude.json`,
+read-only, to pick its id.
 
 For a test that needs a real provider, run `vp run dev --real-providers` or set
 `T3CODE_DEV_REAL_PROVIDERS=1`. The runner then leaves the environment as it is and prints
 `providers=real`. Prefer [Replay](#replay-provider) otherwise. If the dev home's `settings.json`
 (copied by hand) names a provider home outside the dev home, the runner refuses to start and lists
-the fields: remove them or opt in. It does not rewrite your settings. OpenCode and Cursor have no
-home the runner can redirect without moving unrelated tools, and Antigravity profiles already live
-under the dev home.
+the fields: remove them or opt in. It does not rewrite your settings. Antigravity profiles already
+live under the dev home.
 
 ### Replay provider
 

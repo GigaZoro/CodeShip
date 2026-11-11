@@ -70,13 +70,13 @@ export const PeerLinkCreateInput = Schema.Struct({
 export type PeerLinkCreateInput = typeof PeerLinkCreateInput.Type;
 
 /**
- * Whether a link with this access may ask the environment it links to to link back. Linking
- * back changes that environment's own links, which a link below full access otherwise cannot
- * do, so it is limited to links that already work there without asking at every step.
+ * Whether a link with this access may ask the environment it links to to link back. Only full
+ * access: a full-access link can already run anything there through its agents, the `t3` CLI
+ * included, so linking back gives it nothing new. Below that it would be a new power.
  */
 export const peerLinkAccessAllowsLinkBack = (
   access: AuthMcpClientAccess,
-): access is "auto" | "full-access" => access === "auto" || access === "full-access";
+): access is "full-access" => access === "full-access";
 
 /** How linking back from the other environment went. */
 export const PeerLinkBackOutcome = Schema.Union([
@@ -114,6 +114,8 @@ export class PeerLinkError extends Schema.TaggedError<PeerLinkError>()("PeerLink
     "unknown_link",
     "storage",
     "disabled",
+    /** Only from linking back over a link (`t3_link_back`), which never replaces a link. */
+    "already_linked",
   ]),
   message: Schema.String,
   cause: Schema.optionalKey(Schema.Defect()),

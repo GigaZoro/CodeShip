@@ -25,6 +25,8 @@ import { isHostedByThisApp } from "./useUpdateEverything";
 /** An update install of this desktop app that waits for chats' background work to finish. */
 export interface PendingLocalInstall {
   readonly version: string | null;
+  /** Started by "Install updates automatically when idle", not by the user. */
+  readonly automatic?: true;
 }
 
 export const pendingLocalInstallAtom = Atom.make<PendingLocalInstall | null>(null).pipe(
@@ -113,16 +115,24 @@ export function decideHostedRestartHold(decision: RestartHoldDecision): void {
 
 export type HostedWorkWait =
   | { readonly status: "clear" }
+  /** The user chose to update now, whatever still runs. */
+  | { readonly status: "update-now" }
   | { readonly status: "cancelled" }
   | { readonly status: "failed"; readonly error: unknown };
 
-/** Resolves when the work listed on this app's servers has ended, or the user decides first. */
-export async function waitForHostedBackgroundWork(): Promise<HostedWorkWait> {
+/**
+ * Resolves when the work listed on this app's servers has ended, or the user decides first.
+ * With `untilIdle`, it waits until no work is left, work that started meanwhile included.
+ */
+export async function waitForHostedBackgroundWork(options?: {
+  readonly untilIdle?: boolean;
+}): Promise<HostedWorkWait> {
   const environmentIds = readHostedRestartHoldEnvironmentIds();
   const results = await Promise.all(
     environmentIds.map(async (environmentId) => {
       const result = await serverEnvironment.awaitRestartHold.run(appAtomRegistry, {
         environmentId,
+        ...(options?.untilIdle === true ? { untilIdle: true } : {}),
       });
       // The other servers' waits end with this one, or the install would stay half-decided.
       if (result._tag === "Failure" || result.value === "cancel") decideHostedRestartHold("cancel");
@@ -138,5 +148,30 @@ export async function waitForHostedBackgroundWork(): Promise<HostedWorkWait> {
     (result) =>
       result._tag === "Failure" || (result._tag === "Success" && result.value === "cancel"),
   );
-  return cancelled ? { status: "cancelled" } : { status: "clear" };
+  if (cancelled) return { status: "cancelled" };
+  const decidedNow = results.some(
+    (result) => result._tag === "Success" && result.value === "update-now",
+  );
+  return decidedNow ? { status: "update-now" } : { status: "clear" };
+}
+
+export type HostedWorkNow =
+  | { readonly status: "idle" }
+  | { readonly status: "busy" }
+  | { readonly status: "failed"; readonly error: unknown };
+
+/** Whether any chat on this app's servers has background work right now. */
+export async function readHostedBackgroundWork(): Promise<HostedWorkNow> {
+  const results = await Promise.all(
+    readHostedRestartHoldEnvironmentIds().map((environmentId) =>
+      serverEnvironment.readRestartHold.run(appAtomRegistry, { environmentId }),
+    ),
+  );
+  for (const result of results) {
+    if (result._tag === "Failure")
+      return { status: "failed", error: squashAtomCommandFailure(result) };
+  }
+  return results.some((result) => result._tag === "Success" && result.value.work.length > 0)
+    ? { status: "busy" }
+    : { status: "idle" };
 }
