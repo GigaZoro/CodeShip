@@ -1,9 +1,13 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { formatTimeAgo } from "@t3tools/client-runtime/scheduled-task-pins";
+import { useNavigation } from "@react-navigation/native";
 import {
+  detectedManualStepText,
   manualStepsFailureMessage,
+  type DetectedManualStepEntry,
   type ManualStepsState,
 } from "@t3tools/client-runtime/state/manualSteps";
+import { providerClients } from "@t3tools/client-runtime/provider-clients";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { ManualStep } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
@@ -14,10 +18,11 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { RowPressable } from "../../components/ui/RowPressable";
 import { cn } from "../../lib/cn";
-import { t } from "../../lib/i18n";
+import { getFormattingLocale, t } from "../../lib/i18n";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { useThreadShell } from "../../state/entities";
 import { useManualSteps } from "../../state/manualSteps";
+import { openSettings } from "../settings/settings-navigation";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import {
   THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME,
@@ -131,6 +136,96 @@ const ManualStepRow = memo(function ManualStepRow(props: {
   );
 });
 
+const formatLoginDate = (iso: string) =>
+  new Intl.DateTimeFormat(getFormattingLocale(), { dateStyle: "medium" }).format(new Date(iso));
+
+/** A sign-in this machine's server noticed; it opens the settings page that holds the fix. */
+const DetectedStepRow = memo(function DetectedStepRow(props: {
+  readonly entry: DetectedManualStepEntry;
+  readonly pane: "screen" | "sidebar";
+}) {
+  const { entry } = props;
+  const navigation = useNavigation();
+  const theme = useUniwindTheme();
+  const sidebarPane = props.pane === "sidebar";
+  const appearance = getThreadListV2RowAppearance(theme, sidebarPane, false);
+  const text = detectedManualStepText(entry.step, {
+    driverLabel: providerClients.get(entry.step.driver)?.label ?? entry.step.driver,
+    formatDate: formatLoginDate,
+  });
+  const lapsed = entry.step.kind === "login-expired";
+  const content = (
+    <>
+      <View className="flex-row items-center gap-1.5">
+        <SymbolView
+          name={{ ios: "key", android: "lock" }}
+          size={14}
+          tintColorClassName={lapsed ? "accent-danger-foreground" : "accent-warning-foreground"}
+          type="monochrome"
+        />
+        <Text
+          className={cn("flex-1 text-base font-t3-medium", appearance.foregroundClassName)}
+          numberOfLines={1}
+        >
+          {text.step}
+        </Text>
+        <Text className="text-xs font-t3-medium text-primary">{t("Sign in")}</Text>
+      </View>
+      <View className="mt-1 flex-row items-center gap-2">
+        <Text
+          className={cn(
+            "flex-1 text-xs",
+            lapsed ? "font-t3-medium text-danger-foreground" : appearance.mutedForegroundClassName,
+          )}
+          numberOfLines={1}
+        >
+          {text.detail}
+        </Text>
+        <Text
+          className={cn("max-w-[40%] shrink-0 text-xs", appearance.mutedForegroundClassName)}
+          numberOfLines={1}
+        >
+          {entry.step.machine}
+        </Text>
+      </View>
+    </>
+  );
+  return (
+    <View style={appearance.swipeContainerStyle}>
+      <RowPressable
+        accessibilityRole="button"
+        accessibilityLabel={[text.step, text.detail, entry.step.machine].join(", ")}
+        accessibilityHint={
+          entry.step.kind === "mcp-needs-auth"
+            ? t("Opens Capabilities, where the MCP server signs in.")
+            : t("Opens Providers, where the account signs in.")
+        }
+        className={appearance.className}
+        interactionClassName={appearance.interactionClassName}
+        interactionOpacity={appearance.interactionOpacity}
+        onPress={() =>
+          openSettings(
+            navigation,
+            entry.step.kind === "mcp-needs-auth"
+              ? "SettingsCapabilities"
+              : "SettingsProviderAccounts",
+          )
+        }
+        style={appearance.cardStyle}
+      >
+        {sidebarPane ? (
+          content
+        ) : (
+          <View>
+            <View className={THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME}>{content}</View>
+            {THREAD_LIST_V2_ROW_DIVIDERS ? <View className="ml-5 h-px bg-border-subtle" /> : null}
+          </View>
+        )}
+      </RowPressable>
+    </View>
+  );
+});
+
 function useManualStepsExpanded() {
   const preferences = useAtomValue(mobilePreferencesAtom);
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
@@ -153,8 +248,8 @@ function shown(state: ManualStepsState | null): state is ManualStepsState {
 }
 
 /**
- * Above the thread list: the steps only the user can do, from every machine's ThreadPage list.
- * Hidden without a ThreadPage token or with nothing to do; it never alerts.
+ * Above the thread list: the sign-ins each machine notices itself, then the steps only the user can
+ * do from every machine's ThreadPage list. Hidden with nothing to do; it never alerts.
  */
 export function ThreadListManualSteps(props: {
   readonly pane: "screen" | "sidebar";
@@ -180,8 +275,15 @@ export function ThreadListManualSteps(props: {
         }}
       />
       {expanded && state.view.status === "listed"
-        ? state.view.groups.flatMap((group) =>
-            group.steps.map((step) => (
+        ? state.view.groups.flatMap((group) => [
+            ...group.detected.map((entry) => (
+              <DetectedStepRow
+                key={`${entry.step.machine}:${entry.step.id}`}
+                entry={entry}
+                pane={props.pane}
+              />
+            )),
+            ...group.steps.map((step) => (
               <ManualStepRow
                 key={step.threadId}
                 step={step}
@@ -189,7 +291,7 @@ export function ThreadListManualSteps(props: {
                 onSelectThread={props.onSelectThread}
               />
             )),
-          )
+          ])
         : null}
       {expanded && state.view.status === "failed" ? (
         <Pressable

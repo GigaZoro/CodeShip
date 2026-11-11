@@ -67,7 +67,13 @@ export function ExtensionsPage() {
         ) : tab === "plugins" ? (
           <PluginsPanel controlsSlot={controlsSlot} />
         ) : (
-          <McpServersPanel controlsSlot={controlsSlot} />
+          <McpServersPanel
+            controlsSlot={controlsSlot}
+            focus={{
+              ...(search.environmentId ? { environmentId: search.environmentId } : {}),
+              ...(search.server ? { server: search.server } : {}),
+            }}
+          />
         )}
       </div>
     </SidebarInset>

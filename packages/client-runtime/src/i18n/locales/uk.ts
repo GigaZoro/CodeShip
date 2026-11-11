@@ -6843,6 +6843,17 @@ const catalog: MessageCatalog = {
   "Logical Read": "Логічне читання",
   "Logical Write": "Логічний запис",
   login: "логін",
+  "Login ends {date}": "Вхід спливає {date}",
+  "Login ends in {count} days ({date}). Sign in again before then.": {
+    one: "Вхід спливає за {count} день ({date}). Увійдіть знову до цього.",
+    few: "Вхід спливає за {count} дні ({date}). Увійдіть знову до цього.",
+    many: "Вхід спливає за {count} днів ({date}). Увійдіть знову до цього.",
+    other: "Вхід спливає за {count} дня ({date}). Увійдіть знову до цього.",
+  },
+  "Login ends soon": "Вхід скоро спливе",
+  "Login expired": "Вхід закінчився",
+  "Login expired. Sign in again to keep using this account.":
+    "Вхід закінчився. Увійдіть знову, щоб і далі користуватися цим обліковим записом.",
   "Logs endpoint": "Кінцева точка журналів",
   London: "Лондон",
   "Long press to copy the trace ID": "Утримуйте, щоб скопіювати ID трасування",
@@ -6977,6 +6988,7 @@ const catalog: MessageCatalog = {
   "May be stale": "Може бути застарілим",
   mcp: "mcp",
   "MCP server": "Сервер MCP",
+  "MCP server needs sign-in": "MCP-серверу потрібен вхід",
   "mcp servers": "сервери mcp",
   "MCP servers": "Сервери MCP",
   "MCP servers and skills": "Сервери MCP і навички",
@@ -8090,10 +8102,14 @@ const catalog: MessageCatalog = {
   "Opening…": "Відкриття…",
   "Opens a thread that knows which {term} you mean.":
     "Відкриває чат, який знає, який саме {term} ви маєте на увазі.",
+  "Opens Capabilities, where the MCP server signs in.":
+    "Відкриває «Можливості», де MCP-сервер входить в обліковий запис.",
   "Opens environment settings": "Відкриває налаштування середовища",
   "Opens one of your threads.": "Відкриває один із ваших чатів.",
   "Opens over SSH. Needs your key on {machine}":
     "Відкривається через SSH. Потрібен ваш ключ на {machine}",
+  "Opens Providers, where the account signs in.":
+    "Відкриває «Провайдери», де обліковий запис входить у систему.",
   "Opens queued messages to send now, edit, or remove":
     "Відкриває повідомлення в черзі, щоб надіслати зараз, змінити чи видалити",
   "Opens scheduled task settings.": "Відкриває налаштування запланованих завдань.",
@@ -10467,9 +10483,13 @@ const catalog: MessageCatalog = {
   Sidecar: "Sidecar",
   "sign in": "увійти",
   "Sign in": "Увійти",
+  "Sign in again": "Увійти знову",
   "Sign in on {environment}.": "Увійдіть у {environment}.",
+  "Sign in to {account}": "Увійти в {account}",
+  "Sign in to {account} again": "Увійти в {account} знову",
   "Sign in to {name}": "Увійти в {name}",
   "Sign in to {server}": "Увійти в {server}",
+  "Sign in to {server} for {account}": "Увійти в {server} для {account}",
   "Sign in to Antigravity in provider settings before sending.":
     "Увійдіть в Antigravity в налаштуваннях провайдера, перш ніж надсилати.",
   "Sign in to continue authorizing T3 Connect for your CLI.":
@@ -10513,6 +10533,7 @@ const catalog: MessageCatalog = {
   "Signed in as {email}": "Вхід виконано як {email}",
   "Signed in as {email}.": "Ви ввійшли як {email}.",
   "Signed in as {name} with {source}.": "Вхід виконано як {name} через {source}.",
+  "Signed in until {date}": "Вхід чинний до {date}",
   "Signed in with ChatGPT.": "Вхід через ChatGPT виконано.",
   "Signed in, but the token saved below is used until you remove it.":
     "Вхід виконано, але використовується збережений нижче токен, доки ви його не видалите.",
@@ -10816,8 +10837,8 @@ const catalog: MessageCatalog = {
   "Steered the active turn": "Скерувало активний хід",
   "Step 1 of 2: open device": "Крок 1 з 2: відкриття пристрою",
   "Step 2 of 2: connect video": "Крок 2 з 2: підключення відео",
-  "Steps only you can do, from every machine's pending list in ThreadPage. Open one to see its newest note; replying there tells that machine to check it again.":
-    "Кроки, які можете зробити лише ви, зі списків очікування всіх комп’ютерів у ThreadPage. Відкрийте крок, щоб побачити його найновішу нотатку; відповідь там скаже тому комп’ютеру перевірити його знову.",
+  "Steps only you can do. Sign-ins each machine notices itself come first; the rest are every machine's pending list in ThreadPage. Open a ThreadPage step to see its newest note; replying there tells that machine to check it again.":
+    "Кроки, які можете виконати лише ви. Спершу йдуть входи, які кожна машина помічає сама; решта це списки очікування кожної машини в ThreadPage. Відкрийте крок із ThreadPage, щоб побачити його найновішу нотатку; відповідь там підкаже машині перевірити його ще раз.",
   "Still bringing attached context into this message.":
     "Прикріплений контекст ще додається до повідомлення.",
   "Still compressing a pasted image.": "Вставлене зображення ще стискається.",
@@ -12496,6 +12517,7 @@ const catalog: MessageCatalog = {
   "ThreadPage opens in its own tab": "ThreadPage відкривається в окремій вкладці",
   "ThreadPage refused the token. Save a new one in Settings.":
     "ThreadPage відхилив токен. Збережіть новий у налаштуваннях.",
+  "ThreadPage steps are not shown. {reason}": "Кроки з ThreadPage не показано. {reason}",
   "ThreadPage stopped": "ThreadPage зупинився",
   "ThreadPage token": "Токен ThreadPage",
   "ThreadPage token on {machine}": "Токен ThreadPage на {machine}",

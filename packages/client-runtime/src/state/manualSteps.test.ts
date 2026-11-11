@@ -1,7 +1,7 @@
-import type { ManualStep } from "@t3tools/contracts";
+import type { DetectedManualStep, EnvironmentId, ManualStep } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { combineManualSteps } from "./manualSteps.ts";
+import { combineManualSteps, detectedManualStepText } from "./manualSteps.ts";
 
 const step = (
   threadId: string,
@@ -74,5 +74,122 @@ describe("combineManualSteps", () => {
     ],
   ] as const)("shows %j as %j", (sources, view) => {
     expect(combineManualSteps(sources)).toEqual(view);
+  });
+});
+
+const mac = "mac-env" as EnvironmentId;
+const vps = "vps-env" as EnvironmentId;
+const detected = (
+  id: string,
+  machine: string,
+  fields: Partial<DetectedManualStep> = {},
+): DetectedManualStep =>
+  ({
+    id,
+    kind: "signed-out",
+    machine,
+    instanceId: "claudeAgent",
+    driver: "claudeAgent",
+    ...fields,
+  }) as DetectedManualStep;
+
+describe("combineManualSteps with detected steps", () => {
+  it("lists a machine's own findings with no ThreadPage token, most urgent first", () => {
+    const view = combineManualSteps(
+      [{ status: "not-connected" }],
+      [
+        {
+          status: "listed",
+          environmentId: mac,
+          steps: [
+            detected("mcp", "Mac", { kind: "mcp-needs-auth", serverName: "minions" }),
+            detected("soon", "Mac", { kind: "login-expiring" }),
+            detected("gone", "Mac", { kind: "login-expired" }),
+          ],
+        },
+        { status: "failed" },
+      ],
+    );
+    expect(view.status === "listed" ? view.count : null).toBe(3);
+    expect(
+      view.status === "listed"
+        ? view.groups.map((group) => [group.machine, group.detected.map((entry) => entry.step.id)])
+        : view,
+    ).toEqual([["Mac", ["gone", "soon", "mcp"]]]);
+  });
+
+  it("shows a machine reached through two environments once and keeps ThreadPage steps", () => {
+    const view = combineManualSteps(
+      [{ status: "listed", steps: [step("xcode", "Mac")] }],
+      [
+        { status: "listed", environmentId: mac, steps: [detected("a", "Mac")] },
+        {
+          status: "listed",
+          environmentId: vps,
+          steps: [detected("a", "Mac"), detected("a", "VPS")],
+        },
+      ],
+    );
+    expect(view.status === "listed" ? view.count : null).toBe(3);
+    expect(
+      view.status === "listed"
+        ? view.groups.map((group) => [
+            group.machine,
+            group.steps.length,
+            group.detected.map((entry) => entry.environmentId),
+          ])
+        : view,
+    ).toEqual([
+      ["Mac", 1, [mac]],
+      ["VPS", 0, [vps]],
+    ]);
+  });
+
+  it("names a ThreadPage failure beside findings, and fails alone only with nothing else", () => {
+    const failed = { status: "failed", reason: "token-rejected" } as const;
+    const withFinding = combineManualSteps(
+      [failed],
+      [{ status: "listed", environmentId: mac, steps: [detected("a", "Mac")] }],
+    );
+    expect(withFinding.status === "listed" ? withFinding.threadPageIssue : null).toBe(
+      "token-rejected",
+    );
+    expect(
+      combineManualSteps([failed], [{ status: "listed", environmentId: mac, steps: [] }]),
+    ).toEqual(failed);
+    expect(combineManualSteps([{ status: "not-connected" }], [{ status: "loading" }])).toEqual({
+      status: "loading",
+    });
+  });
+});
+
+describe("detectedManualStepText", () => {
+  const helpers = { driverLabel: "Claude", formatDate: (iso: string) => iso.slice(0, 10) };
+  it.each([
+    [
+      detected("a", "Mac", { accountName: "Vitalii" as never }),
+      "Sign in to Claude · Vitalii",
+      "Signed out",
+    ],
+    [
+      detected("b", "Mac", {
+        kind: "login-expiring",
+        expiresAt: "2026-11-29T13:38:18.531Z" as never,
+      }),
+      "Sign in to Claude again",
+      "Login ends 2026-11-29",
+    ],
+    [detected("c", "Mac", { kind: "login-expired" }), "Sign in to Claude again", "Login expired"],
+    [
+      detected("d", "Mac", {
+        kind: "mcp-needs-auth",
+        accountName: "claude" as never,
+        serverName: "threadpage" as never,
+      }),
+      "Sign in to threadpage for Claude",
+      "MCP server needs sign-in",
+    ],
+  ])("words %#", (input, stepText, detail) => {
+    expect(detectedManualStepText(input, helpers)).toEqual({ step: stepText, detail });
   });
 });

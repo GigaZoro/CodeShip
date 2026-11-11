@@ -2869,6 +2869,50 @@ it.layer(
       ),
     );
 
+    it.effect.each([
+      {
+        scenario: "a saved subscription login",
+        capabilities: { tokenSource: "claude.ai", subscriptionType: "max", email: "a@example.com" },
+        expected: "2026-12-01T02:46:43.298Z",
+      },
+      {
+        scenario: "a login that lapsed and reads as signed out",
+        capabilities: { tokenSource: "none", apiKeySource: "none" },
+        expected: "2026-12-01T02:46:43.298Z",
+      },
+      {
+        scenario: "a long-lived token",
+        capabilities: { tokenSource: "CLAUDE_CODE_OAUTH_TOKEN", subscriptionType: "max" },
+        expected: undefined,
+      },
+      {
+        scenario: "an API key",
+        capabilities: { tokenSource: "none", apiKeySource: "ANTHROPIC_API_KEY" },
+        expected: undefined,
+      },
+    ])("reports when $scenario stops renewing", ({ capabilities, expected }) =>
+      Effect.gen(function* () {
+        const status = yield* checkClaudeProviderStatus(
+          defaultClaudeSettings,
+          claudeCapabilities({ apiKeySource: "none", apiProvider: "firstParty", ...capabilities }),
+          { ANTHROPIC_BASE_URL: "" },
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          Effect.succeed("2026-12-01T02:46:43.298Z"),
+        );
+        assert.strictEqual(status.auth.loginExpiresAt, expected);
+      }).pipe(
+        Effect.provide(
+          layerMockSpawner((args) => {
+            if (args.join(" ") === "--version") return { stdout: "2.1.319\n", stderr: "", code: 0 };
+            throw new Error(`Unexpected args: ${args.join(" ")}`);
+          }),
+        ),
+      ),
+    );
+
     it.effect("tells a logged-out CLI which models need a Claude Code update", () =>
       Effect.gen(function* () {
         const status = yield* checkClaudeProviderStatus(

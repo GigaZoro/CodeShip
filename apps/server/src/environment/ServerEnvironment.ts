@@ -267,6 +267,7 @@ export const make = Effect.gen(function* () {
       threadAutoSettleOptOut: true,
       threadLater: true,
       manualSteps: true,
+      detectedManualSteps: true,
       threadProjectFromScratch: true,
       threadTitleRegeneration: true,
       commandOutputStreaming: true,

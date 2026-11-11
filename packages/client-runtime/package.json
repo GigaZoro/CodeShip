@@ -247,6 +247,10 @@
       "types": "./src/state/deviceHubAccess.ts",
       "default": "./src/state/deviceHubAccess.ts"
     },
+    "./providerLoginExpiryText": {
+      "types": "./src/providerLoginExpiryText.ts",
+      "default": "./src/providerLoginExpiryText.ts"
+    },
     "./state/manualSteps": {
       "types": "./src/state/manualSteps.ts",
       "default": "./src/state/manualSteps.ts"

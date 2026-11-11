@@ -20,6 +20,7 @@ import type {
   ProviderMcpSignIn,
 } from "@t3tools/provider-core/server/driver";
 import * as Cache from "effect/Cache";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
@@ -57,6 +58,14 @@ export class ProviderMcp extends Context.Service<
   {
     readonly list: (
       input: ProviderMcpListInput,
+    ) => Effect.Effect<ProviderMcpListResult, ProviderMcpError>;
+    /**
+     * The last list this server loaded for the instance when it is no older than `maxAge`, else a
+     * fresh one. Lets a poller read what the MCP page found without starting the provider each time.
+     */
+    readonly listRecent: (
+      instanceId: ProviderInstanceId,
+      maxAge: Duration.Input,
     ) => Effect.Effect<ProviderMcpListResult, ProviderMcpError>;
     readonly add: (input: ProviderMcpAddInput) => Effect.Effect<void, ProviderMcpError>;
     readonly remove: (input: ProviderMcpServerInput) => Effect.Effect<void, ProviderMcpError>;
@@ -103,17 +112,33 @@ const make = Effect.gen(function* () {
     return instance.mcp;
   });
 
+  // Survives the cache's short TTL, but not a change: the next reader lists again.
+  const loaded = new Map<
+    ProviderInstanceId,
+    { readonly servers: ReadonlyArray<ProviderMcpServer>; readonly at: number }
+  >();
+
   const lists = yield* Cache.makeWith(
     (instanceId: ProviderInstanceId) =>
       management(instanceId, "list").pipe(
         Effect.flatMap((mcp) => mcp.list),
         Effect.map(sortProviderMcpServers),
+        Effect.tap((servers) =>
+          Clock.currentTimeMillis.pipe(
+            Effect.tap((at) => Effect.sync(() => loaded.set(instanceId, { servers, at }))),
+          ),
+        ),
       ),
     {
       capacity: 32,
       timeToLive: (exit) => (Exit.isSuccess(exit) ? LIST_TTL : Duration.zero),
     },
   );
+
+  const invalidateList = (instanceId: ProviderInstanceId) =>
+    Effect.sync(() => loaded.delete(instanceId)).pipe(
+      Effect.andThen(Cache.invalidate(lists, instanceId)),
+    );
 
   const change = (
     instanceId: ProviderInstanceId,
@@ -127,7 +152,7 @@ const make = Effect.gen(function* () {
           Effect.flatMap((all) =>
             Effect.forEach(
               ProviderInstanceRegistry.instancesSharingHome(all, instanceId),
-              (id) => Cache.invalidate(lists, id),
+              invalidateList,
               { discard: true },
             ),
           ),
@@ -166,7 +191,7 @@ const make = Effect.gen(function* () {
                 }),
               ),
           }),
-          Effect.ensuring(Cache.invalidate(lists, input.instanceId)),
+          Effect.ensuring(invalidateList(input.instanceId)),
           Effect.as(succeeded),
         ),
       ),
@@ -176,8 +201,20 @@ const make = Effect.gen(function* () {
   return ProviderMcp.of({
     list: Effect.fn("ProviderMcp.list")(function* (input) {
       yield* Effect.annotateCurrentSpan({ "provider.instance_id": input.instanceId });
-      if (input.refresh === true) yield* Cache.invalidate(lists, input.instanceId);
+      if (input.refresh === true) yield* invalidateList(input.instanceId);
       return { servers: yield* Cache.get(lists, input.instanceId) };
+    }),
+    listRecent: Effect.fn("ProviderMcp.listRecent")(function* (instanceId, maxAge) {
+      yield* Effect.annotateCurrentSpan({ "provider.instance_id": instanceId });
+      const known = loaded.get(instanceId);
+      const now = yield* Clock.currentTimeMillis;
+      if (
+        known !== undefined &&
+        now - known.at <= Duration.toMillis(Duration.fromInputUnsafe(maxAge))
+      ) {
+        return { servers: known.servers };
+      }
+      return { servers: yield* Cache.get(lists, instanceId) };
     }),
     add: Effect.fn("ProviderMcp.add")(function* (input) {
       yield* Effect.annotateCurrentSpan({ "provider.instance_id": input.instanceId });

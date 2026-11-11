@@ -1,4 +1,6 @@
-import { t } from "../../lib/i18n";
+import { getFormattingLocale, t } from "../../lib/i18n";
+import { providerLoginExpiryText } from "@t3tools/client-runtime/providerLoginExpiryText";
+import { providerLoginExpiry } from "@t3tools/shared/providerLoginExpiry";
 import * as Dialog from "../../components/ui/Dialog";
 import {
   isAtomCommandInterrupted,
@@ -23,6 +25,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { ControlPill } from "../../components/ui/ControlPill";
 import { Menu } from "../../components/ui/Menu";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
+import { useNowMinuteMs } from "../../lib/clock";
 import { environmentPresentations } from "../../state/presentation";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
@@ -124,6 +127,9 @@ function canManageProvider(provider: ServerProvider) {
   );
 }
 
+const formatLoginDate = (iso: string) =>
+  new Intl.DateTimeFormat(getFormattingLocale(), { dateStyle: "medium" }).format(new Date(iso));
+
 function ProviderAccount({
   environment,
   provider,
@@ -133,6 +139,7 @@ function ProviderAccount({
   readonly provider: ServerProvider;
   readonly divider: boolean;
 }) {
+  const nowMs = useNowMinuteMs();
   const environmentId = environment.environmentId;
   const instanceId = provider.instanceId;
   const target = { environmentId, input: { instanceId } };
@@ -222,6 +229,11 @@ function ProviderAccount({
     );
   }
   const name = provider.displayName ?? provider.driver;
+  const loginExpiry = providerLoginExpiry(provider.auth.loginExpiresAt, nowMs);
+  const loginText =
+    loginExpiry && !active && unavailableReason === undefined && provider.enabled
+      ? providerLoginExpiryText(loginExpiry, formatLoginDate)
+      : null;
   const email = signedIn && !active && provider.enabled ? provider.auth.email?.trim() : undefined;
   const methods = state?.methods ?? [];
   // The status line says why a provider that is missing or turned off can't sign in.
@@ -245,7 +257,7 @@ function ProviderAccount({
       : !provider.enabled
         ? t("Turned off")
         : signedIn
-          ? t("Signed in")
+          ? (loginText?.text ?? t("Signed in"))
           : isDiscovering
             ? t("Discovering sign-in methods…")
             : needsExternalSetup
@@ -293,7 +305,7 @@ function ProviderAccount({
       ? [
           {
             id: "change",
-            title: t("Change account"),
+            title: loginText?.actionLabel ?? t("Change account"),
             image: "person.crop.circle",
             attributes: { disabled: signInDisabled },
             ...(methodActions.length > 1
