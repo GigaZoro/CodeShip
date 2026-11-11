@@ -17,6 +17,7 @@ import {
   type OrchestrationV2ThreadShell,
   type ScheduledTask,
   ScheduledTaskId,
+  type ScheduledTaskUpsertInput,
   type Project,
   ProjectId,
   ProviderDriverKind,
@@ -69,6 +70,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
+import * as PeerLinks from "../peer/PeerLinks.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import { idleThreadProjection, liveThreadShell } from "./McpToolAccess.testkit.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
@@ -101,6 +103,7 @@ const decodeTarget = Schema.decodeUnknownEffect(OrchestratorMcpTarget);
 const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+  Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
 );
 
 describe("OrchestratorMcpService", () => {
@@ -3055,6 +3058,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Effect.provide(
             OrchestratorMcpService.layer.pipe(
               Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+              Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
               // An unbound task starts in a worktree from the project's default branch.
               Layer.provide(
                 Layer.mock(GitVcsDriver.GitVcsDriver)({
@@ -3217,9 +3221,15 @@ describe("OrchestratorMcpService provider resolution", () => {
       threads: Partial<ThreadManagementService.ThreadManagementService["Service"]> = {},
       tasks: Partial<ScheduledTaskService.ScheduledTaskService["Service"]> = {},
       providers: ReadonlyArray<ServerProvider> = [],
+      linked: ReadonlyArray<EnvironmentId> = [],
     ) =>
       OrchestratorMcpService.layer.pipe(
         Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+        Layer.provide(
+          Layer.mock(PeerLinks.PeerLinks)({
+            listStored: Effect.succeed(linked.map((environmentId) => ({ environmentId }) as never)),
+          }),
+        ),
         Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)(git)),
         Layer.provide(
           Layer.mergeAll(
@@ -3641,6 +3651,262 @@ describe("OrchestratorMcpService provider resolution", () => {
           assert.deepEqual(yield* Ref.get(saved), []);
         }),
     );
+
+    describe("machines a shared task leaves out", () => {
+      const work = EnvironmentId.make("environment:work-machine");
+      const vps = EnvironmentId.make("environment:vps");
+      const sharing = (
+        excludedEnvironmentIds: ReadonlyArray<EnvironmentId>,
+        runOn?: "one" | "every",
+      ): NonNullable<ScheduledTask["shared"]> => ({
+        revision: { at: "2026-11-10T00:00:00.000Z", environmentId: client.environmentId },
+        project: { type: "none" },
+        excludedEnvironmentIds,
+        ...(runOn === undefined ? {} : { runOn }),
+      });
+      const sharedTask = (shared: ScheduledTask["shared"]): ScheduledTask => ({
+        ...existing,
+        shared,
+      });
+      // Stores what the service saves, so a later call reads it back the way the real one does.
+      const storeFor = (initial: ReadonlyArray<ScheduledTask>) =>
+        Effect.gen(function* () {
+          const stored = yield* Ref.make(initial);
+          const saves = yield* Ref.make<ReadonlyArray<ScheduledTaskUpsertInput>>([]);
+          const tasks: Partial<ScheduledTaskService.ScheduledTaskService["Service"]> = {
+            list: () => Ref.get(stored).pipe(Effect.map((listed) => ({ tasks: listed }))),
+            upsert: (input) =>
+              Ref.update(saves, (all) => [...all, input]).pipe(
+                Effect.andThen(
+                  Ref.modify(stored, (listed) => {
+                    const before = listed.find((task) => task.id === input.id);
+                    const task: ScheduledTask = {
+                      ...(before ?? existing),
+                      id: input.id ?? existing.id,
+                      shared:
+                        input.shared === undefined
+                          ? before?.shared
+                          : input.shared === null
+                            ? undefined
+                            : sharing(
+                                input.shared.excludedEnvironmentIds,
+                                input.shared.runOn ?? before?.shared?.runOn,
+                              ),
+                    };
+                    return [
+                      task,
+                      [...listed.filter((other) => other.id !== task.id), task] as const,
+                    ];
+                  }),
+                ),
+                Effect.map((task) => ({ task })),
+              ),
+          };
+          return { saves, tasks };
+        });
+      const run = <A, E>(
+        initial: ReadonlyArray<ScheduledTask>,
+        body: (
+          mcp: OrchestratorMcpService.OrchestratorMcpService["Service"],
+          saves: Ref.Ref<ReadonlyArray<ScheduledTaskUpsertInput>>,
+        ) => Effect.Effect<A, E>,
+      ) =>
+        Effect.gen(function* () {
+          const { saves, tasks } = yield* storeFor(initial);
+          const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
+          const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+            Effect.provide(service(masterRepository, saved, [], {}, tasks, [], [work, vps])),
+          );
+          return yield* body(mcp, saves);
+        });
+      const sharedAs = (saves: ReadonlyArray<ScheduledTaskUpsertInput>) =>
+        saves.map((input) => input.shared);
+
+      it.effect("creates a shared task that leaves the work machine out, and reads it back", () =>
+        run([], (mcp, saves) =>
+          Effect.gen(function* () {
+            const created = yield* mcp.scheduleTask(client, {
+              projectId,
+              prompt: "Check the build",
+              schedule,
+              shared: true,
+              oneMachine: true,
+              excludedMachines: [work, work],
+            });
+            assert.deepEqual(sharedAs(yield* Ref.get(saves)), [
+              { excludedEnvironmentIds: [work], runOn: "one" },
+            ]);
+            assert.deepEqual([created.excludedMachines, created.oneMachine], [[work], true]);
+            const listed = yield* mcp.listScheduledTasks(client, { projectId });
+            assert.deepEqual(listed.tasks[0]?.excludedMachines, [work]);
+          }),
+        ),
+      );
+
+      it.effect("leaves excludedMachines out of the summary of a task that excludes none", () =>
+        run([sharedTask(sharing([]))], (mcp) =>
+          Effect.gen(function* () {
+            const listed = yield* mcp.listScheduledTasks(client, { projectId });
+            assert.equal("excludedMachines" in (listed.tasks[0] ?? {}), false);
+          }),
+        ),
+      );
+
+      it.effect("keeps the stored machines and run mode when an update does not mention them", () =>
+        run([sharedTask(sharing([work], "one"))], (mcp, saves) =>
+          Effect.gen(function* () {
+            yield* mcp.updateScheduledTask(client, { scheduledTaskId: existing.id, shared: true });
+            yield* mcp.updateScheduledTask(client, {
+              scheduledTaskId: existing.id,
+              title: "Renamed",
+            });
+            assert.deepEqual(sharedAs(yield* Ref.get(saves)), [
+              { excludedEnvironmentIds: [work], runOn: "one" },
+              undefined,
+            ]);
+            const listed = yield* mcp.listScheduledTasks(client, { projectId });
+            assert.deepEqual(
+              [listed.tasks[0]?.excludedMachines, listed.tasks[0]?.oneMachine],
+              [[work], true],
+            );
+          }),
+        ),
+      );
+
+      it.effect("keeps the stored machines when only the run mode changes", () =>
+        run([sharedTask(sharing([work], "one"))], (mcp, saves) =>
+          Effect.gen(function* () {
+            yield* mcp.updateScheduledTask(client, {
+              scheduledTaskId: existing.id,
+              oneMachine: false,
+            });
+            assert.deepEqual(sharedAs(yield* Ref.get(saves)), [
+              { excludedEnvironmentIds: [work], runOn: "every" },
+            ]);
+          }),
+        ),
+      );
+
+      it.effect("replaces the stored machines when an update names others, or none", () =>
+        run([sharedTask(sharing([work], "one"))], (mcp, saves) =>
+          Effect.gen(function* () {
+            yield* mcp.updateScheduledTask(client, {
+              scheduledTaskId: existing.id,
+              excludedMachines: [vps],
+            });
+            yield* mcp.updateScheduledTask(client, {
+              scheduledTaskId: existing.id,
+              excludedMachines: [],
+            });
+            assert.deepEqual(sharedAs(yield* Ref.get(saves)), [
+              { excludedEnvironmentIds: [vps], runOn: "one" },
+              { excludedEnvironmentIds: [], runOn: "one" },
+            ]);
+          }),
+        ),
+      );
+
+      it.effect("keeps the machines of a task a repeated create saves over", () =>
+        run([], (mcp, saves) =>
+          Effect.gen(function* () {
+            const request = {
+              projectId,
+              prompt: "Check the build",
+              schedule,
+              shared: true,
+              clientRequestId: "same-request",
+            } as const;
+            yield* mcp.scheduleTask(client, { ...request, excludedMachines: [work] });
+            yield* mcp.scheduleTask(client, request);
+            assert.deepEqual(sharedAs(yield* Ref.get(saves)), [
+              { excludedEnvironmentIds: [work] },
+              { excludedEnvironmentIds: [work] },
+            ]);
+          }),
+        ),
+      );
+
+      it.effect.each([
+        {
+          name: "this machine",
+          machines: [client.environmentId],
+          message: `excludedMachines includes this machine (${client.environmentId}). A task can't be excluded from the machine it is saved on.`,
+        },
+        {
+          name: "a machine this one does not link to",
+          machines: [work, EnvironmentId.make("environment:stranger")],
+          message:
+            "excludedMachines names environment:stranger, which this environment does not link to. Use environmentId values from t3_environment_links.",
+        },
+      ])("refuses to exclude $name", ({ machines, message }) =>
+        run([sharedTask(sharing([work], "one"))], (mcp, saves) =>
+          Effect.gen(function* () {
+            const errors = [
+              yield* mcp
+                .scheduleTask(client, {
+                  projectId,
+                  prompt: "Check the build",
+                  schedule,
+                  shared: true,
+                  excludedMachines: machines,
+                })
+                .pipe(Effect.flip),
+              yield* mcp
+                .updateScheduledTask(client, {
+                  scheduledTaskId: existing.id,
+                  excludedMachines: machines,
+                })
+                .pipe(Effect.flip),
+            ];
+            assert.deepEqual(
+              errors.map((error) => ({ code: error.code, message: error.message })),
+              errors.map(() => ({ code: "invalid_request", message })),
+            );
+            assert.deepEqual(yield* Ref.get(saves), []);
+          }),
+        ),
+      );
+
+      it.effect("refuses excludedMachines on a task that is not shared", () =>
+        run([existing], (mcp, saves) =>
+          Effect.gen(function* () {
+            const errors = [
+              yield* mcp
+                .scheduleTask(client, {
+                  projectId,
+                  prompt: "Check the build",
+                  schedule,
+                  excludedMachines: [work],
+                })
+                .pipe(Effect.flip),
+              yield* mcp
+                .updateScheduledTask(client, {
+                  scheduledTaskId: existing.id,
+                  excludedMachines: [work],
+                })
+                .pipe(Effect.flip),
+              yield* mcp
+                .updateScheduledTask(client, {
+                  scheduledTaskId: existing.id,
+                  shared: false,
+                  excludedMachines: [work],
+                })
+                .pipe(Effect.flip),
+            ];
+            for (const error of errors) {
+              assert.deepEqual(
+                { code: error.code, message: error.message },
+                {
+                  code: "invalid_request",
+                  message: "excludedMachines needs a shared task: pass shared: true as well.",
+                },
+              );
+            }
+            assert.deepEqual(yield* Ref.get(saves), []);
+          }),
+        ),
+      );
+    });
 
     it.effect("follows the default branch when a task is unbound from its thread", () =>
       Effect.gen(function* () {
