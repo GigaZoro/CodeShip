@@ -120,17 +120,17 @@ describe("combineManualSteps with detected steps", () => {
 
   it("shows a machine reached through two environments once and keeps ThreadPage steps", () => {
     const view = combineManualSteps(
-      [{ status: "listed", steps: [step("xcode", "Mac")] }],
+      [{ status: "listed", steps: [step("xcode", "Mac"), step("disk", "Zoro-VPS")] }],
       [
         { status: "listed", environmentId: mac, steps: [detected("a", "Mac")] },
         {
           status: "listed",
           environmentId: vps,
-          steps: [detected("a", "Mac"), detected("a", "VPS")],
+          steps: [detected("a", "Mac"), detected("a", "zoro-vps")],
         },
       ],
     );
-    expect(view.status === "listed" ? view.count : null).toBe(3);
+    expect(view.status === "listed" ? view.count : null).toBe(4);
     expect(
       view.status === "listed"
         ? view.groups.map((group) => [
@@ -141,7 +141,7 @@ describe("combineManualSteps with detected steps", () => {
         : view,
     ).toEqual([
       ["Mac", 1, [mac]],
-      ["VPS", 0, [vps]],
+      ["Zoro-VPS", 1, [vps]],
     ]);
   });
 
