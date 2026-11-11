@@ -27,6 +27,7 @@ import {
   planScopedSettingsPatch,
   scopedSettingsAreMixed,
   scopedSettingsSource,
+  sharedSaveSummary,
   type ProjectOverrideEntry,
   type SavedScopedServerWrite,
   type ScopedSettingsPatch,
@@ -89,7 +90,27 @@ export function useRunScopedSettingsPlan() {
       persistClientSettingsPatch,
     ).then(({ failedEnvironments, savedEnvironments, savedEnvironmentCount }) => {
       if (savedEnvironmentCount > 0) options?.onSaved?.(savedEnvironments);
-      if (failedEnvironments.length === 0) return;
+      if (failedEnvironments.length === 0) {
+        const shared = plan.share === null ? null : sharedSaveSummary(savedEnvironments, plan);
+        if (shared !== null) {
+          toastManager.add({
+            type: "success",
+            title: t("Saved for all machines"),
+            description: [
+              t("Saved on {environments}.", { environments: shared.reached.join(", ") }),
+              ...(shared.catchingUp.length > 0
+                ? [
+                    t(
+                      "Offline machines that follow shared settings will take it when they are back: {machines}.",
+                      { machines: shared.catchingUp.join(", ") },
+                    ),
+                  ]
+                : []),
+            ].join("\n"),
+          });
+        }
+        return;
+      }
       options?.onFailed?.();
       toastManager.add({
         type: "error",
@@ -115,10 +136,13 @@ export function useRunScopedSettingsPlan() {
 }
 
 export function useUpdateScopedSettings() {
-  const { scope, environments } = useSettingsScope();
+  const { scope, environments, environment } = useSettingsScope();
   const run = useRunScopedSettingsPlan();
   return (patch: ScopedSettingsPatch, options?: ScopedSettingsWriteOptions) =>
-    run(planScopedSettingsPatch(scope, environments, patch), options);
+    run(
+      planScopedSettingsPatch(scope, environments, patch, environment?.environmentId ?? null),
+      options,
+    );
 }
 
 export function useClearScopedSettings() {

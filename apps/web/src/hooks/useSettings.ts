@@ -30,6 +30,8 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import {
   filterSharedServerPatch,
+  patchSetsMachineSharedSetting,
+  sharedSettingStamp,
   splitSharedServerPatch,
   supportsSharedSettingsSync,
 } from "@t3tools/client-runtime/state/shared-settings";
@@ -668,6 +670,12 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
         }
         const writes: Array<Parameters<typeof persist>[0]> = [];
         const deniedLabels: string[] = [];
+        // These keys go to every machine this app is connected to; stamping the write lets machines
+        // that are off now take it later.
+        const share =
+          environmentId !== null && patchSetsMachineSharedSetting(sharedPatch)
+            ? sharedSettingStamp(environmentId)
+            : undefined;
         for (const targetId of targets) {
           const target = environments.find((candidate) => candidate.environmentId === targetId);
           const targetPatch = filterSharedServerPatch(
@@ -689,7 +697,7 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
           }
           writes.push({
             environmentId: targetId,
-            input: { patch: targetPatch },
+            input: share === undefined ? { patch: targetPatch } : { patch: targetPatch, share },
           });
         }
         if (writes.length === 0) {

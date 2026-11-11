@@ -192,6 +192,7 @@ import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as ServerSettings from "./serverSettings.ts";
+import * as SharedSettings from "./sharedSettings/SharedSettings.ts";
 import { invalidateSettingsSecrets } from "./sourceControl/sourceControlHostSecrets.ts";
 import * as DatabaseStorage from "./persistence/DatabaseStorage.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
@@ -1403,6 +1404,7 @@ export const layerWsRpc = (
       const databaseStorage = yield* DatabaseStorage.DatabaseStorage;
       const runtimeRecovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
+      const sharedSettings = yield* SharedSettings.SharedSettings;
       const secretResolver = yield* SecretResolver.SecretResolver;
       const peerLinks = yield* PeerLinks.PeerLinks;
       const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
@@ -2620,7 +2622,7 @@ export const layerWsRpc = (
           ),
         [WS_METHODS.serverUpdateSettings]:
           /* Request instrumentation already owns the span; keep this helper in that context. */
-          Effect.fnUntraced(function* ({ patch, providerInstanceMutation }) {
+          Effect.fnUntraced(function* ({ patch, providerInstanceMutation, share }) {
             const deviceHosts = patch.deviceHosts
               ? yield* remoteSshDeviceHosts(patch.deviceHosts).pipe(
                   Effect.provide(deviceHostContext),
@@ -2628,8 +2630,8 @@ export const layerWsRpc = (
               : undefined;
             const nextPatch = { ...patch, ...(deviceHosts ? { deviceHosts } : {}) };
             const settings = yield* providerInstanceMutation === undefined
-              ? serverSettings.updateSettings(nextPatch)
-              : serverSettings.updateProviderInstance(providerInstanceMutation, nextPatch);
+              ? sharedSettings.update(nextPatch, share)
+              : sharedSettings.updateProviderInstance(providerInstanceMutation, nextPatch, share);
             return ServerSettings.redactServerSettingsForClient(settings);
           }),
         [WS_METHODS.serverUpdateProjectScripts]: (mutation) =>
@@ -3411,6 +3413,7 @@ export const layer = Layer.unwrap(
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
     const peerLinks = yield* PeerLinks.PeerLinks;
     const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
+    const sharedSettings = yield* SharedSettings.SharedSettings;
     const linkedScheduledTasks = yield* LinkedScheduledTasks.LinkedScheduledTasks;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
@@ -3499,6 +3502,7 @@ export const layer = Layer.unwrap(
               ),
               Layer.provide(Layer.succeed(PeerLinks.PeerLinks, peerLinks)),
               Layer.provide(Layer.succeed(PeerLinkRequests.PeerLinkRequests, peerLinkRequests)),
+              Layer.provide(Layer.succeed(SharedSettings.SharedSettings, sharedSettings)),
               // Server-lifetime: its background refresh and stored lists serve every client.
               Layer.provide(
                 Layer.succeed(LinkedScheduledTasks.LinkedScheduledTasks, linkedScheduledTasks),

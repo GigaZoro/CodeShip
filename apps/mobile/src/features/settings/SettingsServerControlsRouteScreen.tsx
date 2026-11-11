@@ -53,6 +53,7 @@ import {
   LinkedEnvironmentsSettingsSection,
 } from "./ThreadSettingsSections";
 import { AppSettingsSection } from "./SettingsAboutSection";
+import { FollowSharedSettingsSection } from "./FollowSharedSettingsSection";
 import { supportsSharedSettingsSync } from "@t3tools/client-runtime/state/shared-settings";
 
 type SettingsPage = "threads" | "source-control" | "maintenance";
@@ -715,6 +716,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
           {props.page === "maintenance" ? (
             <>
               <LinkedEnvironmentsSettingsSection />
+              <FollowSharedSettingsSection />
               <AppSettingsSection />
             </>
           ) : null}

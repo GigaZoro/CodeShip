@@ -240,11 +240,13 @@ export class ServerSettingsService extends Context.Service<
 
     readonly updateSettings: (
       patch: ServerSettingsPatch,
+      hooks?: SettingsWriteHooks,
     ) => Effect.Effect<ServerSettings, ServerSettingsError>;
 
     readonly updateProviderInstance: (
       mutation: ProviderInstanceMutation,
       patch?: ServerSettingsPatch,
+      hooks?: SettingsWriteHooks,
     ) => Effect.Effect<ServerSettings, ServerSettingsError>;
 
     readonly updateProjectScripts: (
@@ -265,6 +267,18 @@ export class ServerSettingsService extends Context.Service<
     overrides: DeepPartial<ServerSettings> = {},
     managedPolicy?: ManagedPolicySummary,
   ) => layerTest(overrides, managedPolicy);
+}
+
+/**
+ * Both hooks run under the write lock, so state kept beside the settings file changes in step with
+ * it. Neither can fail the write: the settings are already stored by the time `persisted` runs, and
+ * reporting that write as failed would be wrong.
+ */
+export interface SettingsWriteHooks {
+  /** Checked before anything is stored. False leaves the settings as they are and returns them. */
+  readonly when?: Effect.Effect<boolean>;
+  /** Receives the settings as stored, without the managed-policy locks laid over what clients read. */
+  readonly persisted?: (stored: ServerSettings) => Effect.Effect<void>;
 }
 
 interface SettingsWrite {
@@ -307,14 +321,21 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
 
   const updateTestSettings = <E>(
     update: (current: ServerSettings) => Effect.Effect<ServerSettings, E>,
+    hooks?: SettingsWriteHooks,
   ): Effect.Effect<ServerSettings, E | ServerSettingsError> =>
     writeSemaphore.withPermits(1)(
-      Ref.get(currentSettingsRef).pipe(
-        Effect.flatMap(update),
-        Effect.flatMap(normalizeServerSettings),
-        Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
-        Effect.map(resolveTextGenerationProvider),
-      ),
+      Effect.gen(function* () {
+        if (hooks?.when !== undefined && !(yield* hooks.when)) {
+          return resolveTextGenerationProvider(yield* Ref.get(currentSettingsRef));
+        }
+        const nextSettings = yield* Ref.get(currentSettingsRef).pipe(
+          Effect.flatMap(update),
+          Effect.flatMap(normalizeServerSettings),
+        );
+        yield* Ref.set(currentSettingsRef, nextSettings);
+        if (hooks?.persisted !== undefined) yield* hooks.persisted(nextSettings);
+        return resolveTextGenerationProvider(nextSettings);
+      }),
     );
 
   return {
@@ -322,17 +343,24 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
     start: Effect.void,
     ready: Effect.void,
     getSettings,
-    updateSettings: (patch) =>
-      updateTestSettings((currentSettings) =>
-        Effect.succeed(applyServerSettingsPatch(currentSettings, patch)),
+    updateSettings: (patch, hooks) =>
+      updateTestSettings(
+        (currentSettings) => Effect.succeed(applyServerSettingsPatch(currentSettings, patch)),
+        hooks,
       ),
-    updateProviderInstance: (mutation, patch = {}) =>
-      updateTestSettings((currentSettings) =>
-        Effect.gen(function* () {
-          yield* ensureProviderInstanceMutationAllowed(currentSettings, mutation, "test settings");
-          const patched = applyServerSettingsPatch(currentSettings, patch);
-          return applyProviderInstanceMutation(patched, mutation);
-        }),
+    updateProviderInstance: (mutation, patch = {}, hooks) =>
+      updateTestSettings(
+        (currentSettings) =>
+          Effect.gen(function* () {
+            yield* ensureProviderInstanceMutationAllowed(
+              currentSettings,
+              mutation,
+              "test settings",
+            );
+            const patched = applyServerSettingsPatch(currentSettings, patch);
+            return applyProviderInstanceMutation(patched, mutation);
+          }),
+        hooks,
       ),
     updateProjectScripts: (mutation) =>
       updateTestSettings((currentSettings) =>
@@ -1162,6 +1190,7 @@ const make = Effect.gen(function* () {
 
   const updateAndPersistSettings = <E>(
     update: (current: ServerSettings) => Effect.Effect<SettingsWrite, E>,
+    hooks?: SettingsWriteHooks,
   ): Effect.Effect<ServerSettings, E | ServerSettingsError> =>
     writeSemaphore.withPermits(1)(
       Effect.gen(function* () {
@@ -1172,6 +1201,9 @@ const make = Effect.gen(function* () {
             operation: "read-file",
             cause: parseFailure.value,
           });
+        }
+        if (hooks?.when !== undefined && !(yield* hooks.when)) {
+          return toEffective(yield* materializeSettingsSecrets(current));
         }
         const { patch, settings: updated } = yield* update(current);
         // Vet before secrets: a variable the policy hides from clients is not one they removed.
@@ -1225,6 +1257,7 @@ const make = Effect.gen(function* () {
         const resolved = toEffective(materializedNext);
         materialized = { source: next, value: resolved };
         yield* emitChange(next);
+        if (hooks?.persisted !== undefined) yield* hooks.persisted(next);
         return resolved;
       }),
     );
@@ -1337,20 +1370,24 @@ const make = Effect.gen(function* () {
     start,
     ready: Deferred.await(startedDeferred),
     getSettings: getMaterializedSettings,
-    updateSettings: (patch) =>
-      updateAndPersistSettings((current) =>
-        ensureSecretProviderWritesAllowed(patch, settingsPath).pipe(
-          Effect.as({ patch, settings: applyServerSettingsPatch(current, patch) }),
-        ),
+    updateSettings: (patch, hooks) =>
+      updateAndPersistSettings(
+        (current) =>
+          ensureSecretProviderWritesAllowed(patch, settingsPath).pipe(
+            Effect.as({ patch, settings: applyServerSettingsPatch(current, patch) }),
+          ),
+        hooks,
       ),
-    updateProviderInstance: (mutation, patch = {}) =>
-      updateAndPersistSettings((current) =>
-        Effect.gen(function* () {
-          yield* ensureSecretProviderWritesAllowed(patch, settingsPath);
-          yield* ensureProviderInstanceMutationAllowed(current, mutation, settingsPath);
-          const patched = applyServerSettingsPatch(current, patch);
-          return { patch, settings: applyProviderInstanceMutation(patched, mutation) };
-        }),
+    updateProviderInstance: (mutation, patch = {}, hooks) =>
+      updateAndPersistSettings(
+        (current) =>
+          Effect.gen(function* () {
+            yield* ensureSecretProviderWritesAllowed(patch, settingsPath);
+            yield* ensureProviderInstanceMutationAllowed(current, mutation, settingsPath);
+            const patched = applyServerSettingsPatch(current, patch);
+            return { patch, settings: applyProviderInstanceMutation(patched, mutation) };
+          }),
+        hooks,
       ),
     updateProjectScripts: (mutation) =>
       updateAndPersistSettings((current) => projectScriptWrite(current, mutation)),

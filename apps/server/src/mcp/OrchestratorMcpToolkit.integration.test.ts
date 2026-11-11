@@ -52,6 +52,7 @@ import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
+import * as SharedSettings from "../sharedSettings/SharedSettings.ts";
 
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
@@ -248,7 +249,12 @@ describe("orchestrator MCP toolkit", () => {
           Layer.provide(ServerSettings.layerTest()),
           Layer.provide(layerUnusedScheduledTaskStub),
           Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
-          Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+              Layer.mock(SharedSettings.SharedSettings)({}),
+            ),
+          ),
           Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
           Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
           Layer.provideMerge(

@@ -16,11 +16,13 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as Environment from "../../../environment/ServerEnvironment.ts";
 import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as Settings from "../../../serverSettings.ts";
+import * as SharedSettings from "../../../sharedSettings/SharedSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
@@ -63,10 +65,12 @@ it.effect("refuses a preferences update when the caller's turn ends while it wai
           capabilities: { repositoryIdentity: false },
         }),
       }),
+      Layer.mock(SharedSettings.SharedSettings)({
+        update: () =>
+          Ref.update(updates, (count) => count + 1).pipe(Effect.as(DEFAULT_SERVER_SETTINGS)),
+      }),
       Layer.mock(Settings.ServerSettingsService)({
         getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
-        updateSettings: () =>
-          Ref.update(updates, (count) => count + 1).pipe(Effect.as(DEFAULT_SERVER_SETTINGS)),
       }),
     );
     yield* Effect.gen(function* () {
@@ -228,11 +232,11 @@ it.effect.each([
           capabilities: { repositoryIdentity: false },
         }),
       }),
-      Layer.mock(Settings.ServerSettingsService)({
-        getSettings: Ref.get(stored),
-        updateSettings: (patch) =>
+      Layer.mock(SharedSettings.SharedSettings)({
+        update: (patch) =>
           Ref.updateAndGet(stored, (settings) => applyServerSettingsPatch(settings, patch)),
       }),
+      Layer.mock(Settings.ServerSettingsService)({ getSettings: Ref.get(stored) }),
     );
     yield* Effect.gen(function* () {
       const toolkit = yield* EnvironmentToolkit;
@@ -299,5 +303,78 @@ it.effect.each([
         ),
       ),
     );
+  }),
+);
+
+it.effect.each([
+  { name: "follows shared settings", follows: true, allMachines: true, shared: true },
+  {
+    name: "follows shared settings, one machine",
+    follows: true,
+    allMachines: false,
+    shared: false,
+  },
+  { name: "does not follow shared settings", follows: false, allMachines: true, shared: false },
+])("allMachines on a machine that $name", ({ follows, allMachines, shared }) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse("2026-11-11T12:00:00.000Z"));
+    const writes = yield* Ref.make<ReadonlyArray<{ share: unknown }>>([]);
+    const dependencies = Layer.mergeAll(
+      ThreadCommandExecutor.layer,
+      Layer.succeed(McpInvocationContext.McpInvocationContext, {
+        environmentId,
+        requestNamespace: "client:shared",
+        thread: undefined,
+        client: { sessionId: "shared", label: "Peer", linked: false, access: "full-access" },
+        capabilities: new Set(["orchestration" as const]),
+        issuedAt: 0,
+      }),
+      Layer.mock(ThreadManagement.ThreadManagementService)({}),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+      Layer.mock(Environment.ServerEnvironment)({
+        getDescriptor: Effect.succeed({
+          environmentId,
+          label: "Test",
+          platform: { os: "linux", arch: "x64" },
+          serverVersion: "0.0.0",
+          capabilities: { repositoryIdentity: false },
+        }),
+      }),
+      Layer.mock(SharedSettings.SharedSettings)({
+        update: (_patch, share) =>
+          Ref.update(writes, (all) => [...all, { share }]).pipe(Effect.as(DEFAULT_SERVER_SETTINGS)),
+      }),
+      Layer.mock(Settings.ServerSettingsService)({
+        getSettings: Effect.succeed({ ...DEFAULT_SERVER_SETTINGS, followSharedSettings: follows }),
+      }),
+    );
+    const result = yield* Effect.gen(function* () {
+      const toolkit = yield* EnvironmentToolkit;
+      return yield* toolkit
+        .handle("t3_environment_preferences_update", {
+          newWorktreesStartFromOrigin: false,
+          allMachines,
+        })
+        .pipe(Stream.unwrap, Stream.runCollect);
+    }).pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(EnvironmentHandlers.layer).pipe(
+          Layer.provideMerge(dependencies),
+        ),
+      ),
+    );
+    if (allMachines && !follows) {
+      // A change that cannot reach the other machines must not report success.
+      expect(result.at(-1)?.result).toMatchObject({ code: "invalid_request" });
+      expect(yield* Ref.get(writes)).toEqual([]);
+    } else {
+      expect(yield* Ref.get(writes)).toEqual([
+        {
+          share: shared
+            ? { updatedAt: "2026-11-11T12:00:00.000Z", origin: environmentId }
+            : undefined,
+        },
+      ]);
+    }
   }),
 );

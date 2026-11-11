@@ -122,6 +122,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   scheduledTaskDefaultModel: Schema.optionalKey(Schema.Boolean),
   /** Serves `scheduledTasks.applyShared` and stores `shared`; clients sync shared tasks only here. */
   sharedScheduledTasks: Schema.optionalKey(Schema.Boolean),
+  /** Stores `followSharedSettings` and serves `t3_shared_settings` to linked machines; hide that setting where absent. */
+  sharedSettings: Schema.optionalKey(Schema.Boolean),
   /** Serves `scheduledTasks.listRuns` and honors a task's `catchUpMissedRun`; hide both where absent. */
   scheduledTaskRunHistory: Schema.optionalKey(Schema.Boolean),
   /** Serves `scheduledTasks.subscribeLinked`: the last task list of each machine it links to. */

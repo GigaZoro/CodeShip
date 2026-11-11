@@ -24,6 +24,7 @@ import {
   scopedSettingsAreMixed,
   scopedSettingsSource,
   selectScopedSettingsEnvironments,
+  sharedSaveSummary,
 } from "./scopedSettings";
 import { resolveSettingsScope } from "./settingsScope";
 
@@ -864,5 +865,114 @@ describe("model selection patches at project scope", () => {
       optionsPlan.serverWrites[0]?.patch.projectSettingsOverrides?.[projectId]
         ?.textGenerationModelSelection,
     ).toEqual({ ...saved, options });
+  });
+});
+
+describe("settings saved for all machines", () => {
+  const follower = environment("Follower", { settings: { followSharedSettings: true } });
+  const sleepingFollower = environment("Sleeper", {
+    connected: false,
+    settings: { followSharedSettings: true },
+  });
+  const sleepingLoner = environment("Loner", { connected: false });
+  const everyone = [laptop, follower, sleepingFollower, sleepingLoner, loading];
+  const scopeAll = resolveSettingsScope({}, [], everyone);
+
+  it("stamps a shared setting saved for all machines with the machine it is attributed to", () => {
+    const plan = planScopedSettingsPatch(
+      scopeAll,
+      everyone,
+      { finalReviewByDefault: true },
+      follower.environmentId,
+    );
+    expect(plan.share).toMatchObject({ origin: follower.environmentId });
+    // Only offline machines that are known to follow are told they will catch up.
+    expect(plan.offlineFollowers).toEqual(["Sleeper"]);
+  });
+
+  it.each([
+    ["a setting that belongs to one machine", scopeAll, { linkedEnvironmentsEnabled: true }],
+    ["a write for one machine", named, { finalReviewByDefault: true }],
+  ])("does not stamp %s", (_name, scope, patch) => {
+    expect(planScopedSettingsPatch(scope, everyone, patch, laptop.environmentId).share).toBeNull();
+  });
+
+  it("does not stamp a write that has no machine to be attributed to", () => {
+    expect(planScopedSettingsPatch(scopeAll, everyone, { finalReviewByDefault: true }).share).toBe(
+      null,
+    );
+  });
+
+  it("sends every machine the same stamp", async () => {
+    const plan = planScopedSettingsPatch(
+      scopeAll,
+      [laptop, follower],
+      { finalReviewByDefault: true },
+      laptop.environmentId,
+    );
+    const persistServer = vi.fn(async ({ input }: { input: unknown }) => ({
+      _tag: "Success" as const,
+      value:
+        input === undefined
+          ? DEFAULT_SERVER_SETTINGS
+          : { ...DEFAULT_SERVER_SETTINGS, finalReviewByDefault: true },
+    }));
+    await persistScopedSettingsPatch(plan, persistServer, vi.fn());
+    const shares = persistServer.mock.calls.map(
+      ([request]) => (request.input as { share?: unknown }).share,
+    );
+    expect(shares).toHaveLength(2);
+    expect(shares[0]).toEqual(plan.share);
+    expect(shares[1]).toEqual(plan.share);
+  });
+
+  it("sends no stamp for a write that is not shared", async () => {
+    const plan = planScopedSettingsPatch(named, [laptop, server], { finalReviewByDefault: true });
+    const persistServer = vi.fn(
+      async (_request: { environmentId: EnvironmentId; input: unknown }) => ({
+        _tag: "Success" as const,
+        value: { ...DEFAULT_SERVER_SETTINGS, finalReviewByDefault: true },
+      }),
+    );
+    await persistScopedSettingsPatch(plan, persistServer, vi.fn());
+    expect(persistServer.mock.calls[0]?.[0]).toEqual({
+      environmentId: server.environmentId,
+      input: { patch: { finalReviewByDefault: true } },
+    });
+  });
+
+  it("undoes a shared change as a shared change only when every machine held the same value", () => {
+    const same = planScopedSettingsPatch(
+      scopeAll,
+      [laptop, follower],
+      { finalReviewByDefault: true },
+      laptop.environmentId,
+    );
+    expect(planScopedSettingsUndo(same, {}).share).toMatchObject({ origin: laptop.environmentId });
+
+    const mixed = environment("Mixed", { settings: { finalReviewByDefault: true } });
+    const different = planScopedSettingsPatch(
+      resolveSettingsScope({}, [], [laptop, mixed]),
+      [laptop, mixed],
+      { finalReviewByDefault: false },
+      laptop.environmentId,
+    );
+    expect(planScopedSettingsUndo(different, {}).share).toBeNull();
+  });
+
+  it("summarizes a shared save only when some machine follows shared settings", () => {
+    const saved = (label: string, followSharedSettings: boolean) =>
+      ({ label, settings: { ...DEFAULT_SERVER_SETTINGS, followSharedSettings } }) as never;
+    expect(sharedSaveSummary([saved("A", false)], { offlineFollowers: [] })).toBeNull();
+    expect(
+      sharedSaveSummary([saved("A", true), saved("B", false)], { offlineFollowers: [] }),
+    ).toEqual({
+      reached: ["A", "B"],
+      catchingUp: [],
+    });
+    expect(sharedSaveSummary([saved("A", false)], { offlineFollowers: ["Sleeper"] })).toEqual({
+      reached: ["A"],
+      catchingUp: ["Sleeper"],
+    });
   });
 });

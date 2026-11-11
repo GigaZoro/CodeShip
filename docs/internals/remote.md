@@ -202,6 +202,34 @@ machine is offline and which no client can fetch then. Each machine stores the l
 A failed ask keeps the stored list and records why, and removing a link drops its
 list. Clients show only machines they can't read live, and change nothing through it.
 
+## Shared settings follow links
+
+A machine with `followSharedSettings` on keeps the settings in
+[`MACHINE_SHARED_SETTING_KEYS`](../../packages/contracts/src/sharedSettings.ts) the same
+as the machines it links to. It serves its versions through the link-only `t3_shared_settings` tool
+and pulls its links' every five minutes
+([`SharedSettingsPull.ts`](../../apps/server/src/sharedSettings/SharedSettingsPull.ts)), so a
+machine that was off when a change was saved catches up, and machines that are not linked to each
+other converge by passing versions on. A client saving for all machines sends one stamp
+(`updatedAt`, `origin`) to every machine it reaches. This is not the list in `client-runtime`'s
+`sharedSettings.ts`, which only decides which writes a client sends to every connected machine now.
+
+- **A version stores what the key holds after the write, not the patch.** Some keys merge partial
+  patches, so a patch would lose the fields an earlier change set. The value comes from the stored
+  settings, not `getSettings`, which rewrites `textGenerationModelSelection` and applies policy locks.
+- **Versions change only under the settings write lock** (`SettingsWriteHooks`), so a version
+  pulled from a peer cannot undo a newer change saved here a moment before. Taking another lock
+  around `updateSettings` would invert that order and deadlock.
+- **Newest `updatedAt` wins, ties go to the larger `origin`.** A stamp more than five minutes
+  ahead of this machine's clock is dated now, or one machine with a fast clock would outrank every
+  later change.
+- **Only writes saved for all machines are versions.** A write for one machine or project is a
+  local override: it leaves the version table alone and drops a version that was waiting to apply.
+- **A model selection naming a provider instance this machine lacks is kept as pending**, still
+  served on, and applied by the next pull once the instance exists.
+- **The pulling side checks everything**: the key must be shared and the value must decode as that
+  key's patch field, since a newer peer may share a key this build does not know.
+
 ## Hosted web is a client
 
 The hosted web app stores its connection catalog in the browser and connects
