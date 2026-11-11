@@ -127,7 +127,7 @@ export const OrchestratorMcpTarget = Schema.Struct({
   projectId: Schema.optional(
     ProjectId.annotate({
       description:
-        "With `environmentId`: its project to run in. Default: the one with this project's repository.",
+        "With `environmentId`: its project to run in. Default: the one with this project's repository. Without it, another project of this environment, only with `isolation: 'worktree'`: the child gets a new worktree of that project's repository.",
     }),
   ),
 });
@@ -173,7 +173,7 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   isolation: Schema.optional(
     Schema.Literals(["shared", "worktree"]).annotate({
       description:
-        "'shared' (default): parent checkout. 'worktree': new prepared checkout from the parent commit, for a separate checkout or PR per child. Uncommitted edits stay out.",
+        "'shared' (default): parent checkout. 'worktree': new prepared checkout from the parent commit, for a separate checkout or PR per child. Uncommitted edits stay out. With `target.projectId` of another local project: a worktree of that repository from its default branch.",
     }),
   ),
   mode: Schema.optional(

@@ -100,11 +100,13 @@ const decodeShippedCapabilities = Schema.decodeEffect(shippedResult);
 
 const decodeTarget = Schema.decodeUnknownEffect(OrchestratorMcpTarget);
 
-const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
-  Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
-  Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
-  Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
-);
+const layerOrchestratorServiceWithGit = (git: Partial<GitVcsDriver.GitVcsDriver["Service"]>) =>
+  OrchestratorMcpService.layer.pipe(
+    Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+    Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)(git)),
+    Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+  );
+const layerOrchestratorService = layerOrchestratorServiceWithGit({});
 
 describe("OrchestratorMcpService", () => {
   it.effect("retries terminal acknowledgement with a fresh command id", () =>
@@ -2745,7 +2747,14 @@ describe("OrchestratorMcpService provider resolution", () => {
                 ? [codexAltInstanceId]
                 : [codexInstanceId, codexAltInstanceId],
             ),
-            Layer.mock(ProjectService.ProjectService)({}),
+            Layer.mock(ProjectService.ProjectService)({
+              getById: (id) =>
+                Effect.succeedSome({
+                  id,
+                  title: "Agent config",
+                  workspaceRoot: "/repos/agent-config",
+                } as never),
+            }),
             Layer.mock(SecretRequests.SecretRequests)({}),
             Layer.mock(RemoteDelegation.RemoteDelegation)({}),
             Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -2841,10 +2850,62 @@ describe("OrchestratorMcpService provider resolution", () => {
             );
             if (testCase.name === "healthy-inherited") {
               assert.deepEqual(request.modelSelection, parentModelSelection, testCase.name);
+              const elsewhere = ProjectId.make("project:elsewhere");
+              const shared = yield* service
+                .delegateTask(scope, {
+                  task: "Change the other repository.",
+                  target: { projectId: elsewhere },
+                  clientRequestId: "delegate-foreign-shared",
+                })
+                .pipe(Effect.flip);
+              assert.equal(shared.code, "invalid_request");
+              assert.include(shared.message, 'isolation "worktree"');
+              assert.equal((yield* Ref.get(dispatched)).length, 1);
+              yield* service.delegateTask(scope, {
+                task: "Change the other repository.",
+                target: { projectId: elsewhere },
+                isolation: "worktree",
+                clientRequestId: "delegate-foreign-worktree",
+              });
+              const foreign = (yield* Ref.get(dispatched))[1] as {
+                projectId?: string;
+                workspaceStrategy?: unknown;
+              };
+              assert.equal(foreign.projectId, elsewhere);
+              assert.deepEqual(foreign.workspaceStrategy, {
+                type: "worktree",
+                baseRef: "main",
+                startFromOrigin: true,
+              });
             } else {
               assert.equal(request.modelSelection.model, "codex-alt-model", testCase.name);
             }
-          }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+          }).pipe(
+            Effect.provide(
+              layerOrchestratorServiceWithGit({
+                resolvePrimaryRemoteName: () =>
+                  Effect.fail(
+                    new GitCommandError({
+                      operation: "GitVcsDriver.test",
+                      command: "git",
+                      cwd: "/repos/agent-config",
+                      detail: "No git remote is configured.",
+                    }),
+                  ),
+                resolveCommit: ({ revision }) =>
+                  revision === "refs/heads/main"
+                    ? Effect.succeed({ commitSha: "abc123" })
+                    : Effect.fail(
+                        new GitCommandError({
+                          operation: "GitVcsDriver.test",
+                          command: "git",
+                          cwd: "/repos/agent-config",
+                          detail: "Needed a single revision",
+                        }),
+                      ),
+              }).pipe(Layer.provide(layerDependencies)),
+            ),
+          );
         }
       }),
   );

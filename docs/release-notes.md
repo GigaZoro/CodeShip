@@ -1,3 +1,7 @@
+## 2026-11-11 — An agent can hand a child a worktree of another local repository
+
+- `delegate_task` with `isolation: "worktree"` and `target.projectId` of another project on the same machine now starts the child in a new worktree of that project's repository, from its default branch. Before, such a task was refused and coordinators fell back to making checkouts in the shell. Without `isolation: "worktree"` the refusal now names this option.
+
 ## 2026-11-11 — A restart wakes a chat that waits on a background command
 
 - A chat that ended its turn to wait on a background command it marked as waited on (or on a background task, monitor or subagent) is now told and continues after a restart even when the agent's process stopped a moment before the server did, as an update on Windows or a service restart can do. Before, the server forgot that work in its last moments, so the chat got no note and sat idle until someone sent it a message.
