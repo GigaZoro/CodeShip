@@ -28,6 +28,7 @@ import {
   scopedSettingsAreMixed,
   scopedSettingsSource,
   sharedSaveSummary,
+  sharesWithFollowers,
   type ProjectOverrideEntry,
   type SavedScopedServerWrite,
   type ScopedSettingsPatch,
@@ -164,6 +165,14 @@ export function useClearProjectOverrides() {
     if (context === null) return;
     run(planProjectOverridesClear(context.environments, entries, keys));
   };
+}
+
+/** Says where an all-machines save of a shared setting lands; null while it lands on every machine. */
+export function useSharedScopeNotice(): string | null {
+  const context = useOptionalSettingsScope();
+  return context?.scope.kind === "all" && sharesWithFollowers(context.environments)
+    ? t("Shared settings are saved only on the machines that follow them.")
+    : null;
 }
 
 export function useScopedSettingsWriteAllowed() {

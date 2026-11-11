@@ -34,6 +34,8 @@ import {
   sharedSettingStamp,
   splitSharedServerPatch,
   supportsSharedSettingsSync,
+  wholeSharedSettingValues,
+  withWholeSharedSettingValues,
 } from "@t3tools/client-runtime/state/shared-settings";
 import { ensureLocalApi } from "~/localApi";
 import {
@@ -670,11 +672,17 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
         }
         const writes: Array<Parameters<typeof persist>[0]> = [];
         const deniedLabels: string[] = [];
-        // These keys go to every machine this app is connected to; stamping the write lets machines
-        // that are off now take it later.
+        // These keys go to every machine this app is connected to. Only machines that follow shared
+        // settings get the stamp, with the whole values this machine ends up with, so machines that
+        // are off now take one value later; the rest get a write of their own.
         const share =
-          environmentId !== null && patchSetsMachineSharedSetting(sharedPatch)
-            ? sharedSettingStamp(environmentId)
+          environmentId !== null &&
+          sourceSettings !== undefined &&
+          patchSetsMachineSharedSetting(sharedPatch)
+            ? {
+                stamp: sharedSettingStamp(environmentId),
+                whole: wholeSharedSettingValues(sourceSettings, sharedPatch),
+              }
             : undefined;
         for (const targetId of targets) {
           const target = environments.find((candidate) => candidate.environmentId === targetId);
@@ -697,7 +705,13 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
           }
           writes.push({
             environmentId: targetId,
-            input: share === undefined ? { patch: targetPatch } : { patch: targetPatch, share },
+            input:
+              share === undefined || target?.serverConfig?.settings.followSharedSettings !== true
+                ? { patch: targetPatch }
+                : {
+                    patch: withWholeSharedSettingValues(targetPatch, share.whole),
+                    share: share.stamp,
+                  },
           });
         }
         if (writes.length === 0) {

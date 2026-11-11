@@ -274,17 +274,43 @@ export class ServerSettingsService extends Context.Service<
   ) => layerTest(overrides, managedPolicy);
 }
 
+/** The write a `prepare` hook makes in place of the requested patch. */
+export interface SettingsWritePlan {
+  /** Merged into the stored settings, as a write without hooks would be. */
+  readonly patch: ServerSettingsPatch;
+  /** Set after the patch, each replacing the stored value whole rather than merging into it. */
+  readonly replace?: Partial<ServerSettings>;
+}
+
 /**
  * Both hooks run under the write lock, so state kept beside the settings file changes in step with
- * it. Neither can fail the write: the settings are already stored by the time `persisted` runs, and
+ * it. `persisted` cannot fail the write: the settings are already stored by the time it runs, and
  * reporting that write as failed would be wrong.
  */
 export interface SettingsWriteHooks {
-  /** Checked before anything is stored. False leaves the settings as they are and returns them. */
-  readonly when?: Effect.Effect<boolean>;
+  /**
+   * Sees the settings as stored before anything is written and decides the write: `undefined`
+   * leaves the settings as they are and returns them, a failure refuses the write.
+   */
+  readonly prepare?: (
+    current: ServerSettings,
+  ) => Effect.Effect<SettingsWritePlan | undefined, ServerSettingsError>;
   /** Receives the settings as stored, without the managed-policy locks laid over what clients read. */
   readonly persisted?: (stored: ServerSettings) => Effect.Effect<void>;
 }
+
+const planSettingsWrite = (
+  current: ServerSettings,
+  patch: ServerSettingsPatch,
+  hooks: SettingsWriteHooks | undefined,
+): Effect.Effect<SettingsWritePlan | undefined, ServerSettingsError> =>
+  hooks?.prepare === undefined ? Effect.succeed({ patch }) : hooks.prepare(current);
+
+/** `patch` is what the managed policy vets, so it names the replaced keys too. */
+const applySettingsWritePlan = (current: ServerSettings, plan: SettingsWritePlan) => ({
+  patch: { ...plan.patch, ...plan.replace } as ServerSettingsPatch,
+  settings: { ...applyServerSettingsPatch(current, plan.patch), ...plan.replace },
+});
 
 interface SettingsWrite {
   /** What the write asks for, which the managed policy vets alongside the result. */
@@ -325,18 +351,15 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
   const getSettings = Ref.get(currentSettingsRef).pipe(Effect.map(resolveTextGenerationProvider));
 
   const updateTestSettings = <E>(
-    update: (current: ServerSettings) => Effect.Effect<ServerSettings, E>,
+    update: (current: ServerSettings) => Effect.Effect<ServerSettings | undefined, E>,
     hooks?: SettingsWriteHooks,
   ): Effect.Effect<ServerSettings, E | ServerSettingsError> =>
     writeSemaphore.withPermits(1)(
       Effect.gen(function* () {
-        if (hooks?.when !== undefined && !(yield* hooks.when)) {
-          return resolveTextGenerationProvider(yield* Ref.get(currentSettingsRef));
-        }
-        const nextSettings = yield* Ref.get(currentSettingsRef).pipe(
-          Effect.flatMap(update),
-          Effect.flatMap(normalizeServerSettings),
-        );
+        const current = yield* Ref.get(currentSettingsRef);
+        const updated = yield* update(current);
+        if (updated === undefined) return resolveTextGenerationProvider(current);
+        const nextSettings = yield* normalizeServerSettings(updated);
         yield* Ref.set(currentSettingsRef, nextSettings);
         if (hooks?.persisted !== undefined) yield* hooks.persisted(nextSettings);
         return resolveTextGenerationProvider(nextSettings);
@@ -350,13 +373,22 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
     getSettings,
     updateSettings: (patch, hooks) =>
       updateTestSettings(
-        (currentSettings) => Effect.succeed(applyServerSettingsPatch(currentSettings, patch)),
+        (currentSettings) =>
+          planSettingsWrite(currentSettings, patch, hooks).pipe(
+            Effect.map((plan) =>
+              plan === undefined
+                ? undefined
+                : applySettingsWritePlan(currentSettings, plan).settings,
+            ),
+          ),
         hooks,
       ),
     updateProviderInstance: (mutation, patch = {}, hooks) =>
       updateTestSettings(
         (currentSettings) =>
           Effect.gen(function* () {
+            const plan = yield* planSettingsWrite(currentSettings, patch, hooks);
+            if (plan === undefined) return undefined;
             const resolved = typeof mutation === "function" ? mutation(currentSettings) : mutation;
             if (resolved === undefined)
               return yield* new ServerSettingsError({
@@ -368,8 +400,10 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
               resolved,
               "test settings",
             );
-            const patched = applyServerSettingsPatch(currentSettings, patch);
-            return applyProviderInstanceMutation(patched, resolved);
+            return applyProviderInstanceMutation(
+              applySettingsWritePlan(currentSettings, plan).settings,
+              resolved,
+            );
           }),
         hooks,
       ),
@@ -1205,7 +1239,7 @@ const make = Effect.gen(function* () {
   };
 
   const updateAndPersistSettings = <E>(
-    update: (current: ServerSettings) => Effect.Effect<SettingsWrite, E>,
+    update: (current: ServerSettings) => Effect.Effect<SettingsWrite | undefined, E>,
     hooks?: SettingsWriteHooks,
   ): Effect.Effect<ServerSettings, E | ServerSettingsError> =>
     writeSemaphore.withPermits(1)(
@@ -1218,10 +1252,11 @@ const make = Effect.gen(function* () {
             cause: parseFailure.value,
           });
         }
-        if (hooks?.when !== undefined && !(yield* hooks.when)) {
+        const write = yield* update(current);
+        if (write === undefined) {
           return toEffective(yield* materializeSettingsSecrets(current));
         }
-        const { patch, settings: updated } = yield* update(current);
+        const { patch, settings: updated } = write;
         // Vet before secrets: a variable the policy hides from clients is not one they removed.
         const vetted = managed.vetWrite(current, yield* normalizeServerSettings(updated), patch);
         if (vetted._tag === "Locked") {
@@ -1389,22 +1424,27 @@ const make = Effect.gen(function* () {
     updateSettings: (patch, hooks) =>
       updateAndPersistSettings(
         (current) =>
-          ensureSecretProviderWritesAllowed(patch, settingsPath).pipe(
-            Effect.as({ patch, settings: applyServerSettingsPatch(current, patch) }),
-          ),
+          Effect.gen(function* () {
+            const plan = yield* planSettingsWrite(current, patch, hooks);
+            if (plan === undefined) return undefined;
+            yield* ensureSecretProviderWritesAllowed(plan.patch, settingsPath);
+            return applySettingsWritePlan(current, plan);
+          }),
         hooks,
       ),
     updateProviderInstance: (mutation, patch = {}, hooks) =>
       updateAndPersistSettings(
         (current) =>
           Effect.gen(function* () {
-            yield* ensureSecretProviderWritesAllowed(patch, settingsPath);
+            const plan = yield* planSettingsWrite(current, patch, hooks);
+            if (plan === undefined) return undefined;
+            yield* ensureSecretProviderWritesAllowed(plan.patch, settingsPath);
             const resolved = typeof mutation === "function" ? mutation(current) : mutation;
             if (resolved === undefined)
               return yield* new ServerSettingsError({ settingsPath, operation: "write-file" });
             yield* ensureProviderInstanceMutationAllowed(current, resolved, settingsPath);
-            const patched = applyServerSettingsPatch(current, patch);
-            return { patch, settings: applyProviderInstanceMutation(patched, resolved) };
+            const write = applySettingsWritePlan(current, plan);
+            return { ...write, settings: applyProviderInstanceMutation(write.settings, resolved) };
           }),
         hooks,
       ),

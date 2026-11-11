@@ -4,6 +4,7 @@ import {
   EnvironmentId,
   globalIdleCompaction,
   MACHINE_SHARED_SETTING_KEYS,
+  ProviderInstanceId,
   type ServerSettingsPatch,
   type SharedSettingStamp,
   type SharedSettingVersion,
@@ -13,6 +14,7 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Settings from "../serverSettings.ts";
@@ -25,6 +27,8 @@ const OTHER = EnvironmentId.make("environment-zeta");
 const NOW = "2026-11-11T14:00:00.000Z";
 const EARLIER = "2026-11-11T11:00:00.000Z";
 const LATER = "2026-11-11T13:00:00.000Z";
+const SOON = "2026-11-11T14:01:00.000Z";
+const AN_HOUR_AHEAD = "2026-11-11T15:00:00.000Z";
 
 const stamp = (updatedAt: string, origin: EnvironmentId = HERE): SharedSettingStamp => ({
   updatedAt,
@@ -38,13 +42,33 @@ const version = (
   origin: EnvironmentId = PEER,
 ): SharedSettingVersion => ({ key, value, updatedAt, origin });
 
-/** A machine's settings, its provider instances, and the sqlite file that holds the versions. */
+/**
+ * A machine's settings, its provider instances, and the sqlite file that holds the versions. With
+ * `followingTurnedOff`, reads outside the write lock still say the machine follows shared settings,
+ * as they did a moment before following was turned off.
+ */
 const machine = (
-  overrides: Parameters<typeof Settings.layerTest>[0] = {},
+  overrides: Parameters<typeof Settings.layerTest>[0],
   instances: Ref.Ref<ReadonlyArray<string>>,
-) =>
-  SharedSettings.layer.pipe(
-    Layer.provideMerge(Settings.layerTest({ followSharedSettings: true, ...overrides })),
+  followingTurnedOff: boolean,
+) => {
+  const settings = Settings.layerTest({ followSharedSettings: true, ...overrides });
+  const settingsSeen = followingTurnedOff
+    ? Layer.effect(
+        Settings.ServerSettingsService,
+        Effect.gen(function* () {
+          const real = yield* Settings.ServerSettingsService;
+          return {
+            ...real,
+            getSettings: real.getSettings.pipe(
+              Effect.map((current) => ({ ...current, followSharedSettings: true })),
+            ),
+          };
+        }),
+      ).pipe(Layer.provide(settings))
+    : settings;
+  return SharedSettings.layer.pipe(
+    Layer.provideMerge(settingsSeen),
     Layer.provideMerge(
       Layer.mock(ProviderRegistry.ProviderRegistry)({
         getProviders: Ref.get(instances).pipe(
@@ -52,8 +76,12 @@ const machine = (
         ),
       }),
     ),
+    Layer.provideMerge(
+      Layer.mock(ServerEnvironment.ServerEnvironment)({ getEnvironmentId: Effect.succeed(HERE) }),
+    ),
     Layer.provideMerge(Layer.fresh(SqlitePersistence.layerMemory)),
   );
+};
 
 const run = <A, E>(
   body: (
@@ -62,6 +90,7 @@ const run = <A, E>(
     instances: Ref.Ref<ReadonlyArray<string>>,
   ) => Effect.Effect<A, E>,
   overrides: Parameters<typeof Settings.layerTest>[0] = {},
+  followingTurnedOff = false,
 ) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(Date.parse(NOW));
@@ -70,13 +99,16 @@ const run = <A, E>(
       const shared = yield* SharedSettings.SharedSettings;
       const settings = yield* Settings.ServerSettingsService;
       return yield* body(shared, settings, instances);
-    }).pipe(Effect.provide(machine(overrides, instances)));
+    }).pipe(Effect.provide(machine(overrides, instances, followingTurnedOff)));
   });
 
 const served = (shared: SharedSettings.SharedSettings["Service"]) =>
   shared.servedVersions.pipe(
     Effect.map((versions) => Object.fromEntries(versions.map((entry) => [entry.key, entry]))),
   );
+
+const finalReview = (settings: Settings.ServerSettingsService["Service"]) =>
+  settings.getSettings.pipe(Effect.map((current) => current.finalReviewByDefault));
 
 it.effect("a write saved for all machines becomes the shared version of the keys it sets", () =>
   run((shared) =>
@@ -90,7 +122,7 @@ it.effect("a write saved for all machines becomes the shared version of the keys
   ),
 );
 
-it.effect("a write for one machine records nothing", () =>
+it.effect("a write for one machine shares nothing", () =>
   run((shared, settings) =>
     Effect.gen(function* () {
       yield* shared.update({ defaultRuntimeMode: "full-access" }, undefined);
@@ -100,19 +132,50 @@ it.effect("a write for one machine records nothing", () =>
   ),
 );
 
-it.effect("records the whole value a partial write leaves, not the partial patch", () =>
-  run((shared) =>
-    Effect.gen(function* () {
-      yield* shared.update({ sourceControlWritingStyle: { mode: "custom" } }, stamp(EARLIER));
-      const style = (yield* served(shared)).sourceControlWritingStyle?.value;
-      expect(style).toEqual({
-        mode: "custom",
-        customInstructions: DEFAULT_SERVER_SETTINGS.sourceControlWritingStyle.customInstructions,
-        followChangeRequestTemplates:
-          DEFAULT_SERVER_SETTINGS.sourceControlWritingStyle.followChangeRequestTemplates,
-      });
-    }),
-  ),
+it.effect("one stamp leaves every machine with one value, whatever each held before", () =>
+  Effect.gen(function* () {
+    const style = {
+      mode: "custom" as const,
+      customInstructions: "Use plain words.",
+      followChangeRequestTemplates: false,
+    };
+    const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" };
+    const after = (overrides: Parameters<typeof Settings.layerTest>[0]) =>
+      run(
+        (shared, settings) =>
+          Effect.gen(function* () {
+            yield* shared.update(
+              { sourceControlWritingStyle: style, scheduledTaskModelSelection: selection },
+              stamp(EARLIER),
+            );
+            const current = yield* settings.getSettings;
+            const versions = yield* served(shared);
+            return {
+              style: current.sourceControlWritingStyle,
+              selection: current.scheduledTaskModelSelection,
+              served: [
+                versions.sourceControlWritingStyle?.value,
+                versions.scheduledTaskModelSelection?.value,
+              ],
+            };
+          }),
+        overrides,
+      );
+    const first = yield* after({
+      sourceControlWritingStyle: { mode: "custom", customInstructions: "Machine one's own." },
+      scheduledTaskModelSelection: {
+        ...selection,
+        options: [{ id: "reasoningEffort", value: "high" }],
+      },
+    });
+    const second = yield* after({
+      sourceControlWritingStyle: { mode: "repo_conventions", followChangeRequestTemplates: true },
+    });
+    // Merged into what each held, the first would keep its options and the second its templates.
+    expect(first).toEqual(second);
+    expect(first.style).toEqual(style);
+    expect(first.selection).toEqual(selection);
+  }),
 );
 
 it.effect("does not record keys that belong to one machine", () =>
@@ -127,18 +190,21 @@ it.effect("does not record keys that belong to one machine", () =>
   ),
 );
 
-it.effect(
-  "a machine that does not follow shared settings applies the write but serves nothing",
-  () =>
-    run(
-      (shared, settings) =>
-        Effect.gen(function* () {
-          yield* shared.update({ finalReviewByDefault: true }, stamp(EARLIER));
-          expect((yield* settings.getSettings).finalReviewByDefault).toBe(true);
-          expect(yield* shared.servedVersions).toEqual([]);
-        }),
-      { followSharedSettings: false },
-    ),
+it.effect("a machine that does not follow shared settings refuses a write saved for all", () =>
+  run(
+    (shared, settings) =>
+      Effect.gen(function* () {
+        const error = yield* Effect.flip(
+          shared.update({ finalReviewByDefault: true }, stamp(EARLIER)),
+        );
+        expect(error.operation).toBe("take-shared-setting-unfollowed");
+        expect(yield* finalReview(settings)).toBe(false);
+        // Chosen by name, it is this machine's own change.
+        yield* shared.update({ finalReviewByDefault: true }, undefined);
+        expect(yield* finalReview(settings)).toBe(true);
+      }),
+    { followSharedSettings: false },
+  ),
 );
 
 it.effect("a machine that does not follow shared settings takes nothing from a peer", () =>
@@ -146,10 +212,41 @@ it.effect("a machine that does not follow shared settings takes nothing from a p
     (shared, settings) =>
       Effect.gen(function* () {
         yield* shared.applyPulled(PEER, [version("finalReviewByDefault", true, LATER)]);
-        expect((yield* settings.getSettings).finalReviewByDefault).toBe(false);
+        expect(yield* finalReview(settings)).toBe(false);
         expect(yield* shared.servedVersions).toEqual([]);
       }),
     { followSharedSettings: false },
+  ),
+);
+
+it.effect("takes nothing when following is turned off while a pull waits for the lock", () =>
+  run(
+    (shared, settings, instances) =>
+      Effect.gen(function* () {
+        const selection = { instanceId: "cursor-work", model: "gpt-x" };
+        yield* shared.applyPulled(PEER, [
+          version("finalReviewByDefault", true, LATER),
+          version("scheduledTaskModelSelection", selection, LATER),
+          version("defaultRuntimeMode", "full-access", AN_HOUR_AHEAD),
+        ]);
+        yield* Ref.set(instances, ["codex", "cursor-work"]);
+        yield* TestClock.adjust("1 hour");
+        yield* shared.retryWaiting;
+        const current = yield* settings.getSettings;
+        expect([
+          current.finalReviewByDefault,
+          current.scheduledTaskModelSelection,
+          current.defaultRuntimeMode,
+        ]).toEqual([
+          DEFAULT_SERVER_SETTINGS.finalReviewByDefault,
+          DEFAULT_SERVER_SETTINGS.scheduledTaskModelSelection,
+          DEFAULT_SERVER_SETTINGS.defaultRuntimeMode,
+        ]);
+        // Nothing was kept to pass on either.
+        expect(yield* shared.servedVersions).toEqual([]);
+      }),
+    { followSharedSettings: false },
+    true,
   ),
 );
 
@@ -158,7 +255,7 @@ it.effect("takes a peer's newer version and serves it on", () =>
     Effect.gen(function* () {
       yield* shared.update({ finalReviewByDefault: true }, stamp(EARLIER));
       yield* shared.applyPulled(PEER, [version("finalReviewByDefault", false, LATER)]);
-      expect((yield* settings.getSettings).finalReviewByDefault).toBe(false);
+      expect(yield* finalReview(settings)).toBe(false);
       expect((yield* served(shared)).finalReviewByDefault).toEqual(
         version("finalReviewByDefault", false, LATER, PEER),
       );
@@ -187,8 +284,57 @@ it.effect("ignores a peer's older version", () =>
     Effect.gen(function* () {
       yield* shared.update({ finalReviewByDefault: true }, stamp(LATER));
       yield* shared.applyPulled(PEER, [version("finalReviewByDefault", false, EARLIER)]);
-      expect((yield* settings.getSettings).finalReviewByDefault).toBe(true);
+      expect(yield* finalReview(settings)).toBe(true);
       expect((yield* served(shared)).finalReviewByDefault?.updatedAt).toBe(LATER);
+    }),
+  ),
+);
+
+it.effect("a change saved here alone outranks an older shared version it has not seen", () =>
+  run((shared, settings) =>
+    Effect.gen(function* () {
+      yield* shared.update({ finalReviewByDefault: true }, undefined);
+      yield* shared.applyPulled(PEER, [version("finalReviewByDefault", false, LATER)]);
+      expect(yield* finalReview(settings)).toBe(true);
+      // A version made after the change still applies.
+      yield* shared.applyPulled(PEER, [version("finalReviewByDefault", false, SOON)]);
+      expect(yield* finalReview(settings)).toBe(false);
+    }),
+  ),
+);
+
+it.effect("a write saved for all machines keeps a newer version's value, and its version", () =>
+  run((shared, settings) =>
+    Effect.gen(function* () {
+      yield* shared.applyPulled(PEER, [version("finalReviewByDefault", true, LATER)]);
+      // A delayed write stamped before the version this machine already took.
+      yield* shared.update(
+        { finalReviewByDefault: false, defaultRuntimeMode: "full-access" },
+        stamp(EARLIER, OTHER),
+      );
+      const current = yield* settings.getSettings;
+      expect([current.finalReviewByDefault, current.defaultRuntimeMode]).toEqual([
+        true,
+        "full-access",
+      ]);
+      const versions = yield* served(shared);
+      expect(versions.finalReviewByDefault).toEqual(
+        version("finalReviewByDefault", true, LATER, PEER),
+      );
+      expect(versions.defaultRuntimeMode).toEqual(
+        version("defaultRuntimeMode", "full-access", EARLIER, OTHER),
+      );
+    }),
+  ),
+);
+
+it.effect("a write saved for all machines does not undo a newer change saved here alone", () =>
+  run((shared, settings) =>
+    Effect.gen(function* () {
+      yield* shared.update({ finalReviewByDefault: true }, undefined);
+      yield* shared.update({ finalReviewByDefault: false }, stamp(LATER, OTHER));
+      expect(yield* finalReview(settings)).toBe(true);
+      expect((yield* served(shared)).finalReviewByDefault).toBeUndefined();
     }),
   ),
 );
@@ -199,9 +345,9 @@ it.effect("breaks a tie on the same time by the larger origin", () =>
       yield* shared.update({ finalReviewByDefault: true }, stamp(EARLIER, PEER));
       // The smaller origin loses, the larger one wins, and the same version again changes nothing.
       yield* shared.applyPulled(HERE, [version("finalReviewByDefault", false, EARLIER, HERE)]);
-      expect((yield* settings.getSettings).finalReviewByDefault).toBe(true);
+      expect(yield* finalReview(settings)).toBe(true);
       yield* shared.applyPulled(OTHER, [version("finalReviewByDefault", false, EARLIER, OTHER)]);
-      expect((yield* settings.getSettings).finalReviewByDefault).toBe(false);
+      expect(yield* finalReview(settings)).toBe(false);
       expect((yield* served(shared)).finalReviewByDefault?.origin).toBe(OTHER);
     }),
   ),
@@ -212,7 +358,7 @@ it.effect("a change saved here is not undone by a version that arrives with the 
     Effect.gen(function* () {
       yield* shared.update({ finalReviewByDefault: true }, stamp(EARLIER));
       yield* shared.applyPulled(HERE, [version("finalReviewByDefault", false, EARLIER, HERE)]);
-      expect((yield* settings.getSettings).finalReviewByDefault).toBe(true);
+      expect(yield* finalReview(settings)).toBe(true);
     }),
   ),
 );
@@ -225,6 +371,7 @@ it.effect("refuses keys that are not shared and values that do not fit their key
         version("guestSharingEnabled", true, LATER),
         version("followSharedSettings", false, LATER),
         version("providerInstances", {}, LATER),
+        version("defaultProjectScripts", [], LATER),
         version("noSuchSetting", 1, LATER),
         version("finalReviewByDefault", "yes", LATER),
       ]);
@@ -240,20 +387,50 @@ it.effect("refuses keys that are not shared and values that do not fit their key
   ),
 );
 
-it.effect(
-  "dates a version stamped by a fast clock now, so later changes can still replace it",
-  () =>
-    run((shared, settings) =>
-      Effect.gen(function* () {
-        yield* shared.update({ finalReviewByDefault: true }, stamp("2099-01-01T00:00:00.000Z"));
-        expect((yield* served(shared)).finalReviewByDefault?.updatedAt).toBe(NOW);
-        yield* TestClock.adjust("1 hour");
-        yield* shared.applyPulled(PEER, [
-          version("finalReviewByDefault", false, "2026-11-11T14:30:00.000Z"),
-        ]);
-        expect((yield* settings.getSettings).finalReviewByDefault).toBe(false);
-      }),
-    ),
+it.effect("refuses a write saved for all machines on a device whose clock runs ahead", () =>
+  run((shared, settings) =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        shared.update({ finalReviewByDefault: true }, stamp(AN_HOUR_AHEAD, PEER)),
+      );
+      expect(error.operation).toBe("take-shared-setting-clock-ahead");
+      expect(yield* finalReview(settings)).toBe(false);
+      // Within five minutes, it is an ordinary difference between clocks.
+      yield* shared.update({ finalReviewByDefault: true }, stamp(SOON, PEER));
+      expect(yield* finalReview(settings)).toBe(true);
+    }),
+  ),
+);
+
+it.effect("a version from a fast clock waits for its time and does not keep undoing saves", () =>
+  run((shared, settings) =>
+    Effect.gen(function* () {
+      const ahead = version("finalReviewByDefault", true, AN_HOUR_AHEAD);
+      yield* shared.applyPulled(PEER, [ahead]);
+      expect(yield* finalReview(settings)).toBe(false);
+      // It is not passed on while it waits.
+      expect((yield* served(shared)).finalReviewByDefault).toBeUndefined();
+
+      yield* TestClock.adjust("1 minute");
+      yield* shared.update({ finalReviewByDefault: false }, undefined);
+      yield* TestClock.adjust("1 minute");
+      yield* shared.applyPulled(PEER, [ahead]);
+      yield* shared.retryWaiting;
+      expect(yield* finalReview(settings)).toBe(false);
+
+      // Within five minutes of its stamp it applies, once, and keeps the stamp it was made with.
+      yield* TestClock.adjust("54 minutes");
+      yield* shared.retryWaiting;
+      expect(yield* finalReview(settings)).toBe(true);
+      expect((yield* served(shared)).finalReviewByDefault).toEqual(ahead);
+
+      yield* TestClock.adjust("5 minutes");
+      yield* shared.update({ finalReviewByDefault: false }, undefined);
+      yield* shared.applyPulled(PEER, [ahead]);
+      yield* shared.retryWaiting;
+      expect(yield* finalReview(settings)).toBe(false);
+    }),
+  ),
 );
 
 it.effect(
@@ -267,11 +444,11 @@ it.effect(
         // The version is known and passed on, so machines that have the instance can still take it.
         expect((yield* served(shared)).scheduledTaskModelSelection?.value).toEqual(selection);
 
-        yield* shared.retryPending;
+        yield* shared.retryWaiting;
         expect((yield* settings.getSettings).scheduledTaskModelSelection).toBeNull();
 
         yield* Ref.set(instances, ["codex", "cursor-work"]);
-        yield* shared.retryPending;
+        yield* shared.retryWaiting;
         expect((yield* settings.getSettings).scheduledTaskModelSelection).toMatchObject(selection);
       }),
     ),
@@ -292,7 +469,7 @@ it.effect("a change made on this machine cancels a model selection that was wait
         undefined,
       );
       yield* Ref.set(instances, ["codex", "cursor-work"]);
-      yield* shared.retryPending;
+      yield* shared.retryWaiting;
       expect((yield* settings.getSettings).scheduledTaskModelSelection?.instanceId).toBe("codex");
     }),
   ),

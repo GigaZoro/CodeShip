@@ -28,6 +28,7 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { useOptionalSettingsScope } from "./SettingsScopeContext";
+import { useSharedScopeNotice } from "./useScopedSettings";
 import { resolveSettingsScope, type SettingsScopeSearch } from "./settingsScope";
 import {
   ALL_ENVIRONMENTS_VALUE,
@@ -67,6 +68,7 @@ export function SettingsScopeSentence({
   const scope = useOptionalSettingsScope();
   const pathname = useLocation({ select: (location) => location.pathname });
   const { environments } = useEnvironments();
+  const sharedNotice = useSharedScopeNotice();
   if (scope === null || SETTINGS_DEVICE_ONLY_PATHS.has(pathname)) return null;
   const props: SettingsScopeMenuProps = {
     value: scope.search,
@@ -87,6 +89,7 @@ export function SettingsScopeSentence({
         </span>
         <EnvironmentScopeMenu {...props} />
       </span>
+      {sharedNotice ? <span className="basis-full text-xs">{sharedNotice}</span> : null}
     </p>
   );
 }

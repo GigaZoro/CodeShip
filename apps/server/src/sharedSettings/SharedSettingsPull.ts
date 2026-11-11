@@ -56,7 +56,7 @@ const make = Effect.gen(function* () {
   const pullOnce = Effect.gen(function* () {
     if (!(yield* links.enabled)) return;
     if (!(yield* settings.getSettings).followSharedSettings) return;
-    yield* shared.retryPending;
+    yield* shared.retryWaiting;
     const stored = yield* links.listStored;
     const now = yield* DateTime.now;
     yield* Effect.forEach(

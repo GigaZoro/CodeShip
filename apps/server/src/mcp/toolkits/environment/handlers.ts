@@ -7,7 +7,6 @@ import {
   usageLimitRecoveryChoice,
   usageLimitRecoveryPatch,
 } from "@t3tools/contracts/settings";
-import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Environment from "../../../environment/ServerEnvironment.ts";
 import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandExecutor.ts";
@@ -99,7 +98,7 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
         const update = Effect.gen(function* () {
           // The turn may have ended, or the thread's modes changed, while this waited for the lock.
           yield* check;
-          const { settings, descriptor } = yield* access;
+          const { settings } = yield* access;
           yield* requireModelPreferences(
             yield* (yield* ProviderRegistry.ProviderRegistry).getProviders,
             patch,
@@ -113,15 +112,12 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
                 "This environment does not follow shared settings, so the change would stay here. Turn it on in Settings → Machines & access, or leave out `allMachines`.",
             });
           }
-          const share =
-            allMachines === true
-              ? {
-                  updatedAt: DateTime.formatIso(yield* DateTime.now),
-                  origin: descriptor.environmentId,
-                }
-              : undefined;
           return preferences(
-            yield* sharedSettings.update(patch, share).pipe(Effect.mapError(unavailable)),
+            yield* (
+              allMachines === true
+                ? sharedSettings.updateForAllMachines(patch)
+                : sharedSettings.update(patch, undefined)
+            ).pipe(Effect.mapError(unavailable)),
           );
         });
         return yield* scope.thread === undefined

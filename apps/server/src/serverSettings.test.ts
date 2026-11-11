@@ -204,7 +204,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       ).pipe(Effect.provide(layerServerSettings())),
   );
   it.effect(
-    "runs write hooks under the lock: a failed guard stores nothing, persisted sees what was",
+    "runs write hooks under the lock: a skipped write stores nothing, a plan replaces values whole",
     () =>
       Effect.gen(function* () {
         const service = yield* ServerSettingsModule.ServerSettingsService;
@@ -212,21 +212,35 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         const skipped = yield* service.updateSettings(
           { finalReviewByDefault: true },
           {
-            when: Effect.succeed(false),
+            // @effect-diagnostics-next-line effectSucceedWithVoid:off - A skipped write is undefined, not the wider void type.
+            prepare: () => Effect.succeed(undefined),
             persisted: () => Ref.update(seen, (all) => [...all, true]),
           },
         );
         assert.equal(skipped.finalReviewByDefault, false);
         assert.deepEqual(yield* Ref.get(seen), []);
         assert.equal((yield* service.getSettings).finalReviewByDefault, false);
+        const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" };
+        yield* service.updateSettings({
+          scheduledTaskModelSelection: {
+            ...selection,
+            options: [{ id: "reasoningEffort", value: "low" }],
+          },
+        });
         const saved = yield* service.updateSettings(
-          { finalReviewByDefault: true },
+          { finalReviewByDefault: false },
           {
-            when: Effect.succeed(true),
+            prepare: (current) =>
+              Effect.succeed({
+                patch: { finalReviewByDefault: !current.finalReviewByDefault },
+                replace: { scheduledTaskModelSelection: selection },
+              }),
             persisted: (stored) => Ref.update(seen, (all) => [...all, stored.finalReviewByDefault]),
           },
         );
         assert.equal(saved.finalReviewByDefault, true);
+        // Merged, the stored options would survive.
+        assert.deepEqual(saved.scheduledTaskModelSelection, selection);
         assert.deepEqual(yield* Ref.get(seen), [true]);
       }).pipe(Effect.provide(layerServerSettings())),
   );
