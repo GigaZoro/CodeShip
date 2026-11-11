@@ -382,6 +382,17 @@ export type ModelPreferences = {
   readonly providerModelPreferences: typeof ProviderModelPreferences.Type;
 };
 
+/**
+ * The portable client settings that every device of one user follows, one JSON value per key
+ * (`DEVICE_SETTINGS_PROFILE_KEYS`). Loose on purpose: a newer build may share a key this one does not
+ * know, and it must pass through a server and an older client unchanged.
+ */
+export const DeviceSettingsProfile = Schema.Record(
+  Schema.String.check(Schema.isMaxLength(64)),
+  Schema.Unknown,
+).check(Schema.isMaxProperties(128));
+export type DeviceSettingsProfile = typeof DeviceSettingsProfile.Type;
+
 export const ClientSettingsSchema = Schema.Struct({
   notificationMode: NotificationMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("off" as const)),
@@ -561,6 +572,14 @@ export const ClientSettingsSchema = Schema.Struct({
   snapShotFlash: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   snapShotAnimations: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   wordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // This device keeps the portable settings the same as the profile its primary server shares.
+  followDeviceSettingsProfile: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  // The portable settings this device last took from, or sent to, that profile; null before the first sync.
+  deviceSettingsProfileBase: Schema.NullOr(DeviceSettingsProfile).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   // Opt-in TeX typesetting in rendered Markdown. Off keeps math parsing and
   // KaTeX out of the render path entirely.
   mathRenderingEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -1478,6 +1497,11 @@ export const ServerSettings = Schema.Struct({
    * and passes them on. Needs linkedEnvironmentsEnabled to reach other machines. Never shared itself.
    */
   followSharedSettings: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * What the user's devices that follow the profile apply. Shared with the other machines as one
+   * whole value; empty until a device publishes it.
+   */
+  deviceSettingsProfile: DeviceSettingsProfile.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   sidebarAutoSettleKeepPullRequests: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
@@ -1903,6 +1927,8 @@ export const ServerSettingsPatch = Schema.Struct({
   guestSharingEnabled: Schema.optionalKey(Schema.Boolean),
   linkedEnvironmentsEnabled: Schema.optionalKey(Schema.Boolean),
   followSharedSettings: Schema.optionalKey(Schema.Boolean),
+  /** Replaces the whole profile. */
+  deviceSettingsProfile: Schema.optionalKey(DeviceSettingsProfile),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({
       schemaVersion: Schema.optionalKey(Schema.Literal(1)),
@@ -2102,8 +2128,8 @@ export const ClientSettingsPatch = Schema.Struct({
   followUpBehavior: Schema.optionalKey(Schema.Literals(["queue", "steer", "restart"])),
   proactivePanelsEnabled: Schema.optionalKey(Schema.Boolean),
   showSkillsInSlashMenu: Schema.optionalKey(Schema.Boolean),
-  sidebarGroupByProject: Schema.optionalKey(Schema.Boolean),
-  sidebarGroupByMachine: Schema.optionalKey(Schema.Boolean),
+  sidebarGroupByProject: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
+  sidebarGroupByMachine: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
   boringSidebarMultilineRows: Schema.optionalKey(Schema.Boolean),
   threadDetailsUsageEnabled: Schema.optionalKey(Schema.Boolean),
   threadDetailsItems: Schema.optionalKey(Schema.Record(Schema.String, Schema.Boolean)),
@@ -2125,6 +2151,8 @@ export const ClientSettingsPatch = Schema.Struct({
   snapShotFlash: Schema.optionalKey(Schema.Boolean),
   snapShotAnimations: Schema.optionalKey(Schema.Boolean),
   wordWrap: Schema.optionalKey(Schema.Boolean),
+  followDeviceSettingsProfile: Schema.optionalKey(Schema.Boolean),
+  deviceSettingsProfileBase: Schema.optionalKey(Schema.NullOr(DeviceSettingsProfile)),
   mathRenderingEnabled: Schema.optionalKey(Schema.Boolean),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;
