@@ -67,9 +67,11 @@ stopped backends and replays the failure for the same token.
 
 With `installUpdatesAutomatically` on, a launcher-managed server starts the same update a client
 would, but waits by a stricter rule than a user's "Update when it finishes": nobody chose to cut
-anything, so it waits until a restart hold lists no work at all (`untilRestartHoldIsEmpty`, shared
-with the desktop app), and preparing a release takes minutes, so `beforeHandoff` reads the setting,
-the policy and the hold once more right before the launcher takes over
+anything, so it waits until a restart hold lists no work and no running turn
+(`untilRestartHoldIsEmpty`, shared with the desktop app). A running turn would resume after the
+restart, so a manual update ignores `runningTurns`, but an automatic one must not cut a chat mid
+answer. Preparing a release takes minutes, so `beforeHandoff` reads the setting, the policy and
+the hold once more right before the launcher takes over
 ([`autoUpdate.ts`](../../apps/server/src/cloud/autoUpdate.ts)). A busy hold there puts the update
 off to the next check without counting as a failed attempt. A user's update keeps
 `untilListedRestartHoldWorkEnds`: it waits only for the work running when they chose it. Nothing
@@ -79,7 +81,8 @@ restart that the failed attempt's process did not. Failures before the handoff a
 in memory, because the process that made them is still running. The desktop app does not use this
 path: its renderer installs, because the app, not the server, owns the restart and the install. It
 waits by the same rule, reads each hosted server's hold again right before installing and goes back
-to waiting when work started, and ends its own wait when the setting is turned off.
+to waiting when work or a turn started, and ends its own wait when the setting is turned off.
+`runningTurns` is optional in the hold: a server that predates it reports none.
 
 ## Recovering interrupted threads
 

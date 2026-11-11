@@ -1,6 +1,6 @@
 import { ServerSelfUpdateError, type ServerSelfUpdateOutcome } from "@t3tools/contracts";
 import { cliReleaseChannelOf, type CliReleaseChannel } from "@t3tools/shared/cliRelease";
-import { untilRestartHoldIsEmpty } from "@t3tools/shared/restartHold";
+import { isRestartHoldEmpty, untilRestartHoldIsEmpty } from "@t3tools/shared/restartHold";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -104,10 +104,10 @@ function decideAutoUpdate(input: {
 }
 
 /**
- * Installs new releases on a background service once no chat has background work a restart
- * would cut, and checks again right before the launcher takes over: preparing a release takes
- * minutes, and a chat may start work meanwhile. Then it waits for the next check. Foreground
- * and desktop-hosted servers never self-update here; the desktop app owns its own install.
+ * Installs new releases on a background service once no chat is answering or has background work
+ * a restart would cut, and checks again right before the launcher takes over: preparing a release
+ * takes minutes, and a chat may start meanwhile. Then it waits for the next check. Foreground and
+ * desktop-hosted servers never self-update here; the desktop app owns its own install.
  */
 export const make = Effect.fn("cloud.auto_update.make")(function* () {
   const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
@@ -136,13 +136,14 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     Effect.flatMap(Option.match({ onNone: () => Effect.never, onSome: () => Effect.void })),
   );
 
-  const waitUntilIdle = untilRestartHoldIsEmpty(recovery.watchRestartHold, (work) =>
-    Effect.logInfo("Automatic update waiting for background work to finish.", {
-      waitingOn: work.length,
+  const waitUntilIdle = untilRestartHoldIsEmpty(recovery.watchRestartHold, (hold) =>
+    Effect.logInfo("Automatic update waiting for chats to finish.", {
+      backgroundWork: hold.work.length,
+      runningTurns: hold.runningTurns?.length ?? 0,
     }),
   ).pipe(Stream.runHead, Effect.map(Option.isSome));
 
-  /** Why the update must not go now, read fresh: the setting, the policy and the hold. */
+  /** Why the update must not go now, read fresh: the setting, the policy and what chats are doing. */
   const reasonToHoldOff = Effect.fn("cloud.auto_update.reason_to_hold_off")(function* (
     channel: CliReleaseChannel,
   ) {
@@ -151,7 +152,8 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     if (refusal !== undefined) return refusal;
     const hold = yield* recovery.restartHold.pipe(Effect.option);
     if (Option.isNone(hold)) return "background work could not be read";
-    return hold.value.work.length > 0 ? "a chat started background work" : undefined;
+    if (isRestartHoldEmpty(hold.value)) return undefined;
+    return hold.value.work.length > 0 ? "a chat started background work" : "a chat is answering";
   });
 
   const recordFailure = Effect.fn("cloud.auto_update.record_failure")(function* (

@@ -32,18 +32,23 @@ export function untilListedRestartHoldWorkEnds<E, R>(
   );
 }
 
+/** Whether a restart would cut nothing a chat is doing: no background work and no running turn. */
+export function isRestartHoldEmpty(hold: OrchestrationV2RestartHold): boolean {
+  return hold.work.length === 0 && (hold.runningTurns?.length ?? 0) === 0;
+}
+
 /**
- * "clear" once a hold lists no work at all, including work that started while waiting. An
- * automatic update waits like this, since nobody chose to cut what a chat is doing.
- * `onWaiting` gets the work in each hold that still lists some.
+ * "clear" once a hold lists no work and no running turn, including any that started while waiting.
+ * An automatic update waits like this, since nobody chose to cut what a chat is doing. `onWaiting`
+ * gets each hold that still lists some.
  */
 export function untilRestartHoldIsEmpty<E, R>(
   holds: Stream.Stream<OrchestrationV2RestartHold, E, R>,
-  onWaiting: (work: ReadonlyArray<OrchestrationV2RestartHoldWork>) => Effect.Effect<void>,
+  onWaiting: (hold: OrchestrationV2RestartHold) => Effect.Effect<void>,
 ): Stream.Stream<"clear", E, R> {
   return holds.pipe(
-    Stream.tap((hold) => (hold.work.length === 0 ? Effect.void : onWaiting(hold.work))),
-    Stream.filter((hold) => hold.work.length === 0),
+    Stream.tap((hold) => (isRestartHoldEmpty(hold) ? Effect.void : onWaiting(hold))),
+    Stream.filter(isRestartHoldEmpty),
     Stream.as("clear" as const),
   );
 }

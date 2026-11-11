@@ -408,7 +408,7 @@ import {
   ServerSettingsError,
   ServerSettingsPatch,
 } from "./settings.ts";
-import { SharedSettingsShare } from "./sharedSettings.ts";
+import { SharedSettingsShare, SharedSettingsWriteShare } from "./sharedSettings.ts";
 import {
   ScheduledTaskApplySharedInput,
   ScheduledTaskApplySharedResult,
@@ -1054,10 +1054,11 @@ const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSettings, {
     patch: ServerSettingsPatch,
     providerInstanceMutation: Schema.optionalKey(ProviderInstanceMutation),
     /**
-     * A change saved for all machines, for a machine that follows shared settings: it carries the
-     * shared settings, and `patch` the rest. Servers from before shared settings ignore it.
+     * A change saved for all machines, for a machine that follows shared settings: a server's
+     * stamped share carries the shared settings and `patch` the rest; a client's own stamp leaves
+     * them in `patch`. Servers from before shared settings ignore it.
      */
-    share: Schema.optionalKey(SharedSettingsShare),
+    share: Schema.optionalKey(SharedSettingsWriteShare),
   }),
   success: ServerSettings,
   error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),

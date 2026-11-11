@@ -130,6 +130,47 @@ it.effect("tells a peer without a tool, such as an older version, from a failed 
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect("refuses an answer larger than the call takes", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const large = "x".repeat(10_000);
+      const handlers = McpToolAccess.toLayer(toolkit, {
+        probe: McpToolAccess.reads(() => Effect.succeed({ modes: large })),
+        hold: McpToolAccess.reads(() => Effect.succeed({ modes: "hold" })),
+      });
+      const box = descriptorOf("environment-box", "Box");
+      const b = yield* servePeer(box, McpHttpServer.toolkitRegistration(toolkit, handlers));
+      const context = yield* Layer.build(
+        layerLinkingEnvironment(descriptorOf("environment-a", "A")),
+      );
+      const links = Context.get(context, PeerLinks.PeerLinks);
+      const client = Context.get(context, PeerMcpClient.PeerMcpClient);
+      yield* linkTo(links, b);
+      const request = (maxResultBytes: number) => ({
+        environmentId: box.environmentId,
+        tool: "probe",
+        arguments: {},
+        limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
+        success: Result,
+        maxResultBytes,
+      });
+      expect(yield* client.callIfAvailable(request(20_000))).toEqual(Option.some({ modes: large }));
+      // Over the result's limit, though the whole answer still fits the read.
+      const overResult = yield* Effect.flip(client.callIfAvailable(request(9_000)));
+      // So far over that the answer is not read whole.
+      const overAnswer = yield* Effect.flip(client.callIfAvailable(request(1_000)));
+      for (const [error, maxResultBytes] of [
+        [overResult, 9_000],
+        [overAnswer, 1_000],
+      ] as const) {
+        expect(error.message).toBe(
+          `The linked environment's answer is larger than the ${maxResultBytes} bytes this call takes.`,
+        );
+      }
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect("renews a missing peer session once and reuses its replacement", () =>
   Effect.gen(function* () {
     const sessionHeaders: Array<string | undefined> = [];

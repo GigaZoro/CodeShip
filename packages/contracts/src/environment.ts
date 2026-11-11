@@ -124,6 +124,11 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   sharedScheduledTasks: Schema.optionalKey(Schema.Boolean),
   /** Stores `followSharedSettings` and serves `t3_shared_settings` to linked machines; hide that setting where absent. */
   sharedSettings: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Serves `server.shareSettings` and takes a server's stamped share on `server.updateSettings`.
+   * Where absent, a client stamps a change for all machines itself and sends the values in the patch.
+   */
+  shareSettings: Schema.optionalKey(Schema.Boolean),
   /** Serves `scheduledTasks.listRuns` and honors a task's `catchUpMissedRun`; hide both where absent. */
   scheduledTaskRunHistory: Schema.optionalKey(Schema.Boolean),
   /** Serves `scheduledTasks.subscribeLinked`: the last task list of each machine it links to. */

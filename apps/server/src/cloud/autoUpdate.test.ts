@@ -27,6 +27,8 @@ import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 const NEWER = "999.0.0";
 const NEWEST_AFTER = "999.0.1";
 
+const answering = [{ threadId: ThreadId.make("thread-2"), threadTitle: "Answering" }];
+
 const work = (id: string): OrchestrationV2RestartHold["work"][number] => ({
   threadId: ThreadId.make("thread-1"),
   threadTitle: "Coordinator",
@@ -127,6 +129,22 @@ describe("automatic server update", () => {
     }),
   );
 
+  it.effect("waits while a chat is answering, with no background work", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* SubscriptionRef.set(harness.hold, { work: [], runningTurns: answering });
+      const check = yield* Effect.forkChild(harness.auto.check());
+      yield* Deferred.await(harness.holdSeen);
+      expect(harness.events).toEqual([]);
+
+      yield* Effect.sync(() => harness.events.push("answered"));
+      yield* SubscriptionRef.set(harness.hold, { work: [], runningTurns: [] });
+      yield* Fiber.join(check);
+
+      expect(harness.events).toEqual(["answered", `update ${NEWER}`, `handoff ${NEWER}`]);
+    }),
+  );
+
   it.effect("also waits for work that started while it waited", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ hold: [work("a")] });
@@ -150,6 +168,11 @@ describe("automatic server update", () => {
       name: "a chat starts background work",
       change: (harness: Effect.Success<ReturnType<typeof makeHarness>>) =>
         SubscriptionRef.set(harness.hold, { work: [work("started while preparing")] }),
+    },
+    {
+      name: "a chat starts answering",
+      change: (harness: Effect.Success<ReturnType<typeof makeHarness>>) =>
+        SubscriptionRef.set(harness.hold, { work: [], runningTurns: answering }),
     },
     {
       name: "the setting is turned off",

@@ -1,4 +1,8 @@
-import { OrchestratorMcpSharedSettingsResult, type PeerLink } from "@t3tools/contracts";
+import {
+  OrchestratorMcpSharedSettingsResult,
+  type PeerLink,
+  SHARED_SETTINGS_RESPONSE_MAX_BYTES,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -43,6 +47,7 @@ const make = Effect.gen(function* () {
         arguments: {},
         limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
         success: OrchestratorMcpSharedSettingsResult,
+        maxResultBytes: SHARED_SETTINGS_RESPONSE_MAX_BYTES,
       })
       .pipe(Effect.timeoutOption(PeerMcpClient.PEER_READ_TIMEOUT));
     if (Option.isNone(answer)) {

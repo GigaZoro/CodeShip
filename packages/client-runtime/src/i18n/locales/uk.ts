@@ -1377,6 +1377,8 @@ const catalog: MessageCatalog = {
   "{name} {state}": "{name}: {state}",
   "{name} account options": "Параметри облікового запису {name}",
   "{name} added": "{name} додано",
+  "{name} can link back only when this link has auto or full access. Otherwise link this machine from {name}.":
+    "{name} може пов’язатися у зворотний бік, лише якщо цей зв’язок має автоматичний або повний доступ. Інакше пов’яжіть цей комп’ютер із {name}.",
   "{name} enablement": "Увімкнення {name}",
   "{name} is a guest": "{name} – гість",
   "{name} is a guest. A new link ends their access.":
@@ -11903,6 +11905,8 @@ const catalog: MessageCatalog = {
     "Не вдалося завантажити оновлення. Спробуйте «Завантажити оновлення» ще раз.",
   "The update install failed. Try Restart to update again.":
     "Не вдалося встановити оновлення. Спробуйте «Перезапустити для оновлення» ще раз.",
+  "The update installs once no chat is answering or has background work, including any that starts meanwhile. Restarting now stops it.":
+    "Оновлення встановиться, коли жоден чат не відповідатиме і не матиме фонових завдань, зокрема тих, що почнуться тим часом. Перезапуск зараз зупинить їх.",
   "The update installs when this work finishes, even if chats have started more by then. Restarting now stops it.":
     "Оновлення встановиться, коли ці завдання завершаться, навіть якщо чати тим часом почнуть нові. Перезапуск зараз зупинить їх.",
   "The update track did not change.": "Канал оновлень не змінився.",
@@ -13598,6 +13602,12 @@ const catalog: MessageCatalog = {
   Waiting: "Очікування",
   "Waiting · {label}": "Очікування · {label}",
   "Waiting · {task}": "Очікування · {task}",
+  "Waiting for {count} chats to finish": {
+    one: "Очікування завершення {count} чату",
+    few: "Очікування завершення {count} чатів",
+    many: "Очікування завершення {count} чатів",
+    other: "Очікування завершення {count} чату",
+  },
   "Waiting for {count} tasks": {
     one: "Очікування {count} завдання",
     few: "Очікування {count} завдань",
@@ -13637,6 +13647,7 @@ const catalog: MessageCatalog = {
   "Waiting on a monitor": "Очікування монітора",
   "Waiting on a subagent": "Очікування субагента",
   "Waits for background work": "Очікує фонові завдання",
+  "Waits for chats to finish": "Очікує завершення чатів",
   Wake: "Повернути",
   "Wake {title} now": "Розбудити {title} зараз",
   "Wake now": "Розбудити зараз",

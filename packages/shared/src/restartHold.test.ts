@@ -44,20 +44,34 @@ describe("update waits for background work", () => {
     }),
   );
 
-  it.effect("an automatic update goes only once no work is left, newer work included", () =>
-    Effect.gen(function* () {
-      const waitedOn: Array<ReadonlyArray<string>> = [];
-      const holds = [
-        { work: [work("a", "Review A")] },
-        { work: [work("a", "Review A"), work("b", "Review B")] },
-        { work: [work("b", "Review B")] },
-        { work: [] },
-      ];
-      const outcome = yield* untilRestartHoldIsEmpty(Stream.fromIterable(holds), (remaining) =>
-        Effect.sync(() => waitedOn.push(remaining.map((entry) => entry.label))),
-      ).pipe(Stream.runHead);
-      expect(Option.getOrNull(outcome)).toBe("clear");
-      expect(waitedOn).toEqual([["Review A"], ["Review A", "Review B"], ["Review B"]]);
-    }),
+  it.effect(
+    "an automatic update goes only once no work is left and no chat answers, newer included",
+    () =>
+      Effect.gen(function* () {
+        const waitedOn: Array<ReadonlyArray<string>> = [];
+        const answering = [{ threadId: ThreadId.make("thread-2"), threadTitle: "Answering" }];
+        const holds = [
+          { work: [work("a", "Review A")] },
+          { work: [work("a", "Review A"), work("b", "Review B")] },
+          { work: [work("b", "Review B")], runningTurns: answering },
+          { work: [], runningTurns: answering },
+          { work: [], runningTurns: [] },
+        ];
+        const outcome = yield* untilRestartHoldIsEmpty(Stream.fromIterable(holds), (hold) =>
+          Effect.sync(() =>
+            waitedOn.push([
+              ...hold.work.map((entry) => entry.label),
+              ...(hold.runningTurns ?? []).map((turn) => turn.threadTitle),
+            ]),
+          ),
+        ).pipe(Stream.runHead);
+        expect(Option.getOrNull(outcome)).toBe("clear");
+        expect(waitedOn).toEqual([
+          ["Review A"],
+          ["Review A", "Review B"],
+          ["Review B", "Answering"],
+          ["Answering"],
+        ]);
+      }),
   );
 });

@@ -40,6 +40,7 @@ import {
   pendingLocalInstallAtom,
   readHostedBackgroundWork,
   usePendingLocalInstall,
+  usePendingLocalInstallTurns,
   usePendingLocalInstallWork,
   waitForHostedBackgroundWork,
 } from "./localInstallWait";
@@ -220,8 +221,9 @@ export async function installLocalUpdateWhenIdle(
 }
 
 /**
- * "Install updates automatically when idle": installs once no chat on this app's servers has
- * background work, and only while the setting stays on (`isStillEnabled`, read right before).
+ * "Install updates automatically when idle": installs once no chat on this app's servers is
+ * answering or has background work, and only while the setting stays on (`isStillEnabled`, read
+ * right before).
  */
 export async function installLocalUpdateAutomatically(
   bridge: DesktopBridge,
@@ -280,6 +282,7 @@ function SidebarUpdateControl() {
   const run = useUpdateEverythingRun();
   const pendingInstall = usePendingLocalInstall();
   const pendingWork = usePendingLocalInstallWork();
+  const pendingTurns = usePendingLocalInstallTurns();
   const isRunningEverything = run !== null;
   const { iconStatus, showUpdateDetails } = resolveSidebarUpdatePresentation({
     action: pendingAction,
@@ -289,7 +292,7 @@ function SidebarUpdateControl() {
   });
   const tooltip =
     pendingInstall !== null
-      ? restartHoldTooltip(pendingWork)
+      ? restartHoldTooltip(pendingWork, pendingTurns)
       : runsEverything && !isWaitingOnRecheck
         ? everything.summary
         : state && action === "install" && thisAppThreads.count > 0

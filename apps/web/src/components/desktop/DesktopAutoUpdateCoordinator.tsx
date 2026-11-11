@@ -37,8 +37,8 @@ const readEnabled = () =>
 
 /**
  * Runs "Install updates automatically when idle" for this app: downloads a found update in the
- * background and installs it once no chat on this app's servers has background work, checked
- * again right before it installs. The waiting shows on the update button like any other. The
+ * background and installs it once no chat on this app's servers is answering or has background
+ * work, checked again right before it installs. The waiting shows on the update button like any other. The
  * setting is the bundled server's; turning it off ends the wait this started.
  */
 export function DesktopAutoUpdateCoordinator() {

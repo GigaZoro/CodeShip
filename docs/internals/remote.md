@@ -176,7 +176,9 @@ there, so each machine reads its links' copies through the link-only
 ([`SharedTaskPull.ts`](../../apps/server/src/scheduledTasks/SharedTaskPull.ts)).
 That tool leaves out copies that exclude the asking machine, and records it as a machine that
 receives copies: copies reach machines that link here, not only those this machine links to, so a
-task may leave out any machine that pulled from here or is in the project's machine order.
+task may leave out any machine that pulled from here in the last 30 days or is in the project's
+machine order. Any reader may call the tool, so only a peer link whose own environment is the one
+it asks for is recorded; otherwise anyone could add a machine that a task may then exclude.
 
 - **Highest revision wins, per task.** A machine stamps its own edits with
   `max(now, previous + 1 ms)` and its id, and keeps a stamp it receives as-is,
@@ -251,16 +253,27 @@ other converge by passing versions on. This is not the list in `client-runtime`'
   follows, over its own links, whatever the link's access level, the way shared scheduled tasks sync
   ([`SharedTaskPull.ts`](../../apps/server/src/scheduledTasks/SharedTaskPull.ts)). Turning on
   Follow shared settings is what grants that.
-- **A server stamps a change, never a device.** The client saves the change first on one connected
-  follower (the edited machine when it follows) through `server.shareSettings`, which merges it into
-  that machine's values and stamps it by its clock under the settings lock, then sends the returned
-  stamp and values to the other followers. Watermarks use server clocks too, so a device with a
-  wrong clock cannot order a change before or after one it did not see.
+- **A server stamps a change, not a device, where it can.** The client saves the change first on
+  one connected follower that serves `server.shareSettings` (capability `shareSettings`; the edited
+  machine when it does), which merges it into that machine's values and stamps it by its clock under
+  the settings lock, then sends the returned stamp and values to the other followers. A follower
+  without the capability gets that stamp with the values in its patch, the only shape it reads.
+  While no connected follower has it, during a rollout, the client stamps the change by its own
+  clock and sends every follower the whole values, as clients before `server.shareSettings` do. A
+  server allows such a client stamp only 30 seconds ahead of its clock, against five minutes for a
+  server's, since a device's clock is the one that runs fast and a stamp ahead outranks every change
+  the group makes meanwhile. The server cannot tell a server's relayed share from a client's
+  forgery; a client with settings write access is trusted with settings either way. Watermarks use
+  server clocks, so a device with a wrong clock cannot order a change before or after one it did
+  not see.
 - **One stamp means one value, passed on as sent.** A version is the key's whole value, never a
   patch, and the server replaces the key with it (`SettingsWritePlan.replace`) instead of merging.
   A machine stores and serves the JSON it received and decodes it only to apply it, so a build
   that does not know a field, or a managed policy, cannot shrink the value it passes on under the
-  same stamp.
+  same stamp. A version this build cannot read at all (a key it does not know, or a value such as a
+  newer enum member) is kept pending and served, so a chain of mixed versions still carries the
+  change, and it applies once an update here can read it; at most 64 unknown keys are kept. A key
+  this build knows to belong to one machine is never taken or passed on.
 - **Ordering is per key, checked under the settings write lock** (`SettingsWriteHooks.prepare`).
   Each key records its last shared version and, for writes made on this machine alone, a local
   watermark (time and this machine). A version newer than both applies. One newer than the shared
@@ -277,9 +290,12 @@ other converge by passing versions on. This is not the list in `client-runtime`'
   missing, runs another driver than on the machine that saved it (`instanceDriver`), or is turned
   off. It applies once that changes and no local change is newer, on a stamped write and a pull
   alike.
-- **The pulling side checks everything**: the key must be shared and the value must decode as that
-  key's setting, since a newer peer may share a key this build does not know. A peer whose build
-  has no `t3_shared_settings` is skipped quietly (`PeerMcpClient.callIfAvailable`).
+- **The pulling side checks everything**: only a value that decodes as that key's setting is
+  applied. A value over 64 KB as JSON, or past 2 MB for one `t3_shared_settings` answer, is left
+  out where it is served, pulled or shared, and the pull reads no more of a peer's answer than that
+  allows. Each such problem, like each version this build cannot read, is logged once, not on every
+  pull. A peer whose build has no `t3_shared_settings` is skipped quietly
+  (`PeerMcpClient.callIfAvailable`).
 
 ## Hosted web is a client
 

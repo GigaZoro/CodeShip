@@ -442,8 +442,10 @@ it.effect(
           order("2026-09-10T00:00:00.000Z", [OTHER, HERE_ENVIRONMENT_ID, "environment-third"]),
         );
         // A machine that links here and pulls, with no link from here and no place in the order.
-        yield* service.sharedCopies("environment-puller" as never);
-        yield* service.sharedCopies(HERE_ENVIRONMENT_ID as never);
+        yield* service.sharedCopies("environment-puller" as never, { recordPuller: true });
+        yield* service.sharedCopies(HERE_ENVIRONMENT_ID as never, { recordPuller: true });
+        // A caller not proven to be the machine it names reads copies but is not recorded.
+        yield* service.sharedCopies("environment-claimed" as never, { recordPuller: false });
 
         expect(yield* service.knownMachineIds(SCRATCH)).toEqual([
           OTHER,
@@ -456,6 +458,30 @@ it.effect(
         ]);
       }),
     ),
+);
+
+it.effect("a machine that stops pulling for 30 days is no longer one copies reach", () =>
+  withService((service, sql) =>
+    Effect.gen(function* () {
+      const repo = ProjectId.make(repoProject.id);
+      yield* service.sharedCopies("environment-gone" as never, { recordPuller: true });
+      yield* TestClock.adjust("29 days");
+      yield* service.sharedCopies("environment-active" as never, { recordPuller: true });
+      expect(yield* service.knownMachineIds(repo)).toEqual([
+        "environment-active",
+        "environment-gone",
+      ]);
+
+      yield* TestClock.adjust("2 days");
+      expect(yield* service.knownMachineIds(repo)).toEqual(["environment-active"]);
+      // The next pull drops the stale row.
+      yield* service.sharedCopies("environment-active" as never, { recordPuller: true });
+      const rows = yield* sql<{ readonly environment_id: string }>`
+        SELECT environment_id FROM scheduled_task_shared_pullers ORDER BY environment_id
+      `;
+      expect(rows.map((row) => row.environment_id)).toEqual(["environment-active"]);
+    }),
+  ),
 );
 
 const HOUR_MS = 3_600_000;
@@ -977,7 +1003,7 @@ it.effect("a linked machine gets this machine's stored copies, minus those that 
         yield* service.upsert(upsertInput({ id: "scheduled-task:gone" }));
         yield* service.delete({ id: "scheduled-task:gone" as ScheduledTaskId });
 
-        const pulled = yield* service.sharedCopies(OTHER as never);
+        const pulled = yield* service.sharedCopies(OTHER as never, { recordPuller: true });
         expect(pulled.tasks.map((task) => task.id)).toEqual(["scheduled-task:kept"]);
         // The copy's own model, not the scheduled tasks default shown here.
         expect(pulled.tasks[0]?.modelSelection).toEqual(own);

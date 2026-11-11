@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  type ExecutionEnvironmentCapabilities,
   isMachineSharedSettingKey,
   type MachineSharedSettingKey,
   type ServerSettings,
@@ -7,11 +8,16 @@ import {
   type ServerShareSettingsResult,
   sharedSettingKeysIn,
   sharedSettingValue,
-  type SharedSettingsShare,
+  type SharedSettingStamp,
+  type SharedSettingsWriteShare,
 } from "@t3tools/contracts";
 import { t } from "@t3tools/shared/i18n";
-import { isModelSelectionProviderEnabled } from "@t3tools/shared/serverSettings";
+import {
+  applyServerSettingsPatch,
+  isModelSelectionProviderEnabled,
+} from "@t3tools/shared/serverSettings";
 import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
 import * as Struct from "effect/Struct";
 
 import type { EnvironmentConnectionPhase } from "../connection/presentation.ts";
@@ -110,7 +116,29 @@ export interface SharedSettingsMachine {
   readonly environmentId: EnvironmentId;
   readonly label: string;
   readonly connection: { readonly phase: EnvironmentConnectionPhase };
-  readonly serverConfig: { readonly settings: ServerSettings } | null;
+  readonly serverConfig: {
+    readonly settings: ServerSettings;
+    readonly environment?: { readonly capabilities: Partial<ExecutionEnvironmentCapabilities> };
+  } | null;
+}
+
+/** Whether a machine saves a change for all machines first and stamps it (`server.shareSettings`). */
+function servesShareSettings(machine: SharedSettingsMachine): boolean {
+  return machine.serverConfig?.environment?.capabilities.shareSettings === true;
+}
+
+/**
+ * Each shared setting `patch` sets, as the whole value `base` holds once the patch is applied, for
+ * a change this client stamps itself: every follower takes one value rather than merging a part.
+ */
+function wholeSharedSettingValues(
+  base: ServerSettings,
+  patch: ServerSettingsPatch,
+): ServerSettingsPatch {
+  const applied = applyServerSettingsPatch(base, patch);
+  return Object.fromEntries(
+    sharedSettingKeysIn(patch).map((key) => [key, sharedSettingValue(applied, key)]),
+  ) as ServerSettingsPatch;
 }
 
 export function followsSharedSettings(machine: {
@@ -140,6 +168,8 @@ export interface MachineSettingsWrite {
 export interface SharedSettingsGroupMember {
   readonly environmentId: EnvironmentId;
   readonly previous: ServerSettings;
+  /** It takes a server's stamped share; an older one takes the stamp, with the values in its patch. */
+  readonly servesShareSettings: boolean;
 }
 
 export interface SharedSettingsPlan<W extends MachineSettingsWrite> {
@@ -151,11 +181,14 @@ export interface SharedSettingsPlan<W extends MachineSettingsWrite> {
   readonly writes: ReadonlyArray<W>;
   /**
    * Set when the change is saved for the group: the follower that saves it first and stamps it by
-   * its clock, and the shared settings it sets.
+   * its clock, and the shared settings it sets. With `stampedBy: "client"`, no connected follower
+   * serves `server.shareSettings`, so this client stamps the change by its own clock and every
+   * follower's write carries the whole values; the authority is only the stamp's origin.
    */
   readonly share: {
     readonly authority: EnvironmentId;
     readonly keys: ReadonlyArray<MachineSharedSettingKey>;
+    readonly stampedBy: "server" | "client";
   } | null;
   /** Followers that are offline now, so they take the change from the others when back. */
   readonly offlineFollowers: ReadonlyArray<string>;
@@ -180,8 +213,9 @@ export function plainSettingsWrites<W extends MachineSettingsWrite>(
 
 /**
  * Who gets what when a change is saved for all of `machines`: a plain edit unless it sets a shared
- * setting and some machine follows. Then only followers get the shared settings, saved first by
- * `origin` if it is a connected follower, else by another, whose stamp and values the rest take.
+ * setting and some machine follows. Then only followers get it, saved first by `origin`, or another
+ * connected follower, that serves `server.shareSettings`. While none does, this client stamps the
+ * change and sends every follower the whole values.
  */
 export function planSharedSettingsWrites<W extends MachineSettingsWrite>(input: {
   /** Every machine the change is for, connected now or not. */
@@ -206,13 +240,20 @@ export function planSharedSettingsWrites<W extends MachineSettingsWrite>(input: 
   const offlineFollowers = followers
     .filter((machine) => !isConnected(machine))
     .map(({ label }) => label);
+  const stampers = connectedFollowers.filter(servesShareSettings);
+  const candidates = stampers.length > 0 ? stampers : connectedFollowers;
   const authority =
-    connectedFollowers.find((machine) => machine.environmentId === input.origin) ??
-    connectedFollowers[0];
+    candidates.find((machine) => machine.environmentId === input.origin) ?? candidates[0];
   if (authority === undefined) {
     return { ...plain, writes: [], offlineFollowers, noFollowerConnected: true };
   }
+  const stampedBy = stampers.length > 0 ? "server" : "client";
   const sharedPatch = onlySharedSettings(input.sharedPatch(authority.serverConfig.settings));
+  // Stamped here, every follower carries the whole values, which a server would complete itself.
+  const followerShared =
+    stampedBy === "client"
+      ? wholeSharedSettingValues(authority.serverConfig.settings, sharedPatch)
+      : {};
   const isFollower = new Set(connectedFollowers.map(({ environmentId }) => environmentId));
   const writeOf = (machine: (typeof connectedFollowers)[number]) =>
     input.writes.find((write) => write.environmentId === machine.environmentId) ??
@@ -220,19 +261,23 @@ export function planSharedSettingsWrites<W extends MachineSettingsWrite>(input: 
       environmentId: machine.environmentId,
       label: machine.label,
       previous: machine.serverConfig.settings,
+      servesShareSettings: servesShareSettings(machine),
     });
   const authorityWrite = writeOf(authority);
   return {
     writes: [
       {
         ...authorityWrite,
-        patch: { ...withoutSharedSettings(authorityWrite.patch), ...sharedPatch },
+        patch: {
+          ...withoutSharedSettings(authorityWrite.patch),
+          ...(stampedBy === "client" ? followerShared : sharedPatch),
+        },
       },
       ...connectedFollowers
         .filter((machine) => machine !== authority)
         .map((machine) => {
           const write = writeOf(machine);
-          return { ...write, patch: withoutSharedSettings(write.patch) };
+          return { ...write, patch: { ...withoutSharedSettings(write.patch), ...followerShared } };
         }),
       ...input.writes.flatMap((write) => {
         if (isFollower.has(write.environmentId)) return [];
@@ -240,11 +285,16 @@ export function planSharedSettingsWrites<W extends MachineSettingsWrite>(input: 
         return Object.keys(patch).length === 0 ? [] : [{ ...write, patch }];
       }),
     ],
-    share: { authority: authority.environmentId, keys: sharedSettingKeysIn(sharedPatch) },
+    share: {
+      authority: authority.environmentId,
+      keys: sharedSettingKeysIn(sharedPatch),
+      stampedBy,
+    },
     offlineFollowers,
     sharedGroup: connectedFollowers.map((machine) => ({
       environmentId: machine.environmentId,
       previous: machine.serverConfig.settings,
+      servesShareSettings: servesShareSettings(machine),
     })),
     noFollowerConnected: false,
   };
@@ -277,7 +327,10 @@ export interface SharedSettingsWriteOutcome<W extends MachineSettingsWrite> {
 export interface SharedSettingsPersist {
   readonly update: (request: {
     readonly environmentId: EnvironmentId;
-    readonly input: { readonly patch: ServerSettingsPatch; readonly share?: SharedSettingsShare };
+    readonly input: {
+      readonly patch: ServerSettingsPatch;
+      readonly share?: SharedSettingsWriteShare;
+    };
   }) => Promise<SettingsWriteResult<ServerSettings>>;
   readonly share: (request: {
     readonly environmentId: EnvironmentId;
@@ -286,13 +339,15 @@ export interface SharedSettingsPersist {
 }
 
 /**
- * Sends each write of `plan`, one outcome per write in order. With `share`, the authority saves its
- * write first and stamps it; the other followers then take its stamp and values, which carry any
- * part of a setting this client does not know. Machines outside the group are written meanwhile.
+ * Sends each write of `plan`, one outcome per write in order. A server's share is saved by the
+ * authority first; the others take its stamp and values, an older follower with the values in its
+ * patch. Machines outside the group are written meanwhile. A change this client stamps goes to
+ * every follower at once.
  */
 export async function persistSharedSettingsWrites<W extends MachineSettingsWrite>(
   plan: Pick<SharedSettingsPlan<W>, "writes" | "share" | "sharedGroup">,
   persist: SharedSettingsPersist,
+  now: () => DateTime.Utc = DateTime.nowUnsafe,
 ): Promise<ReadonlyArray<SharedSettingsWriteOutcome<W>>> {
   // A request that throws fails its own machine, never the others.
   const settle = <A>(request: Promise<SettingsWriteResult<A>>) =>
@@ -314,8 +369,31 @@ export async function persistSharedSettingsWrites<W extends MachineSettingsWrite
       })),
     );
   }
-  const authorityWrite = plan.writes.find((write) => write.environmentId === share.authority);
   const followers = new Set(plan.sharedGroup.map(({ environmentId }) => environmentId));
+  if (share.stampedBy === "client") {
+    const stamp: SharedSettingStamp = {
+      updatedAt: DateTime.formatIso(now()),
+      origin: share.authority,
+    };
+    return Promise.all(
+      plan.writes.map(async (write) => ({
+        write,
+        sent: write.patch,
+        result: await update({
+          environmentId: write.environmentId,
+          input: followers.has(write.environmentId)
+            ? { patch: write.patch, share: stamp }
+            : { patch: write.patch },
+        }),
+      })),
+    );
+  }
+  const takesServerShare = new Set(
+    plan.sharedGroup.flatMap(({ environmentId, servesShareSettings }) =>
+      servesShareSettings ? [environmentId] : [],
+    ),
+  );
+  const authorityWrite = plan.writes.find((write) => write.environmentId === share.authority);
   const saved = authorityWrite
     ? settle(
         persist.share({
@@ -359,22 +437,25 @@ export async function persistSharedSettingsWrites<W extends MachineSettingsWrite
         };
       }
       const stamped = authority.value;
+      // The values as the authority stored them, for keys this client knows.
+      const sent = {
+        ...write.patch,
+        ...Object.fromEntries(
+          stamped.share.values.flatMap((value) =>
+            isMachineSharedSettingKey(value.key)
+              ? [[value.key, sharedSettingValue(stamped.settings, value.key)]]
+              : [],
+          ),
+        ),
+      } as ServerSettingsPatch;
       return {
         write,
-        // The values as the authority stored them, for keys this client knows.
-        sent: {
-          ...write.patch,
-          ...Object.fromEntries(
-            stamped.share.values.flatMap((value) =>
-              isMachineSharedSettingKey(value.key)
-                ? [[value.key, sharedSettingValue(stamped.settings, value.key)]]
-                : [],
-            ),
-          ),
-        },
+        sent,
         result: await update({
           environmentId: write.environmentId,
-          input: { patch: write.patch, share: stamped.share },
+          input: takesServerShare.has(write.environmentId)
+            ? { patch: write.patch, share: stamped.share }
+            : { patch: sent, share: stamped.share.stamp },
         }),
       };
     }),

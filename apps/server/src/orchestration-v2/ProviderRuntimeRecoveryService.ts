@@ -5,6 +5,7 @@ import {
   type ProviderThreadId,
   type OrchestrationV2RestartCancelledBackgroundWork,
   type OrchestrationV2RestartHold,
+  type OrchestrationV2RestartHoldTurn,
   type OrchestrationV2RestartHoldWork,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
@@ -309,8 +310,21 @@ function changesRestartHold(event: OrchestrationV2DomainEvent): boolean {
   }
 }
 
+/** A turn that is answering now: a restart cuts it mid-answer. */
+function isRunningTurn(run: ProjectionStore.ProjectionRuntimeRecoveryState["runs"][number]) {
+  return run.status === "preparing" || run.status === "starting" || run.status === "running";
+}
+
 function sameRestartHold(left: OrchestrationV2RestartHold, right: OrchestrationV2RestartHold) {
+  const leftTurns = left.runningTurns ?? [];
+  const rightTurns = right.runningTurns ?? [];
   return (
+    leftTurns.length === rightTurns.length &&
+    leftTurns.every(
+      (turn, index) =>
+        turn.threadId === rightTurns[index]!.threadId &&
+        turn.threadTitle === rightTurns[index]!.threadTitle,
+    ) &&
     left.work.length === right.work.length &&
     left.work.every((entry, index) => {
       const other = right.work[index]!;
@@ -1005,6 +1019,7 @@ export const make = Effect.gen(function* () {
         ),
       );
     const work: Array<OrchestrationV2RestartHoldWork> = [];
+    const runningTurns: Array<OrchestrationV2RestartHoldTurn> = [];
     for (const threadId of threadIds) {
       const projection = yield* projections
         .getRuntimeRecoveryProjection(threadId)
@@ -1016,6 +1031,9 @@ export const make = Effect.gen(function* () {
         );
       // Nobody waits in an archived or deleted thread, and its restart wakes nothing.
       if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) continue;
+      if (projection.runs.some(isRunningTurn)) {
+        runningTurns.push({ threadId, threadTitle: projection.thread.title });
+      }
       const cancelled = restartCancelledBackgroundWork(
         projection,
         yield* cutRuns(projection),
@@ -1034,7 +1052,7 @@ export const make = Effect.gen(function* () {
         }
       }
     }
-    return { work } satisfies OrchestrationV2RestartHold;
+    return { work, runningTurns } satisfies OrchestrationV2RestartHold;
   }).pipe(Effect.withSpan("ProviderRuntimeRecoveryService.restartHold"));
 
   const watchRestartHold = Stream.unwrap(

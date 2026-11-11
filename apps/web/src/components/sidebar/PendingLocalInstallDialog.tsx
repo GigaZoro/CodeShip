@@ -3,6 +3,7 @@ import { useRef } from "react";
 import {
   decideHostedRestartHold,
   usePendingLocalInstall,
+  usePendingLocalInstallTurns,
   usePendingLocalInstallWork,
 } from "./localInstallWait";
 import {
@@ -16,7 +17,7 @@ import {
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
-import { BackgroundWorkGroup } from "./SafeUpdateDialog";
+import { BackgroundWorkGroup, RunningTurnsGroup } from "./SafeUpdateDialog";
 
 import { t, tx } from "~/i18n";
 
@@ -30,6 +31,7 @@ export function PendingLocalInstallDialog({
 }) {
   const pending = usePendingLocalInstall();
   const work = usePendingLocalInstallWork();
+  const turns = usePendingLocalInstallTurns();
   const closeRef = useRef<HTMLButtonElement>(null);
   // The wait ends by itself when the work finishes; the dialog closes with it.
   const shown = open && pending !== null;
@@ -49,14 +51,19 @@ export function PendingLocalInstallDialog({
               : t("Update is waiting")}
           </AlertDialogTitle>
           <AlertDialogDescription>
-            {t(
-              "The update installs when this work finishes, even if chats have started more by then. Restarting now stops it.",
-            )}
+            {pending?.automatic === true
+              ? t(
+                  "The update installs once no chat is answering or has background work, including any that starts meanwhile. Restarting now stops it.",
+                )
+              : t(
+                  "The update installs when this work finishes, even if chats have started more by then. Restarting now stops it.",
+                )}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <ScrollArea scrollFade>
           <div className="flex flex-col gap-4 px-6 pb-4 text-sm">
             <BackgroundWorkGroup title={t("Waits for background work")} work={work} />
+            <RunningTurnsGroup title={t("Waits for chats to finish")} turns={turns} />
           </div>
         </ScrollArea>
         <AlertDialogFooter>
