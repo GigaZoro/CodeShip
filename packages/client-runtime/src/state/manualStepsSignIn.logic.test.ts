@@ -7,6 +7,8 @@ import {
   mcpSignInProgress,
   outcomeOfProgress,
   planSignIns,
+  providerSignInBaseline,
+  providerSignInFlowToCancel,
   providerSignInProgress,
   providerSignInUnsupportedOnPhone,
   recordSignInOutcome,
@@ -300,6 +302,53 @@ describe("providerSignInProgress", () => {
         flow: flow(phase),
       }),
     ).toEqual({ state: "failed", reason, message });
+  });
+});
+
+describe("a step's baseline and the flow it cancels", () => {
+  const running = { phase: "waiting", flowId: "flow-1" } as const;
+
+  it("counts a sign-in that was already running when the step began", () => {
+    const baseline = providerSignInBaseline(running);
+    expect(baseline).toEqual({ finishedFlowId: null, runningFlowId: "flow-1" });
+    expect(
+      providerSignInProgress({
+        kind: "login-expired",
+        baselineFlowId: baseline.finishedFlowId,
+        signedIn: true,
+        flow: { phase: "succeeded", flowId: "flow-1", message: null },
+      }),
+    ).toEqual({ state: "signed-in" });
+  });
+
+  it("takes only a flow that had ended as the baseline", () => {
+    expect(providerSignInBaseline({ phase: "succeeded", flowId: "flow-1" })).toEqual({
+      finishedFlowId: "flow-1",
+      runningFlowId: null,
+    });
+    expect(providerSignInBaseline({ phase: "idle", flowId: null })).toEqual({
+      finishedFlowId: null,
+      runningFlowId: null,
+    });
+    expect(providerSignInBaseline(undefined)).toEqual({
+      finishedFlowId: null,
+      runningFlowId: null,
+    });
+  });
+
+  it("leaves a sign-in started elsewhere running, and ends one this step started", () => {
+    const fromElsewhere = providerSignInBaseline(running);
+    expect(providerSignInFlowToCancel(fromElsewhere, running)).toBeNull();
+    expect(
+      providerSignInFlowToCancel(fromElsewhere, { phase: "verifying", flowId: "flow-2" }),
+    ).toBe("flow-2");
+    const idle = providerSignInBaseline({ phase: "succeeded", flowId: "flow-0" });
+    expect(providerSignInFlowToCancel(idle, { phase: "starting", flowId: "flow-1" })).toBe(
+      "flow-1",
+    );
+    // Nothing to end once the flow is over, or before the step knows what was running.
+    expect(providerSignInFlowToCancel(idle, { phase: "succeeded", flowId: "flow-1" })).toBeNull();
+    expect(providerSignInFlowToCancel(null, running)).toBeNull();
   });
 });
 

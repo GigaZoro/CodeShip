@@ -368,10 +368,20 @@ export class ScheduledTaskService extends Context.Service<
     readonly delete: (
       input: ScheduledTaskDeleteInput,
     ) => Effect.Effect<ScheduledTaskDeleteResult, ScheduledTaskError>;
-    /** This machine's shared tasks as copies for `forEnvironmentId`, which gets none that exclude it. */
+    /**
+     * This machine's shared tasks as copies for `forEnvironmentId`, which gets none that exclude
+     * it. It is recorded as a machine that receives them, which a task may then leave out.
+     */
     readonly sharedCopies: (
       forEnvironmentId: EnvironmentId,
     ) => Effect.Effect<OrchestratorMcpSharedScheduledTasksResult, ScheduledTaskError>;
+    /**
+     * Machines a shared task in this project reaches without a link from here: those in the
+     * project's machine order, and those that pulled shared tasks from here.
+     */
+    readonly knownMachineIds: (
+      projectId: ProjectId,
+    ) => Effect.Effect<ReadonlyArray<EnvironmentId>, ScheduledTaskError>;
     /** Brings this machine's copy of a shared task up to a newer revision; an older one changes nothing. */
     readonly applyShared: (
       input: ScheduledTaskApplySharedInput,
@@ -410,7 +420,10 @@ export class ScheduledTaskService extends Context.Service<
   }
 >()("t3/scheduledTasks/ScheduledTaskService") {}
 
-function taskError(message: string, input?: { taskId?: ScheduledTaskId; cause?: unknown }) {
+function taskError(
+  message: string,
+  input?: { taskId?: ScheduledTaskId | undefined; cause?: unknown },
+) {
   return new ScheduledTaskError({
     message,
     ...(input?.taskId === undefined ? {} : { taskId: input.taskId }),
@@ -773,6 +786,13 @@ export const layer = Layer.effect(
       CREATE TABLE IF NOT EXISTS scheduled_task_catch_up (
         task_id TEXT PRIMARY KEY,
         enabled INTEGER NOT NULL
+      )
+    `;
+    // Machines that pulled shared tasks from here: copies reach them though no link from here does.
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS scheduled_task_shared_pullers (
+        environment_id TEXT PRIMARY KEY,
+        pulled_at TEXT NOT NULL
       )
     `;
     // Outlives the task so a stale copy on another machine is removed, not restored.
@@ -2228,6 +2248,14 @@ export const layer = Layer.effect(
       "ScheduledTaskService.sharedCopies",
     )(
       function* (forEnvironmentId) {
+        if (forEnvironmentId !== hereEnvironmentId) {
+          const pulledAt = DateTime.formatIso(yield* DateTime.now);
+          yield* sql`
+            INSERT INTO scheduled_task_shared_pullers (environment_id, pulled_at)
+            VALUES (${forEnvironmentId}, ${pulledAt})
+            ON CONFLICT (environment_id) DO UPDATE SET pulled_at = excluded.pulled_at
+          `;
+        }
         const rows = yield* selectAllRows();
         // Stored model, not the default shown here: the copy is this task's own definition.
         const tasks = yield* Effect.forEach(
@@ -2275,6 +2303,36 @@ export const layer = Layer.effect(
       Effect.mapError((cause) => taskError("Could not read the shared schedule tasks.", { cause })),
     );
 
+    const knownMachineIds: ScheduledTaskService["Service"]["knownMachineIds"] = Effect.fn(
+      "ScheduledTaskService.knownMachineIds",
+    )(function* (projectId) {
+      const key = scheduledTaskSharedProjectKey(yield* sharedProjectOf(projectId));
+      const known = yield* Effect.gen(function* () {
+        const [stored] = yield* sql<MachineOrderRow>`
+          SELECT project_json, order_json, revision_at, revision_environment_id
+          FROM scheduled_task_project_machine_orders
+          WHERE project_key = ${key}
+        `.pipe(NodeSqliteClient.readOnly);
+        const ordered =
+          stored === undefined
+            ? []
+            : (yield* decodeMachineOrderRow({
+                project: stored.project_json,
+                order: stored.order_json,
+                revision: { at: stored.revision_at, environmentId: stored.revision_environment_id },
+              })).order;
+        const pullers = yield* sql<{ readonly environment_id: string }>`
+          SELECT environment_id FROM scheduled_task_shared_pullers ORDER BY environment_id ASC
+        `.pipe(NodeSqliteClient.readOnly);
+        return [...ordered, ...pullers.map((row) => EnvironmentId.make(row.environment_id))];
+      }).pipe(
+        Effect.mapError((cause) =>
+          taskError("Could not read the machines shared tasks reach.", { cause }),
+        ),
+      );
+      return [...new Set(known)].filter((id) => id !== hereEnvironmentId);
+    });
+
     const subscribeList: ScheduledTaskService["Service"]["subscribeList"] = () =>
       Stream.unwrap(
         Effect.gen(function* () {
@@ -2290,7 +2348,7 @@ export const layer = Layer.effect(
     // Resolved fresh: a project's own identity is a cache that reads blank when cold.
     const sharedProjectOf = Effect.fn("ScheduledTaskService.sharedProjectOf")(function* (
       projectId: ProjectId,
-      taskId: ScheduledTaskId,
+      taskId?: ScheduledTaskId,
     ) {
       if (yield* managedFolders.isScratchProject(projectId)) {
         return { type: "none" } as const satisfies ScheduledTaskSharing["project"];
@@ -3999,6 +4057,7 @@ export const layer = Layer.effect(
       delete: deleteTask,
       applyShared,
       sharedCopies,
+      knownMachineIds,
       deleteForThread,
       moveThreadTasks,
       runNow,

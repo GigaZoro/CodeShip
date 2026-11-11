@@ -8,6 +8,7 @@ import { LinkAccessPicker } from "./LinkAccessPicker";
 /** "Also let {name} reach this machine", with what its agents may do here once it is on. */
 export function LinkBackOption({
   name,
+  here,
   forwardAccess,
   checked,
   onCheckedChange,
@@ -17,7 +18,9 @@ export function LinkBackOption({
 }: {
   /** The machine being linked. */
   readonly name: string;
-  /** The access this link gives agents there; linking back needs auto or full. */
+  /** This machine's name, for the instruction shown when linking back is not offered. */
+  readonly here?: string | null | undefined;
+  /** The access this link gives agents there; only a full-access link may link back. */
   readonly forwardAccess: AuthMcpClientAccess;
   readonly checked: boolean;
   readonly onCheckedChange: (checked: boolean) => void;
@@ -25,13 +28,23 @@ export function LinkBackOption({
   readonly onReverseAccessChange: (access: AuthMcpClientAccess) => void;
   readonly disabled: boolean;
 }) {
-  const allowed = peerLinkAccessAllowsLinkBack(forwardAccess);
+  // Only a full-access link may ask the other machine to link back (docs/internals/remote.md).
+  if (!peerLinkAccessAllowsLinkBack(forwardAccess)) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        {t("Link {here} from {name} to let it reach this machine.", {
+          here: here ?? t("this machine"),
+          name,
+        })}
+      </p>
+    );
+  }
   return (
     <div className="space-y-3">
       <label className="flex items-start gap-2 text-xs">
         <Checkbox
-          checked={checked && allowed}
-          disabled={disabled || !allowed}
+          checked={checked}
+          disabled={disabled}
           onCheckedChange={(next) => onCheckedChange(next === true)}
           className="mt-0.5"
         />
@@ -40,19 +53,14 @@ export function LinkBackOption({
             {t("Also let {name} reach this machine", { name })}
           </span>
           <span className="block text-muted-foreground">
-            {allowed
-              ? t(
-                  "This machine links {name} back in the same step, so no second pairing code is typed there. Linked environments must be on there too.",
-                  { name },
-                )
-              : t(
-                  "{name} can link back only when this link has auto or full access. Otherwise link this machine from {name}.",
-                  { name },
-                )}
+            {t(
+              "This machine links {name} back in the same step, so no second pairing code is typed there. Linked environments must be on there too.",
+              { name },
+            )}
           </span>
         </span>
       </label>
-      {checked && allowed ? (
+      {checked ? (
         <LinkAccessPicker
           value={reverseAccess}
           onChange={onReverseAccessChange}
