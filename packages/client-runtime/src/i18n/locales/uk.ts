@@ -901,6 +901,12 @@ const catalog: MessageCatalog = {
     many: "{count} відкладених чатів",
     other: "{count} відкладеного чату",
   },
+  "{count} still need a sign-in": {
+    one: "{count} ще потребує входу",
+    few: "{count} ще потребують входу",
+    many: "{count} ще потребують входу",
+    other: "{count} ще потребує входу",
+  },
   "{count} stopped": "Зупинено: {count}",
   "{count} stops": {
     one: "{count} зупинка",
@@ -1443,6 +1449,7 @@ const catalog: MessageCatalog = {
   "{policy} Nightly builds are not available.": "{policy} Нічні збірки недоступні.",
   "{pool} {window}: {percent}% left": "{pool} {window}: залишилося {percent}%",
   "{position} of {size}": "{position} з {size}",
+  "{position} of {total}": "{position} з {total}",
   "{preset} ({when})": "{preset} ({when})",
   "{preview}, tool call failed": "{preview}, виклик інструмента не вдався",
   "{pro} {upgradeLink} to Premier for {premier}.": "{pro} {upgradeLink} до Premier: {premier}.",
@@ -5333,6 +5340,7 @@ const catalog: MessageCatalog = {
   "Every provider is hidden.": "Усі провайдери приховано.",
   "Every running agent in {label} stops.": "Усі запущені агенти в {label} буде зупинено.",
   "Every second": "Щосекунди",
+  "Every sign-in is done.": "Усі входи виконано.",
   "Every week": "Щотижня",
   "Everything outside code blocks and the terminal.": "Усе поза блоками коду та терміналом.",
   "Excerpts are hidden until the guide is rewritten for the current head.":
@@ -5580,6 +5588,7 @@ const catalog: MessageCatalog = {
   "Failed to update project icon": "Не вдалося оновити значок проєкту",
   "Failed to update WSL backend.": "Не вдалося оновити бекенд WSL.",
   "Failed to wake thread": "Не вдалося повернути чат",
+  "Failed: {reason}": "Не вдалося: {reason}",
   Failing: "Не пройдено",
   failures: "збої",
   Failures: "Збої",
@@ -5686,6 +5695,7 @@ const catalog: MessageCatalog = {
     "Не вдалося знайти переднє вікно: {command} завершилася з кодом {exitCode}.",
   "Finding the front window failed.": "Не вдалося знайти переднє вікно.",
   "Finding the front window timed out.": "Час пошуку переднього вікна вичерпано.",
+  Finish: "Завершити",
   "Finish dictation": "Завершити диктування",
   "Finish editing the queued message first.":
     "Спочатку завершіть редагування повідомлення в черзі.",
@@ -6817,6 +6827,7 @@ const catalog: MessageCatalog = {
   "Loading scheduled tasks…": "Завантаження запланованих завдань…",
   "Loading sign-in terminal…": "Завантаження термінала входу…",
   "Loading sign-in…": "Завантаження входу…",
+  "Loading sign-ins…": "Завантажуємо входи…",
   "Loading skills": "Завантаження навичок",
   "Loading slow spans...": "Завантаження повільних спанів...",
   "Loading span names...": "Завантаження назв спанів...",
@@ -7738,6 +7749,7 @@ const catalog: MessageCatalog = {
   "Nothing stashed yet.": "Поки нічого не відкладено.",
   "Nothing to preview.": "Немає що переглядати.",
   "Nothing to reset right now.": "Зараз нічого скидати.",
+  "Nothing to sign in to on {machine}.": "На {machine} нічого входити.",
   "Nothing under these filters": "Нічого за цими фільтрами",
   "Nothing was written on {machine}": "На {machine} нічого не записано",
   "Notice details": "Деталі сповіщення",
@@ -10541,6 +10553,8 @@ const catalog: MessageCatalog = {
   "Sign in to {name}": "Увійти в {name}",
   "Sign in to {server}": "Увійти в {server}",
   "Sign in to {server} for {account}": "Увійти в {server} для {account}",
+  "Sign in to all": "Увійти скрізь",
+  "Sign in to all ({count})": "Увійти скрізь ({count})",
   "Sign in to Antigravity in provider settings before sending.":
     "Увійдіть в Antigravity в налаштуваннях провайдера, перш ніж надсилати.",
   "Sign in to continue authorizing T3 Connect for your CLI.":
@@ -10575,6 +10589,7 @@ const catalog: MessageCatalog = {
   "sign-in code": "код входу",
   "Sign-in did not finish": "Вхід не завершено",
   "Sign-in method": "Спосіб входу",
+  "Sign-ins finished": "Входи завершено",
   "Signature check configured on desktop/web.":
     "Перевірку підпису налаштовано на десктопі чи у вебверсії.",
   "Signature verified": "Підпис перевірено",
@@ -10641,6 +10656,10 @@ const catalog: MessageCatalog = {
   Skipped: "Пропущено",
   "Skipped {cookies}": "Пропущено: {cookies}",
   "Skipped {time}: {machine} ran it": "Пропущено {time}: запустив {machine}",
+  "Skipped: the account is not signed in": "Пропущено: у обліковий запис не ввійшли",
+  "Skipped: the account's sign-in failed": "Пропущено: вхід в обліковий запис не вдався",
+  "Skipped: this device cannot run that sign-in":
+    "Пропущено: цей пристрій не може виконати такий вхід",
   Sky: "Небесний",
   "Slack template": "Шаблон Slack",
   Slide: "Слайд",
@@ -11915,9 +11934,12 @@ const catalog: MessageCatalog = {
   "This {term} has no file changes.": "У цьому {term} немає змін у файлах.",
   "This {term} is no longer in the stack. Refresh it.":
     "Цей {term} більше не входить до стека. Оновіть його.",
+  "This account has no sign-in the phone can run. Finish it on web or desktop; Next continues.":
+    "Для цього облікового запису телефон не може виконати вхід. Завершіть його у вебверсії чи на комп’ютері; «Далі» продовжить.",
   "This account has no subscription limits.": "Цей обліковий запис не має обмежень підписки.",
   "This account is no longer reporting limits on the selected environments.":
     "Цей обліковий запис більше не повідомляє про ліміти на вибраних середовищах.",
+  "This account is not available any more.": "Цей обліковий запис більше недоступний.",
   "This action cannot be undone.": "Цю дію не можна скасувати.",
   "This action is currently unavailable.": "Ця дія зараз недоступна.",
   "This action is unavailable.": "Ця дія недоступна.",
@@ -12412,6 +12434,7 @@ const catalog: MessageCatalog = {
   "This server does not support file attachments.": "Цей сервер не підтримує вкладення файлів.",
   "This server does not support registry lookups. Update it before switching tracks.":
     "Цей сервер не підтримує пошук у реєстрі. Оновіть його перед перемиканням каналу.",
+  "This server has no name.": "У цього сервера немає назви.",
   "This server's host blocks the sandbox its browser runs in. Run this once on the host, then try again:":
     "Хост цього сервера блокує пісочницю, у якій працює його браузер. Виконайте це один раз на хості, потім спробуйте ще раз:",
   "This server's host is missing libraries its browser needs. Run this once on the host, then try again:":
@@ -12422,6 +12445,8 @@ const catalog: MessageCatalog = {
     "Цей сеанс може переглядати провайдерів середовища {environment}, але не може змінювати їхні налаштування.",
   "This session can't open the browser stream. Reconnect to try again.":
     "Цей сеанс не може відкрити потік браузера. Підключіться знову й повторіть спробу.",
+  "This session cannot change {machine}'s providers. Next continues.":
+    "Цей сеанс не може змінювати постачальників на {machine}. «Далі» продовжить.",
   "This setting is environment-wide and cannot be overridden by a project.":
     "Цей параметр діє для всього середовища, і проєкт не може його перевизначити.",
   "This setting is saved on a server, and the hosted app is not anchored to one. Change it from the desktop app or from the server's own address.":
@@ -12439,6 +12464,8 @@ const catalog: MessageCatalog = {
     "Це скорочення вже використовується системою або іншим застосунком.",
   "This side chat was deleted.": "Цей бічний чат видалено.",
   "This sign-in cannot continue": "Цей вхід не можна продовжити",
+  "This sign-in runs in a terminal. If it does not respond here, skip it and finish it on web or desktop.":
+    "Цей вхід виконується в терміналі. Якщо він тут не відповідає, пропустіть його й завершіть у вебверсії чи на комп’ютері.",
   "This site can’t be reached": "Не вдалося зв’язатися із цим сайтом",
   "This slide could not be drawn.": "Не вдалося відобразити цей слайд.",
   "This SSH verification prompt expired. Try connecting again.":
@@ -13573,6 +13600,8 @@ const catalog: MessageCatalog = {
   "Wake thread": "Повернути чат",
   "Wake thread now": "Повернути чат зараз",
   "Waking...": "Повернення…",
+  "Walks through every sign-in on this machine, one after another.":
+    "Проводить через усі входи на цій машині, один за одним.",
   warning: "попередження",
   Warning: "Попередження",
   "Warning background": "Тло попередження",
