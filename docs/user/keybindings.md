@@ -127,6 +127,10 @@ Available context keys are `terminalFocus`, `terminalOpen`, `previewFocus`,
 the keyboard. `isWeb` is true in a browser tab. `isDesktop` is true in the
 desktop app. Unknown keys evaluate to `false`.
 
+Settings shows each condition in words, such as "Right panel open, not in the terminal". Point at
+it to see the expression, and open it to edit the expression itself. A condition with a key
+Settings does not know shows as written.
+
 `mod+1` through `mod+9` jump to the first nine threads, and to models while the
 model picker is open. The thread jumps do not run while the model picker is open.
 Those defaults use `isDesktop` so they do not steal the

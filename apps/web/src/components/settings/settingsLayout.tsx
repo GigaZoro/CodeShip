@@ -34,6 +34,7 @@ import {
 import { useClearProjectOverrides, useClearScopedSettings } from "./useScopedSettings";
 import {
   SettingInheritance,
+  showsSettingInheritance,
   type SettingInheritanceState,
   type SettingOverridingProject,
 } from "./SettingInheritance";
@@ -472,11 +473,22 @@ export function SettingsRow({
           : customized
             ? { state: "environment", summary: t("Set on the environment") }
             : { state: "default", summary: t("Built-in default") };
+  const inheritanceSummary =
+    managedBy !== undefined && inheritance.state === "default"
+      ? t("Managed by {owner}", { owner: managedBy })
+      : inheritance.summary;
   const renderedInheritance =
-    context && serverScoped && settingKeys.length > 0 ? (
+    context &&
+    serverScoped &&
+    settingKeys.length > 0 &&
+    showsSettingInheritance({
+      state: inheritance.state,
+      managed: managedBy !== undefined || managed !== undefined,
+      overridingProjectCount: overridingProjects.length,
+    }) ? (
       <SettingInheritance
         state={inheritance.state}
-        summary={inheritance.summary}
+        summary={inheritanceSummary}
         targets={context.targets}
         environments={context.connectedEnvironments}
         keys={settingKeys}
@@ -508,15 +520,7 @@ export function SettingsRow({
           <div className="flex min-h-5 items-center gap-1.5">
             <h3 className="text-sm font-medium text-foreground">{title}</h3>
             {renderedInheritance ? (
-              <span
-                className={cn(
-                  "inline-flex h-5 w-5 shrink-0 items-center justify-center",
-                  // Values set right here explain nothing new, so their marker waits for hover or focus.
-                  (inheritance.state === "default" || inheritance.state === "environment") &&
-                    overridingProjects.length === 0 &&
-                    "opacity-0 group-hover/settings-row:opacity-100 has-focus-visible:opacity-100 has-data-popup-open:opacity-100",
-                )}
-              >
+              <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
                 {renderedInheritance}
               </span>
             ) : null}

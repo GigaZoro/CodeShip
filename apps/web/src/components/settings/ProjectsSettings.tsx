@@ -2,6 +2,7 @@ import { EnvironmentId } from "@t3tools/contracts";
 import { LayersIcon } from "lucide-react";
 
 import { Button } from "../ui/button";
+import { AgentConversationsSettings } from "./AgentConversationsSettings";
 import { ProjectSettingsPanel } from "./ProjectSettingsPanel";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { SettingsScopeNotice } from "./SettingsScopeNotice";
@@ -49,10 +50,11 @@ export function ProjectsSettings() {
         unavailable
       ) : (
         <SettingsPageContainer>
+          <NewProjectsSettingsSection />
           <SettingsScopeNotice inline target="project">
             {t("Choose a project to manage its name, icon, checkouts and actions.")}
           </SettingsScopeNotice>
-          <NewProjectsSettingsSection />
+          <AgentConversationsSettings />
         </SettingsPageContainer>
       )}
     </div>

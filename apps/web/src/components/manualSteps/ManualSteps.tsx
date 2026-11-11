@@ -63,9 +63,12 @@ function useOpenManualStep() {
 function ManualStepRow(props: {
   readonly step: ManualStep;
   readonly parentRowId?: string;
+  /** False under the machine's own heading, which already names it. */
+  readonly showMachine?: boolean;
   readonly onOpen: (step: ManualStep) => void;
 }) {
   const { step } = props;
+  const machine = props.showMachine === false ? null : step.machine;
   const money = step.kind === "needs-you";
   const Icon = money ? CircleDollarSignIcon : HandIcon;
   const handleKeyDown = (event: KeyboardEvent) => {
@@ -82,7 +85,7 @@ function ManualStepRow(props: {
         tabIndex={-1}
         data-sidebar-row={`manual-step:${step.threadId}`}
         data-sidebar-parent={props.parentRowId}
-        aria-label={[money ? t("Money decision") : null, step.step, step.title, step.machine]
+        aria-label={[money ? t("Money decision") : null, step.step, step.title, machine]
           .filter(Boolean)
           .join(", ")}
         onClick={() => props.onOpen(step)}
@@ -130,7 +133,7 @@ function ManualStepRow(props: {
               </InlineButton>
             </span>
           ) : null}
-          <span className="max-w-[40%] shrink-0 truncate">{step.machine}</span>
+          {machine ? <span className="max-w-[40%] shrink-0 truncate">{machine}</span> : null}
         </div>
       </div>
     </li>
@@ -141,9 +144,12 @@ function ManualStepRow(props: {
 function DetectedStepRow(props: {
   readonly entry: DetectedManualStepEntry;
   readonly parentRowId?: string;
+  /** False under the machine's own heading, which already names it. */
+  readonly showMachine?: boolean;
   readonly onOpen: (entry: DetectedManualStepEntry) => void;
 }) {
   const { entry } = props;
+  const machine = props.showMachine === false ? null : entry.step.machine;
   const text = detectedStepText(entry);
   const lapsed = entry.step.kind === "login-expired";
   const handleKeyDown = (event: KeyboardEvent) => {
@@ -160,7 +166,7 @@ function DetectedStepRow(props: {
         tabIndex={-1}
         data-sidebar-row={`detected-step:${detectedManualStepKey(entry)}`}
         data-sidebar-parent={props.parentRowId}
-        aria-label={[text.step, text.detail, entry.step.machine].join(", ")}
+        aria-label={[text.step, text.detail, machine].filter(Boolean).join(", ")}
         onClick={() => props.onOpen(entry)}
         onKeyDown={handleKeyDown}
         className="cursor-pointer rounded-md px-2 py-1.5 text-left outline-none select-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
@@ -194,7 +200,7 @@ function DetectedStepRow(props: {
           >
             {text.detail}
           </span>
-          <span className="max-w-[40%] shrink-0 truncate">{entry.step.machine}</span>
+          {machine ? <span className="max-w-[40%] shrink-0 truncate">{machine}</span> : null}
         </div>
       </div>
     </li>
@@ -273,11 +279,17 @@ function ManualStepsBody(props: {
                 <DetectedStepRow
                   key={detectedManualStepKey(entry)}
                   entry={entry}
+                  showMachine={!props.groupHeadings}
                   onOpen={openDetected}
                 />
               ))}
               {group.steps.map((step) => (
-                <ManualStepRow key={step.threadId} step={step} onOpen={openStep} />
+                <ManualStepRow
+                  key={step.threadId}
+                  step={step}
+                  showMachine={!props.groupHeadings}
+                  onOpen={openStep}
+                />
               ))}
             </ul>
           </li>

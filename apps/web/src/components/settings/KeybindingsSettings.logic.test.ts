@@ -1,6 +1,7 @@
 import { assert, describe, expect, it } from "vite-plus/test";
 import type { ResolvedKeybindingsConfig } from "@t3tools/contracts";
 import {
+  DEFAULT_RESOLVED_KEYBINDINGS,
   compileResolvedKeybindingsConfig,
   parseKeybindingShortcut,
 } from "@t3tools/shared/keybindings";
@@ -9,6 +10,7 @@ import { resolveShortcutCommand } from "../../keybindings";
 
 import {
   buildKeybindingRows,
+  describeWhenCondition,
   keybindingConflictLabels,
   keybindingFromKeyboardEvent,
   parseWhenExpressionDraft,
@@ -299,5 +301,65 @@ describe("KeybindingsSettings.logic", () => {
     );
 
     expect(rows.map((row) => row.conflicts)).toEqual([[], []]);
+  });
+});
+
+describe("describeWhenCondition", () => {
+  const describe_ = (expression: string) => {
+    const parsed = parseWhenExpressionDraft(expression);
+    assert(parsed.ok);
+    return describeWhenCondition(parsed.value);
+  };
+
+  it("says Always when there is no condition", () => {
+    expect(describeWhenCondition(undefined)).toBe("Always");
+  });
+
+  it("puts known context keys in plain words", () => {
+    expect(describe_("terminalFocus")).toBe("In the terminal");
+    expect(describe_("!terminalFocus")).toBe("Not in the terminal");
+    expect(describe_("rightPanelOpen")).toBe("Right panel open");
+  });
+
+  it("joins conditions into one sentence", () => {
+    expect(describe_("rightPanelOpen && !terminalFocus")).toBe(
+      "Right panel open, not in the terminal",
+    );
+    expect(describe_("!terminalFocus && !previewFocus && !editableFocus")).toBe(
+      "Not in the terminal, not in the preview, not in a text field",
+    );
+    expect(describe_("diffFocus || previewFocus")).toBe("In the diff or in the preview");
+  });
+
+  it("keeps mixed and/or groups apart", () => {
+    expect(describe_("(diffFocus || previewFocus) && !terminalFocus")).toBe(
+      "(In the diff or in the preview), not in the terminal",
+    );
+  });
+
+  it("falls back to the raw expression for keys it does not know", () => {
+    expect(describe_("myPluginActive")).toBe("myPluginActive");
+    expect(describe_("!myPluginActive")).toBe("!myPluginActive");
+    expect(describe_("terminalFocus && myPluginActive")).toBe("terminalFocus && myPluginActive");
+  });
+
+  it("keeps the raw expression for a negated group", () => {
+    expect(describe_("!(terminalFocus && diffFocus)")).toBe("!(terminalFocus && diffFocus)");
+  });
+
+  it("describes every context key the default bindings use", () => {
+    const keys = new Set<string>();
+    const collect = (node: Parameters<typeof describeWhenCondition>[0]): void => {
+      if (!node) return;
+      if (node.type === "identifier") keys.add(node.name);
+      else if (node.type === "not") collect(node.node);
+      else {
+        collect(node.left);
+        collect(node.right);
+      }
+    };
+    for (const binding of DEFAULT_RESOLVED_KEYBINDINGS) collect(binding.whenAst);
+    for (const key of keys)
+      expect(describeWhenCondition({ type: "identifier", name: key })).not.toBe(key);
   });
 });

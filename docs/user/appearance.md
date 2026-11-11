@@ -40,7 +40,7 @@ new thread's first message. After that, change them in the thread details card.
 
 ## Math
 
-Turn on **Render math** in **Settings → Appearance** to typeset LaTeX in messages and Markdown
+Turn on **Render math** in **Settings → Chat & diffs** to typeset LaTeX in messages and Markdown
 previews on web, desktop, and mobile. It reads `$…$`, `$$…$$`, `\(…\)`, and `\[…\]`, outside of code.
 Fenced `math` blocks also render. Formulas work in tables, including absolute-value bars.
 Dollar amounts such as `$5 and $10` stay text; write `\$` to keep any other dollar sign literal.

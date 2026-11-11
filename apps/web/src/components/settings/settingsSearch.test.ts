@@ -417,7 +417,13 @@ describe("movedSettingsPath", () => {
     expect(movedSettingsPath("/settings/worktrees", "worktree-branch-naming")).toBe(
       "/settings/source-control",
     );
-    expect(movedSettingsPath("/settings/diffs", "diff-color-scheme")).toBe("/settings/appearance");
+    expect(movedSettingsPath("/settings/diffs", "diff-color-scheme")).toBe("/settings/chat");
+    expect(movedSettingsPath("/settings/appearance", "diff-color-scheme")).toBe("/settings/chat");
+    expect(movedSettingsPath("/settings/appearance", "thread-details-items")).toBe(
+      "/settings/chat",
+    );
+    expect(movedSettingsPath("/settings/appearance", "agent-actions")).toBe("/settings/chat");
+    expect(movedSettingsPath("/settings/appearance", "math-rendering")).toBe("/settings/chat");
     expect(movedSettingsPath("/settings/access", "network-access")).toBe("/settings/connections");
     expect(movedSettingsPath("/settings/storage", "storage-worktrees")).toBe(
       "/settings/source-control",
@@ -439,6 +445,7 @@ describe("movedSettingsPath", () => {
     expect(movedSettingsPath("/settings/projects", "add-project-starts-in")).toBeNull();
     expect(movedSettingsPath("/settings/connections", "remote-environments")).toBeNull();
     expect(movedSettingsPath("/settings/appearance", "theme")).toBeNull();
+    expect(movedSettingsPath("/settings/appearance", "effort-display")).toBeNull();
     expect(movedSettingsPath("/settings/providers", "default-model")).toBeNull();
   });
 });

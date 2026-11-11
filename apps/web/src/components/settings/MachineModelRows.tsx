@@ -321,7 +321,7 @@ export function FinalReviewModelRow() {
     <SettingsRow
       {...searchableSetting("final-review")}
       description={t(
-        "After a request you send changes files, each reviewer checks those changes as a read-only task, and the thread's agent fixes what it confirms. Reviews use turns on the reviewers' accounts. Turn it on or off for one thread from its menu.",
+        "After a request changes files, each reviewer checks the changes and the agent fixes what they confirm, using turns on the reviewers' accounts.",
       )}
       control={
         <Switch

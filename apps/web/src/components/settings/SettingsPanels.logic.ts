@@ -385,10 +385,10 @@ const BROWSER_DEFAULT_KEYS = [
 const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   restorable("/settings/appearance", msg("Contrast"), ["appearanceContrast"]),
   restorable("/settings/appearance", msg("Glass opacity"), ["glassOpacity"]),
-  restorable("/settings/appearance", msg("Diff colors"), ["diffColorScheme"]),
+  restorable("/settings/chat", msg("Diff colors"), ["diffColorScheme"]),
   restorable("/settings/appearance", msg("Chat width"), ["chatWidth"]),
   restorable("/settings/appearance", msg("Effort display"), ["effortDisplay"]),
-  restorable("/settings/appearance", msg("Render math"), ["mathRenderingEnabled"]),
+  restorable("/settings/chat", msg("Render math"), ["mathRenderingEnabled"]),
   restorable("/settings/appearance", msg("Panel animations"), ["panelAnimationDurationMs"]),
   restorable("/settings/appearance", msg("Environment identification"), [
     "environmentIdentificationMode",
