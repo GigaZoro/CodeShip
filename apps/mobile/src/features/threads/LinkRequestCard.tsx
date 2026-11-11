@@ -488,7 +488,7 @@ function LinkRequestSheet(props: {
                         { name: targetName },
                       )
                     : t(
-                        "{name} can link back only when this link has auto or full access. Otherwise link this machine from {name}.",
+                        "{name} can link back only when this link has full access. Otherwise link this machine from {name}.",
                         { name: targetName },
                       )
                 }

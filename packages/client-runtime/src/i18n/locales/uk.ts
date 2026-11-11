@@ -1363,6 +1363,8 @@ const catalog: MessageCatalog = {
   "{model}, {effort}": "{model}, {effort}",
   "{modifier} + Enter always": "Завжди {modifier} + Enter",
   "{modifier} + Enter for multiline prompts": "{modifier} + Enter для багаторядкових запитів",
+  "{name} can link back only when this link has full access. Otherwise link this machine from {name}.":
+    "{name} може з'єднатися у відповідь лише тоді, коли це з'єднання має повний доступ. Інакше з'єднайте цю машину з {name}.",
   "{name} · Archived": "{name} · Архів",
   "{name} ({count} rows)": {
     one: "{name} ({count} рядок)",
