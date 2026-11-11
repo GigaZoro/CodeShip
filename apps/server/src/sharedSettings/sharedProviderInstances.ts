@@ -6,6 +6,7 @@ import {
   type ProviderInstanceConfig,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderInstanceMutation,
   resolveProviderInstanceEnabled,
   type ServerSettings,
   type SharedProviderInstanceValue,
@@ -150,7 +151,8 @@ function changesLockedField(
 /**
  * Whether this machine may take a version of an account rather than only pass it on: never for a
  * driver this build does not share, an instance here that runs another driver under the same id, a
- * built-in instance claimed by another driver or removed, or one an administrator locks or forbids.
+ * built-in instance claimed by another driver or removed, a removal from an older build, which
+ * names no driver, or one an administrator locks or forbids.
  */
 export function canTakeSharedProviderInstance(
   sharing: AccountSharingDrivers,
@@ -164,7 +166,13 @@ export function canTakeSharedProviderInstance(
     ? current.providerInstances[instanceId]
     : undefined;
   if ("removed" in value) {
-    return !sharing.has(instanceId) && (local === undefined || sharing.has(local.driver));
+    // A removal that names no driver could remove another driver's account under the same id.
+    return (
+      value.driver !== undefined &&
+      sharing.has(value.driver) &&
+      !sharing.has(instanceId) &&
+      (local === undefined || local.driver === value.driver)
+    );
   }
   const driver = sharing.get(value.driver);
   if (driver === undefined) return false;
@@ -178,37 +186,38 @@ export function canTakeSharedProviderInstance(
 }
 
 /**
- * The provider instances once an account's version is taken: what it shares, and everything else as
- * this machine had it. A new account gets no home, so it signs in to its own folder here. A removal
- * deletes an account only when nothing in it is this machine's own; otherwise it is turned off and
- * kept with its keys, variables and paths. The login and folders stay either way.
+ * The change taking an account's version makes to that one instance here, or none: what it shares,
+ * the rest as this machine had it. A new account gets no home, so it signs in to its own folder. A
+ * removal deletes an account only when nothing in it is this machine's own, else turns it off and
+ * keeps its keys, variables and paths. The login and folders stay either way.
  */
-export function withSharedProviderInstance(
+export function sharedProviderInstanceMutation(
   sharing: AccountSharingDrivers,
   instances: ProviderInstances,
   instanceId: ProviderInstanceId,
   value: SharedProviderInstanceValue,
   origin: EnvironmentId,
-): ProviderInstances {
-  const next: Record<string, ProviderInstanceConfig> = { ...instances };
+): ProviderInstanceMutation | undefined {
   const local = Object.hasOwn(instances, instanceId) ? instances[instanceId] : undefined;
+  const upsert = (instance: ProviderInstanceConfig): ProviderInstanceMutation | undefined =>
+    local !== undefined && Equal.equals(instance, local)
+      ? undefined
+      : { operation: "upsert", instanceId, instance };
   if ("removed" in value) {
-    if (local === undefined) return instances;
+    if (local === undefined) return undefined;
     const driver = sharing.get(local.driver);
-    if (driver !== undefined && holdsLocalState(driver, local)) {
-      const config = local.config === undefined ? {} : { config: withoutLegacyEnabled(local) };
-      next[instanceId] = { ...local, enabled: false, ...config };
-    } else {
-      delete next[instanceId];
+    if (driver === undefined || !holdsLocalState(driver, local)) {
+      return { operation: "remove", instanceId };
     }
-    return next as ProviderInstances;
+    const config = local.config === undefined ? {} : { config: withoutLegacyEnabled(local) };
+    return upsert({ ...local, enabled: false, ...config });
   }
   // A built-in instance that matches its defaults needs no settings of its own.
   if (
     local === undefined &&
     Equal.equals(sharedProviderInstanceValue(sharing, instanceId, undefined), value)
   ) {
-    return instances;
+    return undefined;
   }
   // The version's `enabled` replaces the legacy flag a config may still carry.
   const localConfig = withoutLegacyEnabled(local);
@@ -221,18 +230,17 @@ export function withSharedProviderInstance(
     } = local ?? {
       driver: value.driver,
     };
-    next[instanceId] = {
+    return upsert({
       ...kept,
       ...named,
       enabled: value.enabled,
       ...(local?.config === undefined ? {} : { config: localConfig }),
-    };
-    return next as ProviderInstances;
+    });
   }
   const driver = sharing.get(value.driver);
   const sharedFields = driver?.sharedFields ?? [];
   const sharedFrom = local === undefined ? origin : local.sharedFrom;
-  next[instanceId] = {
+  return upsert({
     driver: value.driver,
     ...named,
     ...(value.accentColor === undefined ? {} : { accentColor: value.accentColor }),
@@ -244,12 +252,13 @@ export function withSharedProviderInstance(
       ...(driver === undefined ? {} : sharedConfig(driver, value.config)),
     },
     ...(sharedFrom === undefined ? {} : { sharedFrom }),
-  };
-  return next as ProviderInstances;
+  });
 }
 
 const withoutLegacyEnabled = (instance: ProviderInstanceConfig | undefined) =>
   withoutFields(configRecord(instance?.config), ["enabled"]);
+
+type SharedAccountChange = readonly [ProviderInstanceId, SharedProviderInstanceValue];
 
 /**
  * The accounts a write changed as machines share them, with what each now shares. A change only to
@@ -260,27 +269,25 @@ export function changedSharedProviderInstances(
   sharing: AccountSharingDrivers,
   before: ServerSettings,
   after: ServerSettings,
-): ReadonlyArray<readonly [ProviderInstanceId, SharedProviderInstanceValue]> {
+): ReadonlyArray<SharedAccountChange> {
   const ids = new Set([
     ...Object.keys(before.providerInstances),
     ...Object.keys(after.providerInstances),
   ]);
-  return [...ids].flatMap((id) => {
+  return [...ids].flatMap((id): ReadonlyArray<SharedAccountChange> => {
     const instanceId = ProviderInstanceId.make(id);
-    const was = sharedProviderInstanceValue(
-      sharing,
-      instanceId,
-      Object.hasOwn(before.providerInstances, id)
-        ? before.providerInstances[instanceId]
-        : undefined,
-    );
+    const previous = Object.hasOwn(before.providerInstances, id)
+      ? before.providerInstances[instanceId]
+      : undefined;
+    const was = sharedProviderInstanceValue(sharing, instanceId, previous);
     const now = sharedProviderInstanceValue(
       sharing,
       instanceId,
       Object.hasOwn(after.providerInstances, id) ? after.providerInstances[instanceId] : undefined,
     );
     if (now === undefined || Equal.equals(was, now)) return [];
-    if ("removed" in now && was === undefined) return [];
-    return [[instanceId, now] as const];
+    if (!("removed" in now)) return [[instanceId, now] as const];
+    if (previous === undefined || was === undefined) return [];
+    return [[instanceId, { removed: true, driver: previous.driver }] as const];
   });
 }

@@ -6,7 +6,6 @@ import {
   type ServerSettings,
   type ServerSettingsPatch,
   type ServerShareSettingsResult,
-  SHARED_SETTING_SEED_UPDATED_AT,
   sharedSettingKeysIn,
   sharedSettingValue,
   type SharedSettingStamp,
@@ -318,6 +317,17 @@ class SharedSettingsNotSavedError extends Error {
   }
 }
 
+/**
+ * A seed for a group in which no follower stamps changes. Stamped by this client it would carry the
+ * same stamp as another device's seed, and each follower would keep whichever arrived first.
+ */
+class SharedSettingsSeedNotSentError extends Error {
+  constructor() {
+    super(t("Update older servers to save this setting."));
+    this.name = "SharedSettingsSeedNotSentError";
+  }
+}
+
 export interface SharedSettingsWriteOutcome<W extends MachineSettingsWrite> {
   readonly write: W;
   /** What the machine was asked to hold: its patch, and for a follower the stamped values. */
@@ -349,14 +359,14 @@ export interface SharedSettingsPersist {
  * Sends each write of `plan`, one outcome per write in order. A server's share is saved by the
  * authority first; the others take its stamp and values, an older follower with the values in its
  * patch. Machines outside the group are written meanwhile. A change this client stamps goes to
- * every follower at once.
+ * every follower at once, except a seed, which only a server stamps: no follower gets it.
  */
 export async function persistSharedSettingsWrites<W extends MachineSettingsWrite>(
   plan: Pick<SharedSettingsPlan<W>, "writes" | "share" | "sharedGroup">,
   persist: SharedSettingsPersist,
   options: {
     readonly now?: () => DateTime.Utc;
-    /** Stamped older than any version, by a server or this client, so any version held wins. */
+    /** Stamped older than any version by the server that saves it first, so any version held wins. */
     readonly seed?: boolean;
   } = {},
 ): Promise<ReadonlyArray<SharedSettingsWriteOutcome<W>>> {
@@ -384,22 +394,24 @@ export async function persistSharedSettingsWrites<W extends MachineSettingsWrite
   const followers = new Set(plan.sharedGroup.map(({ environmentId }) => environmentId));
   if (share.stampedBy === "client") {
     const stamp: SharedSettingStamp = {
-      updatedAt: seed
-        ? SHARED_SETTING_SEED_UPDATED_AT
-        : DateTime.formatIso((options.now ?? DateTime.nowUnsafe)()),
+      updatedAt: DateTime.formatIso((options.now ?? DateTime.nowUnsafe)()),
       origin: share.authority,
     };
     return Promise.all(
-      plan.writes.map(async (write) => ({
-        write,
-        sent: write.patch,
-        result: await update({
-          environmentId: write.environmentId,
-          input: followers.has(write.environmentId)
-            ? { patch: write.patch, share: stamp }
-            : { patch: write.patch },
-        }),
-      })),
+      plan.writes.map(async (write) => {
+        const follower = followers.has(write.environmentId);
+        return {
+          write,
+          sent: write.patch,
+          result:
+            seed && follower
+              ? { _tag: "Failure", cause: Cause.fail(new SharedSettingsSeedNotSentError()) }
+              : await update({
+                  environmentId: write.environmentId,
+                  input: follower ? { patch: write.patch, share: stamp } : { patch: write.patch },
+                }),
+        };
+      }),
     );
   }
   const takesServerShare = new Set(

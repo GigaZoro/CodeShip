@@ -47,7 +47,7 @@ import {
   accountSharingDrivers,
   canTakeSharedProviderInstance,
   changedSharedProviderInstances,
-  withSharedProviderInstance,
+  sharedProviderInstanceMutation,
 } from "./sharedProviderInstances.ts";
 
 /**
@@ -64,8 +64,8 @@ const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;
 const MAX_CLIENT_STAMP_AHEAD_MS = 30 * 1000;
 
 /**
- * Settings this build does not know are kept to pass on, up to this many, so a peer cannot fill the
- * store with made-up keys. A newer build shares a few more at most.
+ * Settings this build does not know, and accounts it cannot take, are kept to pass on, up to this
+ * many, so a peer cannot fill the store with made-up keys. A newer build shares a few more at most.
  */
 const MAX_UNKNOWN_KEYS = 64;
 
@@ -141,10 +141,6 @@ const jsonBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value) ??
 /** A setting this build keeps to one machine: never taken from another, nor passed on. */
 const isMachineOnlySettingKey = (key: string) =>
   !isMachineSharedSettingKey(key) && Object.hasOwn(ServerSettings.fields, key);
-
-/** A key this build knows: a setting machines share, or one provider instance, versioned on its own. */
-const isSharedKey = (key: string) =>
-  isMachineSharedSettingKey(key) || sharedProviderInstanceIdOf(key) !== undefined;
 
 /**
  * Settings about the accounts themselves. Like an account, a machine that follows shares every
@@ -248,44 +244,64 @@ function selectionWaits(
   return instanceDriver !== undefined && instanceDriver !== here.driver;
 }
 
-/**
- * What taking `candidates` replaces whole: each setting's value, and the provider instances with
- * each account's version taken. An account version that changes nothing here replaces nothing.
- */
-function replacements(
-  sharing: AccountSharingDrivers,
-  current: ServerSettings,
-  candidates: ReadonlyArray<Candidate>,
-): Partial<ServerSettings> {
+/** What taking `candidates` replaces whole: the value of each setting among them. */
+function replacements(candidates: ReadonlyArray<Candidate>): Partial<ServerSettings> {
   const replace: Record<string, unknown> = {};
-  let instances = current.providerInstances;
-  for (const { readable, stamp } of candidates) {
-    if (readable?.kind === "setting") {
-      replace[readable.key] = readable.value;
-    } else if (readable?.kind === "instance") {
-      instances = withSharedProviderInstance(
-        sharing,
-        instances,
-        readable.instanceId,
-        readable.value,
-        stamp.origin,
-      );
-    }
+  for (const { readable } of candidates) {
+    if (readable?.kind === "setting") replace[readable.key] = readable.value;
   }
-  if (instances !== current.providerInstances) replace.providerInstances = instances;
   return replace as Partial<ServerSettings>;
 }
 
-/** Keys this build does not know, which it keeps only to pass on. */
-const unknownKeysIn = (rows: ReadonlyArray<VersionRow>) =>
-  new Set(rows.flatMap((row) => (isSharedKey(row.settingKey) ? [] : [row.settingKey])));
+/**
+ * Whether a version is kept without taking room from the unknown keys: a setting this build knows,
+ * of which there are only so many, or an account it reads, on a driver it shares. Any other account
+ * takes room, since a peer can make up any number of them.
+ */
+function needsNoRoom(sharing: AccountSharingDrivers, key: string, value: unknown) {
+  if (isMachineSharedSettingKey(key)) return true;
+  if (sharedProviderInstanceIdOf(key) === undefined) return false;
+  const account = decodeInstanceValue(value);
+  return (
+    Option.isSome(account) &&
+    account.value.driver !== undefined &&
+    sharing.has(account.value.driver)
+  );
+}
 
-/** Whether there is room to keep `candidate`: a known key, or one already kept, always has it. */
-const hasRoomFor = (rows: ReadonlyArray<VersionRow>, candidate: Candidate) => {
-  if (candidate.readable !== undefined || isSharedKey(candidate.key)) return true;
-  const unknown = unknownKeysIn(rows);
-  return unknown.has(candidate.key) || unknown.size < MAX_UNKNOWN_KEYS;
+/** The keys kept only to pass on, which take room. A machine's own change is never one. */
+const roomTakenIn = (sharing: AccountSharingDrivers, rows: ReadonlyArray<VersionRow>) =>
+  new Set(
+    rows.flatMap((row) => {
+      if (row.kind === "local") return [];
+      const value = row.valueJson === null ? Option.none() : parseJson(row.valueJson);
+      return Option.isSome(value) && needsNoRoom(sharing, row.settingKey, value.value)
+        ? []
+        : [row.settingKey];
+    }),
+  );
+
+/** Whether there is room to keep `candidate`: one that needs none, or a key already kept, has it. */
+const hasRoomFor = (
+  sharing: AccountSharingDrivers,
+  rows: ReadonlyArray<VersionRow>,
+  candidate: Candidate,
+) => {
+  if (needsNoRoom(sharing, candidate.key, candidate.raw)) return true;
+  const taken = roomTakenIn(sharing, rows);
+  return taken.has(candidate.key) || taken.size < MAX_UNKNOWN_KEYS;
 };
+
+/**
+ * The order a machine serves its versions in, so that when they are more than one answer carries,
+ * the settings it knows go first, then the accounts, then what it only passes on.
+ */
+const servedRank = (key: string) =>
+  isMachineSharedSettingKey(key) ? 0 : sharedProviderInstanceIdOf(key) === undefined ? 2 : 1;
+
+/** Whether a settings write failed because an administrator's policy here refuses it. */
+const isPolicyRefusal = (error: ServerSettingsError) =>
+  error.operation === "write-managed-setting" || error.operation === "use-disallowed-provider";
 
 /** A key and, for the idle compaction mode, the legacy flag that also sets it. */
 const keyFields = (key: MachineSharedSettingKey) =>
@@ -591,7 +607,8 @@ const make = Effect.gen(function* () {
       ) {
         return "apply";
       }
-      return "removed" in readable.value || sharing.has(readable.value.driver) ? "relay" : "wait";
+      const driver = readable.value.driver;
+      return driver === undefined || sharing.has(driver) ? "relay" : "wait";
     }
     if (isManagedSettingPath(settings.managedPolicy, candidate.key)) return "relay";
     if (readable === undefined) return "wait";
@@ -649,7 +666,7 @@ const make = Effect.gen(function* () {
     pending: boolean,
   ) {
     const entry = { key: candidate.key, ...candidate.stamp };
-    if (!hasRoomFor(yield* readRows, candidate)) {
+    if (!hasRoomFor(sharing, yield* readRows, candidate)) {
       yield* logOnce(
         "no-room",
         entry,
@@ -664,6 +681,13 @@ const make = Effect.gen(function* () {
         "unreadable",
         entry,
         "A linked machine shared a setting this build cannot read; it is passed on, and applies once this machine is updated",
+      );
+    } else if (candidate.readable?.kind === "instance" && pending) {
+      yield* logOnce(
+        "unshared-driver",
+        entry,
+        "A linked machine shared an account on a provider whose accounts this build does not share; it is passed on, and applies once this machine is updated",
+        { driver: candidate.readable.value.driver },
       );
     }
     return true;
@@ -835,7 +859,7 @@ const make = Effect.gen(function* () {
     return {
       plan: {
         patch: withoutKeys(patch, SHARED_FIELDS),
-        replace: replacements(sharing, current, applied),
+        replace: replacements(applied),
       },
       outcome: { ...NO_OUTCOME, applied },
     };
@@ -932,33 +956,101 @@ const make = Effect.gen(function* () {
     );
 
   /**
+   * Passes on a version that an administrator's policy here refused as it was applied, unless a
+   * newer one was stored meanwhile, and says so once.
+   */
+  const passOnRefused = (candidate: Candidate, error: ServerSettingsError) =>
+    settings.withSettingsSnapshot((current) =>
+      Effect.gen(function* () {
+        if (!current.followSharedSettings) return;
+        const stored = versionsOf(yield* readRows, candidate.key).shared;
+        if (stored !== undefined && isNewerSharedSetting(rowStamp(stored), candidate.stamp)) return;
+        yield* putCandidate(candidate, "shared");
+        yield* logOnce(
+          "refused-by-policy",
+          { key: candidate.key, ...candidate.stamp },
+          "An administrator's policy on this machine refuses a setting a linked machine shared, so it is passed on without applying it",
+          { refusal: error.operation, managedSetting: error.managedSetting },
+        );
+      }),
+    );
+
+  /**
+   * Applies a version under the lock once `decide` says it applies here, and runs `record` once it
+   * is. An account changes one provider instance, so a managed policy vets only that instance's
+   * change; a version the policy still refuses is passed on.
+   */
+  const applyVersion = (
+    candidate: Candidate,
+    decide: (current: ServerSettings) => Effect.Effect<boolean, ServerSettingsError>,
+    record: Effect.Effect<void, SharedSettingsError>,
+  ) => {
+    const persisted = () => recordTaken(candidate.key, record);
+    const write = (): Effect.Effect<ServerSettings, ServerSettingsError> => {
+      const readable = candidate.readable;
+      if (readable?.kind !== "instance") {
+        return settings.updateSettings(
+          {},
+          {
+            prepare: (current) =>
+              decide(current).pipe(
+                Effect.map((applies) =>
+                  applies ? { patch: {}, replace: replacements([candidate]) } : undefined,
+                ),
+              ),
+            persisted,
+          },
+        );
+      }
+      const mutationOf = (current: ServerSettings) =>
+        sharedProviderInstanceMutation(
+          sharing,
+          current.providerInstances,
+          readable.instanceId,
+          readable.value,
+          candidate.stamp.origin,
+        );
+      return settings.updateProviderInstance(
+        mutationOf,
+        {},
+        {
+          prepare: Effect.fn("SharedSettings.applyVersion.prepare")(function* (current) {
+            if (!(yield* decide(current))) return undefined;
+            if (mutationOf(current) !== undefined) return { patch: {} };
+            // It changes nothing here, so no write follows to record it after.
+            yield* record.pipe(Effect.mapError((error) => refuse("write-file", error)));
+            return undefined;
+          }),
+          persisted,
+        },
+      );
+    };
+    return write().pipe(
+      Effect.asVoid,
+      Effect.catchIf(isPolicyRefusal, (error) => passOnRefused(candidate, error)),
+    );
+  };
+
+  /**
    * Takes a version under the lock: applies it, keeps it waiting, or only passes it on, as `dispose`
    * decides against the versions and settings as they stand then.
    */
   const take = (candidate: Candidate, instances: Instances) =>
-    settings.updateSettings(
-      {},
-      {
-        prepare: Effect.fn("SharedSettings.take.prepare")(function* (current) {
-          if (!current.followSharedSettings) return undefined;
-          const rows = yield* readRowsForWrite;
-          const disposition = dispose(
-            candidate,
-            versionsOf(rows, candidate.key),
-            current,
-            instances,
-          );
-          if (disposition === "known") return undefined;
-          if (disposition === "apply") {
-            return { patch: {}, replace: replacements(sharing, current, [candidate]) };
-          }
+    applyVersion(
+      candidate,
+      Effect.fn("SharedSettings.take.decide")(function* (current) {
+        if (!current.followSharedSettings) return false;
+        const rows = yield* readRowsForWrite;
+        const disposition = dispose(candidate, versionsOf(rows, candidate.key), current, instances);
+        if (disposition === "apply") return true;
+        if (disposition !== "known") {
           yield* keepCandidate(candidate, "shared", disposition === "wait").pipe(
             Effect.mapError((error) => refuse("write-file", error)),
           );
-          return undefined;
-        }),
-        persisted: () => recordTaken(candidate.key, putCandidate(candidate, "shared")),
-      },
+        }
+        return false;
+      }),
+      putCandidate(candidate, "shared"),
     );
 
   /** Keeps a version from a fast clock until its time; logs it once, when it first arrives. */
@@ -1049,30 +1141,24 @@ const make = Effect.gen(function* () {
     const { key, readable, stamp } = candidate.value;
     // This build cannot read it yet; it is passed on until an update here can.
     if (readable === undefined) return;
-    yield* settings.updateSettings(
-      {},
-      {
-        prepare: Effect.fn("SharedSettings.retryPendingRow.prepare")(function* (current) {
-          if (!current.followSharedSettings) return undefined;
-          const versions = yield* readVersionsForWrite(key);
-          if (!sameStamp(versions.shared, stamp) || versions.shared?.pending !== 1) {
-            return undefined;
-          }
-          const disposition = isNewerSharedSetting(stamp, stampOf(versions.local))
-            ? dispositionHere(candidate.value, current, instances)
-            : "relay";
-          if (disposition === "relay") {
-            // It is passed on, but never applied here.
-            yield* clearPending(key, stamp).pipe(
-              Effect.mapError((error) => refuse("write-file", error)),
-            );
-            return undefined;
-          }
-          if (disposition === "wait") return undefined;
-          return { patch: {}, replace: replacements(sharing, current, [candidate.value]) };
-        }),
-        persisted: () => recordTaken(key, clearPending(key, stamp)),
-      },
+    yield* applyVersion(
+      candidate.value,
+      Effect.fn("SharedSettings.retryPendingRow.decide")(function* (current) {
+        if (!current.followSharedSettings) return false;
+        const versions = yield* readVersionsForWrite(key);
+        if (!sameStamp(versions.shared, stamp) || versions.shared?.pending !== 1) return false;
+        const disposition = isNewerSharedSetting(stamp, stampOf(versions.local))
+          ? dispositionHere(candidate.value, current, instances)
+          : "relay";
+        if (disposition === "relay") {
+          // It is passed on, but never applied here.
+          yield* clearPending(key, stamp).pipe(
+            Effect.mapError((error) => refuse("write-file", error)),
+          );
+        }
+        return disposition === "apply";
+      }),
+      clearPending(key, stamp),
     );
   });
 
@@ -1152,7 +1238,9 @@ const make = Effect.gen(function* () {
             },
           ];
     });
-    return yield* withinSizeLimits(versions);
+    return yield* withinSizeLimits(
+      versions.toSorted((a, b) => servedRank(a.key) - servedRank(b.key)),
+    );
   });
 
   /**

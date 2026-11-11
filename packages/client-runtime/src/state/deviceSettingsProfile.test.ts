@@ -176,12 +176,18 @@ describe("deviceSettingsProfileAvailability", () => {
     overrides: {
       phase?: "connected" | "connecting";
       capable?: boolean;
+      stamps?: boolean;
       follows?: boolean;
     } = {},
   ) => ({
     connection: { phase: overrides.phase ?? ("connected" as const) },
     serverConfig: {
-      environment: { capabilities: { deviceSettingsProfile: overrides.capable ?? true } },
+      environment: {
+        capabilities: {
+          deviceSettingsProfile: overrides.capable ?? true,
+          shareSettings: overrides.stamps ?? true,
+        },
+      },
       settings: {
         followSharedSettings: overrides.follows ?? true,
         deviceSettingsProfile: { chatWidth: "full" },
@@ -200,6 +206,8 @@ describe("deviceSettingsProfileAvailability", () => {
     ["has no primary server", null, "no-primary"],
     ["is offline", primary({ phase: "connecting" }), "offline"],
     ["is a server that predates the profile", primary({ capable: false }), "unsupported"],
+    // A device seeds an empty profile, and only a server's stamp keeps two devices' seeds apart.
+    ["is a server that does not stamp changes itself", primary({ stamps: false }), "unsupported"],
     [
       "is a server that does not follow shared settings",
       primary({ follows: false }),
