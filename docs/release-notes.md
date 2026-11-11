@@ -1,3 +1,7 @@
+## 2026-11-11 — Agent shells can open the app and `t3code://` links again
+
+- Agents and the shells they start no longer inherit the desktop app's Electron-as-Node switch (`ELECTRON_RUN_AS_NODE`). Before, opening the desktop app, a `t3code://pair` link, or another Electron app such as VS Code from a chat started it as plain Node, which exited without showing anything. The `t3` command line is unaffected.
+
 ## 2026-11-11 — Accounts and device settings follow your machines
 
 - **Add an account once.** On machines that follow shared settings, adding, renaming, recoloring, turning off or removing a Claude, Codex, Antigravity or Cursor account reaches your other following machines, where it shows **Sign in** in **Manual steps**. Sign-ins, keys, folders and other local details never travel. An account removed elsewhere is deleted here only when it holds nothing of this machine's own; otherwise it is turned off and kept.

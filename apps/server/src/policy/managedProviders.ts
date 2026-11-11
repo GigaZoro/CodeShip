@@ -150,15 +150,25 @@ export const disallowedDriverReason = (
  */
 const LAUNCH_OVERRIDE_VARIABLES = ["T3CODE_CODEX_LAUNCH_ARGS"] as const;
 
+/**
+ * The desktop app runs the server as Electron-as-Node. A provider process, or a shell an agent
+ * starts, that inherits this would run any Electron app it opens (the desktop app, a t3code://
+ * link, VS Code) as plain Node, which exits without an error. Workers that need it set it themselves.
+ */
+const SERVER_RUNTIME_VARIABLES = ["ELECTRON_RUN_AS_NODE"] as const;
+
 /** The environment provider drivers launch from under the policy clients were told about. */
 export const providerHostEnvironment = (
   summary: ManagedPolicySummary | undefined,
   environment: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv => {
-  if (summary === undefined) return environment;
   const next = { ...environment };
   for (const name of Object.keys(next)) {
-    if (LAUNCH_OVERRIDE_VARIABLES.some((override) => override === name.toUpperCase())) {
+    const upper = name.toUpperCase();
+    if (
+      SERVER_RUNTIME_VARIABLES.some((runtime) => runtime === upper) ||
+      (summary !== undefined && LAUNCH_OVERRIDE_VARIABLES.some((override) => override === upper))
+    ) {
       delete next[name];
     }
   }

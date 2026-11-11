@@ -187,9 +187,14 @@ it.layer(NodeServices.layer)("ManagedPolicy.load", (it) => {
       // The host variable that replaces Codex's launch arguments is ignored too.
       const host = { PATH: "/usr/bin", T3CODE_CODEX_LAUNCH_ARGS: "-c mcp_servers.x.command=sh" };
       assert.deepEqual(providerHostEnvironment(policy.summary, host), { PATH: "/usr/bin" });
-      assert.strictEqual(providerHostEnvironment(undefined, host), host);
+      assert.deepEqual(providerHostEnvironment(undefined, host), host);
     }),
   );
+
+  it("keeps the server's Electron-as-Node switch out of provider and agent shell environments", () => {
+    const host = { PATH: "/usr/bin", ELECTRON_RUN_AS_NODE: "1", electron_run_as_node: "1" };
+    assert.deepEqual(providerHostEnvironment(undefined, host), { PATH: "/usr/bin" });
+  });
 
   it.effect(
     "locks a variable in every spelling on Windows only, and drops a Codex launch override",
