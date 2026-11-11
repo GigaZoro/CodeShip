@@ -120,6 +120,7 @@ import * as DetectedManualSteps from "./provider/DetectedManualSteps.ts";
 import * as ProviderMcp from "./provider/ProviderMcp.ts";
 import * as ProviderUsageLimitsIngestion from "./provider/ProviderUsageLimitsIngestion.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
+import * as ManualStepChats from "./threadPage/ManualStepChats.ts";
 import * as ManualStepReviews from "./threadPage/ManualStepReviews.ts";
 import * as ManualStepReviewRepository from "./persistence/ManualStepReviews.ts";
 import * as ThreadPageManualSteps from "./threadPage/ThreadPageManualSteps.ts";
@@ -744,6 +745,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ProviderAutoUpdate.layer,
   layerProviderInstallationRefresh,
   ReplayMarkers.layer,
+  ManualStepChats.layer,
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 ).pipe(
   Layer.provideMerge(layerOrchestrationApplication),

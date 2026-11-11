@@ -83,6 +83,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.manualStepsDetected]: "manualSteps",
   [WS_METHODS.manualStepsReview]: "manualSteps",
   [WS_METHODS.manualStepsReviewAgain]: "manualSteps",
+  [WS_METHODS.manualStepsStartChat]: "manualSteps",
   [WS_METHODS.peerLinksList]: "peerLinks",
   [WS_METHODS.peerLinksLink]: "peerLinks",
   [WS_METHODS.peerLinksUnlink]: "peerLinks",

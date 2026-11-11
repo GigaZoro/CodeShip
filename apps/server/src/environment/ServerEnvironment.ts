@@ -272,6 +272,7 @@ export const make = Effect.gen(function* () {
       manualSteps: true,
       detectedManualSteps: true,
       manualStepReviews: true,
+      manualStepChats: true,
       threadProjectFromScratch: true,
       threadTitleRegeneration: true,
       commandOutputStreaming: true,

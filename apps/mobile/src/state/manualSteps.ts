@@ -2,16 +2,24 @@ import { RegistryContext, useAtomRefresh, useAtomValue } from "@effect/atom-reac
 import { useContext } from "react";
 import {
   createManualStepsEnvironmentAtoms,
+  manualStepAttemptChat,
   manualStepReviewState,
+  manualStepStartChatInput,
   manualStepsEnvironmentIdsKey,
   type ManualStepReviewState,
   type ManualStepsState,
 } from "@t3tools/client-runtime/state/manualSteps";
-import type { EnvironmentId, ManualStep, ManualStepReview } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  type ManualStep,
+  type ManualStepDecision,
+  type ManualStepReview,
+} from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../connection/runtime";
-import { useServerConfigs } from "./entities";
+import { uuidv4 } from "../lib/uuid";
+import { useServerConfigs, useThreadShell } from "./entities";
 import { useAtomCommand } from "./use-atom-command";
 
 const manualStepsEnvironment = createManualStepsEnvironmentAtoms(connectionAtomRuntime);
@@ -91,6 +99,42 @@ export function useReviewAgain(
           throw error;
         },
       );
+    },
+  };
+}
+
+/**
+ * Starts the chat that carries out the user's decision on a step. `pending` is the decision on
+ * its way. `started` is the chat this session started for the step: the newest whose start
+ * succeeded, or one the thread list shows with its message although its answer never arrived.
+ */
+export function useStartManualStepChat(step: ManualStep) {
+  const run = useAtomCommand(manualStepsEnvironment.startChat, "manual step start chat");
+  const registry = useContext(RegistryContext);
+  const { attempt, chat } = useAtomValue(manualStepsEnvironment.start(step.threadId));
+  const unanswered = attempt === null || attempt.inFlight ? null : manualStepAttemptChat(attempt);
+  const attemptStarted = useThreadShell(unanswered)?.latestUserMessageAt != null;
+  return {
+    pending: attempt?.inFlight ? attempt.decision : null,
+    started: attemptStarted ? unanswered : chat,
+    /** Null while another start for the step is on its way: nothing is sent. */
+    start: (environmentId: EnvironmentId, decision: ManualStepDecision) => {
+      const commandId = manualStepsEnvironment.beginStart(
+        registry,
+        { stepThreadId: step.threadId, environmentId, decision },
+        { attemptStarted, newId: uuidv4 },
+      );
+      return commandId === null
+        ? null
+        : run({
+            environmentId,
+            input: manualStepStartChatInput(step, decision, commandId, "mobile"),
+          }).then((result) => {
+            if (result._tag === "Failure") {
+              manualStepsEnvironment.failStart(registry, step.threadId, commandId);
+            }
+            return result;
+          });
     },
   };
 }

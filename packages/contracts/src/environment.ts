@@ -165,6 +165,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   detectedManualSteps: Schema.optionalKey(Schema.Boolean),
   /** Serves `manualSteps.review` and `manualSteps.reviewAgain`, AI reviews of manual steps. */
   manualStepReviews: Schema.optionalKey(Schema.Boolean),
+  /** Serves `manualSteps.startChat`, a chat that carries out the user's decision on a step. */
+  manualStepChats: Schema.optionalKey(Schema.Boolean),
   threadProjectFromScratch: Schema.optionalKey(Schema.Boolean),
   threadTitleRegeneration: Schema.optionalKey(Schema.Boolean),
   threadVisitedTracking: Schema.optionalKey(Schema.Boolean),

@@ -1,15 +1,23 @@
 import {
+  CommandId,
   ManualStepReviewError,
   ManualStepsListError,
+  ManualStepStartChatError,
+  ThreadId,
   WS_METHODS,
   type DetectedManualStep,
   type DetectedManualStepsResult,
   type EnvironmentId,
   type ManualStep,
+  type ManualStepDecision,
   type ManualStepReview,
   type ManualStepReviewFailure,
+  type ManualStepSolution,
+  type ManualStepStartChatInput,
   type ManualStepsListFailure,
   type ManualStepsListResult,
+  type ManualStepStartChatFailure,
+  type ScopedThreadRef,
   type ServerConfig,
 } from "@t3tools/contracts";
 import { msg, t, type Message } from "@t3tools/shared/i18n";
@@ -17,7 +25,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { AsyncResult, Atom } from "effect/reactivity";
+import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import {
@@ -54,6 +62,110 @@ export interface DetectedManualStepEntry {
   readonly step: DetectedManualStep;
 }
 
+/** A machine this client may start a step's chat on, under the name its environment carries. */
+export interface ManualStepChatHost {
+  readonly environmentId: EnvironmentId;
+  readonly machine: string;
+}
+
+/**
+ * A step's start that has not reported success. Its response can be lost after the chat started,
+ * so the same decision is sent again under the same command id, which the server replays.
+ */
+export interface ManualStepStartAttempt {
+  readonly environmentId: EnvironmentId;
+  readonly decision: ManualStepDecision;
+  readonly commandId: CommandId;
+  /** On its way: nothing else is sent for the step until it settles. */
+  readonly inFlight: boolean;
+}
+
+/** What this session knows about the chats it started for one step. */
+export interface ManualStepStart {
+  readonly attempt: ManualStepStartAttempt | null;
+  /** The newest chat whose start reported success. */
+  readonly chat: ScopedThreadRef | null;
+}
+
+const NO_START: ManualStepStart = { attempt: null, chat: null };
+
+export const sameManualStepDecision = (left: ManualStepDecision, right: ManualStepDecision) =>
+  JSON.stringify(left) === JSON.stringify(right);
+
+/** Choosing a suggested solution decides exactly what its card shows. */
+export const manualStepSolutionDecision = (solution: ManualStepSolution): ManualStepDecision => ({
+  _tag: "Solution",
+  title: solution.title,
+  detail: solution.detail,
+  ...(solution.command === undefined ? {} : { command: solution.command }),
+});
+
+/** The request that starts a step's chat; `creationSource` is absent on web. */
+export const manualStepStartChatInput = (
+  step: ManualStep,
+  decision: ManualStepDecision,
+  commandId: CommandId,
+  creationSource?: ManualStepStartChatInput["creationSource"],
+): ManualStepStartChatInput => ({
+  commandId,
+  ...(creationSource === undefined ? {} : { creationSource }),
+  step: {
+    threadId: step.threadId,
+    title: step.title,
+    step: step.step,
+    kind: step.kind,
+    machine: step.machine,
+    url: step.url,
+  },
+  decision,
+});
+
+/** The chat an attempt starts: its thread takes the command's id. */
+export const manualStepAttemptChat = (attempt: ManualStepStartAttempt): ScopedThreadRef => ({
+  environmentId: attempt.environmentId,
+  threadId: ThreadId.make(attempt.commandId),
+});
+
+/**
+ * The state after the user chooses `decision`, or null while a start is on its way, when nothing
+ * may be sent. An unfinished attempt of the same decision for the same machine is sent again under
+ * its own id. `attemptStarted` says the thread list shows that attempt's chat with its message:
+ * it went through, so it becomes the step's chat and this choice starts another one.
+ */
+export function beginManualStepStart(
+  state: ManualStepStart,
+  target: { readonly environmentId: EnvironmentId; readonly decision: ManualStepDecision },
+  options: { readonly attemptStarted: boolean; readonly newId: () => string },
+): ManualStepStart | null {
+  const { attempt } = state;
+  if (attempt?.inFlight) return null;
+  if (
+    attempt !== null &&
+    !options.attemptStarted &&
+    attempt.environmentId === target.environmentId &&
+    sameManualStepDecision(attempt.decision, target.decision)
+  ) {
+    return { ...state, attempt: { ...attempt, inFlight: true } };
+  }
+  return {
+    chat: attempt !== null && options.attemptStarted ? manualStepAttemptChat(attempt) : state.chat,
+    attempt: { ...target, commandId: CommandId.make(options.newId()), inFlight: true },
+  };
+}
+
+/** The state after the start sent under `commandId` settled: with its chat, or null when it failed. */
+export function settleManualStepStart(
+  state: ManualStepStart,
+  commandId: CommandId,
+  threadId: ThreadId | null,
+): ManualStepStart {
+  const { attempt } = state;
+  if (attempt?.commandId !== commandId) return state;
+  return threadId === null
+    ? { ...state, attempt: { ...attempt, inFlight: false } }
+    : { attempt: null, chat: { environmentId: attempt.environmentId, threadId } };
+}
+
 export interface ManualStepGroup {
   readonly machine: string;
   /** The Waiting steps from ThreadPage. */
@@ -78,6 +190,8 @@ export type ManualStepsView =
        * among those that list, serve reviews and let this client ask. Null when there is none.
        */
       readonly reviewEnvironmentId: EnvironmentId | null;
+      /** By environment id, so every client picks the same one of two that share a name. */
+      readonly chatHosts: ReadonlyArray<ManualStepChatHost>;
     };
 
 export interface ManualStepsState {
@@ -115,6 +229,56 @@ const REVIEW_FAILURE_MESSAGES: Record<ManualStepReviewProblem, Message> = {
 export const manualStepReviewFailureMessage = (reason: ManualStepReviewProblem) =>
   t(REVIEW_FAILURE_MESSAGES[reason]);
 
+/**
+ * One machine under the names its ThreadPage folder and its server carry, which differ in case,
+ * spaces and separators ("MacBook-Pro-Andrii", "MacBook Pro - Andrii"; "Zoro-VPS", "zoro-vps").
+ */
+const machineKey = (machine: string) => machine.toLocaleLowerCase().replace(/[\s._-]+/g, "");
+
+export type ManualStepStartChatProblem = ManualStepStartChatFailure | "offline";
+
+const START_CHAT_FAILURE_MESSAGES: Record<ManualStepStartChatProblem, Message> = {
+  "no-model": msg(
+    "No provider account on that machine is signed in. Sign in to one, then choose again.",
+  ),
+  "launch-failed": msg("The chat could not be started. Try again."),
+  offline: msg("Could not reach the machine that runs the chat."),
+};
+
+const isManualStepStartChatError = Schema.is(ManualStepStartChatError);
+
+/** Why a step's chat did not start, from the failed command's cause. */
+export function manualStepStartChatFailureMessage(cause: Cause.Cause<unknown>): string {
+  const error = Cause.findErrorOption(cause);
+  return t(
+    START_CHAT_FAILURE_MESSAGES[
+      Option.isSome(error) && isManualStepStartChatError(error.value)
+        ? error.value.reason
+        : "offline"
+    ],
+  );
+}
+
+/**
+ * Where a step's chat runs: its own machine when this client may start chats there, because the
+ * work often has to happen on that machine; otherwise the machine that reviews steps, which reads
+ * ThreadPage and so is one of the user's own. Null when neither can run it.
+ */
+export function manualStepChatHost(
+  view: {
+    readonly chatHosts: ReadonlyArray<ManualStepChatHost>;
+    readonly reviewEnvironmentId: EnvironmentId | null;
+  },
+  machine: string,
+): ManualStepChatHost | null {
+  const key = machineKey(machine);
+  return (
+    view.chatHosts.find((host) => machineKey(host.machine) === key) ??
+    view.chatHosts.find((host) => host.environmentId === view.reviewEnvironmentId) ??
+    null
+  );
+}
+
 const byUrgency = (left: ManualStep, right: ManualStep) =>
   Number(right.kind === "needs-you") - Number(left.kind === "needs-you") ||
   right.updatedAt.localeCompare(left.updatedAt) ||
@@ -149,14 +313,14 @@ function groupManualSteps(
     const known = byThread.get(step.threadId);
     if (known === undefined || step.updatedAt > known.updatedAt) byThread.set(step.threadId, step);
   }
-  // A ThreadPage folder and a server label can spell one machine differently ("Zoro-VPS", "zoro-vps").
+  // A ThreadPage folder and a server label can spell one machine differently; see machineKey.
   // ThreadPage steps come first, so the folder's spelling names the group.
   const byMachine = new Map<
     string,
     { machine: string; steps: ManualStep[]; detected: DetectedManualStepEntry[] }
   >();
   const machineOf = (machine: string) => {
-    const key = machine.toLocaleLowerCase();
+    const key = machineKey(machine);
     const known = byMachine.get(key);
     if (known !== undefined) return known;
     const created = { machine, steps: [], detected: [] };
@@ -221,6 +385,7 @@ function lowestReviewEnvironmentId(sources: ReadonlyArray<ManualStepsSource>) {
 export function combineManualSteps(
   sources: ReadonlyArray<ManualStepsSource>,
   detectedSources: ReadonlyArray<DetectedManualStepsSource> = [],
+  chatHosts: ReadonlyArray<ManualStepChatHost> = [],
 ): ManualStepsView {
   const listed = sources.flatMap((source) => (source.status === "listed" ? [source.steps] : []));
   const detected = detectedEntries(detectedSources);
@@ -234,6 +399,9 @@ export function combineManualSteps(
       count: groups.reduce((total, group) => total + group.steps.length + group.detected.length, 0),
       ...(listed.length === 0 && failure !== undefined ? { threadPageIssue: failure.reason } : {}),
       reviewEnvironmentId: lowestReviewEnvironmentId(sources),
+      chatHosts: [...chatHosts].sort((left, right) =>
+        left.environmentId.localeCompare(right.environmentId),
+      ),
     };
   }
   if (
@@ -316,13 +484,20 @@ interface ManualStepsKey {
   readonly detected: ReadonlyArray<EnvironmentId>;
   /** Environments that serve `manualSteps.review`; older servers do not. */
   readonly reviews: ReadonlyArray<EnvironmentId>;
+  /** Environments that serve `manualSteps.startChat`, with their labels; older servers do not. */
+  readonly chats: ReadonlyArray<ManualStepChatHost>;
 }
 
 /** The key of `view` for the connected servers that serve either list, or null when none does. */
 export function manualStepsEnvironmentIdsKey(
-  serverConfigs: ReadonlyMap<EnvironmentId, Pick<ServerConfig, "environment">>,
+  serverConfigs: ReadonlyMap<
+    EnvironmentId,
+    Pick<ServerConfig, "environment" | "scratchWorkspaceRoot">
+  >,
 ): string | null {
-  const serving = (capability: "manualSteps" | "detectedManualSteps" | "manualStepReviews") =>
+  const serving = (
+    capability: "manualSteps" | "detectedManualSteps" | "manualStepReviews" | "manualStepChats",
+  ) =>
     [...serverConfigs]
       .filter(([, config]) => config.environment.capabilities[capability] === true)
       .map(([environmentId]) => environmentId);
@@ -330,6 +505,14 @@ export function manualStepsEnvironmentIdsKey(
     list: serving("manualSteps"),
     detected: serving("detectedManualSteps"),
     reviews: serving("manualStepReviews"),
+    // The chat is a thread without a project, which a server whose data sits inside a checkout
+    // cannot host.
+    chats: serving("manualStepChats").flatMap((environmentId) => {
+      const config = serverConfigs.get(environmentId);
+      return config?.scratchWorkspaceRoot === undefined
+        ? []
+        : [{ environmentId, machine: config.environment.label }];
+    }),
   };
   return key.list.length === 0 && key.detected.length === 0 ? null : JSON.stringify(key);
 }
@@ -374,9 +557,74 @@ export function createManualStepsEnvironmentAtoms<R, E>(
         registry.set(atom, AsyncResult.success(result));
       }),
   });
+  // One atom for every step, holding only the steps the user chose something for, and kept
+  // through remounts so a retry from a reopened card still replays.
+  const starts = Atom.make<ReadonlyMap<string, ManualStepStart>>(new Map()).pipe(
+    Atom.keepAlive,
+    Atom.withLabel("environment-data:manual-steps:starts"),
+  );
+  const start = Atom.family((stepThreadId: string) =>
+    Atom.readable((get) => get(starts).get(stepThreadId) ?? NO_START).pipe(
+      Atom.withLabel(`environment-data:manual-steps:start:${stepThreadId}`),
+    ),
+  );
+  const updateStart = (
+    registry: AtomRegistry.AtomRegistry,
+    stepThreadId: string,
+    update: (state: ManualStepStart) => ManualStepStart,
+  ) => {
+    const all = registry.get(starts);
+    const current = all.get(stepThreadId) ?? NO_START;
+    const next = update(current);
+    if (next !== current) registry.set(starts, new Map(all).set(stepThreadId, next));
+  };
+  /** Records the choice and returns the id to send it under; null while a start is on its way. */
+  const beginStart = (
+    registry: AtomRegistry.AtomRegistry,
+    target: {
+      readonly stepThreadId: string;
+      readonly environmentId: EnvironmentId;
+      readonly decision: ManualStepDecision;
+    },
+    options: { readonly attemptStarted: boolean; readonly newId: () => string },
+  ): CommandId | null => {
+    const next = beginManualStepStart(
+      registry.get(starts).get(target.stepThreadId) ?? NO_START,
+      target,
+      options,
+    );
+    if (next === null) return null;
+    updateStart(registry, target.stepThreadId, () => next);
+    return next.attempt?.commandId ?? null;
+  };
+  const startChat = createEnvironmentRpcCommand(runtime, {
+    label: "environment-data:manual-steps:start-chat",
+    tag: WS_METHODS.manualStepsStartChat,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.commandId },
+    onSuccess: (target, registry, result) =>
+      Effect.sync(() =>
+        updateStart(registry, target.input.step.threadId, (state) =>
+          settleManualStepStart(state, target.input.commandId, result.threadId),
+        ),
+      ),
+  });
+  /**
+   * Ends a start that failed, keeping its attempt for a retry. The caller does this when the
+   * command settles, because a command can fail before its request is ever built.
+   */
+  const failStart = (
+    registry: AtomRegistry.AtomRegistry,
+    stepThreadId: string,
+    commandId: CommandId,
+  ) =>
+    updateStart(registry, stepThreadId, (state) => settleManualStepStart(state, commandId, null));
   /** Keyed by a JSON {@link ManualStepsKey}. */
   const view = Atom.family((environmentIdsKey: string) => {
     const key = JSON.parse(environmentIdsKey) as ManualStepsKey;
+    const chatEntries = key.chats.map((host) => ({
+      host,
+      permission: startChat.permissionAtom(host.environmentId),
+    }));
     const listEntries = key.list.map((environmentId) => ({
       environmentId,
       servesReviews: key.reviews.includes(environmentId),
@@ -401,6 +649,7 @@ export function createManualStepsEnvironmentAtoms<R, E>(
             detectedResults.map((result, index) =>
               detectedManualStepsSource(key.detected[index]!, result),
             ),
+            chatEntries.flatMap((entry) => (get(entry.permission) ? [entry.host] : [])),
           ),
           refreshing: [...results, ...detectedResults].some((result) => result.waiting),
         };
@@ -411,7 +660,17 @@ export function createManualStepsEnvironmentAtoms<R, E>(
       },
     ).pipe(Atom.withLabel(`environment-data:manual-steps:view:${environmentIdsKey}`));
   });
-  return { list, detected, view, review, reviewAgain };
+  return {
+    list,
+    detected,
+    view,
+    review,
+    reviewAgain,
+    startChat,
+    start,
+    beginStart,
+    failStart,
+  };
 }
 
 export interface DetectedManualStepText {

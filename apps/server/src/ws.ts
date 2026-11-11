@@ -25,6 +25,7 @@ import { subscribeChatGptHandoff } from "./provider/CodexChatGptHandoff.ts";
 import {
   AcpRegistryOperationError,
   CommandId,
+  ManualStepStartChatError,
   authScopeResponse,
   AuthAccessStreamError,
   type AuthAccessStreamEvent,
@@ -284,6 +285,7 @@ import * as AgentConversationSync from "./project/AgentConversationSync.ts";
 import * as AgentSessionImporter from "./project/AgentSessionImporter.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as DetectedManualSteps from "./provider/DetectedManualSteps.ts";
+import * as ManualStepChats from "./threadPage/ManualStepChats.ts";
 import * as ManualStepReviews from "./threadPage/ManualStepReviews.ts";
 import * as ThreadPageManualSteps from "./threadPage/ThreadPageManualSteps.ts";
 
@@ -1376,6 +1378,7 @@ export const layerWsRpc = (
       const manualSteps = yield* ThreadPageManualSteps.ThreadPageManualSteps;
       const detectedManualSteps = yield* DetectedManualSteps.DetectedManualSteps;
       const manualStepReviews = yield* ManualStepReviews.ManualStepReviews;
+      const manualStepChats = yield* ManualStepChats.ManualStepChats;
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const repositoryIdentityResolver =
@@ -2626,6 +2629,25 @@ export const layerWsRpc = (
         [WS_METHODS.manualStepsDetected]: () => detectedManualSteps.list,
         [WS_METHODS.manualStepsReview]: (input) => manualStepReviews.review(input),
         [WS_METHODS.manualStepsReviewAgain]: (input) => manualStepReviews.reviewAgain(input),
+        [WS_METHODS.manualStepsStartChat]: (input) =>
+          startup.enqueueCommand(manualStepChats.start(input)).pipe(
+            // A resumed start is a retry of one already counted.
+            Effect.tap((result) =>
+              result.resumed
+                ? Effect.void
+                : analytics
+                    .record("client.thread.started", { ...originProps, workspaceStrategy: "root" })
+                    .pipe(
+                      Effect.andThen(analytics.record("client.turn.requested", originProps)),
+                      Effect.ignore,
+                    ),
+            ),
+            Effect.map(({ threadId }) => ({ threadId })),
+            Effect.catchTags({
+              ServerRuntimeStartupError: (cause) =>
+                new ManualStepStartChatError({ reason: "launch-failed", detail: cause.message }),
+            }),
+          ),
         [WS_METHODS.serverWatchRestartHold]: () =>
           runtimeRecovery.watchRestartHold.pipe(
             Stream.mapError(

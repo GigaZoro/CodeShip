@@ -1,3 +1,7 @@
+## 2026-11-11 — Pick how to handle a manual step and a chat carries it out
+
+- On the **Manual steps** page, each suggested solution of a step now has **Choose**, and **Other…** takes a decision in your own words. Either one starts a chat under **No project** whose first message is the step and your decision, and opens it, so the agent carries the decision out and records the result in the step's ThreadPage thread. The chat runs on the step's own machine when the app is connected to it, otherwise on the machine that reviews steps. On mobile, the step's sheet has the same buttons and a **Your decision** field. Before, a step's review could only be read, and acting on it meant replying in ThreadPage or starting a chat by hand.
+
 ## 2026-11-11 — A chat is told when its background work stops with its agent's session
 
 - A chat that waits on background work (a command it marked as waited on, a background task, a monitor or a subagent) is now told when its agent's session fails or is closed after a long time without activity. With **Settings → Threads → Recovery → Continue threads after restarts** on it also continues by itself, once: if the work it restarts goes quiet for hours again, the chat waits for your next message instead of repeating. Before, the server dropped that work without a word and the chat waited for a result that never came.

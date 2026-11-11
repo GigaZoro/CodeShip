@@ -1,7 +1,9 @@
 import {
+  manualStepChatHost,
   manualStepsFailureMessage,
   detectedManualStepKey,
   type DetectedManualStepEntry,
+  type ManualStepChatHost,
   type ManualStepGroup,
   type ManualStepsState,
   type ManualStepsView,
@@ -567,9 +569,11 @@ export function ManualStepsSidebarSection() {
 function ManualStepsMachineSection(props: {
   readonly group: ManualStepGroup;
   readonly reviewEnvironmentId: EnvironmentId | null;
+  readonly chatHosts: ReadonlyArray<ManualStepChatHost>;
   readonly selectedThreadId: string | undefined;
 }) {
   const { group } = props;
+  const chatHost = manualStepChatHost(props, group.machine);
   const headingId = useId();
   const openDetected = useOpenDetectedStep();
   return (
@@ -600,6 +604,7 @@ function ManualStepsMachineSection(props: {
             key={step.threadId}
             step={step}
             reviewEnvironmentId={props.reviewEnvironmentId}
+            chatHost={chatHost}
             selected={step.threadId === props.selectedThreadId}
           />
         ))}
@@ -612,6 +617,7 @@ function ManualStepsMachineSection(props: {
 function ManualStepsPageList(props: {
   readonly groups: ReadonlyArray<ManualStepGroup>;
   readonly reviewEnvironmentId: EnvironmentId | null;
+  readonly chatHosts: ReadonlyArray<ManualStepChatHost>;
   readonly selectedThreadId: string | undefined;
 }) {
   return (
@@ -621,6 +627,7 @@ function ManualStepsPageList(props: {
           key={group.machine}
           group={group}
           reviewEnvironmentId={props.reviewEnvironmentId}
+          chatHosts={props.chatHosts}
           selectedThreadId={props.selectedThreadId}
         />
       ))}
@@ -645,7 +652,7 @@ export function ManualStepsPageContent() {
       <div className="flex items-center justify-between gap-3">
         <p className="max-w-2xl text-sm text-muted-foreground">
           {t(
-            "Steps only you can do. Sign-ins each machine notices itself come first; the rest are every machine's pending list in ThreadPage, each reviewed for whether it needs you, with ways to get it done. Replying in a step's ThreadPage thread tells that machine to check it again.",
+            "Steps only you can do. Sign-ins each machine notices itself come first; the rest are every machine's pending list in ThreadPage, each reviewed for whether it needs you, with ways to get it done. Choose a way, or write your own decision, and a chat carries it out. Replying in a step's ThreadPage thread tells that machine to check it again.",
           )}
         </p>
         <Button size="sm" variant="outline" disabled={state.refreshing} onClick={refresh}>
@@ -658,6 +665,7 @@ export function ManualStepsPageContent() {
           <ManualStepsPageList
             groups={view.groups}
             reviewEnvironmentId={view.reviewEnvironmentId}
+            chatHosts={view.chatHosts}
             selectedThreadId={selectedThreadId}
           />
           <ThreadPageIssueNote view={view} />

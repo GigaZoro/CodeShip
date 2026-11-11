@@ -109,6 +109,7 @@ import * as HtmlRenderLibrary from "./htmlRender/HtmlRenderLibrary.ts";
 import * as AccountRouting from "./orchestration-v2/AccountRouting.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as DetectedManualSteps from "./provider/DetectedManualSteps.ts";
+import * as ManualStepChats from "./threadPage/ManualStepChats.ts";
 import * as ManualStepReviews from "./threadPage/ManualStepReviews.ts";
 import * as ThreadPageManualSteps from "./threadPage/ThreadPageManualSteps.ts";
 import * as UsageService from "./usage/UsageService.ts";
@@ -681,6 +682,7 @@ it.effect.each(["pending", "cached"] as const)(
         Layer.mock(ThreadPageManualSteps.ThreadPageManualSteps)({}),
         Layer.mock(DetectedManualSteps.DetectedManualSteps)({}),
         Layer.mock(ManualStepReviews.ManualStepReviews)({}),
+        Layer.mock(ManualStepChats.ManualStepChats)({}),
         Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({
           resolveTargets: () =>
             Deferred.succeed(remoteDiscoveryStarted, undefined).pipe(
@@ -885,6 +887,7 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
       Layer.mock(ThreadPageManualSteps.ThreadPageManualSteps)({}),
       Layer.mock(DetectedManualSteps.DetectedManualSteps)({}),
       Layer.mock(ManualStepReviews.ManualStepReviews)({}),
+      Layer.mock(ManualStepChats.ManualStepChats)({}),
       Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({
         resolveTargets: () => Effect.succeed([]),
       }),

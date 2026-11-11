@@ -1,6 +1,21 @@
 import { formatTimeAgo } from "@t3tools/client-runtime/scheduled-task-pins";
-import { manualStepReviewFailureMessage } from "@t3tools/client-runtime/state/manualSteps";
-import type { EnvironmentId, ManualStep, ManualStepReview } from "@t3tools/contracts";
+import {
+  manualStepChatHost,
+  manualStepReviewFailureMessage,
+  manualStepSolutionDecision,
+  manualStepStartChatFailureMessage,
+  sameManualStepDecision,
+  type ManualStepChatHost,
+} from "@t3tools/client-runtime/state/manualSteps";
+import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
+import {
+  MANUAL_STEP_DECISION_MAX_LENGTH,
+  type EnvironmentId,
+  type ManualStep,
+  type ManualStepDecision,
+  type ManualStepReview,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import * as Clipboard from "expo-clipboard";
 import { useState } from "react";
@@ -9,7 +24,7 @@ import { ScreenStack } from "react-native-screens";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AndroidSheetHeader } from "../../components/ui/AndroidScreenHeader";
-import { AppText as Text } from "../../components/ui/AppText";
+import { AppText as Text, AppTextInput as TextInput } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -17,7 +32,12 @@ import { t } from "../../lib/i18n";
 import { NativeStackScreenOptions, nativeHeaderScrollEdgeEffects } from "../../native/StackHeader";
 import { NativeHeader, NativeScreen } from "../../native/ThemedScreenStack";
 import { useThreadShell } from "../../state/entities";
-import { useManualStepReview, useManualSteps, useReviewAgain } from "../../state/manualSteps";
+import {
+  useManualStepReview,
+  useManualSteps,
+  useReviewAgain,
+  useStartManualStepChat,
+} from "../../state/manualSteps";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
 
@@ -49,7 +69,52 @@ function CopyCommand(props: { readonly command: string }) {
   );
 }
 
-function SolutionList(props: { readonly solutions: ManualStepReview["solutions"] }) {
+interface StepDecision {
+  /** The decision whose chat is starting; every other choice waits for it. */
+  readonly pending: ManualStepDecision | null;
+  readonly failure: string | null;
+  /** The chat this session already started for the step. */
+  readonly started: ScopedThreadRef | null;
+  readonly decide: (decision: ManualStepDecision) => void;
+  readonly openChat: (chat: ScopedThreadRef) => void;
+}
+
+/** Sends a decision to `host` and opens the chat that carries it out. */
+function useStepDecision(step: ManualStep, host: ManualStepChatHost | null): StepDecision | null {
+  const { pending, started, start } = useStartManualStepChat(step);
+  const navigation = useNavigation();
+  const [failure, setFailure] = useState<string | null>(null);
+  if (host === null) return null;
+  const openChat = (chat: ScopedThreadRef) =>
+    navigation.dispatch(
+      StackActions.replace("Thread", {
+        environmentId: chat.environmentId,
+        threadId: chat.threadId,
+      }),
+    );
+  const decide = (decision: ManualStepDecision) => {
+    const starting = start(host.environmentId, decision);
+    if (starting === null) return;
+    setFailure(null);
+    void starting.then((result) => {
+      if (result._tag === "Success") {
+        // The chat opens only while this sheet is in front; later the sheet links to it.
+        if (navigation.isFocused()) {
+          openChat({ environmentId: host.environmentId, threadId: result.value.threadId });
+        }
+      } else if (!isAtomCommandInterrupted(result)) {
+        setFailure(manualStepStartChatFailureMessage(result.cause));
+      }
+    });
+  };
+  return { pending, failure, started, decide, openChat };
+}
+
+function SolutionList(props: {
+  readonly solutions: ManualStepReview["solutions"];
+  readonly decision: StepDecision | null;
+}) {
+  const { decision } = props;
   return (
     <View className="gap-4">
       {props.solutions.map((solution, index) => (
@@ -68,8 +133,86 @@ function SolutionList(props: { readonly solutions: ManualStepReview["solutions"]
           </View>
           <Text className="text-sm text-foreground-muted">{solution.detail}</Text>
           {solution.command === undefined ? null : <CopyCommand command={solution.command} />}
+          {decision === null ? null : <SolutionChoice decision={decision} solution={solution} />}
         </View>
       ))}
+    </View>
+  );
+}
+
+function SolutionChoice(props: {
+  readonly decision: StepDecision;
+  readonly solution: ManualStepReview["solutions"][number];
+}) {
+  const { decision, solution } = props;
+  const own = manualStepSolutionDecision(solution);
+  const sending = decision.pending !== null && sameManualStepDecision(decision.pending, own);
+  return (
+    <Button
+      label={t("Choose")}
+      accessibilityLabel={t("Choose: {solution}", { solution: solution.title })}
+      disabled={decision.pending !== null && !sending}
+      loading={sending}
+      onPress={() => decision.decide(own)}
+    />
+  );
+}
+
+/** The user's own decision, the chat already started, and why a chat did not start. */
+function DecisionFooter(props: { readonly decision: StepDecision; readonly machine: string }) {
+  const { decision } = props;
+  const [text, setText] = useState("");
+  const trimmed = text.trim();
+  const { started } = decision;
+  const sending = decision.pending?._tag === "Other";
+  return (
+    <View className="gap-3">
+      <View className="gap-1.5">
+        <Text className="text-base font-t3-medium text-foreground">{t("Your decision")}</Text>
+        <Text className="text-xs text-foreground-muted">
+          {t("Your choice starts a chat on {machine} that carries it out.", {
+            machine: props.machine,
+          })}
+        </Text>
+        <TextInput
+          multiline
+          accessibilityLabel={t("Your decision")}
+          placeholder={t("Say what to do, in your own words.")}
+          placeholderTextColorClassName="accent-foreground-muted"
+          editable={!sending}
+          value={text}
+          maxLength={MANUAL_STEP_DECISION_MAX_LENGTH}
+          onChangeText={setText}
+          className="min-h-20 rounded-[20px] bg-subtle p-4 text-base text-foreground"
+          style={{ textAlignVertical: "top" }}
+        />
+        <Text
+          className="self-end text-xs text-foreground-muted"
+          style={{ fontVariant: ["tabular-nums"] }}
+        >
+          {text.length} / {MANUAL_STEP_DECISION_MAX_LENGTH}
+        </Text>
+        <Button
+          label={t("Start chat")}
+          tone="primary"
+          disabled={trimmed.length === 0 || (decision.pending !== null && !sending)}
+          loading={sending}
+          onPress={() => decision.decide({ _tag: "Other", text: trimmed })}
+        />
+      </View>
+      {decision.failure === null ? null : (
+        <Text accessibilityRole="alert" className="text-sm text-destructive-foreground">
+          {decision.failure}
+        </Text>
+      )}
+      {started === null ? null : (
+        <View className="items-start gap-2">
+          <Text className="text-sm text-foreground-muted">
+            {t("A chat is carrying out your decision.")}
+          </Text>
+          <Button label={t("Open that chat")} onPress={() => decision.openChat(started)} />
+        </View>
+      )}
     </View>
   );
 }
@@ -81,6 +224,7 @@ function ReviewedAgo(props: { readonly at: string }) {
 function ReviewBody(props: {
   readonly step: ManualStep;
   readonly reviewEnvironmentId: EnvironmentId | null;
+  readonly decision: StepDecision | null;
 }) {
   const { step, reviewEnvironmentId } = props;
   const { state, retry } = useManualStepReview(step, reviewEnvironmentId);
@@ -116,7 +260,7 @@ function ReviewBody(props: {
             </View>
             <Text className="text-sm text-foreground-muted">{state.review.summary}</Text>
           </View>
-          <SolutionList solutions={state.review.solutions} />
+          <SolutionList solutions={state.review.solutions} decision={props.decision} />
           <Text className="text-xs text-foreground-muted">
             <ReviewedAgo at={state.review.generatedAt} />
           </Text>
@@ -137,9 +281,11 @@ function ReviewBody(props: {
 function StepContent(props: {
   readonly step: ManualStep;
   readonly reviewEnvironmentId: EnvironmentId | null;
+  readonly chatHost: ManualStepChatHost | null;
 }) {
-  const { step } = props;
+  const { step, chatHost } = props;
   const navigation = useNavigation();
+  const decision = useStepDecision(step, chatHost);
   const chatShell = useThreadShell(step.chat ?? null);
   const money = step.kind === "needs-you";
   return (
@@ -160,7 +306,10 @@ function StepContent(props: {
           {[money ? t("Money") : null, step.title, step.machine].filter(Boolean).join(" · ")}
         </Text>
       </View>
-      <ReviewBody step={step} reviewEnvironmentId={props.reviewEnvironmentId} />
+      <ReviewBody step={step} reviewEnvironmentId={props.reviewEnvironmentId} decision={decision} />
+      {decision === null || chatHost === null ? null : (
+        <DecisionFooter decision={decision} machine={chatHost.machine} />
+      )}
       <View className="flex-row flex-wrap gap-3">
         <Button
           label={t("Open in ThreadPage")}
@@ -199,10 +348,14 @@ export function ManualStepSheet({ route }: StaticScreenProps<{ readonly threadId
       : null;
   const listed = view?.status === "listed";
   const reviewEnvironmentId = view?.status === "listed" ? view.reviewEnvironmentId : null;
+  const chatHost =
+    view?.status === "listed" && step !== null ? manualStepChatHost(view, step.machine) : null;
 
   const content = (
     <ScrollView
       nestedScrollEnabled
+      keyboardShouldPersistTaps="handled"
+      automaticallyAdjustKeyboardInsets
       className="flex-1"
       contentInsetAdjustmentBehavior={Platform.OS === "ios" ? "automatic" : "never"}
       contentContainerClassName="px-5 pt-4 pb-6"
@@ -213,7 +366,7 @@ export function ManualStepSheet({ route }: StaticScreenProps<{ readonly threadId
           {listed ? t("This step is no longer waiting in ThreadPage.") : t("Loading…")}
         </Text>
       ) : (
-        <StepContent step={step} reviewEnvironmentId={reviewEnvironmentId} />
+        <StepContent step={step} reviewEnvironmentId={reviewEnvironmentId} chatHost={chatHost} />
       )}
     </ScrollView>
   );

@@ -56,6 +56,14 @@ or click a step to read its review on the **Manual steps** page; a bot icon on a
 can do it without you. A new note in the step's thread refreshes the review, and **Review again**
 asks for a new one.
 
+To act on a step from that page, press **Choose** on a suggested solution, or **Other…** to write
+your own decision. Either one starts a chat under **No project** and opens it: its first message is
+the step and your decision, and it asks the agent to carry the decision out and record the result in
+the step's ThreadPage thread. The chat runs on the step's own machine when the app is connected to
+it, otherwise on the machine that reviews steps. For a money decision, the agent may spend only what
+your decision explicitly approves. If a start fails, choosing the same option again continues that
+start instead of opening a second chat; once a chat has started, choosing again starts another one.
+
 To fill the list, create a token in ThreadPage under **Settings → Connections → Connect an
 automation → Script or API**, with **Read only** access to the Machine inbox folder or all threads.
 Save it in **Settings → Threads → ThreadPage** on one machine. The token stays on that machine and

@@ -1,6 +1,8 @@
 import {
+  CommandId,
   EnvironmentId,
   ManualStepReviewError,
+  ThreadId,
   type DetectedManualStep,
   type ManualStep,
 } from "@t3tools/contracts";
@@ -9,9 +11,14 @@ import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  beginManualStepStart,
   combineManualSteps,
   detectedManualStepText,
+  manualStepChatHost,
   manualStepReviewState,
+  manualStepsEnvironmentIdsKey,
+  settleManualStepStart,
+  type ManualStepStart,
 } from "./manualSteps.ts";
 
 const step = (
@@ -81,7 +88,7 @@ describe("combineManualSteps", () => {
         { status: "failed", reason: "offline" },
         { status: "listed", steps: [] },
       ],
-      { status: "listed", groups: [], count: 0, reviewEnvironmentId: null },
+      { status: "listed", groups: [], count: 0, reviewEnvironmentId: null, chatHosts: [] },
     ],
     [
       // The lowest id reviews every step, whatever order the sources arrive in.
@@ -90,7 +97,13 @@ describe("combineManualSteps", () => {
         { status: "listed", steps: [], reviewEnvironmentId: EnvironmentId.make("env-c") },
         { status: "listed", steps: [], reviewEnvironmentId: EnvironmentId.make("env-b") },
       ],
-      { status: "listed", groups: [], count: 0, reviewEnvironmentId: EnvironmentId.make("env-b") },
+      {
+        status: "listed",
+        groups: [],
+        count: 0,
+        reviewEnvironmentId: EnvironmentId.make("env-b"),
+        chatHosts: [],
+      },
     ],
   ] as const)("shows %j as %j", (sources, view) => {
     expect(combineManualSteps(sources)).toEqual(view);
@@ -99,6 +112,89 @@ describe("combineManualSteps", () => {
 
 const mac = "mac-env" as EnvironmentId;
 const vps = "vps-env" as EnvironmentId;
+
+describe("manualStepChatHost", () => {
+  const hosts = [
+    { environmentId: mac, machine: "MacBook Pro - Andrii" },
+    { environmentId: vps, machine: "zoro-vps" },
+  ];
+  it.each([
+    ["the step's own machine, however its folder spells it", hosts, vps, "MacBook-Pro-Andrii", mac],
+    ["the reviewing machine when the step's machine is not connected", hosts, mac, "Zoro-PC", mac],
+    ["no machine when the reviewer cannot start chats either", [hosts[1]!], mac, "Zoro-PC", null],
+  ])("runs the chat on %s", (_case, chatHosts, reviewEnvironmentId, machine, expected) => {
+    expect(
+      manualStepChatHost({ chatHosts, reviewEnvironmentId }, machine)?.environmentId ?? null,
+    ).toBe(expected);
+  });
+
+  it("offers only machines that serve the chat and have a No project folder", () => {
+    const config = (label: string, manualStepChats: boolean, scratchWorkspaceRoot?: string) =>
+      ({
+        environment: { label, capabilities: { manualSteps: true, manualStepChats } },
+        ...(scratchWorkspaceRoot === undefined ? {} : { scratchWorkspaceRoot }),
+      }) as Parameters<typeof manualStepsEnvironmentIdsKey>[0] extends ReadonlyMap<unknown, infer C>
+        ? C
+        : never;
+    const key = manualStepsEnvironmentIdsKey(
+      new Map([
+        [mac, config("Mac", true, "/home/scratch")],
+        [vps, config("VPS", true)],
+        ["old-env" as EnvironmentId, config("Old", false, "/home/scratch")],
+      ]),
+    );
+    expect(JSON.parse(key ?? "{}").chats).toEqual([{ environmentId: mac, machine: "Mac" }]);
+  });
+});
+
+describe("a manual step's start", () => {
+  const keep = { _tag: "Other", text: "Keep the monthly term." } as const;
+  const cancel = { _tag: "Other", text: "Cancel it." } as const;
+  const first = CommandId.make("first");
+  const begin = (
+    state: ManualStepStart,
+    target: Parameters<typeof beginManualStepStart>[1],
+    attemptStarted = false,
+  ) => beginManualStepStart(state, target, { attemptStarted, newId: () => "next" });
+  const sent = beginManualStepStart(
+    { attempt: null, chat: null },
+    { environmentId: mac, decision: keep },
+    { attemptStarted: false, newId: () => first },
+  )!;
+  const unanswered = settleManualStepStart(sent, first, null);
+
+  it("sends nothing else while a start is on its way", () => {
+    expect(begin(sent, { environmentId: mac, decision: cancel })).toBeNull();
+  });
+
+  it.each([
+    ["replays the same decision for the same machine", mac, keep, "first"],
+    ["starts another chat for a different decision", mac, cancel, "next"],
+    ["starts another chat on a different machine", vps, keep, "next"],
+  ])("after an unanswered start, %s", (_case, environmentId, decision, commandId) => {
+    expect(begin(unanswered, { environmentId, decision })?.attempt).toMatchObject({
+      commandId,
+      inFlight: true,
+    });
+  });
+
+  it("keeps a chat the thread list shows and starts another for the next choice", () => {
+    expect(begin(unanswered, { environmentId: mac, decision: keep }, true)).toMatchObject({
+      chat: { environmentId: mac, threadId: "first" },
+      attempt: { commandId: "next" },
+    });
+  });
+
+  it("ends with the chat of the start that succeeded, and ignores any other command", () => {
+    const thread = ThreadId.make("first");
+    expect(settleManualStepStart(sent, CommandId.make("other"), thread)).toBe(sent);
+    expect(settleManualStepStart(sent, first, thread)).toEqual({
+      attempt: null,
+      chat: { environmentId: mac, threadId: thread },
+    });
+  });
+});
+
 const detected = (
   id: string,
   machine: string,
@@ -140,9 +236,14 @@ describe("combineManualSteps with detected steps", () => {
 
   it("keeps ThreadPage steps and groups findings by machine label, whatever its spelling", () => {
     const view = combineManualSteps(
-      [{ status: "listed", steps: [step("xcode", "Mac"), step("disk", "Zoro-VPS")] }],
       [
-        { status: "listed", environmentId: mac, steps: [detected("a", "Mac")] },
+        {
+          status: "listed",
+          steps: [step("xcode", "MacBook-Pro-Andrii"), step("disk", "Zoro-VPS")],
+        },
+      ],
+      [
+        { status: "listed", environmentId: mac, steps: [detected("a", "MacBook Pro - Andrii")] },
         { status: "listed", environmentId: vps, steps: [detected("a", "zoro-vps")] },
       ],
     );
@@ -156,7 +257,7 @@ describe("combineManualSteps with detected steps", () => {
           ])
         : view,
     ).toEqual([
-      ["Mac", 1, [mac]],
+      ["MacBook-Pro-Andrii", 1, [mac]],
       ["Zoro-VPS", 1, [vps]],
     ]);
   });

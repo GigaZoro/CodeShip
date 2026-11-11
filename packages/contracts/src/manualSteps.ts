@@ -1,6 +1,13 @@
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 
-import { ForwardCompatibleArray, IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  CommandId,
+  ForwardCompatibleArray,
+  IsoDateTime,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import { ScopedThreadRef } from "./environment.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ProviderMcpServerName } from "./providerMcp.ts";
@@ -154,6 +161,58 @@ export type ManualStepReviewFailure = typeof ManualStepReviewFailure.Type;
 export class ManualStepReviewError extends Schema.TaggedError<ManualStepReviewError>()(
   "ManualStepReviewError",
   { reason: ManualStepReviewFailure, detail: Schema.String },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
+export const MANUAL_STEP_DECISION_MAX_LENGTH = 2000;
+
+/** What the user decided for a step: one of its review's solutions, or their own words. */
+export const ManualStepDecision = Schema.Union([
+  Schema.TaggedStruct("Solution", {
+    title: Schema.String,
+    detail: Schema.String,
+    command: Schema.optional(Schema.String),
+  }),
+  Schema.TaggedStruct("Other", {
+    text: TrimmedNonEmptyString.check(Schema.isMaxLength(MANUAL_STEP_DECISION_MAX_LENGTH)),
+  }),
+]);
+export type ManualStepDecision = typeof ManualStepDecision.Type;
+
+/**
+ * The step travels with the request, so a machine without a ThreadPage token can run the chat:
+ * a step is best carried out on the machine whose list it is on.
+ */
+export const ManualStepStartChatInput = Schema.Struct({
+  /**
+   * The chat's thread takes this id, so a retry with the same id opens the chat the first
+   * attempt started, and a client can tell from its thread list that an attempt went through.
+   */
+  commandId: CommandId,
+  /** Where the user decided; absent means web. */
+  creationSource: Schema.optional(Schema.Literals(["web", "mobile"])),
+  step: ManualStep.mapFields(Struct.pick(["threadId", "title", "step", "kind", "machine", "url"])),
+  decision: ManualStepDecision,
+});
+export type ManualStepStartChatInput = typeof ManualStepStartChatInput.Type;
+
+export const ManualStepStartChatResult = Schema.Struct({ threadId: ThreadId });
+export type ManualStepStartChatResult = typeof ManualStepStartChatResult.Type;
+
+export const ManualStepStartChatFailure = Schema.Literals([
+  /** No provider account on this machine is signed in and enabled. */
+  "no-model",
+  /** The chat could not be created or its first message was not accepted. */
+  "launch-failed",
+]);
+export type ManualStepStartChatFailure = typeof ManualStepStartChatFailure.Type;
+
+export class ManualStepStartChatError extends Schema.TaggedError<ManualStepStartChatError>()(
+  "ManualStepStartChatError",
+  { reason: ManualStepStartChatFailure, detail: Schema.String },
 ) {
   override get message(): string {
     return this.detail;

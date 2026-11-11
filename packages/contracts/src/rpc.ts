@@ -398,6 +398,9 @@ import {
   ManualStepReviewInput,
   ManualStepsListError,
   ManualStepsListResult,
+  ManualStepStartChatError,
+  ManualStepStartChatInput,
+  ManualStepStartChatResult,
 } from "./manualSteps.ts";
 import {
   StorageCleanupReport,
@@ -594,6 +597,7 @@ export const WS_METHODS = {
   manualStepsDetected: "manualSteps.detected",
   manualStepsReview: "manualSteps.review",
   manualStepsReviewAgain: "manualSteps.reviewAgain",
+  manualStepsStartChat: "manualSteps.startChat",
   serverWatchRestartHold: "server.watchRestartHold",
   peerLinksList: "peerLinks.list",
   peerLinksLink: "peerLinks.link",
@@ -1030,6 +1034,13 @@ const WsManualStepsReviewAgainRpc = Rpc.make(WS_METHODS.manualStepsReviewAgain, 
   payload: ManualStepReviewInput,
   success: ManualStepReview,
   error: Schema.Union([ManualStepReviewError, EnvironmentAuthorizationError]),
+});
+
+/** Starts a chat in No project that carries out the user's decision on a step. */
+const WsManualStepsStartChatRpc = Rpc.make(WS_METHODS.manualStepsStartChat, {
+  payload: ManualStepStartChatInput,
+  success: ManualStepStartChatResult,
+  error: Schema.Union([ManualStepStartChatError, EnvironmentAuthorizationError]),
 });
 
 const WsPeerLinksListRpc = Rpc.make(WS_METHODS.peerLinksList, {
@@ -2375,6 +2386,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsManualStepsDetectedRpc,
   WsManualStepsReviewRpc,
   WsManualStepsReviewAgainRpc,
+  WsManualStepsStartChatRpc,
   WsPeerLinksListRpc,
   WsPeerLinksLinkRpc,
   WsPeerLinksUnlinkRpc,

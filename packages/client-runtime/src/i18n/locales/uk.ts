@@ -1760,6 +1760,7 @@ const catalog: MessageCatalog = {
   "90 days": "90 днів",
   "90d": "90 д",
   "A background prompt could not be sent": "Не вдалося надіслати фоновий запит",
+  "A chat is carrying out your decision.": "Чат виконує ваше рішення.",
   "A comment is anchored to the whole change, so switch to All commits to write one.":
     "Коментар прив’язується до всіх змін, тому перемкніться на «Усі коміти», щоб його написати.",
   "A community color theme for your editor.": "Колірна тема від спільноти для вашого редактора.",
@@ -3080,6 +3081,7 @@ const catalog: MessageCatalog = {
   Choices: "Варіанти",
   "Choices in every snooze menu, listed soonest first. Weekdays mean the next one after today.":
     "Варіанти в кожному меню відкладення, від найближчого. Дні тижня означають найближчий після сьогодні.",
+  Choose: "Вибрати",
   "Choose {color} color": "Вибрати колір: {color}",
   "Choose a .kdl Niri config or a .conf/.lua Hyprland config.":
     "Виберіть конфігурацію Niri .kdl або конфігурацію Hyprland .conf/.lua.",
@@ -3212,6 +3214,7 @@ const catalog: MessageCatalog = {
   "Choose your own config, not system or Omarchy defaults.":
     "Виберіть власну конфігурацію, а не системну чи типову для Omarchy.",
   "Choose your shortcut": "Виберіть скорочення",
+  "Choose: {solution}": "Вибрати: {solution}",
   Cite: "Цитувати",
   "Cite selection in composer": "Цитувати виділене в полі повідомлення",
   claude: "claude",
@@ -4225,6 +4228,8 @@ const catalog: MessageCatalog = {
   "Could not queue task": "Не вдалося поставити завдання в чергу",
   "Could not reach the machine that reads ThreadPage.":
     "Не вдалося з’єднатися з комп’ютером, який читає ThreadPage.",
+  "Could not reach the machine that runs the chat.":
+    "Не вдалося з’єднатися з комп’ютером, який запускає чат.",
   "Could not reach the server.": "Не вдалося зв’язатися із сервером.",
   "Could not reach this environment. Try again.":
     "Не вдалося зв’язатися з цим середовищем. Повторіть спробу.",
@@ -7635,6 +7640,8 @@ const catalog: MessageCatalog = {
   "No projects or threads match “{query}”.": "Немає проєктів чи чатів за запитом «{query}».",
   "No projects yet": "Проєктів ще немає",
   "No projects.": "Немає проєктів.",
+  "No provider account on that machine is signed in. Sign in to one, then choose again.":
+    "На цьому комп’ютері немає жодного облікового запису провайдера з виконаним входом. Увійдіть в один із них і виберіть ще раз.",
   "No provider available": "Немає доступного провайдера",
   "No provider installs plugins here": "Жоден провайдер тут не встановлює плагіни",
   "No provider manages MCP servers here": "Жоден провайдер тут не керує серверами MCP",
@@ -8152,6 +8159,7 @@ const catalog: MessageCatalog = {
     "Відкрийте T3.CodeShip у десктопному застосунку, щоб користуватися вбудованим попереднім переглядом.",
   "Open terminal": "Відкрити термінал",
   "Open terminal to start a shell.": "Відкрийте термінал, щоб запустити оболонку.",
+  "Open that chat": "Відкрити цей чат",
   "Open the full diff": "Відкрити всі зміни",
   "Open the link again after the clone to get the prompt.":
     "Відкрийте посилання знову після клонування, щоб отримати запит.",
@@ -8313,6 +8321,7 @@ const catalog: MessageCatalog = {
   "Other tasks": "Інші завдання",
   "Other ways to connect": "Інші способи підключення",
   "Other wired": "Інші дротові",
+  "Other…": "Інше…",
   Others: "Інші",
   outdated: "застаріле",
   Outdated: "Застаріле",
@@ -9979,6 +9988,7 @@ const catalog: MessageCatalog = {
   "Saving task": "Збереження завдання",
   "Saving...": "Збереження...",
   "Saving…": "Збереження…",
+  "Say what to do, in your own words.": "Напишіть своїми словами, що зробити.",
   Scan: "Сканувати",
   "Scan limit reached. Some projects or conversations may be missing.":
     "Досягнуто ліміту сканування. Деяких проєктів або розмов може бракувати.",
@@ -10891,6 +10901,7 @@ const catalog: MessageCatalog = {
   "Start agent": "Запустити агента",
   "Start another shell for this thread": "Запустити ще одну оболонку для цього чату",
   "Start another shell in {name}": "Запустити іншу оболонку в {name}",
+  "Start chat": "Запустити чат",
   "Start dictation": "Почати диктування",
   "start from remote": "почати з віддаленого",
   "Start from remote": "Почати з віддаленої",
@@ -10937,6 +10948,7 @@ const catalog: MessageCatalog = {
   Starting: "Запуск",
   "Starting {names}… This can take a minute.": "Запуск {names}… Це може зайняти хвилину.",
   "Starting agent tools…": "Запуск інструментів агентів…",
+  "Starting chat…": "Запуск чату…",
   "Starting device hub…": "Запуск центру пристроїв…",
   "Starting device tools…": "Запуск інструментів пристроїв…",
   "Starting device…": "Запуск пристрою…",
@@ -10982,8 +10994,8 @@ const catalog: MessageCatalog = {
   "Steered the active turn": "Скерувало активний хід",
   "Step 1 of 2: open device": "Крок 1 з 2: відкриття пристрою",
   "Step 2 of 2: connect video": "Крок 2 з 2: підключення відео",
-  "Steps only you can do. Sign-ins each machine notices itself come first; the rest are every machine's pending list in ThreadPage, each reviewed for whether it needs you, with ways to get it done. Replying in a step's ThreadPage thread tells that machine to check it again.":
-    "Кроки, які можете виконати лише ви. Спершу йдуть входи, які кожна машина помічає сама; решта це списки очікування кожної машини в ThreadPage, і кожен такий крок перевіряється: чи справді потрібні ви, і як його виконати. Відповідь у треді кроку в ThreadPage підкаже машині перевірити його ще раз.",
+  "Steps only you can do. Sign-ins each machine notices itself come first; the rest are every machine's pending list in ThreadPage, each reviewed for whether it needs you, with ways to get it done. Choose a way, or write your own decision, and a chat carries it out. Replying in a step's ThreadPage thread tells that machine to check it again.":
+    "Кроки, які можете виконати лише ви. Спершу йдуть входи, які кожна машина помічає сама; решта це списки очікування кожної машини в ThreadPage, і кожен такий крок перевіряється: чи справді потрібні ви, і як його виконати. Виберіть спосіб або напишіть власне рішення, і чат його виконає. Відповідь у треді кроку в ThreadPage підкаже машині перевірити його ще раз.",
   "Still bringing attached context into this message.":
     "Прикріплений контекст ще додається до повідомлення.",
   "Still compressing a pasted image.": "Вставлене зображення ще стискається.",
@@ -11514,6 +11526,7 @@ const catalog: MessageCatalog = {
     "Не вдалося зберегти захоплене вікно в чернетку.",
   "The captured window is too large to attach.": "Захоплене вікно завелике для додавання.",
   "The car’s microphone": "Мікрофон автомобіля",
+  "The chat could not be started. Try again.": "Не вдалося запустити чат. Спробуйте ще раз.",
   "The chat goes back to before this message, and the message returns to the message box for you to change. Your files can stay as they are now, or go back to how they were before this message. Going back also undoes any changes you made to them yourself since then.":
     "Чат повернеться до стану перед цим повідомленням, а саме повідомлення повернеться в поле повідомлення, щоб ви могли його змінити. Файли можуть залишитися такими, як зараз, або повернутися до стану перед цим повідомленням. Повернення також скасує зміни, які ви внесли в них самі відтоді.",
   "The chat goes back to before this response, and your message is sent again. Your files can stay as they are now, or go back to how they were before this response. Going back also undoes any changes you made to them yourself since then.":
@@ -13975,12 +13988,15 @@ const catalog: MessageCatalog = {
   "Your changes are now active.": "Ваші зміни тепер активні.",
   "Your changes are saved.": "Ваші зміни збережено.",
   "Your ChatGPT plan is connected": "Ваш тариф ChatGPT підключено",
+  "Your choice starts a chat on {machine} that carries it out.":
+    "Ваш вибір запускає чат на {machine}, який його виконає.",
   "Your cloud sign-in changed. Sign in again to authorize the environment.":
     "Ваш хмарний вхід змінився. Увійдіть ще раз, щоб авторизувати середовище.",
   "Your config changed since this preview. Nothing was saved. Review changes again before saving.":
     "Ваша конфігурація змінилася після цього перегляду. Нічого не збережено. Перегляньте зміни ще раз перед збереженням.",
   "Your config changed since this preview. Review changes again before saving.":
     "Ваша конфігурація змінилася після цього перегляду. Перегляньте зміни ще раз перед збереженням.",
+  "Your decision": "Ваше рішення",
   "Your default browser": "Ваш браузер за замовчуванням",
   "Your desktop closed the capture shortcut. Retry the shortcut request.":
     "Ваш робочий стіл закрив скорочення захоплення. Повторіть запит скорочення.",
