@@ -5,6 +5,7 @@ import {
   type RunId,
   MessageId,
   type ModelSelection,
+  type EnvironmentId,
   type ServerSettingsPatch,
   NodeId,
   ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
@@ -140,6 +141,7 @@ import {
 import { isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
+import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
@@ -282,6 +284,33 @@ function errorMessage(error: unknown): string {
 }
 
 const ONE_MACHINE_NEEDS_SHARED = "oneMachine needs a shared task: pass shared: true as well.";
+const EXCLUDED_MACHINES_NEED_SHARED =
+  "excludedMachines needs a shared task: pass shared: true as well.";
+
+/**
+ * What a save sends as `shared`. A field the caller leaves out keeps the stored
+ * value, so touching a shared task never re-adds an excluded machine.
+ */
+function sharedChoice(
+  input: {
+    readonly oneMachine?: boolean | undefined;
+    readonly excludedMachines?: ReadonlyArray<EnvironmentId> | undefined;
+  },
+  stored: ScheduledTask["shared"] | undefined,
+): NonNullable<ScheduledTaskUpsertInput["shared"]> {
+  const runOn =
+    input.oneMachine === undefined
+      ? stored?.runOn
+      : input.oneMachine
+        ? ("one" as const)
+        : ("every" as const);
+  return {
+    excludedEnvironmentIds: input.excludedMachines
+      ? [...new Set(input.excludedMachines)]
+      : (stored?.excludedEnvironmentIds ?? []),
+    ...(runOn === undefined ? {} : { runOn }),
+  };
+}
 
 function scheduledTaskSummary(
   task: ScheduledTask,
@@ -310,6 +339,9 @@ function scheduledTaskSummary(
     ...(task.placement === undefined ? {} : { placement: task.placement }),
     shared: task.shared != null,
     ...(task.shared?.runOn === "one" ? { oneMachine: true } : {}),
+    ...(task.shared == null || task.shared.excludedEnvironmentIds.length === 0
+      ? {}
+      : { excludedMachines: task.shared.excludedEnvironmentIds }),
     lastRun,
   };
 }
@@ -1139,6 +1171,7 @@ const make = Effect.gen(function* () {
   const accountRouting = yield* Effect.serviceOption(AccountRouting.AccountRouting);
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
+  const peerLinks = yield* PeerLinks.PeerLinks;
   const projects = yield* ProjectService.ProjectService;
   const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
   const gitDriver = yield* GitVcsDriver.GitVcsDriver;
@@ -2219,6 +2252,41 @@ const make = Effect.gen(function* () {
     }
   });
 
+  /**
+   * Machines a shared task may exclude: those this environment links to, plus
+   * any it already excludes. This machine is refused, since the task would
+   * vanish from the place it is saved.
+   */
+  const assertExcludableMachines = Effect.fn("OrchestratorMcpService.assertExcludableMachines")(
+    function* (
+      scope: McpInvocationScope,
+      excluded: ReadonlyArray<EnvironmentId>,
+      stored: ScheduledTask["shared"] | undefined,
+    ) {
+      if (excluded.includes(scope.environmentId)) {
+        return yield* failure(
+          "invalid_request",
+          `excludedMachines includes this machine (${scope.environmentId}). A task can't be excluded from the machine it is saved on.`,
+        );
+      }
+      const known = new Set<string>(stored?.excludedEnvironmentIds ?? []);
+      for (const link of yield* peerLinks.listStored.pipe(
+        Effect.mapError((error) =>
+          failure("orchestration_error", `Could not read linked environments: ${error.message}`),
+        ),
+      )) {
+        known.add(link.environmentId);
+      }
+      const unknown = excluded.filter((id) => !known.has(id));
+      if (unknown.length > 0) {
+        return yield* failure(
+          "invalid_request",
+          `excludedMachines names ${unknown.join(", ")}, which this environment does not link to. Use environmentId values from t3_environment_links.`,
+        );
+      }
+    },
+  );
+
   return OrchestratorMcpService.of({
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       if (input.modelSelection !== undefined && input.followsDefaultModel === true) {
@@ -2234,6 +2302,9 @@ const make = Effect.gen(function* () {
       const project = yield* requireProject(projectId);
       if (input.oneMachine === true && input.shared !== true) {
         return yield* failure("invalid_request", ONE_MACHINE_NEEDS_SHARED);
+      }
+      if (input.excludedMachines !== undefined && input.shared !== true) {
+        return yield* failure("invalid_request", EXCLUDED_MACHINES_NEED_SHARED);
       }
       if (input.shared === true && input.bindToCurrentThread === true) {
         return yield* failure(
@@ -2276,6 +2347,7 @@ const make = Effect.gen(function* () {
         commandId === undefined
           ? undefined
           : { id: ScheduledTaskId.make(`scheduled-task:${commandId}`), commandId };
+      let replayed: ScheduledTask | undefined;
       if (replay !== undefined) {
         // A replay saves over the task it created, which the user may have
         // since raised above this caller's modes.
@@ -2286,8 +2358,11 @@ const make = Effect.gen(function* () {
               failure("orchestration_error", `Could not load scheduled task: ${error.message}`),
             ),
           );
-        const replayed = tasks.find((task) => task.id === replay.id);
+        replayed = tasks.find((task) => task.id === replay.id);
         if (replayed !== undefined) yield* assertScheduledTaskWithinLimits(replayed, limits);
+      }
+      if (input.excludedMachines !== undefined) {
+        yield* assertExcludableMachines(scope, input.excludedMachines, replayed?.shared);
       }
       const upsertInput: ScheduledTaskUpsertInput = {
         title,
@@ -2304,16 +2379,8 @@ const make = Effect.gen(function* () {
         createdBy: "agent",
         creationSource: "mcp",
         ...(input.placement === undefined ? {} : { placement: input.placement }),
-        ...(input.shared === true
-          ? {
-              shared: {
-                excludedEnvironmentIds: [],
-                ...(input.oneMachine === undefined
-                  ? {}
-                  : { runOn: input.oneMachine ? ("one" as const) : ("every" as const) }),
-              },
-            }
-          : {}),
+        // A replay saves over the task it created: what it does not mention stays.
+        ...(input.shared === true ? { shared: sharedChoice(input, replayed?.shared) } : {}),
         ...replay,
       };
       const { task } = yield* scheduledTasks
@@ -2371,6 +2438,10 @@ const make = Effect.gen(function* () {
         if (input.oneMachine === true && !sharedAfter) {
           return yield* failure("invalid_request", ONE_MACHINE_NEEDS_SHARED);
         }
+        if (input.excludedMachines !== undefined) {
+          if (!sharedAfter) return yield* failure("invalid_request", EXCLUDED_MACHINES_NEED_SHARED);
+          yield* assertExcludableMachines(scope, input.excludedMachines, existing.shared);
+        }
         if (input.bindToCurrentThread === true && sharedAfter) {
           return yield* failure(
             "invalid_request",
@@ -2422,15 +2493,11 @@ const make = Effect.gen(function* () {
           // Omitted keeps the stored choice.
           ...(input.shared === false
             ? { shared: null }
-            : sharedAfter && (input.shared === true || input.oneMachine !== undefined)
-              ? {
-                  shared: {
-                    excludedEnvironmentIds: existing.shared?.excludedEnvironmentIds ?? [],
-                    ...(input.oneMachine === undefined
-                      ? {}
-                      : { runOn: input.oneMachine ? ("one" as const) : ("every" as const) }),
-                  },
-                }
+            : sharedAfter &&
+                (input.shared === true ||
+                  input.oneMachine !== undefined ||
+                  input.excludedMachines !== undefined)
+              ? { shared: sharedChoice(input, existing.shared) }
               : {}),
         };
         const { task } = yield* scheduledTasks
@@ -3786,4 +3853,5 @@ export const layer: Layer.Layer<
   | SecretRequests.SecretRequests
   | ServerSettings.ServerSettingsService
   | RemoteDelegation.RemoteDelegation
+  | PeerLinks.PeerLinks
 > = Layer.effect(OrchestratorMcpService, make);
