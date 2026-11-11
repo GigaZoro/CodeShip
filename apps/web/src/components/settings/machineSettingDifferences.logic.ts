@@ -5,6 +5,8 @@ import {
   type ServerSettingsPatch,
 } from "@t3tools/contracts";
 import { idleCompactionModeLabel } from "@t3tools/shared/claudeCompaction";
+import { providerUpdatesPatch, usageLimitRecoveryPatch } from "@t3tools/contracts/settings";
+import { t } from "~/i18n";
 import * as Equal from "effect/Equal";
 
 import {
@@ -49,8 +51,27 @@ const COMPARED_SETTINGS: ReadonlyArray<ComparedSetting> = [
     patch: (mode) => ({ idleCompaction: mode as ReturnType<typeof globalIdleCompaction> }),
   },
   { id: "snooze-options", key: "snoozePresets" },
-  { id: "snooze-limited-threads", key: "snoozeLimitedThreads" },
-  { id: "auto-resume-limited-threads", key: "autoResumeLimitedThreads" },
+  {
+    id: "usage-limit-recovery",
+    key: "snoozeLimitedThreads",
+    resolve: (settings) =>
+      settings.snoozeLimitedThreads === undefined
+        ? undefined
+        : {
+            snoozeLimitedThreads: settings.snoozeLimitedThreads,
+            autoResumeLimitedThreads: settings.autoResumeLimitedThreads,
+            failoverLimitedThreads: settings.failoverLimitedThreads,
+          },
+    format: (value) => {
+      const settings = value as ReturnType<typeof usageLimitRecoveryPatch>;
+      return t("Snooze: {snooze}; resume: {resume}; switch accounts: {switching}.", {
+        snooze: settings.snoozeLimitedThreads ? t("On") : t("Off"),
+        resume: settings.autoResumeLimitedThreads ? t("On") : t("Off"),
+        switching: settings.failoverLimitedThreads ? t("On") : t("Off"),
+      });
+    },
+    patch: (value) => value as ReturnType<typeof usageLimitRecoveryPatch>,
+  },
   { id: "days-before-auto-settle", key: "sidebarAutoSettleAfterDays" },
   { id: "auto-settle-merged-threads", key: "sidebarAutoSettleOnMerge" },
   { id: "keep-threads-with-pull-requests", key: "sidebarAutoSettleKeepPullRequests" },
@@ -73,8 +94,22 @@ const COMPARED_SETTINGS: ReadonlyArray<ComparedSetting> = [
   { id: "project-actions", key: "defaultProjectScripts" },
   { id: "import-agent-conversations", key: "importAgentConversations" },
   { id: "ghq-clone-layout", key: "ghqCloneLayout" },
-  { id: "provider-update-checks", key: "enableProviderUpdateChecks" },
-  { id: "auto-update-providers", key: "autoUpdateProviders" },
+  {
+    id: "provider-updates",
+    key: "enableProviderUpdateChecks",
+    resolve: (settings) => ({
+      enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
+      autoUpdateProviders: settings.autoUpdateProviders,
+    }),
+    format: (value) => {
+      const settings = value as ReturnType<typeof providerUpdatesPatch>;
+      return t("Checks: {checks}; automatic install: {install}.", {
+        checks: settings.enableProviderUpdateChecks ? t("On") : t("Off"),
+        install: settings.autoUpdateProviders ? t("On") : t("Off"),
+      });
+    },
+    patch: (value) => value as ReturnType<typeof providerUpdatesPatch>,
+  },
   { id: "continue-threads-after-server-update", key: "continueThreadsAfterServerUpdate" },
   { id: "background-activity", key: "backgroundActivity" },
   { id: "guest-links", key: "guestSharingEnabled" },
@@ -109,8 +144,9 @@ export function machineSettingDifferences(
 ): MachineSettingDifference[] {
   return COMPARED_SETTINGS.flatMap((setting) => {
     const values = machines.flatMap((machine) => {
-      if (setting.resolve) return [{ machine, value: setting.resolve(machine.settings) }];
-      const value = machine.settings[setting.key];
+      const value = setting.resolve
+        ? setting.resolve(machine.settings)
+        : machine.settings[setting.key];
       return value === undefined ? [] : [{ machine, value }];
     });
     const first = values[0];

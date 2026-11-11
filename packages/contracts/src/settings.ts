@@ -520,10 +520,6 @@ export const ClientSettingsSchema = Schema.Struct({
   sidebarGroupByMachine: Schema.NullOr(Schema.Boolean).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
-  // Retired single grouping choice, read by `resolveSidebarGrouping` until a toggle is set.
-  sidebarGroupBy: Schema.NullOr(Schema.Literals(["none", "project", "machine"])).pipe(
-    Schema.withDecodingDefault(Effect.succeed(null)),
-  ),
   // Opt-in for the retired Labs "boring sidebar" switch, read as project grouping.
   boringSidebarEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   boringSidebarMultilineRows: Schema.Boolean.pipe(
@@ -536,8 +532,6 @@ export const ClientSettingsSchema = Schema.Struct({
   threadDetailsItems: Schema.Record(Schema.String, Schema.Boolean).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
-  // Opt-in for the removed legacy sidebar, also read as project grouping.
-  legacySidebarEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   sidebarWorkingShelfEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   sidebarManualStepsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   // Shown after the built-in Ask the agent requests.
@@ -582,23 +576,89 @@ export type ClientSettings = typeof ClientSettingsSchema.Type;
 
 export const DEFAULT_CLIENT_SETTINGS: ClientSettings = Schema.decodeSync(ClientSettingsSchema)({});
 
+const LegacyStoredClientSettings = Schema.Struct({
+  ...ClientSettingsSchema.fields,
+  sidebarGroupBy: Schema.NullOr(Schema.Literals(["none", "project", "machine"])).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  legacySidebarEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+});
+
+export const StoredClientSettingsSchema = LegacyStoredClientSettings.pipe(
+  Schema.decodeTo(
+    Schema.toType(ClientSettingsSchema),
+    SchemaTransformation.transform({
+      decode: ({ sidebarGroupBy, legacySidebarEnabled, ...settings }): ClientSettings =>
+        sidebarGroupBy === null && !legacySidebarEnabled
+          ? settings
+          : {
+              ...settings,
+              sidebarGroupByProject:
+                settings.sidebarGroupByProject ??
+                (sidebarGroupBy === null
+                  ? settings.boringSidebarEnabled || legacySidebarEnabled
+                  : sidebarGroupBy === "project"),
+              sidebarGroupByMachine: settings.sidebarGroupByMachine ?? sidebarGroupBy === "machine",
+            },
+      encode: (settings) => ({ ...settings, sidebarGroupBy: null, legacySidebarEnabled: false }),
+    }),
+  ),
+);
+
 export const resolveSidebarGrouping = (
   settings: Pick<
     ClientSettings,
-    | "sidebarGroupByProject"
-    | "sidebarGroupByMachine"
-    | "sidebarGroupBy"
-    | "boringSidebarEnabled"
-    | "legacySidebarEnabled"
+    "sidebarGroupByProject" | "sidebarGroupByMachine" | "boringSidebarEnabled"
   >,
 ): SidebarGrouping => ({
-  project:
-    settings.sidebarGroupByProject ??
-    (settings.sidebarGroupBy === null
-      ? settings.boringSidebarEnabled || settings.legacySidebarEnabled
-      : settings.sidebarGroupBy === "project"),
-  machine: settings.sidebarGroupByMachine ?? settings.sidebarGroupBy === "machine",
+  project: settings.sidebarGroupByProject ?? settings.boringSidebarEnabled,
+  machine: settings.sidebarGroupByMachine ?? false,
 });
+
+export const UsageLimitRecoveryChoice = Schema.Literals([
+  "off",
+  "snooze",
+  "resume",
+  "switch-and-resume",
+]);
+export type UsageLimitRecoveryChoice = typeof UsageLimitRecoveryChoice.Type;
+
+export function usageLimitRecoveryPatch(choice: UsageLimitRecoveryChoice) {
+  return {
+    snoozeLimitedThreads: choice === "snooze",
+    autoResumeLimitedThreads: choice === "resume" || choice === "switch-and-resume",
+    failoverLimitedThreads: choice === "switch-and-resume",
+  };
+}
+
+export function usageLimitRecoveryChoice(
+  settings: ReturnType<typeof usageLimitRecoveryPatch>,
+): UsageLimitRecoveryChoice | "custom" {
+  if (settings.failoverLimitedThreads)
+    return settings.autoResumeLimitedThreads && !settings.snoozeLimitedThreads
+      ? "switch-and-resume"
+      : "custom";
+  if (settings.autoResumeLimitedThreads) return settings.snoozeLimitedThreads ? "custom" : "resume";
+  return settings.snoozeLimitedThreads ? "snooze" : "off";
+}
+
+export const ProviderUpdatesChoice = Schema.Literals(["off", "notify", "automatic"]);
+export type ProviderUpdatesChoice = typeof ProviderUpdatesChoice.Type;
+
+export function providerUpdatesPatch(choice: ProviderUpdatesChoice) {
+  return {
+    enableProviderUpdateChecks: choice !== "off",
+    autoUpdateProviders: choice === "automatic",
+  };
+}
+
+export function providerUpdatesChoice(
+  settings: ReturnType<typeof providerUpdatesPatch>,
+): ProviderUpdatesChoice | "custom" {
+  if (settings.autoUpdateProviders)
+    return settings.enableProviderUpdateChecks ? "automatic" : "custom";
+  return settings.enableProviderUpdateChecks ? "notify" : "off";
+}
 
 /** One machine would make one folder, so machine folders are offered from two, or while on. */
 export const offersSidebarMachineGrouping = (machineCount: number, grouping: SidebarGrouping) =>

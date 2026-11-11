@@ -258,6 +258,8 @@ it.effect.each([
           scheduledTaskModelSelection: selection,
           defaultModelSelection: { instanceId, model: "astra" },
           autoModeModels: { [driver]: auto },
+          providerUpdates: "automatic",
+          usageLimitRecovery: "switch-and-resume",
         })
         .pipe(Stream.unwrap, Stream.runCollect);
       if (denied !== undefined) {
@@ -268,6 +270,15 @@ it.effect.each([
           delegatedTaskModelSelections: { implementation: delegated },
           scheduledTaskModelSelection: selection,
           autoModeModels: { [driver]: auto },
+          providerUpdates: "automatic",
+          usageLimitRecovery: "switch-and-resume",
+        });
+        expect(yield* Ref.get(stored)).toMatchObject({
+          enableProviderUpdateChecks: true,
+          autoUpdateProviders: true,
+          snoozeLimitedThreads: false,
+          autoResumeLimitedThreads: true,
+          failoverLimitedThreads: true,
         });
         const read = yield* toolkit
           .handle("t3_environment_read", {})
@@ -284,6 +295,7 @@ it.effect.each([
             delegatedTaskModelSelections: { implementation: null },
             scheduledTaskModelSelection: null,
             autoModeModels: { [driver]: null },
+            enableProviderUpdateChecks: false,
           })
           .pipe(Stream.unwrap, Stream.runDrain);
         expect((yield* Ref.get(stored)).delegatedTaskModelSelections).toEqual({
@@ -291,6 +303,7 @@ it.effect.each([
         });
         expect((yield* Ref.get(stored)).scheduledTaskModelSelection).toBeNull();
         expect((yield* Ref.get(stored)).autoModeModels[driver]).toBeUndefined();
+        expect((yield* Ref.get(stored)).autoUpdateProviders).toBe(false);
       }
     }).pipe(
       Effect.provide(

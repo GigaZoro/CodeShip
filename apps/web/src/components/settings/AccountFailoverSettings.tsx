@@ -14,15 +14,13 @@ import {
   supportsAutoCoordinator,
 } from "@t3tools/shared/serverSettings";
 import { createModelSelection } from "@t3tools/shared/model";
-import { Link } from "@tanstack/react-router";
 import { groupBy } from "effect/Array";
 import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
 
 import { useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
-import { Button, InlineButton } from "../ui/button";
+import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
-import { Switch } from "../ui/switch";
 import { t } from "~/i18n";
 import { SettingsModelSelectionControl } from "./DelegatedTaskModelSettings";
 import { searchableSetting } from "./settingsSearch";
@@ -87,35 +85,6 @@ export function AccountFailoverSettings({
 
   return (
     <SettingsSection {...searchableSetting("account-failover")}>
-      <SettingsRow
-        title={t("Switch accounts at usage limits")}
-        description={
-          <>
-            {t(
-              "When an account hits its usage limit, the thread continues on the first signed-in subscription account of the same provider that still has usage left. API-key and Bedrock accounts are never used. Some providers' terms forbid using extra accounts to get around limits.",
-            )}{" "}
-            <InlineButton
-              render={
-                <Link
-                  to="/settings/threads"
-                  search={{ machine: environmentId }}
-                  hash="auto-resume-limited-threads"
-                />
-              }
-            >
-              {t("Resume or snooze limited threads")}
-            </InlineButton>
-          </>
-        }
-        control={
-          <Switch
-            aria-label={t("Switch accounts at usage limits")}
-            checked={switching}
-            disabled={readOnly}
-            onCheckedChange={(checked) => updateSettings({ failoverLimitedThreads: checked })}
-          />
-        }
-      />
       {supportsAutoMode ? (
         <SettingsRow
           title={t("Auto mode")}

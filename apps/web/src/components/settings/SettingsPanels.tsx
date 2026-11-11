@@ -1,5 +1,6 @@
 import { ThreadPageTokenSettings } from "./ThreadPageTokenSettings";
 import { useAtomValue } from "@effect/atom-react";
+import { UsageLimitRecoverySettings, ProviderUpdatesSettings } from "./RecoverySettings";
 import { NotificationSettings } from "./NotificationSettings";
 import { PRIVACY_POLICY_URL } from "../../legalLinks";
 import { CheckIcon } from "lucide-react";
@@ -95,7 +96,7 @@ import { ensureLocalApi, readLocalApi } from "../../localApi";
 import { isMacPlatform, isWindowsPlatform } from "../../lib/utils";
 import { useEnvironmentProviders, useEnvironments } from "../../state/environments";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
-import { Button, InlineButton } from "../ui/button";
+import { Button } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -701,19 +702,6 @@ export function GeneralSettingsPanel() {
     <SettingsPageContainer>
       <SettingsSection id="notifications" title={t("Notifications")}>
         <NotificationSettings />
-        <SettingsRow
-          {...searchableSetting("in-app-notifications")}
-          description={t(
-            "Show a toast when another thread finishes, fails, or needs input or approval while this app has focus.",
-          )}
-          control={
-            <Switch
-              checked={settings.inAppNotificationsEnabled}
-              onCheckedChange={(checked) => updateSettings({ inAppNotificationsEnabled: checked })}
-              aria-label={t("In-app notifications")}
-            />
-          }
-        />
       </SettingsSection>
 
       <SettingsSection id="sidebar" title={t("Sidebar")}>
@@ -1742,49 +1730,7 @@ export function ThreadsSettingsPanel() {
       ) : null}
 
       <SettingsSection id="usage-limits" title={t("Usage limits")}>
-        <SettingsRow
-          serverScoped
-          {...searchableSetting("auto-resume-limited-threads")}
-          description={
-            <>
-              {t(
-                "Automatically resume threads when their usage limits reset. You can cancel auto-resume in each thread.",
-              )}{" "}
-              <InlineButton render={<Link to="/settings/providers" hash="account-failover" />}>
-                {t("Switch accounts at usage limits")}
-              </InlineButton>
-            </>
-          }
-          settingKeys={["autoResumeLimitedThreads"]}
-          control={
-            <ScopedSwitch
-              settingKeys={["autoResumeLimitedThreads"]}
-              checked={settings.autoResumeLimitedThreads}
-              onCheckedChange={(checked) =>
-                updateSettings({ autoResumeLimitedThreads: Boolean(checked) })
-              }
-              aria-label={t("Resume after usage limits")}
-            />
-          }
-        />
-        <SettingsRow
-          serverScoped
-          {...searchableSetting("snooze-limited-threads")}
-          description={t(
-            "Snooze threads until their usage limits reset. Enable auto-resume to continue the agent after the reset.",
-          )}
-          settingKeys={["snoozeLimitedThreads"]}
-          control={
-            <ScopedSwitch
-              settingKeys={["snoozeLimitedThreads"]}
-              checked={settings.snoozeLimitedThreads}
-              onCheckedChange={(checked) =>
-                updateSettings({ snoozeLimitedThreads: Boolean(checked) })
-              }
-              aria-label={t("Snooze until limits reset")}
-            />
-          }
-        />
+        <UsageLimitRecoverySettings />
       </SettingsSection>
 
       {hasServerTargets ? (
@@ -2239,9 +2185,7 @@ export function MaintenanceSettingsPanel() {
   const telemetryOff = managedTelemetryOffMessage(primaryPolicy);
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
-  const { scope, environment, connectedEnvironments } = useSettingsScope();
-  const environmentId = environment?.environmentId ?? null;
-  const isEnvironmentScope = scope.environmentIds.length === 1 && environmentId !== null;
+  const { scope, connectedEnvironments } = useSettingsScope();
   const hasServerTargets = connectedEnvironments.length > 0;
   // The App, Legal, and setup sections belong to this device, so only the server sections step aside.
   const serverUnavailableMessage =
@@ -2262,68 +2206,7 @@ export function MaintenanceSettingsPanel() {
       ) : (
         <>
           <SettingsSection id="updates" title={t("Updates")}>
-            <SettingsRow
-              serverScoped
-              settingKeys={["enableProviderUpdateChecks"]}
-              {...searchableSetting("provider-update-checks")}
-              description={t(
-                "Check installed provider CLIs for newer available versions and fetch model catalog updates. When off, new models may not appear.",
-              )}
-              resetAction={
-                settings.enableProviderUpdateChecks !==
-                DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks ? (
-                  <SettingResetButton
-                    label={t("provider update checks")}
-                    onClick={() =>
-                      updateSettings({
-                        enableProviderUpdateChecks:
-                          DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
-                      })
-                    }
-                  />
-                ) : null
-              }
-              control={
-                <ScopedSwitch
-                  settingKeys={["enableProviderUpdateChecks"]}
-                  checked={settings.enableProviderUpdateChecks}
-                  onCheckedChange={(checked) =>
-                    updateSettings({ enableProviderUpdateChecks: Boolean(checked) })
-                  }
-                  aria-label={t("Check provider versions")}
-                />
-              }
-            />
-            <SettingsRow
-              serverScoped
-              settingKeys={["autoUpdateProviders"]}
-              {...searchableSetting("auto-update-providers")}
-              description={t(
-                "Update provider CLIs that are behind the latest version when the server starts. Needs provider update checks.",
-              )}
-              resetAction={
-                settings.autoUpdateProviders !== DEFAULT_UNIFIED_SETTINGS.autoUpdateProviders ? (
-                  <SettingResetButton
-                    label={t("automatic provider updates")}
-                    onClick={() =>
-                      updateSettings({
-                        autoUpdateProviders: DEFAULT_UNIFIED_SETTINGS.autoUpdateProviders,
-                      })
-                    }
-                  />
-                ) : null
-              }
-              control={
-                <ScopedSwitch
-                  settingKeys={["autoUpdateProviders"]}
-                  checked={settings.autoUpdateProviders}
-                  onCheckedChange={(checked) =>
-                    updateSettings({ autoUpdateProviders: Boolean(checked) })
-                  }
-                  aria-label={t("Update providers automatically")}
-                />
-              }
-            />
+            <ProviderUpdatesSettings />
             <SettingsRow
               {...searchableSetting("continue-threads-after-server-update")}
               serverScoped
@@ -2388,31 +2271,6 @@ export function MaintenanceSettingsPanel() {
           </SettingsSection>
 
           <StorageCleanupSections />
-
-          <SettingsSection id="diagnostics-section" title={t("Diagnostics")}>
-            <SettingsRow
-              {...searchableSetting("diagnostics")}
-              description={
-                isEnvironmentScope
-                  ? t("Inspect processes, resource use, and logs on this environment.")
-                  : t("Inspect processes, resource use, and logs on one environment at a time.")
-              }
-              control={
-                <Button
-                  render={
-                    <Link
-                      to="/settings/diagnostics"
-                      search={{ machine: environmentId ?? undefined }}
-                    />
-                  }
-                  size="sm"
-                  variant="outline"
-                >
-                  {t("View diagnostics")}
-                </Button>
-              }
-            />
-          </SettingsSection>
         </>
       )}
 

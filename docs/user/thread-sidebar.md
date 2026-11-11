@@ -429,8 +429,9 @@ Queued messages stay saved while the limit blocks the thread. They run after
 the continuation finishes. If the queue was held by a restart, resume it then.
 
 When the provider reports a reset time, choose **Resume at reset** to schedule a
-continuation. You can cancel it from the thread. Enable **Resume after
-usage limits** in **Settings → Threads** to schedule limit stops by default.
+continuation. You can cancel it from the thread. In **Settings → Threads →
+When a thread hits a usage limit**, choose **Resume when the limit resets** to
+schedule limit stops by default.
 The environment must be running when the reset arrives; it resumes overdue
 continuations after a restart. Stopping the thread, sending a new message,
 archiving, or settling it prevents a pending continuation from starting.
@@ -443,12 +444,13 @@ leave a notice explaining why. You can still resume a skipped run manually.
 Choose **Snooze until reset** to hide the thread until its allowance returns.
 Snooze and auto-resume are independent: snooze alone wakes the thread without
 sending a message; enabling both wakes and continues it. **Wake now** cancels
-the snooze. Enable **Snooze until limits reset** in thread behavior settings to
-snooze limit stops by default. Providers without a reset time offer manual
+the snooze. Choose **Snooze until the limit resets** under **When a thread hits
+a usage limit** to snooze limit stops by default without continuing the agent. Providers without a reset time offer manual
 retry and the normal snooze choices.
 
-With two or more accounts for one provider, turn on **Switch accounts at usage
-limits** in **Settings → Providers & models** and arrange the account order there. When
+With two or more accounts for one provider, choose **Switch to another account,
+else resume when the limit resets** in **Settings → Threads → When a thread hits
+a usage limit**. Arrange the account order in **Settings → Providers & models**. When
 an account stops a turn on a limit with a reset time, or Claude holds the turn
 open until that reset, the thread continues on the first other signed-in account
 of that provider, in that order, that still has usage left. A reset less than
@@ -481,7 +483,7 @@ for the coordinator. Then pick **Auto** at the top of the model picker, or turn 
 the default model in settings for new threads. A scheduled task's model can be Auto
 too, and an agent you ask to start a thread in Auto, or `t3 thread start --auto`,
 starts it there. A new thread starts on the primary provider's first account in its
-account order. With **Switch accounts at usage limits** on, it starts on the first
+account order. With account switching enabled in **Settings → Threads**, it starts on the first
 one that has usage left and switches accounts at usage limits. The turn a
 finished background command starts stays on the account that ran the command,
 because only that session has its result; if that account is out of usage, the

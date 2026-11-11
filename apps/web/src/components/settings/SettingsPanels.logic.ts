@@ -400,8 +400,10 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
     changedLabels: getChangedTypographySettingLabels,
   },
   restorable("/settings/general", msg("Time format"), ["timestampFormat"]),
-  restorable("/settings/general", msg("Thread notifications"), ["notificationMode"]),
-  restorable("/settings/general", msg("In-app notifications"), ["inAppNotificationsEnabled"]),
+  restorable("/settings/general", msg("Thread notifications"), [
+    "notificationMode",
+    "inAppNotificationsEnabled",
+  ]),
   restorable("/settings/general", msg("Project grouping"), ["sidebarProjectGroupingMode"]),
   restorable("/settings/general", msg("Project order"), ["sidebarProjectSortOrder"]),
   restorable("/settings/general", msg("Working section"), ["sidebarWorkingShelfEnabled"]),
@@ -432,15 +434,16 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
     "sidebarAutoSettleOpensPullRequests",
   ]),
   restorable("/settings/threads", msg("Auto-settle merged threads"), ["sidebarAutoSettleOnMerge"]),
-  restorable("/settings/threads", msg("Resume after usage limits"), ["autoResumeLimitedThreads"]),
-  restorable("/settings/threads", msg("Snooze until limits reset"), ["snoozeLimitedThreads"]),
+  restorable("/settings/threads", msg("When a thread hits a usage limit"), [
+    "autoResumeLimitedThreads",
+    "snoozeLimitedThreads",
+    "failoverLimitedThreads",
+  ]),
   restorable("/settings/threads", msg("Snooze options"), ["snoozePresets"]),
   restorable("/settings/threads", msg("Response streaming"), ["responseStreamingMode"]),
   restorable("/settings/threads", msg("New thread workspace"), ["defaultThreadEnvMode"]),
-  restorable("/settings/maintenance", msg("Provider update checks"), [
+  restorable("/settings/maintenance", msg("Provider updates"), [
     "enableProviderUpdateChecks",
-  ]),
-  restorable("/settings/maintenance", msg("Update providers automatically"), [
     "autoUpdateProviders",
   ]),
   restorable("/settings/maintenance", msg("Continue threads after restarts"), [

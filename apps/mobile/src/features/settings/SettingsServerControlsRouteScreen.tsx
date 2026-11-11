@@ -1,3 +1,9 @@
+import {
+  ProviderUpdatesChoice,
+  providerUpdatesChoice,
+  providerUpdatesPatch,
+} from "@t3tools/contracts/settings";
+import { SettingsMenuRow } from "./components/SettingsMenuRow";
 import { msg, t, type Message } from "../../lib/i18n";
 import { useNavigation } from "@react-navigation/native";
 import { SettingsRow } from "./components/SettingsRow";
@@ -56,6 +62,13 @@ import { AppSettingsSection } from "./SettingsAboutSection";
 import { supportsSharedSettingsSync } from "@t3tools/client-runtime/state/shared-settings";
 
 type SettingsPage = "threads" | "source-control" | "maintenance";
+
+const updateLabels = {
+  off: msg("Off"),
+  notify: msg("Notify me"),
+  automatic: msg("Install automatically"),
+  custom: msg("Custom: automatic updates without checks"),
+};
 
 const PAGE_TITLES: Record<SettingsPage, Message> = {
   threads: msg("Threads"),
@@ -183,6 +196,7 @@ const AUTO_SETTLE_SETTING_KEYS: ReadonlySet<string> = new Set([
   "sidebarAutoSettleAfterDays",
   "autoResumeLimitedThreads",
   "snoozeLimitedThreads",
+  "failoverLimitedThreads",
 ]);
 
 function planServerSettingsWrites(
@@ -648,37 +662,37 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                     </SettingsSection>
                   ) : null}
                   <SettingsSection title={t("Updates")}>
-                    <SettingsSwitchRow
+                    <SettingsMenuRow
                       icon="arrow.clockwise"
-                      label={t("Check provider updates")}
-                      subtitle={managedSubtitle(
+                      label={t("Provider updates")}
+                      description={managedSubtitle(
                         "enableProviderUpdateChecks",
-                        projectSelected
-                          ? t("Environment-wide setting. Select All projects to change it.")
-                          : t(
-                              "Check installed provider CLIs for newer versions and fetch model catalog updates. When off, new models may not appear.",
-                            ),
+                        t(
+                          "Check provider CLIs and model catalogs for updates. Install automatically also enables checks and updates provider CLIs when the server starts.",
+                        ),
                       )}
-                      value={uniform("enableProviderUpdateChecks")}
-                      disabled={disabledFor("enableProviderUpdateChecks")}
-                      onValueChange={(value) => write({ enableProviderUpdateChecks: value })}
+                      value={
+                        uniform("enableProviderUpdateChecks") === null ||
+                        uniform("autoUpdateProviders") === null
+                          ? null
+                          : providerUpdatesChoice(reference!.settings)
+                      }
+                      currentLabel={
+                        uniform("enableProviderUpdateChecks") === null ||
+                        uniform("autoUpdateProviders") === null
+                          ? t("Mixed")
+                          : t(updateLabels[providerUpdatesChoice(reference!.settings)])
+                      }
+                      disabled={
+                        disabledFor("enableProviderUpdateChecks") ||
+                        disabledFor("autoUpdateProviders")
+                      }
+                      options={ProviderUpdatesChoice.literals.map((value) => ({
+                        value,
+                        label: t(updateLabels[value]),
+                      }))}
+                      onChange={(value) => write(providerUpdatesPatch(value))}
                     />
-                    <View className="border-t border-border-subtle">
-                      <SettingsSwitchRow
-                        icon="arrow.down.circle"
-                        label={t("Update providers automatically")}
-                        subtitle={
-                          projectSelected
-                            ? t("Environment-wide setting. Select All projects to change it.")
-                            : t(
-                                "Update provider CLIs that are behind the latest version when the server starts.",
-                              )
-                        }
-                        value={uniform("autoUpdateProviders")}
-                        disabled={disabledFor("autoUpdateProviders")}
-                        onValueChange={(value) => write({ autoUpdateProviders: value })}
-                      />
-                    </View>
                     <View className="border-t border-border-subtle">
                       <SettingsSwitchRow
                         icon="arrow.uturn.forward"

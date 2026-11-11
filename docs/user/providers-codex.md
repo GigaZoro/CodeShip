@@ -107,9 +107,10 @@ spend limit to continue sooner.
 An account you connected with ChatGPT can stop on its plan's limit or on the cap you set for
 T3.CodeShip in ChatGPT's usage settings. T3.CodeShip knows when either resets only on a machine
 that reads the account's limits, so choose **Read limits** for the account under
-**Usage → Limits** on each machine that runs its threads. With the reset known, **Switch accounts
-at usage limits** moves a stopped thread to an account with room, and the thread can resume by
-itself at the reset.
+**Usage → Limits** on each machine that runs its threads. With the reset known, choose
+**Switch to another account, else resume when the limit resets** under **Settings → Threads →
+When a thread hits a usage limit**. A stopped thread moves to an account with room or resumes
+at the reset.
 
 ## Send feedback to OpenAI
 
