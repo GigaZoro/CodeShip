@@ -642,6 +642,8 @@ export const OrchestratorMcpEnvironmentLinksResult = Schema.Struct({
   links: Schema.Array(OrchestratorMcpEnvironmentLink),
   /** What to do when the machine the user means is not among `links`. */
   notListed: Schema.String,
+  /** Linking is for agents only: it does not put a machine in the app's machine list. */
+  appList: Schema.String,
 });
 export type OrchestratorMcpEnvironmentLinksResult =
   typeof OrchestratorMcpEnvironmentLinksResult.Type;
@@ -945,6 +947,9 @@ export const OrchestratorMcpEnvironmentLinkResult = Schema.Union([
     }),
     label: Schema.String,
     access: AuthMcpClientAccess.annotate({ description: "The access the user chose." }),
+    note: Schema.String.annotate({
+      description: "Linked for agents only: it is not added to the app's machine list.",
+    }),
   }),
   Schema.Struct({
     status: Schema.Literals(["declined", "cancelled"]).annotate({

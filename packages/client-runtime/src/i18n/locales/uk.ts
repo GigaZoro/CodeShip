@@ -1906,6 +1906,7 @@ const catalog: MessageCatalog = {
   "Add {fields}.": "Додайте {fields}.",
   "Add {name}": "Додати {name}",
   "Add {name} to favorites": "Додати {name} до вибраного",
+  "Add {name} to this app": "Додати {name} до застосунку",
   "Add {variable} to {provider}": "Додати {variable} до {provider}",
   "Add a 1Password account, then pick it as the source of a provider variable.":
     "Додайте обліковий запис 1Password, а потім виберіть його джерелом змінної провайдера.",
@@ -2027,6 +2028,7 @@ const catalog: MessageCatalog = {
   "Add to favorites": "Додати до обраного",
   "Add to favorites: {provider}, {model}": "Додати до обраного: {provider}, {model}",
   "Add to review": "Додати до рев’ю",
+  "Add to this app": "Додати до застосунку",
   "Add variable": "Додати змінну",
   "Add your feedback and check your permissions before submitting.":
     "Додайте відгук і перевірте свої дозволи перед надсиланням.",
@@ -2036,6 +2038,7 @@ const catalog: MessageCatalog = {
     "Додайте свій префікс до згенерованої назви гілки.",
   Added: "Додано",
   "Added {name}": "Додано {name}",
+  "Added {name} to this app": "{name} додано до застосунку",
   "Added to {target} for {environment}.": "Додано до {target} для {environment}.",
   "Added to {target} for {environment}. {cookies} skipped.":
     "Додано до {target} для {environment}. Пропущено: {cookies}.",
@@ -3906,6 +3909,7 @@ const catalog: MessageCatalog = {
   "Could not add backend": "Не вдалося додати бекенд",
   "Could not add file to chat": "Не вдалося додати файл до чату",
   "Could not add provider instance": "Не вдалося додати екземпляр провайдера",
+  "Could not add the machine to this app": "Не вдалося додати комп’ютер до застосунку",
   "Could not add the route.": "Не вдалося додати маршрут.",
   "Could not add WSL project": "Не вдалося додати проєкт WSL",
   "Could not answer the request. Try again.": "Не вдалося відповісти на запит. Спробуйте ще раз.",
@@ -6454,6 +6458,8 @@ const catalog: MessageCatalog = {
     "Її, можливо, видалено. Вибраний текст усе ще збережено у вашій цитаті.",
   "It moved to Archived. Its threads and files are kept.":
     "Його перенесено до архіву. Чати й файли збережено.",
+  "It now shows in the machine list and reconnects on app startup.":
+    "Тепер він у списку комп’ютерів і підключатиметься під час запуску застосунку.",
   "It opens as a draft. Nothing runs until you press Send.":
     "Він відкриється як чернетка. Нічого не запуститься, доки ви не натиснете «Надіслати».",
   "It stays on your T3 Connect account and keeps its host space. Deregister it in {link} to free it.":
@@ -6739,6 +6745,8 @@ const catalog: MessageCatalog = {
   "linked environments": "пов’язані середовища",
   "Linked environments": "Пов’язані середовища",
   "linked environments {times}": "пов’язані середовища {times}",
+  "Linked for agents only: not in this app's machine list, so it is missing from the sidebar.":
+    "Зв’язано лише для агентів: комп’ютера немає в списку комп’ютерів цього застосунку, тож його не видно на бічній панелі.",
   "Linked from {count} threads": {
     one: "Прив’язано з {count} чату",
     few: "Прив’язано з {count} чатів",
@@ -6909,6 +6917,8 @@ const catalog: MessageCatalog = {
   "Lock aspect ratio": "Заблокувати співвідношення сторін",
   "Lock viewport aspect ratio": "Заблокувати співвідношення сторін області перегляду",
   Locked: "Заблоковано",
+  "Log in to Tailscale to set up HTTPS access through MagicDNS.":
+    "Увійдіть у Tailscale, щоб налаштувати HTTPS-доступ через MagicDNS.",
   "Log out": "Вийти",
   "Logged out of ACP agent": "Вихід з агента ACP виконано",
   "Logging out": "Вихід",
@@ -10886,10 +10896,6 @@ const catalog: MessageCatalog = {
   "Start side chat": "Почати побічний чат",
   "Start T3.CodeShip when you sign in to this computer.":
     "Запускати T3.CodeShip, коли ви входите в цей комп’ютер.",
-  "Tailscale CLI not found. Install Tailscale to set up HTTPS access through MagicDNS.":
-    "Tailscale CLI не знайдено. Встановіть Tailscale, щоб налаштувати HTTPS-доступ через MagicDNS.",
-  "Log in to Tailscale to set up HTTPS access through MagicDNS.":
-    "Увійдіть у Tailscale, щоб налаштувати HTTPS-доступ через MagicDNS.",
   "Start Tailscale to set up HTTPS access through MagicDNS.":
     "Запустіть Tailscale, щоб налаштувати HTTPS-доступ через MagicDNS.",
   "Start the matching WSL backend, then choose the folder again.":
@@ -11273,6 +11279,8 @@ const catalog: MessageCatalog = {
   tabs: "вкладки",
   Tabs: "Вкладки",
   tailscale: "tailscale",
+  "Tailscale CLI not found. Install Tailscale to set up HTTPS access through MagicDNS.":
+    "Tailscale CLI не знайдено. Встановіть Tailscale, щоб налаштувати HTTPS-доступ через MagicDNS.",
   "Tailscale HTTPS": "HTTPS через Tailscale",
   "Tailscale IP": "IP Tailscale",
   "Take control": "Взяти керування",
@@ -11695,6 +11703,8 @@ const catalog: MessageCatalog = {
     "Посилання вимагає провайдера {provider}, який тут не налаштований, тому використано вашу модель за замовчуванням.",
   "The link is missing its authorization request. Re-run `t3 connect` in your terminal and open the freshly printed URL.":
     "У посиланні немає запиту на авторизацію. Знову виконайте `t3 connect` у терміналі та відкрийте нову надруковану URL-адресу.",
+  "The link lets agents work there. Adding it here also shows the machine in the machine list and lets you open its threads.":
+    "Зв’язок дозволяє агентам працювати там. Додавання тут також показує комп’ютер у списку комп’ютерів і дає відкривати його чати.",
   "The link works once and expires in 24 hours.":
     "Посилання працює один раз і втрачає чинність через 24 години.",
   "The local attachment file is missing.": "Локальний файл вкладення відсутній.",

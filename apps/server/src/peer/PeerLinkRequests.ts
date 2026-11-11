@@ -15,6 +15,7 @@ import {
   type OrchestratorMcpEnvironmentLinkInput,
   type OrchestratorMcpEnvironmentLinkResult,
   OrchestratorMcpFailure,
+  PEER_LINK_AGENTS_ONLY_NOTE,
   type PeerLink,
   type PeerLinkBackOutcome,
   PeerLinkError,
@@ -241,6 +242,7 @@ const make = Effect.gen(function* () {
             environmentId: linked.value.environmentId,
             label: linked.value.label,
             access: linked.value.access,
+            note: PEER_LINK_AGENTS_ONLY_NOTE,
           } as const;
         }
       }
@@ -437,6 +439,7 @@ const resultOf = (card: LinkRequestItem): OrchestratorMcpEnvironmentLinkResult =
         environmentId: card.linkedEnvironmentId!,
         label: card.linkedLabel ?? linkTarget(card),
         access: card.linkedAccess!,
+        note: PEER_LINK_AGENTS_ONLY_NOTE,
       };
     case "failed":
       return { status: "failed", message: card.failure ?? "The link could not be made." };
@@ -472,7 +475,7 @@ const outcomeNotice = (
     case "linked": {
       const label = outcome.linkedLabel ?? target;
       return {
-        text: `The user linked ${label} with ${outcome.linkedAccess} access. Pass environmentId ${outcome.linkedEnvironmentId} to act there.${backNotice(label, back)}`,
+        text: `The user linked ${label} with ${outcome.linkedAccess} access. Pass environmentId ${outcome.linkedEnvironmentId} to act there.${backNotice(label, back)} ${PEER_LINK_AGENTS_ONLY_NOTE} Tell the user if they expected to see it in the app.`,
         notification: {
           source: { kind: "background_task" },
           outcome: "completed",

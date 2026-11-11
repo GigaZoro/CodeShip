@@ -6,6 +6,7 @@ import {
   EnvironmentId,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadShell,
+  PEER_LINK_AGENTS_ONLY_NOTE,
   type SourceControlCloneRepositoryInput,
   ProjectId,
   ProviderInstanceId,
@@ -389,6 +390,7 @@ it.effect("an agent here works on a linked environment's threads within its own 
         links: [
           { environmentId: box.environmentId, label: "Box", status: "reachable", access: "auto" },
         ],
+        appList: PEER_LINK_AGENTS_ONLY_NOTE,
       });
 
       const threads = yield* a.call("thread:laptop-full", "t3_thread_list", {

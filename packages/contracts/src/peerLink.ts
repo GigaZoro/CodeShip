@@ -22,6 +22,14 @@ export const PeerLink = Schema.Struct({
 });
 export type PeerLink = typeof PeerLink.Type;
 
+/**
+ * What a link does not do. The app's machine list is the client's own saved connections, so a
+ * link made for agents never adds to it; saying so keeps people from waiting for the machine
+ * to appear in the sidebar.
+ */
+export const PEER_LINK_AGENTS_ONLY_NOTE =
+  "Linked for agents only: this does not add the machine to the app's machine list (bottom-left of the sidebar). To see it there, open Settings → Machines & access → Linked environments and choose Add to this app, or use Add environment.";
+
 /** Whether a link can be used now, as worked out when it is listed. */
 export const PeerLinkStatus = Schema.Literals(["reachable", "unreachable", "expired"]);
 export type PeerLinkStatus = typeof PeerLinkStatus.Type;

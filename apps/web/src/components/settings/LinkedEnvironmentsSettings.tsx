@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import {
+  addLinkedMachineRoute,
   defaultReverseLinkAccess,
   linkRequestFailureMessage,
   linkReverseRequest,
@@ -25,9 +26,11 @@ import { useId, useRef, useState } from "react";
 import { requestConfirmDialog } from "~/confirmDialog";
 import { mintPairingCodeOn } from "~/state/peerPairingCode";
 import { peerLinkEnvironment, useLinkableMachines, useOwnLinkUrls } from "~/state/peerLinks";
+import { useEnvironments, useRelayEnvironmentDiscovery } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
 import { useEnvironmentScope, usePreparedConnection } from "~/state/session";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { AddLinkedMachineAction } from "./AddLinkedMachineAction";
 import { accessConfig } from "../auth/ConnectAgentSurface";
 import { ConnectionStatusDot } from "../ConnectionStatusDot";
 import { Button } from "../ui/button";
@@ -121,6 +124,13 @@ function LinkedEnvironmentRow({
   const unlink = useAtomCommand(peerLinkEnvironment.unlink, { label: t("unlink environment") });
   const canUnlink = useAtomValue(peerLinkEnvironment.unlink.permissionAtom(environmentId));
   const [busy, setBusy] = useState(false);
+  const { environments } = useEnvironments();
+  const discovery = useRelayEnvironmentDiscovery();
+  const addRoute = addLinkedMachineRoute({
+    savedEnvironmentIds: new Set(environments.map((environment) => environment.environmentId)),
+    connect: discovery.environments,
+    link,
+  });
   const forget = async () => {
     const confirmed = await (requestConfirmDialog(
       t(
@@ -171,17 +181,29 @@ function LinkedEnvironmentRow({
             {t(accessConfig[link.access].label)} · {status}
           </p>
           <p className="truncate text-xs text-muted-foreground/80">{link.urls.join(", ")}</p>
+          {addRoute.kind === "in-app" ? null : (
+            <p className="text-xs text-muted-foreground">
+              {t(
+                "Linked for agents only: not in this app's machine list, so it is missing from the sidebar.",
+              )}
+            </p>
+          )}
         </div>
-        {canUnlink ? (
+        {canUnlink || addRoute.kind !== "in-app" ? (
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
-            <Button
-              size="xs"
-              variant="destructive-outline"
-              disabled={busy}
-              onClick={() => void forget()}
-            >
-              {busy ? t("Forgetting…") : t("Forget")}
-            </Button>
+            {addRoute.kind === "in-app" ? null : (
+              <AddLinkedMachineAction link={link} route={addRoute} />
+            )}
+            {canUnlink ? (
+              <Button
+                size="xs"
+                variant="destructive-outline"
+                disabled={busy}
+                onClick={() => void forget()}
+              >
+                {busy ? t("Forgetting…") : t("Forget")}
+              </Button>
+            ) : null}
           </div>
         ) : null}
       </div>

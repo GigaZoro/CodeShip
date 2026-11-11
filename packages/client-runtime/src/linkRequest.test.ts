@@ -8,6 +8,7 @@ import { BearerConnectionTarget, RelayConnectionTarget } from "./connection/mode
 import type { EnvironmentPresentation } from "./connection/presentation.ts";
 import type { RelayDiscoveredEnvironment } from "./relay/discovery.ts";
 import {
+  addLinkedMachineRoute,
   defaultReverseLinkAccess,
   linkableMachines,
   linkedEnvironmentNames,
@@ -471,5 +472,50 @@ describe("linkRequestFailureMessage", () => {
     expect(linkRequestFailureMessage({ _tag: "SchemaError", message: "code=abc" })).toBe(
       "Could not answer the request. Try again.",
     );
+  });
+});
+
+describe("addLinkedMachineRoute", () => {
+  const linkTo = (urls: ReadonlyArray<string>) => ({
+    environmentId: EnvironmentId.make("env-vps"),
+    urls,
+  });
+  const noConnect = new Map<string, RelayDiscoveredEnvironment>();
+
+  it("has nothing to add when the app already lists the machine", () => {
+    expect(
+      addLinkedMachineRoute({
+        savedEnvironmentIds: new Set([EnvironmentId.make("env-vps")]),
+        connect: noConnect,
+        link: linkTo(["https://vps.example.ts.net"]),
+      }),
+    ).toEqual({ kind: "in-app" });
+  });
+
+  it("uses T3 Connect when the user's account lists a machine the app does not", () => {
+    expect(
+      addLinkedMachineRoute({
+        savedEnvironmentIds: new Set(),
+        connect: new Map([["env-vps", {} as RelayDiscoveredEnvironment]]),
+        link: linkTo(["https://vps.example.ts.net"]),
+      }),
+    ).toEqual({ kind: "connect" });
+  });
+
+  it("pairs at the first address that is not loopback, else the first one", () => {
+    const route = (urls: ReadonlyArray<string>) =>
+      addLinkedMachineRoute({
+        savedEnvironmentIds: new Set(),
+        connect: noConnect,
+        link: linkTo(urls),
+      });
+    expect(route(["http://127.0.0.1:3773", "https://vps.example.ts.net"])).toEqual({
+      kind: "pairing",
+      host: "https://vps.example.ts.net",
+    });
+    expect(route(["http://127.0.0.1:3773"])).toEqual({
+      kind: "pairing",
+      host: "http://127.0.0.1:3773",
+    });
   });
 });

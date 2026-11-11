@@ -14,6 +14,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
+  PEER_LINK_AGENTS_ONLY_NOTE,
   type RuntimeMode,
   RunId,
   ThreadId,
@@ -602,6 +603,7 @@ it.live("the agent asks without waiting, and the user links the box after its tu
       });
       expect(messages[0]!.text).toContain(box.environmentId);
       expect(messages[0]!.text).toContain("auto");
+      expect(messages[0]!.text).toContain(PEER_LINK_AGENTS_ONLY_NOTE);
       expect(items).toHaveLength(1);
       expect(items[0]).toMatchObject({ type: "notification", summary: "Linked Box" });
 
@@ -622,6 +624,7 @@ it.live("the agent asks without waiting, and the user links the box after its tu
         environmentId: box.environmentId,
         label: "Box",
         access: "auto",
+        note: PEER_LINK_AGENTS_ONLY_NOTE,
       });
       expect((yield* a.orchestrator.getThreadProjection(threadId)).turnItems).toHaveLength(before);
       expect((yield* outcomeMessages(a)).messages).toHaveLength(1);
@@ -1010,6 +1013,7 @@ it.live("naming a machine that is already linked returns the link at once, with 
         environmentId: box.environmentId,
         label: "Box",
         access: "auto",
+        note: PEER_LINK_AGENTS_ONLY_NOTE,
       });
       expect(yield* cardOf(a)).toBeUndefined();
 
@@ -1039,6 +1043,7 @@ it.live("a retry naming a machine linked meanwhile closes the card it left as li
         environmentId: box.environmentId,
         label: "Box",
         access: "auto",
+        note: PEER_LINK_AGENTS_ONLY_NOTE,
       });
       expect(yield* cardOf(a)).toMatchObject({
         linkStatus: "linked",

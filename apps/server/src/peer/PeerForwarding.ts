@@ -8,6 +8,7 @@ import {
   OrchestratorMcpThreadReadResult,
   OrchestratorMcpThreadWaitInput,
   OrchestratorMcpThreadWaitResult,
+  PEER_LINK_AGENTS_ONLY_NOTE,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -259,6 +260,7 @@ const make = Effect.gen(function* () {
           lastError: link.lastError,
         })),
         notListed: NOT_LISTED,
+        appList: PEER_LINK_AGENTS_ONLY_NOTE,
       };
     },
   );

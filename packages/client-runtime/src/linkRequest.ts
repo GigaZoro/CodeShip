@@ -103,6 +103,31 @@ function environmentLinkUrls(
 }
 
 /**
+ * How a machine linked for agents gets into this app's machine list, which only saved
+ * connections fill: nothing when it is there already, a T3 Connect route when the user's account
+ * lists it, otherwise a pairing code redeemed at one of the addresses it was linked at.
+ */
+export type AddLinkedMachineRoute =
+  | { readonly kind: "in-app" }
+  | { readonly kind: "connect" }
+  | { readonly kind: "pairing"; readonly host: string | null };
+
+export function addLinkedMachineRoute(input: {
+  readonly savedEnvironmentIds: ReadonlySet<EnvironmentId>;
+  readonly connect: ReadonlyMap<string, RelayDiscoveredEnvironment>;
+  readonly link: Pick<PeerLinkSummary, "environmentId" | "urls">;
+}): AddLinkedMachineRoute {
+  const { environmentId, urls } = input.link;
+  if (input.savedEnvironmentIds.has(environmentId)) return { kind: "in-app" };
+  if (input.connect.has(environmentId)) return { kind: "connect" };
+  const reachableFromHere = urls.find((url) => {
+    const host = URL.parse(url)?.hostname;
+    return host !== undefined && !isLocalLoopbackHost(host);
+  });
+  return { kind: "pairing", host: reachableFromHere ?? urls[0] ?? null };
+}
+
+/**
  * Where another machine may reach `environment`, for its link back: what
  * `linkableMachines` knows of a machine, without addresses that only mean something on this
  * client's own machine.

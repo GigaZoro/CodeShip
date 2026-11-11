@@ -2,6 +2,7 @@ import {
   AuthMcpClientAccess,
   AuthStandardClientScopes,
   EnvironmentId,
+  PEER_LINK_AGENTS_ONLY_NOTE,
   peerLinkAccessAllowsLinkBack,
   type PeerLinkResult,
   type PeerLinkSummary,
@@ -132,7 +133,7 @@ const encodeLinks = Schema.encodeEffect(
   Schema.fromJsonString(Schema.Array(Schema.toEncoded(Schema.Unknown))),
 );
 
-const formatLinks = (links: ReadonlyArray<PeerLinkSummary>) =>
+export const formatLinks = (links: ReadonlyArray<PeerLinkSummary>) =>
   links.length === 0
     ? "No linked environments.\n"
     : `${links
@@ -140,7 +141,7 @@ const formatLinks = (links: ReadonlyArray<PeerLinkSummary>) =>
           (link) =>
             `${link.label} (${link.environmentId})\n  ${link.status}, access ${link.access}, expires ${DateTime.formatIso(link.expiresAt)}\n  ${link.urls.join(", ")}${link.lastError === null ? "" : `\n  last error: ${link.lastError}`}`,
         )
-        .join("\n\n")}\n`;
+        .join("\n\n")}\n\n${PEER_LINK_AGENTS_ONLY_NOTE}\n`;
 
 class EnvironmentLinkUsageError extends Schema.TaggedError<EnvironmentLinkUsageError>()(
   "EnvironmentLinkUsageError",
@@ -153,6 +154,9 @@ class EnvironmentLinkUsageError extends Schema.TaggedError<EnvironmentLinkUsageE
 
 /** The access the other environment gets here when none is chosen: below the full access it was given. */
 const DEFAULT_REVERSE_ACCESS: AuthMcpClientAccess = "auto";
+
+export const formatLinked = (linked: PeerLinkResult) =>
+  `Linked ${linked.label} (${linked.environmentId}) with ${linked.access} access, until ${DateTime.formatIso(linked.expiresAt)}.\n${formatBackOutcome(linked)}${PEER_LINK_AGENTS_ONLY_NOTE}\n`;
 
 const formatBackOutcome = (linked: PeerLinkResult) =>
   linked.back === undefined
@@ -201,7 +205,7 @@ const environmentLinkCommand = Command.make("link", {
   ),
 }).pipe(
   Command.withDescription(
-    "Link another T3.CodeShip environment, so agents here can work there. It shows up there under Settings → Connections, where it can be revoked.",
+    "Link another T3.CodeShip environment, so agents here can work there. It shows up there under Settings → Connections, where it can be revoked. It is not added to the app's machine list: use Add environment or Linked environments → Add to this app for that.",
   ),
   Command.withHandler(
     Effect.fn("environment.link")(function* (flags) {
@@ -211,10 +215,7 @@ const environmentLinkCommand = Command.make("link", {
         pairingCode: flags.pairingCode,
         access: flags.access,
       };
-      const report = (linked: PeerLinkResult) =>
-        Console.log(
-          `Linked ${linked.label} (${linked.environmentId}) with ${linked.access} access, until ${DateTime.formatIso(linked.expiresAt)}.\n${formatBackOutcome(linked)}`,
-        );
+      const report = (linked: PeerLinkResult) => Console.log(formatLinked(linked));
       if (!flags.bothWays) {
         return yield* runWithPeerLinks(flags, (links) =>
           links.link(input).pipe(Effect.flatMap(report)),

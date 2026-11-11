@@ -364,6 +364,10 @@ machine** option as the dialog, and the agent is told whether the link back was 
 - Agents can run commands in a terminal there only through a full-access link,
   and only where that machine lets agents run commands. See
   [terminals on another machine](./terminal.md#terminals-on-another-machine).
+- A link is for agents only: it does not add the machine to this app's machine
+  list (bottom-left of the sidebar). A linked machine that is missing there is
+  marked in **Linked environments**; choose **Add to this app** (one click for a
+  machine on your T3 Connect account, otherwise paste a pairing code from it).
 - The link shows up in that machine's **Settings → Machines & access** like any
   outside agent. Revoke it there to end it. **Forget** on this machine only
   removes it here.
