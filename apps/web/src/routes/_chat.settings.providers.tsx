@@ -1,7 +1,7 @@
 import { createFileRoute, useLocation } from "@tanstack/react-router";
 import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 
-import { ProjectDefaultsSettings } from "../components/settings/ProjectDefaultsSettings";
+import { ModelsSettingsSection } from "../components/settings/ModelsSettings";
 import { ProviderSettingsPanel } from "../components/settings/ProviderSettingsPanel";
 import {
   PROVIDERS_SETTINGS_TABS,
@@ -9,14 +9,13 @@ import {
   type ProvidersSettingsTab,
 } from "../components/settings/providersSettingsTab";
 import { useSettingsScope } from "../components/settings/SettingsScopeContext";
-import { TextGenerationSettingsSection } from "../components/settings/SettingsPanels";
 import { SettingsPageContainer } from "../components/settings/settingsLayout";
 import { SettingsScopeNotice } from "../components/settings/SettingsScopeNotice";
-import { SourceControlWritingSettingsSection } from "../components/settings/SourceControlWritingSettings";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 
 import { msg, t, type Message } from "~/i18n";
 const MACHINE_SECTION_TARGETS: ReadonlySet<string> = new Set([
+  "auto-mode",
   "account-failover",
   "delegated-task-models",
   "final-review",
@@ -92,9 +91,7 @@ function SettingsProvidersRoute() {
       >
         {tabs}
         {machineNoticeFirst ? machineNotice : null}
-        <ProjectDefaultsSettings category="models" />
-        <TextGenerationSettingsSection />
-        <SourceControlWritingSettingsSection part="models" />
+        <ModelsSettingsSection machineEnvironmentId={machine?.environmentId ?? null} />
         {machine === null && !machineNoticeFirst ? machineNotice : null}
       </ProviderSettingsPanel>
     );

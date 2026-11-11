@@ -225,6 +225,14 @@ describe("searchSettings", () => {
       ["Native sessions", "providers"],
       ["CODEX_HOME path", "providers"],
       ["Shadow home path", "providers"],
+      ["Default for new threads", "default-model"],
+      ["Use the last picked model", "last-picked-model"],
+      ["Fallback model", "fallback-model"],
+      ["Auto mode", "auto-mode"],
+      ["Titles and background text", "text-generation-model"],
+      ["Commit and pull request writing", "source-control-writer-model"],
+      ["Final review", "final-review"],
+      ["Delegated tasks", "delegated-task-models"],
     ] as const) {
       expect(searchSettings(title)[0]?.id, title).toBe(id);
     }

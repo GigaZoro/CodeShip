@@ -295,7 +295,7 @@ function AutoModeNote(props: {
       <InlineButton
         onClick={() => {
           props.onRequestClose?.();
-          void navigate({ to: "/settings/providers", hash: "account-failover" });
+          void navigate({ to: "/settings/providers", hash: "auto-mode" });
         }}
       >
         {props.auto === null ? t("Turn on in Settings") : t("Change in Settings")}
