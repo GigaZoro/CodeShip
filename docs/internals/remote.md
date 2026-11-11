@@ -231,33 +231,46 @@ machine that was off when a change was saved catches up, and machines that are n
 other converge by passing versions on. This is not the list in `client-runtime`'s
 `sharedSettings.ts`, which only decides which writes a client sends to every connected machine now.
 
-- **The group is the machines that follow.** A client saving a shared key for all machines writes
-  only to connected followers, with one stamp (`updatedAt`, `origin`); with no follower connected it
-  is a plain bulk edit. A machine that does not follow refuses a stamped write, so racing a client
-  that thought it still followed cannot change it through sharing.
+- **The group is the machines that follow, connected or not.** Once any machine is known to follow,
+  from live or cached config, a client saving a shared key for all machines sends it only to
+  followers; with none connected it saves nothing, since a non-follower must never take it and
+  nothing would pass it on. With no follower known it is a plain bulk edit. Web and mobile plan this
+  with one function (`planSharedSettingsWrites` in `client-runtime`'s `sharedSettings.ts`). A
+  machine that does not follow refuses a stamped write, so racing a client that thought it still
+  followed cannot change it through sharing.
 - **Following is the trust decision.** A follower takes versions from any linked machine that also
   follows, over its own links, whatever the link's access level, the way shared scheduled tasks sync
   ([`SharedTaskPull.ts`](../../apps/server/src/scheduledTasks/SharedTaskPull.ts)). Turning on
   Follow shared settings is what grants that.
-- **One stamp means one value.** A version is the key's whole value, never a patch: the client
-  completes it from the machine being edited before fan-out, the server replaces the key with it
-  (`SettingsWritePlan.replace`) instead of merging into what it held, and records what it stored.
-  Merging would leave each machine with its own options or instructions under the same stamp.
+- **A server stamps a change, never a device.** The client saves the change first on one connected
+  follower (the edited machine when it follows) through `server.shareSettings`, which merges it into
+  that machine's values and stamps it by its clock under the settings lock, then sends the returned
+  stamp and values to the other followers. Watermarks use server clocks too, so a device with a
+  wrong clock cannot order a change before or after one it did not see.
+- **One stamp means one value, passed on as sent.** A version is the key's whole value, never a
+  patch, and the server replaces the key with it (`SettingsWritePlan.replace`) instead of merging.
+  A machine stores and serves the JSON it received and decodes it only to apply it, so a build
+  that does not know a field, or a managed policy, cannot shrink the value it passes on under the
+  same stamp.
 - **Ordering is per key, checked under the settings write lock** (`SettingsWriteHooks.prepare`).
   Each key records its last shared version and, for writes made on this machine alone, a local
-  watermark (time and this machine). A shared version applies only if it is newer than both, so a
-  late older version cannot undo a newer change, and a stale stamped write skips that key rather
-  than leaving value and version disagreeing. Pulled versions, pending retries and pending inserts
-  recheck following under the same lock. Taking another lock around `updateSettings` would invert
-  that order and deadlock.
+  watermark (time and this machine). A version newer than both applies. One newer than the shared
+  version but older than the local change is stored and served without applying, so it still
+  reaches machines only this one links to, and since it is never pending, nothing applies it here
+  later; a setting an administrator locks here is passed on the same way. Pulled versions, pending
+  retries and stored versions recheck following under the same lock. Taking another lock around
+  `updateSettings` would invert that order and deadlock.
 - **Newest `updatedAt` wins, ties go to the larger `origin`, and stamps are never re-dated.** A
   pulled version stamped more than five minutes ahead of this machine's clock waits, unserved,
   until its time (logged once); re-dating it on each pull would let it undo every later save. A
-  client stamp that far ahead is refused, since the device's clock is wrong.
-- **A model selection naming a provider instance this machine lacks is kept as pending**, still
-  served on, and applied by the next pull once the instance exists and no local change is newer.
+  stamped write that far ahead is refused.
+- **A model selection waits, pending and still served, while it cannot run here**: its instance is
+  missing, runs another driver than on the machine that saved it (`instanceDriver`), or is turned
+  off. It applies once that changes and no local change is newer, on a stamped write and a pull
+  alike.
 - **The pulling side checks everything**: the key must be shared and the value must decode as that
-  key's setting, since a newer peer may share a key this build does not know.
+  key's setting, since a newer peer may share a key this build does not know. A peer whose build
+  has no `t3_shared_settings` is skipped quietly (`PeerMcpClient.callIfAvailable`).
 
 ## Hosted web is a client
 

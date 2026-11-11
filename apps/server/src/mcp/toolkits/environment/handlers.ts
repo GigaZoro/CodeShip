@@ -115,7 +115,9 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
           return preferences(
             yield* (
               allMachines === true
-                ? sharedSettings.updateForAllMachines(patch)
+                ? sharedSettings
+                    .updateForAllMachines(patch)
+                    .pipe(Effect.map((saved) => saved.settings))
                 : sharedSettings.update(patch, undefined)
             ).pipe(Effect.mapError(unavailable)),
           );

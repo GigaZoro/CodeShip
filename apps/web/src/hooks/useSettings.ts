@@ -30,12 +30,12 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import {
   filterSharedServerPatch,
-  patchSetsMachineSharedSetting,
-  sharedSettingStamp,
+  followsSharedSettings,
+  type MachineSettingsWrite,
+  persistSharedSettingsWrites,
+  planSharedSettingsWrites,
   splitSharedServerPatch,
   supportsSharedSettingsSync,
-  wholeSharedSettingValues,
-  withWholeSharedSettingValues,
 } from "@t3tools/client-runtime/state/shared-settings";
 import { ensureLocalApi } from "~/localApi";
 import {
@@ -49,6 +49,7 @@ import {
   modelPreferencesMigrationPatch,
   resolveModelPreferences,
 } from "@t3tools/shared/serverSettings";
+import * as Cause from "effect/Cause";
 import * as Equal from "effect/Equal";
 import * as Struct from "effect/Struct";
 import * as Option from "effect/Option";
@@ -640,6 +641,10 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
     }
     return result;
   };
+  const persistShare = useAtomCommand(serverEnvironment.shareSettings, {
+    label: "server settings share",
+    reportFailure: false,
+  });
   const sharedSettingsSyncTargetIds = useSharedSettingsSyncTargetIds(true);
   const updateSettings = (
     patch: UnifiedSettingsPatch,
@@ -694,28 +699,24 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
         if (environmentId) {
           targets.add(environmentId);
         }
-        const writes: Array<Parameters<typeof persist>[0]> = [];
+        const writes: MachineSettingsWrite[] = [];
         const deniedLabels: string[] = [];
-        // These keys go to every machine this app is connected to. Only machines that follow shared
-        // settings get the stamp, with the whole values this machine ends up with, so machines that
-        // are off now take one value later; the rest get a write of their own.
-        const share =
-          environmentId !== null &&
-          sourceSettings !== undefined &&
-          patchSetsMachineSharedSetting(sharedPatch)
-            ? {
-                stamp: sharedSettingStamp(environmentId),
-                whole: wholeSharedSettingValues(sourceSettings, sharedPatch),
-              }
-            : undefined;
+        const sourceFollows = environments.some(
+          (candidate) =>
+            candidate.environmentId === environmentId && followsSharedSettings(candidate),
+        );
         for (const targetId of targets) {
           const target = environments.find((candidate) => candidate.environmentId === targetId);
-          const targetPatch = filterSharedServerPatch(
-            sharedPatch,
-            target?.serverConfig?.settings,
-            sourceSettings,
-            targetId === environmentId,
-          );
+          // A follower takes the group's version and decides itself whether its models can run it.
+          const targetPatch =
+            sourceFollows && target !== undefined && followsSharedSettings(target)
+              ? sharedPatch
+              : filterSharedServerPatch(
+                  sharedPatch,
+                  target?.serverConfig?.settings,
+                  sourceSettings,
+                  targetId === environmentId,
+                );
           if (Object.keys(targetPatch).length === 0) continue;
           const session = appAtomRegistry.get(environmentSession.sessionStateAtom(targetId));
           if (
@@ -729,16 +730,27 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
           }
           writes.push({
             environmentId: targetId,
-            input:
-              share === undefined || target?.serverConfig?.settings.followSharedSettings !== true
-                ? { patch: targetPatch }
-                : {
-                    patch: withWholeSharedSettingValues(targetPatch, share.whole),
-                    share: share.stamp,
-                  },
+            label: target?.label ?? targetId,
+            patch: targetPatch,
           });
         }
-        if (writes.length === 0) {
+        // Within the group, the edited machine saves the shared settings first and stamps them, and
+        // the other followers take its stamp and values, so a follower that is off takes them later.
+        const written = new Set(writes.map(({ environmentId: targetId }) => targetId));
+        const plan = planSharedSettingsWrites({
+          machines: environments.filter(
+            (candidate) =>
+              written.has(candidate.environmentId) ||
+              (sourceFollows &&
+                followsSharedSettings(candidate) &&
+                candidate.connection.phase !== "connected"),
+          ),
+          writes,
+          origin: environmentId,
+          sharedPatch: () => sharedPatch,
+          writeFor: (machine) => ({ ...machine, patch: {} }),
+        });
+        if (plan.writes.length === 0) {
           warnUnsaved(
             deniedLabels.length > 0
               ? t("This connection lacks permission to change settings on {environment}.", {
@@ -749,49 +761,46 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
                 : undefined,
           );
         } else {
-          void Promise.all(
-            writes.map(async (request) => ({
-              label:
-                environments.find((target) => target.environmentId === request.environmentId)
-                  ?.label ?? request.environmentId,
-              result: await persist(request),
-            })),
-          ).then((outcomes) => {
-            if (
-              deniedLabels.length > 0 ||
-              outcomes.some(({ result }) => result._tag === "Failure")
-            ) {
-              options?.onFailed?.();
-            }
-            const failures = outcomes.flatMap(({ label, result }) => {
-              if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return [];
-              const error = squashAtomCommandFailure(result);
-              return [
-                t("Could not save on {label}: {error}", {
-                  label,
-                  error:
-                    error instanceof Error
-                      ? error.message
-                      : t("The save failed. Try reconnecting and saving again."),
-                }),
-              ];
-            });
-            if (failures.length === 0) return;
-            const saved = outcomes
-              .filter(({ result }) => result._tag === "Success")
-              .map(({ label }) => label);
-            toastManager.add({
-              type: "error",
-              title:
-                saved.length > 0 ? t("Setting saved on some environments") : t("Setting not saved"),
-              description: [
-                ...failures,
-                ...(saved.length > 0
-                  ? [t("Saved on {environments}.", { environments: saved.join(", ") })]
-                  : []),
-              ].join("\n"),
-            });
-          });
+          void persistSharedSettingsWrites(plan, { update: persist, share: persistShare }).then(
+            (outcomes) => {
+              if (
+                deniedLabels.length > 0 ||
+                outcomes.some(({ result }) => result._tag === "Failure")
+              ) {
+                options?.onFailed?.();
+              }
+              const failures = outcomes.flatMap(({ write, result }) => {
+                if (result._tag !== "Failure" || Cause.hasInterruptsOnly(result.cause)) return [];
+                const error = squashAtomCommandFailure(result);
+                return [
+                  t("Could not save on {label}: {error}", {
+                    label: write.label,
+                    error:
+                      error instanceof Error
+                        ? error.message
+                        : t("The save failed. Try reconnecting and saving again."),
+                  }),
+                ];
+              });
+              if (failures.length === 0) return;
+              const saved = outcomes
+                .filter(({ result }) => result._tag === "Success")
+                .map(({ write }) => write.label);
+              toastManager.add({
+                type: "error",
+                title:
+                  saved.length > 0
+                    ? t("Setting saved on some environments")
+                    : t("Setting not saved"),
+                description: [
+                  ...failures,
+                  ...(saved.length > 0
+                    ? [t("Saved on {environments}.", { environments: saved.join(", ") })]
+                    : []),
+                ].join("\n"),
+              });
+            },
+          );
         }
       }
     }

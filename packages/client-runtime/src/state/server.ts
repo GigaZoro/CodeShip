@@ -1324,6 +1324,12 @@ export function createServerEnvironmentAtoms<R, E>(
     scheduler: configScheduler,
     concurrency: configConcurrency,
   });
+  const shareSettings = createEnvironmentRpcCommand(runtime, {
+    label: "environment-data:server:share-settings",
+    tag: WS_METHODS.serverShareSettings,
+    scheduler: configScheduler,
+    concurrency: configConcurrency,
+  });
 
   return {
     configValueAtom,
@@ -1720,6 +1726,7 @@ export function createServerEnvironmentAtoms<R, E>(
       concurrency: configConcurrency,
     }),
     updateSettings,
+    shareSettings,
     mutateProviderInstance: updateSettings,
     updateProjectScripts: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:update-project-scripts",

@@ -17,11 +17,13 @@ import { useSettingsEnvironmentFilter } from "./settings-environment-filter";
 import { useSettingsWriter } from "./useSettingsWriter";
 import {
   managedSettingReason,
-  planMobileScopedSettingsPatch,
+  plainMobileSettingsWrites,
   planMobileScopedSettingsClear,
+  planMobileSettingsWrites,
   resolveMobileSettingsTargets,
   uniformMobileSetting,
 } from "./settings-scoped-server";
+import { useEnvironments } from "../../state/environments";
 import {
   AndroidSettingsEnvironmentFilter,
   SettingsEnvironmentFilterHeader,
@@ -66,7 +68,9 @@ export function SettingsFollowUpRouteScreen() {
     ? (preferencesResult.value.followUpBehavior ?? DEFAULT_FOLLOW_UP_BEHAVIOR)
     : null;
 
-  const { selectedTargets, projectGroups, selectedProjectKey } = useSettingsEnvironmentFilter();
+  const { selectedTargets, selectedIds, projectGroups, selectedProjectKey } =
+    useSettingsEnvironmentFilter();
+  const { environments } = useEnvironments();
   const selectedProject = projectGroups.find((group) => group.key === selectedProjectKey);
   const projectSelected = selectedProjectKey !== null;
   const targets = resolveMobileSettingsTargets(
@@ -94,14 +98,23 @@ export function SettingsFollowUpRouteScreen() {
       )
     )
       return;
-    const writes =
+    const plan =
       patch === null
-        ? planMobileScopedSettingsClear(targets, ["skillAvailability"])
-        : planMobileScopedSettingsPatch(targets, projectSelected, patch);
-    if (writes.length === 0) return;
+        ? plainMobileSettingsWrites(
+            targets,
+            planMobileScopedSettingsClear(targets, ["skillAvailability"]),
+          )
+        : planMobileSettingsWrites({
+            machines: environments,
+            targets,
+            allSelected: selectedIds === null,
+            projectSelected,
+            patch,
+          });
+    if (plan.writes.length === 0 && !plan.noFollowerConnected) return;
     writeInFlight.current = true;
     setPending(true);
-    void writeSettings(targets, writes).finally(() => {
+    void writeSettings(targets, plan).finally(() => {
       writeInFlight.current = false;
       setPending(false);
     });

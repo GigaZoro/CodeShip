@@ -407,7 +407,7 @@ import {
   ServerSettingsError,
   ServerSettingsPatch,
 } from "./settings.ts";
-import { SharedSettingStamp } from "./sharedSettings.ts";
+import { SharedSettingsShare } from "./sharedSettings.ts";
 import {
   ScheduledTaskApplySharedInput,
   ScheduledTaskApplySharedResult,
@@ -598,6 +598,7 @@ export const WS_METHODS = {
   peerLinksUnlink: "peerLinks.unlink",
   peerLinksAnswerRequest: "peerLinks.answerRequest",
   serverUpdateSettings: "server.updateSettings",
+  serverShareSettings: "server.shareSettings",
   serverUpdateProjectScripts: "server.updateProjectScripts",
   serverDiscoverSourceControl: "server.discoverSourceControl",
   serverSearchAcpRegistry: "server.searchAcpRegistry",
@@ -1050,10 +1051,30 @@ const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSettings, {
   payload: Schema.Struct({
     patch: ServerSettingsPatch,
     providerInstanceMutation: Schema.optionalKey(ProviderInstanceMutation),
-    /** Marks a write saved for all machines; servers from before shared settings ignore it. */
-    share: Schema.optionalKey(SharedSettingStamp),
+    /**
+     * A change saved for all machines, for a machine that follows shared settings: it carries the
+     * shared settings, and `patch` the rest. Servers from before shared settings ignore it.
+     */
+    share: Schema.optionalKey(SharedSettingsShare),
   }),
   success: ServerSettings,
+  error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
+});
+
+/**
+ * Saves a change for all machines on a machine that follows shared settings, stamped by its clock,
+ * and returns what to send the other followers: the stamp and the whole value of each shared
+ * setting that took it.
+ */
+export const ServerShareSettingsResult = Schema.Struct({
+  settings: ServerSettings,
+  share: SharedSettingsShare,
+});
+export type ServerShareSettingsResult = typeof ServerShareSettingsResult.Type;
+
+const WsServerShareSettingsRpc = Rpc.make(WS_METHODS.serverShareSettings, {
+  payload: Schema.Struct({ patch: ServerSettingsPatch }),
+  success: ServerShareSettingsResult,
   error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
 });
 
@@ -2330,6 +2351,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetDatabaseStorageRpc,
   WsServerWatchRestartHoldRpc,
   WsServerUpdateSettingsRpc,
+  WsServerShareSettingsRpc,
   WsServerUpdateProjectScriptsRpc,
   WsManualStepsListRpc,
   WsManualStepsDetectedRpc,
