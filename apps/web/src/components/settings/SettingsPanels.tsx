@@ -2014,7 +2014,9 @@ export function MaintenanceSettingsPanel() {
   const telemetryOff = managedTelemetryOffMessage(primaryPolicy);
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
-  const { scope, connectedEnvironments } = useSettingsScope();
+  const { scope, environment, connectedEnvironments } = useSettingsScope();
+  const environmentId = environment?.environmentId ?? null;
+  const isEnvironmentScope = scope.environmentIds.length === 1 && environmentId !== null;
   const hasServerTargets = connectedEnvironments.length > 0;
   // The App, Legal, and setup sections belong to this device, so only the server sections step aside.
   const serverUnavailableMessage =
@@ -2100,6 +2102,31 @@ export function MaintenanceSettingsPanel() {
           </SettingsSection>
 
           <StorageCleanupSections />
+
+          <SettingsSection id="diagnostics-section" title={t("Diagnostics")}>
+            <SettingsRow
+              {...searchableSetting("diagnostics")}
+              description={
+                isEnvironmentScope
+                  ? t("Inspect processes, resource use, and logs on this environment.")
+                  : t("Inspect processes, resource use, and logs on one environment at a time.")
+              }
+              control={
+                <Button
+                  render={
+                    <Link
+                      to="/settings/diagnostics"
+                      search={{ machine: environmentId ?? undefined }}
+                    />
+                  }
+                  size="sm"
+                  variant="outline"
+                >
+                  {t("View diagnostics")}
+                </Button>
+              }
+            />
+          </SettingsSection>
         </>
       )}
 
