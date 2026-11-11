@@ -6245,6 +6245,10 @@ const catalog: MessageCatalog = {
   "Inspect managed relay connectivity.": "Перевірка зв’язності керованого ретранслятора.",
   "Inspect pairing links and authorized clients.":
     "Перегляд посилань сполучення й авторизованих клієнтів.",
+  "Inspect processes, resource use, and logs on one environment at a time.":
+    "Переглядайте процеси, використання ресурсів і журнали в одному середовищі за раз.",
+  "Inspect processes, resource use, and logs on this environment.":
+    "Переглядайте процеси, використання ресурсів і журнали в цьому середовищі.",
   "Inspecting cached data…": "Перевірка кешованих даних…",
   Install: "Встановити",
   "Install {name}": "Встановити {name}",
@@ -13399,6 +13403,7 @@ const catalog: MessageCatalog = {
   "View commit {id}": "Переглянути коміт {id}",
   "View commit {sha}, {message}": "Переглянути коміт {sha}, {message}",
   "View device": "Переглянути пристрій",
+  "View diagnostics": "Переглянути діагностику",
   "View diagnostics and usage": "Перегляд діагностики та використання",
   "View diff for {path}, {additions}, {deletions}":
     "Переглянути зміни для {path}, {additions}, {deletions}",
