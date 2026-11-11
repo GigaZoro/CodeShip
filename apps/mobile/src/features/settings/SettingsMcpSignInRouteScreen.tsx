@@ -37,17 +37,24 @@ const failureMessage = (result: AtomCommandResult<unknown, unknown>) => {
   return error instanceof Error && error.message.trim() ? error.message : t(FAILURE_FALLBACK);
 };
 
+interface McpSignInBodyProps {
+  readonly environmentId: EnvironmentId;
+  readonly instanceId: ProviderInstanceId;
+  /** The server's name in the provider's configuration. */
+  readonly name: string;
+  readonly providerLabel: string;
+  /** Leaves out Close and Done, for a host that has its own controls. */
+  readonly embedded?: boolean;
+  readonly onDone: () => void;
+}
+
 /**
  * Signs an MCP server in for one provider account: the browser approves access, and the pasted
  * address finishes it when the provider's redirect cannot reach this phone. The server keeps the
- * sign-in alive while this page is open, so leaving cancels it.
+ * sign-in alive while this is mounted, so leaving cancels it.
  */
-export function SettingsMcpSignInRouteScreen({ route }: Props) {
-  const { serverLabel, providerLabel, name } = route.params;
-  const environmentId = EnvironmentId.make(route.params.environmentId);
-  const instanceId = ProviderInstanceId.make(route.params.instanceId);
-  const navigation = useNavigation();
-  const insets = useSafeAreaInsets();
+export function McpSignInBody(props: McpSignInBodyProps) {
+  const { environmentId, instanceId, name, providerLabel, embedded = false } = props;
   const signIn = useEnvironmentQuery(
     serverEnvironment.providerMcpSignIn({ environmentId, input: { instanceId, name } }),
   );
@@ -75,103 +82,106 @@ export function SettingsMcpSignInRouteScreen({ route }: Props) {
     setCallbackError(failureMessage(result));
   };
 
-  const body = () => {
-    if (signIn.error !== null) {
-      return (
-        <>
-          <Text accessibilityRole="alert" className="px-2 text-danger-foreground">
-            {signIn.error}
-          </Text>
-          <Button label={t("Close")} onPress={() => navigation.goBack()} />
-        </>
-      );
-    }
-    if (state?.phase === "succeeded") {
-      return (
-        <>
-          <Text accessibilityRole="alert" className="px-2 text-base text-foreground">
-            {t("Signed in. New {provider} sessions can use its tools.", {
-              provider: providerLabel,
-            })}
-          </Text>
-          <Button label={t("Done")} tone="primary" onPress={() => navigation.goBack()} />
-        </>
-      );
-    }
-    if (state === null) {
-      return (
-        <View className="flex-row items-center gap-2 px-2">
-          <AppActivityIndicator colorClassName="accent-foreground-muted" />
-          <Text className="text-foreground-muted">{t("Starting the sign-in…")}</Text>
-        </View>
-      );
-    }
-    const authorizationUrl = state.authorizationUrl;
+  if (signIn.error !== null) {
     return (
       <>
-        {authorizationUrl !== undefined ? (
-          <View className="gap-3 px-2">
-            <Text className="text-base text-foreground">
-              {t(
-                "Open the sign-in page and approve access. This page finishes on its own once {provider} gets the response.",
-                { provider: providerLabel },
-              )}
-            </Text>
-            <Button
-              label={t("Open sign-in page")}
-              icon="arrow.up.right"
-              tone="primary"
-              onPress={() => void Linking.openURL(authorizationUrl).catch(() => undefined)}
-            />
-          </View>
-        ) : null}
-        <View className="flex-row items-center gap-2 px-2">
-          <AppActivityIndicator colorClassName="accent-foreground-muted" />
-          <Text className="text-sm text-foreground-muted">{t("Waiting for approval…")}</Text>
-        </View>
-        <SettingsSection>
-          <View className="gap-2 px-4 py-3">
-            <Text className="text-sm font-t3-medium text-foreground-muted">
-              {t("Redirect address")}
-            </Text>
-            <AppTextInput
-              accessibilityLabel={t("Redirect address")}
-              value={callbackUrl}
-              onChangeText={(value) => {
-                setCallbackUrl(value);
-                setCallbackError(null);
-              }}
-              placeholder={"http://localhost:…/callback?code=…"}
-              editable={!submitting}
-              autoCapitalize="none"
-              autoCorrect={false}
-              spellCheck={false}
-              keyboardType="url"
-              returnKeyType="done"
-              className="min-h-11 rounded-xl px-3 py-2 font-mono text-sm text-foreground"
-            />
-            <Text className="text-xs text-foreground-muted">
-              {t(
-                "If the browser shows a connection error after you approve, paste the address from its address bar.",
-              )}
-            </Text>
-            {callbackError !== null ? (
-              <Text accessibilityRole="alert" className="text-xs text-danger-foreground">
-                {callbackError}
-              </Text>
-            ) : null}
-          </View>
-        </SettingsSection>
-        <Button
-          label={t("Finish sign-in")}
-          loading={submitting}
-          disabled={callbackUrl.trim() === ""}
-          onPress={() => void submit()}
-        />
+        <Text accessibilityRole="alert" className="px-2 text-danger-foreground">
+          {signIn.error}
+        </Text>
+        {embedded ? null : <Button label={t("Close")} onPress={props.onDone} />}
       </>
     );
-  };
+  }
+  if (state?.phase === "succeeded") {
+    return (
+      <>
+        <Text accessibilityRole="alert" className="px-2 text-base text-foreground">
+          {t("Signed in. New {provider} sessions can use its tools.", {
+            provider: providerLabel,
+          })}
+        </Text>
+        {embedded ? null : <Button label={t("Done")} tone="primary" onPress={props.onDone} />}
+      </>
+    );
+  }
+  if (state === null) {
+    return (
+      <View className="flex-row items-center gap-2 px-2">
+        <AppActivityIndicator colorClassName="accent-foreground-muted" />
+        <Text className="text-foreground-muted">{t("Starting the sign-in…")}</Text>
+      </View>
+    );
+  }
+  const authorizationUrl = state.authorizationUrl;
+  return (
+    <>
+      {authorizationUrl !== undefined ? (
+        <View className="gap-3 px-2">
+          <Text className="text-base text-foreground">
+            {t(
+              "Open the sign-in page and approve access. This page finishes on its own once {provider} gets the response.",
+              { provider: providerLabel },
+            )}
+          </Text>
+          <Button
+            label={t("Open sign-in page")}
+            icon="arrow.up.right"
+            tone="primary"
+            onPress={() => void Linking.openURL(authorizationUrl).catch(() => undefined)}
+          />
+        </View>
+      ) : null}
+      <View className="flex-row items-center gap-2 px-2">
+        <AppActivityIndicator colorClassName="accent-foreground-muted" />
+        <Text className="text-sm text-foreground-muted">{t("Waiting for approval…")}</Text>
+      </View>
+      <SettingsSection>
+        <View className="gap-2 px-4 py-3">
+          <Text className="text-sm font-t3-medium text-foreground-muted">
+            {t("Redirect address")}
+          </Text>
+          <AppTextInput
+            accessibilityLabel={t("Redirect address")}
+            value={callbackUrl}
+            onChangeText={(value) => {
+              setCallbackUrl(value);
+              setCallbackError(null);
+            }}
+            placeholder={"http://localhost:…/callback?code=…"}
+            editable={!submitting}
+            autoCapitalize="none"
+            autoCorrect={false}
+            spellCheck={false}
+            keyboardType="url"
+            returnKeyType="done"
+            className="min-h-11 rounded-xl px-3 py-2 font-mono text-sm text-foreground"
+          />
+          <Text className="text-xs text-foreground-muted">
+            {t(
+              "If the browser shows a connection error after you approve, paste the address from its address bar.",
+            )}
+          </Text>
+          {callbackError !== null ? (
+            <Text accessibilityRole="alert" className="text-xs text-danger-foreground">
+              {callbackError}
+            </Text>
+          ) : null}
+        </View>
+      </SettingsSection>
+      <Button
+        label={t("Finish sign-in")}
+        loading={submitting}
+        disabled={callbackUrl.trim() === ""}
+        onPress={() => void submit()}
+      />
+    </>
+  );
+}
 
+export function SettingsMcpSignInRouteScreen({ route }: Props) {
+  const { serverLabel, providerLabel, name } = route.params;
+  const navigation = useNavigation();
+  const insets = useSafeAreaInsets();
   return (
     <SettingsScreen title={t("Sign in to {server}", { server: serverLabel })}>
       <ScrollView
@@ -188,7 +198,13 @@ export function SettingsMcpSignInRouteScreen({ route }: Props) {
             provider: providerLabel,
           })}
         </Text>
-        {body()}
+        <McpSignInBody
+          environmentId={EnvironmentId.make(route.params.environmentId)}
+          instanceId={ProviderInstanceId.make(route.params.instanceId)}
+          name={name}
+          providerLabel={providerLabel}
+          onDone={() => navigation.goBack()}
+        />
       </ScrollView>
     </SettingsScreen>
   );

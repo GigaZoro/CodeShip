@@ -97,11 +97,12 @@ const DETECTED_KIND_ORDER: Record<DetectedManualStep["kind"], number> = {
   "mcp-needs-auth": 3,
 };
 
-const byDetectedUrgency = (left: DetectedManualStepEntry, right: DetectedManualStepEntry) =>
+export const byDetectedUrgency = (left: DetectedManualStepEntry, right: DetectedManualStepEntry) =>
   DETECTED_KIND_ORDER[left.step.kind] - DETECTED_KIND_ORDER[right.step.kind] ||
   (left.step.accountName ?? left.step.driver).localeCompare(
     right.step.accountName ?? right.step.driver,
   ) ||
+  left.step.instanceId.localeCompare(right.step.instanceId) ||
   (left.step.serverName ?? "").localeCompare(right.step.serverName ?? "");
 
 /**
@@ -307,16 +308,23 @@ export interface DetectedManualStepText {
   readonly detail: string;
 }
 
+/** The account as the rows name it: the driver, plus the account's own name when it adds one. */
+export function detectedManualStepAccountLabel(
+  step: Pick<DetectedManualStep, "accountName">,
+  driverLabel: string,
+): string {
+  const name = step.accountName?.trim();
+  return name && name.toLowerCase() !== driverLabel.toLowerCase()
+    ? `${driverLabel} · ${name}`
+    : driverLabel;
+}
+
 /** The words for a detected step; the caller names the driver and formats dates in its locale. */
 export function detectedManualStepText(
   step: DetectedManualStep,
   helpers: { readonly driverLabel: string; readonly formatDate: (iso: string) => string },
 ): DetectedManualStepText {
-  const name = step.accountName?.trim();
-  const account =
-    name && name.toLowerCase() !== helpers.driverLabel.toLowerCase()
-      ? `${helpers.driverLabel} · ${name}`
-      : helpers.driverLabel;
+  const account = detectedManualStepAccountLabel(step, helpers.driverLabel);
   switch (step.kind) {
     case "signed-out":
       return { step: t("Sign in to {account}", { account }), detail: t("Signed out") };

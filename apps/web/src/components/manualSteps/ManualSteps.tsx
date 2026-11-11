@@ -11,7 +11,7 @@ import type { ContextMenuItem, ManualStep } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { CircleDollarSignIcon, HandIcon, KeyRoundIcon } from "lucide-react";
-import type { KeyboardEvent, MouseEvent } from "react";
+import { lazy, Suspense, useState, type KeyboardEvent, type MouseEvent } from "react";
 
 import { updateClientSettings, useClientSettings } from "../../hooks/useSettings";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
@@ -34,6 +34,9 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { t } from "~/i18n";
 
 const MANUAL_STEPS_ROW_ID = "shelf:manual-steps";
+
+// The guided sign-in carries the provider and MCP sign-in flows, which most visits never open.
+const SignInAllDialog = lazy(() => import("./SignInAllDialog"));
 
 /** Settings → Threads, at the ThreadPage token. */
 function ConnectThreadPageLink(props: { readonly size?: "xs" | "sm" }) {
@@ -207,6 +210,58 @@ function DetectedStepRow(props: {
   );
 }
 
+/** A machine with several sign-ins to do gets one place to walk through all of them. */
+function SignInAllRow(props: {
+  readonly entries: ReadonlyArray<DetectedManualStepEntry>;
+  readonly parentRowId?: string;
+  /** False under the machine's own heading, which already names it. */
+  readonly showMachine?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const machine = props.showMachine === false ? null : props.entries[0]?.step.machine;
+  const label = t("Sign in to all ({count})", { count: props.entries.length });
+  const handleKeyDown = (event: KeyboardEvent) => {
+    if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) {
+      return;
+    }
+    event.preventDefault();
+    setOpen(true);
+  };
+  return (
+    <li className="list-none">
+      <div
+        role="treeitem"
+        tabIndex={-1}
+        data-sidebar-row={`sign-in-all:${props.entries[0]?.environmentId ?? ""}:${props.entries[0]?.step.machine ?? ""}`}
+        data-sidebar-parent={props.parentRowId}
+        aria-label={[label, machine].filter(Boolean).join(", ")}
+        onClick={() => setOpen(true)}
+        onKeyDown={handleKeyDown}
+        className="flex min-h-8 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 outline-none select-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      >
+        <span onClick={stopRowActivation}>
+          <Button size="xs" variant="outline" onClick={() => setOpen(true)}>
+            <KeyRoundIcon aria-hidden />
+            {label}
+          </Button>
+        </span>
+        {machine ? (
+          <span className="ms-auto max-w-[40%] shrink-0 truncate text-xs text-muted-foreground">
+            {machine}
+          </span>
+        ) : null}
+      </div>
+      {open ? (
+        <Suspense fallback={null}>
+          <SignInAllDialog entries={props.entries} onClose={() => setOpen(false)} />
+        </Suspense>
+      ) : null}
+    </li>
+  );
+}
+
+const hasSeveralSignIns = (group: ManualStepGroup) => group.detected.length >= 2;
+
 function ManualStepsSkeleton() {
   return (
     <div aria-hidden className="grid gap-2 px-2 py-1.5">
@@ -275,6 +330,9 @@ function ManualStepsBody(props: {
               </h3>
             ) : null}
             <ul role="group" aria-label={group.machine} className="flex flex-col gap-px">
+              {hasSeveralSignIns(group) ? (
+                <SignInAllRow entries={group.detected} showMachine={!props.groupHeadings} />
+              ) : null}
               {group.detected.map((entry) => (
                 <DetectedStepRow
                   key={detectedManualStepKey(entry)}
@@ -439,6 +497,15 @@ export function ManualStepsSidebarSection() {
       </li>
       {expanded && state.view.status === "listed"
         ? state.view.groups.flatMap((group) => [
+            ...(hasSeveralSignIns(group)
+              ? [
+                  <SignInAllRow
+                    key={`sign-in-all:${group.machine}`}
+                    entries={group.detected}
+                    parentRowId={MANUAL_STEPS_ROW_ID}
+                  />,
+                ]
+              : []),
             ...group.detected.map((entry) => (
               <DetectedStepRow
                 key={detectedManualStepKey(entry)}

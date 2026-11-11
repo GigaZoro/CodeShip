@@ -44,7 +44,11 @@ ended, and an MCP server that needs signing in. Each names the machine and the a
 before the ThreadPage steps, and has **Sign in**, which opens that account in **Settings →
 Providers** or that server on the **Extensions** MCP tab (on mobile, the Providers page, or
 Capabilities narrowed to that server, whose row has **Sign in**). The step disappears by itself
-once the sign-in works. Servers that predate this list show only the ThreadPage steps.
+once the sign-in works. A machine with two or more of them also has **Sign in to all**, which walks
+through them in one dialog (on mobile, one page): expired logins, then signed-out accounts, logins
+ending soon and MCP servers, each in its usual sign-in flow with **Skip** and **Next**, and a summary
+of what is still pending at the end. An account's MCP servers are skipped when its own sign-in
+fails. Servers that predate this list show only the ThreadPage steps.
 
 To fill the list, create a token in ThreadPage under **Settings → Connections → Connect an
 automation → Script or API**, with **Read only** access to the Machine inbox folder or all threads.
