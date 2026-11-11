@@ -2,7 +2,7 @@ import { DEFAULT_SERVER_SETTINGS, EnvironmentId, ProjectId } from "@t3tools/cont
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { describe, expect, it } from "vite-plus/test";
 
-import { settingInheritanceLayers } from "./SettingInheritance";
+import { settingInheritanceLayers, showsSettingInheritance } from "./SettingInheritance";
 
 const environmentId = EnvironmentId.make("laptop");
 const projectId = ProjectId.make("project");
@@ -98,5 +98,26 @@ describe("settingInheritanceLayers", () => {
       ["Inherits", false],
       ["Current checkout", false],
     ]);
+  });
+});
+
+describe("showsSettingInheritance", () => {
+  it("hides the marker for a built-in default", () => {
+    expect(showsSettingInheritance({ state: "default" })).toBe(false);
+  });
+
+  it.each(["environment", "inherited", "overridden", "mixed"] as const)(
+    "shows the marker when the value is %s",
+    (state) => {
+      expect(showsSettingInheritance({ state })).toBe(true);
+    },
+  );
+
+  it("shows the marker on a default that an administrator's policy sets", () => {
+    expect(showsSettingInheritance({ state: "default", managed: true })).toBe(true);
+  });
+
+  it("shows the marker on a default that projects override", () => {
+    expect(showsSettingInheritance({ state: "default", overridingProjectCount: 2 })).toBe(true);
   });
 });

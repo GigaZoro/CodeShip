@@ -47,6 +47,9 @@ export function UsageProviderSettings({
   const [adding, setAdding] = useState(false);
   const [updatingCursor, setUpdatingCursor] = useState(false);
   const entries = Object.entries(sources);
+  const showsCursorRow = platform?.os === "darwin";
+  // Without a hub or a way to add one, the section has nothing to show.
+  if (entries.length === 0 && readOnly && !showsCursorRow) return null;
 
   const setCursorUsageEnabled = async (enabled: boolean) => {
     setUpdatingCursor(true);
@@ -65,7 +68,8 @@ export function UsageProviderSettings({
       <SettingsSection
         {...searchableSetting("usage-providers")}
         headerAction={
-          !readOnly ? (
+          // An empty list carries its own Add hub button, beside the words that say it is empty.
+          !readOnly && entries.length > 0 ? (
             <Button size="xs" variant="outline" onClick={() => setAdding(true)}>
               <PlusIcon className="size-3" aria-hidden />
               {t("Add hub")}
@@ -73,7 +77,7 @@ export function UsageProviderSettings({
           ) : null
         }
       >
-        {platform?.os === "darwin" ? (
+        {showsCursorRow ? (
           <SettingsRow
             id="cursor-keychain-usage"
             title={t("Cursor account usage")}
@@ -91,7 +95,18 @@ export function UsageProviderSettings({
           />
         ) : null}
         {entries.length === 0 ? (
-          <SettingsRow title={t("No hubs configured.")} />
+          readOnly ? null : (
+            <SettingsRow
+              title={t("No hubs configured.")}
+              description={t("A hub adds its accounts' usage limits to the Limits view.")}
+              control={
+                <Button size="xs" variant="outline" onClick={() => setAdding(true)}>
+                  <PlusIcon className="size-3" aria-hidden />
+                  {t("Add hub")}
+                </Button>
+              }
+            />
+          )
         ) : (
           entries.map(([id, source]) => {
             const label = source.label?.trim() || source.url;

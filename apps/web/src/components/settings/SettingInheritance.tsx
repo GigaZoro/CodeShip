@@ -93,6 +93,23 @@ export type SettingInheritanceState =
   | "overridden"
   | "mixed";
 
+/**
+ * A built-in default explains nothing, so its marker stays off the row. Any other source does: an
+ * environment, project or t3.json value, a mix across machines, a project override elsewhere, or
+ * an administrator's policy.
+ */
+export function showsSettingInheritance({
+  state,
+  managed = false,
+  overridingProjectCount = 0,
+}: {
+  state: SettingInheritanceState;
+  managed?: boolean;
+  overridingProjectCount?: number;
+}): boolean {
+  return state !== "default" || managed || overridingProjectCount > 0;
+}
+
 export interface SettingOverridingProject extends ProjectOverrideEntry {
   readonly label: string;
   readonly open: () => void;

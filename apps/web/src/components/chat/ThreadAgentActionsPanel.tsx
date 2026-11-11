@@ -38,7 +38,7 @@ export function ThreadAgentActionsPanel(props: {
                 aria-label={t("Edit your requests")}
                 onClick={() =>
                   void navigate({
-                    to: "/settings/appearance",
+                    to: "/settings/chat",
                     hash: "agent-actions",
                     hashScrollIntoView: false,
                   })

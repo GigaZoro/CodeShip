@@ -16,7 +16,7 @@ import {
 import { shortcutConflictKey, shortcutKeyFromEvent } from "../../keybindings";
 import { isMacPlatform } from "../../lib/utils";
 import { METRIC_OPTIONS, WINDOW_OPTIONS } from "../usage/usageShortcuts";
-import { msg, t } from "~/i18n";
+import { msg, t, type Message } from "~/i18n";
 
 // Rank every usage command; mixing rank and alphabetical comparisons makes order input-dependent.
 const usageCommandOrder = new Map<KeybindingCommand, number>(
@@ -101,6 +101,64 @@ export function whenAstToExpression(node: KeybindingWhenNode | undefined): strin
     case "or":
       return `${wrapWhenExpression(node.left)} || ${wrapWhenExpression(node.right)}`;
   }
+}
+
+// Each context key reads as a state of the app, so a negated key gets its own opposite wording.
+const WHEN_KEY_PHRASES: Readonly<Record<string, { readonly on: Message; readonly off: Message }>> =
+  {
+    terminalFocus: { on: msg("In the terminal"), off: msg("Not in the terminal") },
+    terminalOpen: { on: msg("Terminal open"), off: msg("Terminal closed") },
+    previewOpen: { on: msg("Preview open"), off: msg("Preview closed") },
+    isWeb: { on: msg("In the web app"), off: msg("Not in the web app") },
+    isDesktop: { on: msg("In the desktop app"), off: msg("Not in the desktop app") },
+    rightPanelOpen: { on: msg("Right panel open"), off: msg("Right panel closed") },
+    modelPickerOpen: { on: msg("Model picker open"), off: msg("Model picker closed") },
+    composerFocus: { on: msg("In the composer"), off: msg("Not in the composer") },
+    draftThreadRoute: { on: msg("On a draft thread"), off: msg("Not on a draft thread") },
+    turnRunning: { on: msg("Agent working"), off: msg("Agent not working") },
+    diffFocus: { on: msg("In the diff"), off: msg("Not in the diff") },
+    previewFocus: { on: msg("In the preview"), off: msg("Not in the preview") },
+    editableFocus: { on: msg("In a text field"), off: msg("Not in a text field") },
+    approvalPending: { on: msg("Approval pending"), off: msg("No approval pending") },
+    usagePageOpen: { on: msg("Usage page open"), off: msg("Usage page closed") },
+    true: { on: msg("Always"), off: msg("Never") },
+    false: { on: msg("Never"), off: msg("Always") },
+  };
+
+const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1);
+
+function describeWhenNode(node: KeybindingWhenNode): string | null {
+  switch (node.type) {
+    case "identifier": {
+      const phrase = WHEN_KEY_PHRASES[node.name];
+      return phrase ? t(phrase.on) : null;
+    }
+    case "not": {
+      const phrase = node.node.type === "identifier" ? WHEN_KEY_PHRASES[node.node.name] : undefined;
+      return phrase ? t(phrase.off) : null;
+    }
+    case "and":
+    case "or": {
+      const left = describeWhenNode(node.left);
+      const right = describeWhenNode(node.right);
+      if (left === null || right === null) return null;
+      const group = (operand: KeybindingWhenNode, text: string) =>
+        (operand.type === "and" || operand.type === "or") && operand.type !== node.type
+          ? `(${text})`
+          : text;
+      const parts = [group(node.left, left), lowerFirst(group(node.right, right))];
+      return node.type === "and" ? parts.join(", ") : parts.join(` ${t("or")} `);
+    }
+  }
+}
+
+/**
+ * A binding's condition in plain words. Unknown context keys, and negated groups, keep the raw
+ * expression, so the wording never claims more than the expression says.
+ */
+export function describeWhenCondition(node: KeybindingWhenNode | undefined): string {
+  if (!node) return t("Always");
+  return describeWhenNode(node) ?? whenAstToExpression(node);
 }
 
 export function whenNodeRemoveLabel(node: KeybindingWhenNode, depth: number): string {
@@ -307,6 +365,7 @@ export function filterKeybindingRows(
       commandLabel(row.command).toLowerCase().includes(normalizedQuery) ||
       row.key.toLowerCase().includes(normalizedQuery) ||
       row.when.toLowerCase().includes(normalizedQuery) ||
+      describeWhenCondition(row.binding.whenAst).toLowerCase().includes(normalizedQuery) ||
       row.source.toLowerCase().includes(normalizedQuery)
     );
   });

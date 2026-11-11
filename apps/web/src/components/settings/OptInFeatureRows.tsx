@@ -51,7 +51,7 @@ function GuestLinksRowWithSignIn() {
     <SettingsRow
       {...searchableSetting("guest-links")}
       description={t(
-        "Share a thread with a guest who watches it live in their browser and sends messages you approve. Sign in to T3 Connect to use guest links.",
+        "Let a guest watch a shared thread live and send messages you approve. Sign in to T3 Connect to use it.",
       )}
       control={
         <Button size="sm" variant="outline" onClick={openAuthPrompt}>
@@ -82,7 +82,7 @@ function GuestLinksRow() {
       // Turning guest links off still works without T3 Connect.
       managed={settings.guestSharingEnabled ? undefined : connectDenial}
       description={t(
-        "Share a thread with a guest who watches it live in their browser and sends messages you approve. Needs T3 Connect: sign in and link this machine under T3 Connect on this page. While it is off, every guest link stops working.",
+        "Let a guest watch a shared thread live and send messages you approve; turning it off ends every guest link.",
       )}
       control={
         <ScopedSwitch
@@ -104,9 +104,7 @@ export function LinkedEnvironmentsRow() {
       serverScoped
       {...searchableSetting("linked-environments-beta")}
       settingKeys={["linkedEnvironmentsEnabled"]}
-      description={t(
-        "Let agents here work on your other machines, and theirs here. Applies to every machine this app is connected to; link them under Linked environments on this page. While it is off, nothing new starts over a link; tasks already running finish.",
-      )}
+      description={t("Let agents here work on your other machines, and theirs here.")}
       control={
         <ScopedSwitch
           settingKeys={["linkedEnvironmentsEnabled"]}

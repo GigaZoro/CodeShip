@@ -574,13 +574,13 @@ before you send it.
 While the agent works through a to-do list, the card shows that list for the turn it is on and how
 many steps are done. **Ask the agent** sends a common request as your message: commit and open a
 pull request, run the tests, or review the changes. Add your own requests, and set their order, in
-**Settings → Appearance → Ask the agent**, or with the settings button beside **Ask the agent** in
+**Settings → Chat & diffs → Ask the agent**, or with the settings button beside **Ask the agent** in
 the card; the command palette lists them all as **Ask the agent** items for the open thread. While the agent is working, the request waits until it finishes. If you are writing a
 message, the request is added to it instead, for you to send. **Your prompts** lists the messages you sent, as far back as
 the conversation has loaded; the one on screen is marked, and selecting one scrolls back to it.
 
 To choose what the thread details card shows, right-click the card or open
-**Settings → Appearance → Thread details**. Hidden rows keep their keyboard
+**Settings → Chat & diffs → Thread details**. Hidden rows keep their keyboard
 shortcuts, such as Open in editor and project scripts. **Reset to default** brings
 back the standard rows.
 

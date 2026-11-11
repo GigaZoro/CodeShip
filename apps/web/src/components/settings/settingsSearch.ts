@@ -338,7 +338,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "diff-color-scheme",
     title: msg("Diff colors"),
-    to: "/settings/appearance",
+    to: "/settings/chat",
     searchTerms: ["red green blue orange additions deletions changes counts palette colorblind"],
   },
   {
@@ -350,7 +350,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "thread-details-items",
     title: msg("Thread details"),
-    to: "/settings/appearance",
+    to: "/settings/chat",
     searchTerms: [
       "customize show hide panel card environment editor scripts branch pull request git changes servers automations lineage usage limits 5 hour weekly quota tokens context window",
     ],
@@ -358,7 +358,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "agent-actions",
     title: msg("Ask the agent"),
-    to: "/settings/appearance",
+    to: "/settings/chat",
     searchTerms: [
       "custom actions buttons requests prompts shortcuts commit pull request tests review thread details card command palette",
     ],
@@ -372,7 +372,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "math-rendering",
     title: msg("Render math"),
-    to: "/settings/appearance",
+    to: "/settings/chat",
     searchTerms: ["latex tex katex equations formulas markdown"],
   },
   {

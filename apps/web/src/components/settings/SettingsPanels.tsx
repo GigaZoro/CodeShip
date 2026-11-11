@@ -87,7 +87,6 @@ import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
-import { AgentConversationsSettings } from "./AgentConversationsSettings";
 import { scheduledTaskPlacementOptions } from "@t3tools/client-runtime/scheduled-task-pins";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -115,6 +114,8 @@ import { searchableSetting } from "./settingsSearch";
 import { LanguageSettingsRow } from "./LanguageSettingsRow";
 import { BackgroundActivitySettingsRow } from "./BackgroundActivitySettings";
 import { AdvancedSettings } from "./AdvancedSettings";
+import { AgentActionsSettings } from "./AgentActionsSettings";
+import { ThreadDetailsItemsRow } from "./ThreadDetailsItemsRow";
 import { SnapShotSettings } from "./SnapShotSettings";
 import { useOpenSetupWizard } from "../../onboarding/setupRerun";
 import { BoringSidebarMultilineRow } from "./OptInFeatureRows";
@@ -1235,15 +1236,49 @@ export function ChatSettingsPanel() {
         </AdvancedSettings>
       </SettingsSection>
 
+      <SettingsSection id="messages" title={t("Messages")}>
+        <SettingsRow
+          {...searchableSetting("math-rendering")}
+          description={t(
+            "Typeset LaTeX math, such as $x^2$ or \\[x^2\\], in messages and Markdown previews. The composer keeps TeX source editable.",
+          )}
+          resetAction={
+            settings.mathRenderingEnabled !== DEFAULT_UNIFIED_SETTINGS.mathRenderingEnabled ? (
+              <SettingResetButton
+                label={t("math rendering")}
+                onClick={() =>
+                  updateSettings({
+                    mathRenderingEnabled: DEFAULT_UNIFIED_SETTINGS.mathRenderingEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.mathRenderingEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ mathRenderingEnabled: Boolean(checked) })
+              }
+              aria-label={t("Render math")}
+            />
+          }
+        />
+      </SettingsSection>
+
+      <SettingsSection id="thread-details" title={t("Thread")}>
+        <ThreadDetailsItemsRow />
+        <AgentActionsSettings />
+      </SettingsSection>
+
       <SettingsSection id="follow-ups" title={t("Follow-ups")}>
         <SettingsRow
           {...searchableSetting("follow-up-behavior")}
-          description={
-            t(
-              "What a message you send while the agent works does. Steer adds it to the current turn, Queue sends it when the turn ends, and Stop and send stops the turn and sends it instead. Providers that can't restart a turn steer instead of stopping.",
-            ) +
-            " " +
-            (settings.sendShortcut === "mod-enter-multiline"
+          description={t(
+            "What a message you send while the agent works does: steer the turn, queue until it ends, or stop and send.",
+          )}
+          status={
+            settings.sendShortcut === "mod-enter-multiline"
               ? t(
                   "Press {modifier} + Enter for single-line prompts or {modifier} + Shift + Enter for multiline prompts to {alternate} instead for one message.",
                   { modifier: modifierLabel, alternate: followUpAlternateLabel },
@@ -1256,7 +1291,7 @@ export function ChatSettingsPanel() {
                 : t("Press {modifier} + Enter to {alternate} instead for one message.", {
                     modifier: modifierLabel,
                     alternate: followUpAlternateLabel,
-                  }))
+                  })
           }
           resetAction={
             settings.followUpBehavior !== DEFAULT_UNIFIED_SETTINGS.followUpBehavior ? (
@@ -1306,7 +1341,7 @@ export function ChatSettingsPanel() {
   );
 }
 
-export function DiffColorsSettingsRow() {
+function DiffColorsSettingsRow() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   return (
@@ -1366,6 +1401,7 @@ function DiffsSettingsSections() {
   return (
     <>
       <SettingsSection id="diffs" title={t("Diffs")}>
+        <DiffColorsSettingsRow />
         <SettingsRow
           {...searchableSetting("diff-layout")}
           description={t(
@@ -1868,49 +1904,49 @@ export function ThreadsSettingsPanel() {
   );
 }
 
-/** Where Add Project starts and how clones are laid out, shown on the Projects page. */
+/** Where Add Project starts and how clones are laid out, at the top of the Projects page. */
 export function NewProjectsSettingsSection() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const mixedAddProjectBaseDirectory = useScopedSettingsMixed(["addProjectBaseDirectory"]);
   return (
-    <>
-      <SettingsSection id="new-projects" title={t("New projects")}>
-        <SettingsRow
-          serverScoped
-          settingKeys={["addProjectBaseDirectory"]}
-          {...searchableSetting("add-project-starts-in")}
-          description={t('Leave empty to use "~/" when the Add Project browser opens.')}
-          resetAction={
-            settings.addProjectBaseDirectory !==
-            DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory ? (
-              <SettingResetButton
-                label={t("add project base directory")}
-                onClick={() =>
-                  updateSettings({
-                    addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <DraftInput
-              size="sm"
-              className="w-full sm:w-72"
-              value={mixedAddProjectBaseDirectory ? "" : settings.addProjectBaseDirectory}
-              onCommit={(next) => updateSettings({ addProjectBaseDirectory: next })}
-              normalizeDraft={resolvePastedPath}
-              placeholder={mixedAddProjectBaseDirectory ? t("Mixed") : "~/"}
-              spellCheck={false}
-              aria-label={t("Add project base directory")}
+    <SettingsSection id="new-projects" title={t("New projects")}>
+      <SettingsRow
+        serverScoped
+        settingKeys={["addProjectBaseDirectory"]}
+        {...searchableSetting("add-project-starts-in")}
+        description={t('Leave empty to use "~/" when the Add Project browser opens.')}
+        resetAction={
+          settings.addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory ? (
+            <SettingResetButton
+              label={t("add project base directory")}
+              onClick={() =>
+                updateSettings({
+                  addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
+                })
+              }
             />
-          }
-        />
+          ) : null
+        }
+        control={
+          <DraftInput
+            size="sm"
+            className="w-full sm:w-72"
+            value={mixedAddProjectBaseDirectory ? "" : settings.addProjectBaseDirectory}
+            onCommit={(next) => updateSettings({ addProjectBaseDirectory: next })}
+            normalizeDraft={resolvePastedPath}
+            placeholder={mixedAddProjectBaseDirectory ? t("Mixed") : "~/"}
+            spellCheck={false}
+            aria-label={t("Add project base directory")}
+          />
+        }
+      >
+        {/* Clones land under the folder above, so the option reads as part of it. */}
         <SettingsRow
           serverScoped
           settingKeys={["ghqCloneLayout"]}
           {...searchableSetting("ghq-clone-layout")}
+          className="px-0 pt-1 pb-2 sm:px-0"
           description={t("Clones go to github.com/owner/repo under the folder above, like ghq.")}
           resetAction={
             settings.ghqCloneLayout !== DEFAULT_UNIFIED_SETTINGS.ghqCloneLayout ? (
@@ -1931,9 +1967,8 @@ export function NewProjectsSettingsSection() {
             />
           }
         />
-      </SettingsSection>
-      <AgentConversationsSettings />
-    </>
+      </SettingsRow>
+    </SettingsSection>
   );
 }
 
