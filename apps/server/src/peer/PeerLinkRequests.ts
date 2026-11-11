@@ -5,6 +5,7 @@
  * (provider CLIs abandon a long tool call): the answer reaches the agent as a notification.
  */
 import {
+  type AuthEnvironmentScope,
   CommandId,
   type EnvironmentId,
   MessageId,
@@ -87,6 +88,8 @@ export class PeerLinkRequests extends Context.Service<
      */
     readonly answer: (
       input: PeerLinkRequestAnswerInput,
+      /** The answering session: a link back may not grant more than it holds. */
+      caller: { readonly scopes: ReadonlyArray<AuthEnvironmentScope> },
     ) => Effect.Effect<PeerLinkRequestAnswerResult, PeerLinkRequestError>;
   }
 >()("t3/peer/PeerLinkRequests") {}
@@ -305,6 +308,7 @@ const make = Effect.gen(function* () {
   /** Links the machine the user picked, or finds the link they chose to keep. */
   const answerOutcome = (
     answer: PeerLinkRequestAnswerInput["answer"],
+    caller: { readonly scopes: ReadonlyArray<AuthEnvironmentScope> },
   ): Effect.Effect<AnswerResult> => {
     switch (answer.type) {
       case "decline":
@@ -333,17 +337,20 @@ const make = Effect.gen(function* () {
       case "link": {
         const [url, ...alternateUrls] = answer.urls;
         return peerLinkBack
-          .link({
-            url,
-            ...(alternateUrls.length === 0 ? {} : { alternateUrls }),
-            pairingCode: answer.pairingCode,
-            access: answer.access,
-            ...(answer.environmentId === undefined
-              ? {}
-              : { expectedEnvironmentId: answer.environmentId }),
-            ...(answer.label === undefined ? {} : { expectedLabel: answer.label }),
-            ...(answer.reverse === undefined ? {} : { reverse: answer.reverse }),
-          })
+          .link(
+            {
+              url,
+              ...(alternateUrls.length === 0 ? {} : { alternateUrls }),
+              pairingCode: answer.pairingCode,
+              access: answer.access,
+              ...(answer.environmentId === undefined
+                ? {}
+                : { expectedEnvironmentId: answer.environmentId }),
+              ...(answer.label === undefined ? {} : { expectedLabel: answer.label }),
+              ...(answer.reverse === undefined ? {} : { reverse: answer.reverse }),
+            },
+            caller,
+          )
           .pipe(
             Effect.map((linked): AnswerResult => ({
               outcome: linkedOutcome(linked),
@@ -360,7 +367,7 @@ const make = Effect.gen(function* () {
   };
 
   const answer: PeerLinkRequests["Service"]["answer"] = Effect.fn("PeerLinkRequests.answer")(
-    function* (input) {
+    function* (input, caller) {
       yield* Effect.annotateCurrentSpan({
         "orchestration_v2.thread_id": input.threadId,
         "link_request.answer": input.answer.type,
@@ -376,7 +383,7 @@ const make = Effect.gen(function* () {
       if (card.linkStatus !== "pending") {
         return yield* new PeerLinkRequestError({ reason: "already_answered" });
       }
-      const { outcome, back } = yield* answerOutcome(input.answer);
+      const { outcome, back } = yield* answerOutcome(input.answer, caller);
       // If Stop closed the card while linking, the card keeps that; the link
       // itself stands and Settings lists it.
       yield* record(
