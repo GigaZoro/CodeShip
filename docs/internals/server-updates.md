@@ -127,12 +127,17 @@ watchdogs that nobody waits on, so that note waits for the next user message.
 For a settled chat the provider thread's roster is often the only record of a background
 command, since the command's turn item may already have completed. Whoever empties a
 roster whose process is gone therefore records the loss on a run in the same write: the
-note's work and a notice in the thread. Two writers do this while the server runs.
+note's work and a notice in the thread. Three writers do this while the server runs.
 
-A provider process that ends on its own (a crash, or a restart that kills it before the
-server) reports the roster it drops as lost, and ingestion records it on the reporting run
-and queues a wake. That wake is queued after the write, so a server that dies first leaves
+A provider process that ends on its own, or that a Stop closes, reports the roster it
+drops as lost, and ingestion records it on the reporting run. Only a process that ends on
+its own while that run is settled (a crash, or a restart that kills it before the server)
+also queues a wake. That wake is queued after the write, so a server that dies first leaves
 the work on the run, where startup recovery finds it as the latest run's undelivered work.
+A process that ends during a turn fails the run where the user sees it, and a Stop was
+asked for, so neither wakes the chat: the next prompt of that conversation carries the
+note. A turn that does not complete reports in the roster update before its terminal
+event, because the run's stream stops reading at that terminal.
 The run's event stream decides when to stop from the adapter's live state, which runs
 ahead of its queued events. For a runtime whose tasks end with its process, it keeps
 reading while the last roster it stored still lists tasks, or the update that reports them
@@ -157,9 +162,20 @@ released, so the release asks the runtime it closes whose background work it sti
 instead of trusting the session id on the row. The record goes to the latest run that is
 not being started again, so the prompt that run is about to build includes it.
 
-An adapter that closes its own process (Stop, a rollback) reports nothing, and shutdown
-reconciles the roster itself. Claude refuses to replace a process that still runs
-background work for its chat, so a new turn never reaches that close with a roster.
+A rollback closes the process as well and writes the provider thread itself, so the
+adapter returns the tasks it stopped with the rolled-back thread instead of reporting them
+on a run's stream, which that write would race and whose stale roster it would put back.
+The rollback records them on the latest run that stays. The rewound conversation no longer
+knows the work its rolled-back turns started, and a note would have the agent start it
+again, so that work is left out. It is also removed from the records rolled-back runs
+carry, including runs an earlier rollback removed, because a rolled-back run still counts
+as a source for the work that remains on it. A record names the tool call that started
+its work for this; a run's turn items tell which run that was. A rollback that fails after
+the process closed rewound nothing, so it records on the latest run what that process ran
+and no run holds yet, unless its own write committed first.
+
+Shutdown reconciles the roster itself. Claude refuses to replace a process that still
+runs background work for its chat, so a new turn never reaches that close with a roster.
 
 Recovery retires effects tied to the lost process and records continuation intent
 in the durable outbox. That intent survives another restart before provider startup.

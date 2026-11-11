@@ -9350,14 +9350,31 @@ describe("ClaudeAdapterV2 background wake turns", () => {
   );
 
   it.effect.each([
-    { ending: "ends on its own", deliberate: false },
-    { ending: "is closed by a runtime restart", deliberate: true },
-  ])("reports the awaited roster as lost only when an idle query $ending", ({ deliberate }) =>
+    { ending: "ends on its own while idle", close: "exit", turn: "settled" },
+    { ending: "is closed by Stop while idle", close: "stop", turn: "settled" },
+    { ending: "ends on its own during a turn", close: "exit", turn: "running" },
+    { ending: "is closed by Stop during a turn", close: "stop", turn: "running" },
+    { ending: "is closed by a Stop the turn answers first", close: "stop", turn: "interrupted" },
+    { ending: "is closed by a rollback", close: "rollback", turn: "settled" },
+    { ending: "is kept by a rollback it cannot rewind to", close: "no-rollback", turn: "settled" },
+  ] as const)("reports the awaited roster as lost when its query $ending", ({ close, turn }) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const harness = yield* makeWakeHarnessWithOptions({
-          close: (sdkMessages) => Queue.shutdown(sdkMessages),
+        const interruptedResult = makeResultFrame({
+          uuid: "00000000-0000-4000-8000-000000000312",
+          result: "",
+          subtype: "error_during_execution",
         });
+        let answerInterrupt: Effect.Effect<void> = Effect.void;
+        const harness = yield* makeWakeHarnessWithOptions({
+          // The answered Stop keeps its process open, so only the turn's own result can report.
+          close: (sdkMessages) =>
+            turn === "interrupted" ? Effect.void : Queue.shutdown(sdkMessages),
+          interrupt: Effect.suspend(() => answerInterrupt),
+        });
+        if (turn === "interrupted") {
+          answerInterrupt = harness.offerAndWait(interruptedResult);
+        }
         const awaitBackgroundTasks = harness.runtime.awaitBackgroundTasks;
         if (awaitBackgroundTasks === undefined) {
           throw new Error("Claude adapter runtime must expose awaitBackgroundTasks.");
@@ -9398,23 +9415,92 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         });
         yield* nextRoster((tasks) => tasks[0]?.awaited === true);
         yield* Queue.offer(harness.sdkMessages, turnOneResult);
-        const terminal = yield* Queue.take(harness.terminalReceipts);
+        const settled = yield* Queue.take(harness.terminalReceipts);
+        const lost = [[WAKE_TASK_ID, true as const]];
+        const marks = (tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask> | undefined) =>
+          tasks?.map((task) => [task.taskId, task.awaited]);
 
-        if (deliberate) {
-          yield* harness.runtime.interruptTurn({
-            providerThread: harness.providerThread,
-            providerTurnId: terminal.providerTurnId,
-            requestRuntimeRestart: true,
+        // The thread as the settled turn stored it, roster included.
+        const settledThread = (yield* nextRoster((tasks) => tasks.length === 1)).providerThread;
+        const nextAttemptId = RunAttemptId.make("attempt-claude-lost-roster-next");
+        if (turn !== "settled") {
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: settledThread,
+              now: yield* DateTime.now,
+              attemptId: nextAttemptId,
+              text: "Are the tests done?",
+              attachments: [],
+              providerTurnOrdinal: 2,
+              nativeThreadHasTurns: true,
+            }),
+          );
+        }
+        if (close === "rollback" || close === "no-rollback") {
+          const providerTurn = lastProviderTurn(harness.events);
+          const rollback = harness.runtime.rollbackThread({
+            providerThread: settledThread,
+            target: {
+              type: "provider_turn",
+              checkpointId: CheckpointId.make("checkpoint-claude-lost-roster"),
+              appRunOrdinal: 1,
+              providerTurn,
+            },
+            // A later turn makes the target need a rewind point, which this turn never recorded.
+            providerThreadTurns:
+              close === "rollback"
+                ? [providerTurn]
+                : [
+                    providerTurn,
+                    {
+                      ...providerTurn,
+                      id: ProviderTurnId.make("provider-turn-claude-lost-roster-next"),
+                      ordinal: 2,
+                    },
+                  ],
           });
-        } else {
+          if (close === "no-rollback") {
+            assert.isTrue(Exit.isFailure(yield* Effect.exit(rollback)));
+            assert.isTrue(yield* harness.hasPendingBackgroundWork);
+            return;
+          }
+          const rolledBack = yield* rollback;
+          // The rollback's caller empties the stored roster, so it gets the tasks to record.
+          assert.deepStrictEqual(marks(rolledBack.lostBackgroundTasks), lost);
+          assert.deepStrictEqual(rolledBack.providerThread.pendingBackgroundTasks, []);
+          const cleared = yield* nextRoster((tasks) => tasks.length === 0);
+          assert.isUndefined(cleared.lostBackgroundTasks);
+          return;
+        }
+        if (close === "exit") {
           yield* Queue.shutdown(harness.sdkMessages);
+        } else {
+          const stop = harness.runtime.interruptTurn({
+            providerThread: settledThread,
+            ...(turn === "settled"
+              ? { providerTurnId: settled.providerTurnId, requestRuntimeRestart: true }
+              : {
+                  providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+                    driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+                    nativeTurnId: `turn:${nextAttemptId}`,
+                  }),
+                }),
+          });
+          // The answered Stop then waits for a process its row never closes.
+          if (turn === "interrupted") yield* Effect.forkScoped(stop);
+          else yield* stop;
         }
         const cleared = yield* nextRoster((tasks) => tasks.length === 0);
         assert.equal(cleared.providerThread.status, "idle");
-        assert.deepStrictEqual(
-          cleared.lostBackgroundTasks?.map((task) => [task.taskId, task.awaited]),
-          deliberate ? undefined : [[WAKE_TASK_ID, true]],
-        );
+        assert.deepStrictEqual(marks(cleared.lostBackgroundTasks), lost);
+        assert.equal(cleared.lostBackgroundTasksCause, close === "stop" ? "stopped" : undefined);
+        if (turn !== "settled") {
+          // The report rides the roster update that precedes the terminal a failed run stops on.
+          const terminal = yield* Queue.take(harness.terminalReceipts);
+          assert.equal(terminal.status, close === "stop" ? "interrupted" : "failed");
+          assert.isBelow(harness.events.indexOf(cleared), harness.events.indexOf(terminal));
+        }
       }).pipe(
         Effect.provide(
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),

@@ -697,6 +697,21 @@ export interface ProjectionStoreV2Shape {
   readonly isNodeStored: (
     node: OrchestrationV2ExecutionNode,
   ) => Effect.Effect<boolean, ProjectionStoreV2Error>;
+  /** The runs of a thread that carry lost background work, read without decoding their payloads. */
+  readonly getRunsWithLostBackgroundWork: (
+    threadId: ThreadId,
+  ) => Effect.Effect<
+    ReadonlyArray<{ readonly id: RunId; readonly status: OrchestrationV2Run["status"] }>,
+    ProjectionStoreV2Error
+  >;
+  /** The ids the turn items of `runIds` go by, read without decoding their payloads. */
+  readonly getRunTurnItemIdentities: (
+    threadId: ThreadId,
+    runIds: ReadonlyArray<RunId>,
+  ) => Effect.Effect<
+    ReadonlyArray<{ readonly id: string; readonly nativeId: string | null }>,
+    ProjectionStoreV2Error
+  >;
   readonly getRuntimeRequest: (
     threadId: ThreadId,
     requestId: RuntimeRequestId,
@@ -5419,6 +5434,36 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         )
         .pipe(Effect.mapError(controlReadError(threadId)));
 
+    const getRunsWithLostBackgroundWork: ProjectionStoreV2Shape["getRunsWithLostBackgroundWork"] =
+      Effect.fn("ProjectionStore.getRunsWithLostBackgroundWork")(
+        function* (threadId) {
+          return yield* sql<{ readonly id: RunId; readonly status: OrchestrationV2Run["status"] }>`
+            SELECT run_id AS id, status
+            FROM orchestration_v2_projection_runs
+            WHERE thread_id = ${threadId}
+              AND json_array_length(payload_json, '$.restartCancelledBackgroundWork') > 0
+          `;
+        },
+        (effect, threadId) => effect.pipe(Effect.mapError(controlReadError(threadId))),
+      );
+
+    const getRunTurnItemIdentities: ProjectionStoreV2Shape["getRunTurnItemIdentities"] = Effect.fn(
+      "ProjectionStore.getRunTurnItemIdentities",
+    )(
+      function* (threadId, runIds) {
+        if (runIds.length === 0) return [];
+        return yield* sql<{ readonly id: string; readonly nativeId: string | null }>`
+          SELECT
+            turn_item_id AS id,
+            json_extract(payload_json, '$.nativeItemRef.nativeId') AS "nativeId"
+          FROM orchestration_v2_projection_turn_items
+          WHERE thread_id = ${threadId}
+            AND run_id IN (SELECT value FROM json_each(${encodeIdList(runIds)}))
+        `;
+      },
+      (effect, threadId) => effect.pipe(Effect.mapError(controlReadError(threadId))),
+    );
+
     const hasUnpairedRunInterruptRequest: ProjectionStoreV2Shape["hasUnpairedRunInterruptRequest"] =
       Effect.fn("ProjectionStore.hasUnpairedRunInterruptRequest")(
         function* (threadId, requestId, resultId) {
@@ -7730,6 +7775,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getHeldQueuedRuns: readOnReader(getHeldQueuedRuns),
       getPendingNativeUserInputs: readOnReader(getPendingNativeUserInputs),
       hasUnpairedRunInterruptRequest: readOnReader(hasUnpairedRunInterruptRequest),
+      getRunTurnItemIdentities: readOnReader(getRunTurnItemIdentities),
+      getRunsWithLostBackgroundWork: readOnReader(getRunsWithLostBackgroundWork),
       isNodeStored: readOnReader(isNodeStored),
       getMessageCount: readOnReader(getMessageCount),
       getSubagentCount: readOnReader(getSubagentCount),

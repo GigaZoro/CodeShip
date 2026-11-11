@@ -3027,6 +3027,22 @@ function claudePendingBackgroundTasksFromRoster(
   );
 }
 
+/** What ended a process with tasks unfinished: it ended on its own, or a Stop closed it. */
+type ClaudeLostTasksCause = "process-ended" | "stopped";
+
+interface ClaudeLostBackgroundTasks {
+  readonly tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
+  readonly cause: ClaudeLostTasksCause;
+}
+
+function claudeLostBackgroundTasksReport(lost: ClaudeLostBackgroundTasks | undefined) {
+  if (lost === undefined || lost.tasks.length === 0) return {};
+  return {
+    lostBackgroundTasks: lost.tasks,
+    ...(lost.cause === "stopped" ? { lostBackgroundTasksCause: lost.cause } : {}),
+  };
+}
+
 function parseClaudeBackgroundTaskEntry(
   entry: unknown,
   monitorTasks: ReadonlyMap<string, unknown>,
@@ -4321,6 +4337,8 @@ interface ClaudeLiveQueryContext {
   stopping: boolean;
   // The adapter closed this query itself, so its exit is not the process ending on its own.
   closeRequested: boolean;
+  // A Stop closes this query, so the tasks it still runs are reported as stopped.
+  stopRequested: boolean;
   readonly subagentsFromEarlierProcesses: ReadonlySet<ActiveClaudeSubagent>;
   // The SDK's per-process model ledger at the last result. A new session starts at zero; a
   // resumed one restores the session's saved totals, unknown until its first result.
@@ -5540,7 +5558,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           readonly nativeThreadId: string;
           readonly providerThread: OrchestrationV2ProviderThread;
           readonly status?: OrchestrationV2ProviderThread["status"];
-          readonly lostBackgroundTasks?: ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
+          readonly lost?: ClaudeLostBackgroundTasks;
         }) {
           const roster = rosterForNativeThread(
             yield* Ref.get(pendingBackgroundTasksByNativeThread),
@@ -5566,9 +5584,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             type: "provider_thread.updated",
             driver: CLAUDE_PROVIDER,
             providerThread,
-            ...((input.lostBackgroundTasks?.length ?? 0) > 0
-              ? { lostBackgroundTasks: input.lostBackgroundTasks }
-              : {}),
+            ...claudeLostBackgroundTasksReport(input.lost),
           });
         });
 
@@ -5730,41 +5746,63 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             });
           });
 
+        const bufferedTaskNotificationIds = Effect.fnUntraced(function* (nativeThreadId: string) {
+          const ids = new Set<string>();
+          const buffered = (yield* Ref.get(wakeBuffers)).get(nativeThreadId);
+          for (const message of buffered?.messages ?? []) {
+            if (message.type === "system" && message.subtype === "task_notification") {
+              ids.add(message.task_id);
+            }
+          }
+          return ids;
+        });
+
+        // The tasks a native thread's process still runs: its roster, minus tasks whose end is
+        // already buffered for the next wake. They end with that process.
+        const unfinishedBackgroundTasks = Effect.fnUntraced(function* (nativeThreadId: string) {
+          const reported = yield* bufferedTaskNotificationIds(nativeThreadId);
+          return claudePendingBackgroundTasksFromRoster(
+            rosterForNativeThread(
+              yield* Ref.get(pendingBackgroundTasksByNativeThread),
+              nativeThreadId,
+            ),
+            taskIdSetForNativeThread(
+              yield* Ref.get(awaitedBackgroundTasksByNativeThread),
+              nativeThreadId,
+            ),
+          ).filter((task) => !reported.has(task.taskId));
+        });
+
         // The SDK emits no initial roster; reset roster and wake eligibility when opening a live query.
         const resetBackgroundTaskStateForNativeThreadProcess = Effect.fnUntraced(function* (
           nativeThreadId: string,
           options?: {
             readonly status?: OrchestrationV2ProviderThread["status"];
-            /** The process that ran the roster ended on its own, so its unfinished tasks are lost. */
-            readonly reportLostTasks?: boolean;
+            /** The process that ran the roster ended, so its unfinished tasks are reported as lost. */
+            readonly lostTasks?: ClaudeLostTasksCause;
           },
         ) {
-          const roster = rosterForNativeThread(
-            yield* Ref.get(pendingBackgroundTasksByNativeThread),
-            nativeThreadId,
-          );
-          const hadRoster = roster.size > 0;
-          const awaitedTaskIds = taskIdSetForNativeThread(
-            yield* Ref.get(awaitedBackgroundTasksByNativeThread),
-            nativeThreadId,
-          );
+          const hadRoster =
+            rosterForNativeThread(
+              yield* Ref.get(pendingBackgroundTasksByNativeThread),
+              nativeThreadId,
+            ).size > 0;
+          const lostTasks =
+            options?.lostTasks === undefined
+              ? undefined
+              : {
+                  tasks: yield* unfinishedBackgroundTasks(nativeThreadId),
+                  cause: options.lostTasks,
+                };
           const remembered = (yield* Ref.get(lastProviderThreadByNativeThread)).get(nativeThreadId);
           const hadPersistedRoster = (remembered?.pendingBackgroundTasks?.length ?? 0) > 0;
           const priorOpaqueTombstones = taskIdSetForNativeThread(
             yield* Ref.get(opaqueBackgroundTaskReplayTombstonesByNativeThread),
             nativeThreadId,
           );
-          const bufferedTaskNotificationIds = new Set<string>();
-          const buffered = (yield* Ref.get(wakeBuffers)).get(nativeThreadId);
-          if (buffered !== undefined) {
-            for (const message of buffered.messages) {
-              if (message.type === "system" && message.subtype === "task_notification") {
-                bufferedTaskNotificationIds.add(message.task_id);
-              }
-            }
-          }
+          const reportedTaskIds = yield* bufferedTaskNotificationIds(nativeThreadId);
           const preservedOpaqueTombstones = [...priorOpaqueTombstones].filter((taskId) =>
-            bufferedTaskNotificationIds.has(taskId),
+            reportedTaskIds.has(taskId),
           );
           yield* clearPendingBackgroundTasksForNativeThread(nativeThreadId);
           yield* clearNativeThreadTaskIdSet(
@@ -5800,14 +5838,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             nativeThreadId,
             providerThread: remembered,
             status,
-            ...(options?.reportLostTasks === true
-              ? {
-                  lostBackgroundTasks: claudePendingBackgroundTasksFromRoster(
-                    roster,
-                    awaitedTaskIds,
-                  ).filter((task) => !bufferedTaskNotificationIds.has(task.taskId)),
-                }
-              : {}),
+            ...(lostTasks === undefined ? {} : { lost: lostTasks }),
           });
         });
 
@@ -7699,6 +7730,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           readonly failure?: OrchestrationV2ProviderFailure;
           readonly threadDisposition?: "reusable" | "broken";
           readonly result?: SDKResultMessage;
+          /** The process ends with this turn, so the tasks it still runs are reported as lost. */
+          readonly lostTasks?: ClaudeLostTasksCause;
         }) {
           yield* reasoningDeltas.flushTurn(input.context.nativeTurnId);
           if (input.context.compaction?.status === "running") {
@@ -7904,8 +7937,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               Effect.gen(function* () {
                 const nativeThreadId =
                   input.context.input.providerThread.nativeThreadRef?.nativeId ?? null;
+                let lost: ClaudeLostBackgroundTasks | undefined;
                 if (nativeThreadId !== null) {
                   if (input.status !== "completed") {
+                    if (input.lostTasks !== undefined) {
+                      lost = {
+                        tasks: yield* unfinishedBackgroundTasks(nativeThreadId),
+                        cause: input.lostTasks,
+                      };
+                    }
                     yield* clearPendingBackgroundTasksForNativeThread(nativeThreadId);
                     yield* clearNativeThreadTaskIdSet(
                       wakeEligibleBackgroundTasksByNativeThread,
@@ -7981,6 +8021,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   type: "provider_thread.updated" as const,
                   driver: CLAUDE_PROVIDER,
                   providerThread,
+                  ...claudeLostBackgroundTasksReport(lost),
                 });
               }),
               emitProviderEvent(terminalEvent),
@@ -8058,11 +8099,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           // Finalization can yield to a replacement process; capture ownership and outcomes first.
           const subagents = yield* Ref.get(sessionSubagentsByTaskId);
           const buffered = (yield* Ref.get(wakeBuffers)).get(closedQuery.nativeThreadId)?.messages;
+          // Any other close reports nothing here: whoever asked for it records what it stops.
+          const lostTasks = closedQuery.stopRequested
+            ? ("stopped" as const)
+            : closedQuery.stopping || closedQuery.closeRequested
+              ? undefined
+              : ("process-ended" as const);
           if (current === context) {
             yield* finalizeActiveTurn({
               context,
               status: interrupted ? "interrupted" : "failed",
               completedAt: yield* DateTime.now,
+              ...(lostTasks === undefined ? {} : { lostTasks }),
               ...(interrupted
                 ? {}
                 : {
@@ -8075,9 +8123,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   }),
             });
           } else {
-            yield* resetBackgroundTaskStateForNativeThreadProcess(closedQuery.nativeThreadId, {
-              reportLostTasks: !closedQuery.stopping && !closedQuery.closeRequested,
-            });
+            yield* resetBackgroundTaskStateForNativeThreadProcess(
+              closedQuery.nativeThreadId,
+              lostTasks === undefined ? undefined : { lostTasks },
+            );
           }
           // Preserve buffered outcomes before Stop clears the wake buffer.
           for (const [taskId, subagent] of subagents) {
@@ -8732,6 +8781,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               context,
               status: "failed",
               completedAt: yield* DateTime.now,
+              lostTasks: "process-ended",
               failure: makeProviderFailure({
                 class: "provider_error",
                 code: "claude_mod_ui_unsupported",
@@ -9836,6 +9886,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   : terminalStatusFromResult(message, failureHint),
               completedAt,
               result: message,
+              // The Stop that interrupted this turn closes the process next.
+              ...(interrupted ? { lostTasks: "stopped" as const } : {}),
               ...(terminalFailure === null ? {} : { failure: terminalFailure }),
             });
             if (signedOut) {
@@ -10837,6 +10889,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             permissionMode: queryOptions.permissionMode,
             stopping: false,
             closeRequested: false,
+            stopRequested: false,
             subagentsFromEarlierProcesses: new Set(
               [...(yield* Ref.get(sessionSubagentsByTaskId)).values()].filter(
                 (subagent) => subagent.task.status === "running",
@@ -11275,15 +11328,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 yield* clearWakeStateForNativeThread(nativeThreadId);
                 yield* resetBackgroundTaskStateForNativeThreadProcess(nativeThreadId, {
                   status: "idle",
+                  lostTasks: "stopped",
                 });
                 return;
               }
+              existing.stopRequested = true;
               yield* closeLiveQueryForNativeThread(nativeThreadId);
               const current = yield* Ref.get(queryContext);
               if (current === null || current.query === existing.query) {
                 yield* clearWakeStateForNativeThread(nativeThreadId);
                 yield* resetBackgroundTaskStateForNativeThreadProcess(nativeThreadId, {
                   status: "idle",
+                  lostTasks: "stopped",
                 });
               }
               return;
@@ -11305,6 +11361,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               next.add(turnInput.providerTurnId);
               return next;
             });
+            existing.stopRequested = true;
             if (!(yield* Deferred.isDone(existing.closed))) {
               yield* existing.query.interrupt.pipe(Effect.timeoutOption("10 seconds"));
               existing.closeRequested = true;
@@ -11909,9 +11966,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               }
 
               const nativeThreadId = yield* getNativeThreadId(rollbackInput.providerThread);
+              // Resolved first: a target it cannot rewind to must leave the process running.
+              const resumeSessionAt = yield* resolveClaudeRollbackResumeSessionAt(rollbackInput);
+              // The rollback's own write empties the roster, so it records these instead of a run's stream.
+              const lostBackgroundTasks = yield* unfinishedBackgroundTasks(nativeThreadId);
               yield* closeLiveQueryForNativeThread(nativeThreadId);
               const now = yield* DateTime.now;
-              const resumeSessionAt = yield* resolveClaudeRollbackResumeSessionAt(rollbackInput);
 
               if (rollbackInput.target.type === "thread_start" && resumeSessionAt === null) {
                 const resetNativeThreadId = yield* queryRunner.allocateSessionId;
@@ -11936,12 +11996,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   providerTurns: [],
                   messages: [],
                   runtimeRequests: [],
+                  lostBackgroundTasks,
                 };
               }
 
               return {
                 providerThread: {
                   ...rollbackInput.providerThread,
+                  // Its tasks ended with the process this rollback closed.
+                  pendingBackgroundTasks: [],
                   providerSessionId: input.providerSessionId,
                   nativeConversationHeadRef:
                     resumeSessionAt === null
@@ -11958,6 +12021,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 providerTurns: [],
                 messages: [],
                 runtimeRequests: [],
+                lostBackgroundTasks,
               };
             },
             (effect, rollbackInput) =>

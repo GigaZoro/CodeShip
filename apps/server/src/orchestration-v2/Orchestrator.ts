@@ -125,6 +125,7 @@ import {
   continuationFailedBeforePrompt,
   continuationStartRetryDelayMs,
   isRestartContinuationSource,
+  isSettledRun,
   promptNeverDelivered,
   restartRetryDelivery,
   restartRetryNoticeId,
@@ -2464,8 +2465,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (run) =>
         (run.status === "cancelled" ||
           (run.status === "failed" && run.restartContinuationOfRunId !== undefined) ||
-          ((run.status === "completed" || run.status === "waiting") &&
-            (run.restartCancelledBackgroundWork?.length ?? 0) > 0)) &&
+          (isSettledRun(run) && (run.restartCancelledBackgroundWork?.length ?? 0) > 0)) &&
         !supersededRun(run, projection.runs),
     );
     if ((yield* Effect.forEach(resumeSources, awaitsRestartContinuation)).includes(true)) return;

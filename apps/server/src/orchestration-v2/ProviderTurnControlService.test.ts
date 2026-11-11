@@ -212,6 +212,8 @@ it.effect(
         ProjectionStore.ProjectionStoreV2,
         ProjectionStore.ProjectionStoreV2.of({
           apply: () => Effect.void,
+          getRunTurnItemIdentities: () => Effect.die("unused getRunTurnItemIdentities"),
+          getRunsWithLostBackgroundWork: () => Effect.die("unused getRunsWithLostBackgroundWork"),
           liftUsageLimitHolds: () => Effect.die("unused liftUsageLimitHolds"),
           getScheduledTaskRecoveryState: () => Effect.die("unused"),
           getLimitRecoveryCandidates: () => Effect.die("unused getLimitRecoveryCandidates"),

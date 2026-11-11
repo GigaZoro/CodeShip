@@ -100,6 +100,8 @@ export const ProviderAdapterV2Event = Schema.Union([
     retainedNativeTurnIds: Schema.optional(Schema.Array(Schema.String)),
     /** Tasks this update drops because the provider process running them ended before they finished. */
     lostBackgroundTasks: Schema.optional(Schema.Array(OrchestrationV2PendingBackgroundTask)),
+    /** A Stop ended that process, so the chat is told with its next prompt and is not woken. */
+    lostBackgroundTasksCause: Schema.optional(Schema.Literal("stopped")),
   }),
   Schema.Struct({
     type: Schema.Literal("provider_turn.updated"),
@@ -495,6 +497,8 @@ export interface ProviderAdapterV2ThreadSnapshot {
   readonly messages: ReadonlyArray<OrchestrationV2ConversationMessage>;
   readonly runtimeRequests: ReadonlyArray<OrchestrationV2RuntimeRequest>;
   readonly providerPayload?: unknown;
+  /** Tasks a rollback ended unfinished by closing the provider process that ran them. */
+  readonly lostBackgroundTasks?: ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
 }
 
 export interface ProviderAdapterV2ReadThreadSnapshotInput {

@@ -1,3 +1,11 @@
+## 2026-11-12 — An agent is told when Stop, a rewind or a crashed turn ends its background work
+
+- **Stop** on a Claude chat closes its agent process, which ends the chat's background commands and monitors. The agent is now told what stopped with your next message, also when you stopped a chat that was only waiting on that work. Before, it could go on waiting for a command that no longer existed. Nothing starts by itself after a Stop.
+- When a Claude agent process ends in the middle of a turn, the turn fails as before, and your next message now also tells the agent which background work went with it.
+- **Edit from here** and **Retry** close the agent process too. The agent is now told about the stopped work it started before the point you returned to. Before, the thread could also keep showing that work as running until its next turn ended.
+- After **Edit from here** or **Retry**, the agent is no longer told about lost background work that the removed messages had started. Before, a restart or a closed session during those messages could leave a note that asked it to start that work again.
+- The thread shows each case as a notice that lists the stopped work: **Chat stopped**, **Conversation rewound** or **Agent process ended**.
+
 ## 2026-11-11 — Pick how to handle a manual step and a chat carries it out
 
 - On the **Manual steps** page, each suggested solution of a step now has **Choose**, and **Other…** takes a decision in your own words. Either one starts a chat under **No project** whose first message is the step and your decision, and opens it, so the agent carries the decision out and records the result in the step's ThreadPage thread. The chat runs on the step's own machine when the app is connected to it, otherwise on the machine that reviews steps. On mobile, the step's sheet has the same buttons and a **Your decision** field. Before, a step's review could only be read, and acting on it meant replying in ThreadPage or starting a chat by hand.

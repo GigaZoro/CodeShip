@@ -143,10 +143,13 @@ command or monitor the agent said it was waiting on is woken and told that this 
 stopped. The same happens when the agent's own process ends while it waits, or its session
 fails or is closed after a long time without activity, even if the server keeps running.
 A thread woken that way is not woken again by a second closure for inactivity.
-Closing the session yourself does not wake it: a forced stop, a sign-out, archiving or
-settling the thread, or changing its account, access mode, workspace or provider. Other
-background shells and monitors, such as a dev server and its watchdog, do not wake it
-either. In those cases the thread learns what stopped with your next message.
+Ending the agent's process yourself does not wake it: **Stop**, **Edit from here** or
+**Retry**, a forced stop, a sign-out, archiving or settling the thread, or changing its
+account, access mode, workspace or provider. Neither does a process that ends in the
+middle of a turn, which fails that turn instead. Other background shells and monitors,
+such as a dev server and its watchdog, do not wake it either. In those cases the thread
+learns what stopped with your next message. After **Edit from here** or **Retry** that
+leaves out work started by the messages you removed.
 An interrupted `/compact` compacts again. An approval or secret the restart
 cancelled is asked for again when the thread resumes. A question the agent asked
 stays open for your answer, which continues the thread. A thread is not resumed

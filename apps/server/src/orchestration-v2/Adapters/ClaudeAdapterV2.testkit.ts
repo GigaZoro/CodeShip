@@ -486,9 +486,15 @@ function makeClaudeSessionForkFrame(
   };
 }
 
+interface ReplayQueryRunnerOptions {
+  readonly replayGate?: ProviderReplayGate;
+  /** Closing a query ends its message stream, as the SDK does; most replays leave that to their scope. */
+  readonly closeEndsProcess?: boolean;
+}
+
 function makeReplayQueryRunner(
   transcript: ClaudeAgentSdkReplayTranscript,
-  replayOptions: { readonly replayGate?: ProviderReplayGate } = {},
+  replayOptions: ReplayQueryRunnerOptions = {},
 ): ClaudeQueryRunner {
   let cursor = 0;
   let failure: ClaudeAgentSdkReplayError | null = null;
@@ -625,9 +631,9 @@ function makeReplayQueryRunner(
 
   const replayMessagesWithGateCleanup = (
     options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
+    abortController: AbortController,
   ): AsyncIterable<SDKMessage> => ({
     [Symbol.asyncIterator]: () => {
-      const abortController = new AbortController();
       iteratorAbortControllers.add(abortController);
       const iterator = replayMessages(options, abortController.signal);
       return {
@@ -807,9 +813,11 @@ function makeReplayQueryRunner(
   return {
     open: (input) => {
       assertNextOutboundFrame(makeClaudeQueryOpenFrame(input));
+      const process = new AbortController();
       return {
-        messages: Stream.fromAsyncIterable(replayMessagesWithGateCleanup(input.options), (cause) =>
-          replayQueryRunnerError(transcript, cause),
+        messages: Stream.fromAsyncIterable(
+          replayMessagesWithGateCleanup(input.options, process),
+          (cause) => replayQueryRunnerError(transcript, cause),
         ),
         offer: (message) =>
           replayEffect(() => {
@@ -847,7 +855,10 @@ function makeReplayQueryRunner(
         interrupt: replayEffect(() => {
           assertNextOutboundFrame({ type: "query.interrupt" });
         }),
-        close: Effect.void,
+        close:
+          replayOptions.closeEndsProcess === true
+            ? Effect.sync(() => process.abort())
+            : Effect.void,
       };
     },
     forkSession: (input) => {
@@ -2834,7 +2845,7 @@ export const ClaudeOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarnes
 
 export function makeClaudeRestartReplayHarness(
   transcript: ClaudeAgentSdkReplayTranscript,
-  options: { readonly replayGate?: ProviderReplayGate } = {},
+  options: ReplayQueryRunnerOptions = {},
 ) {
   const queryRunner = makeReplayQueryRunner(transcript, options);
   return {

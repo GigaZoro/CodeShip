@@ -30,6 +30,7 @@ import {
   isAwaitedWork,
   isRestartContinuationSource,
   isRestartNoteSource,
+  isSettledRun,
   neverStarted,
   promptNeverDelivered,
   restartCancelledBackgroundWorkNote,
@@ -233,7 +234,7 @@ export function restartContinuationRun(
   if (!run) return;
   const preparedContinuation =
     run.status === "starting" && run.restartContinuationOfRunId !== undefined;
-  const settled = run.status === "completed" || run.status === "waiting";
+  const settled = isSettledRun(run);
   if (run.status !== "running" && !preparedContinuation && !settled) return;
   if (restartContinuationBlocked(projection, run, now, settled)) return;
   const liveTurnRequired = !preparedContinuation && !settled;

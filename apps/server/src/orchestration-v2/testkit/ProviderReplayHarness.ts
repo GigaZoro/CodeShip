@@ -504,6 +504,8 @@ export function layerWithRegistry<Error>(
         getThreadProjection: orchestrator.getThreadProjection,
         recoverDelegatedTask: orchestrator.recoverDelegatedTask,
         delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,
+        // A Stop that holds the queue asks for this; a replayed thread has no app-owned tasks.
+        stopDelegatedTasks: () => Effect.void,
       });
     }),
   ).pipe(Layer.provide(layerOrchestratorProvided));

@@ -40,11 +40,13 @@ import { toolOutputImages } from "@t3tools/shared/toolOutput";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerConfig from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
+import { backgroundWorkStoppedNoticeId } from "./RestartBackgroundNote.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
@@ -2360,4 +2362,112 @@ it.effect.each([
     );
     assert.isEmpty(persisted);
   }).pipe(Effect.provide(layerFailingWrites(errors))),
+);
+
+it.effect.each([
+  { ending: "ended on its own after its turn", status: "completed", cause: undefined, wakes: true },
+  { ending: "was closed by a Stop", status: "completed", cause: "stopped", wakes: false },
+  { ending: "ended on its own during its turn", status: "running", cause: undefined, wakes: false },
+] as const)(
+  "records the awaited work lost with a process that $ending, and wakes only a settled run nobody stopped",
+  ({ status, cause, wakes }) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const sql = yield* SqlClient.SqlClient;
+      const threadEvent = yield* threadCreatedEvent(now);
+      const threadId = threadEvent.threadId;
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      const providerThreadId = idAllocator.derive.providerThread({
+        driver: CODEX_DRIVER,
+        nativeThreadId: "native-thread",
+      });
+      const lostRunId = RunId.make("run:lost-work");
+      yield* eventSink.write({
+        events: [
+          threadEvent,
+          {
+            id: yield* idAllocator.allocate.event({ threadId }),
+            type: "run.created",
+            threadId,
+            occurredAt: now,
+            payload: {
+              id: lostRunId,
+              threadId,
+              ordinal: 1,
+              providerInstanceId: modelSelection.instanceId,
+              modelSelection,
+              providerThreadId,
+              userMessageId: MessageId.make("message:lost-work"),
+              rootNodeId: NodeId.make("node:lost-work"),
+              activeAttemptId: RunAttemptId.make("attempt:lost-work"),
+              status,
+              requestedAt: now,
+              startedAt: now,
+              completedAt: status === "running" ? null : now,
+              checkpointId: null,
+              contextHandoffId: null,
+            },
+          },
+        ],
+      });
+
+      yield* ingestor.ingestNormalized({
+        providerSessionId,
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+        runId: lostRunId,
+        event: {
+          type: "provider_thread.updated",
+          driver: CODEX_DRIVER,
+          providerThread: {
+            id: providerThreadId,
+            driver: CODEX_DRIVER,
+            providerInstanceId: modelSelection.instanceId,
+            providerSessionId,
+            appThreadId: threadId,
+            ownerNodeId: null,
+            nativeThreadRef: {
+              driver: CODEX_DRIVER,
+              nativeId: "native-thread",
+              strength: "strong",
+            },
+            nativeConversationHeadRef: null,
+            status: "idle",
+            firstRunOrdinal: 1,
+            lastRunOrdinal: 1,
+            handoffIds: [],
+            forkedFrom: null,
+            pendingBackgroundTasks: [],
+            createdAt: now,
+            updatedAt: now,
+          },
+          lostBackgroundTasks: [
+            { taskId: "task-1", kind: "command", description: "sleep 600", awaited: true },
+          ],
+          ...(cause === undefined ? {} : { lostBackgroundTasksCause: cause }),
+        },
+      });
+
+      const projection = yield* projectionStore.getThreadProjection(threadId);
+      assert.deepEqual(projection.runs[0]?.restartCancelledBackgroundWork, [
+        { kind: "shell", label: "sleep 600 (id task-1)", id: "task-1", awaited: true },
+      ]);
+      assert.equal(
+        projection.turnItems.find((item) => item.id === backgroundWorkStoppedNoticeId(lostRunId))
+          ?.title,
+        cause === "stopped" ? "Chat stopped" : "Agent process ended",
+      );
+      const queuedWakes = yield* sql`
+        SELECT effect_id FROM orchestration_v2_effect_outbox
+        WHERE effect_id = ${EffectOutbox.restartContinuationEffectId(lostRunId)}
+      `;
+      assert.lengthOf(queuedWakes, wakes ? 1 : 0);
+    }).pipe(Effect.provide(layerTest)),
 );

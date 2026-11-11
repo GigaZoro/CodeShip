@@ -61,6 +61,7 @@ import {
   type BackgroundWorkStop,
   cancelledRosterTaskWork,
   isAwaitedWork,
+  isSettledRun,
   latestStartedRun,
   lostBackgroundWorkRecord,
 } from "./RestartBackgroundNote.ts";
@@ -291,9 +292,6 @@ const RELEASED_BACKGROUND_WORK: Record<
   runtime_error: { cause: "session-failed", wakes: "always" },
   manual_shutdown: { cause: "session-closed", wakes: "never" },
 };
-
-const isSettledRun = (run: OrchestrationV2Run) =>
-  run.status === "completed" || run.status === "waiting";
 
 function sessionKey(providerSessionId: ProviderSessionId): string {
   return String(providerSessionId);

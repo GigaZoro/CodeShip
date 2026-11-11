@@ -46,6 +46,7 @@ import { boundFileChangeForStorage } from "./WireProjection.ts";
 import {
   cancelledRosterTaskWork,
   isAwaitedWork,
+  isSettledRun,
   lostBackgroundWorkRecord,
 } from "./RestartBackgroundNote.ts";
 
@@ -471,6 +472,7 @@ export const layer: Layer.Layer<
           readonly threadId: ThreadId;
           readonly providerThreadId: ProviderThreadId;
           readonly tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
+          readonly cause: "process-ended" | "stopped";
         },
       ) {
         if (input.runId === undefined || lost.tasks.length === 0) return [];
@@ -482,7 +484,7 @@ export const layer: Layer.Layer<
         const now = yield* DateTime.now;
         const record = lostBackgroundWorkRecord({
           run,
-          cause: "process-ended",
+          cause: lost.cause,
           work: lost.tasks.map(cancelledRosterTaskWork),
           now,
         });
@@ -509,7 +511,11 @@ export const layer: Layer.Layer<
       },
     );
 
-    /** Wakes the chat now; restart recovery wakes it too if the server stops before this commits. */
+    /**
+     * Wakes the chat now; restart recovery wakes it too if the server stops before this commits.
+     * Only a settled run whose process ended on its own is woken: a Stop was asked for, and a run
+     * cut by its process fails where the user sees it. Their next prompt carries the note.
+     */
     const continueAfterLostBackgroundWork = Effect.fn(
       "ProviderEventIngestor.continueAfterLostBackgroundWork",
     )(function* (
@@ -522,35 +528,38 @@ export const layer: Layer.Layer<
       if (
         recorded?.event.type !== "run.background-work-cancelled" ||
         input.event.type !== "provider_thread.updated" ||
+        input.event.lostBackgroundTasksCause !== undefined ||
         !(input.event.lostBackgroundTasks ?? []).some((task) =>
           isAwaitedWork(cancelledRosterTaskWork(task)),
         )
       )
         return;
       const { runId } = recorded.event.payload;
+      const { threadId } = recorded.event;
       const commandId = CommandId.make(`command:background-work-lost:${runId}`);
-      yield* eventSink
-        .writeWithEffects({
-          commandId,
-          events: [],
-          effects: [
-            EffectOutbox.restartContinuationEffect({
-              commandId,
-              threadId: recorded.event.threadId,
-              sourceRunId: runId,
-            }),
-          ],
-        })
-        .pipe(
-          retryLockTimeout,
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Failed to queue the wake for lost background work", {
-              threadId: recorded.event.threadId,
-              runId,
-              cause,
-            }),
-          ),
-        );
+      yield* Effect.gen(function* () {
+        const { runs } = yield* projections.getThreadRecords(threadId, ["runs"], {
+          runIds: [runId],
+        });
+        if (runs[0] === undefined || !isSettledRun(runs[0])) return;
+        yield* eventSink
+          .writeWithEffects({
+            commandId,
+            events: [],
+            effects: [
+              EffectOutbox.restartContinuationEffect({ commandId, threadId, sourceRunId: runId }),
+            ],
+          })
+          .pipe(retryLockTimeout);
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Failed to queue the wake for lost background work", {
+            threadId,
+            runId,
+            cause,
+          }),
+        ),
+      );
     });
 
     const normalize: ProviderEventIngestorV2Shape["normalize"] =
@@ -610,6 +619,7 @@ export const layer: Layer.Layer<
                   threadId,
                   providerThreadId: input.event.providerThread.id,
                   tasks: input.event.lostBackgroundTasks ?? [],
+                  cause: input.event.lostBackgroundTasksCause ?? "process-ended",
                 })),
                 ...(input.event.retainedNativeTurnIds === undefined
                   ? []

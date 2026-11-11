@@ -106,6 +106,7 @@ it.effect.each([
           Layer.mock(ProjectionStoreV2)({
             getThread: () => Effect.succeed(projection.thread),
             getCheckpointRollbackContext: () => Effect.succeed(projection),
+            getRunsWithLostBackgroundWork: () => Effect.succeed([]),
             getShellSnapshot: () =>
               Effect.succeed({
                 schemaVersion: 1,

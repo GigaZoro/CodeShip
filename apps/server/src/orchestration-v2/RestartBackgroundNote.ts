@@ -122,8 +122,27 @@ export function cancelledRosterTaskWork(task: OrchestrationV2PendingBackgroundTa
         description === undefined ? task.taskId : `${description} (id ${task.taskId})`,
       ) ?? "background task",
     id: task.taskId,
+    ...(task.nativeItemId === undefined ? {} : { nativeItemId: task.nativeItemId }),
     ...(task.awaited === true ? { awaited: true as const } : {}),
   };
+}
+
+/**
+ * Tells the work a set of runs started, by the turn items of those runs: the item itself, the
+ * tool call behind a background task, or the subagent that owns one. A rollback of those runs
+ * leaves the conversation without that work, so it must not be told about it.
+ */
+export function workStartedBy(
+  turnItems: ReadonlyArray<{ readonly id: string; readonly nativeId: string | null }>,
+): (work: Pick<Work, "id" | "nativeItemId">) => boolean {
+  const started = new Set<string>();
+  for (const item of turnItems) {
+    started.add(item.id);
+    if (item.nativeId !== null) started.add(item.nativeId);
+  }
+  return (work) =>
+    (work.id !== undefined && started.has(work.id)) ||
+    (work.nativeItemId !== undefined && started.has(work.nativeItemId));
 }
 
 const MAX_NOTE_ENTRIES = 10;
@@ -144,14 +163,19 @@ export function restartCancelledBackgroundWorkNote(work: ReadonlyArray<Work>): s
   ].join("\n");
 }
 
-/** What ended background work without a report: its server, its agent process, or that process's session. */
+/**
+ * What ended background work without a report: its server, its agent process, that process's
+ * session, or a Stop or a rollback that closed the process.
+ */
 export type BackgroundWorkStop =
   | "server-restarted"
   | "server-shut-down"
   | "process-ended"
   | "session-idle"
   | "session-failed"
-  | "session-closed";
+  | "session-closed"
+  | "stopped"
+  | "rolled-back";
 
 const BACKGROUND_WORK_STOP_TEXT: Record<
   BackgroundWorkStop,
@@ -166,7 +190,16 @@ const BACKGROUND_WORK_STOP_TEXT: Record<
   },
   "session-failed": { title: "Agent session failed", lead: "The agent's session failed" },
   "session-closed": { title: "Agent session closed", lead: "The agent's session was closed" },
+  stopped: { title: "Chat stopped", lead: "Stopping the chat ended the agent process" },
+  "rolled-back": {
+    title: "Conversation rewound",
+    lead: "Rewinding the conversation ended the agent process",
+  },
 };
+
+/** A run whose turn ended and that only background work, if anything, still holds. */
+export const isSettledRun = (run: Pick<OrchestrationV2Run, "status">): boolean =>
+  run.status === "completed" || run.status === "waiting";
 
 export function backgroundWorkStoppedNoticeId(runId: RunId) {
   return derive.runSignalTurnItem({ runId, signal: "background-work-stopped" });

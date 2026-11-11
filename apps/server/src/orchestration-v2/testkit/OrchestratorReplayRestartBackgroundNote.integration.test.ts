@@ -1,6 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { EventId, ProviderDriverKind, type ProviderReplayEntry } from "@t3tools/contracts";
+import {
+  CommandId,
+  EventId,
+  ProviderDriverKind,
+  type ProviderReplayEntry,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -325,8 +330,16 @@ const LOST_SCENARIO = "claude_background_task_after_root";
 const LOST_SESSION_ID = "ec24a006-617b-4324-b516-57a7afff15a4";
 const LOST_TASK_ID = "bc9gkn8ei";
 const LOST_TASK_LABEL = "sleep 25 && echo L2_BG_DONE (id bc9gkn8ei)";
+const LOST_WORK = {
+  kind: "shell",
+  label: LOST_TASK_LABEL,
+  id: LOST_TASK_ID,
+  nativeItemId: "toolu_01DAnwwvVvLM1cTfzrm6kkor",
+  awaited: true,
+} as const;
 const LOST_GATE = "process-exit";
 const QUESTION_AFTER_LOSS = "Is the background command done yet?";
+const QUESTION_AFTER_FAILURE = "What happened?";
 const LOST_NOTE = [
   "Note: this background work was cancelled before it finished, because the T3 server restarted or the agent process running it ended. It will not report back on its own, so resume or restart what you still need and wait for its result:",
   `- shell: ${LOST_TASK_LABEL}`,
@@ -337,24 +350,26 @@ type SessionRelease = Exclude<
   "server_shutdown"
 >;
 
-/** How the thread says its background work stopped: the process ended, or its session was released. */
-const LOST_NOTICE: Record<"process-ended" | SessionRelease, readonly [string, string]> = {
-  "process-ended": ["Agent process ended", "The agent process ended"],
-  idle_timeout: [
-    "Agent session closed",
-    "The agent's session was closed after too long without activity",
-  ],
-  runtime_error: ["Agent session failed", "The agent's session failed"],
-  manual_shutdown: ["Agent session closed", "The agent's session was closed"],
-};
+/** How the thread says its background work stopped: the process ended, a Stop closed it, or its session was released. */
+const LOST_NOTICE: Record<"process-ended" | "stopped" | SessionRelease, readonly [string, string]> =
+  {
+    "process-ended": ["Agent process ended", "The agent process ended"],
+    stopped: ["Chat stopped", "Stopping the chat ended the agent process"],
+    idle_timeout: [
+      "Agent session closed",
+      "The agent's session was closed after too long without activity",
+    ],
+    runtime_error: ["Agent session failed", "The agent's session failed"],
+    manual_shutdown: ["Agent session closed", "The agent's session was closed"],
+  };
 
 /**
- * The root turn settles with the command still running. Then its process exits on its own, or
- * stays up until the test releases its session.
+ * The root turn settles with the command still running. Then its process exits on its own, while
+ * idle or during the next turn, or stays up until the test stops the chat or releases its session.
  */
 const readLostTaskTranscript = Effect.fn("readLostTaskTranscript")(function* (
   resumedPrompts: ReadonlyArray<string>,
-  processExits: boolean,
+  processExits: "idle" | { readonly duringTurn: string } | false,
 ) {
   const recorded = yield* readProviderReplayTranscript(
     new URL(`./fixtures/${LOST_SCENARIO}/claude_transcript.ndjson`, import.meta.url),
@@ -367,7 +382,7 @@ const readLostTaskTranscript = Effect.fn("readLostTaskTranscript")(function* (
       ...recorded.entries.slice(0, label("result:root") + 1),
       // Holds the process until the agent marks the command awaited; it then ends unprompted.
       // The frame carries nothing, so no event races the process exit.
-      ...(processExits
+      ...(processExits === "idle"
         ? ([
             {
               type: "emit_inbound",
@@ -380,7 +395,24 @@ const readLostTaskTranscript = Effect.fn("readLostTaskTranscript")(function* (
             },
             { type: "runtime_exit", status: "success" },
           ] as const)
-        : []),
+        : processExits === false
+          ? []
+          : ([
+              // The process takes the prompt and ends before it answers.
+              {
+                type: "expect_outbound",
+                label: "prompt.offer:cut",
+                frame: {
+                  type: "prompt.offer",
+                  message: {
+                    type: "user",
+                    message: { role: "user", content: processExits.duringTurn },
+                    parent_tool_use_id: null,
+                  },
+                },
+              },
+              { type: "runtime_exit", status: "success" },
+            ] as const)),
       {
         type: "expect_outbound",
         label: "query.open:resume",
@@ -407,11 +439,14 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
   readonly wakeWithoutRestart?: boolean;
   /** The process stays up and its session is released instead. */
   readonly release?: SessionRelease;
+  /** The process stays up and the user stops the chat's background work instead. */
+  readonly stop?: boolean;
 }) {
   const wakeWithoutRestart = input.wakeWithoutRestart === true;
+  const stop = input.stop === true;
   const transcript = yield* readLostTaskTranscript(
     input.resumedPrompts,
-    input.release === undefined,
+    input.release === undefined && !stop ? "idle" : false,
   );
   const workspace = yield* checkpointWorkspace(LOST_SCENARIO);
   const fs = yield* FileSystem.FileSystem;
@@ -440,7 +475,10 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
   const phase1Steps = materialized.steps.slice(0, settledAt + 1);
   const phase3Steps = materialized.steps.slice(settledAt + 1);
   const replayGate = makeProviderReplayGate([LOST_GATE]);
-  const { harness, assertComplete } = makeClaudeRestartReplayHarness(transcript, { replayGate });
+  const { harness, assertComplete } = makeClaudeRestartReplayHarness(transcript, {
+    replayGate,
+    closeEndsProcess: stop,
+  });
   const layerDatabase = SqlitePersistence.layerFromPath(path.join(tempDir, "state.sqlite")).pipe(
     Layer.provide(NodeServices.layer),
   );
@@ -488,7 +526,16 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
         Stream.runHead,
       );
       const afterSequence = yield* eventSink.latestSequence({ threadId });
-      if (input.release === undefined) replayGate.release(LOST_GATE);
+      const settledRun = settled.runs[0];
+      if (stop && settledRun !== undefined) {
+        yield* orchestrator.dispatch({
+          type: "run.interrupt",
+          commandId: CommandId.make("command:lost-task:stop"),
+          threadId,
+          runId: settledRun.id,
+          holdQueue: true,
+        });
+      } else if (input.release === undefined) replayGate.release(LOST_GATE);
       else {
         yield* sessions.release({
           providerSessionId: providerThread.providerSessionId,
@@ -537,13 +584,11 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
   if (lostRun === undefined) return yield* Effect.die("lost task scenario has no run");
   assert.equal(lostRun.status, "completed");
   assert.deepEqual(lost.providerThreads[0]?.pendingBackgroundTasks ?? [], []);
-  assert.deepEqual(lostRun.restartCancelledBackgroundWork, [
-    { kind: "shell", label: LOST_TASK_LABEL, id: LOST_TASK_ID, awaited: true },
-  ]);
+  assert.deepEqual(lostRun.restartCancelledBackgroundWork, [LOST_WORK]);
   const notice = lost.turnItems.find(
     (item) => item.id === backgroundWorkStoppedNoticeId(lostRun.id),
   );
-  const [title, lead] = LOST_NOTICE[input.release ?? "process-ended"];
+  const [title, lead] = LOST_NOTICE[stop ? "stopped" : (input.release ?? "process-ended")];
   assert.deepInclude(notice, {
     type: "system_notice",
     runId: lostRun.id,
@@ -588,6 +633,91 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
   );
   yield* assertComplete;
   return { recovered, after: projectionFor(after, LOST_SCENARIO) };
+});
+
+/**
+ * The chat waits on a marked command, the user asks about it, and the process ends during that
+ * turn. Threads continue after restarts here, so a wake would show as a continuation run.
+ */
+const runLostTaskDuringTurn = Effect.gen(function* () {
+  const transcript = yield* readLostTaskTranscript(
+    [`${LOST_NOTE}\n\nUser message:\n${QUESTION_AFTER_FAILURE}`],
+    { duringTurn: QUESTION_AFTER_LOSS },
+  );
+  const workspace = yield* checkpointWorkspace(LOST_SCENARIO);
+  const materialized = yield* materializeFixtureInput({
+    scenario: LOST_SCENARIO,
+    fixtureInput: {
+      steps: [
+        { type: "message", text: CLAUDE_BACKGROUND_TASK_AFTER_ROOT_PROMPT },
+        { type: "await_run_status", targetRunIndex: 1, status: "completed" },
+        { type: "message", text: QUESTION_AFTER_LOSS },
+        { type: "await_run_status", targetRunIndex: 2, status: "failed" },
+        { type: "message", text: QUESTION_AFTER_FAILURE },
+      ],
+    },
+    driver: ProviderDriverKind.make("claudeAgent"),
+    modelSelection: CLAUDE_MODEL_SELECTION,
+  });
+  const threadId = materialized.projectionThreadIds[0];
+  if (threadId === undefined) {
+    return yield* Effect.die("lost task scenario has no projection thread");
+  }
+  const settledAt = materialized.steps.findIndex((step) => step.type === "await_run_status");
+  const { harness, assertComplete } = makeClaudeRestartReplayHarness(transcript);
+  const scenario = (name: string, steps: typeof materialized.steps) => ({
+    name: `${LOST_SCENARIO}:${name}`,
+    transcript,
+    commands: steps.flatMap((step) => (step.type === "dispatch" ? [step.command] : [])),
+    steps,
+    projectionThreadIds: materialized.projectionThreadIds,
+    runtimePolicyOverride: { cwd: workspace },
+  });
+  const settledScenario = scenario("settled", materialized.steps.slice(0, settledAt + 1));
+  const after = yield* Effect.scoped(
+    Effect.gen(function* () {
+      yield* runOrchestratorV2Scenario(settledScenario);
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const providerThread = (yield* orchestrator.getThreadProjection(threadId)).providerThreads[0];
+      if (providerThread?.providerSessionId == null) {
+        return yield* Effect.die("lost task scenario has no provider session");
+      }
+      const runtime = yield* sessions.get(providerThread.providerSessionId);
+      if (Option.isNone(runtime) || runtime.value.awaitBackgroundTasks === undefined) {
+        return yield* Effect.die("lost task scenario has no live Claude runtime");
+      }
+      const markedAfter = yield* eventSink.latestSequence({ threadId });
+      yield* runtime.value.awaitBackgroundTasks({
+        providerThread,
+        taskIds: [LOST_TASK_ID],
+        awaited: true,
+      });
+      yield* eventSink.stream({ threadId, afterSequence: markedAfter }).pipe(
+        Stream.filter(
+          ({ event }) =>
+            event.type === "provider-thread.updated" &&
+            (event.payload.pendingBackgroundTasks ?? []).some((task) => task.awaited === true),
+        ),
+        Stream.runHead,
+      );
+      const result = yield* runOrchestratorV2Scenario(
+        scenario("cut", materialized.steps.slice(settledAt + 1)),
+      );
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      yield* worker.drain();
+      return projectionFor(result, LOST_SCENARIO);
+    }).pipe(
+      Effect.provide(
+        ProviderReplayHarness.layerProviderReplay(settledScenario, harness, {
+          continueThreadsAfterServerUpdate: true,
+        }),
+      ),
+    ),
+  );
+  yield* assertComplete;
+  return after;
 });
 
 describe("background work its agent process lost", () => {
@@ -696,6 +826,71 @@ describe("background work its agent process lost", () => {
               ["completed", undefined],
               ["completed", undefined],
             ],
+          );
+        }).pipe(
+          provideDeterministicTestRuntime,
+          Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer)),
+        ),
+      ),
+  );
+
+  it.effect("a chat someone stopped is told with the next message, and nothing wakes it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { recovered, after } = yield* runLostTask({
+          resumedPrompts: [`${LOST_NOTE}\n\nUser message:\n${QUESTION_AFTER_LOSS}`],
+          userMessagesAfterRestart: [QUESTION_AFTER_LOSS],
+          // Not even a restart that continues threads wakes it.
+          continueThreadsAfterServerUpdate: true,
+          stop: true,
+        });
+        assert.lengthOf(recovered.runs, 1);
+        assert.deepEqual(
+          after.runs.map((run) => [run.status, run.restartContinuationOfRunId]),
+          [
+            ["completed", undefined],
+            ["completed", undefined],
+          ],
+        );
+      }).pipe(
+        provideDeterministicTestRuntime,
+        Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer)),
+      ),
+    ),
+  );
+
+  it.effect(
+    "a process that ends during a turn leaves the lost work on the failed run for the next message",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const after = yield* runLostTaskDuringTurn;
+          assert.deepEqual(
+            after.runs.map((run) => [run.status, run.restartContinuationOfRunId]),
+            [
+              ["completed", undefined],
+              ["failed", undefined],
+              ["completed", undefined],
+            ],
+          );
+          const failedRun = after.runs[1];
+          assert.deepEqual(failedRun?.restartCancelledBackgroundWork, [LOST_WORK]);
+          assert.deepEqual(after.providerThreads[0]?.pendingBackgroundTasks ?? [], []);
+          const [title, lead] = LOST_NOTICE["process-ended"];
+          assert.deepInclude(
+            after.turnItems.find(
+              (item) =>
+                failedRun !== undefined && item.id === backgroundWorkStoppedNoticeId(failedRun.id),
+            ),
+            {
+              type: "system_notice",
+              title,
+              message: [
+                `${lead} and stopped background work before it finished:`,
+                `- shell: ${LOST_TASK_LABEL}`,
+                "This chat was waiting on it.",
+              ].join("\n"),
+            },
           );
         }).pipe(
           provideDeterministicTestRuntime,

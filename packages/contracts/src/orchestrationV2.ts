@@ -646,6 +646,8 @@ export const OrchestrationV2RestartCancelledBackgroundWork = Schema.Struct({
   kind: Schema.Literals(["subagent", "shell", "monitor", "task"]),
   label: TrimmedNonEmptyString,
   id: Schema.optional(TrimmedNonEmptyString),
+  /** Native id of the turn item that started this work, when it is not `id`. */
+  nativeItemId: Schema.optional(TrimmedNonEmptyString),
   /** The agent was waiting on this work, so its restart note wakes the agent even for a shell. */
   awaited: Schema.optional(Schema.Literal(true)),
 });
