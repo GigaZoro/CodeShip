@@ -1,10 +1,10 @@
-## 2026-11-11 — Agent shells can open the app and `t3code://` links again
-
-- Agents and the shells they start no longer inherit the desktop app's Electron-as-Node switch (`ELECTRON_RUN_AS_NODE`). Before, opening the desktop app, a `t3code://pair` link, or another Electron app such as VS Code from a chat started it as plain Node, which exited without showing anything. The `t3` command line is unaffected.
-
 ## 2026-11-11 — A linked machine can be added to the app's machine list
 
 - Linking a machine for agents never put it in the machine list at the bottom-left of the sidebar, and nothing said so. The `t3 environment link` and `t3 environment list` output and the agent link tools now say it is linked for agents only. In **Settings → Machines & access → Linked environments**, a linked machine missing from the list is marked, with **Add to this app**: one click over T3 Connect, otherwise a pairing code from that machine.
+
+## 2026-11-11 — Agent shells can open the app and `t3code://` links again
+
+- Agents and the shells they start no longer inherit the desktop app's Electron-as-Node switch (`ELECTRON_RUN_AS_NODE`). Before, opening the desktop app, a `t3code://pair` link, or another Electron app such as VS Code from a chat started it as plain Node, which exited without showing anything. The `t3` command line is unaffected.
 
 ## 2026-11-11 — Accounts and device settings follow your machines
 
