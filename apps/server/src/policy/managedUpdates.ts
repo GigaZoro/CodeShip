@@ -7,7 +7,8 @@ import type { CliReleaseChannel } from "@t3tools/shared/cliRelease";
 
 /**
  * Why the managed policy refuses an update a user or maintainer asked for, or `undefined` when it
- * allows it. The server never updates on its own, so `auto` allows every explicit request.
+ * allows it. `auto` allows every update, whether a person asked for it or the server installs it
+ * itself (`installUpdatesAutomatically`); `off` refuses both.
  * Pass `targetChannel` when the caller picks the release; the desktop app gates its own channel.
  */
 export function managedUpdateRefusal(

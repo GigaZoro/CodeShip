@@ -439,6 +439,10 @@
       "types": "./src/cliRelease.ts",
       "import": "./src/cliRelease.ts"
     },
+    "./restartHold": {
+      "types": "./src/restartHold.ts",
+      "import": "./src/restartHold.ts"
+    },
     "./gitPatchPath": {
       "types": "./src/gitPatchPath.ts",
       "import": "./src/gitPatchPath.ts"
