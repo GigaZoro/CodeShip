@@ -1,4 +1,8 @@
-import { DEFAULT_SERVER_SETTINGS, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  type EnvironmentId,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS, type ClientSettings } from "@t3tools/contracts/settings";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -20,6 +24,7 @@ import {
   persistClientSettingsPatch,
   persistClientSettingsUpdate,
   prepareModelPreferencesPatch,
+  sharedSettingsSyncTargets,
 } from "./useSettings";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 
@@ -335,4 +340,21 @@ it("uses the environment's model preferences after migration, including empty li
   );
   expect(merged.favorites).toEqual([]);
   expect(merged.providerModelPreferences).toEqual({});
+});
+
+describe("sharedSettingsSyncTargets", () => {
+  const machine = (id: string, followSharedSettings: boolean | undefined) => ({
+    environmentId: id as EnvironmentId,
+    serverConfig: { settings: { followSharedSettings } },
+  });
+  const ids = ["mac", "pc", "cpc"] as EnvironmentId[];
+
+  it.each([
+    ["no machine follows: every connected machine", [undefined, false, false], "mac", ids],
+    ["an edit on a follower reaches only followers", [true, true, false], "mac", ["mac", "pc"]],
+    ["an edit on a machine outside the group stays there", [true, true, false], "cpc", []],
+  ])("%s", (_name, follows, source, expected) => {
+    const environments = ids.map((id, index) => machine(id, follows[index]));
+    expect(sharedSettingsSyncTargets(environments, ids, source as EnvironmentId)).toEqual(expected);
+  });
 });
