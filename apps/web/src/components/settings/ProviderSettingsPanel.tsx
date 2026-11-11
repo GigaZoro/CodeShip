@@ -28,6 +28,7 @@ import {
   resolveEnvironmentMachineKind,
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
+  SHARED_PROVIDER_CONFIG_FIELDS,
 } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t3tools/contracts/settings";
 import * as Arr from "effect/Array";
@@ -709,6 +710,19 @@ export function EnvironmentProviderSettings({
         });
         return;
       }
+      // The removal reaches the other machines that follow, which a one-click delete does not show.
+      if (
+        settings.followSharedSettings &&
+        Object.hasOwn(SHARED_PROVIDER_CONFIG_FIELDS, instance.driver)
+      ) {
+        toastManager.add({
+          type: "success",
+          title: t("Account removed"),
+          description: t(
+            "Your other machines that follow shared settings remove it too. Each keeps its sign-in and folders.",
+          ),
+        });
+      }
 
       if (instance.driver !== ProviderDriverKind.make("acpRegistry")) return;
       if (providerConfigString(instance.config, "source") === "local") return;
@@ -1146,12 +1160,18 @@ function ProviderInstanceRow({
   readonly actions: ProviderInstanceRowActions;
 }) {
   const allProjects = useProjects();
+  const { environments } = useEnvironments();
   const secretSources = useSecretSources(environmentId);
   const acpProjects =
     mode === "editor" && liveProvider?.driver === "acpRegistry"
       ? allProjects.filter((project) => project.environmentId === environmentId)
       : undefined;
   const instance = explicitInstance ?? { driver };
+  const sharedFrom =
+    instance.sharedFrom === undefined
+      ? undefined
+      : (environments.find((environment) => environment.environmentId === instance.sharedFrom)
+          ?.label ?? null);
   const driverOption = providerClients.get(driver);
   const updateCandidate =
     liveProvider !== undefined && isProviderSettingsUpdateCandidate(liveProvider)
@@ -1185,6 +1205,7 @@ function ProviderInstanceRow({
   return (
     <ProviderInstanceCard
       environmentId={environmentId}
+      sharedFrom={sharedFrom}
       secretSources={secretSources}
       acpProjects={acpProjects}
       projectOverride={projectOverride}

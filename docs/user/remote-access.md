@@ -408,9 +408,18 @@ machine that follows them, whatever that link's access. Leave it off on a machin
 separate, such as a work machine: it neither gives nor takes shared settings.
 
 - Only settings people keep the same everywhere are shared, such as models, thread, worktree,
-  source-control and review defaults. Paths, accounts, providers, devices, secrets, project
-  actions and project overrides stay on one machine, and so do **Allow linked environments**,
-  **Guest links** and **Follow shared settings** itself.
+  source-control and review defaults. Paths, devices, secrets, project actions and project
+  overrides stay on one machine, and so do **Allow linked environments**, **Guest links** and
+  **Follow shared settings** itself.
+- Provider accounts follow too. Add, rename, turn off or remove an account in **Settings →
+  Providers & models** on a following machine, and within a few minutes every other following
+  machine has the same account, marked **From** the machine it came from, with its account order.
+  Each machine signs in on its own: a new account shows as signed out there and appears under
+  **Sign in to all**. Its name, color, whether it is on and its models are shared; its home
+  folder, binary, launch arguments, environment variables and sign-in never leave the machine.
+  The built-in providers share only their name and whether they are on. Removing an account
+  removes it from the other machines too, but each keeps its login and folders. An account added
+  before the machine followed stays where it is until you change it.
 - A change for one environment or one project stays there. A later change saved for all
   environments sets that setting on the following machines again.
 - When two changes to one setting meet, the newest wins, including a change made on one machine

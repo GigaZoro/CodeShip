@@ -1860,6 +1860,7 @@ const catalog: MessageCatalog = {
   "Account {number}": "Обліковий запис {number}",
   "Account name": "Назва облікового запису",
   "Account order": "Порядок облікових записів",
+  "Account removed": "Обліковий запис видалено",
   "Account-specific home sharing the Codex state above.":
     "Домашня папка облікового запису, що ділить стан Codex зверху.",
   "Accounts are tried from the top, and a limited thread continues on the highest one with usage left.":
@@ -5829,6 +5830,7 @@ const catalog: MessageCatalog = {
   "From {branch} (remote)": "Із {branch} (віддалена)",
   "From {label}": "Із {label}",
   "From {label} #{number}": "Із {label} #{number}",
+  "From {machine}": "Із {machine}",
   "From {origin}": "Із {origin}",
   "From {ref}": "Із {ref}",
   "From {ref} (remote)": "Із {ref} (віддалена)",
@@ -10353,6 +10355,7 @@ const catalog: MessageCatalog = {
     "Спільні навички від увімкнених провайдерів у цьому середовищі. Навички, що потребують інструментів, недоступних вибраній моделі, можуть не працювати.",
   "Share with guest": "Поділитися з гостем",
   "Share…": "Поділитися…",
+  Shared: "Спільний",
   "Shared across models": "Спільні для всіх моделей",
   "Shared background policy": "Спільна фонова політика",
   "Shared Codex config, sessions, and state.": "Спільна конфігурація, сеанси та стан Codex.",
@@ -13970,6 +13973,8 @@ const catalog: MessageCatalog = {
   "Your organization's policy adds this server.": "Цей сервер додає політика вашої організації.",
   "Your organization's policy does not allow the {label} provider.":
     "Політика вашої організації не дозволяє провайдера {label}.",
+  "Your other machines that follow shared settings remove it too. Each keeps its sign-in and folders.":
+    "Ваші інші комп’ютери, які приймають спільні налаштування, теж його видалять. Кожен зберігає свій вхід і папки.",
   "Your other review comments will be kept.": "Решту ваших коментарів до рев’ю буде збережено.",
   "Your permissions": "Ваші дозволи",
   "Your preferences for review guides: what to show first, dwell on, or skip. The guide's format and coverage stay the same.":

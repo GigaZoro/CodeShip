@@ -686,6 +686,11 @@ interface ProviderInstanceCardProps {
   readonly environmentId?: EnvironmentId | undefined;
   readonly secretSources?: ReadonlyArray<SecretSource>;
   readonly projectOverride?: ProjectOverrideControl | undefined;
+  /**
+   * Set when the account arrived through shared settings: the machine it came from, or null when
+   * this client does not know that machine.
+   */
+  readonly sharedFrom?: string | null | undefined;
   readonly acpProjects?:
     | ReadonlyArray<{
         readonly id: ProjectId;
@@ -731,6 +736,7 @@ export function ProviderInstanceCard({
   acpProjects = EMPTY_ACP_PROJECTS,
   secretSources = NO_SECRET_SOURCES,
   projectOverride,
+  sharedFrom,
 }: ProviderInstanceCardProps) {
   const enabled = projectOverride?.effectiveEnabled ?? resolveProviderInstanceEnabled(instance);
   const effectiveProvider = liveProvider && { ...liveProvider, enabled };
@@ -1109,6 +1115,11 @@ export function ProviderInstanceCard({
           <span className="min-w-0 flex-1">
             <span className="flex min-w-0 items-center gap-2">
               <span className="truncate text-sm font-medium text-foreground">{displayName}</span>
+              {sharedFrom === undefined ? null : (
+                <Badge variant="outline" size="sm">
+                  {sharedFrom === null ? t("Shared") : t("From {machine}", { machine: sharedFrom })}
+                </Badge>
+              )}
               {versionLabel ? (
                 <code className="max-w-24 shrink-0 truncate text-xs text-muted-foreground">
                   {versionLabel}

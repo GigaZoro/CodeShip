@@ -39,12 +39,10 @@ export function AccountFailoverSettings({
     const [account] = next.splice(from, 1);
     next.splice(to, 0, account!);
     const moved = new Set(accounts.map((candidate) => candidate.instanceId));
-    const known = new Set(providers.map((candidate) => candidate.instanceId));
+    // Accounts only other machines have keep their place; the order is shared with them.
     updateSettings({
       providerInstanceFailoverOrder: [
-        ...settings.providerInstanceFailoverOrder.filter(
-          (instanceId) => !moved.has(instanceId) && known.has(instanceId),
-        ),
+        ...settings.providerInstanceFailoverOrder.filter((instanceId) => !moved.has(instanceId)),
         ...next.map((candidate) => candidate.instanceId),
       ],
     });

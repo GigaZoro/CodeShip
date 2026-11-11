@@ -70,6 +70,7 @@ const machine = (
   instances: Ref.Ref<ReadonlyArray<string>>,
   followingTurnedOff: boolean,
   managedPolicy: ManagedPolicySummary | undefined,
+  environmentId: EnvironmentId,
 ) => {
   const settings = Settings.layerTest({ followSharedSettings: true, ...overrides }, managedPolicy);
   const settingsSeen = followingTurnedOff
@@ -99,7 +100,9 @@ const machine = (
       }),
     ),
     Layer.provideMerge(
-      Layer.mock(ServerEnvironment.ServerEnvironment)({ getEnvironmentId: Effect.succeed(HERE) }),
+      Layer.mock(ServerEnvironment.ServerEnvironment)({
+        getEnvironmentId: Effect.succeed(environmentId),
+      }),
     ),
     Layer.provideMerge(Layer.fresh(SqlitePersistence.layerMemory)),
   );
@@ -114,6 +117,7 @@ const run = <A, E>(
   overrides: Parameters<typeof Settings.layerTest>[0] = {},
   followingTurnedOff = false,
   managedPolicy?: ManagedPolicySummary,
+  environmentId: EnvironmentId = HERE,
 ) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(Date.parse(NOW));
@@ -122,7 +126,11 @@ const run = <A, E>(
       const shared = yield* SharedSettings.SharedSettings;
       const settings = yield* Settings.ServerSettingsService;
       return yield* body(shared, settings, instances);
-    }).pipe(Effect.provide(machine(overrides, instances, followingTurnedOff, managedPolicy)));
+    }).pipe(
+      Effect.provide(
+        machine(overrides, instances, followingTurnedOff, managedPolicy, environmentId),
+      ),
+    );
   });
 
 const served = (shared: SharedSettings.SharedSettings["Service"]) =>
@@ -480,6 +488,11 @@ it.effect("keeps only so many settings this build does not know", () =>
       // One already kept still takes newer versions.
       yield* shared.applyPulled(PEER, [version("newer00", "again", SOON)]);
       expect((yield* served(shared)).newer00?.value).toBe("again");
+      // An account is a key this build knows, even one whose version it cannot read.
+      yield* shared.applyPulled(PEER, [
+        version("providerInstance:codex_new", { driver: 7 }, LATER),
+      ]);
+      expect((yield* served(shared))["providerInstance:codex_new"]?.value).toEqual({ driver: 7 });
     }),
   ),
 );
@@ -490,8 +503,12 @@ it.effect("leaves out values too large to share, when pulled and when served, sa
       const tooLarge = "x".repeat(SHARED_SETTING_VALUE_MAX_BYTES);
       const { warnings } = yield* withWarnings(
         Effect.gen(function* () {
-          yield* shared.applyPulled(PEER, [version("threadTitleInstructions", tooLarge, LATER)]);
-          yield* shared.applyPulled(PEER, [version("threadTitleInstructions", tooLarge, LATER)]);
+          const pulled = [
+            version("threadTitleInstructions", tooLarge, LATER),
+            version(WORK_KEY, { ...WORK_SHARED, displayName: tooLarge }, LATER),
+          ];
+          yield* shared.applyPulled(PEER, pulled);
+          yield* shared.applyPulled(PEER, pulled);
           // One stored before the limit is not served either.
           const sql = yield* SqlClient.SqlClient;
           yield* sql`
@@ -503,9 +520,11 @@ it.effect("leaves out values too large to share, when pulled and when served, sa
           yield* shared.servedVersions;
         }),
       );
-      expect((yield* settings.getSettings).threadTitleInstructions).not.toBe(tooLarge);
+      const current = yield* settings.getSettings;
+      expect(current.threadTitleInstructions).not.toBe(tooLarge);
+      expect(Object.hasOwn(current.providerInstances, WORK)).toBe(false);
       expect(yield* shared.servedVersions).toEqual([]);
-      expect(warnings.filter((warning) => warning.includes("too large"))).toHaveLength(2);
+      expect(warnings.filter((warning) => warning.includes("too large"))).toHaveLength(3);
 
       // Each fits, but together they are more than one answer may carry.
       const large = "y".repeat(SHARED_SETTING_VALUE_MAX_BYTES - 100);
@@ -883,4 +902,457 @@ it.effect("stamps a change saved for all machines here by this server's clock", 
       served: version("finalReviewByDefault", true, NOW, HERE),
     });
   }),
+);
+
+const CLAUDE = ProviderDriverKind.make("claudeAgent");
+const CODEX = ProviderDriverKind.make("codex");
+const WORK = ProviderInstanceId.make("claudeAgent_work");
+const WORK_KEY = "providerInstance:claudeAgent_work";
+
+/** An account as one machine holds it, with its own home, binary, token and environment. */
+const workAccount = (machineName: string) => ({
+  driver: CLAUDE,
+  displayName: "Claude - Work",
+  accentColor: "violet",
+  environment: [
+    { name: "CLAUDE_CODE_OAUTH_TOKEN", value: `token-${machineName}`, sensitive: true },
+  ],
+  config: {
+    homePath: `/Users/${machineName}/.claude-work`,
+    binaryPath: `/Users/${machineName}/bin/claude`,
+    launchArgs: "--chrome",
+    oauthToken: {
+      issuedAt: EARLIER,
+      expiresAt: "2027-11-11T11:00:00.000Z",
+      fingerprint: machineName,
+    },
+    customModels: ["claude-opus-5-5"],
+    autoCompactWindow: "300000",
+  },
+});
+
+/** What every machine that follows holds of the work account. */
+const WORK_SHARED = {
+  driver: "claudeAgent",
+  displayName: "Claude - Work",
+  accentColor: "violet",
+  enabled: true,
+  config: { customModels: ["claude-opus-5-5"], autoCompactWindow: "300000" },
+};
+
+/** The work account as it arrives on a machine that never had it. */
+const workArrived = (origin: EnvironmentId) => ({
+  driver: CLAUDE,
+  displayName: "Claude - Work",
+  accentColor: "violet",
+  enabled: true,
+  config: { customModels: ["claude-opus-5-5"], autoCompactWindow: "300000" },
+  sharedFrom: origin,
+});
+
+const instanceOf = (
+  settings: Settings.ServerSettingsService["Service"],
+  instanceId: ProviderInstanceId,
+) => settings.getSettings.pipe(Effect.map((current) => current.providerInstances[instanceId]));
+
+it.effect("an account added on one machine reaches another with its own home and no login", () =>
+  Effect.gen(function* () {
+    const versions = yield* run((shared) =>
+      Effect.gen(function* () {
+        yield* shared.updateProviderInstance(
+          { operation: "create", instanceId: WORK, instance: workAccount("a") },
+          {},
+          undefined,
+        );
+        return yield* shared.servedVersions;
+      }),
+    );
+    // Its home, binary, launch arguments, token and environment stay where it was added.
+    expect(versions).toEqual([version(WORK_KEY, WORK_SHARED, NOW, HERE)]);
+    const arrived = yield* run(
+      (shared, settings) =>
+        Effect.gen(function* () {
+          yield* shared.applyPulled(HERE, versions);
+          return {
+            instance: yield* instanceOf(settings, WORK),
+            served: (yield* served(shared))[WORK_KEY],
+          };
+        }),
+      {},
+      false,
+      undefined,
+      PEER,
+    );
+    expect(arrived).toEqual({
+      instance: workArrived(HERE),
+      served: version(WORK_KEY, WORK_SHARED, NOW, HERE),
+    });
+  }),
+);
+
+it.effect("an account's shared fields follow the group while its paths stay here", () =>
+  run(
+    (shared, settings) =>
+      Effect.gen(function* () {
+        const local = workAccount("b");
+        const moved = { ...local, config: { ...local.config, homePath: "/Volumes/b/claude" } };
+        // A new home path belongs to this machine alone.
+        yield* shared.updateProviderInstance(
+          { operation: "upsert", instanceId: WORK, instance: moved },
+          {},
+          undefined,
+        );
+        expect(yield* shared.servedVersions).toEqual([]);
+        // A new name belongs to the group.
+        yield* shared.updateProviderInstance(
+          {
+            operation: "upsert",
+            instanceId: WORK,
+            instance: { ...moved, displayName: "Claude - Office" },
+          },
+          {},
+          undefined,
+        );
+        expect((yield* served(shared))[WORK_KEY]).toEqual(
+          version(WORK_KEY, { ...WORK_SHARED, displayName: "Claude - Office" }, NOW, HERE),
+        );
+        // A newer version replaces everything shared, and nothing else.
+        yield* shared.applyPulled(PEER, [
+          version(
+            WORK_KEY,
+            {
+              driver: "claudeAgent",
+              displayName: "Claude - Team",
+              enabled: false,
+              config: { customModels: ["claude-fable-5-2"] },
+            },
+            SOON,
+          ),
+        ]);
+        expect(yield* instanceOf(settings, WORK)).toEqual({
+          driver: CLAUDE,
+          displayName: "Claude - Team",
+          environment: local.environment,
+          enabled: false,
+          config: {
+            homePath: "/Volumes/b/claude",
+            binaryPath: local.config.binaryPath,
+            launchArgs: "--chrome",
+            oauthToken: local.config.oauthToken,
+            customModels: ["claude-fable-5-2"],
+          },
+        });
+      }),
+    { providerInstances: { [WORK]: workAccount("b") } },
+  ),
+);
+
+it.effect("a built-in provider shares only its name and whether it is on", () =>
+  Effect.gen(function* () {
+    const codex = ProviderInstanceId.make("codex");
+    const cursor = ProviderInstanceId.make("cursor");
+    const versions = yield* run((shared) =>
+      Effect.gen(function* () {
+        yield* shared.updateProviderInstance(
+          {
+            operation: "upsert",
+            instanceId: codex,
+            instance: {
+              driver: CODEX,
+              displayName: "Codex - Home",
+              accentColor: "green",
+              enabled: false,
+              config: { binaryPath: "/opt/codex", customModels: ["gpt-x"] },
+            },
+          },
+          {},
+          undefined,
+        );
+        return yield* shared.servedVersions;
+      }),
+    );
+    expect(versions).toEqual([
+      version(
+        "providerInstance:codex",
+        { driver: "codex", displayName: "Codex - Home", enabled: false },
+        NOW,
+        HERE,
+      ),
+    ]);
+    const elsewhere = yield* run(
+      (shared, settings) =>
+        Effect.gen(function* () {
+          yield* shared.applyPulled(HERE, [
+            ...versions,
+            // Cursor as it is with no settings of its own adds none here.
+            version("providerInstance:cursor", { driver: "cursor", enabled: false }, NOW, HERE),
+          ]);
+          const current = yield* settings.getSettings;
+          return [
+            current.providerInstances[codex],
+            Object.hasOwn(current.providerInstances, cursor),
+          ];
+        }),
+      {
+        providerInstances: {
+          [codex]: {
+            driver: CODEX,
+            accentColor: "blue",
+            config: { homePath: "~/.codex-b", customModels: ["gpt-y"] },
+          },
+        },
+      },
+      false,
+      undefined,
+      PEER,
+    );
+    expect(elsewhere).toEqual([
+      {
+        driver: CODEX,
+        displayName: "Codex - Home",
+        accentColor: "blue",
+        enabled: false,
+        config: { homePath: "~/.codex-b", customModels: ["gpt-y"] },
+      },
+      false,
+    ]);
+  }),
+);
+
+it.effect("a removed account leaves every machine that follows, and can be added back", () =>
+  Effect.gen(function* () {
+    const removal = yield* run(
+      (shared) =>
+        Effect.gen(function* () {
+          yield* shared.updateProviderInstance(
+            { operation: "remove", instanceId: WORK },
+            {},
+            undefined,
+          );
+          return yield* shared.servedVersions;
+        }),
+      { providerInstances: { [WORK]: workAccount("a") } },
+    );
+    expect(removal).toEqual([version(WORK_KEY, { removed: true }, NOW, HERE)]);
+    yield* run(
+      (shared, settings) =>
+        Effect.gen(function* () {
+          yield* shared.applyPulled(HERE, removal);
+          expect(yield* instanceOf(settings, WORK)).toBeUndefined();
+          expect((yield* served(shared))[WORK_KEY]).toEqual(removal[0]);
+          // An older version of the account does not bring it back.
+          yield* shared.applyPulled(OTHER, [version(WORK_KEY, WORK_SHARED, EARLIER, OTHER)]);
+          expect(yield* instanceOf(settings, WORK)).toBeUndefined();
+          // Added back, it again has no home of its own, so it uses the folder its login stayed in.
+          yield* shared.applyPulled(OTHER, [version(WORK_KEY, WORK_SHARED, SOON, OTHER)]);
+          expect(yield* instanceOf(settings, WORK)).toEqual(workArrived(OTHER));
+        }),
+      { providerInstances: { [WORK]: workArrived(HERE) } },
+      false,
+      undefined,
+      PEER,
+    );
+  }),
+);
+
+it.effect("a machine that does not follow shared settings neither takes nor shares accounts", () =>
+  run(
+    (shared, settings) =>
+      Effect.gen(function* () {
+        yield* shared.applyPulled(PEER, [
+          version(WORK_KEY, WORK_SHARED, LATER),
+          version("providerInstanceFailoverOrder", [WORK], LATER),
+        ]);
+        const current = yield* settings.getSettings;
+        expect([
+          Object.hasOwn(current.providerInstances, WORK),
+          current.providerInstanceFailoverOrder,
+        ]).toEqual([false, []]);
+        // Its own accounts and their order are changes made here alone, even once it follows.
+        yield* shared.updateProviderInstance(
+          { operation: "create", instanceId: WORK, instance: workAccount("b") },
+          {},
+          undefined,
+        );
+        yield* shared.update({ providerInstanceFailoverOrder: [WORK] }, undefined);
+        yield* shared.update({ followSharedSettings: true }, undefined);
+        expect(yield* shared.servedVersions).toEqual([]);
+      }),
+    { followSharedSettings: false },
+  ),
+);
+
+it.effect("a machine that follows shares the order of its accounts, unknown ones included", () =>
+  Effect.gen(function* () {
+    const home = ProviderInstanceId.make("claudeAgent_home");
+    const order = [WORK, home];
+    const versions = yield* run((shared) =>
+      Effect.gen(function* () {
+        // Saved on this machine alone, as the provider settings save it.
+        yield* shared.update({ providerInstanceFailoverOrder: order }, undefined);
+        return yield* shared.servedVersions;
+      }),
+    );
+    expect(versions).toEqual([version("providerInstanceFailoverOrder", order, NOW, HERE)]);
+    const elsewhere = yield* run(
+      (shared, settings) =>
+        Effect.gen(function* () {
+          yield* shared.applyPulled(HERE, versions);
+          return {
+            order: (yield* settings.getSettings).providerInstanceFailoverOrder,
+            served: (yield* served(shared)).providerInstanceFailoverOrder?.value,
+          };
+        }),
+      { providerInstances: { [home]: { driver: CLAUDE } } },
+      false,
+      undefined,
+      PEER,
+    );
+    // Kept whole on a machine without the work account, which failover there skips.
+    expect(elsewhere).toEqual({ order, served: order });
+  }),
+);
+
+it.effect("takes only what an account shares from a version, whatever else it carries", () =>
+  run(
+    (shared, settings) =>
+      Effect.gen(function* () {
+        const before = yield* settings.getSettings;
+        const sent = {
+          ...WORK_SHARED,
+          environment: [{ name: "ANTHROPIC_BASE_URL", value: "https://example.invalid" }],
+          sharedFrom: OTHER,
+          config: {
+            ...WORK_SHARED.config,
+            homePath: "/tmp/elsewhere",
+            binaryPath: "/tmp/elsewhere/claude",
+            launchArgs: "--dangerously-skip-permissions",
+          },
+        };
+        yield* shared.applyPulled(PEER, [
+          version(WORK_KEY, sent, LATER),
+          // A built-in instance is never another driver's account, nor removed.
+          version("providerInstance:codex", { driver: "claudeAgent", enabled: true }, LATER),
+          version("providerInstance:claudeAgent", { removed: true }, LATER),
+          // An instance of a driver that is not shared is never removed by one that is.
+          version("providerInstance:devReplay", { removed: true }, LATER),
+        ]);
+        const current = yield* settings.getSettings;
+        expect(current.providerInstances).toEqual({
+          ...before.providerInstances,
+          [WORK]: workArrived(PEER),
+        });
+        // Every machine takes only what it shares, so the version is passed on as it came.
+        expect((yield* served(shared))[WORK_KEY]?.value).toEqual(sent);
+      }),
+    {
+      providerInstances: {
+        [ProviderInstanceId.make("codex")]: { driver: CODEX, config: { homePath: "~/.codex" } },
+        [ProviderInstanceId.make("claudeAgent")]: { driver: CLAUDE, enabled: false },
+        [ProviderInstanceId.make("devReplay")]: {
+          driver: ProviderDriverKind.make("acpRegistry"),
+          config: { source: "local", commandPath: "/usr/bin/node" },
+        },
+      },
+    },
+  ),
+);
+
+it.effect(
+  "passes on an account version from a newer build, and takes it once this build reads it",
+  () =>
+    run((shared, settings) =>
+      Effect.gen(function* () {
+        const before = yield* settings.getSettings;
+        const unreadable = version("providerInstance:codex_new", { driver: 7 }, LATER);
+        const newerDriver = version(
+          "providerInstance:newerAgent_a",
+          { driver: "newerAgent", enabled: true },
+          LATER,
+        );
+        const { warnings } = yield* withWarnings(
+          Effect.gen(function* () {
+            yield* shared.applyPulled(PEER, [unreadable, newerDriver]);
+            yield* shared.applyPulled(OTHER, [unreadable, newerDriver]);
+            yield* shared.retryWaiting;
+          }),
+        );
+        expect((yield* settings.getSettings).providerInstances).toEqual(before.providerInstances);
+        const versions = yield* served(shared);
+        expect([versions[unreadable.key], versions[newerDriver.key]]).toEqual([
+          unreadable,
+          newerDriver,
+        ]);
+        expect(warnings.filter((warning) => warning.includes("cannot read"))).toHaveLength(1);
+        // Both wait, so an update here that can take them applies them.
+        const sql = yield* SqlClient.SqlClient;
+        const waiting = yield* sql<{ readonly settingKey: string }>`
+        SELECT setting_key AS "settingKey" FROM shared_setting_versions
+        WHERE pending = 1 ORDER BY setting_key
+      `;
+        expect(waiting.map((row) => row.settingKey)).toEqual([unreadable.key, newerDriver.key]);
+
+        // A build without account sharing kept the work account waiting; this one takes it.
+        yield* sql`
+        INSERT INTO shared_setting_versions
+          (setting_key, kind, value_json, updated_at, origin, pending)
+        VALUES (${WORK_KEY}, 'shared', ${JSON.stringify(WORK_SHARED)}, ${LATER}, ${PEER}, 1)
+      `;
+        yield* shared.retryWaiting;
+        expect(yield* instanceOf(settings, WORK)).toEqual(workArrived(PEER));
+        expect((yield* served(shared))[WORK_KEY]).toEqual(version(WORK_KEY, WORK_SHARED, LATER));
+      }),
+    ),
+);
+
+it.effect("passes on an account version that a change made here before following outranks", () =>
+  run(
+    (shared, settings) =>
+      Effect.gen(function* () {
+        // Renamed here while this machine did not follow, after the group's version was made.
+        const mine = { driver: CLAUDE, displayName: "Claude - Mine", enabled: true, config: {} };
+        yield* shared.updateProviderInstance(
+          { operation: "create", instanceId: WORK, instance: mine },
+          {},
+          undefined,
+        );
+        yield* shared.update({ followSharedSettings: true }, undefined);
+        yield* shared.applyPulled(PEER, [version(WORK_KEY, WORK_SHARED, EARLIER)]);
+        expect(yield* instanceOf(settings, WORK)).toEqual(mine);
+        // A machine that only this one reaches still gets the group's version from it.
+        expect((yield* served(shared))[WORK_KEY]).toEqual(
+          version(WORK_KEY, WORK_SHARED, EARLIER, PEER),
+        );
+      }),
+    { followSharedSettings: false },
+  ),
+);
+
+it.effect("a change to an account here outranks a version from a clock a little ahead", () =>
+  run((shared, settings) =>
+    Effect.gen(function* () {
+      yield* shared.applyPulled(PEER, [version(WORK_KEY, WORK_SHARED, SOON)]);
+      const arrived = yield* instanceOf(settings, WORK);
+      yield* shared.updateProviderInstance(
+        {
+          operation: "upsert",
+          instanceId: WORK,
+          instance: { ...arrived!, displayName: "Claude - Office" },
+        },
+        {},
+        undefined,
+      );
+      expect((yield* served(shared))[WORK_KEY]).toEqual(
+        version(
+          WORK_KEY,
+          { ...WORK_SHARED, displayName: "Claude - Office" },
+          "2026-11-11T14:01:00.001Z",
+          HERE,
+        ),
+      );
+      // Pulled again, the version it replaced does not undo it.
+      yield* shared.applyPulled(PEER, [version(WORK_KEY, WORK_SHARED, SOON)]);
+      expect((yield* instanceOf(settings, WORK))?.displayName).toBe("Claude - Office");
+    }),
+  ),
 );

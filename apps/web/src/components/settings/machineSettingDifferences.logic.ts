@@ -30,11 +30,13 @@ interface SettingPresentation {
 
 /**
  * Every shared key needs an entry here, so a key added to the shared list cannot go uncompared.
- * `"grouped"` marks a key compared inside another key's combined row.
+ * `"grouped"` marks a key compared inside another key's combined row. `"accounts"` marks one that
+ * names each machine's own accounts: machines that follow shared settings keep it the same with
+ * their accounts, and on any other machine it rightly differs.
  */
 const SHARED_SETTING_PRESENTATION: Record<
   MachineSharedSettingKey,
-  SettingPresentation | "grouped"
+  SettingPresentation | "grouped" | "accounts"
 > = {
   defaultModelSelection: { id: "default-model" },
   newThreadsUseLastModel: { id: "last-picked-model" },
@@ -126,6 +128,7 @@ const SHARED_SETTING_PRESENTATION: Record<
   installUpdatesAutomatically: { id: "install-updates-automatically" },
   continueThreadsAfterServerUpdate: { id: "continue-threads-after-server-update" },
   backgroundActivity: { id: "background-activity" },
+  providerInstanceFailoverOrder: "accounts",
 };
 
 interface ComparedSetting extends SettingPresentation {
@@ -141,7 +144,7 @@ interface ComparedSetting extends SettingPresentation {
 const COMPARED_SETTINGS: ReadonlyArray<ComparedSetting> = [
   ...MACHINE_SHARED_SETTING_KEYS.flatMap((key) => {
     const presentation = SHARED_SETTING_PRESENTATION[key];
-    return presentation === "grouped" ? [] : [{ key, ...presentation }];
+    return typeof presentation === "string" ? [] : [{ key, ...presentation }];
   }),
   { id: "project-actions", key: "defaultProjectScripts" },
   { id: "guest-links", key: "guestSharingEnabled" },
