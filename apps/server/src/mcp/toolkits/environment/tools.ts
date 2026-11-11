@@ -7,6 +7,8 @@ import {
   OrchestratorMcpFailure,
   ServerSettings,
   ServerSettingsPatch,
+  ProviderUpdatesChoice,
+  UsageLimitRecoveryChoice,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
@@ -24,6 +26,8 @@ const PreferenceFields = {
   defaultThreadEnvMode: ServerSettings.fields.defaultThreadEnvMode,
   newWorktreesStartFromOrigin: ServerSettings.fields.newWorktreesStartFromOrigin,
   enableProviderUpdateChecks: ServerSettings.fields.enableProviderUpdateChecks,
+  providerUpdates: Schema.Union([ProviderUpdatesChoice, Schema.Literal("custom")]),
+  usageLimitRecovery: Schema.Union([UsageLimitRecoveryChoice, Schema.Literal("custom")]),
   backgroundActivity: Schema.Struct({ profile: BackgroundActivityProfileSelection }),
   sourceControlWritingStyle: Schema.Struct({
     mode: Schema.String,
@@ -62,7 +66,7 @@ const EnvironmentReadTool = Tool.make("t3_environment_read", {
 const EnvironmentPreferencesTool = Tool.make("t3_environment_preferences_update", {
   ...shared,
   description:
-    "Update environment-wide preferences and model defaults, including on a full-access linked machine. Live full-access or default caller thread only. Omitted fields are unchanged; null clears a delegated-task role; `customInstructions: ''` clears it.",
+    "Update environment-wide preferences and model defaults, including on a full-access linked machine. Live full-access or default caller thread only. Omitted fields are unchanged; null clears a delegated-task role; `customInstructions: ''` clears it. `providerUpdates`: off, notify, automatic (also enables checks). Prefer it to the legacy enableProviderUpdateChecks flag; it takes precedence. `usageLimitRecovery`: off, snooze, resume, switch-and-resume. Switching is opt-in: some providers forbid using extra accounts to get around limits. Existing custom combinations are preserved until a choice is supplied.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     defaultModelSelection: ServerSettingsPatch.fields.defaultModelSelection,
@@ -72,6 +76,8 @@ const EnvironmentPreferencesTool = Tool.make("t3_environment_preferences_update"
     defaultThreadEnvMode: ServerSettingsPatch.fields.defaultThreadEnvMode,
     newWorktreesStartFromOrigin: ServerSettingsPatch.fields.newWorktreesStartFromOrigin,
     enableProviderUpdateChecks: ServerSettingsPatch.fields.enableProviderUpdateChecks,
+    providerUpdates: Schema.optionalKey(ProviderUpdatesChoice),
+    usageLimitRecovery: Schema.optionalKey(UsageLimitRecoveryChoice),
     backgroundActivity: Schema.optionalKey(Schema.Struct({ profile: BackgroundActivityProfile })),
     sourceControlWritingStyle: ServerSettingsPatch.fields.sourceControlWritingStyle,
   }),

@@ -1,6 +1,12 @@
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import { requireModelPreferences } from "../../OrchestratorMcpService.ts";
 import { OrchestratorMcpFailure, type ServerSettings } from "@t3tools/contracts";
+import {
+  providerUpdatesChoice,
+  providerUpdatesPatch,
+  usageLimitRecoveryChoice,
+  usageLimitRecoveryPatch,
+} from "@t3tools/contracts/settings";
 import * as Effect from "effect/Effect";
 import * as Environment from "../../../environment/ServerEnvironment.ts";
 import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandExecutor.ts";
@@ -32,6 +38,8 @@ export function preferences(settings: ServerSettings) {
     newWorktreesStartFromOrigin,
     enableProviderUpdateChecks,
     backgroundActivity: { profile: backgroundActivity.profile },
+    providerUpdates: providerUpdatesChoice(settings),
+    usageLimitRecovery: usageLimitRecoveryChoice(settings),
     sourceControlWritingStyle: {
       ...sourceControlWritingStyle,
       customInstructions: characters.slice(0, 4000).join(""),
@@ -68,16 +76,23 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+      const { providerUpdates, usageLimitRecovery, ...legacyPatch } = patch;
+      const settingsPatch = {
+        ...legacyPatch,
+        ...(legacyPatch.enableProviderUpdateChecks === false ? { autoUpdateProviders: false } : {}),
+        ...(providerUpdates === undefined ? {} : providerUpdatesPatch(providerUpdates)),
+        ...(usageLimitRecovery === undefined ? {} : usageLimitRecoveryPatch(usageLimitRecovery)),
+      };
       const update = Effect.gen(function* () {
         // The turn may have ended, or the thread's modes changed, while this waited for the lock.
         yield* check;
         const { settings } = yield* access;
         yield* requireModelPreferences(
           yield* (yield* ProviderRegistry.ProviderRegistry).getProviders,
-          patch,
+          settingsPatch,
         );
         return preferences(
-          yield* settings.updateSettings(patch).pipe(Effect.mapError(unavailable)),
+          yield* settings.updateSettings(settingsPatch).pipe(Effect.mapError(unavailable)),
         );
       });
       return yield* scope.thread === undefined

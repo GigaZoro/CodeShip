@@ -9,6 +9,11 @@ import {
 } from "./providerInstance.ts";
 import {
   ClientSettingsSchema,
+  StoredClientSettingsSchema,
+  usageLimitRecoveryChoice,
+  usageLimitRecoveryPatch,
+  providerUpdatesChoice,
+  providerUpdatesPatch,
   ClientSettingsPatch,
   ClaudeSettings,
   DEFAULT_SERVER_SETTINGS,
@@ -26,6 +31,7 @@ import {
 } from "./settings.ts";
 
 const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
+const decodeStoredClientSettings = Schema.decodeSync(StoredClientSettingsSchema);
 const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const encodeClientSettings = Schema.encodeSync(ClientSettingsSchema);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
@@ -347,7 +353,11 @@ describe("resolveSidebarGrouping", () => {
       { project: false, machine: true },
     ],
   ] as const)("reads %j as %j", (stored, grouping) => {
-    expect(resolveSidebarGrouping(decodeClientSettings(stored))).toEqual(grouping);
+    const migrated = decodeStoredClientSettings(stored);
+    expect(resolveSidebarGrouping(migrated)).toEqual(grouping);
+    expect(migrated).not.toHaveProperty("sidebarGroupBy");
+    expect(migrated).not.toHaveProperty("legacySidebarEnabled");
+    expect(decodeStoredClientSettings(migrated)).toEqual(migrated);
   });
 
   it.each([
@@ -360,6 +370,51 @@ describe("resolveSidebarGrouping", () => {
       expect(offersSidebarMachineGrouping(count, { project: false, machine })).toBe(offered);
     },
   );
+});
+
+describe("consolidated settings choices", () => {
+  it.each(["off", "snooze", "resume", "switch-and-resume"] as const)(
+    "round trips usage-limit recovery %s",
+    (choice) => {
+      expect(usageLimitRecoveryChoice(usageLimitRecoveryPatch(choice))).toBe(choice);
+    },
+  );
+
+  it.each([
+    [false, true, "switch-and-resume"],
+    [true, true, "custom"],
+    [true, false, "custom"],
+  ] as const)("preserves snooze %s and failover %s while resuming", (snooze, failover, choice) => {
+    expect(
+      usageLimitRecoveryChoice({
+        snoozeLimitedThreads: snooze,
+        autoResumeLimitedThreads: true,
+        failoverLimitedThreads: failover,
+      }),
+    ).toBe(choice);
+  });
+
+  it.each([false, true])("shows failover without resume as custom (%s)", (snooze) => {
+    expect(
+      usageLimitRecoveryChoice({
+        snoozeLimitedThreads: snooze,
+        autoResumeLimitedThreads: false,
+        failoverLimitedThreads: true,
+      }),
+    ).toBe("custom");
+  });
+
+  it.each(["off", "notify", "automatic"] as const)("round trips provider updates %s", (choice) => {
+    const patch = providerUpdatesPatch(choice);
+    expect(providerUpdatesChoice(patch)).toBe(choice);
+    expect(patch.autoUpdateProviders && !patch.enableProviderUpdateChecks).toBe(false);
+  });
+
+  it("shows old automatic-without-checks settings truthfully without mutating them", () => {
+    const stored = { enableProviderUpdateChecks: false, autoUpdateProviders: true };
+    expect(providerUpdatesChoice(stored)).toBe("custom");
+    expect(stored).toEqual({ enableProviderUpdateChecks: false, autoUpdateProviders: true });
+  });
 });
 
 describe("provider enabled defaults", () => {

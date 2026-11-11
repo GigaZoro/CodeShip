@@ -2522,7 +2522,6 @@ const catalog: MessageCatalog = {
   "Automatic installation unavailable. Set a binary path or use another environment.":
     "Автоматичне встановлення недоступне. Вкажіть шлях до бінарного файлу або скористайтеся іншим середовищем.",
   "Automatic pricing after saving": "Автоматична ціна після збереження",
-  "automatic provider updates": "автоматичне оновлення провайдерів",
   "Automatic updates are disabled by the T3CODE_DISABLE_AUTO_UPDATE setting.":
     "Автоматичні оновлення вимкнено налаштуванням T3CODE_DISABLE_AUTO_UPDATE.",
   "Automatic updates are not available because no update feed is configured.":
@@ -2541,8 +2540,6 @@ const catalog: MessageCatalog = {
     "Автоматично відновлювати перервані чати після оновлення, збою або перезапуску комп’ютера у вибраних середовищах.",
   "Automatically resume threads stopped by a lost internet connection once the connection is back.":
     "Автоматично відновлювати чати, зупинені через втрату інтернет-з’єднання, коли з’єднання повернеться.",
-  "Automatically resume threads when their usage limits reset. You can cancel auto-resume in each thread.":
-    "Автоматично відновлювати чати, коли скидаються їхні ліміти використання. Автовідновлення можна скасувати в кожному чаті.",
   "Automatically use an available provider, or choose a model for new threads and new scheduled tasks.":
     "Автоматично використовувати доступного провайдера або вибрати модель для нових чатів і нових запланованих завдань.",
   Automation: "Автоматизація",
@@ -2927,17 +2924,13 @@ const catalog: MessageCatalog = {
   "Check for issues": "Перевіряти на проблеми",
   "Check for updates": "Перевірити оновлення",
   "Check for Updates...": "Перевірити оновлення...",
-  "Check installed provider CLIs for newer available versions and fetch model catalog updates. When off, new models may not appear.":
-    "Перевіряти встановлені CLI провайдерів на новіші версії та отримувати оновлення каталогу моделей. Якщо вимкнено, нові моделі можуть не з’явитися.",
-  "Check installed provider CLIs for newer versions and fetch model catalog updates. When off, new models may not appear.":
-    "Перевіряти встановлені CLI провайдерів на нові версії та отримувати оновлення каталогу моделей. Якщо вимкнено, нові моделі можуть не з’являтися.",
   "Check out": "Перейти",
   "Check out {owner}/{name}#{number}?": "Перейти на {owner}/{name}#{number}?",
   "Check out feature branch & continue": "Перейти на гілку функції та продовжити",
   "Check out files": "Перемкнути файли",
   "Check out this {term}": "Перейти до цього {term}",
-  "Check provider updates": "Перевіряти оновлення провайдерів",
-  "Check provider versions": "Перевіряти версії провайдерів",
+  "Check provider CLIs and model catalogs for updates. Install automatically also enables checks and updates provider CLIs when the server starts.":
+    "Перевіряти оновлення CLI провайдерів і каталогів моделей. Автоматичне встановлення також вмикає перевірки й оновлює CLI провайдерів під час запуску сервера.",
   "Check simulator support": "Перевірити підтримку симуляторів",
   "Check T3.CodeShip SnapShots in GNOME Extensions, then try again.":
     "Перевірте T3.CodeShip SnapShots у «Розширеннях GNOME» і спробуйте ще раз.",
@@ -3041,6 +3034,8 @@ const catalog: MessageCatalog = {
   "Checks need attention": "Перевірки потребують уваги",
   "Checks running": "Перевірки виконуються",
   "Checks, {label}": "Перевірки, {label}",
+  "Checks: {checks}; automatic install: {install}.":
+    "Перевірки: {checks}; автоматичне встановлення: {install}.",
   "Checks: {status}": "Перевірки: {status}",
   "Child process {name}": "Дочірній процес {name}",
   "Child Processes": "Дочірні процеси",
@@ -3135,6 +3130,8 @@ const catalog: MessageCatalog = {
     "Виберіть, як позначати середовища Dev і Nightly.",
   "Choose how new worktree branches are named from your first message.":
     "Виберіть, як називати нові гілки worktree за вашим першим повідомленням.",
+  "Choose how stopped threads recover. Switching uses another signed-in subscription account of the same provider, never API-key or Bedrock accounts. Some providers' terms forbid using extra accounts to get around limits. Custom keeps your existing snooze, resume, and account-switching preferences until you choose an option.":
+    "Виберіть, як відновлювати зупинені чати. Перемикання використовує інший обліковий запис із підпискою того самого провайдера, у який виконано вхід, але ніколи не використовує облікові записи з API-ключем чи Bedrock. Умови деяких провайдерів забороняють обходити ліміти за допомогою додаткових облікових записів. Власні налаштування зберігають поточні параметри відкладання, продовження й перемикання облікових записів, доки ви не виберете інший варіант.",
   "Choose how to continue.": "Виберіть, як продовжити.",
   "Choose how to send": "Вибрати спосіб надсилання",
   "Choose how to send this message": "Виберіть, як надіслати це повідомлення",
@@ -4587,6 +4584,7 @@ const catalog: MessageCatalog = {
     "Власні інструкції для системи керування версіями для всіх вибраних середовищ",
   "Custom source control writing instructions":
     "Власні інструкції з написання для системи керування версіями",
+  "Custom: automatic updates without checks": "Власні: автоматичні оновлення без перевірок",
   "Custom…": "Власний…",
   Cut: "Вирізати",
   "Cut off by a steer": "Перервано скеруванням",
@@ -4940,6 +4938,7 @@ const catalog: MessageCatalog = {
   "Displays the mobile sidebar.": "Показує мобільну бічну панель.",
   "DNS address could not be found": "Не вдалося знайти DNS-адресу",
   "Do not import projects": "Не імпортувати проєкти",
+  "Do nothing": "Нічого не робити",
   Docs: "Документація",
   Document: "Документ",
   "Document template": "Шаблон документа",
@@ -5286,8 +5285,6 @@ const catalog: MessageCatalog = {
   "Environment variable name {index}": "Назва змінної середовища {index}",
   "Environment variable value {index}": "Значення змінної середовища {index}",
   "Environment variables (optional)": "Змінні середовища (необов’язково)",
-  "Environment-wide setting. Select All projects to change it.":
-    "Налаштування для всього середовища. Виберіть «Усі проєкти», щоб змінити його.",
   "Environment-wide setting. Select an environment to change it.":
     "Параметр для всього середовища. Виберіть середовище, щоб змінити його.",
   "Environment: {environment}": "Середовище: {environment}",
@@ -6183,7 +6180,7 @@ const catalog: MessageCatalog = {
   "In this repository": "У цьому репозиторії",
   "in under a minute": "менш ніж за хвилину",
   "In use": "Використовується",
-  "In-app notifications": "Сповіщення в застосунку",
+  "In-app toasts": "Сповіщення в застосунку",
   "In-memory process samples retained by the server. The server samples only while diagnostics is open, and this resets when the server restarts.":
     "Вибірки процесів у пам’яті, що зберігає сервер. Сервер збирає вибірки лише поки відкрито діагностику, і вони скидаються після перезапуску сервера.",
   Inaccessible: "Недоступно",
@@ -6243,10 +6240,6 @@ const catalog: MessageCatalog = {
   "Inspect managed relay connectivity.": "Перевірка зв’язності керованого ретранслятора.",
   "Inspect pairing links and authorized clients.":
     "Перегляд посилань сполучення й авторизованих клієнтів.",
-  "Inspect processes, resource use, and logs on one environment at a time.":
-    "Переглядайте процеси, використання ресурсів і журнали в одному середовищі за раз.",
-  "Inspect processes, resource use, and logs on this environment.":
-    "Переглядайте процеси, використання ресурсів і журнали в цьому середовищі.",
   "Inspecting cached data…": "Перевірка кешованих даних…",
   Install: "Встановити",
   "Install {name}": "Встановити {name}",
@@ -6258,6 +6251,7 @@ const catalog: MessageCatalog = {
   "Install Antigravity": "Встановити Antigravity",
   "Install Antigravity in provider settings before sending.":
     "Установіть Antigravity в налаштуваннях провайдера, перш ніж надсилати.",
+  "Install automatically": "Встановлювати автоматично",
   "Install extension": "Встановити розширення",
   "Install failed for {version}. Click to retry.":
     "Не вдалося установити {version}. Натисніть, щоб повторити.",
@@ -7728,6 +7722,7 @@ const catalog: MessageCatalog = {
     "Сповіщення для цього застосунку заборонено. Відкрийте налаштування, щоб увімкнути їх.",
   "Notifications were not enabled.": "Сповіщення не ввімкнено.",
   "Notifications with sound": "Сповіщення зі звуком",
+  "Notify me": "Сповіщати мене",
   now: "зараз",
   "Now runs in another thread": "Тепер запускається в іншому чаті",
   Octopus: "Восьминіг",
@@ -8658,14 +8653,13 @@ const catalog: MessageCatalog = {
     "Статус провайдера недоступний. Відкрийте Налаштування → Керування версіями та скануйте ще раз.",
   "Provider status unavailable. Open Source Control settings and rescan.":
     "Стан провайдера недоступний. Відкрийте налаштування керування версіями й повторіть сканування.",
-  "provider update checks": "перевірка оновлень провайдерів",
-  "Provider update checks": "Перевірка оновлень провайдерів",
   "Provider update did not finish.": "Оновлення провайдера не завершилося.",
   "Provider update failed": "Не вдалося оновити провайдера",
   "Provider update failed.": "Не вдалося оновити провайдера.",
   "Provider update interrupted": "Оновлення провайдера перервано",
   "Provider updated": "Провайдера оновлено",
   "provider updates": "оновлення провайдерів",
+  "Provider updates": "Оновлення провайдерів",
   "Provider updates failed": "Не вдалося оновити провайдерів",
   "Provider variables on {environment} can read values from it by name. Values are read with the op CLI on that server when a provider starts.":
     "Змінні провайдерів на {environment} можуть читати з нього значення за назвою. Значення читаються через op CLI на цьому сервері під час запуску провайдера.",
@@ -9477,18 +9471,17 @@ const catalog: MessageCatalog = {
   Resume: "Відновити",
   "Resume {title}": "Відновити {title}",
   "Resume after the restart": "Відновляться після перезапуску",
-  "Resume after usage limits": "Відновлювати після лімітів використання",
   "Resume agent-owned conversations as T3.CodeShip threads.":
     "Відновіть розмови агента як чати T3.CodeShip.",
   "Resume at reset": "Відновити після скидання",
   "Resume interrupted threads after an update or restart.":
     "Відновлювати перервані чати після оновлення чи перезапуску.",
   "Resume on every machine": "Відновити на всіх комп’ютерах",
-  "Resume or snooze limited threads": "Відновлення або відкладення чатів на ліміті",
   "Resume queue": "Відновити чергу",
   "Resume thread": "Відновити чат",
   "Resume threads stopped by a lost connection once it is back.":
     "Відновлювати чати, зупинені через втрату з’єднання, коли воно повернеться.",
+  "Resume when the limit resets": "Продовжити після скидання ліміту",
   Retry: "Повторити",
   "Retry {name}": "Повторити {name}",
   "Retry after network errors": "Повторювати після збоїв мережі",
@@ -10336,8 +10329,6 @@ const catalog: MessageCatalog = {
   "Show a gentle cue on the captured window.": "Показувати легку підказку на захопленому вікні.",
   "Show a section to add it back to navigation.":
     "Покажіть розділ, щоб повернути його в навігацію.",
-  "Show a toast when another thread finishes, fails, or needs input or approval while this app has focus.":
-    "Показувати сповіщення, коли інший чат завершується, зазнає помилки або потребує введення чи схвалення, поки цей застосунок у фокусі.",
   "Show accessibility JSON": "Показати JSON доступності",
   "Show account": "Показати обліковий запис",
   "Show account details": "Показати відомості про обліковий запис",
@@ -10624,12 +10615,12 @@ const catalog: MessageCatalog = {
   "snooze options": "варіанти відкладення",
   "Snooze options": "Варіанти відкладення",
   "Snooze thread": "Відкласти чат",
-  "Snooze threads until their usage limits reset. Enable auto-resume to continue the agent after the reset.":
-    "Відкладати чати до скидання їхніх лімітів використання. Увімкніть автовідновлення, щоб агент продовжив роботу після скидання.",
   "Snooze until": "Відкласти до",
-  "Snooze until limits reset": "Відкласти до скидання лімітів",
   "Snooze until reset": "Відкласти до скидання",
+  "Snooze until the limit resets": "Відкласти до скидання ліміту",
   "Snooze: {label}, {when}": "Відкласти: {label}, {when}",
+  "Snooze: {snooze}; resume: {resume}; switch accounts: {switching}.":
+    "Відкладання: {snooze}; продовження: {resume}; перемикання облікових записів: {switching}.",
   "Snooze: {when}": "Відкласти: {when}",
   "Snooze: Custom…": "Відкласти: власний час…",
   Snoozed: "Відкладені",
@@ -10965,7 +10956,6 @@ const catalog: MessageCatalog = {
     "Підтримувані провайдери схвалюють рутинні дії; інші все одно питають.",
   Surface: "Поверхня",
   Suspended: "Призупинено",
-  "Switch accounts at usage limits": "Перемикати облікові записи на лімітах використання",
   "Switch branch": "Перейти на гілку",
   "Switch branch, create branch, or move to a worktree":
     "Перемкніть гілку, створіть гілку або перейдіть до worktree",
@@ -10987,6 +10977,8 @@ const catalog: MessageCatalog = {
   "Switch to {mode}": "Перейти в режим {mode}",
   "Switch to a feature branch to create a {kind}.":
     "Перейдіть на гілку функції, щоб створити {kind}.",
+  "Switch to another account, else resume when the limit resets":
+    "Перемкнути на інший обліковий запис, інакше продовжити після скидання ліміту",
   "Switch to Tailscale or deregister an environment you no longer use (sorry!)":
     "Перейдіть на Tailscale або скасуйте реєстрацію середовища, яким більше не користуєтеся (вибачте!)",
   "Switch to Tailscale or get more tunnels by linking your T3 Chat sub (sorry!)":
@@ -11011,10 +11003,13 @@ const catalog: MessageCatalog = {
   "Switching branch": "Перемикання гілки",
   "Switching branch...": "Перемикання гілки...",
   "Switching to WebRTC.": "Перехід на WebRTC.",
+  "Switching uses another subscription account of the same provider. Some providers' terms forbid using extra accounts to get around limits. Custom preserves your current snooze, resume, and switching preferences.":
+    "Перемикання використовує інший обліковий запис із підпискою того самого провайдера. Умови деяких провайдерів забороняють обходити ліміти за допомогою додаткових облікових записів. Власні налаштування зберігають поточні параметри відкладання, продовження й перемикання.",
   "Sync ref": "Синхронізувати посилання",
   "Syncing messages...": "Синхронізація повідомлень…",
   "Syncing threads...": "Синхронізація чатів...",
   System: "Системна",
+  "System alerts": "Системні сповіщення",
   "System alerts when a thread finishes, fails, or needs input or approval. Applies to this device while T3.CodeShip is open.":
     "Системні сповіщення, коли чат завершується, зазнає помилки або потребує введення чи схвалення. Діє на цьому пристрої, поки T3.CodeShip відкрито.",
   "System default": "Як у системі",
@@ -12998,11 +12993,6 @@ const catalog: MessageCatalog = {
     "Оновіть старіші сервери, щоб зберегти це налаштування.",
   "Update pending. Required tools will install automatically when next used. The host needs network access; an older install is not used as a fallback.":
     "Очікується оновлення. Потрібні інструменти встановляться автоматично під час наступного використання. Хосту потрібен доступ до мережі; старішу встановлену версію як запасний варіант не використовують.",
-  "Update provider CLIs that are behind the latest version when the server starts.":
-    "Оновлювати CLI провайдерів, що відстають від останньої версії, під час запуску сервера.",
-  "Update provider CLIs that are behind the latest version when the server starts. Needs provider update checks.":
-    "Оновлювати CLI провайдерів, що відстають від найновішої версії, під час запуску сервера. Потрібна перевірка оновлень провайдерів.",
-  "Update providers automatically": "Оновлювати провайдерів автоматично",
   "Update queued message": "Оновити повідомлення в черзі",
   "Update ready": "Оновлення готове",
   "Update ready to download": "Оновлення готове до завантаження",
@@ -13398,7 +13388,6 @@ const catalog: MessageCatalog = {
   "View commit {id}": "Переглянути коміт {id}",
   "View commit {sha}, {message}": "Переглянути коміт {sha}, {message}",
   "View device": "Переглянути пристрій",
-  "View diagnostics": "Переглянути діагностику",
   "View diagnostics and usage": "Перегляд діагностики та використання",
   "View diff for {path}, {additions}, {deletions}":
     "Переглянути зміни для {path}, {additions}, {deletions}",
@@ -13584,8 +13573,7 @@ const catalog: MessageCatalog = {
   "What went wrong?": "Що пішло не так?",
   "What's changed": "Що змінилося",
   When: "Коли",
-  "When an account hits its usage limit, the thread continues on the first signed-in subscription account of the same provider that still has usage left. API-key and Bedrock accounts are never used. Some providers' terms forbid using extra accounts to get around limits.":
-    "Коли обліковий запис досягає ліміту використання, чат продовжується на першому ввійденому підписковому обліковому записі того самого провайдера, у якого ще є ліміт. Облікові записи з ключем API та Bedrock ніколи не використовуються. Умови деяких провайдерів забороняють використовувати додаткові облікові записи для обходу лімітів.",
+  "When a thread hits a usage limit": "Коли чат досягає ліміту використання",
   "When an agent hands work to a child task without naming a model, the task runs on the model set for its role. Unset roles use the thread's own model.":
     "Коли агент передає роботу дочірньому завданню без указання моделі, завдання виконується на моделі, заданій для його ролі. Для незаданих ролей використовується модель самого чату.",
   "When expression": "Вираз умови",

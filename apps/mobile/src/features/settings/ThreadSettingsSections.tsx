@@ -1,3 +1,9 @@
+import {
+  UsageLimitRecoveryChoice,
+  usageLimitRecoveryChoice,
+  usageLimitRecoveryPatch,
+} from "@t3tools/contracts/settings";
+import { SettingsMenuRow } from "./components/SettingsMenuRow";
 import { msg, t } from "../../lib/i18n";
 import { Button } from "../../components/ui/Button";
 import {
@@ -38,6 +44,14 @@ import {
   uniformMobileSetting,
 } from "./settings-scoped-server";
 
+const recoveryLabels = {
+  off: msg("Do nothing"),
+  snooze: msg("Snooze until the limit resets"),
+  resume: msg("Resume when the limit resets"),
+  "switch-and-resume": msg("Switch to another account, else resume when the limit resets"),
+  custom: msg("Custom"),
+};
+
 const AUTO_SETTLE_DEFAULT_DAYS = DEFAULT_SERVER_SETTINGS.sidebarAutoSettleAfterDays ?? 3;
 
 /**
@@ -77,6 +91,7 @@ export function AutoSettleSettingsRows(props: {
     patch: Partial<AutoSettleSettings> & {
       autoResumeLimitedThreads?: boolean;
       snoozeLimitedThreads?: boolean;
+      failoverLimitedThreads?: boolean;
     },
   ) => props.write(patch);
 
@@ -98,30 +113,33 @@ export function AutoSettleSettingsRows(props: {
   const disabledFor = (...keys: string[]) =>
     disabled || managedSettingReason(displayTargets, ...keys) !== undefined;
   const afterDays = referenceSettings.sidebarAutoSettleAfterDays;
+  const recoveryChoice = usageLimitRecoveryChoice(referenceSettings);
+  const recoveryMixed = (
+    ["autoResumeLimitedThreads", "snoozeLimitedThreads", "failoverLimitedThreads"] as const
+  ).some((key) => uniformMobileSetting(displayTargets, key) === null);
 
   return (
     <View className="gap-6">
       {!projectSelected ? (
         <SettingsSection title={t("Usage limits")}>
-          <SettingsSwitchRow
+          <SettingsMenuRow
             icon="clock"
-            label={t("Resume after usage limits")}
-            subtitle={t(
-              "Automatically resume threads when their usage limits reset. You can cancel auto-resume in each thread.",
+            label={t("When a thread hits a usage limit")}
+            description={t(
+              "Switching uses another subscription account of the same provider. Some providers' terms forbid using extra accounts to get around limits. Custom preserves your current snooze, resume, and switching preferences.",
             )}
-            value={uniformMobileSetting(displayTargets, "autoResumeLimitedThreads")}
-            disabled={disabledFor("autoResumeLimitedThreads")}
-            onValueChange={(value) => writeToAll({ autoResumeLimitedThreads: value })}
-          />
-          <SettingsSwitchRow
-            icon="clock"
-            label={t("Snooze until limits reset")}
-            subtitle={t(
-              "Snooze threads until their usage limits reset. Enable auto-resume to continue the agent after the reset.",
+            value={recoveryMixed ? null : recoveryChoice}
+            currentLabel={recoveryMixed ? t("Mixed") : t(recoveryLabels[recoveryChoice])}
+            disabled={disabledFor(
+              "autoResumeLimitedThreads",
+              "snoozeLimitedThreads",
+              "failoverLimitedThreads",
             )}
-            value={uniformMobileSetting(displayTargets, "snoozeLimitedThreads")}
-            disabled={disabledFor("snoozeLimitedThreads")}
-            onValueChange={(value) => writeToAll({ snoozeLimitedThreads: value })}
+            options={UsageLimitRecoveryChoice.literals.map((value) => ({
+              value,
+              label: t(recoveryLabels[value]),
+            }))}
+            onChange={(value) => writeToAll(usageLimitRecoveryPatch(value))}
           />
         </SettingsSection>
       ) : null}

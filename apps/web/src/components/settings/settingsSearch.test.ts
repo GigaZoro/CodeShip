@@ -14,6 +14,7 @@ import {
   getThreadAutoSettlementSearchAvailability,
   isSettingsSearchScopeAvailable,
   movedSettingsPath,
+  consolidatedSettingsAnchor,
   searchSettings,
   SETTINGS_NAV_GROUPS,
   SETTINGS_SEARCH_ITEMS,
@@ -57,6 +58,25 @@ const ITEMS: ReadonlyArray<SettingsSearchItem> = [
     to: "/settings/general",
   },
 ];
+
+describe("consolidated setting links", () => {
+  it.each([
+    ["auto-resume-limited-threads", "usage-limit-recovery"],
+    ["snooze-limited-threads", "usage-limit-recovery"],
+    ["in-app-notifications", "thread-notifications"],
+    ["provider-update-checks", "provider-updates"],
+    ["auto-update-providers", "provider-updates"],
+  ])("redirects %s to %s", (legacy, current) => {
+    expect(consolidatedSettingsAnchor(legacy)).toBe(current);
+    expect(getSettingsSearchTargetScope(legacy)).toEqual(getSettingsSearchTargetScope(current));
+  });
+  it("moves the old maintenance Diagnostics links to Diagnostics", () => {
+    expect(movedSettingsPath("/settings/maintenance", "diagnostics")).toBe("/settings/diagnostics");
+    expect(movedSettingsPath("/settings/maintenance", "diagnostics-section")).toBe(
+      "/settings/diagnostics",
+    );
+  });
+});
 
 describe("searchSettings", () => {
   it("matches titles, sections, and remembered setting details", () => {
