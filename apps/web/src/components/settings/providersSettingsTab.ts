@@ -16,6 +16,10 @@ const MODELS_TAB_TARGETS: ReadonlySet<string> = new Set([
   "account-failover",
   "delegated-task-models",
   "final-review",
+  // Anchors of the sections the Models list replaced, still used by older links.
+  "new-thread-models",
+  "text-generation",
+  "source-control-models",
 ]);
 
 export function resolveProvidersSettingsTab(tab: unknown, hash: string): ProvidersSettingsTab {

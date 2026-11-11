@@ -516,6 +516,10 @@ function SourceControlWriterModelRow() {
   const { settings, updateSettings, projectEffectiveProviders, projectId } = state;
   const mixed = useScopedSettingsMixed(["sourceControlWriterModelSelection"]);
   const inheritance = sourceControlWriterModelInheritance(settings);
+  const { scope } = useSettingsScope();
+  // In a project the row's own reset only drops the override, which brings back the machine's model.
+  const followsTitlesHere =
+    (scope.kind === "project" || scope.kind === "checkout") && !mixed && inheritance === null;
   const shown = resolveAppModelSelectionState(
     {
       ...settings,
@@ -547,17 +551,26 @@ function SourceControlWriterModelRow() {
         ) : null
       }
       control={
-        <TextGenerationModelControl
-          state={state}
-          label={t("Commit and pull request writing model")}
-          failureTitle={t("Commit and pull request writing model not saved")}
-          shown={shown}
-          providers={projectEffectiveProviders}
-          triggerLabel={mixed ? t("Mixed") : inheritance ? t(inheritance.label) : undefined}
-          showEffort={inheritance === null && !mixed}
-          unavailableMessage={t("Connect an environment to choose its writing model.")}
-          onChange={(next) => updateSettings({ sourceControlWriterModelSelection: next })}
-        />
+        <div className="flex items-center gap-1">
+          {followsTitlesHere ? (
+            <SettingResetButton
+              label={t("commit and pull request writing model")}
+              tooltip={t("Same as titles")}
+              onClick={() => updateSettings({ sourceControlWriterModelSelection: null })}
+            />
+          ) : null}
+          <TextGenerationModelControl
+            state={state}
+            label={t("Commit and pull request writing model")}
+            failureTitle={t("Commit and pull request writing model not saved")}
+            shown={shown}
+            providers={projectEffectiveProviders}
+            triggerLabel={mixed ? t("Mixed") : inheritance ? t(inheritance.label) : undefined}
+            showEffort={inheritance === null && !mixed}
+            unavailableMessage={t("Connect an environment to choose its writing model.")}
+            onChange={(next) => updateSettings({ sourceControlWriterModelSelection: next })}
+          />
+        </div>
       }
     />
   );
@@ -570,6 +583,10 @@ function ReviewGuideModelRow() {
   const mixed = useScopedSettingsMixed(["reviewGuideModelSelection"]);
   const mixedEnabled = useScopedSettingsMixed(["reviewGuidesEnabled"]);
   const inheritance = reviewGuideModelInheritance(settings);
+  const { scope } = useSettingsScope();
+  // In a project the row's own reset only drops the override, which brings back the machine's model.
+  const followsWritingHere =
+    (scope.kind === "project" || scope.kind === "checkout") && !mixed && inheritance === null;
   const shown = resolveAppModelSelectionState(
     {
       ...settings,
@@ -606,17 +623,26 @@ function ReviewGuideModelRow() {
         ) : null
       }
       control={
-        <TextGenerationModelControl
-          state={state}
-          label={t("Review guide model")}
-          failureTitle={t("Review guide model not saved")}
-          shown={shown}
-          providers={textGenerationProviders}
-          triggerLabel={mixed ? t("Mixed") : inheritance ? t(inheritance.label) : undefined}
-          showEffort={inheritance === null && !mixed}
-          unavailableMessage={t("Connect an environment to choose its review guide model.")}
-          onChange={(next) => updateSettings({ reviewGuideModelSelection: next })}
-        />
+        <div className="flex items-center gap-1">
+          {followsWritingHere ? (
+            <SettingResetButton
+              label={t("review guide model")}
+              tooltip={t("Same as writing")}
+              onClick={() => updateSettings({ reviewGuideModelSelection: null })}
+            />
+          ) : null}
+          <TextGenerationModelControl
+            state={state}
+            label={t("Review guide model")}
+            failureTitle={t("Review guide model not saved")}
+            shown={shown}
+            providers={textGenerationProviders}
+            triggerLabel={mixed ? t("Mixed") : inheritance ? t(inheritance.label) : undefined}
+            showEffort={inheritance === null && !mixed}
+            unavailableMessage={t("Connect an environment to choose its review guide model.")}
+            onChange={(next) => updateSettings({ reviewGuideModelSelection: next })}
+          />
+        </div>
       }
     />
   );
