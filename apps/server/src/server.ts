@@ -551,6 +551,7 @@ const layerPreview = Layer.empty.pipe(
 );
 
 const layerDevice = DeviceService.layer.pipe(
+  Layer.provide(SharedSettings.layer),
   Layer.provide(layerServerSettings),
   Layer.provide(ProcessRunner.layer),
   Layer.provide(NetService.layer),

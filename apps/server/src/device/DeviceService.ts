@@ -44,6 +44,7 @@ import {
   pruneAgentDeviceLaunchers,
 } from "./AgentDeviceShim.ts";
 import * as ServerConfig from "../config.ts";
+import * as SharedSettings from "../sharedSettings/SharedSettings.ts";
 import {
   agentDeviceConfigPath,
   agentDeviceSession,
@@ -271,6 +272,9 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
   launchers?: AgentDeviceLaunchers,
 ) {
   const settings = yield* ServerSettings.ServerSettingsService;
+  // Agent device access is shared with the user's other machines, so this machine's own change to
+  // it is recorded there, where an older shared version cannot undo it.
+  const sharedSettings = yield* SharedSettings.SharedSettings;
   const crypto = yield* Crypto.Crypto;
   const lifecycleLock = yield* Semaphore.make(1);
   const readDeviceSettings = settings.getSettings.pipe(
@@ -662,16 +666,19 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       const nextAgentAccess = input.agentAccessEnabled ?? currentSettings.agentAccessEnabled;
       yield* lifecycleLock.withPermit(
         Effect.gen(function* () {
-          yield* settings
-            .updateSettings({
-              ...(input.enabled === undefined ? {} : { enableDeviceSupport: input.enabled }),
-              ...(input.agentAccessEnabled === undefined
-                ? {}
-                : { enableAgentDeviceAccess: input.agentAccessEnabled }),
-              ...(input.onboardingCompleted === undefined
-                ? {}
-                : { deviceOnboardingCompleted: input.onboardingCompleted }),
-            })
+          yield* sharedSettings
+            .update(
+              {
+                ...(input.enabled === undefined ? {} : { enableDeviceSupport: input.enabled }),
+                ...(input.agentAccessEnabled === undefined
+                  ? {}
+                  : { enableAgentDeviceAccess: input.agentAccessEnabled }),
+                ...(input.onboardingCompleted === undefined
+                  ? {}
+                  : { deviceOnboardingCompleted: input.onboardingCompleted }),
+              },
+              undefined,
+            )
             .pipe(
               Effect.mapError(
                 (cause) =>

@@ -6363,6 +6363,8 @@ const catalog: MessageCatalog = {
   "is one of": "є одним із",
   "Issue and revoke credentials for other clients.":
     "Видача й відкликання облікових даних для інших клієнтів.",
+  "It already has a newer change to this setting, so it kept that one.":
+    "На ньому вже є новіша зміна цього параметра, тому він залишив її.",
   "It has no files.": "У ньому немає файлів.",
   "It has not answered Stop. Force stop ends the turn and kills the agent's processes, unless other working threads share them.":
     "Він не відповів на «Зупинити». Примусова зупинка завершує хід і вбиває процеси агента, якщо їх не використовують інші чати в роботі.",
@@ -10275,6 +10277,8 @@ const catalog: MessageCatalog = {
   "Shared Codex config, sessions, and state.": "Спільна конфігурація, сеанси та стан Codex.",
   "Shared policy": "Спільна політика",
   "Shared secret": "Спільний секрет",
+  "Shared settings are saved only on the machines that follow them.":
+    "Спільні налаштування зберігаються лише на комп’ютерах, які їх приймають.",
   "Shared settings require permission to change every checkout in this group.":
     "Для спільних налаштувань потрібен дозвіл змінювати кожну робочу копію в цій групі.",
   Sheet: "Аркуш",

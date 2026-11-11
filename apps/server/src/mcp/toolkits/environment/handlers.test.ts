@@ -16,7 +16,6 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
-import * as TestClock from "effect/testing/TestClock";
 
 import * as Environment from "../../../environment/ServerEnvironment.ts";
 import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandExecutor.ts";
@@ -330,8 +329,7 @@ it.effect.each([
   { name: "does not follow shared settings", follows: false, allMachines: true, shared: false },
 ])("allMachines on a machine that $name", ({ follows, allMachines, shared }) =>
   Effect.gen(function* () {
-    yield* TestClock.setTime(Date.parse("2026-11-11T12:00:00.000Z"));
-    const writes = yield* Ref.make<ReadonlyArray<{ share: unknown }>>([]);
+    const writes = yield* Ref.make<ReadonlyArray<"all machines" | "this machine">>([]);
     const dependencies = Layer.mergeAll(
       ThreadCommandExecutor.layer,
       Layer.succeed(McpInvocationContext.McpInvocationContext, {
@@ -355,7 +353,14 @@ it.effect.each([
       }),
       Layer.mock(SharedSettings.SharedSettings)({
         update: (_patch, share) =>
-          Ref.update(writes, (all) => [...all, { share }]).pipe(Effect.as(DEFAULT_SERVER_SETTINGS)),
+          Ref.update(writes, (all) => [
+            ...all,
+            share === undefined ? ("this machine" as const) : ("all machines" as const),
+          ]).pipe(Effect.as(DEFAULT_SERVER_SETTINGS)),
+        updateForAllMachines: () =>
+          Ref.update(writes, (all) => [...all, "all machines" as const]).pipe(
+            Effect.as(DEFAULT_SERVER_SETTINGS),
+          ),
       }),
       Layer.mock(Settings.ServerSettingsService)({
         getSettings: Effect.succeed({ ...DEFAULT_SERVER_SETTINGS, followSharedSettings: follows }),
@@ -381,13 +386,7 @@ it.effect.each([
       expect(result.at(-1)?.result).toMatchObject({ code: "invalid_request" });
       expect(yield* Ref.get(writes)).toEqual([]);
     } else {
-      expect(yield* Ref.get(writes)).toEqual([
-        {
-          share: shared
-            ? { updatedAt: "2026-11-11T12:00:00.000Z", origin: environmentId }
-            : undefined,
-        },
-      ]);
+      expect(yield* Ref.get(writes)).toEqual([shared ? "all machines" : "this machine"]);
     }
   }),
 );

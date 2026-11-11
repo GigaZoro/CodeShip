@@ -206,29 +206,40 @@ list. Clients show only machines they can't read live, and change nothing throug
 
 A machine with `followSharedSettings` on keeps the settings in
 [`MACHINE_SHARED_SETTING_KEYS`](../../packages/contracts/src/sharedSettings.ts) the same
-as the machines it links to. It serves its versions through the link-only `t3_shared_settings` tool
-and pulls its links' every five minutes
+as the other machines that follow. It serves its versions through the link-only `t3_shared_settings`
+tool and pulls its links' every five minutes
 ([`SharedSettingsPull.ts`](../../apps/server/src/sharedSettings/SharedSettingsPull.ts)), so a
 machine that was off when a change was saved catches up, and machines that are not linked to each
-other converge by passing versions on. A client saving for all machines sends one stamp
-(`updatedAt`, `origin`) to every machine it reaches. This is not the list in `client-runtime`'s
+other converge by passing versions on. This is not the list in `client-runtime`'s
 `sharedSettings.ts`, which only decides which writes a client sends to every connected machine now.
 
-- **A version stores what the key holds after the write, not the patch.** Some keys merge partial
-  patches, so a patch would lose the fields an earlier change set. The value comes from the stored
-  settings, not `getSettings`, which rewrites `textGenerationModelSelection` and applies policy locks.
-- **Versions change only under the settings write lock** (`SettingsWriteHooks`), so a version
-  pulled from a peer cannot undo a newer change saved here a moment before. Taking another lock
-  around `updateSettings` would invert that order and deadlock.
-- **Newest `updatedAt` wins, ties go to the larger `origin`.** A stamp more than five minutes
-  ahead of this machine's clock is dated now, or one machine with a fast clock would outrank every
-  later change.
-- **Only writes saved for all machines are versions.** A write for one machine or project is a
-  local override: it leaves the version table alone and drops a version that was waiting to apply.
+- **The group is the machines that follow.** A client saving a shared key for all machines writes
+  only to connected followers, with one stamp (`updatedAt`, `origin`); with no follower connected it
+  is a plain bulk edit. A machine that does not follow refuses a stamped write, so racing a client
+  that thought it still followed cannot change it through sharing.
+- **Following is the trust decision.** A follower takes versions from any linked machine that also
+  follows, over its own links, whatever the link's access level, the way shared scheduled tasks sync
+  ([`SharedTaskPull.ts`](../../apps/server/src/scheduledTasks/SharedTaskPull.ts)). Turning on
+  Follow shared settings is what grants that.
+- **One stamp means one value.** A version is the key's whole value, never a patch: the client
+  completes it from the machine being edited before fan-out, the server replaces the key with it
+  (`SettingsWritePlan.replace`) instead of merging into what it held, and records what it stored.
+  Merging would leave each machine with its own options or instructions under the same stamp.
+- **Ordering is per key, checked under the settings write lock** (`SettingsWriteHooks.prepare`).
+  Each key records its last shared version and, for writes made on this machine alone, a local
+  watermark (time and this machine). A shared version applies only if it is newer than both, so a
+  late older version cannot undo a newer change, and a stale stamped write skips that key rather
+  than leaving value and version disagreeing. Pulled versions, pending retries and pending inserts
+  recheck following under the same lock. Taking another lock around `updateSettings` would invert
+  that order and deadlock.
+- **Newest `updatedAt` wins, ties go to the larger `origin`, and stamps are never re-dated.** A
+  pulled version stamped more than five minutes ahead of this machine's clock waits, unserved,
+  until its time (logged once); re-dating it on each pull would let it undo every later save. A
+  client stamp that far ahead is refused, since the device's clock is wrong.
 - **A model selection naming a provider instance this machine lacks is kept as pending**, still
-  served on, and applied by the next pull once the instance exists.
+  served on, and applied by the next pull once the instance exists and no local change is newer.
 - **The pulling side checks everything**: the key must be shared and the value must decode as that
-  key's patch field, since a newer peer may share a key this build does not know.
+  key's setting, since a newer peer may share a key this build does not know.
 
 ## Hosted web is a client
 

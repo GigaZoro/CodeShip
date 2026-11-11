@@ -8,9 +8,9 @@ and stay selected as you move between categories or search for a setting.
 Preferences saved on this device, such as appearance, confirmations and browser profiles, always
 show and ignore the selection. Everything else is stored on a server. Choose one environment to
 edit its settings, or leave **All environments** to edit every connected environment at once.
-Offline environments keep their current values, unless they follow
-[shared settings](remote-access.md#shared-settings): then they take the change when they are
-back.
+Offline environments keep their current values. When a connected machine follows
+[shared settings](remote-access.md#shared-settings), a shared setting saved for all environments
+goes only to the machines that follow, including offline ones when they are back.
 
 Choose a project to override settings for it on the selected environments. A layers icon beside
 each server row's title shows where the value comes from: the built-in default, the environment,

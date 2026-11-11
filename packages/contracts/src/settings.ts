@@ -1723,6 +1723,8 @@ export const ServerSettingsOperation = Schema.Literals([
   "prepare-directory",
   "write-managed-setting",
   "use-disallowed-provider",
+  "take-shared-setting-unfollowed",
+  "take-shared-setting-clock-ahead",
 ]);
 export type ServerSettingsOperation = typeof ServerSettingsOperation.Type;
 
@@ -1748,6 +1750,12 @@ export class ServerSettingsError extends Schema.TaggedError<ServerSettingsError>
   override get message(): string {
     if (this.operation === "write-managed-setting") {
       return `${this.managedSetting ?? "This setting"} is managed by ${this.managedBy ?? "your organization"} and cannot be changed.`;
+    }
+    if (this.operation === "take-shared-setting-unfollowed") {
+      return "This machine does not follow shared settings, so a change saved for all machines does not apply here. Choose this machine by name to change it.";
+    }
+    if (this.operation === "take-shared-setting-clock-ahead") {
+      return "This device's clock is more than 5 minutes ahead of this machine's clock. Correct the time on this device, then save again.";
     }
     if (this.operation === "use-disallowed-provider") {
       return disallowedProviderMessage(

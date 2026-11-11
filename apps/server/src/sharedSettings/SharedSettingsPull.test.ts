@@ -79,7 +79,7 @@ const pull = (input: {
                   ...applied,
                   `${peer}:${versions.map((version) => version.key).join(",")}`,
                 ]),
-              retryPending: Ref.update(input.retries, (count) => count + 1),
+              retryWaiting: Ref.update(input.retries, (count) => count + 1),
             }),
           ),
         ),

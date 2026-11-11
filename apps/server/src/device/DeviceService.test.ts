@@ -31,6 +31,7 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as SharedSettings from "../sharedSettings/SharedSettings.ts";
 import * as DeviceHost from "./DeviceHost.ts";
 import { makeDeviceHubOperations } from "./DeviceHubOperations.ts";
 import { NodeRuntimeUnavailableError } from "@t3tools/shared/nodeRuntime";
@@ -284,7 +285,7 @@ const fixture = Effect.fn("fixture")(function* (
     () => Effect.succeed("/host.json"),
     installTool,
   ).pipe(
-    Effect.provide(NodeCrypto.layer),
+    Effect.provide(Layer.merge(SharedSettings.layerTest, NodeCrypto.layer)),
     Effect.provideService(DeviceHost.DeviceHost, host),
     Effect.provideService(
       ServerSettings.ServerSettingsService,
@@ -880,7 +881,7 @@ it.effect.each(["shutdown", "close"] as const)(
               releasedWhileBooted.push(booted);
             }),
         },
-      ).pipe(Effect.provide(NodeCrypto.layer));
+      ).pipe(Effect.provide(Layer.merge(SharedSettings.layerTest, NodeCrypto.layer)));
       expect(launchers).toEqual(new Set());
       const input = { threadId, deviceId, platform: "ios" as const };
       const other = { ...input, threadId: ThreadId.make("capture-recovery-other") };
@@ -1030,7 +1031,7 @@ it.effect("leaves a session its host leases to every thread open when one thread
         prune: () => Effect.void,
         release: (launcher) => Effect.sync(() => void released.push(launcher)),
       },
-    ).pipe(Effect.provide(NodeCrypto.layer));
+    ).pipe(Effect.provide(Layer.merge(SharedSettings.layerTest, NodeCrypto.layer)));
     const threads = [ThreadId.make("pool-a"), ThreadId.make("pool-b")];
     for (const threadId of threads) {
       yield* service.open({ threadId, deviceId, platform: "ios" });
@@ -1133,7 +1134,7 @@ it.effect.each([
         stop: Effect.void,
       };
       const service = yield* DeviceService.makeWithHosts(new Map([[host.id, host]])).pipe(
-        Effect.provide(NodeCrypto.layer),
+        Effect.provide(Layer.merge(SharedSettings.layerTest, NodeCrypto.layer)),
       );
       yield* service.list;
       const exit = yield* Effect.exit(service.shutdown({ deviceId, platform: "ios" }));
@@ -1205,7 +1206,7 @@ it.effect.each([LOCAL_DEVICE_HOST_ID, "ssh-fixture"])(
         stopAgent: Effect.void,
       };
       const service = yield* DeviceService.makeWithHosts(new Map([[hostId, host]])).pipe(
-        Effect.provide(NodeCrypto.layer),
+        Effect.provide(Layer.merge(SharedSettings.layerTest, NodeCrypto.layer)),
         Effect.provideService(HttpClient.HttpClient, http),
       );
 
@@ -1359,6 +1360,7 @@ it.effect("reconciles SSH host settings without publishing no-op changes", () =>
       stopAgent: Effect.void,
     };
     const service = yield* DeviceService.make.pipe(
+      Effect.provide(SharedSettings.layerTest),
       Effect.provideService(DeviceHost.DeviceHost, localHost),
       Effect.provideService(ServerSettings.ServerSettingsService, {
         ...settings,
@@ -1472,6 +1474,7 @@ it.effect("a failed tool update reports npm's exit code but not its output", () 
       stderrInvalidUtf8: false,
     };
     const service = yield* DeviceService.make.pipe(
+      Effect.provide(SharedSettings.layerTest),
       Effect.provideService(DeviceHost.DeviceHost, host),
       Effect.provideService(ProcessRunner.ProcessRunner, {
         run: () => Effect.succeed(npmFailure),
@@ -1787,7 +1790,7 @@ describe("locating a device id across hosts", () => {
           [thisMachine.id, listingHost(thisMachine, ["Pixel_10"])],
           [macMini.id, listingHost(macMini, ["MAC-UDID", "Pixel_10"])],
         ]),
-      ).pipe(Effect.provide(NodeCrypto.layer));
+      ).pipe(Effect.provide(Layer.merge(SharedSettings.layerTest, NodeCrypto.layer)));
       yield* service.list;
       return yield* test(service);
     }).pipe(Effect.provide(ServerSettings.layerTest({ enableDeviceSupport: true })), Effect.scoped);

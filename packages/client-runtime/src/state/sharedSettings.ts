@@ -3,9 +3,14 @@ import {
   isMachineSharedSettingKey,
   type ServerSettings,
   type ServerSettingsPatch,
+  sharedSettingKeysIn,
+  sharedSettingValue,
   type SharedSettingStamp,
 } from "@t3tools/contracts";
-import { isModelSelectionProviderEnabled } from "@t3tools/shared/serverSettings";
+import {
+  applyServerSettingsPatch,
+  isModelSelectionProviderEnabled,
+} from "@t3tools/shared/serverSettings";
 import * as DateTime from "effect/DateTime";
 import * as Struct from "effect/Struct";
 
@@ -91,8 +96,45 @@ export function sharedSettingStamp(
 
 /** Whether a write sets a setting that machines share, so it is worth stamping. */
 export function patchSetsMachineSharedSetting(patch: ServerSettingsPatch): boolean {
-  return Object.entries(patch).some(
-    ([key, value]) =>
-      value !== undefined && (isMachineSharedSettingKey(key) || key === "compactIdleThreads"),
+  return sharedSettingKeysIn(patch).length > 0;
+}
+
+/**
+ * Each shared setting `patch` sets, as the whole value `base` stores once the patch is applied. A
+ * write saved for all machines carries these, computed once from the machine being edited, so every
+ * machine that takes it records one value rather than merging a part into what it had.
+ */
+export function wholeSharedSettingValues(
+  base: ServerSettings,
+  patch: ServerSettingsPatch,
+): ServerSettingsPatch {
+  const keys = sharedSettingKeysIn(patch);
+  if (keys.length === 0) return {};
+  const applied = applyServerSettingsPatch(base, patch);
+  return Object.fromEntries(
+    keys.map((key) => [key, sharedSettingValue(applied, key)]),
+  ) as ServerSettingsPatch;
+}
+
+/**
+ * `patch` with each shared setting it sets replaced by its value in `whole`. One `whole` leaves
+ * out is not part of the edited machine's change, so it is not sent under the shared stamp.
+ */
+export function withWholeSharedSettingValues(
+  patch: ServerSettingsPatch,
+  whole: ServerSettingsPatch,
+): ServerSettingsPatch {
+  const keys = sharedSettingKeysIn(patch);
+  if (keys.length === 0) return patch;
+  const own = Object.fromEntries(
+    Object.entries(patch).filter(
+      ([key]) => key !== "compactIdleThreads" && !isMachineSharedSettingKey(key),
+    ),
   );
+  return {
+    ...own,
+    ...Object.fromEntries(
+      keys.flatMap((key) => (whole[key] === undefined ? [] : [[key, whole[key]]])),
+    ),
+  } as ServerSettingsPatch;
 }

@@ -7,6 +7,7 @@ import {
   isMachineSharedSettingKey,
   isNewerSharedSetting,
   MACHINE_SHARED_SETTING_KEYS,
+  sharedSettingKeysIn,
   SharedSettingStamp,
 } from "./sharedSettings.ts";
 import { ServerSettingsPatch } from "./settings.ts";
@@ -29,9 +30,22 @@ describe("MACHINE_SHARED_SETTING_KEYS", () => {
     "deviceHosts",
     "threadPage",
     "projectSettingsOverrides",
+    "defaultProjectScripts",
     "environmentIcon",
   ])("never shares %s", (key) => {
     expect(isMachineSharedSettingKey(key)).toBe(false);
+  });
+
+  it.each([
+    ["a shared key", { finalReviewByDefault: true }, ["finalReviewByDefault"]],
+    [
+      "the legacy idle compaction flag, as the mode",
+      { compactIdleThreads: true },
+      ["idleCompaction"],
+    ],
+    ["nothing for a key one machine keeps", { worktreesDirectory: "/tmp" }, []],
+  ])("finds %s in a write", (_name, patch, keys) => {
+    expect(sharedSettingKeysIn(patch)).toEqual(keys);
   });
 
   it("holds only keys a settings write can set, each once", () => {

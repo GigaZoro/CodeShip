@@ -96,7 +96,6 @@ const SHARED_SETTING_PRESENTATION: Record<
   pullRequestMergeMethod: { id: "pull-request-merge-method" },
   reviewGuidesEnabled: { id: "review-guides" },
   reviewGuideInstructions: { id: "review-guide-instructions" },
-  defaultProjectScripts: { id: "project-actions" },
   importAgentConversations: { id: "import-agent-conversations" },
   ghqCloneLayout: { id: "ghq-clone-layout" },
   enableProviderUpdateChecks: {
@@ -125,8 +124,8 @@ interface ComparedSetting extends SettingPresentation {
 
 /**
  * Settings that people keep the same on every machine. Paths, accounts, provider instances, devices,
- * and per-project overrides belong to one machine, so they are left out. The last two belong to one
- * machine too, and are listed so a one-off bulk edit can still make them match; saving them never
+ * and per-project overrides belong to one machine, so they are left out. The last three are not
+ * shared either, and are listed so a one-off bulk edit can still make them match; saving them never
  * becomes a shared version.
  */
 const COMPARED_SETTINGS: ReadonlyArray<ComparedSetting> = [
@@ -134,6 +133,7 @@ const COMPARED_SETTINGS: ReadonlyArray<ComparedSetting> = [
     const presentation = SHARED_SETTING_PRESENTATION[key];
     return presentation === "grouped" ? [] : [{ key, ...presentation }];
   }),
+  { id: "project-actions", key: "defaultProjectScripts" },
   { id: "guest-links", key: "guestSharingEnabled" },
   { id: "linked-environments-beta", key: "linkedEnvironmentsEnabled" },
 ];

@@ -1,13 +1,12 @@
 import * as Schema from "effect/Schema";
 
 import { EnvironmentId, IsoDateTime } from "./baseSchemas.ts";
-import type { ServerSettings, ServerSettingsPatch } from "./settings.ts";
+import { globalIdleCompaction, type ServerSettings, type ServerSettingsPatch } from "./settings.ts";
 
 /**
- * Settings people keep the same on every machine; one machine's paths, accounts, provider
- * instances, devices, secrets and project maps stay out. `linkedEnvironmentsEnabled` is out
- * because turning it off by sharing would cut the channel, `guestSharingEnabled` because exposing a
- * machine is its own choice. Not client-runtime's `sharedSettings.ts` list of writes sent now.
+ * Settings kept the same on every machine. Out: one machine's paths, accounts, instances, devices,
+ * secrets and project maps; `linkedEnvironmentsEnabled` (sharing could cut the channel);
+ * `guestSharingEnabled`; and `defaultProjectScripts`, saved through its own call and shortcuts.
  */
 export const MACHINE_SHARED_SETTING_KEYS = [
   "defaultModelSelection",
@@ -46,7 +45,6 @@ export const MACHINE_SHARED_SETTING_KEYS = [
   "pullRequestMergeMethod",
   "reviewGuidesEnabled",
   "reviewGuideInstructions",
-  "defaultProjectScripts",
   "importAgentConversations",
   "ghqCloneLayout",
   "enableProviderUpdateChecks",
@@ -62,6 +60,20 @@ const MACHINE_SHARED_SETTING_KEY_SET: ReadonlySet<string> = new Set(MACHINE_SHAR
 export const isMachineSharedSettingKey = (key: string): key is MachineSharedSettingKey =>
   MACHINE_SHARED_SETTING_KEY_SET.has(key);
 
+/** The shared settings a write changes; the legacy idle compaction flag sets the mode. */
+export const sharedSettingKeysIn = (
+  patch: ServerSettingsPatch,
+): ReadonlyArray<MachineSharedSettingKey> =>
+  MACHINE_SHARED_SETTING_KEYS.filter(
+    (key) =>
+      patch[key] !== undefined ||
+      (key === "idleCompaction" && patch.compactIdleThreads !== undefined),
+  );
+
+/** What a machine holds for a shared setting; older settings files keep the idle mode elsewhere. */
+export const sharedSettingValue = (settings: ServerSettings, key: MachineSharedSettingKey) =>
+  key === "idleCompaction" ? globalIdleCompaction(settings) : settings[key];
+
 /**
  * `Date.prototype.toISOString` output only, so that comparing two timestamps as text orders them in
  * time.
@@ -72,9 +84,10 @@ export const SharedSettingTimestamp = IsoDateTime.check(
 export type SharedSettingTimestamp = typeof SharedSettingTimestamp.Type;
 
 /**
- * Sent with a settings write saved for all machines. Every machine that receives the write gets the
- * same stamp, so they all record one version. `origin` is the machine the change is attributed to,
- * which breaks a tie between two changes made in the same millisecond.
+ * Sent with a settings write saved for all machines, only to machines that follow shared settings.
+ * Every one of them gets the same stamp and the complete value of each shared key, so they all
+ * record one version with one value. `origin` is the machine the change is attributed to, which
+ * breaks a tie between two changes made in the same millisecond.
  */
 export const SharedSettingStamp = Schema.Struct({
   updatedAt: SharedSettingTimestamp,
