@@ -46,7 +46,6 @@ import {
 
 const recoveryLabels = {
   off: msg("Do nothing"),
-  snooze: msg("Snooze until the limit resets"),
   resume: msg("Resume when the limit resets"),
   "switch-and-resume": msg("Switch to another account, else resume when the limit resets"),
   custom: msg("Custom"),
@@ -114,9 +113,9 @@ export function AutoSettleSettingsRows(props: {
     disabled || managedSettingReason(displayTargets, ...keys) !== undefined;
   const afterDays = referenceSettings.sidebarAutoSettleAfterDays;
   const recoveryChoice = usageLimitRecoveryChoice(referenceSettings);
-  const recoveryMixed = (
-    ["autoResumeLimitedThreads", "snoozeLimitedThreads", "failoverLimitedThreads"] as const
-  ).some((key) => uniformMobileSetting(displayTargets, key) === null);
+  const recoveryMixed = (["autoResumeLimitedThreads", "failoverLimitedThreads"] as const).some(
+    (key) => uniformMobileSetting(displayTargets, key) === null,
+  );
 
   return (
     <View className="gap-6">
@@ -126,20 +125,23 @@ export function AutoSettleSettingsRows(props: {
             icon="clock"
             label={t("When a thread hits a usage limit")}
             description={t(
-              "Switching uses another subscription account of the same provider. Some providers' terms forbid using extra accounts to get around limits. Custom preserves your current snooze, resume, and switching preferences.",
+              "Switching uses another subscription account of the same provider. Some providers' terms forbid using extra accounts to get around limits. Custom keeps account switching without automatic resume until you choose an action.",
             )}
             value={recoveryMixed ? null : recoveryChoice}
             currentLabel={recoveryMixed ? t("Mixed") : t(recoveryLabels[recoveryChoice])}
-            disabled={disabledFor(
-              "autoResumeLimitedThreads",
-              "snoozeLimitedThreads",
-              "failoverLimitedThreads",
-            )}
+            disabled={disabledFor("autoResumeLimitedThreads", "failoverLimitedThreads")}
             options={UsageLimitRecoveryChoice.literals.map((value) => ({
               value,
               label: t(recoveryLabels[value]),
             }))}
             onChange={(value) => writeToAll(usageLimitRecoveryPatch(value))}
+          />
+          <SettingsSwitchRow
+            icon="clock"
+            label={t("Hide limited threads until the limit resets")}
+            value={uniformMobileSetting(displayTargets, "snoozeLimitedThreads")}
+            disabled={disabledFor("snoozeLimitedThreads")}
+            onValueChange={(value) => writeToAll({ snoozeLimitedThreads: value })}
           />
         </SettingsSection>
       ) : null}

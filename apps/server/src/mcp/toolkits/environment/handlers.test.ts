@@ -260,6 +260,7 @@ it.effect.each([
           autoModeModels: { [driver]: auto },
           providerUpdates: "automatic",
           usageLimitRecovery: "switch-and-resume",
+          snoozeLimitedThreads: true,
         })
         .pipe(Stream.unwrap, Stream.runCollect);
       if (denied !== undefined) {
@@ -272,11 +273,12 @@ it.effect.each([
           autoModeModels: { [driver]: auto },
           providerUpdates: "automatic",
           usageLimitRecovery: "switch-and-resume",
+          snoozeLimitedThreads: true,
         });
         expect(yield* Ref.get(stored)).toMatchObject({
           enableProviderUpdateChecks: true,
           autoUpdateProviders: true,
-          snoozeLimitedThreads: false,
+          snoozeLimitedThreads: true,
           autoResumeLimitedThreads: true,
           failoverLimitedThreads: true,
         });
@@ -288,7 +290,34 @@ it.effect.each([
             delegatedTaskModelSelections: { implementation: delegated },
             scheduledTaskModelSelection: selection,
             autoModeModels: { [driver]: auto },
+            usageLimitRecovery: "switch-and-resume",
+            snoozeLimitedThreads: true,
           },
+        });
+        for (const usageLimitRecovery of ["off", "resume", "switch-and-resume"] as const) {
+          yield* toolkit
+            .handle("t3_environment_preferences_update", { usageLimitRecovery })
+            .pipe(Stream.unwrap, Stream.runDrain);
+          expect((yield* Ref.get(stored)).snoozeLimitedThreads).toBe(true);
+        }
+        yield* toolkit
+          .handle("t3_environment_preferences_update", { usageLimitRecovery: "snooze" })
+          .pipe(Stream.unwrap, Stream.runDrain);
+        expect(yield* Ref.get(stored)).toMatchObject({
+          snoozeLimitedThreads: true,
+          autoResumeLimitedThreads: false,
+          failoverLimitedThreads: false,
+        });
+        yield* toolkit
+          .handle("t3_environment_preferences_update", {
+            usageLimitRecovery: "resume",
+            snoozeLimitedThreads: false,
+          })
+          .pipe(Stream.unwrap, Stream.runDrain);
+        expect(yield* Ref.get(stored)).toMatchObject({
+          snoozeLimitedThreads: false,
+          autoResumeLimitedThreads: true,
+          failoverLimitedThreads: false,
         });
         yield* toolkit
           .handle("t3_environment_preferences_update", {

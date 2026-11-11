@@ -373,17 +373,27 @@ describe("resolveSidebarGrouping", () => {
 });
 
 describe("consolidated settings choices", () => {
-  it.each(["off", "snooze", "resume", "switch-and-resume"] as const)(
+  it.each(["off", "resume", "switch-and-resume"] as const)(
     "round trips usage-limit recovery %s",
     (choice) => {
       expect(usageLimitRecoveryChoice(usageLimitRecoveryPatch(choice))).toBe(choice);
+      for (const snoozeLimitedThreads of [false, true]) {
+        const stored = {
+          snoozeLimitedThreads,
+          autoResumeLimitedThreads: false,
+          failoverLimitedThreads: true,
+        };
+        const updated = { ...stored, ...usageLimitRecoveryPatch(choice) };
+        expect(updated.snoozeLimitedThreads).toBe(snoozeLimitedThreads);
+        expect(usageLimitRecoveryChoice(updated)).toBe(choice);
+      }
     },
   );
 
   it.each([
     [false, true, "switch-and-resume"],
-    [true, true, "custom"],
-    [true, false, "custom"],
+    [true, true, "switch-and-resume"],
+    [true, false, "resume"],
   ] as const)("preserves snooze %s and failover %s while resuming", (snooze, failover, choice) => {
     expect(
       usageLimitRecoveryChoice({

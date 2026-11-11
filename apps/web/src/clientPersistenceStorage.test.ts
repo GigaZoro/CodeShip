@@ -38,6 +38,25 @@ afterEach(() => {
 });
 
 describe("clientPersistenceStorage", () => {
+  it("returns migrated preferences when storage is read-only and retries persistence", async () => {
+    const testWindow = getTestWindow();
+    const original = JSON.stringify({ sidebarGroupBy: "machine", timestampFormat: "12-hour" });
+    testWindow.localStorage.setItem("t3code:client-settings:v1", original);
+    const write = vi.spyOn(testWindow.localStorage, "setItem").mockImplementationOnce(() => {
+      throw new DOMException("Read-only storage", "SecurityError");
+    });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { readBrowserClientSettings } = await import("./clientPersistenceStorage");
+    const settings = readBrowserClientSettings();
+    expect(settings).toMatchObject({ sidebarGroupByMachine: true, timestampFormat: "12-hour" });
+    expect(testWindow.localStorage.getItem("t3code:client-settings:v1")).toBe(original);
+    expect(warning).toHaveBeenCalled();
+    expect(readBrowserClientSettings()).toEqual(settings);
+    expect(write).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(testWindow.localStorage.getItem("t3code:client-settings:v1")!)).toEqual(
+      settings,
+    );
+  });
   it("persists sidebar grouping migration once without losing other preferences", async () => {
     const testWindow = getTestWindow();
     testWindow.localStorage.setItem(

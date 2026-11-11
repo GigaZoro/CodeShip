@@ -38,8 +38,16 @@ export function readBrowserClientSettings(): ClientSettings | null {
       cause,
     });
   }
-  if (Object.hasOwn(document, "sidebarGroupBy") || Object.hasOwn(document, "legacySidebarEnabled"))
-    writeBrowserClientSettings(settings);
+  if (
+    Object.hasOwn(document, "sidebarGroupBy") ||
+    Object.hasOwn(document, "legacySidebarEnabled")
+  ) {
+    try {
+      writeBrowserClientSettings(settings);
+    } catch (cause) {
+      console.warn("Could not persist migrated browser client settings.", cause);
+    }
+  }
   return settings;
 }
 

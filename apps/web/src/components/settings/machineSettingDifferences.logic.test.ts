@@ -77,10 +77,16 @@ describe("machineSettingDifferences", () => {
     ).toEqual([]);
   });
 
-  it("skips a machine whose server does not report the setting", () => {
-    const old = machine("Old", {}, "snoozeLimitedThreads");
+  it.each([
+    "snoozeLimitedThreads",
+    "autoResumeLimitedThreads",
+    "failoverLimitedThreads",
+    "enableProviderUpdateChecks",
+    "autoUpdateProviders",
+  ] as const)("skips a machine whose server does not report %s", (key) => {
+    const old = machine("Old", {}, key);
     expect(
-      machineSettingDifferences([machine("Laptop", { snoozeLimitedThreads: true }), old]),
+      machineSettingDifferences([machine("Laptop", { [key]: !DEFAULT_SERVER_SETTINGS[key] }), old]),
     ).toEqual([]);
   });
 

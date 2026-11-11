@@ -9,6 +9,7 @@ import {
 } from "@t3tools/contracts/settings";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { SettingsRow } from "./settingsLayout";
+import { ScopedSwitch } from "./ScopedSwitch";
 import { searchableSetting } from "./settingsSearch";
 import {
   useScopedSettings,
@@ -22,7 +23,6 @@ const isProviderUpdatesChoice = Schema.is(ProviderUpdatesChoice);
 
 const recoveryLabels = {
   off: msg("Do nothing"),
-  snooze: msg("Snooze until the limit resets"),
   resume: msg("Resume when the limit resets"),
   "switch-and-resume": msg("Switch to another account, else resume when the limit resets"),
   custom: msg("Custom"),
@@ -37,57 +37,59 @@ const updateLabels = {
 export function UsageLimitRecoverySettings() {
   const settings = useScopedSettings();
   const update = useUpdateScopedSettings();
-  const keys = [
-    "snoozeLimitedThreads",
-    "autoResumeLimitedThreads",
-    "failoverLimitedThreads",
-  ] as const;
+  const keys = ["autoResumeLimitedThreads", "failoverLimitedThreads"] as const;
   const mixed = useScopedSettingsMixed(keys);
   const choice = usageLimitRecoveryChoice(settings);
   return (
-    <SettingsRow
-      {...searchableSetting("usage-limit-recovery")}
-      serverScoped
-      settingKeys={keys}
-      description={t(
-        "Choose how stopped threads recover. Switching uses another signed-in subscription account of the same provider, never API-key or Bedrock accounts. Some providers' terms forbid using extra accounts to get around limits. Custom keeps your existing snooze, resume, and account-switching preferences until you choose an option.",
-      )}
-      status={
-        choice === "custom"
-          ? t("Snooze: {snooze}; resume: {resume}; switch accounts: {switching}.", {
-              snooze: settings.snoozeLimitedThreads ? t("On") : t("Off"),
-              resume: settings.autoResumeLimitedThreads ? t("On") : t("Off"),
-              switching: settings.failoverLimitedThreads ? t("On") : t("Off"),
-            })
-          : undefined
-      }
-      control={
-        <div className="w-full sm:w-72">
-          <Select
-            value={mixed ? null : choice}
-            onValueChange={(value) => {
-              if (isUsageLimitRecoveryChoice(value)) update(usageLimitRecoveryPatch(value));
-            }}
-          >
-            <SelectTrigger size="sm" aria-label={t("When a thread hits a usage limit")}>
-              <SelectValue>{mixed ? t("Mixed") : t(recoveryLabels[choice])}</SelectValue>
-            </SelectTrigger>
-            <SelectPopup align="end" alignItemWithTrigger={false}>
-              {choice === "custom" ? (
-                <SelectItem value="custom" disabled>
-                  {t(recoveryLabels.custom)}
-                </SelectItem>
-              ) : null}
-              {UsageLimitRecoveryChoice.literals.map((value) => (
-                <SelectItem key={value} value={value}>
-                  {t(recoveryLabels[value])}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-        </div>
-      }
-    />
+    <>
+      <SettingsRow
+        {...searchableSetting("usage-limit-recovery")}
+        serverScoped
+        settingKeys={keys}
+        description={t(
+          "Choose how stopped threads recover. Switching uses another signed-in subscription account of the same provider, never API-key or Bedrock accounts. Some providers' terms forbid using extra accounts to get around limits. Custom keeps account switching without automatic resume until you choose an action.",
+        )}
+        control={
+          <div className="w-full sm:w-72">
+            <Select
+              value={mixed ? null : choice}
+              onValueChange={(value) => {
+                if (isUsageLimitRecoveryChoice(value)) update(usageLimitRecoveryPatch(value));
+              }}
+            >
+              <SelectTrigger size="sm" aria-label={t("When a thread hits a usage limit")}>
+                <SelectValue>{mixed ? t("Mixed") : t(recoveryLabels[choice])}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {choice === "custom" ? (
+                  <SelectItem value="custom" disabled>
+                    {t(recoveryLabels.custom)}
+                  </SelectItem>
+                ) : null}
+                {UsageLimitRecoveryChoice.literals.map((value) => (
+                  <SelectItem key={value} value={value}>
+                    {t(recoveryLabels[value])}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          </div>
+        }
+      />
+      <SettingsRow
+        title={t("Hide limited threads until the limit resets")}
+        serverScoped
+        settingKeys={["snoozeLimitedThreads"]}
+        control={
+          <ScopedSwitch
+            settingKeys={["snoozeLimitedThreads"]}
+            checked={settings.snoozeLimitedThreads}
+            onCheckedChange={(checked) => update({ snoozeLimitedThreads: checked })}
+            aria-label={t("Hide limited threads until the limit resets")}
+          />
+        }
+      />
+    </>
   );
 }
 

@@ -28,6 +28,7 @@ const PreferenceFields = {
   enableProviderUpdateChecks: ServerSettings.fields.enableProviderUpdateChecks,
   providerUpdates: Schema.Union([ProviderUpdatesChoice, Schema.Literal("custom")]),
   usageLimitRecovery: Schema.Union([UsageLimitRecoveryChoice, Schema.Literal("custom")]),
+  snoozeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   backgroundActivity: Schema.Struct({ profile: BackgroundActivityProfileSelection }),
   sourceControlWritingStyle: Schema.Struct({
     mode: Schema.String,
@@ -66,7 +67,7 @@ const EnvironmentReadTool = Tool.make("t3_environment_read", {
 const EnvironmentPreferencesTool = Tool.make("t3_environment_preferences_update", {
   ...shared,
   description:
-    "Update environment-wide preferences and model defaults, including on a full-access linked machine. Live full-access or default caller thread only. Omitted fields are unchanged; null clears a delegated-task role; `customInstructions: ''` clears it. `providerUpdates`: off, notify, automatic (also enables checks). Prefer it to the legacy enableProviderUpdateChecks flag; it takes precedence. `usageLimitRecovery`: off, snooze, resume, switch-and-resume. Switching is opt-in: some providers forbid using extra accounts to get around limits. Existing custom combinations are preserved until a choice is supplied.",
+    "Update server preferences/model defaults, also on full-access linked machines. Live full-access/default callers only. Omitted fields stay; null clears a role; customInstructions: '' clears it. providerUpdates: off/notify/automatic; overrides enableProviderUpdateChecks. Checks off disables automatic updates; automatic enables checks. usageLimitRecovery: off/resume/switch-and-resume; snoozeLimitedThreads hides independently. Legacy snooze hides with recovery off. Switching is opt-in; some providers forbid extra accounts to bypass limits.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     defaultModelSelection: ServerSettingsPatch.fields.defaultModelSelection,
@@ -77,7 +78,10 @@ const EnvironmentPreferencesTool = Tool.make("t3_environment_preferences_update"
     newWorktreesStartFromOrigin: ServerSettingsPatch.fields.newWorktreesStartFromOrigin,
     enableProviderUpdateChecks: ServerSettingsPatch.fields.enableProviderUpdateChecks,
     providerUpdates: Schema.optionalKey(ProviderUpdatesChoice),
-    usageLimitRecovery: Schema.optionalKey(UsageLimitRecoveryChoice),
+    usageLimitRecovery: Schema.optionalKey(
+      Schema.Union([UsageLimitRecoveryChoice, Schema.Literal("snooze")]),
+    ),
+    snoozeLimitedThreads: ServerSettingsPatch.fields.snoozeLimitedThreads,
     backgroundActivity: Schema.optionalKey(Schema.Struct({ profile: BackgroundActivityProfile })),
     sourceControlWritingStyle: ServerSettingsPatch.fields.sourceControlWritingStyle,
   }),

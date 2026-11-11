@@ -110,6 +110,66 @@ const withClientSettings = <A, E, R>(
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped);
 
 describe("DesktopClientSettings", () => {
+  it.effect(
+    "reads migrated preferences through a read-only symlink target and retries persistence",
+    () =>
+      withClientSettings(
+        Effect.gen(function* () {
+          const environment = yield* DesktopEnvironment.DesktopEnvironment;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const dotfiles = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-read-only-settings-",
+          });
+          const targetPath = `${dotfiles}/client-settings.json`;
+          const original = JSON.stringify({
+            sidebarGroupBy: "machine",
+            timestampFormat: "12-hour",
+          });
+          yield* fileSystem.writeFileString(targetPath, original);
+          yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
+          yield* fileSystem.symlink(targetPath, environment.clientSettingsPath);
+          let readOnly = true;
+          const settings = yield* DesktopClientSettings.make.pipe(
+            Effect.provideService(
+              FileSystem.FileSystem,
+              FileSystem.FileSystem.of({
+                ...fileSystem,
+                writeFileString: (filePath, content, options) =>
+                  Effect.suspend(() =>
+                    readOnly && filePath.startsWith(`${targetPath}.`)
+                      ? Effect.fail(
+                          PlatformError.systemError({
+                            _tag: "PermissionDenied",
+                            module: "FileSystem",
+                            method: "writeFileString",
+                            pathOrDescriptor: filePath,
+                          }),
+                        )
+                      : fileSystem.writeFileString(filePath, content, options),
+                  ),
+              }),
+            ),
+          );
+          const migrated = yield* settings.get;
+          assert.isTrue(Option.isSome(migrated));
+          if (Option.isSome(migrated)) {
+            assert.equal(migrated.value.sidebarGroupByMachine, true);
+            assert.equal(migrated.value.timestampFormat, "12-hour");
+          }
+          assert.equal(yield* fileSystem.readFileString(targetPath), original);
+          assert.deepEqual(yield* settings.get, migrated);
+          const writeError = yield* settings.set(clientSettings).pipe(Effect.flip);
+          assert.instanceOf(writeError, DesktopClientSettings.DesktopClientSettingsWriteError);
+          readOnly = false;
+          assert.deepEqual(yield* settings.get, migrated);
+          assert.notProperty(
+            JSON.parse(yield* fileSystem.readFileString(targetPath)),
+            "sidebarGroupBy",
+          );
+          assert.equal(yield* fileSystem.readLink(environment.clientSettingsPath), targetPath);
+        }),
+      ),
+  );
   it.effect("saves through a symlinked client settings file without replacing the link", () =>
     withClientSettings(
       Effect.gen(function* () {

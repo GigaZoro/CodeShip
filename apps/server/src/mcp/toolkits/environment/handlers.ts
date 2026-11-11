@@ -40,6 +40,7 @@ export function preferences(settings: ServerSettings) {
     backgroundActivity: { profile: backgroundActivity.profile },
     providerUpdates: providerUpdatesChoice(settings),
     usageLimitRecovery: usageLimitRecoveryChoice(settings),
+    snoozeLimitedThreads: settings.snoozeLimitedThreads,
     sourceControlWritingStyle: {
       ...sourceControlWritingStyle,
       customInstructions: characters.slice(0, 4000).join(""),
@@ -81,7 +82,12 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
         ...legacyPatch,
         ...(legacyPatch.enableProviderUpdateChecks === false ? { autoUpdateProviders: false } : {}),
         ...(providerUpdates === undefined ? {} : providerUpdatesPatch(providerUpdates)),
-        ...(usageLimitRecovery === undefined ? {} : usageLimitRecoveryPatch(usageLimitRecovery)),
+        ...(usageLimitRecovery === undefined
+          ? {}
+          : usageLimitRecoveryPatch(usageLimitRecovery === "snooze" ? "off" : usageLimitRecovery)),
+        ...(usageLimitRecovery === "snooze"
+          ? { snoozeLimitedThreads: legacyPatch.snoozeLimitedThreads ?? true }
+          : {}),
       };
       const update = Effect.gen(function* () {
         // The turn may have ended, or the thread's modes changed, while this waited for the lock.

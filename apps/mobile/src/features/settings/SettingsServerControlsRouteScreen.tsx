@@ -324,8 +324,8 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
   const disabled = !canWriteSettings || pendingWrites > 0 || !hasConnectedSelection;
   const managed = (...keys: string[]) => managedSettingReason(targets, ...keys);
   // A locked row keeps its explanation and says who manages it.
-  const managedSubtitle = (key: string, subtitle: string) => {
-    const reason = managed(key);
+  const managedSubtitle = (key: string | string[], subtitle: string) => {
+    const reason = managed(...(typeof key === "string" ? [key] : key));
     return reason === undefined ? subtitle : `${subtitle} ${reason}`;
   };
   const runtimeModeChoices = withManagedRuntimeModeLimits(
@@ -666,10 +666,17 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       icon="arrow.clockwise"
                       label={t("Provider updates")}
                       description={managedSubtitle(
-                        "enableProviderUpdateChecks",
-                        t(
-                          "Check provider CLIs and model catalogs for updates. Install automatically also enables checks and updates provider CLIs when the server starts.",
-                        ),
+                        ["enableProviderUpdateChecks", "autoUpdateProviders"],
+                        [
+                          t(
+                            "Check provider CLIs and model catalogs for updates. Install automatically also enables checks and updates provider CLIs when the server starts.",
+                          ),
+                          projectSelected
+                            ? t("Environment-wide setting. Select All projects to change it.")
+                            : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" "),
                       )}
                       value={
                         uniform("enableProviderUpdateChecks") === null ||
