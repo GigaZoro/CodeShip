@@ -13,8 +13,9 @@ Offline environments keep their current values, unless they follow
 back.
 
 Choose a project to override settings for it on the selected environments. A layers icon beside
-each server row's title shows where the value comes from: the built-in default, the environment,
-or a project override. Click it to see that chain on every selected environment. An override can
+a server row's title appears when the value comes from somewhere other than the built-in default:
+the environment, a project override, the repository's `t3.json`, or an administrator's policy.
+Click it to see that chain on every selected environment. An override can
 be reset to inherit again. Settings that cannot be overridden by a project are shown read-only
 while a project is selected.
 

@@ -58,6 +58,7 @@ import {
   buildWhenVariableOptions,
   commandLabel,
   DEFAULT_WHEN_VARIABLE,
+  describeWhenCondition,
   isKnownWhenVariable,
   keybindingConflictLabels,
   keybindingFromKeyboardEvent,
@@ -883,21 +884,35 @@ function WhenClauseControl({
     if (!open) onValidityChange(true);
   };
 
+  const description = describeWhenCondition(value);
+  const trigger = (
+    <PopoverTrigger
+      render={
+        <Button
+          variant={expression ? "ghost" : "ghost-muted"}
+          size="micro"
+          className="min-w-0 shrink"
+        />
+      }
+      aria-label={t("Edit when clause for {command}", { command: label })}
+    >
+      <span className="truncate">{description}</span>
+      <ChevronDownIcon className="size-3.5 shrink-0 opacity-60" />
+    </PopoverTrigger>
+  );
+
   return (
     <Popover onOpenChange={handleOpenChange}>
-      <PopoverTrigger
-        render={
-          <Button
-            variant={expression ? "ghost" : "ghost-muted"}
-            size="micro"
-            className="min-w-0 shrink"
-          />
-        }
-        aria-label={t("Edit when clause for {command}", { command: label })}
-      >
-        <span className="truncate font-mono">{expression || t("Always")}</span>
-        <ChevronDownIcon className="size-3.5 shrink-0 opacity-60" />
-      </PopoverTrigger>
+      {expression && expression !== description ? (
+        <Tooltip>
+          <TooltipTrigger render={trigger} />
+          <TooltipPopup side="top">
+            <span className="font-mono">{expression}</span>
+          </TooltipPopup>
+        </Tooltip>
+      ) : (
+        trigger
+      )}
       <PopoverContent align="start" sideOffset={6}>
         <WhenExpressionBuilder
           value={value}

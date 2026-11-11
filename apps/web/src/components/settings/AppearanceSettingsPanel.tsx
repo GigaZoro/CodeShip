@@ -24,7 +24,6 @@ import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { useTheme } from "../../hooks/useTheme";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
-import { Switch } from "../ui/switch";
 import { ThemeLibrary } from "./ThemeSettings";
 import {
   SettingResetButton,
@@ -32,13 +31,10 @@ import {
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
-import { DiffColorsSettingsRow } from "./SettingsPanels";
 import { searchableSetting } from "./settingsSearch";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { PanelAnimationsPreview } from "./PanelAnimationsPreview";
 import { TypographySection } from "./TypographySettings";
-import { ThreadDetailsItemsRow } from "./ThreadDetailsItemsRow";
-import { AgentActionsSettings } from "./AgentActionsSettings";
 
 const ENVIRONMENT_IDENTIFICATION_LABELS: Record<EnvironmentIdentificationMode, Message> = {
   artwork: msg("Artwork"),
@@ -292,8 +288,6 @@ export function AppearanceSettingsPanel() {
             </div>
           }
         />
-        <ThreadDetailsItemsRow />
-        <AgentActionsSettings />
         <SettingsRow
           {...searchableSetting("effort-display")}
           description={t(
@@ -333,34 +327,6 @@ export function AppearanceSettingsPanel() {
             </div>
           }
         />
-        <SettingsRow
-          {...searchableSetting("math-rendering")}
-          description={t(
-            "Typeset LaTeX math, such as $x^2$ or \\[x^2\\], in messages and Markdown previews. The composer keeps TeX source editable.",
-          )}
-          resetAction={
-            settings.mathRenderingEnabled !== DEFAULT_UNIFIED_SETTINGS.mathRenderingEnabled ? (
-              <SettingResetButton
-                label={t("math rendering")}
-                onClick={() =>
-                  updateSettings({
-                    mathRenderingEnabled: DEFAULT_UNIFIED_SETTINGS.mathRenderingEnabled,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.mathRenderingEnabled}
-              onCheckedChange={(checked) =>
-                updateSettings({ mathRenderingEnabled: Boolean(checked) })
-              }
-              aria-label={t("Render math")}
-            />
-          }
-        />
-        <DiffColorsSettingsRow />
         <AdvancedSettings
           targetIds={[
             searchableSetting("panel-animations").id,

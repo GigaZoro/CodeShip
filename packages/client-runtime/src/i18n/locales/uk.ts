@@ -1762,6 +1762,8 @@ const catalog: MessageCatalog = {
     "Гостьове посилання активне. Нове посилання скасовує поточне.",
   "A guide is a tour of the change: stops through the code in reading order, with the calls only a maintainer can make.":
     "Посібник – це тур змінами: етапи кодом у порядку читання з рішеннями, які може ухвалити лише мейнтейнер.",
+  "A hub adds its accounts' usage limits to the Limits view.":
+    "Хаб додає ліміти використання своїх акаунтів до перегляду лімітів.",
   "A lease ends after the lease minutes even while in use.":
     "Оренда закінчується після вказаної кількості хвилин, навіть якщо пристрій використовується.",
   "A lease ends after the lease minutes even while in use. Saving restarts this host, which releases its devices.":
@@ -2038,8 +2040,8 @@ const catalog: MessageCatalog = {
   "admin request": "запит до адміністратора",
   Advanced: "Додатково",
   "Advanced (one environment)": "Додатково (одне середовище)",
-  "After a request you send changes files, each reviewer checks those changes as a read-only task, and the thread's agent fixes what it confirms. Reviews use turns on the reviewers' accounts. Turn it on or off for one thread from its menu.":
-    "Після того як надісланий вами запит змінює файли, кожен рецензент перевіряє ці зміни як завдання лише для читання, а агент чату виправляє те, що підтвердить. Рев’ю використовують ходи на облікових записах рецензентів. Вмикайте або вимикайте для окремого чату з його меню.",
+  "After a request changes files, each reviewer checks the changes and the agent fixes what they confirm, using turns on the reviewers' accounts.":
+    "Після запиту, що змінює файли, кожен рев’юер перевіряє зміни, а агент виправляє підтверджене, витрачаючи ходи на акаунтах рев’юерів.",
   "After the turn": "Після ходу",
   Agent: "Агент",
   "Agent access": "Доступ агентів",
@@ -2060,6 +2062,7 @@ const catalog: MessageCatalog = {
   "Agent has control": "Керує агент",
   "Agent Live Updates": "Живі оновлення агента",
   "Agent not responding to Stop": "Агент не реагує на зупинку",
+  "Agent not working": "Агент не працює",
   "Agent notifications are enabled for this device.":
     "Сповіщення агента ввімкнено для цього пристрою.",
   "Agent notifications are unavailable on this platform.":
@@ -2074,6 +2077,7 @@ const catalog: MessageCatalog = {
   "Agent tools": "Інструменти агента",
   "Agent tools are ready.": "Інструменти агентів готові.",
   "Agent work in progress": "Агент працює",
+  "Agent working": "Агент працює",
   "Agent:": "Агент:",
   Agents: "Агенти",
   "Agents can also type commands into their threads' terminals, in threads with Full access.":
@@ -2308,6 +2312,7 @@ const catalog: MessageCatalog = {
   "Approval from {title}": "Схвалення від {title}",
   "Approval needed": "Потрібне схвалення",
   "Approval needed from {title}": "Потрібне схвалення від {title}",
+  "Approval pending": "Очікує схвалення",
   "Approval requested": "Запитано схвалення",
   "Approval requests": "Запити на схвалення",
   approvals: "схвалення",
@@ -6178,11 +6183,18 @@ const catalog: MessageCatalog = {
   "in {minutes}m": "через {minutes} хв",
   "In a separate worktree": "В окремому worktree",
   "in a terminal {times}": "у терміналі {times}",
+  "In a text field": "У текстовому полі",
   "In each project, matches recent change descriptions and change request titles.":
     "У кожному проєкті враховує нещодавні описи змін і назви запитів на зміни.",
   "In messages": "У повідомленнях",
   "In progress": "Виконується",
   "In Settings": "У налаштуваннях",
+  "In the composer": "У полі повідомлення",
+  "In the desktop app": "У застосунку для комп’ютера",
+  "In the diff": "У змінах",
+  "In the preview": "У попередньому перегляді",
+  "In the terminal": "У терміналі",
+  "In the web app": "У вебзастосунку",
   "In this repository": "У цьому репозиторії",
   "in under a minute": "менш ніж за хвилину",
   "In use": "Використовується",
@@ -6574,8 +6586,12 @@ const catalog: MessageCatalog = {
   legal: "юридичне",
   Legal: "Правова інформація",
   "Less often": "Рідше",
-  "Let agents here work on your other machines, and theirs here. Applies to every machine this app is connected to; link them under Linked environments on this page. While it is off, nothing new starts over a link; tasks already running finish.":
-    "Дозвольте агентам звідси працювати на ваших інших комп’ютерах, а їхнім агентам працювати тут. Діє для кожного комп’ютера, до якого підключено цей застосунок; пов’яжіть їх у розділі «Пов’язані середовища» на цій сторінці. Поки вимкнено, нічого нового через зв’язок не запускається; уже запущені завдання завершуються.",
+  "Let a guest watch a shared thread live and send messages you approve; turning it off ends every guest link.":
+    "Дозвольте гостю наживо стежити за спільним чатом і надсилати повідомлення, які ви схвалюєте; вимкнення завершує всі гостьові посилання.",
+  "Let a guest watch a shared thread live and send messages you approve. Sign in to T3 Connect to use it.":
+    "Дозвольте гостю наживо стежити за спільним чатом і надсилати повідомлення, які ви схвалюєте. Щоб користуватися цим, увійдіть у T3 Connect.",
+  "Let agents here work on your other machines, and theirs here.":
+    "Дозвольте агентам тут працювати на ваших інших комп’ютерах, а їм там – на цьому.",
   "Let agents on a machine work on your other machines, and theirs on it. Turn it on for each machine. While it is off, nothing new starts over a link; tasks already running finish.":
     "Дозвольте агентам на одному комп’ютері працювати на ваших інших комп’ютерах, а їм на цьому. Увімкніть це для кожного комп’ютера. Поки вимкнено, нічого нового не запускається через зв’язок; запущені завдання завершуються.",
   "Let T3.CodeShip read {browser}’s cookies": "Дозвольте T3.CodeShip читати cookie {browser}",
@@ -6926,6 +6942,7 @@ const catalog: MessageCatalog = {
   "Managed binary cleanup failed.": "Не вдалося очистити керований бінарний файл.",
   "Managed by {organization}": "Керує {organization}",
   "Managed by {organization}.": "Керується організацією {organization}.",
+  "Managed by {owner}": "Керується {owner}",
   "Managed by {owner}.": "Керує {owner}.",
   "Managed by {owner}. Tools update automatically on this host when needed.":
     "Керує {owner}. Інструменти на цьому хості оновлюються автоматично, коли потрібно.",
@@ -7054,6 +7071,7 @@ const catalog: MessageCatalog = {
   "Message restored. Press send to retry.":
     "Повідомлення відновлено. Натисніть «Надіслати», щоб повторити.",
   "Message surface": "Поверхня повідомлення",
+  Messages: "Повідомлення",
   "Messages from apps need a started thread.":
     "Повідомлення від застосунків потребують запущеного чату.",
   "Messages loading": "Завантаження повідомлень",
@@ -7115,7 +7133,9 @@ const catalog: MessageCatalog = {
   "Model ID": "ID моделі",
   "Model mappings cannot form a cycle on {target}.":
     "Зіставлення моделей не можуть утворювати цикл у {target}.",
+  "Model picker closed": "Вибір моделі закрито",
   "Model picker is disabled": "Вибір моделі вимкнено",
+  "Model picker open": "Вибір моделі відкрито",
   "Model preferences and custom models are saved on the selected environment and shared across connected devices.":
     "Налаштування моделей і власні моделі зберігаються у вибраному середовищі та спільні для підключених пристроїв.",
   "Model preferences not saved": "Налаштування моделей не збережено",
@@ -7378,6 +7398,7 @@ const catalog: MessageCatalog = {
     "Віртуальних пристроїв Android не знайдено. Створіть один у Device Manager в Android Studio, а потім оновіть.",
   "No app on this device can show this format. Save or share it to open it elsewhere.":
     "Жоден застосунок на цьому пристрої не може показати цей формат. Збережіть його або поділіться, щоб відкрити деінде.",
+  "No approval pending": "Немає схвалень в очікуванні",
   "No archived threads": "Немає архівних чатів",
   "No artifacts in this project.": "У цьому проєкті немає артефактів.",
   "No artifacts match “{query}”.": "Немає артефактів за запитом «{query}».",
@@ -7670,12 +7691,20 @@ const catalog: MessageCatalog = {
   "Not connected: message not sent": "Немає підключення: повідомлення не надіслано",
   "Not found": "Не знайдено",
   "Not granted": "Не надано",
+  "Not in a text field": "Не в текстовому полі",
+  "Not in the composer": "Не в полі повідомлення",
+  "Not in the desktop app": "Не в застосунку для комп’ютера",
+  "Not in the diff": "Не у змінах",
+  "Not in the preview": "Не в попередньому перегляді",
+  "Not in the terminal": "Не в терміналі",
+  "Not in the web app": "Не у вебзастосунку",
   "Not installed": "Не встановлено",
   "Not installed on this machine.": "Не встановлено на цьому комп’ютері.",
   "Not installed.": "Не встановлено.",
   "Not linked": "Не зв’язано",
   "Not now": "Не зараз",
   "Not on {machines}": "Немає на: {machines}",
+  "Not on a draft thread": "Не в чернетці чату",
   "Not on: {machines}": "Не на: {machines}",
   "Not ready": "Не готово",
   "Not ready yet. Finish the step above.": "Ще не готово. Завершіть крок вище.",
@@ -7776,6 +7805,7 @@ const catalog: MessageCatalog = {
   "On {name}": "На {name}",
   "On {source} it lives in {location}. Pull that repository on {target} to get it; for agent-config, its check --fix also links missing skills.":
     "На {source} вона розташована в {location}. Виконайте pull цього репозиторію на {target}, щоб отримати її; для agent-config команда check --fix також підключає відсутні навички.",
+  "On a draft thread": "У чернетці чату",
   "On a tailnet, run {command} instead.": "У tailnet натомість виконайте {command}.",
   "On another machine, so this machine's agent can't read it. Remove it or switch back to send.":
     "Він на іншому комп’ютері, тому агент цього комп’ютера не може його прочитати. Видаліть його або поверніться назад, щоб надіслати.",
@@ -8498,6 +8528,7 @@ const catalog: MessageCatalog = {
   "Preview annotation": "Анотація попереднього перегляду",
   "preview browser": "браузер попереднього перегляду",
   "Preview browser": "Браузер попереднього перегляду",
+  "Preview closed": "Попередній перегляд закрито",
   "Preview closed.": "Перегляд закрито.",
   "Preview failed": "Не вдалося створити попередній перегляд",
   "Preview is desktop-only": "Попередній перегляд доступний лише в десктопному застосунку",
@@ -8526,6 +8557,7 @@ const catalog: MessageCatalog = {
     "Перегляд обмежений. Збережіть документ або відкрийте його в іншому застосунку, щоб прочитати повністю.",
   "Preview media": "Попередній перегляд медіа",
   "Preview menu": "Меню перегляду",
+  "Preview open": "Попередній перегляд відкрито",
   "Preview unavailable": "Попередній перегляд недоступний",
   "Preview URL (optional)": "URL попереднього перегляду (необов’язково)",
   "Preview video attachment, {name}, {size}": "Попередній перегляд відеовкладення, {name}, {size}",
@@ -9650,7 +9682,9 @@ const catalog: MessageCatalog = {
   "Rewriting…": "Переписування…",
   "rich text composer": "поле повідомлення з форматуванням",
   "Rich text composer": "Поле повідомлення з форматуванням",
+  "Right panel closed": "Праву панель закрито",
   "Right panel is unavailable": "Права панель недоступна",
+  "Right panel open": "Праву панель відкрито",
   Robot: "Робот",
   rocket: "ракета",
   Rocket: "Ракета",
@@ -10267,10 +10301,6 @@ const catalog: MessageCatalog = {
   "Shadow home path": "Шлях до тіньової домашньої папки",
   "Shaking the phone also shows them": "Їх також показує струшування телефона",
   Share: "Поділитися",
-  "Share a thread with a guest who watches it live in their browser and sends messages you approve. Needs T3 Connect: sign in and link this machine under T3 Connect on this page. While it is off, every guest link stops working.":
-    "Поділіться чатом з гостем, який стежитиме за ним наживо у своєму браузері й надсилатиме повідомлення, які ви схвалюєте. Потрібен T3 Connect: увійдіть і пов’яжіть цей комп’ютер у розділі T3 Connect на цій сторінці. Поки його вимкнено, жодне гостьове посилання не працює.",
-  "Share a thread with a guest who watches it live in their browser and sends messages you approve. Sign in to T3 Connect to use guest links.":
-    "Поділіться чатом з гостем, який стежитиме за ним наживо у своєму браузері й надсилатиме повідомлення, які ви схвалюєте. Щоб користуватися гостьовими посиланнями, увійдіть у T3 Connect.",
   "Share link": "Поділитися посиланням",
   "Share PR data with other enabled environments.":
     "Ділитися даними PR з іншими ввімкненими середовищами.",
@@ -11207,6 +11237,7 @@ const catalog: MessageCatalog = {
   "Terminal font preview": "Попередній перегляд шрифту термінала",
   "Terminal font size": "Розмір шрифту термінала",
   "terminal input": "ввід у терміналі",
+  "Terminal open": "Термінал відкрито",
   "Terminal options": "Параметри термінала",
   "Terminal output": "Вивід термінала",
   "terminal output {times}": "вивід термінала {times}",
@@ -13173,6 +13204,8 @@ const catalog: MessageCatalog = {
     "Ліміти використання недоступні для цього провайдера",
   "Usage limits unavailable": "Ліміти використання недоступні",
   "Usage metric": "Показник використання",
+  "Usage page closed": "Сторінку використання закрито",
+  "Usage page open": "Сторінку використання відкрито",
   "Usage period": "Період використання",
   "Usage providers": "Провайдери використання",
   "Usage resolution": "Деталізація використання",
@@ -13583,8 +13616,8 @@ const catalog: MessageCatalog = {
   Wed: "Ср",
   Wednesday: "Середа",
   Weekdays: "У будні",
-  "What a message you send while the agent works does. Steer adds it to the current turn, Queue sends it when the turn ends, and Stop and send stops the turn and sends it instead. Providers that can't restart a turn steer instead of stopping.":
-    "Що відбувається з повідомленням, яке ви надсилаєте, поки агент працює. «Скерування» додає його до поточного ходу, «Черга» надсилає його, коли хід завершиться, а «Зупинити й надіслати» зупиняє хід і надсилає його замість нього. Провайдери, які не можуть перезапустити хід, скеровують замість зупинки.",
+  "What a message you send while the agent works does: steer the turn, queue until it ends, or stop and send.":
+    "Що робить повідомлення, надіслане, поки агент працює: спрямовує хід, чекає в черзі до його завершення або зупиняє хід і надсилається.",
   "What agents here may do there": "Що агенти звідси можуть робити там",
   "What it may do": "Що він може робити",
   "What should the agent do each time this runs?": "Що має робити агент під час кожного запуску?",
