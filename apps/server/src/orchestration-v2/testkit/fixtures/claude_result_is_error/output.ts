@@ -1,5 +1,6 @@
 import { assert } from "@effect/vitest";
 import type { ProviderReplayTranscript } from "@t3tools/contracts";
+import { AUTHENTICATION_FAILED_FAILURE_CODE } from "@t3tools/provider-core/server/failure";
 
 import type { OrchestratorV2ScenarioResult } from "../../OrchestratorScenario.ts";
 import {
@@ -49,7 +50,7 @@ export function assertClaudeResultIsErrorOutput(
   assert.isDefined(errorItem);
   if (errorItem?.type !== "error") throw new Error("expected error item");
   assert.equal(errorItem.failure.message, AUTH_FAILURE_TEXT);
-  assert.equal(errorItem.failure.code, "api_error_401");
+  assert.equal(errorItem.failure.code, AUTHENTICATION_FAILED_FAILURE_CODE);
   assert.equal(errorItem.failure.class, "provider_error");
 
   const run1AssistantTexts = projection.turnItems.flatMap((item) =>
