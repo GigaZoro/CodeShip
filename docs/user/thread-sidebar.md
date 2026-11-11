@@ -444,9 +444,11 @@ leave a notice explaining why. You can still resume a skipped run manually.
 Choose **Snooze until reset** to hide the thread until its allowance returns.
 Snooze and auto-resume are independent: snooze alone wakes the thread without
 sending a message; enabling both wakes and continues it. **Wake now** cancels
-the snooze. Choose **Snooze until the limit resets** under **When a thread hits
-a usage limit** to snooze limit stops by default without continuing the agent. Providers without a reset time offer manual
-retry and the normal snooze choices.
+the snooze. Turn on **Hide limited threads until the limit resets** in
+**Settings → Threads** to hide limit stops by default. Choose their recovery action
+separately under **When a thread hits a usage limit**: **Do nothing** keeps the
+agent stopped; **Resume when the limit resets** also continues it. Providers without
+a reset time offer manual retry and the normal snooze choices.
 
 With two or more accounts for one provider, choose **Switch to another account,
 else resume when the limit resets** in **Settings → Threads → When a thread hits

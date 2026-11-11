@@ -3130,8 +3130,8 @@ const catalog: MessageCatalog = {
     "Виберіть, як позначати середовища Dev і Nightly.",
   "Choose how new worktree branches are named from your first message.":
     "Виберіть, як називати нові гілки worktree за вашим першим повідомленням.",
-  "Choose how stopped threads recover. Switching uses another signed-in subscription account of the same provider, never API-key or Bedrock accounts. Some providers' terms forbid using extra accounts to get around limits. Custom keeps your existing snooze, resume, and account-switching preferences until you choose an option.":
-    "Виберіть, як відновлювати зупинені чати. Перемикання використовує інший обліковий запис із підпискою того самого провайдера, у який виконано вхід, але ніколи не використовує облікові записи з API-ключем чи Bedrock. Умови деяких провайдерів забороняють обходити ліміти за допомогою додаткових облікових записів. Власні налаштування зберігають поточні параметри відкладання, продовження й перемикання облікових записів, доки ви не виберете інший варіант.",
+  "Choose how stopped threads recover. Switching uses another signed-in subscription account of the same provider, never API-key or Bedrock accounts. Some providers' terms forbid using extra accounts to get around limits. Custom keeps account switching without automatic resume until you choose an action.":
+    "Виберіть спосіб відновлення зупинених чатів. Перемикання використовує інший обліковий запис із підпискою того самого провайдера, у який виконано вхід, але не облікові записи з API-ключем або Bedrock. Умови деяких провайдерів забороняють використовувати додаткові облікові записи для обходу лімітів. Власний варіант зберігає перемикання облікових записів без автоматичного відновлення, доки ви не виберете дію.",
   "Choose how to continue.": "Виберіть, як продовжити.",
   "Choose how to send": "Вибрати спосіб надсилання",
   "Choose how to send this message": "Виберіть, як надіслати це повідомлення",
@@ -5286,6 +5286,8 @@ const catalog: MessageCatalog = {
   "Environment variable name {index}": "Назва змінної середовища {index}",
   "Environment variable value {index}": "Значення змінної середовища {index}",
   "Environment variables (optional)": "Змінні середовища (необов’язково)",
+  "Environment-wide setting. Select All projects to change it.":
+    "Налаштування для всього середовища. Щоб змінити його, виберіть «Усі проєкти».",
   "Environment-wide setting. Select an environment to change it.":
     "Параметр для всього середовища. Виберіть середовище, щоб змінити його.",
   "Environment: {environment}": "Середовище: {environment}",
@@ -5961,6 +5963,8 @@ const catalog: MessageCatalog = {
   "Hide file navigator": "Сховати навігатор файлів",
   "Hide file tree": "Сховати дерево файлів",
   "Hide inspector": "Сховати інспектор",
+  "Hide limited threads until the limit resets":
+    "Приховувати чати з вичерпаним лімітом до його скидання",
   "Hide location of {name}": "Приховати розташування {name}",
   "Hide Manual steps": "Сховати ручні кроки",
   "Hide model: {provider}, {model}": "Сховати модель: {provider}, {model}",
@@ -10631,7 +10635,6 @@ const catalog: MessageCatalog = {
   "Snooze thread": "Відкласти чат",
   "Snooze until": "Відкласти до",
   "Snooze until reset": "Відкласти до скидання",
-  "Snooze until the limit resets": "Відкласти до скидання ліміту",
   "Snooze: {label}, {when}": "Відкласти: {label}, {when}",
   "Snooze: {snooze}; resume: {resume}; switch accounts: {switching}.":
     "Відкладання: {snooze}; продовження: {resume}; перемикання облікових записів: {switching}.",
@@ -11019,8 +11022,8 @@ const catalog: MessageCatalog = {
   "Switching branch": "Перемикання гілки",
   "Switching branch...": "Перемикання гілки...",
   "Switching to WebRTC.": "Перехід на WebRTC.",
-  "Switching uses another subscription account of the same provider. Some providers' terms forbid using extra accounts to get around limits. Custom preserves your current snooze, resume, and switching preferences.":
-    "Перемикання використовує інший обліковий запис із підпискою того самого провайдера. Умови деяких провайдерів забороняють обходити ліміти за допомогою додаткових облікових записів. Власні налаштування зберігають поточні параметри відкладання, продовження й перемикання.",
+  "Switching uses another subscription account of the same provider. Some providers' terms forbid using extra accounts to get around limits. Custom keeps account switching without automatic resume until you choose an action.":
+    "Перемикання використовує інший обліковий запис із підпискою того самого провайдера. Умови деяких провайдерів забороняють використовувати додаткові облікові записи для обходу лімітів. Власний варіант зберігає перемикання облікових записів без автоматичного відновлення, доки ви не виберете дію.",
   "Sync ref": "Синхронізувати посилання",
   "Syncing messages...": "Синхронізація повідомлень…",
   "Syncing threads...": "Синхронізація чатів...",
