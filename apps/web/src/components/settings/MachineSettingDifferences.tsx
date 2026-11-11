@@ -10,7 +10,7 @@ import { planScopedSettingsPatch } from "./scopedSettings";
 import { EveryMachineSettingsScope, useSettingsScope } from "./SettingsScopeContext";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
-import { useRunScopedSettingsPlan } from "./useScopedSettings";
+import { useRunScopedSettingsPlan, useSharedScopeNotice } from "./useScopedSettings";
 
 /** Settings people keep the same everywhere, listed where machines disagree. */
 export function MachineSettingDifferencesSection() {
@@ -24,6 +24,7 @@ export function MachineSettingDifferencesSection() {
 function MachineSettingDifferences() {
   const { scope, environments, connectedEnvironments } = useSettingsScope();
   const runPlan = useRunScopedSettingsPlan();
+  const sharedNotice = useSharedScopeNotice();
   const writable = useEnvironmentsWithScope(connectedEnvironments, AuthSettingsWriteScope);
   const differences = machineSettingDifferences(
     connectedEnvironments.flatMap((environment) =>
@@ -129,6 +130,9 @@ function MachineSettingDifferences() {
           </SettingsRow>
         ))
       )}
+      {sharedNotice && differences.length > 0 ? (
+        <p className="px-3 text-xs text-muted-foreground sm:px-4">{sharedNotice}</p>
+      ) : null}
       {unreachable.length > 0 ? (
         <p className="px-3 text-xs text-muted-foreground sm:px-4">
           {t("Reconnect {machines} to compare their settings.", {

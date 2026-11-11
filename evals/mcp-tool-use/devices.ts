@@ -46,6 +46,7 @@ import { liveThreadsLayer } from "../../apps/server/src/mcp/McpToolAccess.testki
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
 import * as ProjectService from "../../apps/server/src/project/ProjectService.ts";
 import { ServerSettingsService } from "../../apps/server/src/serverSettings.ts";
+import * as SharedSettings from "../../apps/server/src/sharedSettings/SharedSettings.ts";
 import { shellInvocations } from "./device-grading.ts";
 
 export interface DeviceWorld {
@@ -777,6 +778,7 @@ export const makeDeviceTools = Effect.fn("evaluateMcpToolUse.makeDeviceTools")(f
     McpHttpServer.layerDeviceToolkit.pipe(
       Layer.provideMerge(McpServer.McpServer.layer),
       Layer.provideMerge(devices),
+      Layer.provideMerge(SharedSettings.layerTest),
       Layer.provideMerge(
         Layer.mergeAll(
           liveThreadsLayer,

@@ -11,6 +11,7 @@ import {
   type ProjectId,
   type ProjectScopedServerSettingKey,
   type ProjectSettingsOverrides,
+  isMachineSharedSettingKey,
   ServerSettings,
   type SharedSettingStamp,
   type T3ProjectFile,
@@ -20,6 +21,8 @@ import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connect
 import {
   patchSetsMachineSharedSetting,
   sharedSettingStamp,
+  wholeSharedSettingValues,
+  withWholeSharedSettingValues,
 } from "@t3tools/client-runtime/state/shared-settings";
 import {
   clearProjectSettingsOverrides,
@@ -228,6 +231,36 @@ function forDestination(previous: ServerSettings, patch: ServerSettingsPatch): S
   return { ...rest, ...idleCompactionPatch(previous, idleCompaction) };
 }
 
+/** The patch one machine gets: worktree cleanup rules edited through storage keys follow it. */
+function machinePatch(previous: ServerSettings, serverPatch: ServerSettingsPatch) {
+  return forDestination(
+    previous,
+    previous.worktreeCleanup != null &&
+      serverPatch.storageCleanup &&
+      Object.keys(serverPatch.storageCleanup).some((key) => key.startsWith("worktree"))
+      ? {
+          ...serverPatch,
+          worktreeCleanup: {
+            mode: "custom",
+            rules: {
+              ...resolveWorktreeCleanup(previous, null),
+              ...Object.fromEntries(
+                Object.entries(serverPatch.storageCleanup).filter(([key]) =>
+                  key.startsWith("worktree"),
+                ),
+              ),
+            },
+          },
+        }
+      : serverPatch,
+  );
+}
+
+interface SharedGroupMember {
+  readonly environmentId: EnvironmentId;
+  readonly previous: ServerSettings;
+}
+
 export interface ScopedSettingsPlan {
   readonly clientPatch: ClientSettingsPatch;
   readonly hasClientWrite: boolean;
@@ -237,33 +270,66 @@ export interface ScopedSettingsPlan {
   readonly share: SharedSettingStamp | null;
   /** Machines that are offline now and follow shared settings, so they take the write when back. */
   readonly offlineFollowers: readonly string[];
+  /**
+   * For a shared write, every connected machine that follows shared settings and what it held
+   * before, including one the write skipped because it already had the value.
+   */
+  readonly sharedGroup: readonly SharedGroupMember[];
 }
 
-const NOT_SHARED = { share: null, offlineFollowers: [] } as const;
+const NOT_SHARED = { share: null, offlineFollowers: [], sharedGroup: [] } as const;
+
+/** Whether "All environments" saves shared settings only on the machines that follow them. */
+export function sharesWithFollowers(environments: readonly ScopedSettingsEnvironment[]): boolean {
+  return environments.some(
+    (environment) =>
+      isConnectedWithConfig(environment) &&
+      environment.serverConfig?.settings.followSharedSettings === true,
+  );
+}
 
 /**
- * An "All machines" write that sets a shared setting is a shared change, attributed to `origin`.
- * Writes for one machine or one project are local overrides and carry no stamp.
+ * An "All environments" write of a shared setting goes only to connected followers, stamped, with
+ * the whole value `originPatch` leaves on `origin`, the machine being edited. With no follower
+ * connected it is a plain bulk edit; a write for one machine or project carries no stamp.
  */
-function sharingFor(
+function shareWrites(
   scope: ResolvedSettingsScope,
   environments: readonly ScopedSettingsEnvironment[],
   origin: EnvironmentId | null,
-  serverPatches: ReadonlyArray<ServerSettingsPatch>,
-): Pick<ScopedSettingsPlan, "share" | "offlineFollowers"> {
+  writes: ScopedServerWrite[],
+  originPatch: (originSettings: ServerSettings) => ServerSettingsPatch,
+): Pick<ScopedSettingsPlan, "serverWrites" | "share" | "offlineFollowers" | "sharedGroup"> {
+  const plain = { serverWrites: writes, ...NOT_SHARED };
   if (
     scope.kind !== "all" ||
     origin === null ||
-    !serverPatches.some(patchSetsMachineSharedSetting)
+    !writes.some((write) => patchSetsMachineSharedSetting(write.patch))
   ) {
-    return NOT_SHARED;
+    return plain;
   }
   const { environments: selected, connectedEnvironments } = selectScopedSettingsEnvironments(
     scope,
     environments,
     null,
   );
+  const sharedGroup = connectedEnvironments.flatMap((environment) =>
+    environment.serverConfig?.settings.followSharedSettings === true
+      ? [{ environmentId: environment.environmentId, previous: environment.serverConfig.settings }]
+      : [],
+  );
+  const base =
+    connectedEnvironments.find((environment) => environment.environmentId === origin)?.serverConfig
+      ?.settings ?? sharedGroup[0]?.previous;
+  if (sharedGroup.length === 0 || base === undefined) return plain;
+  const whole = wholeSharedSettingValues(base, originPatch(base));
+  const followers = new Set(sharedGroup.map(({ environmentId }) => environmentId));
   return {
+    serverWrites: writes.flatMap((write) =>
+      followers.has(write.environmentId)
+        ? [{ ...write, patch: withWholeSharedSettingValues(write.patch, whole) }]
+        : [],
+    ),
     share: sharedSettingStamp(origin),
     offlineFollowers: selected
       .filter(
@@ -272,6 +338,7 @@ function sharingFor(
           environment.serverConfig?.settings.followSharedSettings === true,
       )
       .map(({ label }) => label),
+    sharedGroup,
   };
 }
 
@@ -352,35 +419,16 @@ export function planScopedSettingsPatch(
                   environmentId: environment.environmentId,
                   label: environment.label,
                   previous,
-                  patch: forDestination(
-                    previous,
-                    previous.worktreeCleanup != null &&
-                      serverPatch.storageCleanup &&
-                      Object.keys(serverPatch.storageCleanup).some((key) =>
-                        key.startsWith("worktree"),
-                      )
-                      ? {
-                          ...serverPatch,
-                          worktreeCleanup: {
-                            mode: "custom",
-                            rules: {
-                              ...resolveWorktreeCleanup(previous, null),
-                              ...Object.fromEntries(
-                                Object.entries(serverPatch.storageCleanup).filter(([key]) =>
-                                  key.startsWith("worktree"),
-                                ),
-                              ),
-                            },
-                          },
-                        }
-                      : serverPatch,
-                  ),
+                  patch: machinePatch(previous, serverPatch),
                 },
               ];
             })
           : [];
+  const sharing = shareWrites(scope, environments, origin, serverWrites, (base) =>
+    machinePatch(base, serverPatch),
+  );
   const hasClientWrite = Object.keys(clientPatch).length > 0;
-  const hasWrite = hasClientWrite || serverWrites.length > 0;
+  const hasWrite = hasClientWrite || sharing.serverWrites.length > 0;
   const unavailableReason =
     hasWrite || Object.keys(patch).length === 0
       ? null
@@ -395,15 +443,7 @@ export function planScopedSettingsPatch(
             : scope.kind === "environment"
               ? t("Connect {environment} to save this setting.", { environment: scope.label })
               : t("Connect an environment to save this setting.");
-  return {
-    clientPatch,
-    hasClientWrite,
-    serverWrites,
-    unavailableReason,
-    ...(serverWrites.length > 0
-      ? sharingFor(scope, environments, origin, [serverPatch])
-      : NOT_SHARED),
-  };
+  return { clientPatch, hasClientWrite, unavailableReason, ...sharing };
 }
 
 function clientOnlyPatch(patch: ScopedSettingsPatch): ClientSettingsPatch {
@@ -447,25 +487,20 @@ export function planPerEnvironmentSettingsPatch(
           ];
         })
       : [];
+  // Each machine's values come from its own state, but a key one machine resets is reset to the
+  // same value on the rest, so the reset is still one shared change with one value.
+  const sharing = shareWrites(scope, environments, origin, serverWrites, () =>
+    Object.assign({}, ...serverWrites.map(({ patch }) => patch)),
+  );
   const hasClientWrite = Object.keys(clientPatch).length > 0;
   return {
     clientPatch,
     hasClientWrite,
-    serverWrites,
     unavailableReason:
-      hasClientWrite || serverWrites.length > 0 || [...patches.values()].every(isEmptyPatch)
+      hasClientWrite || sharing.serverWrites.length > 0 || [...patches.values()].every(isEmptyPatch)
         ? null
         : t("Connect an environment to save this setting."),
-    // Each machine's values come from its own state, but a key one machine resets is reset to the
-    // same value on the rest, so the reset is still one shared change.
-    ...(serverWrites.length > 0
-      ? sharingFor(
-          scope,
-          environments,
-          origin,
-          serverWrites.map(({ patch }) => patch),
-        )
-      : NOT_SHARED),
+    ...sharing,
   };
 }
 
@@ -473,10 +508,18 @@ function isEmptyPatch(patch: ScopedSettingsPatch) {
   return Object.keys(patch).length === 0;
 }
 
+/** What a machine held for a key; servers keep the idle compaction mode in different fields. */
+function heldValue(settings: ServerSettings, key: string): unknown {
+  return key === "idleCompaction" || key === "compactIdleThreads"
+    ? globalIdleCompaction(settings)
+    : settings[key as keyof ServerSettings];
+}
+
 /**
- * Writes back each machine's values from before `plan`, for exactly the keys it changed. When every
- * machine held the same value, the undo is a shared change too; otherwise each machine gets its own
- * value back and offline machines keep what `plan` shared.
+ * Writes back each machine's values from before `plan`, for exactly the keys it changed. The undo is
+ * a shared change too only when every machine that follows shared settings held one value for each
+ * shared key, including a machine the write skipped because it already had the value; otherwise
+ * each machine gets its own value back and offline machines keep what `plan` shared.
  */
 export function planScopedSettingsUndo(
   plan: ScopedSettingsPlan,
@@ -497,30 +540,30 @@ export function planScopedSettingsUndo(
                 write.previous.projectSettingsOverrides[projectId as ProjectId] ?? null,
               ]),
             )
-          : write.previous[key as keyof ServerSettings],
+          : heldValue(write.previous, key),
       ]),
     ) as ServerSettingsPatch,
   }));
-  const first = serverWrites[0];
+  const sharedKeys = [...new Set(serverWrites.flatMap(({ patch }) => Object.keys(patch)))].filter(
+    (key) => isMachineSharedSettingKey(key) || key === "compactIdleThreads",
+  );
+  const [first, ...rest] = plan.sharedGroup;
   const sameEverywhere =
     first !== undefined &&
-    serverWrites.every((write) =>
-      Object.keys(write.patch).every(
-        (key) =>
-          Object.hasOwn(first.patch, key) &&
-          Equal.equals(
-            write.patch[key as keyof ServerSettingsPatch],
-            first.patch[key as keyof ServerSettingsPatch],
-          ),
+    rest.every((member) =>
+      sharedKeys.every((key) =>
+        Equal.equals(heldValue(member.previous, key), heldValue(first.previous, key)),
       ),
     );
+  const shared = plan.share !== null && sameEverywhere;
   return {
     clientPatch,
     hasClientWrite: plan.hasClientWrite,
     serverWrites,
     unavailableReason: null,
-    share: plan.share !== null && sameEverywhere ? sharedSettingStamp(plan.share.origin) : null,
-    offlineFollowers: plan.share !== null && sameEverywhere ? plan.offlineFollowers : [],
+    share: shared ? sharedSettingStamp(plan.share.origin) : null,
+    offlineFollowers: shared ? plan.offlineFollowers : [],
+    sharedGroup: shared ? plan.sharedGroup : [],
   };
 }
 
@@ -639,16 +682,14 @@ export type SavedScopedServerWrite = ScopedServerWrite & { readonly settings: Se
 
 /**
  * What to tell the user after a write saved for all machines: where it landed, and which offline
- * machines will catch up. Null when no machine follows shared settings, since then it was a plain
- * bulk edit that nothing will carry further.
+ * machines will catch up. Null unless a machine that follows shared settings stored it, since only
+ * such a machine passes the change on to the ones that were offline.
  */
 export function sharedSaveSummary(
   saved: readonly SavedScopedServerWrite[],
   plan: Pick<ScopedSettingsPlan, "offlineFollowers">,
 ): { readonly reached: string[]; readonly catchingUp: readonly string[] } | null {
-  const follows =
-    saved.some(({ settings }) => settings.followSharedSettings) || plan.offlineFollowers.length > 0;
-  return follows
+  return saved.some(({ settings }) => settings.followSharedSettings)
     ? { reached: saved.map(({ label }) => label), catchingUp: plan.offlineFollowers }
     : null;
 }
@@ -686,7 +727,11 @@ export async function persistScopedSettingsPatch(
       return [
         {
           ...environment,
-          message: t("This environment does not support this setting. Update T3.CodeShip on it."),
+          // A machine that takes shared versions keeps a newer change rather than this one.
+          message:
+            plan.share !== null && result.value.value.followSharedSettings
+              ? t("It already has a newer change to this setting, so it kept that one.")
+              : t("This environment does not support this setting. Update T3.CodeShip on it."),
         },
       ];
     }

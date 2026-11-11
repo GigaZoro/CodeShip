@@ -56,6 +56,7 @@ import {
   useScopedSettings,
   useRunScopedSettingsPlan,
   useScopedSettingsMixed,
+  useSharedScopeNotice,
   useUpdateScopedSettings,
 } from "./useScopedSettings";
 import {
@@ -1667,14 +1668,18 @@ function ScopedCompactIdleThreadsRow() {
 function ScheduledTaskPlacementRow() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
+  const sharedNotice = useSharedScopeNotice();
   return (
     <SettingsRow
       {...searchableSetting("scheduled-task-default-placement")}
       serverScoped
       settingKeys={["scheduledTaskDefaultPlacement"]}
-      description={t(
-        "Where new scheduled tasks appear on every machine. Change a task's place from its menu.",
-      )}
+      description={[
+        t(
+          "Where new scheduled tasks appear on every machine. Change a task's place from its menu.",
+        ),
+        ...(sharedNotice ? [sharedNotice] : []),
+      ].join(" ")}
       resetAction={
         settings.scheduledTaskDefaultPlacement !==
         DEFAULT_UNIFIED_SETTINGS.scheduledTaskDefaultPlacement ? (

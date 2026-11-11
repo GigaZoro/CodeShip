@@ -376,25 +376,33 @@ fails with that reason.
 
 ### Shared settings
 
-A change saved with **All environments** at the top of a Settings page is written to every machine
-connected now. A machine that follows shared settings also takes it later if it was off: when it
-is back, it copies the change from the machines it is linked to, and passes it on to the rest.
+Machines that follow shared settings keep the same settings. A shared setting saved with **All
+environments** at the top of a Settings page is saved on the connected machines that follow, and a
+following machine that was off takes it when it is back: it copies the change from the machines it
+is linked to, and passes it on to the rest. A machine that does not follow changes only when you
+choose it by name. With no following machine connected, **All environments** edits every connected
+machine as before.
 
 Turn it on for each machine in **Settings → Machines & access → Follow shared settings**; on
 mobile, **Settings → Maintenance & about**. It needs Linked environments on, here and on the
-machine it copies from. Leave it off on a machine that must stay separate, such as a work machine:
-it neither gives nor takes shared settings.
+machine it copies from. Turning it on means this machine takes shared settings from any linked
+machine that follows them, whatever that link's access. Leave it off on a machine that must stay
+separate, such as a work machine: it neither gives nor takes shared settings.
 
 - Only settings people keep the same everywhere are shared, such as models, thread, worktree,
-  source-control and review defaults. Paths, accounts, providers, devices, secrets and project
-  overrides stay on one machine, and so do **Allow linked environments**, **Guest links** and
-  **Follow shared settings** itself.
-- A change for one environment or one project stays there. The next change saved for all
-  environments sets that setting everywhere again.
-- When two changes to one setting meet, the newest wins.
+  source-control and review defaults. Paths, accounts, providers, devices, secrets, project
+  actions and project overrides stay on one machine, and so do **Allow linked environments**,
+  **Guest links** and **Follow shared settings** itself.
+- A change for one environment or one project stays there. A later change saved for all
+  environments sets that setting on the following machines again.
+- When two changes to one setting meet, the newest wins, including a change made on one machine
+  alone. A machine whose clock is more than five minutes ahead cannot save for all machines until
+  its clock is corrected.
 - A model that names a provider account a machine does not have is not applied there. It waits,
   and applies once the account exists. **Differences between machines** shows the gap.
 - **Use everywhere** in **Differences between machines** shares that machine's value the same way.
+  For settings that are not shared, such as project actions, it is a one-off edit of every
+  connected machine.
 - Agents can share a preference change with `allMachines` on `t3_environment_preferences_update`.
 
 ## Manage or revoke access

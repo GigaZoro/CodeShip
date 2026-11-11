@@ -17,6 +17,7 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as SharedSettings from "../sharedSettings/SharedSettings.ts";
 import * as DeviceService from "./DeviceService.ts";
 import * as EasDeviceHost from "./EasDeviceHost.ts";
 
@@ -592,7 +593,7 @@ describe("EAS Simulator host", () => {
       const host = yield* makeHost(expo, config(), yield* Scope.make());
       const service = yield* DeviceService.makeWithHosts(new Map([["eas", host]]), undefined, () =>
         Effect.succeed("/eas-agent.json"),
-      );
+      ).pipe(Effect.provide(SharedSettings.layerTest));
       const first = ThreadId.make("first");
       const second = ThreadId.make("second");
       const opened = yield* service.open({

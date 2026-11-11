@@ -4,8 +4,10 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ServerSettings from "../serverSettings.ts";
+import * as SharedSettings from "../sharedSettings/SharedSettings.ts";
 import { releaseAgentDeviceSession } from "./AgentDeviceTarget.ts";
 import * as DeviceHost from "./DeviceHost.ts";
 import { makeDeviceHubOperations } from "./DeviceHubOperations.ts";
@@ -102,7 +104,7 @@ it.effect("keeps hosts independent when serials collide and another host fails",
         order.push("write finished");
         return "/host-config.json";
       }),
-    ).pipe(Effect.provide(NodeCrypto.layer));
+    ).pipe(Effect.provide(Layer.merge(SharedSettings.layerTest, NodeCrypto.layer)));
     expect(yield* service.agentReadinessIfSupported("b")).not.toBeNull();
     const listed = yield* service.list;
     expect(listed.devices.map((device) => device.hostId).sort()).toEqual(["a", "b"]);
