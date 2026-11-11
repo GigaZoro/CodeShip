@@ -663,8 +663,20 @@ export const OrchestrationV2RestartHoldWork = Schema.Struct({
 });
 export type OrchestrationV2RestartHoldWork = typeof OrchestrationV2RestartHoldWork.Type;
 
+/**
+ * A chat whose turn is running now. A restart cuts the turn and the chat resumes it, so a manual
+ * update does not wait for it; an automatic one does, since nobody chose to cut it.
+ */
+export const OrchestrationV2RestartHoldTurn = Schema.Struct({
+  threadId: ThreadId,
+  threadTitle: Schema.String,
+});
+export type OrchestrationV2RestartHoldTurn = typeof OrchestrationV2RestartHoldTurn.Type;
+
 export const OrchestrationV2RestartHold = Schema.Struct({
   work: Schema.Array(OrchestrationV2RestartHoldWork),
+  /** Absent from servers that predate automatic updates waiting for running turns. */
+  runningTurns: Schema.optional(Schema.Array(OrchestrationV2RestartHoldTurn)),
 });
 export type OrchestrationV2RestartHold = typeof OrchestrationV2RestartHold.Type;
 

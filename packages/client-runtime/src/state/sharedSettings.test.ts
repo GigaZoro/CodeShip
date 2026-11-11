@@ -9,6 +9,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "@effect/vitest";
 import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
 
 import {
   filterSharedServerPatch,
@@ -94,7 +95,12 @@ describe("filterSharedServerPatch", () => {
 describe("saving a change for all machines", () => {
   const machine = (
     id: string,
-    options: { readonly follows?: boolean; readonly connected?: boolean } = {},
+    options: {
+      readonly follows?: boolean;
+      readonly connected?: boolean;
+      /** A server from before `server.shareSettings`. */
+      readonly older?: boolean;
+    } = {},
   ) => ({
     environmentId: EnvironmentId.make(id),
     label: id,
@@ -103,6 +109,7 @@ describe("saving a change for all machines", () => {
     },
     serverConfig: {
       settings: { ...DEFAULT_SERVER_SETTINGS, followSharedSettings: options.follows === true },
+      environment: { capabilities: { shareSettings: options.older !== true } },
     },
   });
   const mac = machine("Mac", { follows: true });
@@ -127,9 +134,12 @@ describe("saving a change for all machines", () => {
       sharedPatch: () => patch,
       writeFor: ({ environmentId, label }) => ({ environmentId, label, patch: {} }),
     });
+  const oldMac = machine("Old Mac", { follows: true, older: true });
+  const oldPc = machine("Old PC", { follows: true, older: true });
   const summary = (planned: ReturnType<typeof plan>) => ({
     writes: planned.writes.map(({ label, patch }) => ({ label, patch })),
     authority: planned.share?.authority ?? null,
+    stampedBy: planned.share?.stampedBy ?? null,
     offlineFollowers: planned.offlineFollowers,
     noFollowerConnected: planned.noFollowerConnected,
   });
@@ -147,6 +157,7 @@ describe("saving a change for all machines", () => {
           { label: "CPC", patch: { worktreesDirectory: "/work" } },
         ],
         authority: pc.environmentId,
+        stampedBy: "server",
         offlineFollowers: ["VPS"],
         noFollowerConnected: false,
       },
@@ -159,6 +170,7 @@ describe("saving a change for all machines", () => {
       {
         writes: [{ label: "Mac", patch: { finalReviewByDefault: true } }],
         authority: mac.environmentId,
+        stampedBy: "server",
         offlineFollowers: [],
         noFollowerConnected: false,
       },
@@ -168,7 +180,46 @@ describe("saving a change for all machines", () => {
       [cpc, vps],
       { finalReviewByDefault: true },
       cpc,
-      { writes: [], authority: null, offlineFollowers: ["VPS"], noFollowerConnected: true },
+      {
+        writes: [],
+        authority: null,
+        stampedBy: null,
+        offlineFollowers: ["VPS"],
+        noFollowerConnected: true,
+      },
+    ],
+    [
+      "is saved first by a follower that stamps changes, past an older edited one",
+      [oldMac, pc],
+      { finalReviewByDefault: true },
+      oldMac,
+      {
+        writes: [
+          { label: "PC", patch: { finalReviewByDefault: true } },
+          { label: "Old Mac", patch: {} },
+        ],
+        authority: pc.environmentId,
+        stampedBy: "server",
+        offlineFollowers: [],
+        noFollowerConnected: false,
+      },
+    ],
+    [
+      "is stamped here, whole values to every follower, while no follower stamps changes",
+      [oldMac, oldPc, cpc],
+      { finalReviewByDefault: true, worktreesDirectory: "/work" },
+      oldPc,
+      {
+        writes: [
+          { label: "Old PC", patch: { worktreesDirectory: "/work", finalReviewByDefault: true } },
+          { label: "Old Mac", patch: { worktreesDirectory: "/work", finalReviewByDefault: true } },
+          { label: "CPC", patch: { worktreesDirectory: "/work" } },
+        ],
+        authority: oldPc.environmentId,
+        stampedBy: "client",
+        offlineFollowers: [],
+        noFollowerConnected: false,
+      },
     ],
     [
       "is a plain edit of every machine when none follows",
@@ -181,6 +232,7 @@ describe("saving a change for all machines", () => {
           { label: "Laptop", patch: { finalReviewByDefault: true } },
         ],
         authority: null,
+        stampedBy: null,
         offlineFollowers: [],
         noFollowerConnected: false,
       },
@@ -196,6 +248,7 @@ describe("saving a change for all machines", () => {
           { label: "CPC", patch: { worktreesDirectory: "/work" } },
         ],
         authority: null,
+        stampedBy: null,
         offlineFollowers: [],
         noFollowerConnected: false,
       },
@@ -242,6 +295,53 @@ describe("saving a change for all machines", () => {
       ["Mac", { finalReviewByDefault: true, worktreesDirectory: "/work" }],
       ["PC", { worktreesDirectory: "/work", finalReviewByDefault: true }],
       ["CPC", { worktreesDirectory: "/work" }],
+    ]);
+  });
+
+  it("sends an older follower the first one's stamp, with the values in its patch", async () => {
+    const saved: ServerSettings = { ...DEFAULT_SERVER_SETTINGS, finalReviewByDefault: true };
+    const update = vi.fn(async (_request: { environmentId: EnvironmentId }) => success(saved));
+    await persistSharedSettingsWrites(plan([mac, oldPc], { finalReviewByDefault: true }, mac), {
+      update,
+      share: async () => success({ settings: saved, share: stamped }),
+    });
+    expect(update.mock.calls.map(([request]) => request)).toEqual([
+      {
+        environmentId: oldPc.environmentId,
+        input: { patch: { finalReviewByDefault: true }, share: stamped.stamp },
+      },
+    ]);
+  });
+
+  it("stamps a change itself and sends it to every follower at once", async () => {
+    const update = vi.fn(async (_request: { environmentId: EnvironmentId }) =>
+      success(DEFAULT_SERVER_SETTINGS),
+    );
+    const share = vi.fn(async (_request: unknown) => {
+      throw new Error("No follower serves server.shareSettings.");
+    });
+    const now = DateTime.makeUnsafe("2026-11-11T12:00:00.000Z");
+    await persistSharedSettingsWrites(
+      plan(
+        [oldMac, oldPc, cpc],
+        { finalReviewByDefault: true, worktreesDirectory: "/work" },
+        oldMac,
+      ),
+      { update, share },
+      () => now,
+    );
+    const stamp = { updatedAt: "2026-11-11T12:00:00.000Z", origin: oldMac.environmentId };
+    expect(share).not.toHaveBeenCalled();
+    expect(update.mock.calls.map(([request]) => request)).toEqual([
+      {
+        environmentId: oldMac.environmentId,
+        input: { patch: { worktreesDirectory: "/work", finalReviewByDefault: true }, share: stamp },
+      },
+      {
+        environmentId: oldPc.environmentId,
+        input: { patch: { worktreesDirectory: "/work", finalReviewByDefault: true }, share: stamp },
+      },
+      { environmentId: cpc.environmentId, input: { patch: { worktreesDirectory: "/work" } } },
     ]);
   });
 

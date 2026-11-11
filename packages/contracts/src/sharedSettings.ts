@@ -118,9 +118,20 @@ export const providerInstanceDriver = (settings: ServerSettings, instanceId: str
   instanceId;
 
 /**
- * One shared setting's whole value, loose on the wire: a newer machine may share a key or field this
- * build does not know, so the JSON is passed on as sent and decoded only to apply it. For a model
- * selection, `instanceDriver` is its instance's driver where it was saved.
+ * The most one shared value may take as JSON. A larger one is refused where it is served, pulled or
+ * shared, so one bad value cannot crowd out the rest. Not a schema check, which would refuse the
+ * whole answer with it.
+ */
+export const SHARED_SETTING_VALUE_MAX_BYTES = 64 * 1024;
+
+/** The most a machine serves of its shared settings in one `t3_shared_settings` answer, or takes. */
+export const SHARED_SETTINGS_RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * One shared setting's whole value, loose on the wire: a newer machine may share a key, field or
+ * value this build does not know. The JSON is stored and passed on as sent, and decoded only to
+ * apply it; a version this build cannot read waits, and applies once an update here can read it.
+ * For a model selection, `instanceDriver` is its instance's driver where it was saved.
  */
 export const SharedSettingValue = Schema.Struct({
   key: Schema.String.check(Schema.isMaxLength(128)),
@@ -147,6 +158,15 @@ export const SharedSettingsShare = Schema.Struct({
   values: Schema.Array(SharedSettingValue).check(Schema.isMaxLength(256)),
 });
 export type SharedSettingsShare = typeof SharedSettingsShare.Type;
+
+/**
+ * What a settings write carries when it is saved for all machines: a change a server saved first and
+ * stamped (`server.shareSettings`), or a stamp the client made by its own clock, with the whole
+ * values in the write's patch. Clients from before `server.shareSettings`, and clients writing to
+ * machines without it, send the second; a server allows it much less time ahead of its clock.
+ */
+export const SharedSettingsWriteShare = Schema.Union([SharedSettingsShare, SharedSettingStamp]);
+export type SharedSettingsWriteShare = typeof SharedSettingsWriteShare.Type;
 
 /** Whether `candidate` replaces `known`: newest first, then the larger origin id. */
 export const isNewerSharedSetting = (

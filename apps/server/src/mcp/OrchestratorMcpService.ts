@@ -2290,7 +2290,7 @@ const make = Effect.gen(function* () {
       if (stillUnknown.length > 0) {
         return yield* failure(
           "invalid_request",
-          `excludedMachines names ${stillUnknown.join(", ")}, which no copy of this task reaches: this environment does not link to it, it is not in the project's machine order, and it never pulled shared tasks from here. Use environmentId values from t3_environment_links.`,
+          `excludedMachines names ${stillUnknown.join(", ")}, which no copy of this task reaches: this environment does not link to it, it is not in the project's machine order, and it has not pulled shared tasks from here in the last 30 days. Use environmentId values from t3_environment_links.`,
         );
       }
     },
@@ -2421,9 +2421,13 @@ const make = Effect.gen(function* () {
       },
     ),
     sharedScheduledTasks: Effect.fn("OrchestratorMcpService.sharedScheduledTasks")(
-      function* (_scope, input) {
+      function* (scope, input) {
+        // Anyone who may read can ask, so only a peer link signed in as that machine is recorded
+        // as one that receives copies, which a task may then leave out.
+        const recordPuller =
+          scope.client?.linked === true && scope.client.linkedFrom === input.forEnvironmentId;
         return yield* scheduledTasks
-          .sharedCopies(input.forEnvironmentId)
+          .sharedCopies(input.forEnvironmentId, { recordPuller })
           .pipe(
             Effect.mapError((error) =>
               failure("orchestration_error", `Could not read shared tasks: ${error.message}`),

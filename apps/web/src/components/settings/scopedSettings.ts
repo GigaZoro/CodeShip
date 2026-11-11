@@ -20,6 +20,7 @@ import {
   persistSharedSettingsWrites,
   planSharedSettingsWrites,
   type SharedSettingsGroupMember,
+  type SharedSettingsMachine,
   type SharedSettingsPersist,
   type SharedSettingsPlan,
 } from "@t3tools/client-runtime/state/shared-settings";
@@ -40,9 +41,7 @@ interface ScopedSettingsEnvironment {
   readonly environmentId: EnvironmentId;
   readonly label: string;
   readonly connection: { readonly phase: EnvironmentConnectionPhase };
-  readonly serverConfig: {
-    readonly settings: ServerSettings;
-  } | null;
+  readonly serverConfig: SharedSettingsMachine["serverConfig"];
 }
 
 const SERVER_KEYS = new Set<string>(Object.keys(ServerSettings.fields));
@@ -519,9 +518,10 @@ export function planScopedSettingsUndo(
   const serverWrites = plan.serverWrites.map((write) => {
     const keys = [
       ...Object.keys(write.patch),
-      // Followers took the shared keys from the stamp; under a shared undo, only the first saves.
+      // Followers took the shared keys from the stamp; under a server's shared undo, only the first
+      // saves them, and under a client's every follower carries them.
       ...(followers.has(write.environmentId) &&
-      (share === null || write.environmentId === share.authority)
+      (share === null || share.stampedBy === "client" || write.environmentId === share.authority)
         ? sharedKeys
         : []),
     ];

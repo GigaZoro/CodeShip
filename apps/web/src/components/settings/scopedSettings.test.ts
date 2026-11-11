@@ -45,6 +45,8 @@ function environment(
     connected?: boolean;
     loaded?: boolean;
     settings?: Partial<ServerSettings>;
+    /** A server from before `server.shareSettings`. */
+    older?: boolean;
   } = {},
 ) {
   return {
@@ -58,6 +60,7 @@ function environment(
         ? null
         : {
             settings: { ...DEFAULT_SERVER_SETTINGS, ...options.settings },
+            environment: { capabilities: { shareSettings: options.older !== true } },
           },
   };
 }
@@ -925,6 +928,7 @@ describe("settings saved for all machines", () => {
     expect(plan.share).toEqual({
       authority: follower.environmentId,
       keys: ["finalReviewByDefault"],
+      stampedBy: "server",
     });
     // Only offline machines that are known to follow are told they will catch up.
     expect(plan.offlineFollowers).toEqual(["Sleeper"]);
@@ -1033,6 +1037,114 @@ describe("settings saved for all machines", () => {
           },
         },
       },
+    ]);
+  });
+
+  it("is saved first by a follower that stamps changes, past an older edited one", () => {
+    const older = environment("Older", { older: true, settings: { followSharedSettings: true } });
+    const plan = planScopedSettingsPatch(
+      resolveSettingsScope({}, [], [older, follower]),
+      [older, follower],
+      { finalReviewByDefault: true },
+      older.environmentId,
+    );
+    expect(plan.share).toMatchObject({ authority: follower.environmentId, stampedBy: "server" });
+  });
+
+  it("sends an older follower the first one's stamp with the values in its patch", async () => {
+    const older = environment("Older", { older: true, settings: { followSharedSettings: true } });
+    const plan = planScopedSettingsPatch(
+      resolveSettingsScope({}, [], [follower, older]),
+      [follower, older],
+      { finalReviewByDefault: true },
+      follower.environmentId,
+    );
+    const update = vi.fn(
+      savedAs(({ patch }) => applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, patch)),
+    );
+    const { failedEnvironments } = await persistScopedSettingsPatch(
+      plan,
+      { update, share: vi.fn(stampedOver()) },
+      vi.fn(),
+    );
+    expect(update.mock.calls.map(([request]) => request)).toEqual([
+      {
+        environmentId: older.environmentId,
+        input: { patch: { finalReviewByDefault: true }, share: STAMP },
+      },
+    ]);
+    expect(failedEnvironments).toEqual([]);
+  });
+
+  it("stamps the change itself, whole values to every follower, while none can", async () => {
+    const edited = environment("Edited", {
+      older: true,
+      settings: {
+        followSharedSettings: true,
+        sourceControlWritingStyle: {
+          mode: "repo_conventions",
+          customInstructions: "Edited machine's words.",
+          followChangeRequestTemplates: false,
+        },
+      },
+    });
+    const other = environment("Other", { older: true, settings: { followSharedSettings: true } });
+    const loner = environment("Loner", { older: true });
+    const machines = [edited, other, loner];
+    const plan = planScopedSettingsPatch(
+      resolveSettingsScope({}, [], machines),
+      machines,
+      { sourceControlWritingStyle: { mode: "custom" }, worktreesDirectory: "/work" },
+      edited.environmentId,
+    );
+    expect(plan.share).toMatchObject({ authority: edited.environmentId, stampedBy: "client" });
+    const share = vi.fn(stampedOver());
+    const update = vi.fn(
+      savedAs(({ patch }) => applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, patch)),
+    );
+    await persistScopedSettingsPatch(plan, { update, share }, vi.fn());
+    expect(share).not.toHaveBeenCalled();
+    const whole = {
+      mode: "custom",
+      customInstructions: "Edited machine's words.",
+      followChangeRequestTemplates: false,
+    };
+    const requests = update.mock.calls.map(([request]) => request);
+    const stamp = (requests[0]?.input as { share?: unknown } | undefined)?.share;
+    expect(stamp).toEqual({ updatedAt: expect.any(String), origin: edited.environmentId });
+    expect(requests).toEqual([
+      {
+        environmentId: edited.environmentId,
+        input: {
+          patch: { worktreesDirectory: "/work", sourceControlWritingStyle: whole },
+          share: stamp,
+        },
+      },
+      {
+        environmentId: other.environmentId,
+        input: {
+          patch: { worktreesDirectory: "/work", sourceControlWritingStyle: whole },
+          share: stamp,
+        },
+      },
+      { environmentId: loner.environmentId, input: { patch: { worktreesDirectory: "/work" } } },
+    ]);
+  });
+
+  it("undoes a change it stamped itself on every follower", () => {
+    const first = environment("First", { older: true, settings: { followSharedSettings: true } });
+    const second = environment("Second", { older: true, settings: { followSharedSettings: true } });
+    const plan = planScopedSettingsPatch(
+      resolveSettingsScope({}, [], [first, second]),
+      [first, second],
+      { finalReviewByDefault: true },
+      first.environmentId,
+    );
+    const undo = planScopedSettingsUndo(plan, {});
+    expect(undo.share).toMatchObject({ authority: first.environmentId, stampedBy: "client" });
+    expect(undo.serverWrites.map(({ label, patch }) => ({ label, patch }))).toEqual([
+      { label: "First", patch: { finalReviewByDefault: false } },
+      { label: "Second", patch: { finalReviewByDefault: false } },
     ]);
   });
 

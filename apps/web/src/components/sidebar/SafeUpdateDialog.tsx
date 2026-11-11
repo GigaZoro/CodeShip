@@ -1,5 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
-import type { OrchestrationV2RestartHoldWork } from "@t3tools/contracts";
+import type {
+  OrchestrationV2RestartHoldTurn,
+  OrchestrationV2RestartHoldWork,
+} from "@t3tools/contracts";
 import { type ReactNode, type RefObject, useRef } from "react";
 
 import { useEnvironments } from "~/state/environments";
@@ -204,6 +207,22 @@ function ThreadGroup({
         key: `${environmentId}:${thread.id}`,
         content: thread.title,
       }))}
+    />
+  );
+}
+
+/** Chats whose turn is running, which an automatic install waits for. */
+export function RunningTurnsGroup({
+  title,
+  turns,
+}: {
+  readonly title: string;
+  readonly turns: ReadonlyArray<OrchestrationV2RestartHoldTurn>;
+}) {
+  return (
+    <EntryGroup
+      title={title}
+      entries={turns.map((turn) => ({ key: turn.threadId, content: turn.threadTitle }))}
     />
   );
 }

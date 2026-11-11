@@ -118,9 +118,9 @@ export type AutoInstallReadiness =
   | { readonly status: "failed"; readonly error: unknown };
 
 /**
- * The wait before an automatic install: until no chat on this app's servers has background
- * work, work that started meanwhile included, then one more look right before installing. Work
- * that started in between sends it back to waiting. The setting turned off or a cancel stops it;
+ * The wait before an automatic install: until no chat on this app's servers is answering or has
+ * background work, work and turns that started meanwhile included, then one more look right
+ * before installing. A chat that started in between sends it back to waiting. The setting turned off or a cancel stops it;
  * the user choosing "Update now" installs at once, as for any wait.
  */
 export async function waitToInstallAutomatically(input: {

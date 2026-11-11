@@ -8,7 +8,13 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { EnvironmentId, type OrchestrationV2RestartHoldWork } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  type OrchestrationV2RestartHold,
+  type OrchestrationV2RestartHoldTurn,
+  type OrchestrationV2RestartHoldWork,
+} from "@t3tools/contracts";
+import { isRestartHoldEmpty } from "@t3tools/shared/restartHold";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
@@ -39,25 +45,41 @@ export function usePendingLocalInstall(): PendingLocalInstall | null {
 }
 
 const EMPTY_WORK: ReadonlyArray<OrchestrationV2RestartHoldWork> = [];
+const EMPTY_TURNS: ReadonlyArray<OrchestrationV2RestartHoldTurn> = [];
 
 /** Only servers that advertise the capability can report background work; others have none. */
 const holdsRestart = (environment: EnvironmentPresentation) =>
   isHostedByThisApp(environment) &&
   environment.serverConfig?.environment.capabilities.restartHold === true;
 
+/** Keyed by `environmentIdsKey`; the latest hold each listed server reported. */
+const restartHoldsAtom = Atom.family((environmentIds: string) =>
+  Atom.make((get): ReadonlyArray<OrchestrationV2RestartHold> =>
+    environmentIds.split("\n").flatMap((id) => {
+      if (id === "") return [];
+      const hold = AsyncResult.getOrElse(
+        get(serverEnvironment.restartHold({ environmentId: EnvironmentId.make(id), input: {} })),
+        () => null,
+      );
+      return hold === null ? [] : [hold];
+    }),
+  ).pipe(Atom.withLabel(`restart-holds:${environmentIds}`)),
+);
+
 /** Keyed by `environmentIdsKey`; the work every listed server's chats wait on. */
 const restartHoldWorkAtom = Atom.family((environmentIds: string) =>
   Atom.make((get): ReadonlyArray<OrchestrationV2RestartHoldWork> => {
-    const ids = environmentIds.split("\n").filter((id) => id !== "");
-    if (ids.length === 0) return EMPTY_WORK;
-    return ids.flatMap(
-      (id) =>
-        AsyncResult.getOrElse(
-          get(serverEnvironment.restartHold({ environmentId: EnvironmentId.make(id), input: {} })),
-          () => null,
-        )?.work ?? EMPTY_WORK,
-    );
+    const holds = get(restartHoldsAtom(environmentIds));
+    return holds.length === 0 ? EMPTY_WORK : holds.flatMap((hold) => hold.work);
   }).pipe(Atom.withLabel(`restart-hold-work:${environmentIds}`)),
+);
+
+/** Keyed by `environmentIdsKey`; the chats answering on every listed server. */
+const runningTurnsAtom = Atom.family((environmentIds: string) =>
+  Atom.make((get): ReadonlyArray<OrchestrationV2RestartHoldTurn> => {
+    const holds = get(restartHoldsAtom(environmentIds));
+    return holds.length === 0 ? EMPTY_TURNS : holds.flatMap((hold) => hold.runningTurns ?? []);
+  }).pipe(Atom.withLabel(`restart-hold-running-turns:${environmentIds}`)),
 );
 
 /** Keyed by `environmentIdsKey`; the work a pending install still waits on there. */
@@ -97,6 +119,12 @@ export function usePendingLocalInstallWork() {
   return useAtomValue(waitingOnWorkAtom(useHostedRestartHoldKey(pending !== null)));
 }
 
+/** The chats an automatic install waits on to finish answering; a manual one waits on none. */
+export function usePendingLocalInstallTurns() {
+  const pending = usePendingLocalInstall();
+  return useAtomValue(runningTurnsAtom(useHostedRestartHoldKey(pending?.automatic === true)));
+}
+
 function readHostedRestartHoldEnvironmentIds(): ReadonlyArray<EnvironmentId> {
   return [...appAtomRegistry.get(environmentPresentations.presentationsAtom).keys()].filter(
     (environmentId) => {
@@ -122,7 +150,8 @@ export type HostedWorkWait =
 
 /**
  * Resolves when the work listed on this app's servers has ended, or the user decides first.
- * With `untilIdle`, it waits until no work is left, work that started meanwhile included.
+ * With `untilIdle`, it waits until no work is left and no chat is answering, work and turns that
+ * started meanwhile included.
  */
 export async function waitForHostedBackgroundWork(options?: {
   readonly untilIdle?: boolean;
@@ -160,7 +189,7 @@ export type HostedWorkNow =
   | { readonly status: "busy" }
   | { readonly status: "failed"; readonly error: unknown };
 
-/** Whether any chat on this app's servers has background work right now. */
+/** Whether any chat on this app's servers has background work or is answering right now. */
 export async function readHostedBackgroundWork(): Promise<HostedWorkNow> {
   const results = await Promise.all(
     readHostedRestartHoldEnvironmentIds().map((environmentId) =>
@@ -171,7 +200,7 @@ export async function readHostedBackgroundWork(): Promise<HostedWorkNow> {
     if (result._tag === "Failure")
       return { status: "failed", error: squashAtomCommandFailure(result) };
   }
-  return results.some((result) => result._tag === "Success" && result.value.work.length > 0)
+  return results.some((result) => result._tag === "Success" && !isRestartHoldEmpty(result.value))
     ? { status: "busy" }
     : { status: "idle" };
 }

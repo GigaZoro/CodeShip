@@ -3839,7 +3839,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           name: "a machine no copy reaches",
           machines: [work, cpc, EnvironmentId.make("environment:stranger")],
           message:
-            "excludedMachines names environment:stranger, which no copy of this task reaches: this environment does not link to it, it is not in the project's machine order, and it never pulled shared tasks from here. Use environmentId values from t3_environment_links.",
+            "excludedMachines names environment:stranger, which no copy of this task reaches: this environment does not link to it, it is not in the project's machine order, and it has not pulled shared tasks from here in the last 30 days. Use environmentId values from t3_environment_links.",
         },
       ])("refuses to exclude $name", ({ machines, message }) =>
         run([sharedTask(sharing([work], "one"))], (mcp, saves) =>
@@ -3868,6 +3868,41 @@ describe("OrchestratorMcpService provider resolution", () => {
             assert.deepEqual(yield* Ref.get(saves), []);
           }),
         ),
+      );
+
+      it.effect("records only a peer link that pulls for its own environment", () =>
+        Effect.gen(function* () {
+          const recorded = yield* Ref.make<ReadonlyArray<boolean>>([]);
+          const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
+          const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+            Effect.provide(
+              service(
+                masterRepository,
+                saved,
+                [],
+                {},
+                {
+                  sharedCopies: (_forEnvironmentId, { recordPuller }) =>
+                    Ref.update(recorded, (all) => [...all, recordPuller]).pipe(
+                      Effect.as({ tasks: [], deletions: [], projectMachineOrders: [] }),
+                    ),
+                },
+              ),
+            ),
+          );
+          const peer = (linkedFrom: EnvironmentId | undefined): McpInvocationScope => ({
+            ...client,
+            client: {
+              ...client.client!,
+              linked: true,
+              ...(linkedFrom === undefined ? {} : { linkedFrom }),
+            },
+          });
+          for (const scope of [client, peer(undefined), peer(work), peer(cpc)]) {
+            yield* mcp.sharedScheduledTasks(scope, { forEnvironmentId: cpc });
+          }
+          assert.deepEqual(yield* Ref.get(recorded), [false, false, false, true]);
+        }),
       );
 
       it.effect("excludes a machine this one does not link to but whose copies it serves", () =>

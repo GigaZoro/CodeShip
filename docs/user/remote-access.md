@@ -416,7 +416,10 @@ separate, such as a work machine: it neither gives nor takes shared settings.
 - When two changes to one setting meet, the newest wins, including a change made on one machine
   alone, which that machine keeps while still passing the shared change on. Changes are timed by
   the following machine that saves them first, so the clock of the phone or browser you use does
-  not matter.
+  not matter. While every connected follower runs an older version, the phone or browser times the
+  change itself, so its clock must be right to within 30 seconds.
+- A machine on an older version passes on a shared change it cannot read yet, and applies it once
+  it is updated.
 - A default model that a machine cannot run yet, because it lacks that provider instance, runs it
   with another provider, or has it turned off, waits there until it can.
 - A model that names a provider account a machine does not have is not applied there. It waits,

@@ -752,13 +752,15 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
         });
         if (plan.writes.length === 0) {
           warnUnsaved(
-            deniedLabels.length > 0
-              ? t("This connection lacks permission to change settings on {environment}.", {
-                  environment: deniedLabels.join(", "),
-                })
-              : targets.size > 0
-                ? t("Update older servers to save this setting.")
-                : undefined,
+            plan.noFollowerConnected
+              ? t("Connect a machine that follows shared settings to save this for all machines.")
+              : deniedLabels.length > 0
+                ? t("This connection lacks permission to change settings on {environment}.", {
+                    environment: deniedLabels.join(", "),
+                  })
+                : targets.size > 0
+                  ? t("Update older servers to save this setting.")
+                  : undefined,
           );
         } else {
           void persistSharedSettingsWrites(plan, { update: persist, share: persistShare }).then(

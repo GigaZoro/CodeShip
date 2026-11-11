@@ -8,12 +8,16 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerSettingsPatch,
+  SHARED_SETTING_VALUE_MAX_BYTES,
+  SHARED_SETTINGS_RESPONSE_MAX_BYTES,
   type SharedSettingsShare,
   type SharedSettingVersion,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Ref from "effect/Ref";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -106,7 +110,7 @@ const run = <A, E>(
     shared: SharedSettings.SharedSettings["Service"],
     settings: Settings.ServerSettingsService["Service"],
     instances: Ref.Ref<ReadonlyArray<string>>,
-  ) => Effect.Effect<A, E>,
+  ) => Effect.Effect<A, E, SqlClient.SqlClient>,
   overrides: Parameters<typeof Settings.layerTest>[0] = {},
   followingTurnedOff = false,
   managedPolicy?: ManagedPolicySummary,
@@ -125,6 +129,19 @@ const served = (shared: SharedSettings.SharedSettings["Service"]) =>
   shared.servedVersions.pipe(
     Effect.map((versions) => Object.fromEntries(versions.map((entry) => [entry.key, entry]))),
   );
+
+/** Runs `body` and returns, with its result, the text of each warning it logged. */
+const withWarnings = <A, E, R>(body: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const warnings: string[] = [];
+    const logger = Logger.make(({ logLevel, message }) => {
+      if (logLevel === "Warn") warnings.push(String(Array.isArray(message) ? message[0] : message));
+    });
+    const result = yield* body.pipe(
+      Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
+    );
+    return { result, warnings };
+  });
 
 const finalReview = (settings: Settings.ServerSettingsService["Service"]) =>
   settings.getSettings.pipe(Effect.map((current) => current.finalReviewByDefault));
@@ -388,7 +405,7 @@ it.effect("a change saved here is not undone by a version that arrives with the 
   ),
 );
 
-it.effect("refuses keys that are not shared and values that do not fit their key", () =>
+it.effect("refuses settings this build keeps to one machine, and never passes them on", () =>
   run((shared, settings) =>
     Effect.gen(function* () {
       yield* shared.applyPulled(PEER, [
@@ -397,17 +414,109 @@ it.effect("refuses keys that are not shared and values that do not fit their key
         version("followSharedSettings", false, LATER),
         version("providerInstances", {}, LATER),
         version("defaultProjectScripts", [], LATER),
-        version("noSuchSetting", 1, LATER),
-        version("finalReviewByDefault", "yes", LATER),
       ]);
       const current = yield* settings.getSettings;
       expect([
         current.linkedEnvironmentsEnabled,
         current.guestSharingEnabled,
         current.followSharedSettings,
-        current.finalReviewByDefault,
-      ]).toEqual([false, false, true, false]);
+      ]).toEqual([false, false, true]);
       expect(yield* shared.servedVersions).toEqual([]);
+    }),
+  ),
+);
+
+it.effect("passes on a version this build cannot read without applying it, saying so once", () =>
+  run((shared, settings) =>
+    Effect.gen(function* () {
+      const unknownKey = version("fromANewerBuild", { on: true }, LATER);
+      const newValue = version("defaultRuntimeMode", "a-newer-mode", LATER);
+      const misfit = version("finalReviewByDefault", "yes", LATER);
+      const { warnings } = yield* withWarnings(
+        Effect.gen(function* () {
+          yield* shared.applyPulled(PEER, [unknownKey, newValue, misfit]);
+          yield* shared.applyPulled(OTHER, [unknownKey, newValue, misfit]);
+          yield* shared.retryWaiting;
+        }),
+      );
+      const before = yield* settings.getSettings;
+      expect([before.defaultRuntimeMode, before.finalReviewByDefault]).toEqual([
+        DEFAULT_SERVER_SETTINGS.defaultRuntimeMode,
+        false,
+      ]);
+      const versions = yield* served(shared);
+      expect([
+        versions.fromANewerBuild,
+        versions.defaultRuntimeMode,
+        versions.finalReviewByDefault,
+      ]).toEqual([unknownKey, newValue, misfit]);
+      expect(warnings.filter((warning) => warning.includes("cannot read"))).toHaveLength(3);
+
+      // A newer version this build reads replaces it, and a stamped write keeps the rest it can.
+      yield* shared.applyPulled(PEER, [version("finalReviewByDefault", true, SOON)]);
+      expect(yield* finalReview(settings)).toBe(true);
+      yield* TestClock.adjust("2 minutes");
+      yield* shared.update(
+        {},
+        share({ defaultRuntimeMode: "even-newer", snoozeLimitedThreads: false }, SOON, OTHER),
+      );
+      expect((yield* settings.getSettings).snoozeLimitedThreads).toBe(false);
+      expect((yield* served(shared)).defaultRuntimeMode?.value).toBe("even-newer");
+    }),
+  ),
+);
+
+it.effect("keeps only so many settings this build does not know", () =>
+  run((shared) =>
+    Effect.gen(function* () {
+      yield* shared.applyPulled(
+        PEER,
+        Array.from({ length: 70 }, (_, index) =>
+          version(`newer${String(index).padStart(2, "0")}`, index, LATER),
+        ),
+      );
+      const unknown = (yield* shared.servedVersions).filter(({ key }) => key.startsWith("newer"));
+      expect(unknown).toHaveLength(64);
+      // One already kept still takes newer versions.
+      yield* shared.applyPulled(PEER, [version("newer00", "again", SOON)]);
+      expect((yield* served(shared)).newer00?.value).toBe("again");
+    }),
+  ),
+);
+
+it.effect("leaves out values too large to share, when pulled and when served, saying so once", () =>
+  run((shared, settings) =>
+    Effect.gen(function* () {
+      const tooLarge = "x".repeat(SHARED_SETTING_VALUE_MAX_BYTES);
+      const { warnings } = yield* withWarnings(
+        Effect.gen(function* () {
+          yield* shared.applyPulled(PEER, [version("threadTitleInstructions", tooLarge, LATER)]);
+          yield* shared.applyPulled(PEER, [version("threadTitleInstructions", tooLarge, LATER)]);
+          // One stored before the limit is not served either.
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`
+            INSERT INTO shared_setting_versions
+              (setting_key, kind, value_json, updated_at, origin, pending)
+            VALUES ('reviewGuideInstructions', 'shared', ${JSON.stringify(tooLarge)}, ${LATER}, ${PEER}, 0)
+          `;
+          yield* shared.servedVersions;
+          yield* shared.servedVersions;
+        }),
+      );
+      expect((yield* settings.getSettings).threadTitleInstructions).not.toBe(tooLarge);
+      expect(yield* shared.servedVersions).toEqual([]);
+      expect(warnings.filter((warning) => warning.includes("too large"))).toHaveLength(2);
+
+      // Each fits, but together they are more than one answer may carry.
+      const large = "y".repeat(SHARED_SETTING_VALUE_MAX_BYTES - 100);
+      yield* shared.applyPulled(
+        PEER,
+        Array.from({ length: 40 }, (_, index) => version(`large${index}`, large, LATER)),
+      );
+      const kept = yield* shared.servedVersions;
+      expect(kept.length).toBeGreaterThan(0);
+      expect(kept.length).toBeLessThan(40);
+      expect(JSON.stringify(kept).length).toBeLessThanOrEqual(SHARED_SETTINGS_RESPONSE_MAX_BYTES);
     }),
   ),
 );
@@ -423,6 +532,29 @@ it.effect("refuses a write saved for all machines on a device whose clock runs a
       // Within five minutes, it is an ordinary difference between clocks.
       yield* shared.update({}, share({ finalReviewByDefault: true }, SOON, PEER));
       expect(yield* finalReview(settings)).toBe(true);
+    }),
+  ),
+);
+
+it.effect("a client's own stamp may run only 30 seconds ahead, a server's five minutes", () =>
+  run((shared, settings) =>
+    Effect.gen(function* () {
+      // Clients from before `server.shareSettings` stamp by their own clock, values in the patch.
+      const error = yield* Effect.flip(
+        shared.update({ finalReviewByDefault: true }, { updatedAt: SOON, origin: PEER }),
+      );
+      expect(error.operation).toBe("take-shared-setting-clock-ahead");
+      expect(yield* finalReview(settings)).toBe(false);
+
+      const close = "2026-11-11T14:00:20.000Z";
+      yield* shared.update({ finalReviewByDefault: true }, { updatedAt: close, origin: PEER });
+      expect(yield* finalReview(settings)).toBe(true);
+      expect((yield* served(shared)).finalReviewByDefault).toEqual(
+        version("finalReviewByDefault", true, close, PEER),
+      );
+      // A server's stamp, a minute ahead, is an ordinary difference between machines' clocks.
+      yield* shared.update({}, share({ finalReviewByDefault: false }, SOON, PEER));
+      expect(yield* finalReview(settings)).toBe(false);
     }),
   ),
 );

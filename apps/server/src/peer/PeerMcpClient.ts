@@ -12,10 +12,12 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as HttpBody from "effect/http/HttpBody";
 import * as HttpClient from "effect/http/HttpClient";
 import type * as HttpClientError from "effect/http/HttpClientError";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
+import type * as HttpClientResponse from "effect/http/HttpClientResponse";
 
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as PeerLinks from "./PeerLinks.ts";
@@ -49,6 +51,8 @@ interface PeerCallInput<S extends Schema.Decoder<unknown>> {
   readonly arguments: Record<string, unknown>;
   readonly limits: PeerCallLimits;
   readonly success: S;
+  /** The most the tool's result may take as JSON; a larger answer is refused, never read whole. */
+  readonly maxResultBytes?: number;
 }
 
 export class PeerMcpClient extends Context.Service<
@@ -108,6 +112,34 @@ const linkedEnvironmentsOffThere = new OrchestratorMcpFailure({
   message:
     "The linked environment has Linked environments turned off. Turn it on in its Settings → Machines & access → Linked environments.",
 });
+
+/**
+ * An MCP answer carries its result twice, as escaped text and as structured content, so its body
+ * takes up to about three times the result's size.
+ */
+const ANSWER_BYTES_PER_RESULT_BYTE = 4;
+
+const answerTooLarge = (maxResultBytes: number) =>
+  new OrchestratorMcpFailure({
+    code: "orchestration_error",
+    message: `The linked environment's answer is larger than the ${maxResultBytes} bytes this call takes.`,
+  });
+
+/** The body as text, read no further than `maxResultBytes` allows when it is set. */
+const readBody = (response: HttpClientResponse.HttpClientResponse, maxResultBytes?: number) => {
+  if (maxResultBytes === undefined) return response.text;
+  const maxBodyBytes = maxResultBytes * ANSWER_BYTES_PER_RESULT_BYTE;
+  return Stream.runFoldEffect(
+    response.stream,
+    (): { readonly chunks: Array<Uint8Array>; size: number } => ({ chunks: [], size: 0 }),
+    (read, chunk) => {
+      read.size += chunk.byteLength;
+      if (read.size > maxBodyBytes) return Effect.fail(answerTooLarge(maxResultBytes));
+      read.chunks.push(chunk);
+      return Effect.succeed(read);
+    },
+  ).pipe(Effect.map(({ chunks }) => Buffer.concat(chunks).toString("utf8")));
+};
 
 /** The body of an MCP response: JSON, or a single server-sent event carrying JSON. */
 const responseJson = (contentType: string | undefined, text: string) =>
@@ -227,7 +259,10 @@ const make = Effect.gen(function* () {
       });
     }
     const body = yield* decodeToolCallResponse(
-      responseJson(response.headers["content-type"], yield* response.text),
+      responseJson(
+        response.headers["content-type"],
+        yield* readBody(response, input.maxResultBytes),
+      ),
     ).pipe(
       Effect.mapError(
         () =>
@@ -250,6 +285,12 @@ const make = Effect.gen(function* () {
       });
     }
     const text = body.result.content.map((part) => part.text ?? "").join("");
+    if (
+      input.maxResultBytes !== undefined &&
+      Buffer.byteLength(text, "utf8") > input.maxResultBytes
+    ) {
+      return yield* answerTooLarge(input.maxResultBytes);
+    }
     if (body.result.isError === true) {
       // A refusal keeps the peer's own code, so the agent sees why it was refused.
       const refused = decodeFailure(text);

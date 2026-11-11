@@ -123,6 +123,10 @@ const ONE_MACHINE_GRACE_CAP_MS = 5 * MINUTE_MS;
 // The first machine in the order runs on time without asking; later than this it asks first.
 const ONE_MACHINE_ON_TIME_MS = MINUTE_MS;
 const WEBHOOK_DELIVERY_RETENTION = 50;
+// A machine that has not pulled shared tasks for this long no longer counts as one they reach.
+const SHARED_PULLER_RETENTION_MS = 30 * 24 * 60 * MINUTE_MS;
+const sharedPullerCutoff = (now: DateTime.Utc) =>
+  DateTime.formatIso(DateTime.subtract(now, { milliseconds: SHARED_PULLER_RETENTION_MS }));
 const RUN_HISTORY_RETENTION = 50;
 const WEBHOOK_DEDUPE_DELIVERY_RETENTION = 20;
 const WEBHOOK_FILTERED_DELIVERY_RETENTION = 20;
@@ -370,14 +374,16 @@ export class ScheduledTaskService extends Context.Service<
     ) => Effect.Effect<ScheduledTaskDeleteResult, ScheduledTaskError>;
     /**
      * This machine's shared tasks as copies for `forEnvironmentId`, which gets none that exclude
-     * it. It is recorded as a machine that receives them, which a task may then leave out.
+     * it. With `recordPuller`, for a caller proven to be that machine, it is recorded as one that
+     * receives them, which a task may then leave out.
      */
     readonly sharedCopies: (
       forEnvironmentId: EnvironmentId,
+      options: { readonly recordPuller: boolean },
     ) => Effect.Effect<OrchestratorMcpSharedScheduledTasksResult, ScheduledTaskError>;
     /**
      * Machines a shared task in this project reaches without a link from here: those in the
-     * project's machine order, and those that pulled shared tasks from here.
+     * project's machine order, and those that pulled shared tasks from here in the last 30 days.
      */
     readonly knownMachineIds: (
       projectId: ProjectId,
@@ -2247,13 +2253,18 @@ export const layer = Layer.effect(
     const sharedCopies: ScheduledTaskService["Service"]["sharedCopies"] = Effect.fn(
       "ScheduledTaskService.sharedCopies",
     )(
-      function* (forEnvironmentId) {
-        if (forEnvironmentId !== hereEnvironmentId) {
-          const pulledAt = DateTime.formatIso(yield* DateTime.now);
+      function* (forEnvironmentId, { recordPuller }) {
+        if (recordPuller && forEnvironmentId !== hereEnvironmentId) {
+          const now = yield* DateTime.now;
+          const pulledAt = DateTime.formatIso(now);
           yield* sql`
             INSERT INTO scheduled_task_shared_pullers (environment_id, pulled_at)
             VALUES (${forEnvironmentId}, ${pulledAt})
             ON CONFLICT (environment_id) DO UPDATE SET pulled_at = excluded.pulled_at
+          `;
+          yield* sql`
+            DELETE FROM scheduled_task_shared_pullers
+            WHERE pulled_at < ${sharedPullerCutoff(now)}
           `;
         }
         const rows = yield* selectAllRows();
@@ -2321,8 +2332,11 @@ export const layer = Layer.effect(
                 order: stored.order_json,
                 revision: { at: stored.revision_at, environmentId: stored.revision_environment_id },
               })).order;
+        const cutoff = sharedPullerCutoff(yield* DateTime.now);
         const pullers = yield* sql<{ readonly environment_id: string }>`
-          SELECT environment_id FROM scheduled_task_shared_pullers ORDER BY environment_id ASC
+          SELECT environment_id FROM scheduled_task_shared_pullers
+          WHERE pulled_at >= ${cutoff}
+          ORDER BY environment_id ASC
         `.pipe(NodeSqliteClient.readOnly);
         return [...ordered, ...pullers.map((row) => EnvironmentId.make(row.environment_id))];
       }).pipe(

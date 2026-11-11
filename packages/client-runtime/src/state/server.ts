@@ -886,7 +886,8 @@ export function createServerEnvironmentAtoms<R, E>(
     environmentId === null ? EMPTY_SERVER_UPDATE_STATE_ATOM : updateStateValueAtom(environmentId);
   /**
    * Ends when the work chats there waited on has ended, or when the user decides first. With
-   * `untilIdle`, as for an automatic install, it also waits for work that started meanwhile.
+   * `untilIdle`, as for an automatic install, it also waits for work that started meanwhile and
+   * for every running turn to end.
    */
   const awaitRestartHoldClear = Effect.fn("ServerUpdate.awaitRestartHoldClear")(function* (
     environmentId: EnvironmentId,
@@ -907,7 +908,7 @@ export function createServerEnvironmentAtoms<R, E>(
         onWaiting(work);
       });
     const cleared = untilIdle
-      ? untilRestartHoldIsEmpty(holds, record)
+      ? untilRestartHoldIsEmpty(holds, (hold) => record(hold.work))
       : untilListedRestartHoldWorkEnds(holds, record);
     const outcome = yield* Stream.merge(cleared, decisions).pipe(
       Stream.runHead,
