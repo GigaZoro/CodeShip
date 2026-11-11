@@ -118,17 +118,23 @@ function groupManualSteps(
     const known = byThread.get(step.threadId);
     if (known === undefined || step.updatedAt > known.updatedAt) byThread.set(step.threadId, step);
   }
-  const byMachine = new Map<string, { steps: ManualStep[]; detected: DetectedManualStepEntry[] }>();
+  // A ThreadPage folder and a server label can spell one machine differently ("Zoro-VPS", "zoro-vps").
+  // ThreadPage steps come first, so the folder's spelling names the group.
+  const byMachine = new Map<
+    string,
+    { machine: string; steps: ManualStep[]; detected: DetectedManualStepEntry[] }
+  >();
   const machineOf = (machine: string) => {
-    const known = byMachine.get(machine);
+    const key = machine.toLocaleLowerCase();
+    const known = byMachine.get(key);
     if (known !== undefined) return known;
-    const created = { steps: [], detected: [] };
-    byMachine.set(machine, created);
+    const created = { machine, steps: [], detected: [] };
+    byMachine.set(key, created);
     return created;
   };
   for (const step of byThread.values()) machineOf(step.machine).steps.push(step);
   for (const entry of detected) machineOf(entry.step.machine).detected.push(entry);
-  const groups = [...byMachine].map(([machine, found]) => ({
+  const groups = [...byMachine.values()].map(({ machine, ...found }) => ({
     machine,
     steps: found.steps.sort(byUrgency),
     detected: found.detected.sort(byDetectedUrgency),
