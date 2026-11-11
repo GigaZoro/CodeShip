@@ -407,6 +407,7 @@ function LinkEnvironmentAction({
             <LinkAccessPicker value={access} onChange={setAccess} disabled={busy} />
             <LinkBackOption
               name={otherName}
+              here={environmentLabel}
               forwardAccess={access}
               checked={bothWays}
               onCheckedChange={setBothWays}

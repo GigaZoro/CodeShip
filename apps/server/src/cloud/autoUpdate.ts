@@ -1,6 +1,6 @@
-import type { ServerSelfUpdateOutcome } from "@t3tools/contracts";
+import { ServerSelfUpdateError, type ServerSelfUpdateOutcome } from "@t3tools/contracts";
 import { cliReleaseChannelOf, type CliReleaseChannel } from "@t3tools/shared/cliRelease";
-import { untilListedRestartHoldWorkEnds } from "@t3tools/shared/restartHold";
+import { untilRestartHoldIsEmpty } from "@t3tools/shared/restartHold";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -104,9 +104,10 @@ function decideAutoUpdate(input: {
 }
 
 /**
- * Installs new releases on a background service once the restart hold clears, as a client's
- * update would. Foreground and desktop-hosted servers never self-update here; the desktop app
- * owns its own install.
+ * Installs new releases on a background service once no chat has background work a restart
+ * would cut, and checks again right before the launcher takes over: preparing a release takes
+ * minutes, and a chat may start work meanwhile. Then it waits for the next check. Foreground
+ * and desktop-hosted servers never self-update here; the desktop app owns its own install.
  */
 export const make = Effect.fn("cloud.auto_update.make")(function* () {
   const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
@@ -135,11 +136,23 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     Effect.flatMap(Option.match({ onNone: () => Effect.never, onSome: () => Effect.void })),
   );
 
-  const waitUntilIdle = untilListedRestartHoldWorkEnds(recovery.watchRestartHold, (work) =>
+  const waitUntilIdle = untilRestartHoldIsEmpty(recovery.watchRestartHold, (work) =>
     Effect.logInfo("Automatic update waiting for background work to finish.", {
       waitingOn: work.length,
     }),
   ).pipe(Stream.runHead, Effect.map(Option.isSome));
+
+  /** Why the update must not go now, read fresh: the setting, the policy and the hold. */
+  const reasonToHoldOff = Effect.fn("cloud.auto_update.reason_to_hold_off")(function* (
+    channel: CliReleaseChannel,
+  ) {
+    if (!(yield* enabled)) return "the setting was turned off";
+    const refusal = managedUpdateRefusal(policy.document, channel);
+    if (refusal !== undefined) return refusal;
+    const hold = yield* recovery.restartHold.pipe(Effect.option);
+    if (Option.isNone(hold)) return "background work could not be read";
+    return hold.value.work.length > 0 ? "a chat started background work" : undefined;
+  });
 
   const recordFailure = Effect.fn("cloud.auto_update.record_failure")(function* (
     version: string,
@@ -162,7 +175,10 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     });
   });
 
-  const install = Effect.fn("cloud.auto_update.install")(function* (version: string) {
+  const install = Effect.fn("cloud.auto_update.install")(function* (
+    version: string,
+    channel: CliReleaseChannel,
+  ) {
     yield* Effect.logInfo("Automatic update found a newer release.", {
       currentVersion: packageJson.version,
       targetVersion: version,
@@ -179,14 +195,37 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     );
     if (!idle) return;
     yield* Effect.logInfo("Automatic update starting.", { targetVersion: version });
-    yield* selfUpdate.update({ targetVersion: version }).pipe(
+    // Set when the last check puts the update off, which is not a failed attempt.
+    const heldOff = yield* Ref.make<string | undefined>(undefined);
+    const beforeHandoff = () =>
+      reasonToHoldOff(channel).pipe(
+        Effect.flatMap((reason) =>
+          reason === undefined
+            ? Effect.void
+            : Ref.set(heldOff, reason).pipe(
+                Effect.andThen(Effect.fail(new ServerSelfUpdateError({ reason }))),
+              ),
+        ),
+      );
+    yield* selfUpdate.update({ targetVersion: version }, undefined, undefined, beforeHandoff).pipe(
       Effect.flatMap((result) =>
         Effect.logInfo("Automatic update handed to the service launcher.", {
           targetVersion: result.targetVersion,
           updateId: result.updateId,
         }),
       ),
-      Effect.catch((error) => recordFailure(version, error.reason)),
+      Effect.catch((error) =>
+        Ref.get(heldOff).pipe(
+          Effect.flatMap((reason) =>
+            reason === undefined
+              ? recordFailure(version, error.reason)
+              : Effect.logInfo("Automatic update put off until the next check.", {
+                  targetVersion: version,
+                  reason,
+                }),
+          ),
+        ),
+      ),
     );
   });
 
@@ -213,7 +252,7 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
         yield* Effect.logDebug("Automatic update skipped by policy.", { reason: refusal });
         return;
       }
-      return yield* install(decision.version);
+      return yield* install(decision.version, channel);
     }
     if ((yield* Ref.getAndSet(reportedSkipRef, decision.version)) !== decision.version) {
       yield* Effect.logInfo("Automatic update is holding off a release that did not install.", {

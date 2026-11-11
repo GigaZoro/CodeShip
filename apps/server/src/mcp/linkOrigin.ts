@@ -67,10 +67,9 @@ const linkBackDenied = (message: string) =>
   new OrchestratorMcpFailure({ code: "capability_denied", message });
 
 /**
- * The one change to this environment's links a fenced link may make: linking back to the
- * environment it signed in from. It names that environment itself at sign-in, so it can only
- * link back to the machine whose pairing code it holds, and its access must already let it
- * work here without approval at every step.
+ * Linking back trusts only the full-access grant, which already runs anything here. The
+ * environment the link named at sign-in is its own claim and only narrows the request; see
+ * "Linking both ways" in docs/internals/remote.md.
  */
 export const assertMayLinkBack = (
   scope: McpInvocationScope,
@@ -94,7 +93,7 @@ export const assertMayLinkBack = (
   if (!peerLinkAccessAllowsLinkBack(clientModeCeiling(client).runtimeMode)) {
     return Effect.fail(
       linkBackDenied(
-        `${client.label} is linked with less than auto access, which is not enough to ask this environment to link back. Link it with auto or full access, or link it from here.`,
+        `${client.label} is linked with less than full access, which is not enough to ask this environment to link back. Link it with full access, or link it from here.`,
       ),
     );
   }

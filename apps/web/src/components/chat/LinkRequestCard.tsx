@@ -455,6 +455,7 @@ function LinkRequestDialog(props: {
                     <LinkAccessPicker value={access} onChange={setAccess} disabled={busy} />
                     <LinkBackOption
                       name={targetName}
+                      here={hereLabel}
                       forwardAccess={access}
                       checked={bothWays}
                       onCheckedChange={setBothWays}

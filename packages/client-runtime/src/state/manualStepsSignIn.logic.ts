@@ -172,11 +172,46 @@ export const outcomeOfProgress = (progress: SignInProgress): SignInOutcome | nul
       ? { status: "signed-in" }
       : { status: "failed", reason: progress.reason, message: progress.message };
 
+type ProviderAuthFlow = Pick<ProviderAuthState, "phase" | "flowId">;
+
+const flowIsRunning = (phase: ProviderAuthState["phase"]) =>
+  phase === "starting" || phase === "waiting" || phase === "verifying";
+
+/** How an account's sign-in stood when its step began. */
+export interface ProviderSignInBaseline {
+  /** A flow that had already ended then. It never answers for this step. */
+  readonly finishedFlowId: string | null;
+  /**
+   * A flow already running then, started elsewhere. How it ends answers for this step, but
+   * leaving the step does not cancel it.
+   */
+  readonly runningFlowId: string | null;
+}
+
+/** Only a flow that had ended is a baseline: one still running may yet finish this step. */
+export function providerSignInBaseline(flow: ProviderAuthFlow | undefined): ProviderSignInBaseline {
+  if (flow?.flowId == null) return { finishedFlowId: null, runningFlowId: null };
+  return flowIsRunning(flow.phase)
+    ? { finishedFlowId: null, runningFlowId: flow.flowId }
+    : { finishedFlowId: flow.flowId, runningFlowId: null };
+}
+
 /**
- * Where one provider account's sign-in stands. A flow counts only when it started after the step
- * did (`baselineFlowId` is the flow the account had then), so a finished flow from earlier never
- * answers for this one. A signed-out account also counts as done once it reads as signed in, for
- * example when it was signed in from another window.
+ * The running flow that leaving the step ends: one started after the step began, never one that
+ * was already running, and none while the baseline is unknown.
+ */
+export function providerSignInFlowToCancel(
+  baseline: ProviderSignInBaseline | null,
+  flow: ProviderAuthFlow | undefined,
+): string | null {
+  if (baseline === null || flow?.flowId == null || !flowIsRunning(flow.phase)) return null;
+  return flow.flowId === baseline.runningFlowId ? null : flow.flowId;
+}
+
+/**
+ * Where one provider account's sign-in stands. A flow that had ended when the step began
+ * (`baselineFlowId`) never answers for it; one running then does. A signed-out account also
+ * counts as done once it reads as signed in, as when signed in from another window.
  */
 export function providerSignInProgress(input: {
   readonly kind: StepKind;

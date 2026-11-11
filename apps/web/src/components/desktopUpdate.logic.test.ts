@@ -8,7 +8,9 @@ import {
   resolveAutoDesktopUpdateStep,
   resolveDesktopUpdateButtonAction,
   resolveDesktopUpdatePendingAction,
+  waitToInstallAutomatically,
 } from "./desktopUpdate.logic";
+import type { HostedWorkNow, HostedWorkWait } from "./sidebar/localInstallWait";
 
 const baseState: DesktopUpdateState = {
   enabled: true,
@@ -152,5 +154,57 @@ describe("resolveAutoDesktopUpdateStep", () => {
     ],
   ] as const)("%s", (_name, patch, options, expected) => {
     expect(step(patch, options)).toBe(expected);
+  });
+});
+
+describe("waitToInstallAutomatically", () => {
+  const run = (
+    waits: ReadonlyArray<HostedWorkWait>,
+    nows: ReadonlyArray<HostedWorkNow>,
+    isStillEnabled: () => boolean = () => true,
+  ) => {
+    const calls: Array<string> = [];
+    const readiness = waitToInstallAutomatically({
+      waitUntilIdle: async () => {
+        calls.push("wait");
+        return waits[calls.filter((call) => call === "wait").length - 1]!;
+      },
+      readWorkNow: async () => {
+        calls.push("read");
+        return nows[calls.filter((call) => call === "read").length - 1]!;
+      },
+      isStillEnabled,
+    });
+    return readiness.then((result) => ({ result, calls }));
+  };
+
+  it("installs once idle and still idle right before installing", async () => {
+    expect(await run([{ status: "clear" }], [{ status: "idle" }])).toEqual({
+      result: { status: "install" },
+      calls: ["wait", "read"],
+    });
+  });
+
+  it("waits again when a chat started work right before the install", async () => {
+    expect(
+      await run(
+        [{ status: "clear" }, { status: "clear" }],
+        [{ status: "busy" }, { status: "idle" }],
+      ),
+    ).toEqual({ result: { status: "install" }, calls: ["wait", "read", "wait", "read"] });
+  });
+
+  it("stops when the setting was turned off, or the wait was cancelled", async () => {
+    expect((await run([{ status: "clear" }], [{ status: "idle" }], () => false)).result).toEqual({
+      status: "stop",
+    });
+    expect((await run([{ status: "cancelled" }], [])).result).toEqual({ status: "stop" });
+  });
+
+  it("installs at once when the user chose to update now", async () => {
+    expect(await run([{ status: "update-now" }], [])).toEqual({
+      result: { status: "install" },
+      calls: ["wait"],
+    });
   });
 });

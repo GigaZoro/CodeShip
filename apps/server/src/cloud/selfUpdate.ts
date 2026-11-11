@@ -59,12 +59,17 @@ export function resolveServerSelfUpdateCapability(input: {
 export class ServerSelfUpdate extends Context.Service<
   ServerSelfUpdate,
   {
+    /**
+     * `beforeHandoff` is the last check before the service launcher takes over, after the
+     * release is downloaded and prepared: when it fails, nothing is handed off.
+     */
     readonly update: (
       input: ServerSelfUpdateInput,
       reportProgress?: (
         stage: ServerSelfUpdateProgressStage,
       ) => Effect.Effect<void, ServerSelfUpdateError>,
       onHandoffAccepted?: () => Effect.Effect<void>,
+      beforeHandoff?: () => Effect.Effect<void, ServerSelfUpdateError>,
     ) => Effect.Effect<ServerSelfUpdateResult, ServerSelfUpdateError>;
     readonly commitDesktopUpdate: (
       requestId: string,
@@ -158,7 +163,12 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
 
   const update: ServerSelfUpdate["Service"]["update"] = Effect.fn(
     "cloud.server_self_update.update",
-  )(function* (input, reportProgress = () => Effect.void, onHandoffAccepted = () => Effect.void) {
+  )(function* (
+    input,
+    reportProgress = () => Effect.void,
+    onHandoffAccepted = () => Effect.void,
+    beforeHandoff = () => Effect.void,
+  ) {
     const policyRefusal = managedUpdateRefusal(
       policy.document,
       capability === "boot-service" ? cliReleaseChannelOf(input.targetVersion.trim()) : undefined,
@@ -286,6 +296,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         ),
       );
 
+      yield* beforeHandoff();
       yield* reportProgress("installing");
       const updateId = yield* Effect.uninterruptible(
         launcher.requestUpdate({ targetVersion, dbPath: serverConfig.dbPath }).pipe(

@@ -2253,8 +2253,9 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Machines a shared task may exclude: those this environment links to, plus
-   * any it already excludes. This machine is refused, since the task would
+   * Machines a shared task may exclude: those its copies can reach, which are the machines this
+   * environment links to, those in the project's machine order and those that pull shared tasks
+   * from here, plus any it already excludes. This machine is refused, since the task would
    * vanish from the place it is saved.
    */
   const assertExcludableMachines = Effect.fn("OrchestratorMcpService.assertExcludableMachines")(
@@ -2262,6 +2263,7 @@ const make = Effect.gen(function* () {
       scope: McpInvocationScope,
       excluded: ReadonlyArray<EnvironmentId>,
       stored: ScheduledTask["shared"] | undefined,
+      projectId: ProjectId,
     ) {
       if (excluded.includes(scope.environmentId)) {
         return yield* failure(
@@ -2278,10 +2280,17 @@ const make = Effect.gen(function* () {
         known.add(link.environmentId);
       }
       const unknown = excluded.filter((id) => !known.has(id));
-      if (unknown.length > 0) {
+      if (unknown.length === 0) return;
+      for (const id of yield* scheduledTasks
+        .knownMachineIds(projectId)
+        .pipe(Effect.mapError((error) => failure("orchestration_error", error.message)))) {
+        known.add(id);
+      }
+      const stillUnknown = unknown.filter((id) => !known.has(id));
+      if (stillUnknown.length > 0) {
         return yield* failure(
           "invalid_request",
-          `excludedMachines names ${unknown.join(", ")}, which this environment does not link to. Use environmentId values from t3_environment_links.`,
+          `excludedMachines names ${stillUnknown.join(", ")}, which no copy of this task reaches: this environment does not link to it, it is not in the project's machine order, and it never pulled shared tasks from here. Use environmentId values from t3_environment_links.`,
         );
       }
     },
@@ -2362,7 +2371,7 @@ const make = Effect.gen(function* () {
         if (replayed !== undefined) yield* assertScheduledTaskWithinLimits(replayed, limits);
       }
       if (input.excludedMachines !== undefined) {
-        yield* assertExcludableMachines(scope, input.excludedMachines, replayed?.shared);
+        yield* assertExcludableMachines(scope, input.excludedMachines, replayed?.shared, projectId);
       }
       const upsertInput: ScheduledTaskUpsertInput = {
         title,
@@ -2440,7 +2449,12 @@ const make = Effect.gen(function* () {
         }
         if (input.excludedMachines !== undefined) {
           if (!sharedAfter) return yield* failure("invalid_request", EXCLUDED_MACHINES_NEED_SHARED);
-          yield* assertExcludableMachines(scope, input.excludedMachines, existing.shared);
+          yield* assertExcludableMachines(
+            scope,
+            input.excludedMachines,
+            existing.shared,
+            existing.projectId,
+          );
         }
         if (input.bindToCurrentThread === true && sharedAfter) {
           return yield* failure(

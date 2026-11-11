@@ -345,9 +345,9 @@ holds the machines this app knows and those on your T3 Connect account. If this
 app is connected to that machine with a session that manages access there, it
 makes the pairing code itself; otherwise paste one from that machine's
 **Settings → Machines & access**. From a terminal, use
-`t3 environment link <address> --pairing-code <code> --access <mode>`. For both ways, add
-`--both-ways --own-url <this machine's https or Tailscale address>`; `--reverse-access <mode>`
-sets what the other machine's agents may do here.
+`t3 environment link <address> --pairing-code <code> --access <mode>`. For both ways, use
+`--access full-access` and add `--both-ways --own-url <this machine's https or Tailscale address>`;
+`--reverse-access <mode>` sets what the other machine's agents may do here.
 
 You can also ask an agent to link a machine by name, such as "delegate this to
 my vps". It shows a card in the thread where you pick the machine the same way
@@ -371,11 +371,13 @@ machine** option as the dialog, and the agent is told whether the link back was 
   link both ways in one step, tick **Also let {machine} reach this machine** in the same
   dialog, or add `--both-ways` to `t3 environment link`. This machine makes the pairing code
   for that machine itself, so no second code is typed there. Pick what that machine's agents
-  may do here; it starts as the access you gave, and never above auto unless you choose full
-  access. It needs auto or full access on the link you are making, and Linked environments on
-  both machines. If the other machine is an older version, has it off or refuses, the link you
-  made stays and you are told to link this machine from there. The two links are separate:
-  **Forget** and revoke each one on the machine that holds it.
+  may do here; it starts at auto. It is offered only when the link you are making has full
+  access, since that access already lets the other machine run anything here; with less, link
+  this machine from the other one. It needs Linked environments on both machines, and never
+  replaces a link the other machine already has to this one. If the other machine is an older
+  version, has it off, already has a link here or refuses, the link you made stays and you are
+  told to link this machine from there. The two links are separate: **Forget** and revoke each
+  one on the machine that holds it.
 - Link credentials last 30 days and renew automatically while both machines run
   a version that supports renewal and can reach each other in the last 10 days
   before expiry. Renewal keeps the same access. Revoking the session on the

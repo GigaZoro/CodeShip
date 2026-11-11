@@ -187,6 +187,7 @@ const layerUnusedScheduledTaskStub = Layer.succeed(
     setFollowsDefaultModel: () => Effect.die("unused in this test"),
     delete: () => Effect.die("ScheduledTaskService.delete is unused in this test"),
     applyShared: () => Effect.die("unused in this test"),
+    knownMachineIds: () => Effect.die("unused in this test"),
     sharedCopies: () => Effect.die("unused in this test"),
     deleteForThread: () => Effect.die("unused in this test"),
     moveThreadTasks: () => Effect.die("unused in this test"),

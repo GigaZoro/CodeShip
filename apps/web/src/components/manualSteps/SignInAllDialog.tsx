@@ -13,10 +13,13 @@ import {
   mcpSignInProgress,
   outcomeOfProgress,
   providerReadsSignedIn,
+  providerSignInBaseline,
+  providerSignInFlowToCancel,
   providerSignInProgress,
   recordSignInOutcome,
   startSignInSession,
   summarizeSignIns,
+  type ProviderSignInBaseline,
   type SignInOutcome,
   type SignInProgress,
 } from "@t3tools/client-runtime/state/manualStepsSignIn.logic";
@@ -127,9 +130,9 @@ function ProviderStep(props: StepProps) {
     reportDefect: false,
   });
   const auth = query.data ?? undefined;
-  // The flow the account had when the step began; only a later one answers for this step.
-  const [baseline, setBaseline] = useState<{ readonly flowId: string | null } | null>(null);
-  if (baseline === null && auth !== undefined) setBaseline({ flowId: auth.flowId });
+  // How the account's sign-in stood when the step began.
+  const [baseline, setBaseline] = useState<ProviderSignInBaseline | null>(null);
+  if (baseline === null && auth !== undefined) setBaseline(providerSignInBaseline(auth));
 
   const progress: SignInProgress =
     provider === undefined
@@ -142,15 +145,12 @@ function ProviderStep(props: StepProps) {
         ? { state: "pending" }
         : providerSignInProgress({
             kind: step.kind,
-            baselineFlowId: baseline.flowId,
+            baselineFlowId: baseline.finishedFlowId,
             signedIn: providerReadsSignedIn(provider, auth?.phase),
             flow: auth,
           });
 
-  const activeFlowId =
-    auth?.phase === "starting" || auth?.phase === "waiting" || auth?.phase === "verifying"
-      ? auth.flowId
-      : null;
+  const activeFlowId = providerSignInFlowToCancel(baseline, auth);
   const cancelActiveFlow = useStableCallback(() => {
     if (activeFlowId !== null) {
       void cancel({ environmentId, input: { instanceId: step.instanceId, flowId: activeFlowId } });

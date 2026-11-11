@@ -432,6 +432,32 @@ it.effect("saving with a machine order stamps the project's order and keeps run-
   ),
 );
 
+it.effect(
+  "machines a task reaches without a link: the project's order and those that pulled, not this one",
+  () =>
+    withService((service) =>
+      Effect.gen(function* () {
+        expect(yield* service.knownMachineIds(SCRATCH)).toEqual([]);
+        yield* service.applyShared(
+          order("2026-09-10T00:00:00.000Z", [OTHER, HERE_ENVIRONMENT_ID, "environment-third"]),
+        );
+        // A machine that links here and pulls, with no link from here and no place in the order.
+        yield* service.sharedCopies("environment-puller" as never);
+        yield* service.sharedCopies(HERE_ENVIRONMENT_ID as never);
+
+        expect(yield* service.knownMachineIds(SCRATCH)).toEqual([
+          OTHER,
+          "environment-third",
+          "environment-puller",
+        ]);
+        // Another project has no machine order; the machines that pull still get its copies.
+        expect(yield* service.knownMachineIds(ProjectId.make(repoProject.id))).toEqual([
+          "environment-puller",
+        ]);
+      }),
+    ),
+);
+
 const HOUR_MS = 3_600_000;
 const MINUTE_MS = 60_000;
 const oneMachineShared = (machineOrder: string[]) => ({

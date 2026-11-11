@@ -31,3 +31,19 @@ export function untilListedRestartHoldWorkEnds<E, R>(
     Stream.as("clear" as const),
   );
 }
+
+/**
+ * "clear" once a hold lists no work at all, including work that started while waiting. An
+ * automatic update waits like this, since nobody chose to cut what a chat is doing.
+ * `onWaiting` gets the work in each hold that still lists some.
+ */
+export function untilRestartHoldIsEmpty<E, R>(
+  holds: Stream.Stream<OrchestrationV2RestartHold, E, R>,
+  onWaiting: (work: ReadonlyArray<OrchestrationV2RestartHoldWork>) => Effect.Effect<void>,
+): Stream.Stream<"clear", E, R> {
+  return holds.pipe(
+    Stream.tap((hold) => (hold.work.length === 0 ? Effect.void : onWaiting(hold.work))),
+    Stream.filter((hold) => hold.work.length === 0),
+    Stream.as("clear" as const),
+  );
+}

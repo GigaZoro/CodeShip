@@ -1,6 +1,8 @@
 import {
   AuthMcpClientAccess,
+  AuthStandardClientScopes,
   EnvironmentId,
+  peerLinkAccessAllowsLinkBack,
   type PeerLinkResult,
   type PeerLinkSummary,
 } from "@t3tools/contracts";
@@ -140,9 +142,17 @@ const formatLinks = (links: ReadonlyArray<PeerLinkSummary>) =>
         )
         .join("\n\n")}\n`;
 
-/** The access the other environment gets here when none is chosen: the one it gave, up to auto. */
-const defaultReverseAccess = (forward: AuthMcpClientAccess): AuthMcpClientAccess =>
-  forward === "full-access" ? "auto" : forward;
+class EnvironmentLinkUsageError extends Schema.TaggedError<EnvironmentLinkUsageError>()(
+  "EnvironmentLinkUsageError",
+  { detail: Schema.String },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
+/** The access the other environment gets here when none is chosen: below the full access it was given. */
+const DEFAULT_REVERSE_ACCESS: AuthMcpClientAccess = "auto";
 
 const formatBackOutcome = (linked: PeerLinkResult) =>
   linked.back === undefined
@@ -173,7 +183,7 @@ const environmentLinkCommand = Command.make("link", {
   ),
   bothWays: Flag.Boolean("both-ways").pipe(
     Flag.withDescription(
-      "Also let the other environment reach this one: it links back with a pairing code this environment makes, so nothing is typed there. Needs --access auto or full-access, and --own-url.",
+      "Also let the other environment reach this one: it links back with a pairing code this environment makes, so nothing is typed there. Needs --access full-access, and --own-url.",
     ),
     Flag.withDefault(false),
   ),
@@ -185,7 +195,7 @@ const environmentLinkCommand = Command.make("link", {
   ),
   reverseAccess: Flag.Literals("reverse-access", AuthMcpClientAccess.literals).pipe(
     Flag.withDescription(
-      "With --both-ways: what the other environment's agents may do here. Defaults to the --access given, and never more than auto unless set to full-access.",
+      "With --both-ways: what the other environment's agents may do here. Defaults to auto.",
     ),
     Flag.optional,
   ),
@@ -193,32 +203,46 @@ const environmentLinkCommand = Command.make("link", {
   Command.withDescription(
     "Link another T3.CodeShip environment, so agents here can work there. It shows up there under Settings → Connections, where it can be revoked.",
   ),
-  Command.withHandler((flags) => {
-    const input = {
-      url: flags.url,
-      alternateUrls: flags.alternateUrl,
-      pairingCode: flags.pairingCode,
-      access: flags.access,
-    };
-    const report = (linked: PeerLinkResult) =>
-      Console.log(
-        `Linked ${linked.label} (${linked.environmentId}) with ${linked.access} access, until ${DateTime.formatIso(linked.expiresAt)}.\n${formatBackOutcome(linked)}`,
+  Command.withHandler(
+    Effect.fn("environment.link")(function* (flags) {
+      const input = {
+        url: flags.url,
+        alternateUrls: flags.alternateUrl,
+        pairingCode: flags.pairingCode,
+        access: flags.access,
+      };
+      const report = (linked: PeerLinkResult) =>
+        Console.log(
+          `Linked ${linked.label} (${linked.environmentId}) with ${linked.access} access, until ${DateTime.formatIso(linked.expiresAt)}.\n${formatBackOutcome(linked)}`,
+        );
+      if (!flags.bothWays) {
+        return yield* runWithPeerLinks(flags, (links) =>
+          links.link(input).pipe(Effect.flatMap(report)),
+        );
+      }
+      if (!peerLinkAccessAllowsLinkBack(flags.access)) {
+        return yield* new EnvironmentLinkUsageError({
+          detail:
+            "--both-ways needs --access full-access: only a full-access link may ask the other environment to link back. Link without it, then link this environment from there.",
+        });
+      }
+      return yield* runLinkingBothWays(flags, (back) =>
+        back
+          .link(
+            {
+              ...input,
+              reverse: {
+                access: Option.getOrElse(flags.reverseAccess, () => DEFAULT_REVERSE_ACCESS),
+                urls: flags.ownUrl,
+              },
+            },
+            // Whoever runs this terminal owns this environment's database, and every grant in it.
+            { scopes: AuthStandardClientScopes },
+          )
+          .pipe(Effect.flatMap(report)),
       );
-    if (!flags.bothWays) {
-      return runWithPeerLinks(flags, (links) => links.link(input).pipe(Effect.flatMap(report)));
-    }
-    return runLinkingBothWays(flags, (back) =>
-      back
-        .link({
-          ...input,
-          reverse: {
-            access: Option.getOrElse(flags.reverseAccess, () => defaultReverseAccess(flags.access)),
-            urls: flags.ownUrl,
-          },
-        })
-        .pipe(Effect.flatMap(report)),
-    );
-  }),
+    }),
+  ),
 );
 
 const environmentListCommand = Command.make("list", { ...authLocationFlags, json: jsonFlag }).pipe(

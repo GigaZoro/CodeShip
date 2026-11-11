@@ -145,17 +145,20 @@ came from. A stamp without the access, from before it was recorded, is fenced.
 environment's agents reach the other, not the reverse. When the user also lets the other
 machine reach this one, [`PeerLinkBack`](../../apps/server/src/peer/PeerLinkBack.ts) mints a
 short-lived pairing code _here_ and sends it over the new link to the other environment's
-`t3_link_back` tool, which runs its ordinary `PeerLinks.link` toward this one. The code never
-passes through a client or a log, and an unredeemed one is revoked. Linking back is the one change
-to an environment's links a fenced link may make, so the rule is narrow
-([`assertMayLinkBack`](../../apps/server/src/mcp/linkOrigin.ts)): the caller is a peer link whose
-signed session declared the environment it signed in from (`ple`, set from `peer_environment_id`
-at registration) and may link back only to that one, and its access is at least `auto`. A link
-made before sessions named their origin, or below `auto`, is refused and the user links from the
-other side. The declared environment is the link's own claim, so it narrows what the link may
-ask for without being proof of who it is: the code that makes the request useful can only come
-from an administrator of the environment it opens, and the other side still checks that the
-address answers as that environment.
+`t3_link_back` tool, which runs `PeerLinks.link` toward this one. The code never passes through
+a client or a log, and one not redeemed, including when the call is interrupted, is revoked. The
+caller of the linking side must hold every scope the code grants, as for `/api/auth/pairing-token`.
+
+The trust anchor is the full-access grant, nothing else
+([`assertMayLinkBack`](../../apps/server/src/mcp/linkOrigin.ts)). Only a peer link with full access
+may call `t3_link_back`: it can already run anything on that machine through its agents, terminal
+commands and the `t3` CLI included, so linking back gives it no new power. The environment id the
+link declared at registration (`peer_environment_id`, signed into its session as `ple`) is the
+link's own claim, open to any client that registers, so it is only a hint that narrows the request
+to that one environment; the other side still checks that the address answers as it. Linking back
+never replaces a link: when the other side already has a link to that environment id, stored or
+expired, it refuses (`PeerLinks.link` with `onlyNew`, checked again by the insert), so a client
+claiming another machine's id cannot redirect that machine's link. Re-linking is done by hand.
 
 A link card an agent asked for goes through the same service: `peerLinks.answerRequest` returns
 how linking back went only to a client that asked for it. An older server answers with nothing, so
@@ -171,7 +174,9 @@ Links only pull: a link paired below full access may not change scheduled tasks
 there, so each machine reads its links' copies through the link-only
 `t3_shared_scheduled_tasks` tool and applies them itself
 ([`SharedTaskPull.ts`](../../apps/server/src/scheduledTasks/SharedTaskPull.ts)).
-That tool leaves out copies that exclude the asking machine.
+That tool leaves out copies that exclude the asking machine, and records it as a machine that
+receives copies: copies reach machines that link here, not only those this machine links to, so a
+task may leave out any machine that pulled from here or is in the project's machine order.
 
 - **Highest revision wins, per task.** A machine stamps its own edits with
   `max(now, previous + 1 ms)` and its id, and keeps a stamp it receives as-is,
