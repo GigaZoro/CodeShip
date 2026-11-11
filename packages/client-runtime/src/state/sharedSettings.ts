@@ -272,6 +272,11 @@ export interface SharedSettingsWriteOutcome<W extends MachineSettingsWrite> {
   /** What the machine was asked to hold: its patch, and for a follower the stamped values. */
   readonly sent: ServerSettingsPatch;
   readonly result: SettingsWriteResult<ServerSettings>;
+  /**
+   * For the follower that saved the change first: the shared settings it kept its own value of,
+   * because the version it already held was newer, so no machine took the change to them.
+   */
+  readonly superseded?: ReadonlyArray<MachineSharedSettingKey>;
 }
 
 /** How a client sends a settings write, and a change saved for all machines, to one machine. */
@@ -329,11 +334,14 @@ export async function persistSharedSettingsWrites<W extends MachineSettingsWrite
     plan.writes.map(async (write): Promise<SharedSettingsWriteOutcome<W>> => {
       if (write === authorityWrite && saved !== undefined) {
         const result = await saved;
+        if (result._tag !== "Success") return { write, sent: write.patch, result };
+        const taken = new Set(result.value.share.values.map(({ key }) => key));
+        const superseded = sharedSettingKeysIn(write.patch).filter((key) => !taken.has(key));
         return {
           write,
           sent: write.patch,
-          result:
-            result._tag === "Success" ? { _tag: "Success", value: result.value.settings } : result,
+          result: { _tag: "Success", value: result.value.settings },
+          ...(superseded.length === 0 ? {} : { superseded }),
         };
       }
       if (!followers.has(write.environmentId)) {
@@ -380,4 +388,34 @@ export async function persistSharedSettingsWrites<W extends MachineSettingsWrite
       };
     }),
   );
+}
+
+/**
+ * How a settings write ended for the one who sent it: saved by every machine it went to; kept off
+ * because the machine that saves first already held a newer version of a shared setting it set,
+ * with that machine's settings; or not saved somewhere, including a write that was interrupted and
+ * a machine that refused it.
+ */
+export type SharedSettingsWriteSettlement =
+  | { readonly _tag: "saved" }
+  | {
+      readonly _tag: "superseded";
+      readonly keys: ReadonlyArray<MachineSharedSettingKey>;
+      readonly settings: ServerSettings;
+    }
+  | { readonly _tag: "notSaved" };
+
+export function settleSharedSettingsWrite(
+  outcomes: ReadonlyArray<SharedSettingsWriteOutcome<MachineSettingsWrite>>,
+  refused: number,
+): SharedSettingsWriteSettlement {
+  if (refused > 0 || outcomes.some(({ result }) => result._tag !== "Success")) {
+    return { _tag: "notSaved" };
+  }
+  for (const { result, superseded } of outcomes) {
+    if (superseded !== undefined && result._tag === "Success") {
+      return { _tag: "superseded", keys: superseded, settings: result.value };
+    }
+  }
+  return { _tag: "saved" };
 }

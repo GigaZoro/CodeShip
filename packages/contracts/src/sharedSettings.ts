@@ -1,17 +1,8 @@
 import * as Schema from "effect/Schema";
 
 import { EnvironmentId, IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import {
-  type ProviderInstanceConfig,
-  ProviderDriverKind,
-  ProviderInstanceId,
-} from "./providerInstance.ts";
-import {
-  globalIdleCompaction,
-  resolveProviderInstanceEnabled,
-  type ServerSettings,
-  type ServerSettingsPatch,
-} from "./settings.ts";
+import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
+import { globalIdleCompaction, type ServerSettings, type ServerSettingsPatch } from "./settings.ts";
 
 /**
  * Settings kept the same on every machine. Out: one machine's paths, devices, secrets and project
@@ -147,36 +138,6 @@ export function sharedProviderInstanceIdOf(key: string): ProviderInstanceId | un
   return isProviderInstanceId(instanceId) ? instanceId : undefined;
 }
 
-/**
- * The config fields an account shares, per driver; a new field stays on its machine until listed.
- * Paths, binaries, homes, launch arguments, server addresses, credentials and their metadata never
- * are, nor is `environment`. A driver missing here, such as a registry agent, is not shared at all.
- */
-export const SHARED_PROVIDER_CONFIG_FIELDS: Readonly<Record<string, ReadonlyArray<string>>> = {
-  claudeAgent: ["customModels", "autoCompactWindow", "idleCompaction"],
-  codex: ["setupMode", "customModels"],
-  antigravity: ["authMethod", "gcpProject", "gcpLocation", "customModels"],
-  cursor: ["customModels"],
-  grok: ["customModels"],
-  opencode: ["customModels"],
-  pi: ["customModels"],
-  fx: ["customModels"],
-  muse: ["customModels"],
-};
-
-/** Only the fields of `config` that `driver` shares, from a config of unknown shape. */
-export function sharedProviderConfig(driver: string, config: unknown): Record<string, unknown> {
-  const fields = SHARED_PROVIDER_CONFIG_FIELDS[driver] ?? [];
-  if (config === null || typeof config !== "object" || Array.isArray(config)) return {};
-  return Object.fromEntries(
-    fields.flatMap((field) =>
-      Object.hasOwn(config, field) && (config as Record<string, unknown>)[field] !== undefined
-        ? [[field, (config as Record<string, unknown>)[field]]]
-        : [],
-    ),
-  );
-}
-
 /** An account as every machine that follows shared settings holds it. */
 export const SharedProviderInstanceDefinition = Schema.Struct({
   driver: ProviderDriverKind,
@@ -199,35 +160,6 @@ export type SharedProviderInstanceValue = typeof SharedProviderInstanceValue.Typ
 /** A built-in instance is named after its driver; only its name and whether it is on are shared. */
 export const isBuiltInProviderInstance = (instanceId: string, driver: string) =>
   instanceId === driver;
-
-/**
- * What a machine shares of one provider instance, or nothing for a driver that is not shared. A
- * missing built-in instance still runs with its defaults; a missing added account is a removal.
- */
-export function sharedProviderInstanceValue(
-  instanceId: ProviderInstanceId,
-  instance: ProviderInstanceConfig | undefined,
-): SharedProviderInstanceValue | undefined {
-  if (instance === undefined) {
-    if (!Object.hasOwn(SHARED_PROVIDER_CONFIG_FIELDS, instanceId)) return { removed: true };
-    const driver = ProviderDriverKind.make(instanceId);
-    return { driver, enabled: resolveProviderInstanceEnabled({ driver }) };
-  }
-  if (!Object.hasOwn(SHARED_PROVIDER_CONFIG_FIELDS, instance.driver)) return undefined;
-  const named = instance.displayName === undefined ? {} : { displayName: instance.displayName };
-  const enabled = resolveProviderInstanceEnabled(instance);
-  if (isBuiltInProviderInstance(instanceId, instance.driver)) {
-    return { driver: instance.driver, ...named, enabled };
-  }
-  const config = sharedProviderConfig(instance.driver, instance.config);
-  return {
-    driver: instance.driver,
-    ...named,
-    ...(instance.accentColor === undefined ? {} : { accentColor: instance.accentColor }),
-    enabled,
-    ...(Object.keys(config).length === 0 ? {} : { config }),
-  };
-}
 
 /**
  * One shared setting's whole value, loose on the wire: a newer machine may share a key or field this

@@ -35,9 +35,12 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import { BUILT_IN_DRIVERS } from "../provider/builtInDrivers.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Settings from "../serverSettings.ts";
 import {
+  type AccountSharingDrivers,
+  accountSharingDrivers,
   canTakeSharedProviderInstance,
   changedSharedProviderInstances,
   withSharedProviderInstance,
@@ -48,6 +51,12 @@ import {
  * would outrank every later change until real time caught up, so it waits until then instead.
  */
 const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;
+
+/**
+ * The stamp time of a seed: a first value for a setting the group may already hold. Older than any
+ * version a clock can make, so whatever a machine already has wins over it.
+ */
+const SEED_UPDATED_AT = "1970-01-01T00:00:00.000Z";
 
 /** Errors about versions name their store, since there is no settings file to point at. */
 const VERSIONS_PATH = "shared setting versions";
@@ -225,6 +234,7 @@ function selectionWaits(candidate: Candidate, current: ServerSettings, instances
  * each account's version taken. An account version that changes nothing here replaces nothing.
  */
 function replacements(
+  sharing: AccountSharingDrivers,
   current: ServerSettings,
   candidates: ReadonlyArray<Candidate>,
 ): Partial<ServerSettings> {
@@ -235,6 +245,7 @@ function replacements(
       replace[candidate.key] = candidate.value;
     } else {
       instances = withSharedProviderInstance(
+        sharing,
         instances,
         candidate.instanceId,
         candidate.value,
@@ -265,9 +276,12 @@ const refuse = (operation: ServerSettingsOperation, cause?: unknown) =>
 
 /**
  * How a write is saved: for this machine alone, as a version another machine stamped, or as a change
- * saved for all machines that this machine stamps.
+ * saved for all machines that this machine stamps, by its clock or as a seed.
  */
-type WriteShare = SharedSettingsShare | "fromThisMachine" | undefined;
+type WriteShare = SharedSettingsShare | "fromThisMachine" | "seedFromThisMachine" | undefined;
+
+const isFromThisMachine = (share: WriteShare): share is "fromThisMachine" | "seedFromThisMachine" =>
+  share === "fromThisMachine" || share === "seedFromThisMachine";
 
 interface WriteOutcome {
   readonly stamp: SharedSettingStamp | undefined;
@@ -322,11 +336,15 @@ export class SharedSettings extends Context.Service<
       share: SharedSettingsShare | undefined,
     ) => Effect.Effect<ServerSettings, ServerSettingsError>;
     /**
-     * A change saved for all machines, made here: completed from this machine's own values and
-     * stamped by its clock, both under the write lock. Returns what to send the other machines that
-     * follow shared settings; a key whose version here is newer keeps its value and is not in it.
+     * A change saved for all machines, made here and stamped by its clock under the write lock.
+     * Returns what to send the other followers; a key whose version here is newer keeps its value
+     * and is not in it. A `seed` is stamped older than any version, so it is saved only for a key
+     * no machine holds a version of yet.
      */
-    readonly updateForAllMachines: (patch: ServerSettingsPatch) => Effect.Effect<
+    readonly updateForAllMachines: (
+      patch: ServerSettingsPatch,
+      options?: { readonly seed?: boolean },
+    ) => Effect.Effect<
       {
         readonly settings: ServerSettings;
         readonly share: SharedSettingsShare;
@@ -351,6 +369,7 @@ const make = Effect.gen(function* () {
   const settings = yield* Settings.ServerSettingsService;
   const providers = yield* ProviderRegistry.ProviderRegistry;
   const environment = yield* ServerEnvironment.ServerEnvironment;
+  const sharing = yield* accountSharingDrivers(BUILT_IN_DRIVERS);
 
   const storeError = (operation: string) => (cause: unknown) =>
     new SharedSettingsError({ operation, cause });
@@ -485,6 +504,7 @@ const make = Effect.gen(function* () {
     if (!isNewerSharedSetting(candidate.stamp, stampOf(versions.local))) return "relay";
     if (candidate.kind === "instance") {
       return canTakeSharedProviderInstance(
+        sharing,
         current,
         candidate.instanceId,
         candidate.value,
@@ -585,7 +605,8 @@ const make = Effect.gen(function* () {
     yield* Effect.forEach(outcome.applied, (candidate) => putCandidate(candidate, "shared"), {
       discard: true,
     });
-    const accounts = before === undefined ? [] : changedSharedProviderInstances(before, stored);
+    const accounts =
+      before === undefined ? [] : changedSharedProviderInstances(sharing, before, stored);
     if (accountKeys.length > 0 || accounts.length > 0) {
       yield* recordAccounts(accountKeys, accounts, stored);
     }
@@ -683,11 +704,15 @@ const make = Effect.gen(function* () {
   const planFromThisMachine = Effect.fn("SharedSettings.planFromThisMachine")(function* (
     patch: ServerSettingsPatch,
     current: ServerSettings,
+    seed: boolean,
   ) {
     if (!current.followSharedSettings) {
       return yield* refuse("take-shared-setting-unfollowed");
     }
-    const stamp = yield* nowStamp;
+    const now = yield* nowStamp;
+    const stamp: SharedSettingStamp = seed
+      ? { updatedAt: SEED_UPDATED_AT, origin: now.origin }
+      : now;
     const rows = yield* readRowsForWrite;
     const keys = sharedSettingKeysIn(patch);
     const isFresh = (key: MachineSharedSettingKey) => {
@@ -716,7 +741,7 @@ const make = Effect.gen(function* () {
     sink?: ShareSink,
   ) {
     // A stamp made by another machine's clock, more than a few minutes ahead of this one's.
-    if (share !== undefined && share !== "fromThisMachine" && (yield* isAhead(share.stamp))) {
+    if (share !== undefined && !isFromThisMachine(share) && (yield* isAhead(share.stamp))) {
       return yield* refuse("take-shared-setting-clock-ahead");
     }
     let outcome: WriteOutcome =
@@ -727,10 +752,9 @@ const make = Effect.gen(function* () {
       prepare: (current) => {
         before = current;
         if (share === undefined) return Effect.succeed({ patch });
-        const planning: Effect.Effect<Planned, ServerSettingsError> =
-          share === "fromThisMachine"
-            ? planFromThisMachine(patch, current)
-            : planStamped(patch, share, current);
+        const planning: Effect.Effect<Planned, ServerSettingsError> = isFromThisMachine(share)
+          ? planFromThisMachine(patch, current, share === "seedFromThisMachine")
+          : planStamped(patch, share, current);
         return planning.pipe(
           Effect.map((planned) => {
             outcome = planned.outcome;
@@ -777,7 +801,7 @@ const make = Effect.gen(function* () {
             );
             return undefined;
           }
-          return { patch: {}, replace: replacements(current, [candidate]) };
+          return { patch: {}, replace: replacements(sharing, current, [candidate]) };
         }),
         persisted: () => recordTaken(candidate.key, putCandidate(candidate, "shared")),
       },
@@ -889,7 +913,7 @@ const make = Effect.gen(function* () {
             return undefined;
           }
           if (selectionWaits(candidate.value, current, instances)) return undefined;
-          return { patch: {}, replace: replacements(current, [candidate.value]) };
+          return { patch: {}, replace: replacements(sharing, current, [candidate.value]) };
         }),
         persisted: () => recordTaken(key, clearPending(key, stamp)),
       },
@@ -989,16 +1013,23 @@ const make = Effect.gen(function* () {
         );
       },
     ),
-    updateForAllMachines: Effect.fn("SharedSettings.updateForAllMachines")(function* (patch) {
-      const sink: ShareSink = { stamp: undefined, values: [] };
-      const stored = yield* settings.updateSettings(
-        patch,
-        yield* writeHooks(patch, "fromThisMachine", false, sink),
-      );
-      // `prepare` stamps the change under the lock; it refuses the write when it cannot.
-      if (sink.stamp === undefined) return yield* refuse("take-shared-setting-unfollowed");
-      return { settings: stored, share: { stamp: sink.stamp, values: sink.values } };
-    }),
+    updateForAllMachines: Effect.fn("SharedSettings.updateForAllMachines")(
+      function* (patch, options) {
+        const sink: ShareSink = { stamp: undefined, values: [] };
+        const stored = yield* settings.updateSettings(
+          patch,
+          yield* writeHooks(
+            patch,
+            options?.seed === true ? "seedFromThisMachine" : "fromThisMachine",
+            false,
+            sink,
+          ),
+        );
+        // `prepare` stamps the change under the lock; it refuses the write when it cannot.
+        if (sink.stamp === undefined) return yield* refuse("take-shared-setting-unfollowed");
+        return { settings: stored, share: { stamp: sink.stamp, values: sink.values } };
+      },
+    ),
     applyPulled,
     retryWaiting,
   });
