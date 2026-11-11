@@ -1,3 +1,11 @@
+## 2026-11-11 — A chat is told when its background work stops with its agent's session
+
+- A chat that waits on background work (a command it marked as waited on, a background task, a monitor or a subagent) is now told when its agent's session fails or is closed after a long time without activity. With **Settings → Threads → Recovery → Continue threads after restarts** on it also continues by itself, once: if the work it restarts goes quiet for hours again, the chat waits for your next message instead of repeating. Before, the server dropped that work without a word and the chat waited for a result that never came.
+- When you or an agent close the session, the stopped work is recorded without starting a turn, and the agent is told with its next message. That covers a forced stop, a sign-out, archiving or settling the thread, and a change of account, access mode, workspace or provider. After a move to another account the agent is told there too, since it continues the same conversation; after a switch to a different provider it is told when the thread returns to the first one.
+- The thread shows it as a notice, **Agent session closed** or **Agent session failed**, that lists the stopped work.
+- A chat whose latest turn was a `/compact` is now woken for lost background work like any other chat. Before, that wake was dropped and the chat waited for your next message.
+- An agent process that ends on its own now always leaves the thread without stale background work, also when it ended at the same moment as another update from it. Before, the thread could keep showing work that no longer existed until the next restart.
+
 ## 2026-11-11 — ChatGPT's app limit is named, and a stopped Codex account is tried again
 
 - When ChatGPT stops a Codex account that connects through ChatGPT while the plan still has room (the account's windows show none used up), the thread now says "ChatGPT's app limit stopped this account" with the plan's remaining percent, instead of a plain usage limit. No ChatGPT setting lifts this limit; the message points to signing the account in with Codex's own login.

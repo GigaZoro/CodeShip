@@ -434,10 +434,11 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
       projection.providerTurns,
       projection.attempts,
     );
-    // A cut compaction resumes by compacting again; only a person signs a provider out.
-    const recompact =
-      sourceMessage !== undefined && !note.settled && isCompactionCommandMessage(sourceMessage);
-    if (sourceMessage !== undefined && isNativeMaintenanceCommand(sourceMessage) && !recompact)
+    // A cut compaction resumes by compacting again, and a finished one still owes the note of
+    // the work it lost; only a person signs a provider out.
+    const compaction = sourceMessage !== undefined && isCompactionCommandMessage(sourceMessage);
+    const recompact = compaction && !note.settled;
+    if (sourceMessage !== undefined && isNativeMaintenanceCommand(sourceMessage) && !compaction)
       return;
     const noteText =
       note.work.length === 0 ? undefined : restartCancelledBackgroundWorkNote(note.work);

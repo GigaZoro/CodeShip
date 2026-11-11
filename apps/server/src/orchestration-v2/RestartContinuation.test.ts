@@ -29,7 +29,11 @@ import {
   restartResumeRun,
   restartRetryRun,
 } from "./RestartContinuation.ts";
-import { continuationStartRetryDelayMs, restartRetryNoticeId } from "./RestartBackgroundNote.ts";
+import {
+  continuationStartRetryDelayMs,
+  restartCancelledBackgroundWorkNote,
+  restartRetryNoticeId,
+} from "./RestartBackgroundNote.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -1122,7 +1126,7 @@ it.effect("does not continue a run the user asked to stop before the restart", (
   }),
 );
 
-it.effect("compacts again after a cut /compact but does not repeat a cut /logout", () =>
+it.effect("continues a /compact with what it owes but never repeats a /logout", () =>
   Effect.gen(function* () {
     for (const [text, expected] of [
       [" /COMPACT ", ["/compact"]],
@@ -1146,6 +1150,29 @@ it.effect("compacts again after a cut /compact but does not repeat a cut /logout
       ],
     } as unknown as OrchestrationV2ThreadProjection);
     assert.deepEqual(texts, [CONTINUE_PROMPT]);
+    // A compaction that finished still owes the note of the awaited work it lost afterwards.
+    const lost = [{ kind: "task" as const, label: "build" }];
+    const settled = makeProjection();
+    for (const [text, expected] of [
+      ["/compact", [restartCancelledBackgroundWorkNote(lost)]],
+      ["/logout", []],
+    ] satisfies ReadonlyArray<readonly [string, Array<string>]>) {
+      const texts = yield* continuationTexts({
+        ...settled,
+        runs: [
+          {
+            ...settled.runs[0]!,
+            status: "completed",
+            completedAt: now,
+            userMessageId: MessageId.make("message:user"),
+            restartCancelledBackgroundWork: lost,
+          },
+        ],
+        providerTurns: [{ ...settled.providerTurns[0]!, status: "completed" }],
+        messages: [{ id: MessageId.make("message:user"), role: "user", text, attachments: [] }],
+      } as unknown as OrchestrationV2ThreadProjection);
+      assert.deepEqual(texts, expected, text);
+    }
   }),
 );
 

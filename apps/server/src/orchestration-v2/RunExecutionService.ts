@@ -1306,6 +1306,15 @@ export const layer: Layer.Layer<
           // buffers, session subagents) must not pin this root subscription.
           const latestProviderThreadSnapshot = yield* Ref.get(latestProviderThread);
           if (input.session.hasPendingBackgroundWorkForThread !== undefined) {
+            // A runtime whose tasks end with its process drops its roster before this stream
+            // ingests the event that says so, which may report the tasks as lost. Stopping now
+            // would leave them stored.
+            if (
+              input.session.backgroundTasksEndWithProcess === true &&
+              (latestProviderThreadSnapshot.pendingBackgroundTasks?.length ?? 0) > 0
+            ) {
+              return false;
+            }
             const hasPendingWork = yield* input.session
               .hasPendingBackgroundWorkForThread(latestProviderThreadSnapshot)
               .pipe(Effect.catchCause(() => Effect.succeed(false)));

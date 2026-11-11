@@ -6,10 +6,13 @@ import {
   EnvironmentId,
   type ModelSelection,
   type OrchestrationV2AppThread,
+  MessageId,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2PendingBackgroundTask,
   type OrchestrationV2ProviderCapabilities,
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2Run,
   type Project,
   ProjectId,
   ProviderDriverKind,
@@ -41,6 +44,7 @@ import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -51,6 +55,7 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import { backgroundWorkStoppedNoticeId } from "./RestartBackgroundNote.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
@@ -334,7 +339,9 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
       readonly initialProviderItemIdentityVersion?: 2;
     }) => Effect.Effect<void>;
     readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
-    readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
+    readonly hasPendingBackgroundWorkForThread?: (
+      providerThread: OrchestrationV2ProviderThread,
+    ) => Effect.Effect<boolean>;
     readonly backgroundTasksEndWithProcess?: boolean;
     readonly hangSessionScopeClose?: boolean;
     readonly startTurn?: Effect.Effect<void>;
@@ -424,7 +431,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
           ...(options.hasPendingBackgroundWorkForThread === undefined
             ? {}
             : {
-                hasPendingBackgroundWorkForThread: () => options.hasPendingBackgroundWorkForThread!,
+                hasPendingBackgroundWorkForThread: options.hasPendingBackgroundWorkForThread,
               }),
           ensureThread: () => unimplemented("ensureThread unused in test"),
           resumeThread: (threadInput) =>
@@ -482,7 +489,9 @@ function layerTest(input: {
     readonly paused: Deferred.Deferred<void>;
   };
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
-  readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
+  readonly hasPendingBackgroundWorkForThread?: (
+    providerThread: OrchestrationV2ProviderThread,
+  ) => Effect.Effect<boolean>;
   readonly backgroundTasksEndWithProcess?: boolean;
   readonly hangSessionScopeClose?: boolean;
   readonly startTurn?: Effect.Effect<void>;
@@ -554,6 +563,8 @@ function layerTest(input: {
   return Layer.mergeAll(
     layerTestStores,
     layerConfiguredEventSink,
+    // Reads the outbox the event sink writes; both share the test database.
+    EffectOutbox.layer.pipe(Layer.provide(layerTestDatabase)),
     IdAllocator.layer,
     layerConfiguredMcpRegistry,
     McpProviderSessions.layer,
@@ -2394,7 +2405,12 @@ it.effect("ProviderSessionManagerV2 terminal detach revokes the thread's MCP cre
   }),
 );
 
-const openSessionWithBackgroundCommand = (fixtureName: string) =>
+const openSessionWithBackgroundCommand = (
+  fixtureName: string,
+  pendingBackgroundTasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask> = [
+    { taskId: "dev-server", kind: "command", description: "python3 -m http.server" },
+  ],
+) =>
   Effect.gen(function* () {
     const eventSink = yield* EventSink.EventSinkV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -2412,9 +2428,6 @@ const openSessionWithBackgroundCommand = (fixtureName: string) =>
       providerInstanceId: modelSelection.instanceId,
       threadId,
     });
-    const pendingBackgroundTasks = [
-      { taskId: "dev-server", kind: "command", description: "python3 -m http.server" },
-    ] as const;
     const providerThreads = [
       {
         ...makeProviderThread({ idAllocator, threadId, providerSessionId, now }),
@@ -2461,7 +2474,45 @@ const openSessionWithBackgroundCommand = (fixtureName: string) =>
         ).map((task) => task.taskId),
       );
     });
-    return { threadId, providerSessionId, providerThreads, writeProviderThread, rosters };
+    const writeRun = (
+      ordinal: number,
+      status: OrchestrationV2Run["status"],
+      extra: Partial<OrchestrationV2Run> = {},
+    ) =>
+      Effect.gen(function* () {
+        const run: OrchestrationV2Run = {
+          id: idAllocator.derive.run({ threadId, ordinal }),
+          threadId,
+          ordinal,
+          providerInstanceId: modelSelection.instanceId,
+          modelSelection,
+          providerThreadId: providerThreads[0]!.id,
+          userMessageId: MessageId.make(`message:${fixtureName}:${ordinal}`),
+          rootNodeId: null,
+          activeAttemptId: null,
+          status,
+          requestedAt: now,
+          startedAt: now,
+          completedAt: status === "starting" ? null : now,
+          checkpointId: null,
+          contextHandoffId: null,
+          ...extra,
+        };
+        yield* eventSink.write({
+          events: [
+            {
+              id: yield* idAllocator.allocate.event({ threadId }),
+              type: "run.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: run,
+            },
+          ],
+        });
+        return run;
+      });
+    return { threadId, providerSessionId, providerThreads, writeProviderThread, writeRun, rosters };
   });
 
 it.effect(
@@ -2485,6 +2536,164 @@ it.effect(
       yield* effect.pipe(
         Effect.provide(
           layerTest({ state, idleTimeoutMs: 60_000, capabilities: ExclusiveCapabilities }),
+        ),
+      );
+    }),
+);
+
+type ReleasedWorkCase = {
+  readonly name: string;
+  readonly reason: "idle_timeout" | "runtime_error" | "manual_shutdown";
+  readonly wakes: boolean;
+  readonly awaited?: false;
+  /** The waiting run continues a run that lost awaited work, or one a restart cut. */
+  readonly continues?: "lost-work" | "cut-turn";
+};
+
+it.effect.each<ReleasedWorkCase>([
+  { name: "an idle close wakes a waiting chat", reason: "idle_timeout", wakes: true },
+  { name: "a failed session wakes a waiting chat", reason: "runtime_error", wakes: true },
+  { name: "a requested close wakes nobody", reason: "manual_shutdown", wakes: false },
+  { name: "unawaited work wakes nobody", reason: "idle_timeout", awaited: false, wakes: false },
+  // Quiet work the agent restarted after a wake would be closed and woken again.
+  {
+    name: "an idle close does not wake a chat woken for lost work",
+    reason: "idle_timeout",
+    continues: "lost-work",
+    wakes: false,
+  },
+  {
+    name: "an idle close wakes a turn resumed after a restart",
+    reason: "idle_timeout",
+    continues: "cut-turn",
+    wakes: true,
+  },
+  {
+    name: "a failure wakes a chat woken for lost work",
+    reason: "runtime_error",
+    continues: "lost-work",
+    wakes: true,
+  },
+])(
+  "ProviderSessionManagerV2 records the work a release stops: $name",
+  ({ name, reason, awaited = true, continues, wakes }) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const effect = Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const { threadId, providerSessionId, writeRun, rosters } =
+          yield* openSessionWithBackgroundCommand(
+            `provider-session-manager-released-work:${name}`,
+            [
+              {
+                taskId: "build",
+                kind: "command",
+                description: "vp run build",
+                ...(awaited ? { awaited: true as const } : {}),
+              },
+            ],
+          );
+        const source =
+          continues === undefined
+            ? undefined
+            : yield* writeRun(
+                1,
+                continues === "lost-work" ? "completed" : "cancelled",
+                continues === "lost-work"
+                  ? { restartCancelledBackgroundWork: [{ kind: "task", label: "earlier" }] }
+                  : {},
+              );
+        const waiting = yield* writeRun(
+          2,
+          "completed",
+          source === undefined ? {} : { restartContinuationOfRunId: source.id },
+        );
+        // A run started again for the turn that replaces the session: its prompt is not built yet.
+        const replacing = yield* writeRun(3, "starting");
+
+        yield* manager.release({ providerSessionId, reason });
+
+        assert.deepStrictEqual(yield* rosters, [[], ["build"]]);
+        const projection = yield* projectionStore.getThreadProjection(threadId);
+        const work = (runId: OrchestrationV2Run["id"]) =>
+          projection.runs.find((run) => run.id === runId)?.restartCancelledBackgroundWork;
+        assert.deepStrictEqual(work(waiting.id), [
+          {
+            kind: "shell",
+            label: "vp run build (id build)",
+            id: "build",
+            ...(awaited ? { awaited: true } : {}),
+          },
+        ]);
+        assert.isUndefined(work(replacing.id));
+        const notice = projection.turnItems.find(
+          (item) => item.id === backgroundWorkStoppedNoticeId(waiting.id),
+        );
+        assert.deepInclude(notice, {
+          type: "system_notice",
+          runId: waiting.id,
+          title: reason === "runtime_error" ? "Agent session failed" : "Agent session closed",
+        });
+        assert.strictEqual(
+          Option.isSome(yield* outbox.get(EffectOutbox.restartContinuationEffectId(waiting.id))),
+          wakes,
+        );
+      });
+
+      yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000 })));
+    }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 records the roster a replaced session runs for a thread a new turn moved",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const movedThread = yield* Ref.make<OrchestrationV2ProviderThread["id"] | null>(null);
+      const effect = Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const { threadId, providerSessionId, providerThreads, writeRun, rosters } =
+          yield* openSessionWithBackgroundCommand("provider-session-manager-moved-roster", [
+            { taskId: "build", kind: "command", description: "vp run build", awaited: true },
+          ]);
+        // The turn that replaces the session points the thread at the next one before the detach.
+        const moved = providerThreads[1]!;
+        yield* Ref.set(movedThread, moved.id);
+        const waiting = yield* writeRun(1, "completed", { providerThreadId: moved.id });
+        const replacing = yield* writeRun(2, "starting", { providerThreadId: moved.id });
+
+        yield* manager.detach({
+          providerSessionId,
+          threadId,
+          detail: "Provider or model selection changed.",
+        });
+
+        assert.deepStrictEqual(yield* rosters, [[], []]);
+        const { runs } = yield* projectionStore.getThreadProjection(threadId);
+        const work = (runId: OrchestrationV2Run["id"]) =>
+          runs.find((run) => run.id === runId)?.restartCancelledBackgroundWork;
+        assert.deepStrictEqual(work(waiting.id), [
+          { kind: "shell", label: "vp run build (id build)", id: "build", awaited: true },
+        ]);
+        assert.isUndefined(work(replacing.id));
+        assert.isTrue(
+          Option.isNone(yield* outbox.get(EffectOutbox.restartContinuationEffectId(waiting.id))),
+        );
+      });
+
+      yield* effect.pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            capabilities: ExclusiveCapabilities,
+            hasPendingBackgroundWorkForThread: (providerThread) =>
+              Ref.get(movedThread).pipe(Effect.map((id) => id === providerThread.id)),
+          }),
         ),
       );
     }),
@@ -2519,23 +2728,36 @@ it.effect("ProviderSessionManagerV2 keeps a provider update that lands while rel
     const beforeUnchangedWrite = yield* Ref.make<Effect.Effect<void>>(Effect.void);
     const effect = Effect.gen(function* () {
       const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
-      const { providerSessionId, providerThreads, writeProviderThread, rosters } =
-        yield* openSessionWithBackgroundCommand("provider-session-manager-raced-roster");
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const {
+        threadId,
+        providerSessionId,
+        providerThreads,
+        writeProviderThread,
+        writeRun,
+        rosters,
+      } = yield* openSessionWithBackgroundCommand("provider-session-manager-raced-roster");
       const seeded = providerThreads[0]!;
+      const waiting = yield* writeRun(1, "completed");
+      // A replacement process stores its own roster, which no longer lists the released work.
       yield* Ref.set(
         beforeUnchangedWrite,
         writeProviderThread({
           ...seeded,
-          pendingBackgroundTasks: [
-            ...seeded.pendingBackgroundTasks,
-            { taskId: "replacement-task", kind: "command" },
-          ],
+          pendingBackgroundTasks: [{ taskId: "replacement-task", kind: "command" }],
         }).pipe(Effect.orDie),
       );
 
       yield* manager.close(providerSessionId);
 
       assert.deepStrictEqual(yield* rosters, [["replacement-task"], ["dev-server"]]);
+      const { runs } = yield* projectionStore.getThreadProjection(threadId);
+      assert.deepStrictEqual(
+        runs
+          .find((run) => run.id === waiting.id)
+          ?.restartCancelledBackgroundWork?.map((work) => work.id),
+        ["dev-server"],
+      );
     });
 
     yield* effect.pipe(

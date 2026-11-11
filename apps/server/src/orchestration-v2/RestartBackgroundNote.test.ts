@@ -11,6 +11,7 @@ import * as DateTime from "effect/DateTime";
 import {
   cancelledRosterTaskWork,
   cancelledTurnItemWork,
+  conversationProviderThreadIds,
   isAwaitedWork,
   isRestartNoteContinuation,
   pendingRestartCancelledBackgroundWork,
@@ -61,6 +62,36 @@ it("keeps the note for the provider thread that lost the work across a provider 
   assert.deepEqual(pending(backOnClaude, [root, onCodex, backOnClaude]), lost);
   const later = run(4, claudeThread);
   assert.deepEqual(pending(later, [root, onCodex, backOnClaude, later]), []);
+});
+
+it("delivers the note to the account that resumes the same native conversation", () => {
+  const otherAccountThread = ProviderThreadId.make("provider-thread:claude-other-account");
+  const row = (id: ProviderThreadId, nativeId: string, driver = "claudeAgent") =>
+    ({ id, driver, nativeThreadRef: { nativeId } }) as Parameters<
+      typeof conversationProviderThreadIds
+    >[0];
+  const conversation = conversationProviderThreadIds(row(otherAccountThread, "native-1"), [
+    row(claudeThread, "native-1"),
+    row(otherAccountThread, "native-1"),
+    row(codexThread, "native-1", "codex"),
+    row(ProviderThreadId.make("provider-thread:claude-fork"), "native-2"),
+  ]);
+  assert.deepEqual([...conversation].sort(), [claudeThread, otherAccountThread].sort());
+
+  const root = run(1, claudeThread, { restartCancelledBackgroundWork: lost });
+  const moved = run(2, otherAccountThread);
+  const later = run(3, otherAccountThread);
+  const pending = (target: OrchestrationV2Run, runs: ReadonlyArray<OrchestrationV2Run>) =>
+    pendingRestartCancelledBackgroundWork({
+      runs,
+      providerTurns: runs.filter((source) => source.id !== target.id).map(turnFor),
+      compactionMessageIds: new Set(),
+      run: target,
+      attempts: [{ id: target.activeAttemptId!, runId: target.id }],
+      conversation,
+    });
+  assert.deepEqual(pending(moved, [root, moved]), lost);
+  assert.deepEqual(pending(later, [root, moved, later]), []);
 });
 
 it("delivers a resumed queued run's note even after a higher-ordinal run", () => {

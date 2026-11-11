@@ -14,6 +14,7 @@ import {
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
+  type OrchestrationV2StoredEvent,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
   ProviderDriverKind,
@@ -1873,6 +1874,39 @@ it.effect("keeps ingesting until queued background work clears after the probe g
   }),
 );
 
+it.effect("keeps ingesting until the queued roster update lands after the probe goes idle", () =>
+  Effect.gen(function* () {
+    // An agent process that ends drops its roster at once; the update that reports it is queued.
+    const observed = yield* runBackgroundItemScenario(
+      "queued-roster-update",
+      (ids) => {
+        const roster = (tasks: OrchestrationV2ProviderThread["pendingBackgroundTasks"]) =>
+          ({
+            type: "provider_thread.updated",
+            driver,
+            providerThread: {
+              id: ids.providerThreadId,
+              driver,
+              appThreadId: ids.threadId,
+              pendingBackgroundTasks: tasks,
+            } as OrchestrationV2ProviderThread,
+          }) satisfies ProviderAdapter.ProviderAdapterV2Event;
+        return [
+          roster([{ taskId: "build", kind: "command", awaited: true }]),
+          rootTerminalEvent(ids, "completed"),
+          roster([]),
+        ];
+      },
+      {
+        keepEventStreamOpen: true,
+        hasPendingBackgroundWorkForThread: () => Effect.succeed(false),
+        backgroundTasksEndWithProcess: true,
+      },
+    );
+    assert.deepEqual(observed, ["roster:1", "root-finalized", "roster:0"]);
+  }),
+);
+
 it.effect("keeps ingesting a child thread's late background item completion", () =>
   Effect.gen(function* () {
     const observed = yield* runBackgroundItemScenario("bg-child-item", (ids) => [
@@ -3657,6 +3691,7 @@ function runBackgroundItemScenario(
     readonly hasPendingBackgroundWorkForThread?: (
       providerThread: OrchestrationV2ProviderThread,
     ) => Effect.Effect<boolean>;
+    readonly backgroundTasksEndWithProcess?: true;
     readonly loadInheritedBackgroundTurnItems?: () => Effect.Effect<
       ReadonlyArray<{ readonly id: TurnItemId; readonly runId: RunId }>
     >;
@@ -3718,6 +3753,12 @@ function runBackgroundItemScenario(
                     `subagent:${event.subagent.status}`,
                   ]);
                 }
+                if (event.type === "provider_thread.updated") {
+                  const tasks = event.providerThread.pendingBackgroundTasks ?? [];
+                  yield* Ref.update(observed, (current) => [...current, `roster:${tasks.length}`]);
+                  // The stream adopts a provider thread only once its update is stored.
+                  return [{} as OrchestrationV2StoredEvent];
+                }
                 return [];
               }),
           }),
@@ -3737,6 +3778,9 @@ function runBackgroundItemScenario(
           ...(options?.hasPendingBackgroundWorkForThread === undefined
             ? {}
             : { hasPendingBackgroundWorkForThread: options.hasPendingBackgroundWorkForThread }),
+          ...(options?.backgroundTasksEndWithProcess === undefined
+            ? {}
+            : { backgroundTasksEndWithProcess: options.backgroundTasksEndWithProcess }),
           subscribeEvents: Effect.gen(function* () {
             yield* options?.onSubscribe ?? Effect.void;
             const events = Stream.fromIterable(makeEvents(ids)).pipe(

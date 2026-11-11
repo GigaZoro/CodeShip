@@ -66,6 +66,7 @@ import {
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import {
+  conversationProviderThreadIds,
   isRestartNoteContinuation,
   pendingRestartCancelledBackgroundWork,
   RESTART_RESEND_NOTE,
@@ -928,6 +929,7 @@ export const layer: Layer.Layer<
         ),
         run,
         attempts: projection.attempts,
+        conversation: conversationProviderThreadIds(providerThread, projection.providerThreads),
       });
       const restartNote = [
         restartCancelledWork.length === 0

@@ -125,13 +125,41 @@ never wake it. Its continuation prompt is the note of what will not report back.
 unmarked shell or monitor does not wake a settled run: most are dev servers and their
 watchdogs that nobody waits on, so that note waits for the next user message.
 For a settled chat the provider thread's roster is often the only record of a background
-command, since the command's turn item may already have completed. A provider process
-that ends on its own (a crash, or a restart that kills it before the server) reports the
-roster it drops as lost, and ingestion records that loss on the run in the same write
-that empties the roster: the note's work, a notice in the thread, and a wake. The wake is
-queued after that write, so a server that dies first leaves the work on the run, where
-startup recovery finds it as the latest run's undelivered work. A deliberate close
-(Stop, session release, shutdown) reports nothing; shutdown reconciles the roster itself.
+command, since the command's turn item may already have completed. Whoever empties a
+roster whose process is gone therefore records the loss on a run in the same write: the
+note's work and a notice in the thread. Two writers do this while the server runs.
+
+A provider process that ends on its own (a crash, or a restart that kills it before the
+server) reports the roster it drops as lost, and ingestion records it on the reporting run
+and queues a wake. That wake is queued after the write, so a server that dies first leaves
+the work on the run, where startup recovery finds it as the latest run's undelivered work.
+The run's event stream decides when to stop from the adapter's live state, which runs
+ahead of its queued events. For a runtime whose tasks end with its process, it keeps
+reading while the last roster it stored still lists tasks, or the update that reports them
+lost would be dropped with the roster left behind.
+
+A session release ends the process without a report from it, so the session manager
+records the loss when it clears the roster. It records what the process ran when it was
+released, minus what a run already carries, and not what the roster still lists: a
+replacement process may have stored its own empty roster first. A release nobody asked
+for (the idle pin expired, or the runtime failed) queues the wake in that write, because
+the session is already stopped and startup recovery would not find the chat. An idle
+close does not wake a run that was itself woken for lost work: an agent that restarts
+quiet work would be closed and woken again every few hours with nobody watching. The wake
+of a finished `/compact` run sends only the note. A release someone asked for records the work
+without a wake: a forced stop, a sign-out, archiving or settling the thread, and any
+change that needs a new session (another account, access mode, workspace or provider).
+The next prompt of that native conversation carries the note, also when an account move
+resumes it under another provider thread.
+
+Such a change points the provider thread at its next session before the old one is
+released, so the release asks the runtime it closes whose background work it still runs
+instead of trusting the session id on the row. The record goes to the latest run that is
+not being started again, so the prompt that run is about to build includes it.
+
+An adapter that closes its own process (Stop, a rollback) reports nothing, and shutdown
+reconciles the roster itself. Claude refuses to replace a process that still runs
+background work for its chat, so a new turn never reaches that close with a roster.
 
 Recovery retires effects tied to the lost process and records continuation intent
 in the durable outbox. That intent survives another restart before provider startup.

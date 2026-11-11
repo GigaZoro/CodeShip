@@ -34,6 +34,7 @@ import {
 } from "../telemetry/ProviderUsageAnalytics.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -43,10 +44,9 @@ import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import { stripUnservedToolOutputImageBytes } from "./toolOutputImageBytes.ts";
 import { boundFileChangeForStorage } from "./WireProjection.ts";
 import {
-  backgroundWorkStoppedNotice,
   cancelledRosterTaskWork,
   isAwaitedWork,
-  mergeRestartCancelledBackgroundWork,
+  lostBackgroundWorkRecord,
 } from "./RestartBackgroundNote.ts";
 
 export class ProviderEventNormalizeError extends Schema.TaggedError<ProviderEventNormalizeError>()(
@@ -479,8 +479,13 @@ export const layer: Layer.Layer<
         });
         const run = runs[0];
         if (run === undefined || run.providerThreadId !== lost.providerThreadId) return [];
-        const work = lost.tasks.map(cancelledRosterTaskWork);
         const now = yield* DateTime.now;
+        const record = lostBackgroundWorkRecord({
+          run,
+          cause: "process-ended",
+          work: lost.tasks.map(cancelledRosterTaskWork),
+          now,
+        });
         return [
           yield* makeDomainEvent(input, {
             type: "run.background-work-cancelled",
@@ -489,10 +494,7 @@ export const layer: Layer.Layer<
             occurredAt: now,
             payload: {
               runId: run.id,
-              restartCancelledBackgroundWork: mergeRestartCancelledBackgroundWork(
-                run.restartCancelledBackgroundWork ?? [],
-                work,
-              ),
+              restartCancelledBackgroundWork: record.restartCancelledBackgroundWork,
             },
           }),
           yield* makeDomainEvent(input, {
@@ -501,15 +503,7 @@ export const layer: Layer.Layer<
             runId: run.id,
             nodeId: run.rootNodeId,
             occurredAt: now,
-            payload: backgroundWorkStoppedNotice({
-              run,
-              cause: "process-ended",
-              work,
-              stoppedAt: now,
-              now,
-              // EventSink places the item after the run's existing items.
-              ordinal: 0,
-            }),
+            payload: record.notice,
           }),
         ];
       },
@@ -540,12 +534,11 @@ export const layer: Layer.Layer<
           commandId,
           events: [],
           effects: [
-            {
-              id: `effect:restart-continuation:${runId}`,
+            EffectOutbox.restartContinuationEffect({
               commandId,
               threadId: recorded.event.threadId,
-              request: { type: "provider-runtime.continue", sourceRunId: runId },
-            },
+              sourceRunId: runId,
+            }),
           ],
         })
         .pipe(

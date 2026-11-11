@@ -2,11 +2,14 @@ import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
+  CommandId,
   isOrchestrationV2WorkActive,
   ModelSelection,
   OrchestrationV2DomainEvent,
+  type OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2Run,
   OrchestrationV2RuntimeRequest,
   ProviderInstanceId,
   ProviderSessionId,
@@ -45,6 +48,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ServerSettings from "../serverSettings.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
+import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -53,6 +57,13 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import {
+  type BackgroundWorkStop,
+  cancelledRosterTaskWork,
+  isAwaitedWork,
+  latestStartedRun,
+  lostBackgroundWorkRecord,
+} from "./RestartBackgroundNote.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
@@ -265,6 +276,24 @@ function releasedRuntimeRequestStatusFor(
 ): OrchestrationV2RuntimeRequest["status"] {
   return reason === "manual_shutdown" || reason === "server_shutdown" ? "cancelled" : "expired";
 }
+
+/**
+ * How a release that ends the process explains the background work it stops, and whether the chat
+ * that waits on that work is woken: only when nobody asked for the release. An idle close does not
+ * wake a run that was itself woken for lost work: quiet work its agent restarts would be closed
+ * and woken again, unattended.
+ */
+const RELEASED_BACKGROUND_WORK: Record<
+  Exclude<ProviderSessionReleaseReason, "server_shutdown">,
+  { readonly cause: BackgroundWorkStop; readonly wakes: "always" | "once" | "never" }
+> = {
+  idle_timeout: { cause: "session-idle", wakes: "once" },
+  runtime_error: { cause: "session-failed", wakes: "always" },
+  manual_shutdown: { cause: "session-closed", wakes: "never" },
+};
+
+const isSettledRun = (run: OrchestrationV2Run) =>
+  run.status === "completed" || run.status === "waiting";
 
 function sessionKey(providerSessionId: ProviderSessionId): string {
   return String(providerSessionId);
@@ -743,6 +772,8 @@ export const layerWithOptions = (
 
       // Read tasks as soon as the session leaves the live map, before a replacement reports its own.
       // Keep OpenCode's roster: its background subagents share a server and can outlive the session.
+      // A turn that replaces this session has already moved its provider thread to the next one,
+      // so the runtime being closed also says whose background work it still runs.
       const readReleasedBackgroundTasks = Effect.fn(
         "ProviderSessionManager.readReleasedBackgroundTasks",
       )(
@@ -757,7 +788,8 @@ export const layerWithOptions = (
           ) {
             return [];
           }
-          const providerSessionId = input.entry.runtime.providerSessionId;
+          const { runtime } = input.entry;
+          const providerSessionId = runtime.providerSessionId;
           const threadIds = new Set(input.entry.attachedThreadIds);
           if (input.detachedThreadId !== undefined) threadIds.add(input.detachedThreadId);
           const released = [];
@@ -767,14 +799,20 @@ export const layerWithOptions = (
             ]);
             for (const providerThread of projection.providerThreads) {
               const tasks = providerThread.pendingBackgroundTasks ?? [];
-              if (providerThread.providerSessionId !== providerSessionId || tasks.length === 0) {
-                continue;
-              }
+              if (tasks.length === 0) continue;
+              const runsItsWork =
+                providerThread.providerSessionId === providerSessionId ||
+                (runtime.hasPendingBackgroundWorkForThread !== undefined &&
+                  providerThread.driver === runtime.driver &&
+                  (yield* runtime
+                    .hasPendingBackgroundWorkForThread(providerThread)
+                    .pipe(Effect.catchCause(() => Effect.succeed(false)))));
+              if (!runsItsWork) continue;
               released.push({
                 threadId,
                 providerSessionId,
                 providerThreadId: providerThread.id,
-                taskIds: new Set(tasks.map((task) => task.taskId)),
+                tasks,
               });
             }
           }
@@ -794,55 +832,171 @@ export const layerWithOptions = (
         ReturnType<typeof readReleasedBackgroundTasks>
       >[number];
 
-      // Dead processes cannot report task endings; stale rosters keep threads Waiting.
+      // The run that last ran on a released thread records what the release stopped. A run
+      // started again has not rebuilt its prompt, so the run before it takes the record and that
+      // prompt carries the note.
+      const releasedWorkRecord = Effect.fnUntraced(function* (input: {
+        readonly reason: keyof typeof RELEASED_BACKGROUND_WORK;
+        readonly threadId: ThreadId;
+        readonly providerSessionId: ProviderSessionId;
+        readonly providerThread: OrchestrationV2ProviderThread;
+        readonly runs: ReadonlyArray<OrchestrationV2Run>;
+        readonly stopped: ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
+        readonly now: DateTime.Utc;
+      }) {
+        const run =
+          input.providerThread.ownerNodeId !== null
+            ? undefined
+            : latestStartedRun(
+                input.runs.filter(
+                  (candidate) =>
+                    candidate.status !== "preparing" && candidate.status !== "starting",
+                ),
+                input.providerThread.id,
+              );
+        // The process that ended on its own may have reported this work a moment earlier.
+        const recorded = new Set(
+          input.runs.flatMap((candidate) =>
+            (candidate.restartCancelledBackgroundWork ?? []).map((entry) => entry.id),
+          ),
+        );
+        const work = input.stopped
+          .map(cancelledRosterTaskWork)
+          .filter((entry) => !recorded.has(entry.id));
+        if (run === undefined || work.length === 0) return { events: [], effects: [] };
+        const { cause, wakes } = RELEASED_BACKGROUND_WORK[input.reason];
+        const record = lostBackgroundWorkRecord({ run, cause, work, now: input.now });
+        const base = {
+          threadId: input.threadId,
+          runId: run.id,
+          driver: input.providerThread.driver,
+          providerInstanceId: run.providerInstanceId,
+          occurredAt: input.now,
+        };
+        const allocateEventId = idAllocator.allocate.event(input);
+        const events: ReadonlyArray<OrchestrationV2DomainEvent> = [
+          {
+            ...base,
+            id: yield* allocateEventId,
+            type: "run.background-work-cancelled",
+            payload: {
+              runId: run.id,
+              restartCancelledBackgroundWork: record.restartCancelledBackgroundWork,
+            },
+          },
+          {
+            ...base,
+            id: yield* allocateEventId,
+            type: "turn-item.updated",
+            ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
+            payload: record.notice,
+          },
+        ];
+        // The wake rides the record's write: the session is already stopped, so a restart
+        // would not find this chat by itself.
+        const wokenFor = input.runs.find(
+          (candidate) => candidate.id === run.restartContinuationOfRunId,
+        );
+        const wake =
+          wakes !== "never" &&
+          work.some(isAwaitedWork) &&
+          isSettledRun(run) &&
+          !(
+            wakes === "once" &&
+            wokenFor !== undefined &&
+            isSettledRun(wokenFor) &&
+            (wokenFor.restartCancelledBackgroundWork ?? []).some(isAwaitedWork)
+          );
+        return {
+          events,
+          effects: wake
+            ? [
+                EffectOutbox.restartContinuationEffect({
+                  commandId: CommandId.make(`command:background-work-lost:${run.id}`),
+                  threadId: input.threadId,
+                  sourceRunId: run.id,
+                }),
+              ]
+            : [],
+        };
+      });
+
+      // Dead processes cannot report task endings; stale rosters keep threads Waiting. What the
+      // release stopped is recorded in the roster's own write.
       const writeReleasedBackgroundWorkEvents = (
         released: ReadonlyArray<ReleasedBackgroundTasks>,
+        reason: ProviderSessionReleaseReason,
       ) =>
-        Effect.forEach(
-          released,
-          ({ threadId, providerSessionId, providerThreadId, taskIds }) =>
-            Effect.gen(function* () {
-              for (let attempt = 0; attempt < 3; attempt++) {
-                const projection = yield* projectionStore.getThreadRecords(threadId, [
-                  "providerThreads",
-                ]);
-                const providerThread = projection.providerThreads.find(
-                  (candidate) => candidate.id === providerThreadId,
-                );
-                const tasks = providerThread?.pendingBackgroundTasks ?? [];
-                const remaining = tasks.filter((task) => !taskIds.has(task.taskId));
-                if (providerThread === undefined || remaining.length === tasks.length) return;
-                const now = yield* DateTime.now;
-                const { committed } = yield* eventSink.writeIfProviderThreadUnchanged({
-                  expected: providerThread,
-                  events: [
-                    {
-                      id: yield* idAllocator.allocate.event({ threadId, providerSessionId }),
-                      type: "provider-thread.updated",
+        // Shutdown releases no roster here: restart recovery reconciles it.
+        reason === "server_shutdown"
+          ? Effect.void
+          : Effect.forEach(
+              released,
+              ({ threadId, providerSessionId, providerThreadId, tasks: stopped }) =>
+                Effect.gen(function* () {
+                  const taskIds = new Set(stopped.map((task) => task.taskId));
+                  for (let attempt = 0; attempt < 3; attempt++) {
+                    const projection = yield* projectionStore.getThreadRecords(threadId, [
+                      "providerThreads",
+                      "runs",
+                    ]);
+                    const providerThread = projection.providerThreads.find(
+                      (candidate) => candidate.id === providerThreadId,
+                    );
+                    if (providerThread === undefined) return;
+                    const tasks = providerThread.pendingBackgroundTasks ?? [];
+                    const remaining = tasks.filter((task) => !taskIds.has(task.taskId));
+                    const now = yield* DateTime.now;
+                    // Recorded from what the process ran when it was released: its replacement
+                    // may already have stored its own empty roster.
+                    const record = yield* releasedWorkRecord({
+                      reason,
                       threadId,
-                      driver: providerThread.driver,
-                      providerInstanceId: providerThread.providerInstanceId,
-                      occurredAt: now,
-                      payload: {
-                        ...providerThread,
-                        pendingBackgroundTasks: remaining,
-                        updatedAt: now,
-                      },
+                      providerSessionId,
+                      providerThread,
+                      runs: projection.runs,
+                      stopped,
+                      now,
+                    });
+                    const cleared: ReadonlyArray<OrchestrationV2DomainEvent> =
+                      remaining.length === tasks.length
+                        ? []
+                        : [
+                            {
+                              id: yield* idAllocator.allocate.event({
+                                threadId,
+                                providerSessionId,
+                              }),
+                              type: "provider-thread.updated",
+                              threadId,
+                              driver: providerThread.driver,
+                              providerInstanceId: providerThread.providerInstanceId,
+                              occurredAt: now,
+                              payload: {
+                                ...providerThread,
+                                pendingBackgroundTasks: remaining,
+                                updatedAt: now,
+                              },
+                            },
+                          ];
+                    if (cleared.length === 0 && record.events.length === 0) return;
+                    const { committed } = yield* eventSink.writeIfProviderThreadUnchanged({
+                      expected: providerThread,
+                      events: [...cleared, ...record.events],
+                      effects: record.effects,
+                    });
+                    if (committed) return;
+                  }
+                  yield* Effect.logWarning(
+                    "orchestration-v2.provider-session-release-roster-conflict",
+                    {
+                      providerSessionId,
+                      providerThreadId,
                     },
-                  ],
-                });
-                if (committed) return;
-              }
-              yield* Effect.logWarning(
-                "orchestration-v2.provider-session-release-roster-conflict",
-                {
-                  providerSessionId,
-                  providerThreadId,
-                },
-              );
-            }),
-          { discard: true },
-        );
+                  );
+                }),
+              { discard: true },
+            );
 
       const writeReleaseRecords = (input: {
         readonly entry: LiveSessionEntry;
@@ -862,7 +1016,9 @@ export const layerWithOptions = (
                 input.entry.requestEventPermit.withPermits(1),
               ),
             ),
-            Effect.exit(writeReleasedBackgroundWorkEvents(input.releasedBackgroundTasks)),
+            Effect.exit(
+              writeReleasedBackgroundWorkEvents(input.releasedBackgroundTasks, input.reason),
+            ),
           ],
           { concurrency: 1 },
         ).pipe(Effect.flatMap(Exit.asVoidAll));

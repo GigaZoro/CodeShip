@@ -1,5 +1,6 @@
 import type {
   OrchestrationV2PendingBackgroundTask,
+  OrchestrationV2ProviderThread,
   OrchestrationV2ProviderTurn,
   OrchestrationV2RestartCancelledBackgroundWork,
   OrchestrationV2Run,
@@ -143,8 +144,14 @@ export function restartCancelledBackgroundWorkNote(work: ReadonlyArray<Work>): s
   ].join("\n");
 }
 
-/** What ended background work without a report: its server, or the agent process that ran it. */
-export type BackgroundWorkStop = "server-restarted" | "server-shut-down" | "process-ended";
+/** What ended background work without a report: its server, its agent process, or that process's session. */
+export type BackgroundWorkStop =
+  | "server-restarted"
+  | "server-shut-down"
+  | "process-ended"
+  | "session-idle"
+  | "session-failed"
+  | "session-closed";
 
 const BACKGROUND_WORK_STOP_TEXT: Record<
   BackgroundWorkStop,
@@ -153,6 +160,12 @@ const BACKGROUND_WORK_STOP_TEXT: Record<
   "server-restarted": { title: "Server restarted", lead: "The server restarted" },
   "server-shut-down": { title: "Server shut down", lead: "The server shut down" },
   "process-ended": { title: "Agent process ended", lead: "The agent process ended" },
+  "session-idle": {
+    title: "Agent session closed",
+    lead: "The agent's session was closed after too long without activity",
+  },
+  "session-failed": { title: "Agent session failed", lead: "The agent's session failed" },
+  "session-closed": { title: "Agent session closed", lead: "The agent's session was closed" },
 };
 
 export function backgroundWorkStoppedNoticeId(runId: RunId) {
@@ -194,6 +207,53 @@ export function backgroundWorkStoppedNotice(input: {
       ...(input.work.some(isAwaitedWork) ? ["This chat was waiting on it."] : []),
     ].join("\n"),
   };
+}
+
+/**
+ * What a run's process lost while the server kept running: the run's merged record of it, and the
+ * thread notice that explains it. EventSink places the notice after the run's existing items.
+ */
+export function lostBackgroundWorkRecord(input: {
+  readonly run: Pick<
+    OrchestrationV2Run,
+    "id" | "threadId" | "rootNodeId" | "providerThreadId" | "restartCancelledBackgroundWork"
+  >;
+  readonly cause: BackgroundWorkStop;
+  readonly work: ReadonlyArray<Work>;
+  readonly now: DateTime.Utc;
+}) {
+  return {
+    restartCancelledBackgroundWork: mergeRestartCancelledBackgroundWork(
+      input.run.restartCancelledBackgroundWork ?? [],
+      input.work,
+    ),
+    notice: backgroundWorkStoppedNotice({
+      run: input.run,
+      cause: input.cause,
+      work: input.work,
+      stoppedAt: input.now,
+      now: input.now,
+      ordinal: 0,
+    }),
+  };
+}
+
+/** The latest run that started on a provider thread, whose record the work that thread lost joins. */
+export function latestStartedRun(
+  runs: ReadonlyArray<OrchestrationV2Run>,
+  providerThreadId: NonNullable<OrchestrationV2Run["providerThreadId"]>,
+): OrchestrationV2Run | undefined {
+  return runs.reduce<OrchestrationV2Run | undefined>(
+    (latest, run) =>
+      run.providerThreadId === providerThreadId &&
+      run.status !== "queued" &&
+      run.status !== "rolled_back" &&
+      !neverStarted(run) &&
+      (latest === undefined || runRanAfter(run, latest))
+        ? run
+        : latest,
+    undefined,
+  );
 }
 
 type ProviderTurnState = Pick<
@@ -419,11 +479,38 @@ export function isRestartNoteContinuation(
   );
 }
 
-/** Derive delivery from later completed turns on the same provider thread, excluding compactions, resumes, and rolled-back runs. */
+/**
+ * The provider threads that carry one native conversation. A move to another account resumes it
+ * under that account's own row, and the agent that lost the work answers there.
+ */
+export function conversationProviderThreadIds(
+  providerThread: Pick<OrchestrationV2ProviderThread, "id" | "driver" | "nativeThreadRef">,
+  providerThreads: ReadonlyArray<
+    Pick<OrchestrationV2ProviderThread, "id" | "driver" | "nativeThreadRef">
+  >,
+): ReadonlySet<OrchestrationV2ProviderThread["id"]> {
+  const nativeId = providerThread.nativeThreadRef?.nativeId;
+  return new Set([
+    providerThread.id,
+    ...(nativeId == null
+      ? []
+      : providerThreads
+          .filter(
+            (candidate) =>
+              candidate.driver === providerThread.driver &&
+              candidate.nativeThreadRef?.nativeId === nativeId,
+          )
+          .map((candidate) => candidate.id)),
+  ]);
+}
+
+/** Derive delivery from later completed turns of the same native conversation, excluding compactions, resumes, and rolled-back runs. */
 export function pendingRestartCancelledBackgroundWork(input: {
   readonly runs: ReadonlyArray<OrchestrationV2Run>;
   readonly providerTurns: ReadonlyArray<ProviderTurnState>;
   readonly compactionMessageIds: ReadonlySet<string>;
+  /** From conversationProviderThreadIds; the run's own provider thread when omitted. */
+  readonly conversation?: ReadonlySet<OrchestrationV2ProviderThread["id"]>;
   readonly run: Pick<
     OrchestrationV2Run,
     | "id"
@@ -444,13 +531,15 @@ export function pendingRestartCancelledBackgroundWork(input: {
     isCompaction(input.run)
   )
     return [];
-  const providerThreadId = input.run.providerThreadId;
+  const conversation = input.conversation ?? new Set([input.run.providerThreadId]);
   const deliveredAttemptIds = new Set(
     input.providerTurns
-      .filter((turn) => turn.providerThreadId === providerThreadId && turn.status === "completed")
+      .filter((turn) => conversation.has(turn.providerThreadId) && turn.status === "completed")
       .map((turn) => turn.runAttemptId),
   );
-  const sameThread = input.runs.filter((run) => run.providerThreadId === providerThreadId);
+  const sameThread = input.runs.filter(
+    (run) => run.providerThreadId !== null && conversation.has(run.providerThreadId),
+  );
   const prompted = sameThread.filter(
     (candidate) =>
       candidate.id !== input.run.id &&
