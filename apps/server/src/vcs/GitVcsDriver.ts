@@ -110,6 +110,8 @@ export interface GitPreparedCommitContext {
 }
 
 export interface ExecuteGitProgress {
+  /** Runs once Git is spawned, after any wait for a free Git process slot. */
+  readonly onProcessStarted?: () => Effect.Effect<void, never>;
   readonly onStdoutLine?: (line: string) => Effect.Effect<void, never>;
   readonly onStderrLine?: (line: string) => Effect.Effect<void, never>;
   readonly onHookStarted?: (hookName: string) => Effect.Effect<void, never>;
@@ -118,6 +120,9 @@ export interface ExecuteGitProgress {
     exitCode: number | null;
     durationMs: number | null;
   }) => Effect.Effect<void, never>;
+  /** `helper` names the credential helper program and its action, such as `git-credential-osxkeychain get`. */
+  readonly onCredentialHelperStarted?: (helper: string) => Effect.Effect<void, never>;
+  readonly onCredentialHelperFinished?: (helper: string) => Effect.Effect<void, never>;
 }
 
 export interface CreateWorktreeProgress {

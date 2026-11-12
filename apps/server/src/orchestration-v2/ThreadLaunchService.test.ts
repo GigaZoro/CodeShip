@@ -62,7 +62,10 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
-import { GIT_REMOTE_UNREACHABLE_DETAIL } from "../vcs/GitVcsDriverCore.ts";
+import {
+  GIT_REMOTE_TIMED_OUT_DETAIL,
+  GIT_REMOTE_UNREACHABLE_DETAIL,
+} from "../vcs/GitVcsDriverCore.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as ThreadTitleRegeneration from "./ThreadTitleRegenerationService.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
@@ -1163,9 +1166,16 @@ it.effect.each([
     detail: GIT_REMOTE_UNREACHABLE_DETAIL,
     failureClass: "transport_error",
   },
+  {
+    name: "a remote that does not answer in time",
+    detail: GIT_REMOTE_TIMED_OUT_DETAIL,
+    failureClass: "transport_error",
+  },
 ] as const)(
   "shows the fetch diagnosis when preparing a worktree from origin fails at $name",
   ({ detail, failureClass }) => {
+    const diagnostics =
+      "Fetch phases: credential helper git-credential-test get 1.2 s; transfer 0.4 s.";
     const harness = makeHarness({
       fetchWorktreeBaseCommit: () =>
         Effect.fail(
@@ -1174,6 +1184,7 @@ it.effect.each([
             command: "git",
             cwd: project.workspaceRoot,
             detail,
+            diagnostics,
             exitCode: 128,
           }),
         ),
@@ -1206,6 +1217,7 @@ it.effect.each([
       );
       const failure = projection.turnItems.find((item) => item.type === "error")?.failure;
       assert.include(failure?.message ?? "", detail);
+      assert.include(failure?.message ?? "", diagnostics);
       assert.equal(failure?.class, failureClass);
       assert.equal(harness.createWorktree.mock.calls.length, 0);
       assert.equal(harness.runSetup.mock.calls.length, 0);

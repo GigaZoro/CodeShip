@@ -370,9 +370,9 @@ export const VcsPullResult = Schema.Struct({
 });
 export type VcsPullResult = typeof VcsPullResult.Type;
 
-// Git stderr can echo credentials from argv and remote URLs. Only a fixed
-// reason reaches the error and its diagnostic suffix; newer, unknown reasons
-// decode as absent through GitCommandError.
+// Git stderr can echo credentials from argv and remote URLs, so the reason is a
+// fixed value and Git lines in `diagnostics` have URL credentials stripped.
+// Newer, unknown reasons decode as absent through GitCommandError.
 export const GitCommandFailureReason = Schema.Literals([
   "authentication_failed",
   "branch_already_exists",
@@ -400,11 +400,14 @@ export class GitCommandError extends Schema.TaggedError<GitCommandError>()("GitC
   outputLength: Schema.optional(Schema.Number),
   reason: ForwardCompatibleOptional(GitCommandFailureReason),
   detail: Schema.String,
+  // Phase timings and Git's own error lines, with credentials stripped from URLs.
+  diagnostics: Schema.optional(Schema.String),
   cause: Schema.optional(Schema.Defect()),
 }) {
   override get message(): string {
     const reason = this.reason === undefined ? "" : ` (${this.reason})`;
-    return `Git command failed in ${this.operation} (${this.cwd}): ${this.detail}${reason}`;
+    const diagnostics = this.diagnostics === undefined ? "" : ` ${this.diagnostics}`;
+    return `Git command failed in ${this.operation} (${this.cwd}): ${this.detail}${reason}${diagnostics}`;
   }
 }
 

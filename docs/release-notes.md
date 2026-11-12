@@ -1,3 +1,8 @@
+## 2026-11-12 — Scheduled runs retry a worktree fetch that timed out after a wake
+
+- When a scheduled run started right after the machine woke from sleep, fetching the project's remote to prepare its worktree could get no answer within 30 seconds, and the run failed for good. A fetch that times out now counts as a lost connection, so the run waits for the network and tries again, as it already did when Git could not reach the remote.
+- A failed fetch now says where the time went: how long each Git credential helper took or that it was still running, how long the transfer took, and Git's own last error lines with any credentials removed from URLs.
+
 ## 2026-11-12 — A failed background-work mark says why, and unknown ids no longer wait
 
 - When `t3_background_wait` cannot update the awaited background work, the error now names the cause (for example a timeout) instead of only "Failed to update the awaited background work."

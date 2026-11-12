@@ -35,6 +35,7 @@ import {
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as ServerConfig from "../config.ts";
 import {
+  GIT_REMOTE_TIMED_OUT_DETAIL,
   makeGitVcsDriverCore,
   parseGitCheckoutProgressLine,
   splitNullSeparatedGitStdoutPaths,
@@ -1262,7 +1263,11 @@ it.effect.each([
 ] as const)("reports $name during fetch without retaining remote output", (scenario) =>
   Effect.gen(function* () {
     const secret = "secret-fetch-token";
-    const stderr = `${scenario.stderr}\nhttps://user:${secret}@example.com/private?token=${secret}`;
+    const stderr = [
+      scenario.stderr,
+      `https://user:${secret}@example.com/private?token=${secret}`,
+      `error: unable to access 'https://user:${secret}@example.com/private?token=${secret}': stalled`,
+    ].join("\n");
     const attempts = yield* Ref.make(0);
     const spawner = ChildProcessSpawner.make((command) =>
       Effect.gen(function* () {
@@ -1294,6 +1299,7 @@ it.effect.each([
     const cwd = yield* makeTmpDir();
     const error = yield* driver.fetchRemote({ cwd, remoteName: "origin" }).pipe(Effect.flip);
     assert.include(error.detail, scenario.expected);
+    assert.include(error.message, "error: unable to access 'https://example.com/private': stalled");
     assert.equal(error.exitCode, 128);
     assert.equal(error.stderrLength, stderr.length);
     assert.equal(error.stdoutLength, secret.length);
@@ -1332,6 +1338,54 @@ it.effect("retries a fetch that lost a ref update to another Git process", () =>
     const cwd = yield* makeTmpDir();
     yield* driver.fetchRemote({ cwd, remoteName: "origin", refName: "main" });
     assert.equal(yield* Ref.get(attempts), 2);
+  }).pipe(Effect.provide(layerServerConfig.pipe(Layer.provideMerge(NodeServices.layer)))),
+);
+
+it.effect("names the credential helper that never answered when a fetch times out", () =>
+  Effect.gen(function* () {
+    const helperStarted = yield* Deferred.make<void>();
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.gen(function* () {
+        if (!ChildProcess.isStandardCommand(command))
+          return yield* Effect.die("expected Git command");
+        if (command.args[0] !== "fetch") return makeNonRepositoryHandle();
+        const traceFile = command.options.env?.GIT_TRACE2_EVENT;
+        if (traceFile === undefined) return yield* Effect.die("expected a trace2 file");
+        NodeFS.appendFileSync(
+          traceFile,
+          `${JSON.stringify({
+            event: "child_start",
+            sid: "remote-https",
+            child_id: 0,
+            child_class: "?",
+            use_shell: true,
+            argv: ["/home/me/bin/git-credential-hang get"],
+          })}\n`,
+        );
+        yield* Deferred.succeed(helperStarted, undefined);
+        return ChildProcessSpawner.makeHandle({
+          ...makeNonRepositoryHandle(),
+          exitCode: Effect.never,
+          isRunning: Effect.succeed(true),
+          stderr: Stream.empty,
+        });
+      }),
+    );
+    const driver = yield* makeGitVcsDriverCore().pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    );
+    const cwd = yield* makeTmpDir();
+
+    const fetch = yield* driver
+      .fetchRemote({ cwd, remoteName: "origin", refName: "main" })
+      .pipe(Effect.flip, Effect.forkChild);
+    yield* Deferred.await(helperStarted);
+    yield* TestClock.adjust("30 seconds");
+    const error = yield* Fiber.join(fetch);
+
+    assert.equal(error.detail, GIT_REMOTE_TIMED_OUT_DETAIL);
+    assert.include(error.message, "credential helper git-credential-hang get still running after");
+    assert.notInclude(error.message, "/home/me");
   }).pipe(Effect.provide(layerServerConfig.pipe(Layer.provideMerge(NodeServices.layer)))),
 );
 

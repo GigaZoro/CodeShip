@@ -579,11 +579,82 @@ function isMissingWorktreeStderr(stderr: string): boolean {
   );
 }
 
+const GIT_COMMAND_TIMED_OUT_DETAIL = "Git command timed out.";
+
 /** A fetch that could not resolve or connect to the remote host: the network, not the repository. */
 export const GIT_REMOTE_UNREACHABLE_DETAIL =
   "Git could not reach the remote. Check the server's network connection and remote host, then retry.";
 
-// Fetch stderr can carry credentials; persist only fixed diagnoses or generic failures.
+/** A fetch that got no answer in time, from the remote or from a credential helper that needs the network. */
+export const GIT_REMOTE_TIMED_OUT_DETAIL =
+  "Git got no answer in time. Check the server's network connection and Git credential helper, then retry.";
+
+// Git's own diagnostics; credential helpers and the remote (`remote:`) can print anything.
+const GIT_OWN_DIAGNOSTIC_LINE = /^(?:fatal|error|warning): /;
+const MAX_FETCH_DIAGNOSTIC_LINES = 3;
+const MAX_FETCH_DIAGNOSTIC_LINE_LENGTH = 300;
+
+// Git strips passwords from the URLs it prints, but not tokens in user names or query strings.
+function withoutUrlCredentials(line: string): string {
+  return line.replace(/\b([a-z][a-z0-9+.-]*:\/\/)(?:[^\s/@'"]*@)?([^\s?#'"]*)[^\s'"]*/gi, "$1$2");
+}
+
+const formatSeconds = (ms: number) => `${(Math.max(0, ms) / 1000).toFixed(1)} s`;
+
+/** Where a fetch spent its time and what Git said, for its failure message. */
+function makeFetchTimeline() {
+  let processStartedAtMs: number | null = null;
+  const helpers: Array<{ helper: string; startedAtMs: number; finishedAtMs: number | null }> = [];
+  const gitLines: Array<string> = [];
+  const progress: GitVcsDriver.ExecuteGitProgress = {
+    onProcessStarted: () =>
+      Clock.currentTimeMillis.pipe(
+        Effect.map((now) => {
+          processStartedAtMs = now;
+        }),
+      ),
+    onStderrLine: (line) =>
+      Effect.sync(() => {
+        if (!GIT_OWN_DIAGNOSTIC_LINE.test(line)) return;
+        gitLines.push(withoutUrlCredentials(line).slice(0, MAX_FETCH_DIAGNOSTIC_LINE_LENGTH));
+        if (gitLines.length > MAX_FETCH_DIAGNOSTIC_LINES) gitLines.shift();
+      }),
+    onCredentialHelperStarted: (helper) =>
+      Clock.currentTimeMillis.pipe(
+        Effect.map((now) => helpers.push({ helper, startedAtMs: now, finishedAtMs: null })),
+      ),
+    onCredentialHelperFinished: (helper) =>
+      Clock.currentTimeMillis.pipe(
+        Effect.map((now) => {
+          const run = helpers.findLast(
+            (candidate) => candidate.helper === helper && candidate.finishedAtMs === null,
+          );
+          if (run) run.finishedAtMs = now;
+        }),
+      ),
+  };
+  const describe = Clock.currentTimeMillis.pipe(
+    Effect.map((now) => {
+      if (processStartedAtMs === null) return "Fetch phases: Git had not started.";
+      let helperMs = 0;
+      const phases = helpers.map(({ helper, startedAtMs: helperStartedAtMs, finishedAtMs }) => {
+        const durationMs = (finishedAtMs ?? now) - helperStartedAtMs;
+        helperMs += durationMs;
+        return finishedAtMs === null
+          ? `credential helper ${helper} still running after ${formatSeconds(durationMs)}`
+          : `credential helper ${helper} ${formatSeconds(durationMs)}`;
+      });
+      if (phases.length === 0) phases.push("no credential helper ran");
+      phases.push(`transfer ${formatSeconds(now - processStartedAtMs - helperMs)}`);
+      const said = gitLines.length === 0 ? "" : ` Git said: ${gitLines.join(" | ")}`;
+      return `Fetch phases: ${phases.join("; ")}.${said}`;
+    }),
+  );
+  return { progress, describe };
+}
+
+// Fetch stderr can carry credentials; the detail is a fixed diagnosis, and
+// makeFetchTimeline keeps only Git's own lines with URL credentials removed.
 function fetchFailureDetail(stderr: string): string | undefined {
   const lines = stderr.split(/\r?\n/).map((line) => line.trim());
   if (
@@ -664,6 +735,24 @@ function trace2ChildKey(record: Record<string, unknown>): string | null {
   return typeof hookName === "string" && hookName.trim().length > 0 ? hookName.trim() : null;
 }
 
+const CREDENTIAL_HELPER_ACTIONS = new Set(["get", "store", "erase"]);
+
+// Git runs a credential helper through the shell as one unclassified "<helper> <action>" argument.
+function credentialHelperFromTrace2(record: Record<string, unknown>): string | null {
+  const argv = record.argv;
+  if (record.child_class !== "?" || record.use_shell !== true) return null;
+  if (!Array.isArray(argv) || argv.length !== 1) return null;
+  const [command] = argv;
+  if (typeof command !== "string") return null;
+  const words = command.trim().split(/\s+/);
+  const action = words.at(-1) ?? "";
+  if (words.length < 2 || !CREDENTIAL_HELPER_ACTIONS.has(action)) return null;
+  const program = words[0]?.split(/[\\/]/).at(-1) ?? "";
+  const name = program === "git" && words.length > 2 ? `git-${words[1]}` : program;
+  // An inline shell helper's text can hold a secret, so only a plain program name is kept.
+  return `${/^[\w.+-]+$/.test(name) ? name : "inline helper"} ${action}`;
+}
+
 const Trace2Record = Schema.Record(Schema.String, Schema.Unknown);
 const decodeTrace2Record = decodeJsonResult(Trace2Record);
 
@@ -675,7 +764,12 @@ const createTrace2Monitor = Effect.fnUntraced(function* (
   PlatformError.PlatformError,
   Scope.Scope | FileSystem.FileSystem | Path.Path
 > {
-  if (!progress?.onHookStarted && !progress?.onHookFinished) {
+  if (
+    !progress?.onHookStarted &&
+    !progress?.onHookFinished &&
+    !progress?.onCredentialHelperStarted &&
+    !progress?.onCredentialHelperFinished
+  ) {
     return {
       env: {},
       flush: Effect.void,
@@ -689,6 +783,7 @@ const createTrace2Monitor = Effect.fnUntraced(function* (
     suffix: ".json",
   });
   const hookStartByChildKey = new Map<string, { hookName: string; startedAtMs: number }>();
+  const credentialHelperByChildKey = new Map<string, string>();
   const traceTailState = yield* Ref.make<TraceTailState>({
     processedChars: 0,
     remainder: "",
@@ -712,6 +807,24 @@ const createTrace2Monitor = Effect.fnUntraced(function* (
     const event = traceRecord.success.event;
     const childKey = trace2ChildKey(traceRecord.success);
     if (childKey === null) {
+      return;
+    }
+    const credentialHelper =
+      event === "child_start"
+        ? credentialHelperFromTrace2(traceRecord.success)
+        : credentialHelperByChildKey.get(childKey);
+    if (credentialHelper != null) {
+      if (event === "child_start") {
+        credentialHelperByChildKey.set(childKey, credentialHelper);
+        if (progress.onCredentialHelperStarted) {
+          yield* progress.onCredentialHelperStarted(credentialHelper);
+        }
+      } else if (event === "child_exit") {
+        credentialHelperByChildKey.delete(childKey);
+        if (progress.onCredentialHelperFinished) {
+          yield* progress.onCredentialHelperFinished(credentialHelper);
+        }
+      }
       return;
     }
     const started = hookStartByChildKey.get(childKey);
@@ -1008,6 +1121,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
                 }),
             ),
           );
+        if (input.progress?.onProcessStarted) yield* input.progress.onProcessStarted();
 
         const [stdout, stderr, exitCode] = yield* Effect.all(
           [
@@ -1088,7 +1202,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             () =>
               new GitCommandError({
                 ...gitCommandContext(commandInput),
-                detail: "Git command timed out.",
+                detail: GIT_COMMAND_TIMED_OUT_DETAIL,
               }),
           ),
         ),
@@ -4431,43 +4545,59 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       env: NON_INTERACTIVE_GIT_ENV,
       fallbackErrorDetail: `git fetch ${input.remoteName} failed`,
     };
-    // Another fetch in the same repository, such as the background status
-    // poll, can win the race for a remote-tracking ref. The loser fails, but
-    // the ref is free again by the time a rerun needs it, so retry once.
-    const runFetch = (fetchArgs: readonly string[]) => {
-      const run = executeGitWithStableDiagnostics(
+    const fetchContext = (fetchArgs: readonly string[]) =>
+      gitCommandContext({ operation: "GitVcsDriver.fetchRemote", cwd: input.cwd, args: fetchArgs });
+    const runFetchOnce = Effect.fn("GitVcsDriver.fetchRemote.attempt")(function* (
+      fetchArgs: readonly string[],
+    ) {
+      const timeline = makeFetchTimeline();
+      const result = yield* executeGitWithStableDiagnostics(
         "GitVcsDriver.fetchRemote",
         input.cwd,
         fetchArgs,
-        {
-          ...options,
-          allowNonZeroExit: true,
-        },
-      );
-      return run.pipe(
-        Effect.filterOrElse(
-          (result) => !(result.exitCode !== 0 && isRefLockFailure(result.stderr)),
-          (_result) => run,
+        { ...options, allowNonZeroExit: true, progress: timeline.progress },
+      ).pipe(
+        Effect.catchIf(
+          (error) => error.detail === GIT_COMMAND_TIMED_OUT_DETAIL,
+          () =>
+            Effect.flatMap(timeline.describe, (diagnostics) =>
+              Effect.fail(
+                new GitCommandError({
+                  ...fetchContext(fetchArgs),
+                  detail: GIT_REMOTE_TIMED_OUT_DETAIL,
+                  diagnostics,
+                }),
+              ),
+            ),
         ),
       );
-    };
+      return { ...result, diagnostics: result.exitCode === 0 ? "" : yield* timeline.describe };
+    });
+    // Another fetch in the same repository, such as the background status
+    // poll, can win the race for a remote-tracking ref. The loser fails, but
+    // the ref is free again by the time a rerun needs it, so retry once.
+    const runFetch = (fetchArgs: readonly string[]) =>
+      runFetchOnce(fetchArgs).pipe(
+        Effect.filterOrElse(
+          (result) => !(result.exitCode !== 0 && isRefLockFailure(result.stderr)),
+          (_result) => runFetchOnce(fetchArgs),
+        ),
+      );
+    const fetchFailure = (
+      fetchArgs: readonly string[],
+      result: GitVcsDriver.ExecuteGitResult & { readonly diagnostics: string },
+    ) =>
+      new GitCommandError({
+        ...fetchContext(fetchArgs),
+        detail: fetchFailureDetail(result.stderr) ?? options.fallbackErrorDetail,
+        diagnostics: result.diagnostics,
+        ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
+        stdoutLength: result.stdout.length,
+        stderrLength: result.stderr.length,
+      });
     const fetchAll = runFetch(args).pipe(
       Effect.flatMap((result) =>
-        result.exitCode === 0
-          ? Effect.void
-          : Effect.fail(
-              new GitCommandError({
-                ...gitCommandContext({
-                  operation: "GitVcsDriver.fetchRemote",
-                  cwd: input.cwd,
-                  args,
-                }),
-                detail: fetchFailureDetail(result.stderr) ?? options.fallbackErrorDetail,
-                ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
-                stdoutLength: result.stdout.length,
-                stderrLength: result.stderr.length,
-              }),
-            ),
+        result.exitCode === 0 ? Effect.void : Effect.fail(fetchFailure(args, result)),
       ),
     );
     if (input.refName === undefined) {
@@ -4490,17 +4620,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     ) {
       return false;
     }
-    return yield* new GitCommandError({
-      ...gitCommandContext({
-        operation: "GitVcsDriver.fetchRemote",
-        cwd: input.cwd,
-        args: scopedArgs,
-      }),
-      detail: fetchFailureDetail(result.stderr) ?? options.fallbackErrorDetail,
-      ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
-      stdoutLength: result.stdout.length,
-      stderrLength: result.stderr.length,
-    });
+    return yield* fetchFailure(scopedArgs, result);
   });
 
   const resolveRemoteTrackingCommit: GitVcsDriver.GitVcsDriver["Service"]["resolveRemoteTrackingCommit"] =

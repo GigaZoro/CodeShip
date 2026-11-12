@@ -41,7 +41,10 @@ import {
 } from "@t3tools/shared/git";
 
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
-import { GIT_REMOTE_UNREACHABLE_DETAIL } from "../vcs/GitVcsDriverCore.ts";
+import {
+  GIT_REMOTE_TIMED_OUT_DETAIL,
+  GIT_REMOTE_UNREACHABLE_DETAIL,
+} from "../vcs/GitVcsDriverCore.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -196,10 +199,14 @@ export class ThreadLaunchService extends Context.Service<
 const isThreadLaunchError = Schema.is(ThreadLaunchError);
 const isGitCommandError = Schema.is(GitCommandError);
 
-// Git could not reach the remote, so the setup works again once the network is back.
+// Git could not reach the remote, or got no answer while the network came back after a
+// wake from sleep, so the setup works again once the network is back.
 function lostConnection(error: unknown): boolean {
   const cause = isThreadLaunchError(error) ? error.cause : error;
-  return isGitCommandError(cause) && cause.detail === GIT_REMOTE_UNREACHABLE_DETAIL;
+  return (
+    isGitCommandError(cause) &&
+    (cause.detail === GIT_REMOTE_UNREACHABLE_DETAIL || cause.detail === GIT_REMOTE_TIMED_OUT_DETAIL)
+  );
 }
 
 function failureDetail(error: unknown): string {
