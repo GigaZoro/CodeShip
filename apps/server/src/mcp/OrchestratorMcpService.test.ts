@@ -3154,7 +3154,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                         yield* Ref.update(upserted, (count) => count + 1);
                         const saving = task({
                           ...(input.id === undefined ? {} : { id: input.id }),
-                          prompt: input.prompt,
+                          ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
                           runtimeMode: input.runtimeMode,
                           interactionMode: input.interactionMode,
                           ...(input.placement === undefined ? {} : { placement: input.placement }),
@@ -3898,6 +3898,71 @@ describe("OrchestratorMcpService provider resolution", () => {
         }),
     );
 
+    it.effect("schedules a task that reads a prompt file, and keeps the file unless told", () =>
+      Effect.gen(function* () {
+        const promptFile = {
+          path: "automations/daily.md",
+          lastRead: { at: "2026-11-10T00:00:00.000Z", ref: "origin/main", commit: "c1" },
+        };
+        const fileTask: ScheduledTask = { ...existing, prompt: "Run the daily check.", promptFile };
+        const saves = yield* Ref.make<ReadonlyArray<ScheduledTaskUpsertInput>>([]);
+        const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+          Effect.provide(
+            service(
+              masterRepository,
+              saved,
+              [fileTask],
+              {},
+              {
+                upsert: (input) =>
+                  Ref.update(saves, (all) => [...all, input]).pipe(Effect.as({ task: fileTask })),
+              },
+            ),
+          ),
+        );
+
+        const created = yield* mcp.scheduleTask(client, {
+          projectId,
+          promptFile: "automations/daily.md",
+          schedule,
+        });
+        assert.deepEqual(created.promptFile, promptFile);
+        yield* mcp.updateScheduledTask(client, {
+          scheduledTaskId: existing.id,
+          promptFile: null,
+          prompt: "Typed instead.",
+        });
+        assert.deepEqual(
+          (yield* Ref.get(saves)).map((input) => [input.title, input.prompt, input.promptFile]),
+          [
+            ["automations/daily.md", undefined, "automations/daily.md"],
+            [existing.title, "Typed instead.", null],
+          ],
+        );
+
+        const refusals = [
+          mcp.scheduleTask(client, {
+            projectId,
+            prompt: "Run it",
+            promptFile: "automations/daily.md",
+            schedule,
+          }),
+          mcp.updateScheduledTask(client, { scheduledTaskId: existing.id, prompt: "Run it" }),
+        ];
+        const messages = [];
+        for (const refused of refusals) messages.push((yield* refused.pipe(Effect.flip)).message);
+        assert.deepEqual(messages, [
+          "Pass `prompt` or `promptFile`, not both: a task with a prompt file runs what the file says.",
+          "This task reads its prompt from automations/daily.md. To give it a prompt instead, pass promptFile: null with prompt.",
+        ]);
+        assert.deepEqual(
+          (yield* mcp.listScheduledTasks(client, { projectId })).tasks[0]?.promptFile,
+          promptFile,
+        );
+      }),
+    );
+
     describe("machines a shared task leaves out", () => {
       const work = EnvironmentId.make("environment:work-machine");
       const vps = EnvironmentId.make("environment:vps");
@@ -4172,6 +4237,67 @@ describe("OrchestratorMcpService provider resolution", () => {
           }),
         ),
       );
+
+      it.effect("sets the project's machine order through a one-machine task", () => {
+        const everyMachine = ScheduledTaskId.make("scheduled-task:every-machine");
+        return run(
+          [sharedTask(sharing([], "one")), { ...existing, id: everyMachine, shared: sharing([]) }],
+          (mcp, saves) =>
+            Effect.gen(function* () {
+              yield* mcp.updateScheduledTask(client, {
+                scheduledTaskId: existing.id,
+                machineOrder: [vps, client.environmentId, vps],
+              });
+              yield* mcp.scheduleTask(client, {
+                projectId,
+                prompt: "Check the build",
+                schedule,
+                shared: true,
+                oneMachine: true,
+                machineOrder: [cpc, client.environmentId],
+              });
+              assert.deepEqual(sharedAs(yield* Ref.get(saves)), [
+                {
+                  excludedEnvironmentIds: [],
+                  runOn: "one",
+                  machineOrder: [vps, client.environmentId],
+                },
+                {
+                  excludedEnvironmentIds: [],
+                  runOn: "one",
+                  machineOrder: [cpc, client.environmentId],
+                },
+              ]);
+
+              const refusals = [
+                mcp.scheduleTask(client, {
+                  projectId,
+                  prompt: "Check the build",
+                  schedule,
+                  shared: true,
+                  machineOrder: [vps],
+                }),
+                mcp.updateScheduledTask(client, {
+                  scheduledTaskId: everyMachine,
+                  machineOrder: [vps],
+                }),
+                mcp.updateScheduledTask(client, {
+                  scheduledTaskId: existing.id,
+                  machineOrder: [EnvironmentId.make("environment:stranger")],
+                }),
+              ];
+              const messages = [];
+              for (const refused of refusals)
+                messages.push((yield* refused.pipe(Effect.flip)).message);
+              assert.deepEqual(messages, [
+                "machineOrder orders the machines of one-machine tasks: pass shared: true and oneMachine: true as well.",
+                "machineOrder orders the machines of one-machine tasks: pass shared: true and oneMachine: true as well.",
+                `machineOrder names environment:stranger, which is not this machine (${client.environmentId}), not linked from it, not in the project's machine order and has not pulled shared tasks from here in the last 30 days. Use environmentId values from t3_environment_links.`,
+              ]);
+              assert.lengthOf(yield* Ref.get(saves), 2);
+            }),
+        );
+      });
 
       it.effect("refuses excludedMachines on a task that is not shared", () =>
         run([existing], (mcp, saves) =>

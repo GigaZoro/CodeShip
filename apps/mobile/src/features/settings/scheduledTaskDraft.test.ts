@@ -288,3 +288,35 @@ describe("a check the target machine cannot keep", () => {
     expect(runConditionLostOnTarget({ targetSupportsRunConditions, draft })).toBe(lost);
   });
 });
+
+describe("a task that reads its prompt from a file", () => {
+  const lastRead = { at: "2026-11-12T08:00:00.000Z", ref: "origin/main", commit: "abcdef1234567" };
+  const fileTask = {
+    title: "Poll",
+    prompt: "Do the daily thing",
+    schedule: { type: "interval", everyMs: 60_000 },
+    workspaceStrategy: { type: "root" },
+    promptFile: { path: "automations/daily.md", lastRead },
+  } as unknown as ScheduledTask;
+
+  it("opens in file mode and a duplicate starts unread", () => {
+    expect(editDraft(fileTask)).toMatchObject({
+      promptSource: "file",
+      promptFile: "automations/daily.md",
+      savedPromptFile: "automations/daily.md",
+      promptLastRead: lastRead,
+    });
+    expect(duplicateDraft(fileTask, "Copy")).toMatchObject({
+      promptSource: "file",
+      savedPromptFile: null,
+      promptLastRead: null,
+    });
+  });
+
+  it("notices a changed path", () => {
+    const draft = editDraft(fileTask);
+    expect(hasScheduledTaskDraftChanges(draft, { ...draft, promptFile: "automations/x.md" })).toBe(
+      true,
+    );
+  });
+});

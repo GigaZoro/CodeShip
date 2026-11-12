@@ -22,6 +22,10 @@ import {
   type WebhookFilterDraft,
 } from "@t3tools/client-runtime/scheduled-task-webhook";
 import {
+  promptFileDraft,
+  type PromptFileDraft,
+} from "@t3tools/client-runtime/scheduled-task-prompt-file";
+import {
   runConditionDraft,
   type RunConditionDraft,
 } from "@t3tools/client-runtime/scheduled-task-run-condition";
@@ -90,7 +94,7 @@ export function validateScheduledTasksSearch(raw: Record<string, unknown>) {
 export type ScheduleMode = "fixed" | "once" | "interval" | "webhook";
 export type WorkspaceMode = "root" | "worktree" | "existing_worktree";
 
-export interface DraftState {
+export interface DraftState extends PromptFileDraft {
   readonly editingId: string | null;
   readonly title: string;
   readonly prompt: string;
@@ -306,6 +310,7 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     editingId: task.id,
     title: task.title,
     prompt: task.prompt,
+    ...promptFileDraft(task),
     enabled: task.enabled,
     scheduleMode: schedule.type === "fixed_time" ? "fixed" : schedule.type,
     intervalMinutes:
@@ -363,7 +368,14 @@ export function taskToDraft(task: ScheduledTask): DraftState {
 
 /** A new task's draft from an existing one. The new task stores nothing yet, so every field is sent. */
 export function copyTaskDraft(task: ScheduledTask, title: string): DraftState {
-  return { ...taskToDraft(task), editingId: null, title, savedFilters: [] };
+  return {
+    ...taskToDraft(task),
+    editingId: null,
+    title,
+    savedFilters: [],
+    savedPromptFile: null,
+    promptLastRead: null,
+  };
 }
 
 /** Projects are per machine: another machine's copy has the same repository, else the same name. */

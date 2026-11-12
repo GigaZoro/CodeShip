@@ -1,3 +1,10 @@
+## 2026-11-12 — A scheduled task can read its prompt from a file in its project
+
+- Under **Prompt** in a task's editor, **Read from a file** takes a path from the root of the project's git repository, such as `automations/daily.md`. Each run fetches the default branch of the project's remote and reads the file there, so a change pushed to that branch reaches the next run on every machine without editing the task. Saving reads the file once and shows the text it found and the commit it came from.
+- A run that cannot read the file fails, and **Run history** names the file and the branch. It never runs text an earlier read found. Webhook tasks keep a typed prompt.
+- Agents set it with `schedule_task` (`promptFile`, or `null` to type the prompt again), and `list_scheduled_tasks` returns it with the last read. `schedule_task` also takes `machineOrder`, so an agent can set the order in which a project's machines try its one-machine tasks.
+- See [Prompt from a file](user/project-settings.md#prompt-from-a-file).
+
 ## 2026-11-12 — Screen readers hear when a pinned task's run was skipped
 
 - A scheduled task pinned to the sidebar or the mobile thread list now tells a screen reader when its check found no work and skipped the last run, with the check's reason. Before, only the row's visible line and hover card said so.

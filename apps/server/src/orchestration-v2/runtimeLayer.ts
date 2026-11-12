@@ -62,6 +62,7 @@ import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as RunConditionCheck from "../scheduledTasks/RunConditionCheck.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as PromptFileReader from "../scheduledTasks/PromptFileReader.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 
 export const layerEventInfrastructure = Layer.mergeAll(
@@ -309,6 +310,7 @@ const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
       layerThreadManagementProvided,
       layerManagedProjectFoldersProvided,
       layerSecretRequestsProvided,
+      PromptFileReader.layer.pipe(Layer.provide(GitVcsDriver.layer)),
     ),
   ),
 );

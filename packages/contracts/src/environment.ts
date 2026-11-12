@@ -145,6 +145,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   scheduledTaskRunHistory: Schema.optionalKey(Schema.Boolean),
   /** Stores and runs a task's `runCondition`; hide its fields where absent, since older servers drop it. */
   scheduledTaskRunConditions: Schema.optionalKey(Schema.Boolean),
+  /** Reads a task's `promptFile` at each run; hide that choice where absent, since older servers drop it. */
+  scheduledTaskPromptFiles: Schema.optionalKey(Schema.Boolean),
   /** Serves `scheduledTasks.subscribeLinked`: the last task list of each machine it links to. */
   linkedScheduledTasks: Schema.optionalKey(Schema.Boolean),
   /** Honors `delegatedTaskModelSelections`; hide that setting where it is absent. */

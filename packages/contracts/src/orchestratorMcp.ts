@@ -24,6 +24,8 @@ import {
 import {
   ScheduledTaskNoWorkSkip,
   ScheduledTaskPlacement,
+  ScheduledTaskPromptFile,
+  ScheduledTaskPromptFilePath,
   ScheduledTaskRunCondition,
   ScheduledTaskRunConditionInput,
   ScheduledTaskRunStatus,
@@ -685,6 +687,22 @@ const scheduledTaskRunConditionField = {
   }),
 };
 
+const scheduledTaskPromptFileField = {
+  promptFile: Schema.optional(Schema.NullOr(ScheduledTaskPromptFilePath)).annotate({
+    description:
+      "Instead of `prompt`: a file in the project's git repository, path from its root. Each run reads it from the remote's default branch, so a push changes the next run. Null: back to `prompt`.",
+  }),
+};
+
+const scheduledTaskMachineOrderField = {
+  machineOrder: Schema.optional(Schema.Array(EnvironmentId).check(Schema.isMaxLength(50))).annotate(
+    {
+      description:
+        "With oneMachine: the order the project's machines try all its one-machine tasks in, first first. This machine's id and t3_environment_links ids. Replaces it; omit to keep it.",
+    },
+  ),
+};
+
 const scheduledTaskModelFields = {
   modelSelection: Schema.optional(CanonicalModelSelection).annotate({
     description:
@@ -700,7 +718,8 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   ...scheduledTaskModelFields,
   environmentId: OrchestratorMcpEnvironmentTarget,
   projectId: OrchestratorMcpProjectTarget,
-  prompt: OrchestratorMcpPrompt,
+  prompt: Schema.optional(OrchestratorMcpPrompt),
+  ...scheduledTaskPromptFileField,
   schedule: OrchestratorMcpSchedule,
   title: Schema.optional(OrchestratorMcpTitle),
   enabled: Schema.optional(Schema.Boolean.annotate({ description: "Default true." })),
@@ -727,6 +746,7 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
     description:
       "With shared: machines (t3_environment_links ids) that keep no copy. Replaces the list; omit to keep it.",
   }),
+  ...scheduledTaskMachineOrderField,
   placement: Schema.optional(ScheduledTaskPlacement).annotate({
     description:
       "Where it shows in the user's thread list: none (hidden), chat (runs as normal chats), pinned (a task row). Omit to keep the current one, or for new tasks the user's default.",
@@ -752,6 +772,10 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   scheduledTaskId: ScheduledTaskId,
   title: Schema.String,
   prompt: Schema.String,
+  promptFile: Schema.optional(ScheduledTaskPromptFile).annotate({
+    description:
+      "Each run reads its prompt from this file. `prompt` is the text this machine's `lastRead` found.",
+  }),
   enabled: Schema.Boolean,
   projectId: ProjectId,
   boundThreadId: Schema.NullOr(ThreadId),
@@ -848,6 +872,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
   scheduledTaskId: ScheduledTaskId,
   prompt: Schema.optional(OrchestratorMcpPrompt),
+  ...scheduledTaskPromptFileField,
   title: Schema.optional(OrchestratorMcpTitle),
   schedule: Schema.optional(OrchestratorMcpSchedule),
   enabled: Schema.optional(Schema.Boolean),
@@ -860,6 +885,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
     description:
       "With shared: machines (t3_environment_links ids) that keep no copy. Replaces the list; omit to keep it.",
   }),
+  ...scheduledTaskMachineOrderField,
   placement: Schema.optional(ScheduledTaskPlacement),
   ...scheduledTaskRunConditionField,
 });

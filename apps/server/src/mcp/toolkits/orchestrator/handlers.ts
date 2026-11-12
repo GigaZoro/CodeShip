@@ -87,17 +87,17 @@ const handlers = {
     (input) => input.scheduledTaskId === undefined,
     McpToolAccess.startsThreads(
       () => ({}),
-      ({ prompt, schedule, ...input }) =>
+      ({ schedule, ...input }) =>
         Effect.gen(function* () {
-          if (prompt === undefined || schedule === undefined) {
+          if ((input.prompt === undefined && input.promptFile == null) || schedule === undefined) {
             return yield* new OrchestratorMcpFailure({
               code: "invalid_request",
-              message: "A new scheduled task needs `prompt` and `schedule`.",
+              message: "A new scheduled task needs `prompt` or `promptFile`, and `schedule`.",
             });
           }
           const scope = yield* McpInvocationContext.McpInvocationContext;
           const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-          return yield* service.scheduleTask(scope, { ...input, prompt, schedule });
+          return yield* service.scheduleTask(scope, { ...input, schedule });
         }),
       // A scheduled run starts long after its caller, with nothing to carry the link.
       { refused: "schedule tasks in this environment" },
@@ -106,6 +106,7 @@ const handlers = {
       ({
         scheduledTaskId,
         prompt,
+        promptFile,
         title,
         schedule,
         enabled,
@@ -113,6 +114,7 @@ const handlers = {
         shared,
         oneMachine,
         excludedMachines,
+        machineOrder,
         placement,
         modelSelection,
         followsDefaultModel,
@@ -125,6 +127,7 @@ const handlers = {
           return yield* service.updateScheduledTask(scope, {
             scheduledTaskId,
             prompt,
+            promptFile,
             title,
             schedule,
             enabled,
@@ -132,6 +135,7 @@ const handlers = {
             shared,
             oneMachine,
             excludedMachines,
+            machineOrder,
             placement,
             modelSelection,
             followsDefaultModel,

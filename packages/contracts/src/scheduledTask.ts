@@ -440,9 +440,67 @@ export const ScheduledTaskSharedDeletion = Schema.Struct({
 });
 export type ScheduledTaskSharedDeletion = typeof ScheduledTaskSharedDeletion.Type;
 
+export const MAX_PROMPT_FILE_PATH_LENGTH = 512;
+
+export type PromptFilePathProblem =
+  | "too_long"
+  | "backslash"
+  | "absolute"
+  | "control_character"
+  | "empty_or_dot_part";
+
+/** Why a prompt file path is refused, or undefined when it names a file from the repository's root. */
+export function promptFilePathProblem(path: string): PromptFilePathProblem | undefined {
+  if (path.length > MAX_PROMPT_FILE_PATH_LENGTH) return "too_long";
+  if (path.includes("\\")) return "backslash";
+  if (path.startsWith("/") || /^[A-Za-z]:/u.test(path)) return "absolute";
+  if (/\p{Cc}/u.test(path)) return "control_character";
+  if (path.split("/").some((part) => part === "" || part === "." || part === "..")) {
+    return "empty_or_dot_part";
+  }
+  return undefined;
+}
+
+// Clients show their own translated text for each problem; this is what the server answers.
+const PROMPT_FILE_PATH_PROBLEM_TEXT: Record<PromptFilePathProblem, string> = {
+  too_long: `The prompt file path is longer than ${MAX_PROMPT_FILE_PATH_LENGTH} characters.`,
+  backslash: "Write the prompt file path with forward slashes.",
+  absolute: "The prompt file path starts at the repository's root, so it cannot be absolute.",
+  control_character: "The prompt file path cannot hold control characters.",
+  empty_or_dot_part: "The prompt file path cannot have empty, . or .. parts.",
+};
+
+/** A file in the task's project, read from its remote's default branch for each run. */
+export const ScheduledTaskPromptFilePath = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(MAX_PROMPT_FILE_PATH_LENGTH),
+  Schema.makeFilter((path: string) => {
+    const problem = promptFilePathProblem(path);
+    return problem === undefined ? undefined : PROMPT_FILE_PATH_PROBLEM_TEXT[problem];
+  }),
+).annotate({
+  description: "A path from the repository's root, such as automations/daily.md.",
+});
+
+/** One read of a prompt file: where it came from. The task's `prompt` holds the text it read. */
+export const ScheduledTaskPromptFileRead = Schema.Struct({
+  at: IsoDateTime,
+  /** The remote branch it was read from, such as `origin/main`. */
+  ref: TrimmedNonEmptyString,
+  commit: TrimmedNonEmptyString,
+});
+export type ScheduledTaskPromptFileRead = typeof ScheduledTaskPromptFileRead.Type;
+
+export const ScheduledTaskPromptFile = Schema.Struct({
+  path: ScheduledTaskPromptFilePath,
+  /** This machine's last read. Null until it reads the file, as for a shared copy from another machine. */
+  lastRead: Schema.NullOr(ScheduledTaskPromptFileRead),
+});
+export type ScheduledTaskPromptFile = typeof ScheduledTaskPromptFile.Type;
+
 export const ScheduledTask = Schema.Struct({
   id: ScheduledTaskId,
   title: TrimmedNonEmptyString,
+  /** With `promptFile`, the text its last read found; runs read the file again. */
   prompt: TrimmedNonEmptyString,
   enabled: Schema.Boolean,
   schedule: ScheduledTaskSchedule,
@@ -490,6 +548,8 @@ export const ScheduledTask = Schema.Struct({
   lastNoWorkSkip: Schema.optional(Schema.NullOr(ScheduledTaskNoWorkSkip)),
   /** When the run condition of the occurrence due now started; null while none is running. */
   runCheckStartedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** Each run reads its prompt from this file. Null: `prompt` is the text. Absent from servers without prompt files. */
+  promptFile: Schema.optional(Schema.NullOr(ScheduledTaskPromptFile)),
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
 
@@ -563,7 +623,13 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   }),
   commandId: Schema.optional(CommandId),
   title: TrimmedNonEmptyString,
-  prompt: TrimmedNonEmptyString,
+  prompt: Schema.optional(TrimmedNonEmptyString).annotate({
+    description: "Needed unless the task reads its prompt from a file; ignored when it does.",
+  }),
+  promptFile: Schema.optional(Schema.NullOr(ScheduledTaskPromptFilePath)).annotate({
+    description:
+      "Read the prompt from this file of the project's repository, on its remote's default branch, at each run. The save reads it once. Null: run `prompt`. Omitted keeps the stored choice.",
+  }),
   enabled: Schema.Boolean,
   schedule: ScheduledTaskUpsertSchedule,
   projectId: ProjectId,
@@ -617,6 +683,8 @@ export const ScheduledTaskSharedCopy = Schema.Struct({
   catchUpMissedRun: Schema.optional(Schema.Boolean),
   /** Null: the task has none. Absent from machines without run conditions; the receiving machine keeps its own. */
   runCondition: Schema.optional(Schema.NullOr(ScheduledTaskRunCondition)),
+  /** Null: the task runs `prompt`. Absent from machines without prompt files; the receiving machine keeps its own. */
+  promptFile: Schema.optional(Schema.NullOr(ScheduledTaskPromptFilePath)),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdBy: OrchestrationV2Actor,

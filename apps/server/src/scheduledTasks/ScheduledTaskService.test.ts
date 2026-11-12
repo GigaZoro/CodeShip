@@ -716,7 +716,7 @@ it.effect("a task that follows the default runs the scheduled tasks model and ke
         (candidate) => candidate.id === task.id,
       )!;
       assert.deepEqual(stored.modelSelection, ownModel);
-      yield* service.upsert({ ...stored, title: "Renamed" });
+      yield* service.upsert({ ...stored, title: "Renamed", promptFile: null });
       assert.deepEqual(
         (yield* service.list({ resolveModels: false })).tasks[0]?.modelSelection,
         ownModel,

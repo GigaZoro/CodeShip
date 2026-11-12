@@ -169,6 +169,14 @@ import {
   type ScheduleMode,
   type WorkspaceMode,
 } from "./scheduledTasksSettings.logic";
+import {
+  effectivePromptSource,
+  promptFileDraftProblem,
+  promptFileLostOnTarget,
+  promptFileReadFor,
+  promptUpsertFields,
+  type PromptSource,
+} from "@t3tools/client-runtime/scheduled-task-prompt-file";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Label } from "../ui/label";
 import { ScheduledTaskPlacementRadioGroup } from "./ScheduledTaskPlacementRadioGroup";
@@ -247,6 +255,10 @@ const EMPTY_DRAFT: DraftState = {
   editingId: null,
   title: "",
   prompt: "",
+  promptSource: "text",
+  promptFile: "",
+  savedPromptFile: null,
+  promptLastRead: null,
   enabled: true,
   scheduleMode: "fixed",
   intervalMinutes: "15",
@@ -2687,6 +2699,15 @@ function ScheduledTaskEditorForm({
     environment?.serverConfig?.environment.capabilities.scheduledTaskRunConditions === true;
   const offersRunCondition = targetSupportsRunConditions && draft.scheduleMode !== "webhook";
   const runConditionLost = runConditionLostOnTarget({ targetSupportsRunConditions, draft });
+  const supportsPromptFiles =
+    environment?.serverConfig?.environment.capabilities.scheduledTaskPromptFiles === true;
+  const promptSource = effectivePromptSource({ supportsPromptFiles, draft });
+  const promptFileLost = promptFileLostOnTarget({
+    supportsPromptFiles,
+    isWebhook: draft.scheduleMode === "webhook",
+    draft,
+  });
+  const promptFileRead = promptFileReadFor(draft);
   const catchUpMissedRun =
     draft.catchUpMissedRun ??
     defaultCatchUpMissedRun({
@@ -2748,7 +2769,13 @@ function ScheduledTaskEditorForm({
         label: "project",
         fieldId: "scheduled-task-project",
       },
-      { missing: !draft.prompt.trim(), label: "prompt", fieldId: "scheduled-task-prompt" },
+      promptSource === "file"
+        ? {
+            missing: !draft.promptFile.trim(),
+            label: "promptFile",
+            fieldId: "scheduled-task-prompt-file",
+          }
+        : { missing: !draft.prompt.trim(), label: "prompt", fieldId: "scheduled-task-prompt" },
       { missing: selection === null, label: "model", fieldId: null },
     ].filter((field) => field.missing);
     if (missing.length > 0 || selection === null) {
@@ -2758,6 +2785,7 @@ function ScheduledTaskEditorForm({
         fieldName("name") ? t("a name") : null,
         fieldName("project") ? t("a project") : null,
         fieldName("prompt") ? t("a prompt") : null,
+        fieldName("promptFile") ? t("a prompt file") : null,
         fieldName("model") ? t("a model") : null,
       ].filter((part) => part !== null);
       reportFailure(
@@ -2772,6 +2800,17 @@ function ScheduledTaskEditorForm({
       const firstFieldId = missing.find((field) => field.fieldId !== null)?.fieldId;
       if (firstFieldId) document.getElementById(firstFieldId)?.focus();
       return;
+    }
+    if (promptSource === "file") {
+      const problem = promptFileDraftProblem({
+        promptFile: draft.promptFile,
+        isWebhook: draft.scheduleMode === "webhook",
+      });
+      if (problem !== undefined) {
+        reportFailure(t("Invalid prompt file"), problem);
+        document.getElementById("scheduled-task-prompt-file")?.focus();
+        return;
+      }
     }
     const parsedFilters = parseWebhookFilterDrafts(draft.filters);
     if (draft.scheduleMode === "webhook" && "error" in parsedFilters) {
@@ -2832,6 +2871,16 @@ function ScheduledTaskEditorForm({
       );
       return;
     }
+    if (promptFileLost) {
+      reportFailure(
+        t("Prompt file would be dropped"),
+        t(
+          "{machine} cannot read prompts from files. Use the text instead or pick another machine.",
+          { machine: environment?.label ?? environmentId },
+        ),
+      );
+      return;
+    }
     const runCondition = offersRunCondition ? runConditionInput(draft.runCondition) : undefined;
     if (offersRunCondition && runCondition === undefined) {
       reportFailure(t("Invalid check"), runConditionInvalidText());
@@ -2841,7 +2890,7 @@ function ScheduledTaskEditorForm({
     const input: ScheduledTaskUpsertInput = {
       ...(draft.editingId ? { id: draft.editingId as ScheduledTaskId, requireExisting: true } : {}),
       title: draft.title.trim(),
-      prompt: draft.prompt.trim(),
+      ...promptUpsertFields({ supportsPromptFiles, draft }),
       enabled: draft.enabled,
       schedule,
       projectId: selectedProjectId as ProjectId,
@@ -3274,17 +3323,110 @@ function ScheduledTaskEditorForm({
             </Field>
           ) : null}
 
-          <Field label={t("Prompt")} htmlFor="scheduled-task-prompt">
-            <Textarea
-              id="scheduled-task-prompt"
-              className="max-h-64 overflow-y-auto"
-              placeholder={t("What should the agent do each time this runs?")}
-              value={draft.prompt}
-              onChange={(event) =>
-                setDraft((current) => ({ ...current, prompt: event.target.value }))
+          <div className="space-y-2">
+            <Label
+              htmlFor={
+                promptSource === "file" ? "scheduled-task-prompt-file" : "scheduled-task-prompt"
               }
-            />
-          </Field>
+            >
+              {t("Prompt")}
+            </Label>
+            {supportsPromptFiles ? (
+              <ToggleGroup
+                aria-label={t("Where the prompt comes from")}
+                value={[promptSource]}
+                disabled={saving}
+                onValueChange={(values) => {
+                  const choice = values[0] as PromptSource | undefined;
+                  if (choice === undefined) return;
+                  setDraft((current) => ({ ...current, promptSource: choice }));
+                }}
+              >
+                <Toggle value="text">{t("Write it here")}</Toggle>
+                <Toggle value="file" disabled={draft.scheduleMode === "webhook"}>
+                  {t("Read from a file")}
+                </Toggle>
+              </ToggleGroup>
+            ) : null}
+            {supportsPromptFiles && draft.scheduleMode === "webhook" ? (
+              <p className="text-sm text-muted-foreground">
+                {t("A webhook task fills its prompt from each request.")}
+              </p>
+            ) : null}
+            {promptSource === "file" ? (
+              <div className="space-y-2">
+                <Input
+                  id="scheduled-task-prompt-file"
+                  placeholder={"automations/daily.md"}
+                  aria-describedby="scheduled-task-prompt-file-help"
+                  value={draft.promptFile}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, promptFile: event.target.value }))
+                  }
+                />
+                <p id="scheduled-task-prompt-file-help" className="text-sm text-muted-foreground">
+                  {t(
+                    "A path from the root of the project's repository. Each run reads it from the remote's default branch, so a push changes the next run.",
+                  )}
+                </p>
+                {promptFileRead ? (
+                  <div className="space-y-2">
+                    <p className="text-sm text-muted-foreground">
+                      {t("Read from {ref} at {commit} on {date}", {
+                        ref: promptFileRead.ref,
+                        commit: promptFileRead.commit.slice(0, 7),
+                        date: new Intl.DateTimeFormat(getFormattingLocale(), {
+                          dateStyle: "medium",
+                          timeStyle: "short",
+                        }).format(new Date(promptFileRead.at)),
+                      })}
+                    </p>
+                    <Textarea
+                      aria-label={t("Text it read")}
+                      className="max-h-64 overflow-y-auto"
+                      readOnly
+                      value={draft.prompt}
+                    />
+                  </div>
+                ) : draft.editingId && draft.savedPromptFile === draft.promptFile.trim() ? (
+                  <p className="text-sm text-muted-foreground">
+                    {t("Not read on this machine yet. Saving or the next run reads it.")}
+                  </p>
+                ) : null}
+              </div>
+            ) : (
+              <Textarea
+                id="scheduled-task-prompt"
+                className="max-h-64 overflow-y-auto"
+                placeholder={t("What should the agent do each time this runs?")}
+                value={draft.prompt}
+                onChange={(event) =>
+                  setDraft((current) => ({ ...current, prompt: event.target.value }))
+                }
+              />
+            )}
+            {promptFileLost ? (
+              <Alert variant="warning">
+                <TriangleAlertIcon />
+                <AlertTitle>{t("Prompt file")}</AlertTitle>
+                <AlertDescription>
+                  {t(
+                    "{machine} runs an older T3.CodeShip that cannot read prompts from files. Saving there would replace {path} with the text above.",
+                    { machine: environment?.label ?? environmentId, path: draft.promptFile.trim() },
+                  )}
+                </AlertDescription>
+                <AlertAction>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() => setDraft((current) => ({ ...current, promptSource: "text" }))}
+                  >
+                    {t("Use the text")}
+                  </Button>
+                </AlertAction>
+              </Alert>
+            ) : null}
+          </div>
 
           <Field label={t("Model")}>
             <div className="space-y-3">

@@ -272,6 +272,33 @@ if (!threads.some((thread) => thread.status === "waiting")) {
 }
 ```
 
+## Prompt from a file
+
+A task can read its prompt from a file in its project's git repository instead
+of keeping its own copy. Under **Prompt** in the task's editor, choose **Read
+from a file** and give the file's path from the repository's root, such as
+`automations/daily.md`.
+
+- Each run fetches the default branch of the project's remote, usually
+  `origin/main`, and reads the file there. A change pushed to that branch
+  reaches the next run on every machine; edits that are not pushed are not used.
+- Saving reads the file once, so a wrong path is refused right away. The editor
+  shows the text the last read found and the commit it came from.
+- A run that cannot read the file, because it is missing or empty or the remote
+  can't be reached, fails, and **Run history** names the file and the branch.
+  It never runs text an earlier read found. For **One machine**, the next
+  machine in the order tries.
+- Anyone who can push to that branch decides what the task does, with the
+  task's permissions.
+- A shared task carries the path, and each machine reads the file through its
+  own checkout of the project.
+- Webhook tasks fill their prompt from each request, so they can't use a file.
+- Moving or duplicating a task to a machine on an older T3.CodeShip would
+  replace the file with the text it last read, so the editor asks you to use
+  that text or pick another machine.
+- Agents set it with `schedule_task` (`promptFile`, or `null` to type the prompt
+  again) and read it, with the last read, from `list_scheduled_tasks`.
+
 ## Shared scheduled tasks
 
 A task's **Runs** choice keeps a copy of it on each of your machines:
@@ -287,9 +314,9 @@ A task's **Runs** choice keeps a copy of it on each of your machines:
   still running it, the later machine keeps asking every few minutes and runs
   the task itself if that run fails or the machine stops answering, until the
   next run is due. A run you or an agent stop stays stopped. The order belongs
-  to the
-  project, so changing it in one task changes it for every one-machine task in
-  that project.
+  to the project, so changing it in one task changes it for every one-machine
+  task in that project. Agents read it from `list_scheduled_tasks`
+  (`machineOrder`) and set it with `schedule_task` (`machineOrder`).
 
 For **One machine**, each machine needs a link to every machine ahead of it in
 the order, made in **Settings → Machines & access → Linked environments** on

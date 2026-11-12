@@ -80,6 +80,7 @@ import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as RunConditionCheck from "./RunConditionCheck.ts";
 import * as SharedTaskPeerCheck from "./SharedTaskPeerCheck.ts";
+import * as PromptFileReader from "./PromptFileReader.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
@@ -319,6 +320,11 @@ interface ScheduledTaskRow {
   readonly run_condition_json?: string | null;
   /** The newest no-work skip from scheduled_task_runs; it outlives the condition that made it. */
   readonly no_work_skip_json?: string | null;
+  /** From scheduled_task_prompt_files: null when the task runs its own prompt. */
+  readonly prompt_file_path?: string | null;
+  readonly prompt_file_read_at?: string | null;
+  readonly prompt_file_ref?: string | null;
+  readonly prompt_file_commit?: string | null;
 }
 
 interface RunRecordRow {
@@ -656,6 +662,24 @@ const decodeRow = Effect.fnUntraced(
                 ? null
                 : yield* decodeNoWorkSkipJson(row.no_work_skip_json),
           }),
+      ...(row.prompt_file_path === undefined
+        ? {}
+        : {
+            promptFile:
+              row.prompt_file_path === null
+                ? null
+                : {
+                    path: row.prompt_file_path,
+                    lastRead:
+                      row.prompt_file_read_at == null
+                        ? null
+                        : {
+                            at: row.prompt_file_read_at,
+                            ref: row.prompt_file_ref,
+                            commit: row.prompt_file_commit,
+                          },
+                  },
+          }),
     });
   },
   (effect, row, _origin?) =>
@@ -713,6 +737,7 @@ export const layer = Layer.effect(
     );
     const peerCheck = yield* SharedTaskPeerCheck.SharedTaskPeerCheck;
     const runConditionCheck = yield* RunConditionCheck.RunConditionCheck;
+    const promptFiles = yield* PromptFileReader.PromptFileReader;
     const projects = yield* ProjectService.ProjectService;
     const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
     const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
@@ -754,6 +779,8 @@ export const layer = Layer.effect(
     const activeRuns = yield* Ref.make<ReadonlySet<ScheduledTaskId>>(new Set());
     // Tasks whose run condition is running for the occurrence due now, and when it started.
     const runChecks = yield* Ref.make<ReadonlyMap<ScheduledTaskId, string>>(new Map());
+    // Scheduled runs that read their prompt file in the background, claimed before they start.
+    const backgroundRuns = yield* Ref.make<ReadonlySet<ScheduledTaskId>>(new Set());
     const withRunCheck =
       (checks: ReadonlyMap<ScheduledTaskId, string>) =>
       (task: ScheduledTask): ScheduledTask => ({
@@ -851,6 +878,16 @@ export const layer = Layer.effect(
       CREATE TABLE IF NOT EXISTS scheduled_task_shared_pullers (
         environment_id TEXT PRIMARY KEY,
         pulled_at TEXT NOT NULL
+      )
+    `;
+    // A row means each run reads its prompt from this file; `prompt` keeps the text last read.
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS scheduled_task_prompt_files (
+        task_id TEXT PRIMARY KEY,
+        path TEXT NOT NULL,
+        read_at TEXT,
+        ref TEXT,
+        commit_sha TEXT
       )
     `;
     // Outlives the task so a stale copy on another machine is removed, not restored.
@@ -951,7 +988,15 @@ export const layer = Layer.effect(
             'reason', json_extract(r.check_json, '$.detail'))
           FROM scheduled_task_runs r
           WHERE r.task_id = scheduled_tasks.task_id AND r.skip_reason = 'no_work'
-          ORDER BY r.started_at DESC, r.run_id DESC LIMIT 1) AS no_work_skip_json
+          ORDER BY r.started_at DESC, r.run_id DESC LIMIT 1) AS no_work_skip_json,
+        (SELECT path FROM scheduled_task_prompt_files pf
+          WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_path,
+        (SELECT read_at FROM scheduled_task_prompt_files pf
+          WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_read_at,
+        (SELECT ref FROM scheduled_task_prompt_files pf
+          WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_ref,
+        (SELECT commit_sha FROM scheduled_task_prompt_files pf
+          WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_commit
       FROM scheduled_tasks
       -- Not updated_at: toggles, runs and edits rewrite it, and clients render
       -- this order as-is, so rows would move under the pointer.
@@ -1035,7 +1080,15 @@ export const layer = Layer.effect(
             'reason', json_extract(r.check_json, '$.detail'))
           FROM scheduled_task_runs r
           WHERE r.task_id = scheduled_tasks.task_id AND r.skip_reason = 'no_work'
-          ORDER BY r.started_at DESC, r.run_id DESC LIMIT 1) AS no_work_skip_json
+          ORDER BY r.started_at DESC, r.run_id DESC LIMIT 1) AS no_work_skip_json,
+        (SELECT path FROM scheduled_task_prompt_files pf
+          WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_path,
+        (SELECT read_at FROM scheduled_task_prompt_files pf
+          WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_read_at,
+        (SELECT ref FROM scheduled_task_prompt_files pf
+          WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_ref,
+        (SELECT commit_sha FROM scheduled_task_prompt_files pf
+          WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_commit
       FROM scheduled_tasks
       WHERE task_id = ${id}
     `.pipe(NodeSqliteClient.readOnly);
@@ -1308,6 +1361,7 @@ export const layer = Layer.effect(
         Effect.andThen(sql`DELETE FROM scheduled_task_one_machine_decision WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_catch_up WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_run_conditions WHERE task_id = ${id}`),
+        Effect.andThen(sql`DELETE FROM scheduled_task_prompt_files WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_runs WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_tasks WHERE task_id = ${id}`),
       );
@@ -1526,6 +1580,61 @@ export const layer = Layer.effect(
       };
     });
 
+    const readPromptFile = Effect.fn("ScheduledTaskService.readPromptFile")(function* (
+      projectId: ProjectId,
+      path: string,
+    ) {
+      const unreadable = (detail: string) =>
+        new PromptFileReader.PromptFileReadError({ path, ref: null, detail });
+      const project = yield* projects
+        .getById(projectId)
+        .pipe(
+          Effect.mapError((error) =>
+            unreadable(`could not look up the task's project: ${error.message}`),
+          ),
+        );
+      if (Option.isNone(project)) {
+        return yield* unreadable("the task's project is not on this machine.");
+      }
+      return yield* promptFiles.read({ cwd: project.value.workspaceRoot, path });
+    });
+
+    // The stored text shows what the last run read. Only the task, project and file this read was
+    // for keep it, and a read that started before the stored one never replaces it.
+    const readRunPromptFile = Effect.fn("ScheduledTaskService.readRunPromptFile")(function* (
+      task: ScheduledTask,
+      path: string,
+    ) {
+      const readAt = iso(yield* localNow);
+      const read = yield* readPromptFile(task.projectId, path);
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const recorded = yield* sql`
+              UPDATE scheduled_task_prompt_files
+              SET read_at = ${readAt}, ref = ${read.ref}, commit_sha = ${read.commit}
+              WHERE task_id = ${task.id} AND path = ${path}
+                AND (read_at IS NULL OR read_at <= ${readAt})
+                AND EXISTS (
+                  SELECT 1 FROM scheduled_tasks
+                  WHERE task_id = ${task.id} AND created_at = ${task.createdAt}
+                    AND project_id = ${task.projectId}
+                )
+              RETURNING task_id
+            `;
+            if (recorded.length > 0) {
+              yield* sql`UPDATE scheduled_tasks SET prompt = ${read.text} WHERE task_id = ${task.id}`;
+            }
+          }),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not record the prompt file's text.", { taskId: task.id, cause }),
+          ),
+        );
+      return read;
+    });
+
     const runTask = Effect.fn("ScheduledTaskService.runTask")(function* (
       task: ScheduledTask,
       trigger: "scheduled" | "manual" | "webhook",
@@ -1627,14 +1736,28 @@ export const layer = Layer.effect(
             : `${active.id}:webhook:${webhook.deliveryId}`;
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
-        // A webhook prompt was rendered from the row when the request arrived.
-        const prompt = webhook?.prompt ?? active.prompt;
+        // A webhook prompt was rendered from the row when the request arrived. A prompt file is
+        // read for each run, and a failed read fails the run: it never runs an earlier read's text.
+        const prompt: Result.Result<
+          string,
+          PromptFileReader.PromptFileReadError | ScheduledTaskError
+        > =
+          webhook !== undefined
+            ? Result.succeed(webhook.prompt)
+            : active.promptFile == null
+              ? Result.succeed(active.prompt)
+              : yield* Effect.result(
+                  readRunPromptFile(active, active.promptFile.path).pipe(
+                    Effect.map((read) => read.text),
+                  ),
+                );
 
         // A bound thread can move to another project (No project to a project) while
         // this fires. Follow it; one move needs at most two retries. Same ids replay safely.
         const sendBound = (
           threadId: ThreadId,
           projectId: ProjectId,
+          text: string,
           retries: number,
         ): ReturnType<typeof threadManagement.sendToThread> =>
           threadManagement
@@ -1644,7 +1767,7 @@ export const layer = Layer.effect(
               threadId,
               messageId,
               scheduledTaskId: active.id,
-              text: prompt,
+              text,
               attachments: [],
               mode: "queue",
               createdBy: active.createdBy,
@@ -1660,7 +1783,7 @@ export const layer = Layer.effect(
                         Effect.flatMap((shell) =>
                           shell === null || shell.projectId === projectId
                             ? Effect.fail(error)
-                            : sendBound(threadId, shell.projectId, retries - 1),
+                            : sendBound(threadId, shell.projectId, text, retries - 1),
                         ),
                       ),
               }),
@@ -1671,8 +1794,9 @@ export const layer = Layer.effect(
             ? { type: "launch" as const, ...(yield* launchSelectionFor(active)) }
             : { type: "bound" as const, threadId: ThreadId.make(active.threadId) };
         // Capture defects and interrupts too so dispatch failures still reach markCompleted.
-        const result =
-          target.type === "launch"
+        const result = Result.isFailure(prompt)
+          ? Exit.fail(prompt.failure)
+          : target.type === "launch"
             ? yield* Effect.exit(
                 threadLaunch
                   .launch({
@@ -1686,7 +1810,7 @@ export const layer = Layer.effect(
                     initialMessage: {
                       messageId,
                       scheduledTaskId: active.id,
-                      text: prompt,
+                      text: prompt.success,
                       attachments: [],
                     },
                     createdBy: active.createdBy,
@@ -1697,14 +1821,20 @@ export const layer = Layer.effect(
             : yield* Effect.exit(
                 // The stored selection only seeds fresh threads. A bound run
                 // follows the thread's current provider, so it passes none.
-                sendBound(target.threadId, active.projectId, 2).pipe(Effect.as(target.threadId)),
+                sendBound(target.threadId, active.projectId, prompt.success, 2).pipe(
+                  Effect.as(target.threadId),
+                ),
               );
 
         const runSucceeded = result._tag === "Success";
         if (webhook !== undefined && runSucceeded) yield* Ref.set(webhook.dispatched, true);
         const completedAt = yield* localNow;
         const lastRunStatus = runSucceeded ? ("succeeded" as const) : ("failed" as const);
-        const lastRunError = runSucceeded ? null : errorMessage(result.cause);
+        const lastRunError = runSucceeded
+          ? null
+          : Result.isFailure(prompt)
+            ? prompt.failure.message
+            : errorMessage(result.cause);
         const threadId = runSucceeded ? result.value : null;
         // One transaction, so an edit cannot land between reading the schedule and
         // writing the next run computed from it. The origin is read first: it reads
@@ -1735,7 +1865,7 @@ export const layer = Layer.effect(
             outcome: lastRunStatus,
             threadId,
             error: lastRunError,
-            failover: target.type === "launch" ? target.failover : null,
+            failover: target.type === "launch" && Result.isSuccess(prompt) ? target.failover : null,
           });
           // startedAtIso in the guard ensures this writes only to the row this
           // run marked as running — a task deleted mid-run and recreated with
@@ -1979,13 +2109,15 @@ export const layer = Layer.effect(
     });
 
     /**
-     * A scheduled occurrence: a task with a run condition runs it first, in the background, so a
-     * slow check holds up no other due task. Run now and webhooks start their run directly.
+     * A scheduled occurrence: a task with a run condition runs it first, and a task with a prompt
+     * file fetches it, both in the background, so a slow check or fetch holds up no other due
+     * task. Run now and webhooks start their run directly.
      */
     const startScheduledRun = Effect.fn("ScheduledTaskService.startScheduledRun")(function* (
       task: ScheduledTask,
       fire: ScheduledFire,
     ) {
+      // Due rows come without either, so look both up.
       const [condition] = yield* sql<RunConditionRow>`
         SELECT command, timeout_seconds FROM scheduled_task_run_conditions WHERE task_id = ${task.id}
       `.pipe(
@@ -1995,7 +2127,37 @@ export const layer = Layer.effect(
         ),
       );
       if (condition === undefined) {
-        return yield* runTask(task, "scheduled", undefined, fire).pipe(Effect.asVoid);
+        const run = runTask(task, "scheduled", undefined, fire).pipe(Effect.asVoid);
+        const readsFile = yield* sql`
+          SELECT 1 FROM scheduled_task_prompt_files WHERE task_id = ${task.id}
+        `.pipe(
+          NodeSqliteClient.readOnly,
+          Effect.map((rows) => rows.length > 0),
+          Effect.mapError((cause) =>
+            taskError("Could not read the task's prompt file.", { taskId: task.id, cause }),
+          ),
+        );
+        if (!readsFile) return yield* run;
+        const claimed = yield* Ref.modify(backgroundRuns, (runs) =>
+          runs.has(task.id)
+            ? ([false, runs] as const)
+            : ([true, new Set(runs).add(task.id)] as const),
+        );
+        if (!claimed) return;
+        yield* run.pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Scheduled task run failed", { taskId: task.id, cause }),
+          ),
+          Effect.ensuring(
+            Ref.update(backgroundRuns, (runs) => {
+              const next = new Set(runs);
+              next.delete(task.id);
+              return next;
+            }),
+          ),
+          Effect.forkIn(serviceScope),
+        );
+        return;
       }
       const checkStartedAt = yield* localNow;
       const claimed = yield* Ref.modify(runChecks, (checks) =>
@@ -2090,6 +2252,48 @@ export const layer = Layer.effect(
             INSERT INTO scheduled_task_catch_up (task_id, enabled) VALUES (${id}, ${enabled ? 1 : 0})
             ON CONFLICT (task_id) DO UPDATE SET enabled = excluded.enabled
           `;
+
+    /** "keep" keeps the last read while the path stays the same; null drops it. */
+    const writePromptFile = (
+      id: ScheduledTaskId,
+      path: string | null,
+      read: { readonly at: string; readonly ref: string; readonly commit: string } | "keep" | null,
+    ) =>
+      path === null
+        ? sql`DELETE FROM scheduled_task_prompt_files WHERE task_id = ${id}`
+        : read === "keep"
+          ? sql`
+              INSERT INTO scheduled_task_prompt_files (task_id, path) VALUES (${id}, ${path})
+              ON CONFLICT (task_id) DO UPDATE SET
+                read_at = CASE WHEN path = excluded.path THEN read_at END,
+                ref = CASE WHEN path = excluded.path THEN ref END,
+                commit_sha = CASE WHEN path = excluded.path THEN commit_sha END,
+                path = excluded.path
+            `
+          : read === null
+            ? sql`
+                INSERT INTO scheduled_task_prompt_files (task_id, path) VALUES (${id}, ${path})
+                ON CONFLICT (task_id) DO UPDATE SET
+                  path = excluded.path, read_at = NULL, ref = NULL, commit_sha = NULL
+              `
+            : sql`
+              INSERT INTO scheduled_task_prompt_files (task_id, path, read_at, ref, commit_sha)
+              VALUES (${id}, ${path}, ${read.at}, ${read.ref}, ${read.commit})
+              ON CONFLICT (task_id) DO UPDATE SET
+                path = excluded.path,
+                read_at = excluded.read_at,
+                ref = excluded.ref,
+                commit_sha = excluded.commit_sha
+            `;
+
+    // A run may have read the file since the task was loaded, so a write that keeps the read
+    // takes the text it found in the same transaction.
+    const storedPrompt = (id: ScheduledTaskId) =>
+      sql<{
+        readonly prompt: string;
+      }>`SELECT prompt FROM scheduled_tasks WHERE task_id = ${id}`.pipe(
+        Effect.map((rows) => rows[0]?.prompt),
+      );
 
     const recordOneMachineDecision = (
       taskId: ScheduledTaskId,
@@ -2396,10 +2600,11 @@ export const layer = Layer.effect(
       const tasks = yield* listDueTasks(now).pipe(
         Effect.mapError((cause) => taskError("Could not list schedule tasks.", { cause })),
       );
-      // A task whose check is running has this occurrence in hand already.
+      // A task whose check or background run is going has this occurrence in hand already.
       const checking = yield* Ref.get(runChecks);
+      const inBackground = yield* Ref.get(backgroundRuns);
       const due = tasks.flatMap((task) =>
-        task.nextRunAt === null || checking.has(task.id)
+        task.nextRunAt === null || checking.has(task.id) || inBackground.has(task.id)
           ? []
           : [{ task, dueAt: DateTime.makeUnsafe(task.nextRunAt) }],
       );
@@ -2566,6 +2771,7 @@ export const layer = Layer.effect(
                     ? {}
                     : { catchUpMissedRun: task.catchUpMissedRun }),
                   runCondition: task.runCondition ?? null,
+                  promptFile: task.promptFile?.path ?? null,
                   runtimeMode: task.runtimeMode,
                   interactionMode: task.interactionMode,
                   createdBy: task.createdBy,
@@ -2809,6 +3015,36 @@ export const layer = Layer.effect(
       // Omitted keeps the stored choice.
       const sharedRunOn = input.shared?.runOn ?? existingTask?.shared?.runOn;
       const machineOrder = input.shared?.machineOrder;
+      // Omitted keeps the stored file, so a client that predates prompt files can re-save a task.
+      const promptFilePath =
+        input.promptFile === undefined
+          ? (existingTask?.promptFile?.path ?? null)
+          : input.promptFile;
+      if (promptFilePath !== null && input.schedule.type === "webhook") {
+        return yield* taskError(
+          "A webhook task fills its prompt from each request, so it can't read it from a file.",
+          { taskId: id },
+        );
+      }
+      // A new or moved file is read now, so a wrong path is refused here rather than at a run.
+      const promptFileKept =
+        existingTask?.promptFile != null &&
+        existingTask.promptFile.path === promptFilePath &&
+        existingTask.promptFile.lastRead !== null &&
+        existingTask.projectId === input.projectId;
+      const promptRead =
+        promptFilePath === null || promptFileKept
+          ? null
+          : yield* readPromptFile(input.projectId, promptFilePath).pipe(
+              Effect.mapError((error) => taskError(error.message, { taskId: id })),
+            );
+      const prompt =
+        promptFilePath === null ? input.prompt : (promptRead?.text ?? existingTask?.prompt);
+      if (prompt === undefined) {
+        return yield* taskError("A task needs a prompt, or a prompt file to read it from.", {
+          taskId: id,
+        });
+      }
       // Keep the existing next_run_at when the schedule itself is untouched:
       // editing a title or prompt must not postpone (or resurrect) a due
       // run — only schedule/enabled changes restart the clock.
@@ -2896,7 +3132,7 @@ export const layer = Layer.effect(
       const task: ScheduledTask = {
         id,
         title: input.title,
-        prompt: input.prompt,
+        prompt,
         enabled: input.enabled,
         schedule,
         projectId: input.projectId,
@@ -2942,8 +3178,9 @@ export const layer = Layer.effect(
           Effect.gen(function* () {
             // Checked in the transaction so a replay of a creation cannot undo a later change.
             const created = existingTask === null && !(yield* hasTask(id));
+            const keptText = promptFileKept ? yield* storedPrompt(id) : undefined;
             yield* saveTask(
-              task,
+              keptText === undefined ? task : { ...task, prompt: keptText },
               input.requireExisting === true,
               scheduleUnchanged ? existingTask.schedule : null,
               webhook,
@@ -2958,6 +3195,11 @@ export const layer = Layer.effect(
             // Omitted keeps the stored choice, or for a new task its schedule's default.
             yield* writeCatchUp(id, input.catchUpMissedRun);
             yield* writeRunCondition(id, runCondition);
+            yield* writePromptFile(
+              id,
+              promptFilePath,
+              promptRead === null ? "keep" : { ...promptRead, at: iso(now) },
+            );
             if (sharedExclusions !== undefined && sharedProject !== null) {
               yield* writeSharing(id, {
                 revision: yield* stampRevision(id),
@@ -3060,6 +3302,10 @@ export const layer = Layer.effect(
               WHERE task_id = ${taskId}`;
             const [catchUp] = yield* sql<{ readonly enabled: number }>`
               SELECT enabled FROM scheduled_task_catch_up WHERE task_id = ${taskId}`;
+            const [promptFile] = yield* sql<{ readonly path: string }>`
+              SELECT path FROM scheduled_task_prompt_files WHERE task_id = ${taskId}`;
+            const promptFileDiffers =
+              task.promptFile !== undefined && task.promptFile !== (promptFile?.path ?? null);
             const conditionDiffers =
               task.runCondition !== undefined &&
               (task.runCondition === null
@@ -3072,9 +3318,12 @@ export const layer = Layer.effect(
                 (catchUp === undefined
                   ? defaultCatchUpMissedRun(task.schedule)
                   : catchUp.enabled === 1);
-            if (!conditionDiffers && !catchUpDiffers) return { outcome: "stale" as const };
+            if (!conditionDiffers && !catchUpDiffers && !promptFileDiffers) {
+              return { outcome: "stale" as const };
+            }
             if (conditionDiffers) yield* writeRunCondition(taskId, task.runCondition);
             if (catchUpDiffers) yield* writeCatchUp(taskId, task.catchUpMissedRun);
+            if (promptFileDiffers) yield* writePromptFile(taskId, task.promptFile ?? null, null);
             return { outcome: "applied" as const };
           }),
         );
@@ -3148,6 +3397,16 @@ export const layer = Layer.effect(
         existingTask.enabled === task.enabled &&
         isSameSchedule(existingTask.schedule, schedule) &&
         hasAlignedSlots(existingTask) === hasAlignedSlots({ schedule, shared: task.shared });
+      // A copy from a machine without prompt files leaves this machine's file in place.
+      const promptFilePath =
+        task.promptFile === undefined ? (existingTask?.promptFile?.path ?? null) : task.promptFile;
+      // The stored text goes with this machine's last read of the same file, not the sender's.
+      const keepsOwnRead =
+        promptFilePath !== null &&
+        existingTask?.promptFile != null &&
+        existingTask.promptFile.path === promptFilePath &&
+        existingTask.promptFile.lastRead !== null &&
+        existingTask.projectId === projectId;
       const saved: ScheduledTask = {
         id,
         title: task.title,
@@ -3192,7 +3451,9 @@ export const layer = Layer.effect(
       return yield* commit(
         Effect.gen(function* () {
           const created = existingTask === null && !(yield* hasTask(id));
-          yield* saveTask(saved, false, scheduleUnchanged ? existingTask.schedule : null, {
+          const keptText = keepsOwnRead ? yield* storedPrompt(id) : undefined;
+          const written = keptText === undefined ? saved : { ...saved, prompt: keptText };
+          yield* saveTask(written, false, scheduleUnchanged ? existingTask.schedule : null, {
             token: null,
             secret: null,
             secretChanged: true,
@@ -3204,6 +3465,7 @@ export const layer = Layer.effect(
             : sql`DELETE FROM scheduled_task_default_model WHERE task_id = ${id}`;
           yield* writeCatchUp(id, task.catchUpMissedRun);
           yield* writeRunCondition(id, task.runCondition);
+          yield* writePromptFile(id, promptFilePath, keepsOwnRead ? "keep" : null);
           yield* writeSharing(id, task.shared);
         }),
         "applied",

@@ -20,6 +20,10 @@ import {
   type WebhookFilterDraft,
 } from "@t3tools/client-runtime/scheduled-task-webhook";
 import {
+  promptFileDraft,
+  type PromptFileDraft,
+} from "@t3tools/client-runtime/scheduled-task-prompt-file";
+import {
   runConditionDraft,
   type RunConditionDraft,
 } from "@t3tools/client-runtime/scheduled-task-run-condition";
@@ -196,7 +200,7 @@ export function scheduleFromDraft(draft: ScheduleDraft): ScheduledTaskUpsertSche
 }
 
 type Workspace = "worktree" | "root" | "existing_worktree";
-export type ScheduledTaskDraft = {
+export type ScheduledTaskDraft = PromptFileDraft & {
   readonly task: ScheduledTask | null;
   readonly title: string;
   readonly prompt: string;
@@ -225,6 +229,8 @@ function draftSignature(draft: ScheduledTaskDraft): string {
   return JSON.stringify([
     draft.title,
     draft.prompt,
+    draft.promptSource,
+    draft.promptFile.trim(),
     draft.projectId,
     draft.modelSelection?.instanceId,
     draft.modelSelection?.model,
@@ -284,6 +290,7 @@ export function createDraft(
     task: null,
     title: "",
     prompt: "",
+    ...promptFileDraft(null),
     projectId,
     modelSelection,
     modelSelectionIsExplicit: false,
@@ -306,7 +313,14 @@ export function createDraft(
 /** A new task like an existing one. It stores nothing yet, so its webhook filters are all sent. */
 export function duplicateDraft(task: ScheduledTask, title: string): ScheduledTaskDraft {
   const draft = editDraft(task);
-  return { ...draft, task: null, title, schedule: { ...draft.schedule, savedFilters: [] } };
+  return {
+    ...draft,
+    task: null,
+    title,
+    schedule: { ...draft.schedule, savedFilters: [] },
+    savedPromptFile: null,
+    promptLastRead: null,
+  };
 }
 
 export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
@@ -314,6 +328,7 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     task,
     title: task.title,
     prompt: task.prompt,
+    ...promptFileDraft(task),
     projectId: task.projectId,
     modelSelection: task.modelSelection,
     modelSelectionIsExplicit: true,

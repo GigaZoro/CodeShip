@@ -288,6 +288,10 @@ function errorMessage(error: unknown): string {
 const ONE_MACHINE_NEEDS_SHARED = "oneMachine needs a shared task: pass shared: true as well.";
 const EXCLUDED_MACHINES_NEED_SHARED =
   "excludedMachines needs a shared task: pass shared: true as well.";
+const MACHINE_ORDER_NEEDS_ONE_MACHINE =
+  "machineOrder orders the machines of one-machine tasks: pass shared: true and oneMachine: true as well.";
+const PROMPT_AND_PROMPT_FILE =
+  "Pass `prompt` or `promptFile`, not both: a task with a prompt file runs what the file says.";
 
 /**
  * What a save sends as `shared`. A field the caller leaves out keeps the stored
@@ -297,6 +301,7 @@ function sharedChoice(
   input: {
     readonly oneMachine?: boolean | undefined;
     readonly excludedMachines?: ReadonlyArray<EnvironmentId> | undefined;
+    readonly machineOrder?: ReadonlyArray<EnvironmentId> | undefined;
   },
   stored: ScheduledTask["shared"] | undefined,
 ): NonNullable<ScheduledTaskUpsertInput["shared"]> {
@@ -311,6 +316,7 @@ function sharedChoice(
       ? [...new Set(input.excludedMachines)]
       : (stored?.excludedEnvironmentIds ?? []),
     ...(runOn === undefined ? {} : { runOn }),
+    ...(input.machineOrder === undefined ? {} : { machineOrder: [...new Set(input.machineOrder)] }),
   };
 }
 
@@ -328,6 +334,7 @@ function scheduledTaskSummary(
     scheduledTaskId: task.id,
     title: task.title,
     prompt: task.prompt,
+    ...(task.promptFile == null ? {} : { promptFile: task.promptFile }),
     enabled: task.enabled,
     projectId: task.projectId,
     boundThreadId: task.threadId,
@@ -2341,6 +2348,37 @@ const make = Effect.gen(function* () {
     },
   );
 
+  /** A machine order names this machine and machines a one-machine task's copies can reach. */
+  const assertOrderableMachines = Effect.fn("OrchestratorMcpService.assertOrderableMachines")(
+    function* (
+      scope: McpInvocationScope,
+      order: ReadonlyArray<EnvironmentId>,
+      projectId: ProjectId,
+    ) {
+      const known = new Set<string>([scope.environmentId]);
+      for (const link of yield* peerLinks.listStored.pipe(
+        Effect.mapError((error) =>
+          failure("orchestration_error", `Could not read linked environments: ${error.message}`),
+        ),
+      )) {
+        known.add(link.environmentId);
+      }
+      if (order.every((id) => known.has(id))) return;
+      for (const id of yield* scheduledTasks
+        .knownMachineIds(projectId)
+        .pipe(Effect.mapError((error) => failure("orchestration_error", error.message)))) {
+        known.add(id);
+      }
+      const unknown = order.filter((id) => !known.has(id));
+      if (unknown.length > 0) {
+        return yield* failure(
+          "invalid_request",
+          `machineOrder names ${unknown.join(", ")}, which is not this machine (${scope.environmentId}), not linked from it, not in the project's machine order and has not pulled shared tasks from here in the last 30 days. Use environmentId values from t3_environment_links.`,
+        );
+      }
+    },
+  );
+
   return OrchestratorMcpService.of({
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       if (input.modelSelection !== undefined && input.followsDefaultModel === true) {
@@ -2366,6 +2404,12 @@ const make = Effect.gen(function* () {
       if (input.excludedMachines !== undefined && input.shared !== true) {
         return yield* failure("invalid_request", EXCLUDED_MACHINES_NEED_SHARED);
       }
+      if (input.machineOrder !== undefined && input.oneMachine !== true) {
+        return yield* failure("invalid_request", MACHINE_ORDER_NEEDS_ONE_MACHINE);
+      }
+      if (input.prompt !== undefined && input.promptFile != null) {
+        return yield* failure("invalid_request", PROMPT_AND_PROMPT_FILE);
+      }
       if (input.shared === true && input.bindToCurrentThread === true) {
         return yield* failure(
           "invalid_request",
@@ -2390,7 +2434,7 @@ const make = Effect.gen(function* () {
         parent?.thread.modelSelection ??
         resolveScheduledTaskDefaultModelSelection(yield* readSettings, projectId, project) ??
         (yield* projectDefaultModelSelection(project));
-      const derivedTitle = input.prompt.split("\n")[0]?.trim() ?? "";
+      const derivedTitle = (input.prompt ?? input.promptFile ?? "").split("\n")[0]?.trim() ?? "";
       const title =
         input.title ?? (derivedTitle.length > 0 ? derivedTitle.slice(0, 80) : "Scheduled task");
       // Scope the idempotency key by provider session so two callers
@@ -2424,9 +2468,13 @@ const make = Effect.gen(function* () {
       if (input.excludedMachines !== undefined) {
         yield* assertExcludableMachines(scope, input.excludedMachines, replayed?.shared, projectId);
       }
+      if (input.machineOrder !== undefined) {
+        yield* assertOrderableMachines(scope, input.machineOrder, projectId);
+      }
       const upsertInput: ScheduledTaskUpsertInput = {
         title,
-        prompt: input.prompt,
+        ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
+        ...(input.promptFile === undefined ? {} : { promptFile: input.promptFile }),
         enabled: input.enabled ?? true,
         schedule: input.schedule,
         projectId,
@@ -2514,6 +2562,27 @@ const make = Effect.gen(function* () {
         if (input.oneMachine === true && !sharedAfter) {
           return yield* failure("invalid_request", ONE_MACHINE_NEEDS_SHARED);
         }
+        if (input.machineOrder !== undefined) {
+          const oneMachineAfter =
+            sharedAfter && (input.oneMachine ?? existing.shared?.runOn === "one");
+          if (!oneMachineAfter) {
+            return yield* failure("invalid_request", MACHINE_ORDER_NEEDS_ONE_MACHINE);
+          }
+          yield* assertOrderableMachines(scope, input.machineOrder, existing.projectId);
+        }
+        if (input.prompt !== undefined && input.promptFile != null) {
+          return yield* failure("invalid_request", PROMPT_AND_PROMPT_FILE);
+        }
+        if (
+          input.prompt !== undefined &&
+          input.promptFile === undefined &&
+          existing.promptFile != null
+        ) {
+          return yield* failure(
+            "invalid_request",
+            `This task reads its prompt from ${existing.promptFile.path}. To give it a prompt instead, pass promptFile: null with prompt.`,
+          );
+        }
         if (input.excludedMachines !== undefined) {
           if (!sharedAfter) return yield* failure("invalid_request", EXCLUDED_MACHINES_NEED_SHARED);
           yield* assertExcludableMachines(
@@ -2557,6 +2626,7 @@ const make = Effect.gen(function* () {
           id: existing.id,
           title: input.title ?? existing.title,
           prompt: input.prompt ?? existing.prompt,
+          ...(input.promptFile === undefined ? {} : { promptFile: input.promptFile }),
           enabled: input.enabled ?? existing.enabled,
           schedule: input.schedule ?? existing.schedule,
           projectId: existing.projectId,
@@ -2578,7 +2648,8 @@ const make = Effect.gen(function* () {
             : sharedAfter &&
                 (input.shared === true ||
                   input.oneMachine !== undefined ||
-                  input.excludedMachines !== undefined)
+                  input.excludedMachines !== undefined ||
+                  input.machineOrder !== undefined)
               ? { shared: sharedChoice(input, existing.shared) }
               : {}),
         };

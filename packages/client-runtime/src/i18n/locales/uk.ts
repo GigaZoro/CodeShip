@@ -1320,6 +1320,8 @@ const catalog: MessageCatalog = {
   "{left}% left": "Залишилось {left}%",
   "{login} · Team": "{login} · Команда",
   "{machine} · {status}": "{machine} · {status}",
+  "{machine} cannot read prompts from files. Use the text instead or pick another machine.":
+    "{machine} не може читати запити з файлів. Використайте текст або виберіть інший комп’ютер.",
   "{machine} cannot run checks. Remove the check or pick another machine.":
     "{machine} не може виконувати перевірки. Видаліть перевірку або виберіть інший комп’ютер.",
   "{machine} could not save this change first, so it was not sent here.":
@@ -1336,6 +1338,8 @@ const catalog: MessageCatalog = {
   "{machine} pull request routing": "Маршрутизація пул-реквестів для {machine}",
   "{machine} ran it last, at {time}": "Востаннє запущено на {machine} о {time}",
   "{machine} ran it.": "Його виконав {machine}.",
+  "{machine} runs an older T3.CodeShip that cannot read prompts from files. Saving there would replace {path} with the text above.":
+    "На {machine} встановлено старішу версію T3.CodeShip, яка не може читати запити з файлів. Збереження там замінить {path} текстом вище.",
   "{machine} runs an older T3.CodeShip that cannot run checks. Saving there would drop this task's check.":
     "На {machine} встановлено старішу версію T3.CodeShip, яка не може виконувати перевірки. Збереження там видалить перевірку цього завдання.",
   "{machine} server": "Сервер {machine}",
@@ -1809,11 +1813,14 @@ const catalog: MessageCatalog = {
     "Встановлено новіше розширення. Оновіть T3.CodeShip замість його заміни.",
   "A page in the browser wants to open another application:\n\n{url}":
     "Сторінка в браузері хоче відкрити інший застосунок:\n\n{url}",
+  "A path from the root of the project's repository. Each run reads it from the remote's default branch, so a push changes the next run.":
+    "Шлях від кореня репозиторію проєкту. Кожен запуск читає його з головної гілки віддаленого репозиторію, тож надсилання змін впливає на наступний запуск.",
   "A plugin adds this server. Manage it on the Plugins page.":
     "Цей сервер додає плагін. Керуйте ним на сторінці «Плагіни».",
   "A product call": "Продуктове рішення",
   "a project": "проєкт",
   "a prompt": "запит",
+  "a prompt file": "файл запиту",
   "A queued message cannot be left empty.": "Повідомлення в черзі не може бути порожнім.",
   "A queued message was not sent": "Повідомлення з черги не надіслано",
   "A risk to judge": "Ризик, який варто оцінити",
@@ -1838,6 +1845,8 @@ const catalog: MessageCatalog = {
     "VPN, брандмауер або DNS-фільтр на цьому пристрої може блокувати тунель.",
   "A walk through the diff and what to read closely.":
     "Огляд змін і того, на що варто звернути увагу.",
+  "A webhook task fills its prompt from each request.":
+    "Завдання з вебгуком отримує запит із кожного виклику.",
   "A- {size} pt": "A- {size} пт",
   "A+ {size} pt": "A+ {size} пт",
   Abort: "Перервати",
@@ -6435,6 +6444,7 @@ const catalog: MessageCatalog = {
   "Invalid MCP sign-in request.": "Недійсний запит на вхід MCP.",
   "Invalid pairing token. Check the token and try again.":
     "Недійсний токен сполучення. Перевірте токен і спробуйте ще раз.",
+  "Invalid prompt file": "Недійсний файл запиту",
   "Invalid provider headers": "Некоректні заголовки провайдера",
   "Invalid QR code": "Недійсний QR-код",
   "Invalid regular expression": "Некоректний регулярний вираз",
@@ -7802,6 +7812,8 @@ const catalog: MessageCatalog = {
   "Not on {machines}": "Немає на: {machines}",
   "Not on a draft thread": "Не в чернетці чату",
   "Not on: {machines}": "Не на: {machines}",
+  "Not read on this machine yet. Saving or the next run reads it.":
+    "На цій машині ще не прочитано. Збереження або наступний запуск прочитає його.",
   "Not ready": "Не готово",
   "Not ready yet. Finish the step above.": "Ще не готово. Завершіть крок вище.",
   "Not reported": "Не повідомлено",
@@ -8743,6 +8755,8 @@ const catalog: MessageCatalog = {
   "Projects with no open threads": "Проєкти без відкритих чатів",
   Prompt: "Запит",
   "Prompt added from a link": "Запит додано з посилання",
+  "Prompt file": "Файл запиту",
+  "Prompt file would be dropped": "Файл запиту буде відкинуто",
   "Prompt font": "Шрифт запиту",
   "Prompt font preview": "Попередній перегляд шрифту запиту",
   "Prompt font size": "Розмір шрифту запиту",
@@ -8978,6 +8992,8 @@ const catalog: MessageCatalog = {
   "Read file": "Читання файлу",
   "Read file +{count} more": "Прочитано файл, ще +{count}",
   "Read files": "Читання файлів",
+  "Read from {ref} at {commit} on {date}": "Прочитано з {ref} на коміті {commit}, {date}",
+  "Read from a file": "Читати з файлу",
   "Read it before you send.": "Прочитайте його перед надсиланням.",
   "Read limits": "Читати ліміти",
   "Read limits on {environment}": "Читати ліміти на {environment}",
@@ -11399,6 +11415,7 @@ const catalog: MessageCatalog = {
   "Text appears once the agent finishes its turn.":
     "Текст з’являється, коли агент завершує свій хід.",
   "Text generation model": "Модель генерування тексту",
+  "Text it read": "Прочитаний текст",
   "text size": "розмір тексту",
   "Text size": "Розмір тексту",
   Th: "Чт",
@@ -11832,6 +11849,14 @@ const catalog: MessageCatalog = {
     "Проєкт створено, але він ще не дійшов до цього пристрою. Він з’явиться в списку проєктів, щойно з’єднання наздожене.",
   "The prompt can use {{body.a.b}}, {{headers.name}}, {{query.name}}, {{body}} and {{request}}. The filled-in prompt is all the agent sees.":
     "Запит може використовувати {{body.a.b}}, {{headers.name}}, {{query.name}}, {{body}} і {{request}}. Агент бачить лише заповнений запит.",
+  "The prompt file path cannot have empty, . or .. parts.":
+    "Шлях до файлу запиту не може містити порожніх частин або частин «.» чи «..».",
+  "The prompt file path cannot hold control characters.":
+    "Шлях до файлу запиту не може містити керівних символів.",
+  "The prompt file path is longer than {max} characters.":
+    "Шлях до файлу запиту довший за {max} символів.",
+  "The prompt file path starts at the repository's root, so it cannot be absolute.":
+    "Шлях до файлу запиту починається від кореня репозиторію, тому він не може бути абсолютним.",
   "The prompt opens in a new task once the clone starts.":
     "Запит відкриється в новому завданні, щойно почнеться клонування.",
   "The prompt was stashed, but browser storage rejected its images. They will be missing if you reload.":
@@ -13486,6 +13511,7 @@ const catalog: MessageCatalog = {
     "Використовувати шаблон репозиторію для описів запитів на зміни, коли він є.",
   "Use the same appearance and layout on all my devices":
     "Однаковий вигляд і розташування на всіх моїх пристроях",
+  "Use the text": "Використати текст",
   "Use the thread's model": "Використовувати модель чату",
   "Use these rules for this project.": "Використовувати ці правила для цього проєкту.",
   "Use thinner grayscale text smoothing instead of the macOS default.":
@@ -13827,6 +13853,7 @@ const catalog: MessageCatalog = {
   "Where new threads in this project start.": "Де починаються нові чати в цьому проєкті.",
   "Where new threads start. Projects and their t3.json can override it.":
     "Де починаються нові чати. Проєкти та їхній t3.json можуть це змінити.",
+  "Where the prompt comes from": "Звідки береться запит",
   "Which machines run this task": "Які комп’ютери запускають це завдання",
   "while the agent is running": "поки агент працює",
   "While the agent is running": "Поки агент працює",
@@ -13929,8 +13956,11 @@ const catalog: MessageCatalog = {
   "Write files": "Запис файлів",
   "Write guide": "Створити посібник",
   "Write in Markdown…": "Пишіть у Markdown…",
+  "Write it here": "Написати тут",
   "Write the instructions each selected environment should use.":
     "Напишіть інструкції, які має використовувати кожне вибране середовище.",
+  "Write the prompt file path with forward slashes.":
+    "Пишіть шлях до файлу запиту з прямими скісними рисками (/).",
   "Write throughput": "Пропускна здатність запису",
   "Write Total": "Усього записано",
   'Write-only headers JSON, e.g. {"Authorization":"Bearer …"}':

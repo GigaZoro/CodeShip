@@ -7,6 +7,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as RunConditionCheck from "./RunConditionCheck.ts";
+import * as PromptFileReader from "./PromptFileReader.ts";
 import * as SharedTaskPeerCheck from "./SharedTaskPeerCheck.ts";
 
 export const HERE_ENVIRONMENT_ID = EnvironmentId.make("environment-here");
@@ -31,15 +32,25 @@ const layerRunConditionFindsWork = Layer.mock(RunConditionCheck.RunConditionChec
   run: () => Effect.succeed({ outcome: "run", failure: null, exitCode: 0, detail: null }),
 });
 
-/** This machine's id and its projects, for services that only need to identify a repository. */
+/** A reader for tests that set no prompt file: any read is a bug in the test. */
+const layerNoPromptFiles = Layer.mock(PromptFileReader.PromptFileReader)({
+  read: ({ path }) => Effect.die(`This test reads no prompt file, but read ${path}.`),
+});
+
+/**
+ * This machine's id, its projects and its prompt files, for services that only need to identify
+ * a repository or read from it.
+ */
 export const layerSharedTaskIdentities = (
   projects: ReadonlyArray<TestSharedProject> = [],
   peerCheck: Layer.Layer<SharedTaskPeerCheck.SharedTaskPeerCheck> = layerNoPeersRan,
   runConditionCheck: Layer.Layer<RunConditionCheck.RunConditionCheck> = layerRunConditionFindsWork,
+  promptFiles: Layer.Layer<PromptFileReader.PromptFileReader> = layerNoPromptFiles,
 ) =>
   Layer.mergeAll(
     peerCheck,
     runConditionCheck,
+    promptFiles,
     Layer.mock(ServerEnvironment.ServerEnvironmentIdentity)({
       getEnvironmentId: Effect.succeed(HERE_ENVIRONMENT_ID),
     }),
@@ -57,9 +68,10 @@ export const layerSharedTaskDependencies = (
   projects: ReadonlyArray<TestSharedProject> = [],
   peerCheck?: Layer.Layer<SharedTaskPeerCheck.SharedTaskPeerCheck>,
   runConditionCheck?: Layer.Layer<RunConditionCheck.RunConditionCheck>,
+  promptFiles?: Layer.Layer<PromptFileReader.PromptFileReader>,
 ) =>
   Layer.mergeAll(
-    layerSharedTaskIdentities(projects, peerCheck, runConditionCheck),
+    layerSharedTaskIdentities(projects, peerCheck, runConditionCheck, promptFiles),
     Layer.mock(ProjectService.ProjectService)({
       getById: (projectId) =>
         Effect.succeed(

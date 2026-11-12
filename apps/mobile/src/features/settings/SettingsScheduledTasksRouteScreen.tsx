@@ -55,7 +55,14 @@ import {
 import { useRef, useState, type ReactNode } from "react";
 import { useFocusEffect, useNavigation, usePreventRemove } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { AppState, Platform, Pressable, TextInput as RNTextInput, View } from "react-native";
+import {
+  AppState,
+  Platform,
+  Pressable,
+  ScrollView as NativeScrollView,
+  TextInput as RNTextInput,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "../../components/ui/Button";
@@ -68,6 +75,13 @@ import {
 import { Menu } from "../../components/ui/Menu";
 import type { ComposerEditorSelection } from "../../components/ComposerEditor";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
+import {
+  effectivePromptSource,
+  promptFileDraftProblem,
+  promptFileLostOnTarget,
+  promptFileReadFor,
+  promptUpsertFields,
+} from "@t3tools/client-runtime/scheduled-task-prompt-file";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import {
@@ -141,6 +155,7 @@ import {
   formatNextScheduledTaskRun,
   formatRunAtDate,
   formatRunAtTime,
+  formatScheduledTaskRunTime,
   formatScheduledTaskTime as formatTime,
   isWeekdaysRepeat,
   repeatLabel,
@@ -813,6 +828,8 @@ function SettingsScheduledTaskEditorScreen({ title }: { readonly title: string }
                   ...draftForEnvironment(target.environmentId),
                   title: editor.draft.title,
                   prompt: editor.draft.prompt,
+                  promptSource: editor.draft.promptSource,
+                  promptFile: editor.draft.promptFile,
                   schedule: editor.draft.schedule,
                   enabled: editor.draft.enabled,
                   runCondition: editor.draft.runCondition,
@@ -969,6 +986,14 @@ function TaskForm({
     config?.environment.capabilities.scheduledTaskRunConditions === true;
   const offersRunCondition = targetSupportsRunConditions && draft.schedule.mode !== "webhook";
   const runConditionLost = runConditionLostOnTarget({ targetSupportsRunConditions, draft });
+  const supportsPromptFiles = config?.environment.capabilities.scheduledTaskPromptFiles === true;
+  const promptSource = effectivePromptSource({ supportsPromptFiles, draft });
+  const promptFileLost = promptFileLostOnTarget({
+    supportsPromptFiles,
+    isWebhook: draft.schedule.mode === "webhook",
+    draft,
+  });
+  const promptFileRead = promptFileReadFor(draft);
   const offersOnce =
     config?.environment.capabilities.oneTimeSchedules === true ||
     draft.task?.schedule.type === "once";
@@ -1026,7 +1051,7 @@ function TaskForm({
     }
     if (
       !draft.title.trim() ||
-      !draft.prompt.trim() ||
+      (promptSource === "file" ? !draft.promptFile.trim() : !draft.prompt.trim()) ||
       !draft.projectId ||
       !taskModel ||
       !schedule ||
@@ -1037,6 +1062,16 @@ function TaskForm({
         t("Add a name, prompt, project, model, valid schedule, and checkout path if needed."),
       );
       return;
+    }
+    if (promptSource === "file") {
+      const problem = promptFileDraftProblem({
+        promptFile: draft.promptFile,
+        isWebhook: draft.schedule.mode === "webhook",
+      });
+      if (problem !== undefined) {
+        Dialog.alert(t("Invalid prompt file"), problem);
+        return;
+      }
     }
     if (!projects.some((project) => project.id === draft.projectId)) {
       Dialog.alert(t("Project unavailable"), t("Choose a project in this environment."));
@@ -1051,6 +1086,16 @@ function TaskForm({
       );
       return;
     }
+    if (promptFileLost) {
+      Dialog.alert(
+        t("Prompt file would be dropped"),
+        t(
+          "{machine} cannot read prompts from files. Use the text instead or pick another machine.",
+          { machine: environmentLabel },
+        ),
+      );
+      return;
+    }
     const runCondition = offersRunCondition ? runConditionInput(draft.runCondition) : null;
     if (runCondition === undefined) {
       Dialog.alert(t("Invalid check"), runConditionInvalidText());
@@ -1059,7 +1104,7 @@ function TaskForm({
     const input: ScheduledTaskUpsertInput = {
       ...(draft.task ? { id: draft.task.id, requireExisting: true } : {}),
       title: draft.title.trim(),
-      prompt: draft.prompt.trim(),
+      ...promptUpsertFields({ supportsPromptFiles, draft }),
       projectId: draft.projectId,
       modelSelection: taskModel,
       ...(offersDefaultModel ? { followsDefaultModel } : {}),
@@ -1226,7 +1271,86 @@ function TaskForm({
             placeholder={t("Check for issues")}
             onChange={(title) => setDraft({ ...draft, title })}
           />
-          {promptField}
+          {supportsPromptFiles ? (
+            <View className="gap-2 border-t border-border-subtle px-4 py-3">
+              <Text className="text-sm text-foreground-muted">{t("Prompt")}</Text>
+              <SegmentedControl
+                variant="card"
+                options={[
+                  { value: "text" as const, label: t("Write it here") },
+                  // The control cannot disable one option, so a webhook task leaves it out.
+                  ...(draft.schedule.mode === "webhook"
+                    ? []
+                    : [{ value: "file" as const, label: t("Read from a file") }]),
+                ]}
+                selected={promptSource}
+                onSelect={(choice) => setDraft({ ...draft, promptSource: choice })}
+              />
+              {draft.schedule.mode === "webhook" ? (
+                <Text className="text-sm text-foreground-muted">
+                  {t("A webhook task fills its prompt from each request.")}
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
+          {promptSource === "file" ? (
+            <>
+              <FormField
+                label={t("Prompt file")}
+                disabled={saving}
+                technical
+                borderTop
+                value={draft.promptFile}
+                placeholder={"automations/daily.md"}
+                onChange={(promptFile) => setDraft({ ...draft, promptFile })}
+              />
+              <View className="gap-2 px-4 pb-3">
+                <Text className="text-sm text-foreground-muted">
+                  {t(
+                    "A path from the root of the project's repository. Each run reads it from the remote's default branch, so a push changes the next run.",
+                  )}
+                </Text>
+                {promptFileRead ? (
+                  <>
+                    <Text className="text-sm text-foreground-muted">
+                      {t("Read from {ref} at {commit} on {date}", {
+                        ref: promptFileRead.ref,
+                        commit: promptFileRead.commit.slice(0, 7),
+                        date: formatScheduledTaskRunTime(promptFileRead.at),
+                      })}
+                    </Text>
+                    <Text className="text-sm text-foreground-muted">{t("Text it read")}</Text>
+                    <NativeScrollView className="max-h-64" nestedScrollEnabled>
+                      <Text selectable className="text-base text-foreground">
+                        {draft.prompt}
+                      </Text>
+                    </NativeScrollView>
+                  </>
+                ) : draft.task && draft.savedPromptFile === draft.promptFile.trim() ? (
+                  <Text className="text-sm text-foreground-muted">
+                    {t("Not read on this machine yet. Saving or the next run reads it.")}
+                  </Text>
+                ) : null}
+              </View>
+            </>
+          ) : (
+            promptField
+          )}
+          {promptFileLost ? (
+            <View className="gap-3 border-t border-border-subtle px-4 py-3">
+              <Text className="text-sm text-warning-foreground">
+                {t(
+                  "{machine} runs an older T3.CodeShip that cannot read prompts from files. Saving there would replace {path} with the text above.",
+                  { machine: environmentLabel, path: draft.promptFile.trim() },
+                )}
+              </Text>
+              <Button
+                label={t("Use the text")}
+                disabled={saving}
+                onPress={() => setDraft({ ...draft, promptSource: "text" })}
+              />
+            </View>
+          ) : null}
         </SettingsSection>
 
         <SettingsSection title={t("Context")}>

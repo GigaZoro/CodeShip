@@ -83,6 +83,10 @@
       "types": "./src/scheduledTaskRunCondition.ts",
       "default": "./src/scheduledTaskRunCondition.ts"
     },
+    "./scheduled-task-prompt-file": {
+      "types": "./src/scheduledTaskPromptFile.ts",
+      "default": "./src/scheduledTaskPromptFile.ts"
+    },
     "./scheduled-task-pins": {
       "types": "./src/scheduledTaskPins.ts",
       "default": "./src/scheduledTaskPins.ts"

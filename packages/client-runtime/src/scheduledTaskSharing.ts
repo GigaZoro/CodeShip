@@ -105,6 +105,8 @@ function sharedCopyOf(task: ScheduledTask): ScheduledTaskSharedCopy | null {
     creationSource: task.creationSource,
     createdAt: task.createdAt,
     shared: task.shared,
+    // Absent from a server without prompt files, so the receiving machine keeps its own.
+    ...(task.promptFile === undefined ? {} : { promptFile: task.promptFile?.path ?? null }),
   };
 }
 

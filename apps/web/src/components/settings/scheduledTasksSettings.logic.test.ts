@@ -497,3 +497,27 @@ it("rejects dedupe templates without a request placeholder", () => {
   expect(scheduleFromDraft({ ...draft, replayKey: "literal" })).toBeNull();
   expect(scheduleFromDraft({ ...draft, coalesceKey: "{{body.bad" })).toBeNull();
 });
+
+describe("a task that reads its prompt from a file", () => {
+  const lastRead = { at: "2026-11-12T08:00:00.000Z", ref: "origin/main", commit: "abcdef1234567" };
+  const fileTask: ScheduledTask = {
+    ...legacyTask,
+    prompt: "Do the daily thing",
+    promptFile: { path: "automations/daily.md", lastRead },
+  };
+
+  it("opens in file mode and a copy starts unread", () => {
+    expect(taskToDraft(fileTask)).toMatchObject({
+      promptSource: "file",
+      promptFile: "automations/daily.md",
+      savedPromptFile: "automations/daily.md",
+      promptLastRead: lastRead,
+      prompt: "Do the daily thing",
+    });
+    expect(copyTaskDraft(fileTask, "Copy")).toMatchObject({
+      promptSource: "file",
+      savedPromptFile: null,
+      promptLastRead: null,
+    });
+  });
+});
