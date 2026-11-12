@@ -1,3 +1,8 @@
+## 2026-11-12 — Going back in a chat never leaves a later turn behind
+
+- **Edit from here** and **Retry** now go back past every later turn whose agent has finished, including a turn that has just ended and whose file snapshot is not saved yet. Before, such a turn could stay in the chat after the conversation and files went back past it, and going back to just before it said "The thread has changed. Select a message to rewind again."
+- Going back while a later turn is still running is refused with "A later turn is still running. Stop the agent, then try again." The buttons are already off while the agent works, but a window that had not caught up yet could still send the request, and with some providers the conversation went back while the turn's work stayed in the chat.
+
 ## 2026-11-12 — Each stop of a chat's background work keeps its own notice
 
 - When a chat's background work was stopped more than once before its next turn (for example its agent process ended, then its session was closed), the thread showed only the latest notice, and a scheduled task's run took that later time as when it stopped. Such a run could then resume although a newer run of its task had already replaced it. Each stop now keeps its own notice, listing the work it stopped, and a scheduled run is judged by when its work first stopped.

@@ -781,6 +781,28 @@ export function orchestrationV2WorktreePending(
   );
 }
 
+/**
+ * A run whose provider turn has ended, so a rollback to an earlier checkpoint discards it.
+ * `waiting` is an ended turn whose checkpoint is not captured yet.
+ */
+export function orchestrationV2RunTurnEnded(status: OrchestrationV2Run["status"]): boolean {
+  // Exhaustive, so a new status cannot be skipped by rollbacks without a decision here.
+  switch (status) {
+    case "waiting":
+    case "completed":
+    case "interrupted":
+    case "failed":
+    case "cancelled":
+      return true;
+    case "queued":
+    case "preparing":
+    case "starting":
+    case "running":
+    case "rolled_back":
+      return false;
+  }
+}
+
 export const OrchestrationV2RunAttempt = Schema.Struct({
   id: RunAttemptId,
   // Provider-thread rows can be reused after recovery; retain the native input destination.

@@ -1,11 +1,12 @@
 // @effect-diagnostics globalTimers:off - The rewind wait runs in client callbacks, outside an Effect runtime.
-import type {
-  CommandId,
-  MessageId,
-  OrchestrationV2Checkpoint,
-  OrchestrationV2ProviderTurn,
-  RunAttemptId,
-  RunId,
+import {
+  type CommandId,
+  type MessageId,
+  type OrchestrationV2Checkpoint,
+  type OrchestrationV2ProviderTurn,
+  orchestrationV2RunTurnEnded,
+  type RunAttemptId,
+  type RunId,
 } from "@t3tools/contracts";
 import { t } from "@t3tools/shared/i18n";
 import * as Option from "effect/Option";
@@ -218,16 +219,9 @@ export function waitForRevertedMessage(input: {
     (providerThread) => providerThread.id === providerThreadId,
   );
   const initialProviderThreadIds = new Set(initial?.providerThreads.map((thread) => thread.id));
-  // Paging can omit the source run. Rollback commits the entire settled suffix atomically.
+  // Paging can omit the source run. Rollback commits the entire ended suffix atomically.
   const witness = initial?.runs.reduce<(typeof initial.runs)[number] | undefined>((latest, run) => {
-    if (
-      run.ordinal <= turnCount ||
-      (run.status !== "completed" &&
-        run.status !== "interrupted" &&
-        run.status !== "failed" &&
-        run.status !== "cancelled")
-    )
-      return latest;
+    if (run.ordinal <= turnCount || !orchestrationV2RunTurnEnded(run.status)) return latest;
     return latest === undefined || run.ordinal > latest.ordinal ? run : latest;
   }, undefined);
   if (witness === undefined) {

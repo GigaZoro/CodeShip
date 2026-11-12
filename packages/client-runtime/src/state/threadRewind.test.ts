@@ -345,12 +345,14 @@ describe("waitForRevertedMessage", () => {
   });
 
   it.each([
-    ["same", "streamed"],
-    ["replacement", "streamed"],
-    ["replacement", "refetched"],
+    ["same", "streamed", "cancelled"],
+    ["replacement", "streamed", "cancelled"],
+    ["replacement", "refetched", "cancelled"],
+    // Its turn ended, but its checkpoint is not captured yet.
+    ["same", "streamed", "waiting"],
   ] as const)(
-    "waits for the retained rollback suffix when the edited message and run are paged out (%s provider, %s)",
-    async (providerIdentity, projectionSource) => {
+    "waits for the retained rollback suffix when the edited message and run are paged out (%s provider, %s, latest run %s)",
+    async (providerIdentity, projectionSource, latestStatus) => {
       vi.useFakeTimers();
       const { projection, set, wait } = projectionAtom();
       const latestRunId = RunId.make("latest-run-9");
@@ -359,7 +361,7 @@ describe("waitForRevertedMessage", () => {
         id: latestRunId,
         ordinal: 9,
         userMessageId: MessageId.make("latest-message-9"),
-        status: "cancelled" as const,
+        status: latestStatus,
       };
       const bounded = {
         ...projection,

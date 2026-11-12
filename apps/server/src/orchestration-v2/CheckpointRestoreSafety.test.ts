@@ -89,7 +89,7 @@ it.effect.each([
       staleCheckpoints: [],
       checkpoint: { id: checkpointId, scopeId, status: "ready", appRunOrdinal: null },
       scope: { id: scopeId, cwd },
-      runsToRollback: [{ id: "later-run", ordinal: 1, status: "completed", rootNodeId: null }],
+      laterRuns: [{ id: "later-run", ordinal: 1, status: "completed", rootNodeId: null }],
     } as unknown as ProjectionCheckpointRollbackContext;
     const layerTest = CheckpointRollbackService.layer.pipe(
       Layer.provide(

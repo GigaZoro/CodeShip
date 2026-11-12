@@ -80,7 +80,7 @@ import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import { toSafeThreadAttachmentSegment } from "../attachmentStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
-import { ROLLBACK_FAILED_MESSAGE } from "./CheckpointRollbackService.ts";
+import { LATER_RUN_ACTIVE_MESSAGE } from "./CheckpointRollbackService.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
@@ -984,9 +984,10 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
       const [rollbackEffect] = yield* outbox.listByCommandId(rollbackCommandId);
       assert.equal(rollbackEffect?.status, "failed");
       const failed = yield* orchestrator.getThreadProjection(threadId);
+      // The seeded run never leaves `starting`, so every attempt refuses to cut under it.
       assert.deepEqual(failed.thread.rollbackFailure, {
         requestId: rollbackCommandId,
-        message: ROLLBACK_FAILED_MESSAGE,
+        message: LATER_RUN_ACTIVE_MESSAGE,
       });
 
       yield* rollback(CommandId.make("runtime-rollback-failure-retry"));

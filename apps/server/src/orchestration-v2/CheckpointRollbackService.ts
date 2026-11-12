@@ -6,6 +6,7 @@ import {
   type OrchestrationV2PendingBackgroundTask,
   type OrchestrationV2RestartCancelledBackgroundWork,
   type OrchestrationV2Run,
+  orchestrationV2RunTurnEnded,
   ProviderThreadId,
   type RunId,
   ThreadId,
@@ -50,6 +51,9 @@ import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 export const ROLLBACK_FAILED_MESSAGE =
   "The provider could not roll back this conversation. Try again; if it keeps failing, check the provider and server logs.";
 
+export const LATER_RUN_ACTIVE_MESSAGE =
+  "A later turn is still running. Stop the agent, then try again.";
+
 export class CheckpointRollbackExecutionError extends Schema.TaggedError<CheckpointRollbackExecutionError>()(
   "CheckpointRollbackExecutionError",
   {
@@ -59,6 +63,7 @@ export class CheckpointRollbackExecutionError extends Schema.TaggedError<Checkpo
       "provider-turn-unavailable",
       "unexpected-failure",
       "shared-workspace",
+      "later-run-active",
     ]),
     threadId: ThreadId,
     providerThreadId: ProviderThreadId,
@@ -76,6 +81,8 @@ export class CheckpointRollbackExecutionError extends Schema.TaggedError<Checkpo
         return `Provider turn for rollback target ${this.checkpointId} is unavailable on provider thread ${this.providerThreadId}.`;
       case "shared-workspace":
         return SHARED_WORKSPACE_RESTORE_MESSAGE;
+      case "later-run-active":
+        return LATER_RUN_ACTIVE_MESSAGE;
       case "unexpected-failure":
         return ROLLBACK_FAILED_MESSAGE;
     }
@@ -88,11 +95,13 @@ const isCheckpointRestoreError = Schema.is(CheckpointRestoreError);
 const isRuntimePolicyAboveCeilingError = Schema.is(RuntimePolicyAboveCeilingError);
 
 /**
- * The message clients see when a rollback fails. Only a held Git index lock
- * gets its own explanation; other reasons carry internal ids or raw Git
- * output, so they fall back to the generic message.
+ * The message clients see when a rollback fails. A running later turn, a
+ * runtime policy above the ceiling and a held Git index lock get their own
+ * explanation; other reasons carry internal ids or raw Git output, so they
+ * fall back to the generic message.
  */
 export function rollbackFailureClientMessage(error: CheckpointRollbackExecutionError): string {
+  if (error.reason === "later-run-active") return error.message;
   if (isRuntimePolicyAboveCeilingError(error.cause)) return error.cause.message;
   const restoreCause = isCheckpointRestoreError(error.cause) ? error.cause.cause : undefined;
   return isVcsProcessExitError(restoreCause) && restoreCause.detail === GIT_INDEX_LOCKED_DETAIL
@@ -269,7 +278,7 @@ export const layer: Layer.Layer<
       readonly restoreFiles?: boolean;
     }) {
       const context = yield* projections.getCheckpointRollbackContext(input.threadId, input);
-      const { providerThread, checkpoint, scope, targetAttempt, runsToRollback, staleCheckpoints } =
+      const { providerThread, checkpoint, scope, targetAttempt, laterRuns, staleCheckpoints } =
         context;
       if (
         providerThread === undefined ||
@@ -292,6 +301,15 @@ export const layer: Layer.Layer<
       ) {
         return yield* new CheckpointRollbackExecutionError({
           reason: "active-provider-changed",
+          threadId: input.threadId,
+          providerThreadId: input.providerThreadId,
+          checkpointId: input.checkpointId,
+        });
+      }
+      // The conversation cannot be cut under a live turn, and the turn would outlive the rewind.
+      if (laterRuns.some((run) => !orchestrationV2RunTurnEnded(run.status))) {
+        return yield* new CheckpointRollbackExecutionError({
+          reason: "later-run-active",
           threadId: input.threadId,
           providerThreadId: input.providerThreadId,
           checkpointId: input.checkpointId,
@@ -410,7 +428,7 @@ export const layer: Layer.Layer<
         ProviderAdapter.ProviderAdapterV2ThreadSnapshot,
         "providerThread" | "lostBackgroundTasks"
       > =
-        runsToRollback.length === 0
+        laterRuns.length === 0
           ? { providerThread }
           : yield* session.rollbackThread({
               providerThread,
@@ -418,7 +436,7 @@ export const layer: Layer.Layer<
               providerThreadTurns,
             });
       const lostTasks = snapshot.lostBackgroundTasks ?? [];
-      const rolledBackRunIds = runsToRollback.map((run) => run.id);
+      const rolledBackRunIds = laterRuns.map((run) => run.id);
 
       // Lock against full-row thread writes that could restore the old native session after rollback.
       const writeRollback = threadCommands.withLock(
@@ -482,7 +500,7 @@ export const layer: Layer.Layer<
               }),
             );
           }
-          for (const run of runsToRollback) {
+          for (const run of laterRuns) {
             const rootNode = context.rootNodes.find((candidate) => candidate.id === run.rootNodeId);
             // Left out, the stored record stays; the pruning below is the only change to it.
             const { restartCancelledBackgroundWork: _recorded, ...rolledBack } = run;

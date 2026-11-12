@@ -217,7 +217,7 @@ it.effect.each([
       providerSession: undefined,
       checkpoint: { id: checkpointId, scopeId, status: "ready", appRunOrdinal: 0 },
       scope: { id: scopeId, cwd: worktreePath },
-      runsToRollback: [],
+      laterRuns: [],
       targetAttempt: undefined,
       rolledBackAttemptIds: [],
       staleCheckpoints: [],
@@ -759,6 +759,67 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
           ["ready", "ready", "ready", "stale", "stale", "stale", "stale", "stale", "ready"],
         );
       }),
+    );
+
+    it.effect.each([
+      {
+        laterStatus: "waiting",
+        failure: null,
+        rollbackCounts: [4],
+        statuses: [
+          "completed",
+          "completed",
+          "rolled_back",
+          "rolled_back",
+          "rolled_back",
+          "rolled_back",
+          "rolled_back",
+        ],
+      },
+      {
+        laterStatus: "running",
+        failure: CheckpointRollbackService.LATER_RUN_ACTIVE_MESSAGE,
+        rollbackCounts: [],
+        statuses: [
+          "completed",
+          "completed",
+          "completed",
+          "interrupted",
+          "failed",
+          "running",
+          "rolled_back",
+        ],
+      },
+    ])(
+      "rolls back past a $laterStatus later run only once its turn has ended",
+      ({ laterStatus, failure, rollbackCounts, statuses }) =>
+        Effect.gen(function* () {
+          const history = yield* seedRollbackHistory(`rollback-history-later-${laterStatus}`);
+          const sql = yield* SqlClient.SqlClient;
+          // A `waiting` run ended its turn, but its checkpoint capture never committed.
+          yield* sql`UPDATE orchestration_v2_projection_runs
+            SET status = ${laterStatus}, payload_json = json_set(payload_json,
+              '$.status', ${laterStatus}, '$.completedAt', NULL, '$.checkpointId', NULL)
+            WHERE run_id = ${history.runId(6)}`;
+
+          const outcome = yield* history.rollback(2).pipe(
+            Effect.as(null),
+            Effect.catchTags({
+              CheckpointRollbackExecutionError: (error) =>
+                Effect.succeed(CheckpointRollbackService.rollbackFailureClientMessage(error)),
+            }),
+          );
+
+          assert.equal(outcome, failure);
+          assert.deepEqual(history.rollbackCounts, rollbackCounts);
+          const runs = yield* sql<{ status: string }>`
+            SELECT status FROM orchestration_v2_projection_runs
+            WHERE thread_id = ${history.threadId} ORDER BY ordinal`;
+          assert.deepEqual(
+            runs.map((run) => run.status),
+            statuses,
+          );
+        }),
     );
 
     it.effect(
