@@ -26,6 +26,7 @@ import * as Stream from "effect/Stream";
 import type * as Tool from "effect/ai/Tool";
 
 import type * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
+import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
 import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import {
   resolveInteractionMode,
@@ -35,6 +36,7 @@ import {
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -120,6 +122,7 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const projects = yield* ProjectService.ProjectService;
+  const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
   const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const crypto = yield* Crypto.Crypto;
   const hereId = yield* ServerEnvironment.ServerEnvironment.pipe(
@@ -137,14 +140,19 @@ const make = Effect.gen(function* () {
       .getThreadRecords(parentThreadId, ["subagents"], { subagentIds: [taskId] })
       .pipe(Effect.map(({ thread, subagents }) => ({ thread, task: subagents[0] })));
 
-  /** The peer's project with this thread's repository, or the one the caller named. */
+  /**
+   * Where the task runs there: the project the caller named, the peer's own No project for a
+   * thread in No project (it has no repository to match), else the peer's project with this
+   * thread's repository.
+   */
   const resolveRemoteProject = Effect.fn("RemoteDelegation.resolveRemoteProject")(function* (
     scope: ThreadScope,
     environmentId: EnvironmentId,
     parentProjectId: ProjectId,
     requested: ProjectId | undefined,
   ) {
-    if (requested !== undefined) return requested;
+    if (requested !== undefined) return { projectId: requested } as const;
+    if (yield* managedFolders.isScratchProject(parentProjectId)) return { scratch: true } as const;
     const here = yield* projects.getById(parentProjectId).pipe(
       Effect.map(Option.getOrUndefined),
       Effect.orElseSucceed(() => undefined),
@@ -174,7 +182,7 @@ const make = Effect.gen(function* () {
       );
       cursor = listed.nextCursor;
     }
-    if (matches.length === 1) return matches[0]!.id;
+    if (matches.length === 1) return { projectId: matches[0]!.id } as const;
     return yield* new OrchestratorMcpFailure({
       code: "invalid_request",
       message:
@@ -182,6 +190,39 @@ const make = Effect.gen(function* () {
           ? `No project there has this repository (${key}). Pass target.projectId; t3_project_list with this environmentId lists them. To bring the repository there, use t3_project_clone and then t3_project_create with this environmentId.`
           : `Several projects there have this repository: ${matches.map((project) => `${project.title} (${project.id})`).join(", ")}. Pass target.projectId.`,
     });
+  });
+
+  /**
+   * The peer's own provider instance for a target that names only a driver: instance ids belong
+   * to one environment, so this thread's would not exist there. An instance that is not usage
+   * limited and has no constraints comes first.
+   */
+  const resolveRemoteInstance = Effect.fn("RemoteDelegation.resolveRemoteInstance")(function* (
+    scope: ThreadScope,
+    environmentId: EnvironmentId,
+    driverKind: ProviderDriverKind,
+  ) {
+    const there = yield* forwarding.call(
+      scope,
+      OrchestratorToolkit.tools.orchestrator_capabilities,
+      environmentId,
+      {},
+    );
+    const ofDriver = there.providers.filter((provider) => provider.driverKind === driverKind);
+    const usable =
+      ofDriver.find(
+        (provider) => provider.usageLimited !== true && provider.constraints.length === 0,
+      ) ?? ofDriver[0];
+    if (usable === undefined) {
+      const available = there.providers
+        .map((provider) => `${provider.providerInstanceId} (${provider.driverKind})`)
+        .join(", ");
+      return yield* new OrchestratorMcpFailure({
+        code: "provider_unavailable",
+        message: `No provider instance of driver ${driverKind} there. Its instances: ${available || "none"}. Pass target.providerInstanceId.`,
+      });
+    }
+    return usable.providerInstanceId;
   });
 
   const delegate: RemoteDelegation["Service"]["delegate"] = Effect.fn("RemoteDelegation.delegate")(
@@ -222,13 +263,17 @@ const make = Effect.gen(function* () {
       // The provider and model inherit as they do for a task here. Another
       // provider there has no model to inherit, so the caller names one.
       const inherited = parent.thread.modelSelection;
-      const instanceId = target.providerInstanceId ?? inherited.instanceId;
+      const instanceId =
+        target.providerInstanceId ??
+        (target.driverKind === undefined
+          ? inherited.instanceId
+          : yield* resolveRemoteInstance(scope, target.environmentId, target.driverKind));
       const model =
         target.model ?? (instanceId === inherited.instanceId ? inherited.model : undefined);
       if (model === undefined) {
         return yield* new OrchestratorMcpFailure({
           code: "target_required",
-          message: "Pass target.model from orchestrator_capabilities with this environmentId.",
+          message: `Pass target.model from orchestrator_capabilities with this environmentId (instance ${instanceId} there).`,
         });
       }
       const options =
@@ -247,7 +292,7 @@ const make = Effect.gen(function* () {
         input.interactionMode === undefined || input.interactionMode === "inherit"
           ? undefined
           : yield* resolveInteractionMode(parent.thread.interactionMode, input.interactionMode);
-      const projectId = yield* resolveRemoteProject(
+      const where = yield* resolveRemoteProject(
         scope,
         target.environmentId,
         parent.thread.projectId,
@@ -263,7 +308,7 @@ const make = Effect.gen(function* () {
         ProjectToolkit.tools.t3_thread_launch,
         target.environmentId,
         {
-          projectId,
+          ...where,
           title: input.title ?? parent.thread.title,
           modelSelection: { instanceId, model, ...(options === undefined ? {} : { options }) },
           ...(runtimeMode === undefined ? {} : { runtimeMode }),

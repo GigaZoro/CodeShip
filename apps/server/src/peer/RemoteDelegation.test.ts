@@ -14,6 +14,7 @@ import {
   ProviderInstanceId,
   ProviderThreadId,
   type Project,
+  type ServerProvider,
   type RepositoryIdentity,
   RunId,
   ThreadId,
@@ -107,6 +108,8 @@ interface BoxThread {
   readonly delegatedFrom: Ref.Ref<ThreadLaunch.ThreadLaunchInput["delegatedFrom"] | null>;
   /** The model and modes it was launched with. */
   readonly launchedWith: Ref.Ref<LaunchedWith | null>;
+  /** The project the thread there was launched in. */
+  readonly launchedProject: Ref.Ref<ProjectId | null>;
   /** The first message the thread there was launched with. */
   readonly message: Ref.Ref<string | null>;
   readonly status: Ref.Ref<OrchestrationV2Run["status"]>;
@@ -158,6 +161,7 @@ const makeBoxThread = Effect.gen(function* () {
     ),
     delegatedFrom: yield* Ref.make<ThreadLaunch.ThreadLaunchInput["delegatedFrom"] | null>(null),
     launchedWith: yield* Ref.make<LaunchedWith | null>(null),
+    launchedProject: yield* Ref.make<ProjectId | null>(null),
     message: yield* Ref.make<string | null>(null),
     status: yield* Ref.make<OrchestrationV2Run["status"]>("running"),
     reply: yield* Ref.make<string | null>("Working…"),
@@ -217,6 +221,27 @@ const boxProjects: ReadonlyArray<Project> = [
     deletedAt: null,
   },
 ];
+
+const boxScratchProject = ProjectId.make("project:box-scratch");
+
+/** The box's own accounts: its codex instance is not named like the laptop's. */
+const boxCodex = ProviderInstanceId.make("codex_box");
+const readyProvider = {
+  enabled: true,
+  installed: true,
+  availability: "available",
+  status: "ready",
+  auth: { status: "authenticated" },
+  models: [],
+};
+const boxProviders = [
+  { ...readyProvider, instanceId: boxCodex, driver },
+  {
+    ...readyProvider,
+    instanceId: ProviderInstanceId.make("claudeAgent_box"),
+    driver: ProviderDriverKind.make("claudeAgent"),
+  },
+] as unknown as ReadonlyArray<ServerProvider>;
 
 const serveBox = (thread: BoxThread) => {
   return servePeer(box, boxToolkitLayer(thread));
@@ -453,6 +478,7 @@ const boxToolkitLayer = (thread: BoxThread) => {
           Ref.set(thread.launched, input.threadId!).pipe(
             Effect.andThen(Ref.set(thread.linkOrigin, input.linkOrigin ?? null)),
             Effect.andThen(Ref.set(thread.delegatedFrom, input.delegatedFrom ?? null)),
+            Effect.andThen(Ref.set(thread.launchedProject, input.projectId)),
             Effect.andThen(Ref.set(thread.message, input.initialMessage?.text ?? null)),
             Effect.andThen(
               Ref.set(thread.launchedWith, {
@@ -507,7 +533,10 @@ const boxToolkitLayer = (thread: BoxThread) => {
     ),
     Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
     Layer.provide(
-      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/p" }),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/p",
+        ensureScratchProject: Effect.succeed({ projectId: boxScratchProject }),
+      }),
     ),
     Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
     Layer.provide(Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({})),
@@ -517,9 +546,13 @@ const boxToolkitLayer = (thread: BoxThread) => {
       ),
     ),
     Layer.provide(
-      Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed(boxProviders) }),
     ),
-    Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
+    Layer.provide(
+      Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+        list: () => Effect.succeed(boxProviders.map((provider) => provider.instanceId)),
+      }),
+    ),
     Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
     Layer.provide(
       Layer.mock(ProjectService.ProjectService)({
@@ -613,6 +646,12 @@ const makeLaptop = (
             }),
           ),
           Layer.provide(
+            Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+              namedProjectsRoot: "/p",
+              isScratchProject: (projectId) => Effect.succeed(projectId === laptopScratchProject),
+            }),
+          ),
+          Layer.provide(
             Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
               resolve: (cwd) =>
                 Effect.succeed(
@@ -664,6 +703,7 @@ const makeLaptop = (
     };
   });
 
+const laptopScratchProject = ProjectId.make("project:laptop-scratch");
 const parentThreadId = ThreadId.make("thread:laptop-parent");
 const parentRunId = RunId.make("run:laptop-parent");
 const parentRootNode = NodeId.make("node:laptop-parent:root");
@@ -681,7 +721,10 @@ const parentScope: McpInvocationContext.McpInvocationScope = {
 };
 
 /** The laptop's parent thread, mid-turn when its agent delegates. */
-const seedParent = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>) =>
+const seedParent = (
+  laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
+  projectId = ProjectId.make("project:laptop"),
+) =>
   Effect.gen(function* () {
     const now = yield* DateTime.now;
     const providerThreadId = ProviderThreadId.make("provider-thread:laptop-parent");
@@ -691,7 +734,7 @@ const seedParent = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>) =>
       creationSource: "web",
       commandId: CommandId.make("command:create:laptop-parent"),
       threadId: parentThreadId,
-      projectId: ProjectId.make("project:laptop"),
+      projectId,
       title: "Laptop parent",
       modelSelection,
       runtimeMode: "full-access",
@@ -1114,6 +1157,79 @@ it.effect("a task named only by environment inherits the parent's model, within 
         clientRequestId: "broader",
       });
       expect(broader.isError).toBe(true);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a task from a No-project chat runs in the box's No project", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a, laptopScratchProject);
+
+      const result = yield* a.call("delegate_task", {
+        task: "Run the suite on the box.",
+        target: { environmentId: box.environmentId },
+      });
+      expect(result.isError, JSON.stringify(result.content)).toBe(false);
+      expect(yield* Ref.get(thread.launchedProject)).toBe(boxScratchProject);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a task named only by driver runs on the box's own instance of it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+
+      const result = yield* a.call("delegate_task", {
+        task: "Run the suite on the box.",
+        target: { environmentId: box.environmentId, driverKind: driver, model: "gpt-5.4" },
+      });
+      expect(result.isError, JSON.stringify(result.content)).toBe(false);
+      expect((yield* Ref.get(thread.launchedWith))?.modelSelection).toEqual({
+        instanceId: boxCodex,
+        model: "gpt-5.4",
+      });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a driver the box has no instance of is refused with the box's instances", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+
+      const result = yield* a.call("delegate_task", {
+        task: "Run the suite on the box.",
+        target: { environmentId: box.environmentId, driverKind: "cursor", model: "auto" },
+      });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain("codex_box (codex), claudeAgent_box");
+      expect(yield* Ref.get(thread.launched)).toBeNull();
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

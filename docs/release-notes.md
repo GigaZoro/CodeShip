@@ -1,3 +1,8 @@
+## 2026-11-12 — An agent in a No-project chat can delegate to another machine
+
+- `delegate_task` to a linked machine now starts the task in that machine's own **No project** when the chat it comes from is in No project. Before, it was refused with `target_required`, because a chat with no repository had nothing to match a project there.
+- A target that names only `driverKind` now runs on the other machine's own account of that driver. Before, the task was sent with the calling chat's account id, which does not exist on the other machine. When the other machine has no account of that driver, the refusal lists the accounts it does have.
+
 ## 2026-11-12 — Prompt files: tests for binary and over-long files
 
 - Maintenance only, with no change in behavior. Tests now check that a scheduled task whose prompt file is binary, or longer than a prompt can be, fails its run and names the file and the branch.
