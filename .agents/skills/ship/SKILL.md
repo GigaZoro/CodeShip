@@ -52,7 +52,7 @@ Touch only the branch and worktree you just landed. Never touch another session'
 3. Remote branch: only if `git ls-remote --exit-code --heads origin <branch>` finds it, run `git push origin --delete <branch>`.
 4. Local branch: `git switch --detach`, then `git branch --delete <branch>`. Never use `-D`.
 5. Delete the scratch files you created: temp dirs, database copies, logs.
-6. Worktree, last, because it is usually your cwd: `git -C <main> worktree remove <path>`. Ignored files such as `node_modules` and `.t3` do not block it. If it refuses because of modified or untracked files, stop and report them. Never use `--force`.
+6. Worktree, last, because it is usually your cwd: `git -C <main> worktree remove <path>`. Run it in the foreground with a 600000 ms timeout, never in the background: deleting `node_modules` takes minutes, a background command's completion notice starts another turn on this thread, and a turn start rebuilds the thread's missing worktree. Ignored files such as `node_modules` and `.t3` do not block it. If it refuses because of modified or untracked files, stop and report them. Never use `--force`.
 
 ## 8. Report
 

@@ -1,3 +1,7 @@
+## 2026-11-12 — Shipping removes the chat's worktree for good
+
+- When an agent lands finished work, it now removes the chat's worktree while it waits. Before, it removed the worktree in the background, and the notice that the removal had finished woke the chat, which rebuilt the worktree and its branch from main.
+
 ## 2026-11-12 — Auto-resume continues a thread as soon as its next model has room
 
 - A thread stopped by a limit that holds only one model, such as Claude's weekly Fable window, now continues by itself as soon as its next turn can run a model the limit does not hold: an Auto thread whose Auto model is another one, or a thread you switched to another model. Before, **Resume at reset** waited for the stopped model's own reset, days away for a weekly window, although the thread could run on another model right away.
