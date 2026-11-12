@@ -1,3 +1,10 @@
+## 2026-11-12 — An agent is told when its background subagents end with its process
+
+- A Claude chat that waits on a background subagent is now told when the agent process running it ends: on its own, with **Stop**, **Stop and send**, **Edit from here** or **Retry**, or when its session is closed. Before, these closes recorded only the chat's background commands and monitors, so the chat could keep waiting for a subagent that would never report back, until the next server restart.
+- The same rules apply as for a command it waits on: a process that ends on its own, or a session that fails or closes after a long time without activity, wakes the chat; in every other case the agent learns what stopped with your next message.
+- The thread's notice about the stopped work lists the subagent too.
+- A background subagent no longer shows as running after its agent's session was closed. Before, it stayed running until the next server restart.
+
 ## 2026-11-12 — Claude agents call `t3_background_wait` with the argument it takes
 
 - Claude's instructions and the tool's description now tell agents to pass `taskIds: ["<task id>"]` to `t3_background_wait`. Before, they said to pass "its task ID", so agents sent `taskId` and every call was refused, leaving the thread out of Working while its tests or build ran.

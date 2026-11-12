@@ -9355,6 +9355,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     { ending: "ends on its own during a turn", close: "exit", turn: "running" },
     { ending: "is closed by Stop during a turn", close: "stop", turn: "running" },
     { ending: "is closed by a Stop the turn answers first", close: "stop", turn: "interrupted" },
+    { ending: "ends after a Stop the turn answered", close: "stop", turn: "answered" },
     { ending: "is closed by a rollback", close: "rollback", turn: "settled" },
     { ending: "is kept by a rollback it cannot rewind to", close: "no-rollback", turn: "settled" },
   ] as const)("reports the awaited roster as lost when its query $ending", ({ close, turn }) =>
@@ -9364,6 +9365,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           uuid: "00000000-0000-4000-8000-000000000312",
           result: "",
           subtype: "error_during_execution",
+          errors: ["Error: Request was aborted."],
+          terminalReason: "aborted_streaming",
         });
         let answerInterrupt: Effect.Effect<void> = Effect.void;
         const harness = yield* makeWakeHarnessWithOptions({
@@ -9372,7 +9375,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             turn === "interrupted" ? Effect.void : Queue.shutdown(sdkMessages),
           interrupt: Effect.suspend(() => answerInterrupt),
         });
-        if (turn === "interrupted") {
+        if (turn === "interrupted" || turn === "answered") {
           answerInterrupt = harness.offerAndWait(interruptedResult);
         }
         const awaitBackgroundTasks = harness.runtime.awaitBackgroundTasks;
@@ -9414,11 +9417,41 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           awaited: true,
         });
         yield* nextRoster((tasks) => tasks[0]?.awaited === true);
+        // A background subagent is not in the roster, and it ends with the process too.
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_started",
+            task_id: "task-lost-subagent",
+            tool_use_id: "toolu-lost-subagent",
+            description: "Audit recent commits",
+            subagent_type: "general-purpose",
+            is_backgrounded: true,
+            task_type: "local_agent",
+            prompt: "Audit the last five commits.",
+            uuid: "00000000-0000-4000-8000-000000000313",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
         yield* Queue.offer(harness.sdkMessages, turnOneResult);
         const settled = yield* Queue.take(harness.terminalReceipts);
-        const lost = [[WAKE_TASK_ID, true as const]];
+        const lost = [
+          [WAKE_TASK_ID, "command", true, undefined],
+          ["task-lost-subagent", "subagent", undefined, "Audit recent commits"],
+        ];
         const marks = (tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask> | undefined) =>
-          tasks?.map((task) => [task.taskId, task.awaited]);
+          tasks?.map((task) => [
+            task.taskId,
+            task.kind,
+            task.awaited,
+            task.kind === "subagent" ? task.description : undefined,
+          ]);
+        const lossReports = () =>
+          harness.events.filter(
+            (event) =>
+              event.type === "provider_thread.updated" && event.lostBackgroundTasks !== undefined,
+          );
 
         // The thread as the settled turn stored it, roster included.
         const settledThread = (yield* nextRoster((tasks) => tasks.length === 1)).providerThread;
@@ -9471,7 +9504,19 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.deepStrictEqual(rolledBack.providerThread.pendingBackgroundTasks, []);
           const cleared = yield* nextRoster((tasks) => tasks.length === 0);
           assert.isUndefined(cleared.lostBackgroundTasks);
+          assert.lengthOf(lossReports(), 0);
           return;
+        }
+        const runningBackgroundSubagents = harness.runtime.runningBackgroundSubagents;
+        if (runningBackgroundSubagents === undefined) {
+          throw new Error("Claude adapter runtime must expose runningBackgroundSubagents.");
+        }
+        if (turn === "settled") {
+          // What a session release reads before it closes the process.
+          assert.deepStrictEqual(
+            marks(yield* runningBackgroundSubagents(settledThread)),
+            lost.slice(1),
+          );
         }
         if (close === "exit") {
           yield* Queue.shutdown(harness.sdkMessages);
@@ -9501,6 +9546,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.equal(terminal.status, close === "stop" ? "interrupted" : "failed");
           assert.isBelow(harness.events.indexOf(cleared), harness.events.indexOf(terminal));
         }
+        // The exit that follows a turn's own report does not report the same work again.
+        assert.deepStrictEqual(lossReports(), [cleared]);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),

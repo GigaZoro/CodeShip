@@ -868,6 +868,13 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
               description: "tail -f build.log",
               parentTaskId: "agent-rolled-back",
             },
+            // That background subagent itself, which no roster lists.
+            {
+              taskId: "agent-rolled-back",
+              kind: "subagent",
+              description: "Watch the build",
+              nativeItemId: "toolu_agent_rolled_back",
+            },
           );
 
           yield* history.rollback(2);

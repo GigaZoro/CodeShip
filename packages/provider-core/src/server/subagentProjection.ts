@@ -452,3 +452,91 @@ export const endRunlessRootTurns = Effect.fn("subagentProjection.endRunlessRootT
   }
   return events;
 });
+
+type NativeSubagentRecords = Pick<
+  OrchestrationV2ThreadProjection,
+  "nodes" | "subagents" | "turnItems"
+>;
+
+/**
+ * Ends a native subagent that died with its provider process: its record, its own thread's
+ * runless root turn, and the subagents it started there, which a provider can record on that
+ * thread rather than the parent's.
+ */
+export const endDeadNativeSubagent = Effect.fn("subagentProjection.endDeadNativeSubagent")(
+  function* <E, ReadError, R>(input: {
+    readonly projection: NativeSubagentRecords;
+    readonly subagent: Pick<
+      Extract<OrchestrationV2TurnItem, { readonly type: "subagent" }>,
+      "subagentId" | "origin" | "childThreadId" | "providerInstanceId"
+    >;
+    readonly status: "completed" | "failed" | "interrupted" | "cancelled";
+    readonly now: DateTime.Utc;
+    readonly emitted: ReadonlyArray<OrchestrationV2DomainEvent>;
+    readonly allocateEventId: () => Effect.Effect<EventId, E>;
+    /** The open runless records of a subagent's own thread, or null when the thread is gone. */
+    readonly readChildThread: (
+      threadId: ThreadId,
+    ) => Effect.Effect<
+      (NativeSubagentRecords & Pick<OrchestrationV2ThreadProjection, "providerTurns">) | null,
+      ReadError,
+      R
+    >;
+    /** Child threads already ended, shared across calls so each is ended once. */
+    readonly endedChildThreadIds: Set<ThreadId>;
+  }) {
+    const events: Array<OrchestrationV2DomainEvent> = [];
+    const dying = [{ projection: input.projection, subagent: input.subagent }];
+    for (const { projection, subagent } of dying) {
+      events.push(
+        ...(yield* endOrphanedNativeSubagent({
+          projection,
+          subagentId: subagent.subagentId,
+          status: input.status,
+          now: input.now,
+          emitted: [...input.emitted, ...events],
+          allocateEventId: input.allocateEventId,
+        })),
+      );
+      const childThreadId = subagent.childThreadId;
+      if (
+        subagent.origin !== "provider_native" ||
+        childThreadId === null ||
+        input.endedChildThreadIds.has(childThreadId)
+      ) {
+        continue;
+      }
+      input.endedChildThreadIds.add(childThreadId);
+      const child = yield* input.readChildThread(childThreadId);
+      if (child === null) continue;
+      events.push(
+        ...(yield* endRunlessRootTurns({
+          threadId: childThreadId,
+          providerInstanceId: subagent.providerInstanceId,
+          projection: child,
+          status: input.status,
+          now: input.now,
+          emitted: [...input.emitted, ...events],
+          allocateEventId: input.allocateEventId,
+        })),
+      );
+      for (const nested of child.turnItems) {
+        if (nested.type === "subagent") dying.push({ projection: child, subagent: nested });
+      }
+      for (const nested of child.subagents) {
+        if (nested.origin === "provider_native" && nested.runId === null) {
+          dying.push({
+            projection: child,
+            subagent: {
+              subagentId: nested.id,
+              origin: nested.origin,
+              childThreadId: nested.childThreadId,
+              providerInstanceId: nested.providerInstanceId,
+            },
+          });
+        }
+      }
+    }
+    return events;
+  },
+);

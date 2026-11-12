@@ -3,6 +3,8 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
   EventId,
+  isOrchestrationV2WorkActive,
+  type OrchestrationV2RestartCancelledBackgroundWork,
   ProviderDriverKind,
   type ProviderReplayEntry,
 } from "@t3tools/contracts";
@@ -345,6 +347,46 @@ const LOST_NOTE = [
   `- shell: ${LOST_TASK_LABEL}`,
 ].join("\n");
 
+/** The background work a lost-work scenario's process runs when it ends. */
+interface LostWork {
+  readonly name: string;
+  readonly scenario: string;
+  readonly sessionId: string;
+  readonly prompt: string;
+  readonly rootResultLabel: string;
+  readonly work: OrchestrationV2RestartCancelledBackgroundWork;
+  readonly note: string;
+  /** A command waits only once the agent marks it awaited; a subagent always holds the chat. */
+  readonly awaitTaskId?: string;
+}
+
+const LOST_COMMAND: LostWork = {
+  name: "a marked background command",
+  scenario: LOST_SCENARIO,
+  sessionId: LOST_SESSION_ID,
+  prompt: CLAUDE_BACKGROUND_TASK_AFTER_ROOT_PROMPT,
+  rootResultLabel: "result:root",
+  work: LOST_WORK,
+  note: LOST_NOTE,
+  awaitTaskId: LOST_TASK_ID,
+};
+
+/** No roster lists a background subagent; only the process that runs it knows it. */
+const LOST_SUBAGENT: LostWork = {
+  name: "a background subagent",
+  scenario: SCENARIO,
+  sessionId: SESSION_ID,
+  prompt: CLAUDE_BACKGROUND_SUBAGENT_AFTER_ROOT_PROMPT,
+  rootResultLabel: "result",
+  work: {
+    kind: "subagent",
+    label: "Background subagent test (id a2995bfced8019363)",
+    id: "a2995bfced8019363",
+    nativeItemId: "toolu_01AS7YtghJ9Knkp7QuuGTo7j",
+  },
+  note: NOTE,
+};
+
 type SessionRelease = Exclude<
   ProviderSessionManager.ProviderSessionReleaseReason,
   "server_shutdown"
@@ -368,18 +410,19 @@ const LOST_NOTICE: Record<"process-ended" | "stopped" | SessionRelease, readonly
  * idle or during the next turn, or stays up until the test stops the chat or releases its session.
  */
 const readLostTaskTranscript = Effect.fn("readLostTaskTranscript")(function* (
+  lost: LostWork,
   resumedPrompts: ReadonlyArray<string>,
   processExits: "idle" | { readonly duringTurn: string } | false,
 ) {
   const recorded = yield* readProviderReplayTranscript(
-    new URL(`./fixtures/${LOST_SCENARIO}/claude_transcript.ndjson`, import.meta.url),
+    new URL(`./fixtures/${lost.scenario}/claude_transcript.ndjson`, import.meta.url),
   );
   const label = (name: string) =>
     recorded.entries.findIndex((entry) => entry.type === "emit_inbound" && entry.label === name);
   return yield* ClaudeOrchestratorReplayHarness.decodeTranscript({
     ...recorded,
     entries: [
-      ...recorded.entries.slice(0, label("result:root") + 1),
+      ...recorded.entries.slice(0, label(lost.rootResultLabel) + 1),
       // Holds the process until the agent marks the command awaited; it then ends unprompted.
       // The frame carries nothing, so no event races the process exit.
       ...(processExits === "idle"
@@ -389,7 +432,7 @@ const readLostTaskTranscript = Effect.fn("readLostTaskTranscript")(function* (
               label: LOST_GATE,
               frame: {
                 type: "rate_limit_event",
-                session_id: LOST_SESSION_ID,
+                session_id: lost.sessionId,
                 uuid: "lost-task-hold",
               },
             },
@@ -419,19 +462,20 @@ const readLostTaskTranscript = Effect.fn("readLostTaskTranscript")(function* (
         frame: {
           type: "query.open",
           options: {
-            ...recordedResumeOptions(LOST_SCENARIO, recorded.entries),
-            resume: LOST_SESSION_ID,
+            ...recordedResumeOptions(lost.scenario, recorded.entries),
+            resume: lost.sessionId,
           },
         },
       },
       ...resumedPrompts.flatMap((prompt, index) =>
-        resumedTurn(LOST_SESSION_ID, String(index + 1), prompt),
+        resumedTurn(lost.sessionId, String(index + 1), prompt),
       ),
     ],
   });
 });
 
 const runLostTask = Effect.fn("runLostTask")(function* (input: {
+  readonly lost: LostWork;
   readonly resumedPrompts: ReadonlyArray<string>;
   readonly userMessagesAfterRestart: ReadonlyArray<string>;
   readonly continueThreadsAfterServerUpdate: boolean;
@@ -442,13 +486,16 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
   /** The process stays up and the user stops the chat's background work instead. */
   readonly stop?: boolean;
 }) {
+  const { lost: lostWork } = input;
+  const scenarioName = lostWork.scenario;
   const wakeWithoutRestart = input.wakeWithoutRestart === true;
   const stop = input.stop === true;
   const transcript = yield* readLostTaskTranscript(
+    lostWork,
     input.resumedPrompts,
     input.release === undefined && !stop ? "idle" : false,
   );
-  const workspace = yield* checkpointWorkspace(LOST_SCENARIO);
+  const workspace = yield* checkpointWorkspace(scenarioName);
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const tempDir = yield* Effect.acquireRelease(
@@ -456,10 +503,10 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
     (directory) => fs.remove(directory, { recursive: true, force: true }).pipe(Effect.orDie),
   );
   const materialized = yield* materializeFixtureInput({
-    scenario: LOST_SCENARIO,
+    scenario: scenarioName,
     fixtureInput: {
       steps: [
-        { type: "message", text: CLAUDE_BACKGROUND_TASK_AFTER_ROOT_PROMPT },
+        { type: "message", text: lostWork.prompt },
         { type: "await_run_status", targetRunIndex: 1, status: "completed" },
         ...input.userMessagesAfterRestart.map((text) => ({ type: "message" as const, text })),
       ],
@@ -484,7 +531,7 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
   );
   const snapshotPath = path.join(tempDir, "restart-state.sqlite");
   const scenario = (name: string, steps: typeof materialized.steps) => ({
-    name: `${LOST_SCENARIO}:${name}`,
+    name: `${scenarioName}:${name}`,
     transcript,
     commands: steps.flatMap((step) => (step.type === "dispatch" ? [step.command] : [])),
     steps,
@@ -509,22 +556,24 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
       if (Option.isNone(runtime) || runtime.value.awaitBackgroundTasks === undefined) {
         return yield* Effect.die("lost task scenario has no live Claude runtime");
       }
-      const markedAfter = yield* eventSink.latestSequence({ threadId });
-      // What t3_background_wait does for the agent.
-      const { matched } = yield* runtime.value.awaitBackgroundTasks({
-        providerThread,
-        taskIds: [LOST_TASK_ID],
-        awaited: true,
-      });
-      assert.deepEqual(matched, [LOST_TASK_ID]);
-      yield* eventSink.stream({ threadId, afterSequence: markedAfter }).pipe(
-        Stream.filter(
-          ({ event }) =>
-            event.type === "provider-thread.updated" &&
-            (event.payload.pendingBackgroundTasks ?? []).some((task) => task.awaited === true),
-        ),
-        Stream.runHead,
-      );
+      if (lostWork.awaitTaskId !== undefined) {
+        const markedAfter = yield* eventSink.latestSequence({ threadId });
+        // What t3_background_wait does for the agent.
+        const { matched } = yield* runtime.value.awaitBackgroundTasks({
+          providerThread,
+          taskIds: [lostWork.awaitTaskId],
+          awaited: true,
+        });
+        assert.deepEqual(matched, [lostWork.awaitTaskId]);
+        yield* eventSink.stream({ threadId, afterSequence: markedAfter }).pipe(
+          Stream.filter(
+            ({ event }) =>
+              event.type === "provider-thread.updated" &&
+              (event.payload.pendingBackgroundTasks ?? []).some((task) => task.awaited === true),
+          ),
+          Stream.runHead,
+        );
+      }
       const afterSequence = yield* eventSink.latestSequence({ threadId });
       const settledRun = settled.runs[0];
       if (stop && settledRun !== undefined) {
@@ -546,6 +595,18 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
         Stream.filter(({ event }) => event.type === "run.background-work-cancelled"),
         Stream.runHead,
       );
+      if (lostWork.work.kind === "subagent") {
+        // Whatever stopped it also ends its record, which a restart would otherwise find open.
+        yield* eventSink.stream({ threadId, afterSequence }).pipe(
+          Stream.filter(
+            ({ event }) =>
+              event.type === "turn-item.updated" &&
+              event.payload.type === "subagent" &&
+              !isOrchestrationV2WorkActive(event.payload.status),
+          ),
+          Stream.runHead,
+        );
+      }
       if (wakeWithoutRestart) {
         // The wake is queued just after the loss commits, so wait for the run it starts.
         yield* eventSink.stream({ threadId, afterSequence }).pipe(
@@ -560,7 +621,7 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
           yield* runOrchestratorV2Scenario(
             scenario("woken", [{ type: "await_thread_idle", threadId }]),
           ),
-          LOST_SCENARIO,
+          scenarioName,
         );
       }
       const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
@@ -584,7 +645,8 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
   if (lostRun === undefined) return yield* Effect.die("lost task scenario has no run");
   assert.equal(lostRun.status, "completed");
   assert.deepEqual(lost.providerThreads[0]?.pendingBackgroundTasks ?? [], []);
-  assert.deepEqual(lostRun.restartCancelledBackgroundWork, [LOST_WORK]);
+  assert.deepEqual(lostRun.restartCancelledBackgroundWork, [lostWork.work]);
+  assert.isFalse(lost.subagents.some((subagent) => isOrchestrationV2WorkActive(subagent.status)));
   const notice = lost.turnItems.find(
     (item) => item.id === backgroundWorkStoppedNoticeId(lostRun.id),
   );
@@ -595,7 +657,7 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
     title,
     message: [
       `${lead} and stopped background work before it finished:`,
-      `- shell: ${LOST_TASK_LABEL}`,
+      `- ${lostWork.work.kind}: ${lostWork.work.label}`,
       "This chat was waiting on it.",
     ].join("\n"),
   });
@@ -623,7 +685,7 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
       ),
     ),
   );
-  const recovered = projectionFor(restarted, LOST_SCENARIO);
+  const recovered = projectionFor(restarted, scenarioName);
 
   const after = yield* Effect.scoped(
     runOrchestratorV2ProviderReplayScenario(scenario("after-restart", phase3Steps), harness, {
@@ -632,7 +694,7 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
     }),
   );
   yield* assertComplete;
-  return { recovered, after: projectionFor(after, LOST_SCENARIO) };
+  return { recovered, after: projectionFor(after, scenarioName) };
 });
 
 /**
@@ -641,6 +703,7 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
  */
 const runLostTaskDuringTurn = Effect.gen(function* () {
   const transcript = yield* readLostTaskTranscript(
+    LOST_COMMAND,
     [`${LOST_NOTE}\n\nUser message:\n${QUESTION_AFTER_FAILURE}`],
     { duringTurn: QUESTION_AFTER_LOSS },
   );
@@ -727,6 +790,7 @@ describe("background work its agent process lost", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const { recovered } = yield* runLostTask({
+            lost: LOST_COMMAND,
             resumedPrompts: [LOST_NOTE],
             userMessagesAfterRestart: [],
             continueThreadsAfterServerUpdate: true,
@@ -750,70 +814,77 @@ describe("background work its agent process lost", () => {
       ),
   );
 
-  it.effect("wakes the chat at once when only its agent process ends", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const { after: woken } = yield* runLostTask({
-          resumedPrompts: [LOST_NOTE],
-          userMessagesAfterRestart: [],
-          continueThreadsAfterServerUpdate: true,
-          wakeWithoutRestart: true,
-        });
-        assert.deepEqual(
-          woken.runs.map((run) => [run.status, run.restartContinuationOfRunId]),
-          [
-            ["completed", undefined],
-            ["completed", woken.runs[0]?.id],
-          ],
-        );
-        const continuation = woken.runs[1];
-        assert.equal(
-          woken.messages.find((message) => message.id === continuation?.userMessageId)?.text,
-          LOST_NOTE,
-        );
-      }).pipe(
-        provideDeterministicTestRuntime,
-        Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer)),
+  it.effect.each([LOST_COMMAND, LOST_SUBAGENT])(
+    "wakes the chat at once when only the agent process running $name ends",
+    (lost) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { after: woken } = yield* runLostTask({
+            lost,
+            resumedPrompts: [lost.note],
+            userMessagesAfterRestart: [],
+            continueThreadsAfterServerUpdate: true,
+            wakeWithoutRestart: true,
+          });
+          assert.deepEqual(
+            woken.runs.map((run) => [run.status, run.restartContinuationOfRunId]),
+            [
+              ["completed", undefined],
+              ["completed", woken.runs[0]?.id],
+            ],
+          );
+          const continuation = woken.runs[1];
+          assert.equal(
+            woken.messages.find((message) => message.id === continuation?.userMessageId)?.text,
+            lost.note,
+          );
+        }).pipe(
+          provideDeterministicTestRuntime,
+          Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer)),
+        ),
       ),
-    ),
   );
 
-  it.effect("wakes the chat when its session is closed after too long without activity", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const { after: woken } = yield* runLostTask({
-          resumedPrompts: [LOST_NOTE],
-          userMessagesAfterRestart: [],
-          continueThreadsAfterServerUpdate: true,
-          wakeWithoutRestart: true,
-          release: "idle_timeout",
-        });
-        assert.deepEqual(
-          woken.runs.map((run) => [run.status, run.restartContinuationOfRunId]),
-          [
-            ["completed", undefined],
-            ["completed", woken.runs[0]?.id],
-          ],
-        );
-        const continuation = woken.runs[1];
-        assert.equal(
-          woken.messages.find((message) => message.id === continuation?.userMessageId)?.text,
-          LOST_NOTE,
-        );
-      }).pipe(
-        provideDeterministicTestRuntime,
-        Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer)),
+  it.effect.each([LOST_COMMAND, LOST_SUBAGENT])(
+    "wakes the chat waiting on $name when its session is closed after too long without activity",
+    (lost) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { after: woken } = yield* runLostTask({
+            lost,
+            resumedPrompts: [lost.note],
+            userMessagesAfterRestart: [],
+            continueThreadsAfterServerUpdate: true,
+            wakeWithoutRestart: true,
+            release: "idle_timeout",
+          });
+          assert.deepEqual(
+            woken.runs.map((run) => [run.status, run.restartContinuationOfRunId]),
+            [
+              ["completed", undefined],
+              ["completed", woken.runs[0]?.id],
+            ],
+          );
+          const continuation = woken.runs[1];
+          assert.equal(
+            woken.messages.find((message) => message.id === continuation?.userMessageId)?.text,
+            lost.note,
+          );
+        }).pipe(
+          provideDeterministicTestRuntime,
+          Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer)),
+        ),
       ),
-    ),
   );
 
-  it.effect(
-    "a session someone closed is told with the next message, and a restart does not wake it",
-    () =>
+  it.effect.each([LOST_COMMAND, LOST_SUBAGENT])(
+    "a session someone closed is told about $name with the next message, and a restart does not wake it",
+    (lost) =>
       Effect.scoped(
         Effect.gen(function* () {
           const { recovered, after } = yield* runLostTask({
-            resumedPrompts: [`${LOST_NOTE}\n\nUser message:\n${QUESTION_AFTER_LOSS}`],
+            lost,
+            resumedPrompts: [`${lost.note}\n\nUser message:\n${QUESTION_AFTER_LOSS}`],
             userMessagesAfterRestart: [QUESTION_AFTER_LOSS],
             // Not even a restart that continues threads wakes it.
             continueThreadsAfterServerUpdate: true,
@@ -834,29 +905,32 @@ describe("background work its agent process lost", () => {
       ),
   );
 
-  it.effect("a chat someone stopped is told with the next message, and nothing wakes it", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const { recovered, after } = yield* runLostTask({
-          resumedPrompts: [`${LOST_NOTE}\n\nUser message:\n${QUESTION_AFTER_LOSS}`],
-          userMessagesAfterRestart: [QUESTION_AFTER_LOSS],
-          // Not even a restart that continues threads wakes it.
-          continueThreadsAfterServerUpdate: true,
-          stop: true,
-        });
-        assert.lengthOf(recovered.runs, 1);
-        assert.deepEqual(
-          after.runs.map((run) => [run.status, run.restartContinuationOfRunId]),
-          [
-            ["completed", undefined],
-            ["completed", undefined],
-          ],
-        );
-      }).pipe(
-        provideDeterministicTestRuntime,
-        Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer)),
+  it.effect.each([LOST_COMMAND, LOST_SUBAGENT])(
+    "a chat someone stopped is told about $name with the next message, and nothing wakes it",
+    (lost) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { recovered, after } = yield* runLostTask({
+            lost,
+            resumedPrompts: [`${lost.note}\n\nUser message:\n${QUESTION_AFTER_LOSS}`],
+            userMessagesAfterRestart: [QUESTION_AFTER_LOSS],
+            // Not even a restart that continues threads wakes it.
+            continueThreadsAfterServerUpdate: true,
+            stop: true,
+          });
+          assert.lengthOf(recovered.runs, 1);
+          assert.deepEqual(
+            after.runs.map((run) => [run.status, run.restartContinuationOfRunId]),
+            [
+              ["completed", undefined],
+              ["completed", undefined],
+            ],
+          );
+        }).pipe(
+          provideDeterministicTestRuntime,
+          Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer)),
+        ),
       ),
-    ),
   );
 
   it.effect(
@@ -903,6 +977,7 @@ describe("background work its agent process lost", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const { recovered, after } = yield* runLostTask({
+          lost: LOST_COMMAND,
           resumedPrompts: [`${LOST_NOTE}\n\nUser message:\n${QUESTION_AFTER_LOSS}`],
           userMessagesAfterRestart: [QUESTION_AFTER_LOSS],
           continueThreadsAfterServerUpdate: false,

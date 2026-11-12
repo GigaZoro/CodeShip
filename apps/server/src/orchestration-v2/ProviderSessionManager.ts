@@ -65,6 +65,7 @@ import {
   lostBackgroundWorkRecord,
   lostWorkRecordRun,
 } from "./RestartBackgroundNote.ts";
+import { endDeadNativeSubagent } from "@t3tools/provider-core/server/subagentProjection";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
@@ -796,9 +797,18 @@ export const layerWithOptions = (
               "providerThreads",
             ]);
             for (const providerThread of projection.providerThreads) {
-              const tasks = providerThread.pendingBackgroundTasks ?? [];
-              if (tasks.length === 0) continue;
+              const roster = providerThread.pendingBackgroundTasks ?? [];
+              // No roster lists them, so only the process can tell; they end with it as well.
+              const subagents =
+                runtime.runningBackgroundSubagents === undefined ||
+                providerThread.driver !== runtime.driver
+                  ? []
+                  : yield* runtime
+                      .runningBackgroundSubagents(providerThread)
+                      .pipe(Effect.catchCause(() => Effect.succeed([])));
+              if (roster.length === 0 && subagents.length === 0) continue;
               const runsItsWork =
+                subagents.length > 0 ||
                 providerThread.providerSessionId === providerSessionId ||
                 (runtime.hasPendingBackgroundWorkForThread !== undefined &&
                   providerThread.driver === runtime.driver &&
@@ -810,7 +820,7 @@ export const layerWithOptions = (
                 threadId,
                 providerSessionId,
                 providerThreadId: providerThread.id,
-                tasks,
+                tasks: [...roster, ...subagents],
                 recordedByRelease: new Set<string>(),
               });
             }
@@ -985,6 +995,60 @@ export const layerWithOptions = (
               ),
         );
 
+      // The closed process cannot report its background subagents' end either, and the release
+      // already ended its subscribers. Ended here, like the roster, or they show as running.
+      const endReleasedSubagents = Effect.fnUntraced(function* (input: {
+        readonly threadId: ThreadId;
+        readonly providerSessionId: ProviderSessionId;
+        readonly stopped: ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
+        readonly now: DateTime.Utc;
+      }) {
+        const nativeTaskIds = new Set(
+          input.stopped.flatMap((task) => (task.kind === "subagent" ? [task.taskId] : [])),
+        );
+        if (nativeTaskIds.size === 0) return [];
+        const open = ["pending", "running", "waiting"] as const;
+        const projection = yield* projectionStore.getThreadRecords(
+          input.threadId,
+          ["nodes", "subagents", "turnItems"],
+          { turnItemTypes: ["subagent"], turnItemStatuses: open },
+        );
+        const endedChildThreadIds = new Set<ThreadId>();
+        const events: Array<OrchestrationV2DomainEvent> = [];
+        for (const item of projection.turnItems) {
+          if (item.type !== "subagent" || !nativeTaskIds.has(item.nativeItemRef?.nativeId ?? ""))
+            continue;
+          events.push(
+            ...(yield* endDeadNativeSubagent({
+              projection,
+              subagent: item,
+              status: "cancelled",
+              now: input.now,
+              emitted: events,
+              allocateEventId: () =>
+                idAllocator.allocate.event({
+                  threadId: input.threadId,
+                  providerSessionId: input.providerSessionId,
+                }),
+              readChildThread: (childThreadId) =>
+                projectionStore
+                  .getThreadRecords(
+                    childThreadId,
+                    ["nodes", "providerTurns", "subagents", "turnItems"],
+                    { turnItemRunIds: [null], turnItemStatuses: open },
+                  )
+                  .pipe(
+                    Effect.catchTags({
+                      ProjectionStoreThreadNotFoundError: () => Effect.succeed(null),
+                    }),
+                  ),
+              endedChildThreadIds,
+            })),
+          );
+        }
+        return events;
+      });
+
       // Dead processes cannot report task endings; stale rosters keep threads Waiting. What the
       // release stopped is recorded in the roster's own write unless it was recorded before.
       const writeReleasedBackgroundWorkEvents = (
@@ -1050,15 +1114,22 @@ export const layerWithOptions = (
                               },
                             },
                           ];
+                    const ended = yield* endReleasedSubagents({
+                      threadId,
+                      providerSessionId,
+                      stopped,
+                      now,
+                    });
                     if (
                       cleared.length === 0 &&
                       record.events.length === 0 &&
-                      record.effects.length === 0
+                      record.effects.length === 0 &&
+                      ended.length === 0
                     )
                       return;
                     const { committed } = yield* eventSink.writeIfProviderThreadUnchanged({
                       expected: providerThread,
-                      events: [...cleared, ...record.events],
+                      events: [...cleared, ...record.events, ...ended],
                       effects: record.effects,
                     });
                     if (committed) return;

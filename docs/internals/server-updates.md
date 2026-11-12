@@ -128,6 +128,10 @@ For a settled chat the provider thread's roster is often the only record of a ba
 command, since the command's turn item may already have completed. Whoever empties a
 roster whose process is gone therefore records the loss on a run in the same write: the
 note's work and a notice in the thread. Three writers do this while the server runs.
+Claude's roster lists only its opaque tasks, not background subagents, which end with the
+process all the same, so every writer also takes the subagents that process still runs from
+the adapter. The adapter gives each one out once per process: a turn that reported it is not
+followed by a second report when the process then exits.
 
 A provider process that ends on its own, or that a Stop closes, reports the roster it
 drops as lost, and ingestion records it on the reporting run. Only a process that ends on
@@ -166,7 +170,10 @@ A release writes that record before it closes the session's scope, which can tak
 seconds, so a turn that opens a session meanwhile builds its prompt with it. The roster
 and the wake wait for the close: events the closing process already queued could put a
 cleared roster back, and a woken turn would resume the conversation while the old process
-still runs. A record whose write fails is written again with the roster after the close,
+still runs. The write that clears the roster also ends the records of the background
+subagents the release stopped: the process's own update of them reaches no subscriber once
+the release ended them, and a subagent left running would show as running and be recorded
+a second time by the next startup's recovery. A record whose write fails is written again with the roster after the close,
 and retried; turns that start before it lands do not wait for it, since the retry lasts
 as long as the database fails, and the first prompt after it lands tells it. Holding the
 session's open lock for the whole release was set aside: a slow close would block the
