@@ -1,3 +1,8 @@
+## 2026-11-12 — Weekly and weekday scheduled tasks catch up a run missed while the machine was off
+
+- A fixed-time task that runs on chosen weekdays, such as every Monday or Monday to Friday, now catches up a run it missed while the machine was off or asleep, as daily tasks already did: it runs once when the machine is back, unless its next run comes sooner. Before, such a task skipped the missed run, so a weekly task waited a whole week. Tasks where you turned **Catch up a missed run** off keep that choice.
+- Agents can read **Catch up a missed run** with `list_scheduled_tasks` and set it with `schedule_task`.
+
 ## 2026-11-12 — Agents' thread and task lists use far fewer tokens
 
 - `list_scheduled_tasks` now returns a short prompt preview and a hash for each task. Pass `includePrompt`, or a `scheduledTaskId` to read one task, for the full prompt. `schedule_task` no longer repeats the prompt you just sent.

@@ -222,11 +222,13 @@ export type ScheduledTaskUpsertSchedule = typeof ScheduledTaskUpsertSchedule.Typ
 export const ScheduledTaskRunStatus = Schema.Literals(["never", "running", "succeeded", "failed"]);
 export type ScheduledTaskRunStatus = typeof ScheduledTaskRunStatus.Type;
 
-/** A daily fixed-time task catches up a run it missed while the app was off, unless set otherwise. */
+/**
+ * A fixed-time task, on any weekdays, catches up a run it missed while the app was off unless
+ * set otherwise. Missing one costs a weekly task a whole week; the nearer-than-next guard keeps
+ * a catch-up from doubling the next run.
+ */
 export function defaultCatchUpMissedRun(schedule: ScheduledTaskSchedule): boolean {
-  if (schedule.type !== "fixed_time") return false;
-  const weekdays = new Set(schedule.weekdays ?? []);
-  return weekdays.size === 0 || weekdays.size === 7;
+  return schedule.type === "fixed_time";
 }
 
 export const ScheduledTaskRunTrigger = Schema.Literals([
@@ -641,7 +643,7 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   }),
   catchUpMissedRun: Schema.optional(Schema.Boolean).annotate({
     description:
-      "Run a fixed-time run missed while the app was off once it is back. Omitted keeps the stored choice, or for a new task the default: on for daily tasks.",
+      "Run a fixed-time run missed while the app was off once it is back. Omitted keeps the stored choice, or for a new task the default: on.",
   }),
   runCondition: Schema.optional(Schema.NullOr(ScheduledTaskRunConditionInput)).annotate({
     description:

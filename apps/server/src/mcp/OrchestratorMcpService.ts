@@ -294,6 +294,8 @@ const MACHINE_ORDER_NEEDS_ONE_MACHINE =
   "machineOrder orders the machines of one-machine tasks: pass shared: true and oneMachine: true as well.";
 const PROMPT_AND_PROMPT_FILE =
   "Pass `prompt` or `promptFile`, not both: a task with a prompt file runs what the file says.";
+const CATCH_UP_NEEDS_FIXED_TIME =
+  "catchUpMissedRun applies only to a fixed_time schedule: other schedules never catch up.";
 
 /**
  * What a save sends as `shared`. A field the caller leaves out keeps the stored
@@ -380,6 +382,9 @@ function scheduledTaskSummary(
     ...(task.runCondition == null ? {} : { runCondition: task.runCondition }),
     ...(task.runCheckStartedAt == null ? {} : { checkingSince: task.runCheckStartedAt }),
     ...(task.lastNoWorkSkip == null ? {} : { lastSkipped: task.lastNoWorkSkip }),
+    ...(task.schedule.type === "fixed_time" && task.catchUpMissedRun !== undefined
+      ? { catchUpMissedRun: task.catchUpMissedRun }
+      : {}),
     lastRun,
   };
 }
@@ -2430,6 +2435,9 @@ const make = Effect.gen(function* () {
       if (input.prompt !== undefined && input.promptFile != null) {
         return yield* failure("invalid_request", PROMPT_AND_PROMPT_FILE);
       }
+      if (input.catchUpMissedRun !== undefined && input.schedule.type !== "fixed_time") {
+        return yield* failure("invalid_request", CATCH_UP_NEEDS_FIXED_TIME);
+      }
       if (input.shared === true && input.bindToCurrentThread === true) {
         return yield* failure(
           "invalid_request",
@@ -2507,6 +2515,9 @@ const make = Effect.gen(function* () {
         createdBy: "agent",
         creationSource: "mcp",
         ...(input.placement === undefined ? {} : { placement: input.placement }),
+        ...(input.catchUpMissedRun === undefined
+          ? {}
+          : { catchUpMissedRun: input.catchUpMissedRun }),
         // A replay saves over the task it created: what it does not mention stays.
         ...(input.shared === true ? { shared: sharedChoice(input, replayed?.shared) } : {}),
         ...(input.runCondition === undefined ? {} : { runCondition: input.runCondition }),
@@ -2620,6 +2631,12 @@ const make = Effect.gen(function* () {
             existing.projectId,
           );
         }
+        if (
+          input.catchUpMissedRun !== undefined &&
+          (input.schedule ?? existing.schedule).type !== "fixed_time"
+        ) {
+          return yield* failure("invalid_request", CATCH_UP_NEEDS_FIXED_TIME);
+        }
         if (input.bindToCurrentThread === true && sharedAfter) {
           return yield* failure(
             "invalid_request",
@@ -2670,6 +2687,9 @@ const make = Effect.gen(function* () {
           creationSource: existing.creationSource,
           ...(input.placement === undefined ? {} : { placement: input.placement }),
           ...(input.runCondition === undefined ? {} : { runCondition: input.runCondition }),
+          ...(input.catchUpMissedRun === undefined
+            ? {}
+            : { catchUpMissedRun: input.catchUpMissedRun }),
           // Omitted keeps the stored choice.
           ...(input.shared === false
             ? { shared: null }

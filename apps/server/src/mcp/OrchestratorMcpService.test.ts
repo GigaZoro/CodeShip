@@ -3860,8 +3860,58 @@ describe("OrchestratorMcpService provider resolution", () => {
         }),
     );
 
+    it.effect("saves a fixed-time task's catch-up choice and reads it back", () =>
+      Effect.gen(function* () {
+        const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
+        const saves = yield* Ref.make<ReadonlyArray<ScheduledTaskUpsertInput>>([]);
+        const weekly: ScheduledTask = {
+          ...existing,
+          id: ScheduledTaskId.make("scheduled-task:weekly"),
+          schedule: { type: "fixed_time", timeOfDay: "09:00", weekdays: [1] },
+          catchUpMissedRun: true,
+        };
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+          Effect.provide(
+            service(
+              masterRepository,
+              saved,
+              [weekly, existing],
+              {},
+              {
+                upsert: (input) =>
+                  Ref.update(saves, (all) => [...all, input]).pipe(Effect.as({ task: weekly })),
+              },
+            ),
+          ),
+        );
+        yield* mcp.scheduleTask(client, {
+          projectId,
+          prompt: "Sync from upstream",
+          schedule: weekly.schedule,
+          catchUpMissedRun: false,
+        });
+        yield* mcp.updateScheduledTask(client, { scheduledTaskId: weekly.id, prompt: "Sync" });
+        yield* mcp.updateScheduledTask(client, {
+          scheduledTaskId: existing.id,
+          schedule: weekly.schedule,
+          catchUpMissedRun: true,
+        });
+        assert.deepEqual(
+          (yield* Ref.get(saves)).map((input) => input.catchUpMissedRun),
+          [false, undefined, true],
+        );
+        const { tasks } = yield* mcp.listScheduledTasks(client, { projectId });
+        assert.deepEqual(
+          [weekly.id, existing.id].map(
+            (id) => tasks.find((task) => task.scheduledTaskId === id)?.catchUpMissedRun,
+          ),
+          [true, undefined],
+        );
+      }),
+    );
+
     it.effect(
-      "refuses to bind a shared task to a thread, or run one machine of an unshared task",
+      "refuses to bind a shared task to a thread, run one machine of an unshared task, or catch up a schedule without fixed times",
       () =>
         Effect.gen(function* () {
           const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
@@ -3905,6 +3955,30 @@ describe("OrchestratorMcpService provider resolution", () => {
               {
                 code: "invalid_request",
                 message: "oneMachine needs a shared task: pass shared: true as well.",
+              },
+            );
+          }
+
+          const catchUpErrors = [
+            yield* mcp
+              .scheduleTask(client, {
+                projectId,
+                prompt: "Check the build",
+                schedule,
+                catchUpMissedRun: true,
+              })
+              .pipe(Effect.flip),
+            yield* mcp
+              .updateScheduledTask(client, { scheduledTaskId: existing.id, catchUpMissedRun: true })
+              .pipe(Effect.flip),
+          ];
+          for (const error of catchUpErrors) {
+            assert.deepEqual(
+              { code: error.code, message: error.message },
+              {
+                code: "invalid_request",
+                message:
+                  "catchUpMissedRun applies only to a fixed_time schedule: other schedules never catch up.",
               },
             );
           }

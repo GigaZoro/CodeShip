@@ -717,6 +717,11 @@ const scheduledTaskModelFields = {
   }),
 };
 
+const OrchestratorMcpCatchUpMissedRun = Schema.Boolean.annotate({
+  description:
+    "fixed_time only. True: a run missed while the app was off runs once when it is back, if nearer than the next run. Default true; omit to keep.",
+});
+
 export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   ...scheduledTaskModelFields,
   environmentId: OrchestratorMcpEnvironmentTarget,
@@ -755,6 +760,7 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
       "Where it shows in the user's thread list: none (hidden), chat (runs as normal chats), pinned (a task row). Omit to keep the current one, or for new tasks the user's default.",
   }),
   ...scheduledTaskRunConditionField,
+  catchUpMissedRun: Schema.optional(OrchestratorMcpCatchUpMissedRun),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
@@ -816,6 +822,9 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   }),
   lastSkipped: Schema.optional(ScheduledTaskNoWorkSkip).annotate({
     description: "The last occurrence its run condition skipped for no work, and why.",
+  }),
+  catchUpMissedRun: Schema.optional(Schema.Boolean).annotate({
+    description: "fixed_time only: a run missed while the app was off runs once when it is back.",
   }),
   lastRun: Schema.optional(
     Schema.NullOr(
@@ -896,6 +905,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   ...scheduledTaskMachineOrderField,
   placement: Schema.optional(ScheduledTaskPlacement),
   ...scheduledTaskRunConditionField,
+  catchUpMissedRun: Schema.optional(Schema.Boolean),
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;

@@ -119,6 +119,7 @@ const handlers = {
         modelSelection,
         followsDefaultModel,
         runCondition,
+        catchUpMissedRun,
       }) =>
         Effect.gen(function* () {
           if (scheduledTaskId === undefined) return yield* Effect.die("unreachable");
@@ -140,6 +141,7 @@ const handlers = {
             modelSelection,
             followsDefaultModel,
             runCondition,
+            catchUpMissedRun,
           });
         }),
     ),

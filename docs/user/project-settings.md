@@ -164,7 +164,7 @@ a new thread on each run survive deletion of their previous threads.
 A fixed-time task whose time passed while its machine was off or asleep runs
 once when the machine is back, if that is nearer the missed time than the next
 run. **Catch up a missed run** in the task's editor turns this off or on; it
-starts on for daily tasks. **Run history** in a task's menu lists each time it
+starts on for every fixed-time task, daily, weekly, or on chosen weekdays. **Run history** in a task's menu lists each time it
 fired: runs that started a thread, runs that failed before one existed, and
 missed or skipped times, with the reason. Select a task's **Last run** to open
 that run's thread. In the mobile Tasks tab, tapping a task opens its last run;

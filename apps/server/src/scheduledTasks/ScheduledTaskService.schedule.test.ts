@@ -322,7 +322,7 @@ it.effect(
       expect([daily, off, weekly].map((task) => task.catchUpMissedRun)).toEqual([
         true,
         false,
-        false,
+        true,
       ]);
 
       // The app is off from the 10th until 09:00 on the 13th: three daily times pass.
@@ -356,6 +356,106 @@ it.effect(
           { outcome: "skipped", skipReason: "missed", scheduledFor: isoAt(13, 7) },
         ]);
       }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect(
+  "catches up a weekly or weekday run missed while the app was off once, unless the next run is sooner",
+  () =>
+    Effect.gen(function* () {
+      const at = (day: number, hour: number) =>
+        DateTime.makeZonedUnsafe(
+          { year: 2026, month: 11, day, hour, minute: 0, second: 0, millisecond: 0 },
+          { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+        );
+      const isoAt = (day: number, hour: number) =>
+        DateTime.formatIso(DateTime.toUtc(at(day, hour)));
+      // Sunday 2026-11-08.
+      yield* TestClock.setTime(DateTime.toEpochMillis(at(8, 12)));
+      const launched = yield* Ref.make<ReadonlyArray<string>>([]);
+      const layer = runHistoryLayer((input) =>
+        Ref.update(launched, (titles) => [...titles, input.title]).pipe(
+          Effect.as({ threadId: ThreadId.make("thread-caught-up"), resumed: false } as never),
+        ),
+      );
+      const { weekly, weekdays } = yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const weekly = (yield* service.upsert(
+          yield* historyTask("Mondays", {
+            schedule: { type: "fixed_time", timeOfDay: "07:00", weekdays: [1] },
+          }),
+        )).task;
+        const weekdays = (yield* service.upsert(
+          yield* historyTask("Weekdays", {
+            schedule: { type: "fixed_time", timeOfDay: "07:00", weekdays: [1, 2, 3, 4, 5] },
+          }),
+        )).task;
+        return { weekly, weekdays };
+      }).pipe(Effect.provide(layer));
+      expect([weekly.catchUpMissedRun, weekdays.catchUpMissedRun]).toEqual([true, true]);
+
+      // The app is off until `day` `hour`, then settles until both tasks wait for their next runs.
+      // The clock moves before the service starts: a running scheduler would fire on time.
+      const backAt = (day: number, hour: number, next: { weekly: string; weekdays: string }) =>
+        Effect.gen(function* () {
+          const service = yield* ScheduledTaskService.ScheduledTaskService;
+          const settled = yield* service.subscribeList().pipe(
+            Stream.filter(({ tasks }) =>
+              tasks.every(
+                (task) =>
+                  task.nextRunAt === (task.id === weekly.id ? next.weekly : next.weekdays) &&
+                  task.lastRunStatus !== "running",
+              ),
+            ),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+          yield* TestClock.adjust("6 seconds");
+          yield* Fiber.join(settled);
+          const [weeklyRun] = (yield* service.listRuns({ id: weekly.id })).runs;
+          const [weekdaysRun] = (yield* service.listRuns({ id: weekdays.id })).runs;
+          return { weeklyRun, weekdaysRun };
+        }).pipe(Effect.provide(layer), (started) =>
+          TestClock.setTime(DateTime.toEpochMillis(at(day, hour))).pipe(Effect.andThen(started)),
+        );
+
+      // Monday 20:00: Monday's run is 13 hours late, and the weekly task's next is a week off;
+      // the weekday task's next run, Tuesday 07:00, is sooner.
+      const monday = yield* backAt(9, 20, { weekly: isoAt(16, 7), weekdays: isoAt(10, 7) });
+      expect(yield* Ref.get(launched)).toEqual(["Mondays"]);
+      expect(monday.weeklyRun).toMatchObject({
+        trigger: "catch_up",
+        scheduledFor: isoAt(9, 7),
+        outcome: "succeeded",
+      });
+      expect(monday.weekdaysRun).toMatchObject({
+        outcome: "skipped",
+        skipReason: "next_run_sooner",
+        scheduledFor: isoAt(9, 7),
+      });
+
+      // Saturday 12:00: Friday's run is 29 hours late and the next one is Monday, 43 hours off.
+      const saturday = yield* backAt(14, 12, { weekly: isoAt(16, 7), weekdays: isoAt(16, 7) });
+      expect(yield* Ref.get(launched)).toEqual(["Mondays", "Weekdays"]);
+      expect(saturday.weekdaysRun).toMatchObject({
+        trigger: "catch_up",
+        scheduledFor: isoAt(13, 7),
+        outcome: "succeeded",
+      });
+
+      // Sunday 2026-11-22 20:00: both missed runs are days old and Monday 07:00 is 11 hours off.
+      const sunday = yield* backAt(22, 20, { weekly: isoAt(23, 7), weekdays: isoAt(23, 7) });
+      expect(yield* Ref.get(launched)).toEqual(["Mondays", "Weekdays"]);
+      expect(sunday.weeklyRun).toMatchObject({
+        outcome: "skipped",
+        skipReason: "next_run_sooner",
+        scheduledFor: isoAt(16, 7),
+      });
+      expect(sunday.weekdaysRun).toMatchObject({
+        outcome: "skipped",
+        skipReason: "next_run_sooner",
+        scheduledFor: isoAt(20, 7),
+      });
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
