@@ -2,8 +2,11 @@ import type * as NodeOS from "node:os";
 
 import { describe, expect, it } from "@effect/vitest";
 
+import * as NetAddress from "effect/net/NetAddress";
+
 import {
   acceptsPrivateNetworkConnection,
+  localUrlHostForAddress,
   resolveHeadlessConnectionString,
 } from "./startupAccess.ts";
 
@@ -71,5 +74,19 @@ describe("acceptsPrivateNetworkConnection", () => {
     expect(accepts("203.0.113.7", "192.168.1.31")).toBe(false);
     expect(accepts("169.254.10.1", "169.254.10.2")).toBe(false);
     expect(accepts(undefined, "192.168.1.31")).toBe(false);
+  });
+});
+
+describe("localUrlHostForAddress", () => {
+  it("reaches a wildcard listener on loopback and any other on its own address", () => {
+    const host = (ip: string) =>
+      localUrlHostForAddress(NetAddress.inetAddressFromIpStringUnsafe(ip, 3773));
+    expect(host("0.0.0.0")).toBe("127.0.0.1");
+    expect(host("::")).toBe("127.0.0.1");
+    expect(host("127.0.0.1")).toBe("127.0.0.1");
+    expect(host("::1")).toBe("[::1]");
+    // `t3 serve --host <tailnet IP>` listens on that address only.
+    expect(host("100.101.102.103")).toBe("100.101.102.103");
+    expect(host("fd7a:115c:a1e0::1")).toBe("[fd7a:115c:a1e0::1]");
   });
 });

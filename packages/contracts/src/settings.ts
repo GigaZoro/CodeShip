@@ -1013,7 +1013,7 @@ export type UsageLimitSourceConfig = typeof UsageLimitSourceConfig.Type;
 
 /** ThreadPage, which agents keep each machine's pending list in. */
 export const ThreadPageSettings = Schema.Struct({
-  /** A ThreadPage Integration API token that can read the Machine inbox folders. */
+  /** A ThreadPage Integration API token for the Machine inbox list and scheduled-task checks. */
   apiToken: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed("")), secretSetting),
 });
 export type ThreadPageSettings = typeof ThreadPageSettings.Type;

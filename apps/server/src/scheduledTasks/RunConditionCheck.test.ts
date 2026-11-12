@@ -8,6 +8,7 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as ThreadPageCheckAccess from "../threadPage/ThreadPageCheckAccess.ts";
 import * as RunConditionCheck from "./RunConditionCheck.ts";
 
 const NEEDS_RUN = "node ~/.agents/skills/polybot-pr-reviewer/ado-pr-review.mjs needs-run";
@@ -85,6 +86,11 @@ const output = (
   ...overrides,
 });
 
+const THREADPAGE_ENV = {
+  T3CODE_THREADPAGE_URL: "http://127.0.0.1:43123/api/threadpage",
+  T3CODE_THREADPAGE_TOKEN: "check-token",
+};
+
 const runCheck = (
   answer: Effect.Effect<ProcessRunner.ProcessRunOutput, ProcessRunner.ProcessRunError>,
   options: {
@@ -93,12 +99,30 @@ const runCheck = (
   } = {},
 ) => {
   const calls: Array<ProcessRunner.ProcessRunInput> = [];
+  const grant = { issued: 0, live: false, liveDuringRun: [] as boolean[] };
   const layer = RunConditionCheck.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         ManagedPolicy.layerTest(options.policy),
         Layer.mock(ProcessRunner.ProcessRunner)({
-          run: (input) => Effect.sync(() => calls.push(input)).pipe(Effect.andThen(answer)),
+          run: (input) =>
+            Effect.sync(() => {
+              calls.push(input);
+              grant.liveDuringRun.push(grant.live);
+            }).pipe(Effect.andThen(answer)),
+        }),
+        Layer.mock(ThreadPageCheckAccess.ThreadPageCheckAccess)({
+          grant: Effect.acquireRelease(
+            Effect.sync(() => {
+              grant.issued += 1;
+              grant.live = true;
+              return THREADPAGE_ENV;
+            }),
+            () =>
+              Effect.sync(() => {
+                grant.live = false;
+              }),
+          ),
         }),
       ),
     ),
@@ -115,7 +139,7 @@ const runCheck = (
     Effect.provideService(HostProcess.HomeDirectory, "/Users/me"),
     Effect.provideService(HostProcess.Environment, { PATH: "/usr/bin", ELECTRON_RUN_AS_NODE: "1" }),
     Effect.provide(layer),
-    Effect.map((result) => ({ result, calls })),
+    Effect.map((result) => ({ result, calls, grant })),
   );
 };
 
@@ -131,7 +155,11 @@ describe("RunConditionCheck", () => {
         "needs-run",
       ]);
       assert.equal(call.cwd, "/work/project");
-      assert.deepEqual(call.env, { PATH: "/usr/bin", ELECTRON_RUN_AS_NODE: undefined });
+      assert.deepEqual(call.env, {
+        PATH: "/usr/bin",
+        ELECTRON_RUN_AS_NODE: undefined,
+        ...THREADPAGE_ENV,
+      });
       assert.equal(call.timeoutBehavior, "timedOutResult");
       assert.equal(call.outputMode, "truncate");
       assert.isTrue(Duration.equals(Duration.fromInputUnsafe(call.timeout!), Duration.seconds(45)));
@@ -239,8 +267,11 @@ describe("RunConditionCheck", () => {
         ],
       ];
       for (const [answer, expected] of rows) {
-        const { result } = yield* runCheck(answer);
+        const { result, grant } = yield* runCheck(answer);
         assert.deepEqual(result, expected);
+        // The check's ThreadPage token lives exactly as long as its program, however it ends.
+        assert.deepEqual(grant.liveDuringRun, [true]);
+        assert.isFalse(grant.live);
       }
       const long = yield* runCheck(Effect.succeed(output({ stdout: "x".repeat(400) })));
       assert.lengthOf(long.result.detail ?? "", 300);
@@ -249,7 +280,7 @@ describe("RunConditionCheck", () => {
 
   it.effect("does not run when a policy forbids full access", () =>
     Effect.gen(function* () {
-      const { result, calls } = yield* runCheck(Effect.succeed(output({})), {
+      const { result, calls, grant } = yield* runCheck(Effect.succeed(output({})), {
         policy: {
           schemaVersion: 1,
           organization: "Example Corp",
@@ -257,6 +288,7 @@ describe("RunConditionCheck", () => {
         },
       });
       assert.lengthOf(calls, 0);
+      assert.equal(grant.issued, 0);
       assert.deepEqual(result, {
         outcome: "failed",
         failure: "policy",

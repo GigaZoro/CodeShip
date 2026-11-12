@@ -228,6 +228,50 @@ Things to know:
 - Agents set it with `schedule_task` (`runCondition`) and read it, with the last
   skipped time and its reason, from `list_scheduled_tasks`.
 
+### Read and write ThreadPage from a check
+
+A check can use this machine's [ThreadPage](threadpage.md) connection without
+seeing its token. While the check runs, it has two environment variables:
+`T3CODE_THREADPAGE_URL`, an address on this machine's T3.CodeShip server, and
+`T3CODE_THREADPAGE_TOKEN`, which works only until the check ends. Send the token
+as `Authorization: Bearer <token>`.
+
+| Request                                                                        | Answer                                                                                                                                             |
+| ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET $T3CODE_THREADPAGE_URL/threads?folder_id=<folder id>`                     | 200 `{"threads": [...]}`: the folder's active threads, each with `id`, `title`, `description`, `status`, `status_name`, `last_activity_at`, `url`. |
+| `POST $T3CODE_THREADPAGE_URL/notes` with `{"thread_id": "…", "markdown": "…"}` | 201 `{"note_id": "…", "url": "…", "operation_id": "…"}`.                                                                                           |
+
+Add `"operation_id"`, a UUID, to a note to retry it safely: ThreadPage adds a
+note once per id. Adding a note to a thread needs ThreadPage Pro; on other plans
+ThreadPage refuses it with `pro_required`. Other answers:
+
+- 400 `invalid_request`: no folder, or a note body that is not that JSON or is
+  over 64 KiB.
+- 401 `unauthorized`: the token is missing, wrong, or its check has ended.
+- 503 `not_connected`: this machine has no ThreadPage token. Save one in
+  **Settings → Threads → ThreadPage**; adding notes needs **Can add notes**
+  access.
+- 502 `threadpage_failed`: ThreadPage refused or did not answer, or the folder
+  has more than 500 active threads, more than a check can list. `status` is
+  ThreadPage's HTTP status, `code` its error code, such as `write_not_allowed`,
+  and `retry_after` the seconds to wait when it limits requests.
+
+For example, a Node check that starts the chat only when a folder has a waiting
+thread:
+
+```js
+const response = await fetch(
+  `${process.env.T3CODE_THREADPAGE_URL}/threads?folder_id=${process.argv[2]}`,
+  { headers: { Authorization: `Bearer ${process.env.T3CODE_THREADPAGE_TOKEN}` } },
+);
+if (!response.ok) process.exit(1);
+const { threads } = await response.json();
+if (!threads.some((thread) => thread.status === "waiting")) {
+  console.log(JSON.stringify({ needsRun: false, reason: "Nothing is waiting" }));
+  process.exit(10);
+}
+```
+
 ## Shared scheduled tasks
 
 A task's **Runs** choice keeps a copy of it on each of your machines:

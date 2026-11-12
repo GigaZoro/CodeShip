@@ -106,6 +106,7 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ScratchThreadPromotion from "../project/ScratchThreadPromotion.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import * as ThreadPageCheckAccess from "../threadPage/ThreadPageCheckAccess.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import {
@@ -10484,6 +10485,7 @@ const layerProductionBrowserAccessTest = RuntimeLayer.layerProduction.pipe(
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
   Layer.provide(layerSharedTaskIdentities()),
   Layer.provide(ManagedPolicy.layerTest()),
+  Layer.provide(Layer.mock(ThreadPageCheckAccess.ThreadPageCheckAccess)({})),
   Layer.provide(layerPlatformTest),
 );
 

@@ -1,3 +1,10 @@
+## 2026-11-12 — A scheduled task's check can read and write ThreadPage
+
+- A **Check before running** command can now use the machine's ThreadPage connection without seeing its token. While the check runs it gets `T3CODE_THREADPAGE_URL`, an address on the machine's own T3.CodeShip server, and `T3CODE_THREADPAGE_TOKEN`, a token that stops working when the check ends. With them it can list a folder's active threads with their status, description and last activity (`GET …/threads?folder_id=`) and add a note to a thread (`POST …/notes`). A check can now decide from ThreadPage whether there is work, and write a note on every run.
+- The calls use the token saved in **Settings → Threads → ThreadPage** on the machine that runs the check, so save one on each machine whose checks use ThreadPage, with **Can add notes** access when a check adds notes. Refusals say why: no token on this machine, or ThreadPage's own status and error code, such as `write_not_allowed`, and how long to wait when it limits requests.
+- See [Read and write ThreadPage from a check](user/project-settings.md#read-and-write-threadpage-from-a-check).
+- A server started on one specific address (`t3 serve --host <address>`) is now reached on that address by Tailscale Serve and the managed tunnel. They used to point at 127.0.0.1, where nothing listened.
+
 ## 2026-11-12 — One rule decides which turn records stopped background work
 
 - For contributors: a session that closes and a restarted turn now use the same rule to pick the turn that records the background work they stopped. Nothing changes in the app.

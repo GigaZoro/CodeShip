@@ -1348,8 +1348,8 @@ const catalog: MessageCatalog = {
   "{machine}: turned off": "{machine}: вимкнено",
   "{machines} read and act": "{machines}: читати й діяти",
   "{machines} read PRs": "{machines}: читати PR",
-  "{manualSteps} lists the steps only you can do, which agents keep in ThreadPage's Machine inbox folder. This server reads them with a ThreadPage token and never shows it to apps. In ThreadPage, open Settings, Connections, then Connect an automation, Script or API: choose Read only, and Work or All threads.":
-    "{manualSteps} показує кроки, які можете зробити лише ви: агенти ведуть їх у папці Machine inbox у ThreadPage. Цей сервер читає їх за токеном ThreadPage і ніколи не показує його застосункам. У ThreadPage відкрийте Settings, Connections, потім Connect an automation, Script or API: виберіть Read only і Work або All threads.",
+  "{manualSteps} lists the steps only you can do, which agents keep in ThreadPage's Machine inbox folder. Scheduled-task checks on this machine can also list threads and add notes through it. This server keeps the token and never shows it to apps or checks. In ThreadPage, open Settings, Connections, then Connect an automation, Script or API: choose Read only, or Can add notes when a check adds notes, and Work or All threads.":
+    "{manualSteps} показує кроки, які можете зробити лише ви: агенти ведуть їх у папці Machine inbox у ThreadPage. Перевірки запланованих завдань на цій машині теж можуть через нього переглядати треди й додавати нотатки. Цей сервер зберігає токен і ніколи не показує його застосункам чи перевіркам. У ThreadPage відкрийте Settings, Connections, потім Connect an automation, Script or API: виберіть Read only або Can add notes, якщо перевірка додає нотатки, і Work або All threads.",
   "{mark}  {label} · Failed": "{mark}  {label} · Помилка",
   "{mark}  {label} · Not checked": "{mark}  {label} · Не перевірено",
   "{message} Choose another model.": "{message} Виберіть іншу модель.",

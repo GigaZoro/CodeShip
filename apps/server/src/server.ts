@@ -123,6 +123,8 @@ import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as ManualStepChats from "./threadPage/ManualStepChats.ts";
 import * as ManualStepReviews from "./threadPage/ManualStepReviews.ts";
 import * as ManualStepReviewRepository from "./persistence/ManualStepReviews.ts";
+import * as ThreadPageCheckAccess from "./threadPage/ThreadPageCheckAccess.ts";
+import * as ThreadPageCheckAccessHttp from "./threadPage/checkAccessHttp.ts";
 import * as ThreadPageManualSteps from "./threadPage/ThreadPageManualSteps.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
 import * as T3ProjectFileLoader from "./project/T3ProjectFileLoader.ts";
@@ -223,7 +225,7 @@ import * as ProjectionMaintenance from "./orchestration-v2/ProjectionMaintenance
 import * as AccountRouting from "./orchestration-v2/AccountRouting.ts";
 import * as ProjectionStoreV2 from "./orchestration-v2/ProjectionStore.ts";
 import { makePersistedServerRuntimeState } from "./serverRuntimeState.ts";
-import { acceptsPrivateNetworkConnection, loopbackUrlHostForAddress } from "./startupAccess.ts";
+import { acceptsPrivateNetworkConnection, localUrlHostForAddress } from "./startupAccess.ts";
 import * as OrchestrationHttp from "./orchestration-v2/http.ts";
 import * as ProjectHttp from "./project/http.ts";
 import * as NetService from "@t3tools/shared/Net";
@@ -768,6 +770,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
       UsageLimitSources.layer,
       AccountRouting.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
       ThreadPageManualSteps.layer,
+      ThreadPageCheckAccess.layer,
       DetectedManualSteps.layer,
     ),
   ),
@@ -873,6 +876,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerAttachmentUploadRoute,
     ServerHttp.layerDesktopAutoInstallReadinessRoute,
     GuestHttp.layer,
+    ThreadPageCheckAccessHttp.layer,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
@@ -993,7 +997,7 @@ const layerMakeServer = Layer.unwrap(
               }
 
               const localPort = address.port;
-              const localHost = loopbackUrlHostForAddress(address);
+              const localHost = localUrlHostForAddress(address);
               return yield* ensureTailscaleServe({
                 localPort,
                 servePort: config.tailscaleServePort,
@@ -1106,7 +1110,7 @@ const layerMakeServer = Layer.unwrap(
             const server = yield* HttpServer.HttpServer;
             const address = server.address;
             if (typeof address === "string" || !("port" in address)) return;
-            const localOrigin = `http://${loopbackUrlHostForAddress(address)}:${address.port}`;
+            const localOrigin = `http://${localUrlHostForAddress(address)}:${address.port}`;
             const endpointRuntime = yield* CloudManagedEndpointRuntime.CloudManagedEndpointRuntime;
             const runManagedTunnelRecovery = yield* makeManagedTunnelRecovery({
               recover: (config: RelayManagedEndpointRuntimeConfig) =>

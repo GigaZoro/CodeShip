@@ -66,8 +66,11 @@ start instead of opening a second chat; once a chat has started, choosing again 
 
 To fill the list, create a token in ThreadPage under **Settings → Connections → Connect an
 automation → Script or API**, with **Read only** access to the Machine inbox folder or all threads.
-Save it in **Settings → Threads → ThreadPage** on one machine. The token stays on that machine and
-is never sent to apps, and every app connected to it shows the list: under Needs you in a chat's
+Save it in **Settings → Threads → ThreadPage** on one machine. A
+[scheduled task's check](project-settings.md#read-and-write-threadpage-from-a-check) on a machine
+uses that machine's token, so save one wherever such checks run, with **Can add notes** access if a
+check adds notes. The token stays on its machine and is never sent to apps or checks, and every app
+connected to it shows the list: under Needs you in a chat's
 details column, in the thread list on narrow windows and on mobile, and on the **Manual steps**
 page in the sidebar rail and the command palette. The list never sends notifications. To hide it
 under Needs you and in the thread list, right-click its header and choose **Hide Manual steps**;

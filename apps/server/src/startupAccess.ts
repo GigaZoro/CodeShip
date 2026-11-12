@@ -71,10 +71,11 @@ export const acceptsPrivateNetworkConnection = (socket: {
     (address) => address !== undefined && isPrivateNetworkAddress(address),
   );
 
-export const loopbackUrlHostForAddress = (address: NetAddress.InetAddress): string =>
-  address._tag === "InetAddressV6" && NetAddress.isLoopback(address.address)
-    ? "[::1]"
-    : "127.0.0.1";
+/** The URL host this machine's own processes reach the listener on: loopback for a wildcard bind. */
+export const localUrlHostForAddress = (address: NetAddress.InetAddress): string =>
+  NetAddress.isUnspecified(address.address)
+    ? "127.0.0.1"
+    : NetAddress.formatUrlHost(address.address);
 
 const normalizeHost = (host: string): string =>
   host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;

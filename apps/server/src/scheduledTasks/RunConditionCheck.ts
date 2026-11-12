@@ -16,6 +16,7 @@ import * as Layer from "effect/Layer";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import { providerHostEnvironment } from "../policy/managedProviders.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as ThreadPageCheckAccess from "../threadPage/ThreadPageCheckAccess.ts";
 
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_DETAIL_LENGTH = 300;
@@ -132,6 +133,7 @@ const failed = (
 const make = Effect.gen(function* () {
   const processRunner = yield* ProcessRunner.ProcessRunner;
   const managedPolicy = yield* ManagedPolicy.ManagedPolicy;
+  const threadPageAccess = yield* ThreadPageCheckAccess.ThreadPageCheckAccess;
   // A check runs without approval, so a policy that forbids full access forbids it.
   const policyDenial = managedRuntimeModeDenial(managedPolicy.summary, "full-access");
 
@@ -153,54 +155,57 @@ const make = Effect.gen(function* () {
         ...shell,
         ...Object.fromEntries(removed.map((name) => [name, undefined])),
       };
-      return yield* processRunner
-        .run({
-          command: resolved.command,
-          args: resolved.args,
-          cwd: input.cwd,
-          env,
-          timeout: Duration.seconds(input.timeoutSeconds),
-          // Closed at once, so a program that reads stdin to its end does not wait out the time limit.
-          stdin: "",
-          timeoutBehavior: "timedOutResult",
-          outputMode: "truncate",
-          maxOutputBytes: MAX_OUTPUT_BYTES,
-        })
-        .pipe(
-          Effect.map((output): ScheduledTaskRunCheck => {
-            if (output.timedOut) return failed("timeout", null);
-            const exitCode = output.code === null ? null : Number(output.code);
-            if (exitCode === 0) {
-              return {
-                outcome: "run",
-                failure: null,
-                exitCode,
-                detail: runCheckDetail(output, false),
-              };
-            }
-            if (exitCode === RUN_CONDITION_SKIP_EXIT_CODE) {
-              return {
-                outcome: "skip",
-                failure: null,
-                exitCode,
-                detail: runCheckDetail(output, false),
-              };
-            }
-            return failed("exit_code", runCheckDetail(output, true), exitCode);
+      // The ThreadPage grant ends with the check, so a program it leaves behind cannot use it.
+      return yield* threadPageAccess.grant.pipe(
+        Effect.flatMap((threadPageEnv) =>
+          processRunner.run({
+            command: resolved.command,
+            args: resolved.args,
+            cwd: input.cwd,
+            env: { ...env, ...threadPageEnv },
+            timeout: Duration.seconds(input.timeoutSeconds),
+            // Closed at once, so a program that reads stdin to its end does not wait out the time limit.
+            stdin: "",
+            timeoutBehavior: "timedOutResult",
+            outputMode: "truncate",
+            maxOutputBytes: MAX_OUTPUT_BYTES,
           }),
-          Effect.catch((error) =>
-            Effect.succeed(
-              failed(
-                "not_started",
-                cleanLine(
-                  "cause" in error && error.cause instanceof Error
-                    ? error.cause.message
-                    : error.message,
-                ),
+        ),
+        Effect.scoped,
+        Effect.map((output): ScheduledTaskRunCheck => {
+          if (output.timedOut) return failed("timeout", null);
+          const exitCode = output.code === null ? null : Number(output.code);
+          if (exitCode === 0) {
+            return {
+              outcome: "run",
+              failure: null,
+              exitCode,
+              detail: runCheckDetail(output, false),
+            };
+          }
+          if (exitCode === RUN_CONDITION_SKIP_EXIT_CODE) {
+            return {
+              outcome: "skip",
+              failure: null,
+              exitCode,
+              detail: runCheckDetail(output, false),
+            };
+          }
+          return failed("exit_code", runCheckDetail(output, true), exitCode);
+        }),
+        Effect.catch((error) =>
+          Effect.succeed(
+            failed(
+              "not_started",
+              cleanLine(
+                "cause" in error && error.cause instanceof Error
+                  ? error.cause.message
+                  : error.message,
               ),
             ),
           ),
-        );
+        ),
+      );
     },
   );
 

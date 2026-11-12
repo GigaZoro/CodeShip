@@ -17,6 +17,13 @@ import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } fr
 
 import * as Settings from "../serverSettings.ts";
 import {
+  readThreadPagePages,
+  THREADPAGE_API_URL,
+  THREADPAGE_PAGE_SIZE,
+  threadPageListPage,
+  threadPageRequestHeaders,
+} from "./threadPageApi.ts";
+import {
   findMachineInbox,
   limitNotes,
   machineFolders,
@@ -28,8 +35,6 @@ import {
   type ThreadPageThread,
 } from "./manualSteps.ts";
 
-const API = "https://thread.page/api/integrations/v1";
-const PAGE_SIZE = "50";
 // List cursors page 50 at a time; these caps bound a read to a few hundred requests at worst.
 const MAX_FOLDER_PAGES = 20;
 const MAX_THREAD_PAGES = 10;
@@ -62,15 +67,9 @@ const Note = Schema.Struct({
   trashed: Schema.Boolean,
   markdown: Schema.String,
 });
-interface Page<A> {
-  readonly items: ReadonlyArray<A>;
-  readonly next_cursor: string | null;
-}
-const page = <S extends Schema.Top>(item: S) =>
-  Schema.Struct({ items: Schema.Array(item), next_cursor: Schema.NullOr(Schema.String) });
-const decodeFolderPage = Schema.decodeUnknownEffect(page(Folder));
-const decodeThreadPage = Schema.decodeUnknownEffect(page(Thread));
-const decodeNotePage = Schema.decodeUnknownEffect(page(NoteSummary));
+const decodeFolderPage = Schema.decodeUnknownEffect(threadPageListPage(Folder));
+const decodeThreadPage = Schema.decodeUnknownEffect(threadPageListPage(Thread));
+const decodeNotePage = Schema.decodeUnknownEffect(threadPageListPage(NoteSummary));
 const decodeNote = Schema.decodeUnknownEffect(Note);
 
 const isManualStepsListError = Schema.is(ManualStepsListError);
@@ -154,14 +153,9 @@ const make = Effect.gen(function* () {
     return yield* requestSlots.withPermits(1)(
       client
         .execute(
-          HttpClientRequest.get(`${API}${path}`).pipe(
+          HttpClientRequest.get(`${THREADPAGE_API_URL}${path}`).pipe(
             HttpClientRequest.setUrlParams(params),
-            HttpClientRequest.setHeaders({
-              Authorization: `Bearer ${token}`,
-              Accept: "application/json",
-              // ThreadPage's edge refuses requests without a named client.
-              "User-Agent": "T3.CodeShip",
-            }),
+            HttpClientRequest.setHeaders(threadPageRequestHeaders(token)),
           ),
         )
         .pipe(
@@ -172,26 +166,14 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const readPages = Effect.fn("ThreadPageManualSteps.readPages")(function* <A, E>(
-    maxPages: number,
-    readPage: (cursor: string | null) => Effect.Effect<Page<A>, E>,
-  ) {
-    const items: A[] = [];
-    let cursor: string | null = null;
-    for (let index = 0; index < maxPages; index += 1) {
-      const result: Page<A> = yield* readPage(cursor);
-      items.push(...result.items);
-      cursor = result.next_cursor;
-      if (cursor === null) break;
-    }
-    return items;
-  });
-
   const read = Effect.fn("ThreadPageManualSteps.read")(function* (token: string) {
-    const folders: ReadonlyArray<ThreadPageFolder> = yield* readPages(MAX_FOLDER_PAGES, (cursor) =>
-      get(token, "/folders", { limit: PAGE_SIZE, ...(cursor === null ? {} : { cursor }) }).pipe(
-        Effect.flatMap(decodeFolderPage),
-      ),
+    const folders: ReadonlyArray<ThreadPageFolder> = yield* readThreadPagePages(
+      MAX_FOLDER_PAGES,
+      (cursor) =>
+        get(token, "/folders", {
+          limit: THREADPAGE_PAGE_SIZE,
+          ...(cursor === null ? {} : { cursor }),
+        }).pipe(Effect.flatMap(decodeFolderPage)),
     );
     const inbox = findMachineInbox(folders);
     if (inbox === null) {
@@ -200,11 +182,11 @@ const make = Effect.gen(function* () {
     const threadsByFolder = yield* Effect.forEach(
       [...machineFolders(folders, inbox.id)],
       ([folderId, machine]) =>
-        readPages(MAX_THREAD_PAGES, (cursor) =>
+        readThreadPagePages(MAX_THREAD_PAGES, (cursor) =>
           get(token, "/threads", {
             folder_id: folderId,
             state: "active",
-            limit: PAGE_SIZE,
+            limit: THREADPAGE_PAGE_SIZE,
             ...(cursor === null ? {} : { cursor }),
           }).pipe(Effect.flatMap(decodeThreadPage)),
         ).pipe(Effect.map((threads: ReadonlyArray<ThreadPageThread>) => ({ machine, threads }))),
@@ -282,11 +264,11 @@ const make = Effect.gen(function* () {
         return yield* failure("token-rejected", "No ThreadPage token is set.");
       }
       return yield* Effect.gen(function* () {
-        const summaries: ReadonlyArray<ThreadPageNoteSummary> = yield* readPages(
+        const summaries: ReadonlyArray<ThreadPageNoteSummary> = yield* readThreadPagePages(
           MAX_NOTE_PAGES,
           (cursor) =>
             get(token, `/threads/${encodeURIComponent(threadId)}/notes`, {
-              limit: PAGE_SIZE,
+              limit: THREADPAGE_PAGE_SIZE,
               ...(cursor === null ? {} : { cursor }),
             }).pipe(Effect.flatMap(decodeNotePage)),
         );
