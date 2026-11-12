@@ -100,6 +100,25 @@ describe("scheduleDraftForTask", () => {
   });
 });
 
+describe("task group in the draft", () => {
+  const task = (group: string | null | undefined) =>
+    ({
+      title: "Triage",
+      group,
+      schedule: { type: "interval", everyMs: 60_000 },
+      workspaceStrategy: { type: "root" },
+    }) as unknown as ScheduledTask;
+
+  it("opens the stored group and copies it into a duplicate", () => {
+    expect(editDraft(task("Machine care")).group).toBe("Machine care");
+    expect(editDraft(task(null)).group).toBe("");
+    expect(editDraft(task(undefined)).group).toBe("");
+    const copy = duplicateDraft(task("Machine care"), "Triage (copy)");
+    expect(copy.group).toBe("Machine care");
+    expect(copy.task).toBeNull();
+  });
+});
+
 describe("scheduleFromDraft", () => {
   it("rejects an empty day selection rather than silently scheduling every day", () => {
     expect(scheduleFromDraft({ ...DEFAULT_SCHEDULE, weekdays: [] })).toBeNull();

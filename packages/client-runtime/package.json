@@ -91,6 +91,10 @@
       "types": "./src/scheduledTaskPins.ts",
       "default": "./src/scheduledTaskPins.ts"
     },
+    "./scheduled-task-groups": {
+      "types": "./src/scheduledTaskGroups.ts",
+      "default": "./src/scheduledTaskGroups.ts"
+    },
     "./scheduled-task-sharing": {
       "types": "./src/scheduledTaskSharing.ts",
       "default": "./src/scheduledTaskSharing.ts"

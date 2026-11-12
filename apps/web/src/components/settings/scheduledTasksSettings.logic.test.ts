@@ -241,6 +241,16 @@ describe("a check the target machine cannot keep", () => {
   });
 });
 
+describe("scheduled task groups in the editor draft", () => {
+  it("copies the group into a new task, which has nothing stored to clear", () => {
+    const grouped = { ...legacyTask, group: "Machine care" };
+    expect(taskToDraft(grouped).savedGroup).toBe("Machine care");
+    const copy = copyTaskDraft(grouped, "Copy");
+    expect(copy.group).toBe("Machine care");
+    expect(copy.savedGroup).toBe("");
+  });
+});
+
 describe("a thread's automations", () => {
   it("lists tasks bound to the thread, that last ran in it, or that sent it a prompt", () => {
     const threadId = ThreadId.make("thread");

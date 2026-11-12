@@ -50,6 +50,8 @@ import {
   type ScheduledTaskReorderPinnedResult,
   type ScheduledTaskSetPlacementInput,
   type ScheduledTaskSetPlacementResult,
+  type ScheduledTaskSetGroupPausedInput,
+  type ScheduledTaskSetGroupPausedResult,
   type ServerSettings as ServerSettingsValue,
   type ScheduledTaskUpsertInput,
   managedPolicyDeniedMessage,
@@ -141,6 +143,10 @@ interface RunConditionRow {
 const RUN_HISTORY_RETENTION = 50;
 // Kept apart, so a frequent check that finds no work cannot push real runs out of history.
 const NO_WORK_SKIP_RETENTION = 10;
+// Runs (not skips) this recent stay beyond the newest 50, so usage can count a group's runs over 90 days.
+const RUN_HISTORY_WINDOW_MS = 90 * 24 * 60 * MINUTE_MS;
+const runHistoryCutoff = (startedAt: string) =>
+  DateTime.formatIso(DateTime.makeUnsafe(Date.parse(startedAt) - RUN_HISTORY_WINDOW_MS));
 const WEBHOOK_DEDUPE_DELIVERY_RETENTION = 20;
 const WEBHOOK_FILTERED_DELIVERY_RETENTION = 20;
 const WEBHOOK_DEDUPE_LOG_PER_MINUTE = 10;
@@ -325,6 +331,9 @@ interface ScheduledTaskRow {
   readonly prompt_file_read_at?: string | null;
   readonly prompt_file_ref?: string | null;
   readonly prompt_file_commit?: string | null;
+  /** From scheduled_task_group: null when the task has no group. */
+  readonly group_label?: string | null;
+  readonly paused_with_group?: number | null;
 }
 
 interface RunRecordRow {
@@ -395,6 +404,13 @@ export class ScheduledTaskService extends Context.Service<
     readonly setPlacement: (
       input: ScheduledTaskSetPlacementInput,
     ) => Effect.Effect<ScheduledTaskSetPlacementResult, ScheduledTaskError>;
+    /**
+     * Pausing turns off the listed tasks that are on and in a group, and marks them; resuming
+     * turns back on only marked ones, leaving any that can no longer run off and saying why.
+     */
+    readonly setGroupPaused: (
+      input: ScheduledTaskSetGroupPausedInput,
+    ) => Effect.Effect<ScheduledTaskSetGroupPausedResult, ScheduledTaskError>;
     readonly reorderPinned: (
       input: ScheduledTaskReorderPinnedInput,
     ) => Effect.Effect<ScheduledTaskReorderPinnedResult, ScheduledTaskError>;
@@ -541,14 +557,22 @@ function nextRunAfterRun(
 }
 
 /** An enabled one-time task with a past time would never run, so saving it is an error. */
+function passedOnceMessage(
+  task: Pick<ScheduledTask, "enabled" | "schedule">,
+  now: DateTime.DateTime,
+): string | undefined {
+  return task.enabled && task.schedule.type === "once" && nextRunAt(task, now) === null
+    ? "The run time has passed. Pick a time in the future."
+    : undefined;
+}
+
 function requireFutureOnce(
   task: Pick<ScheduledTask, "enabled" | "schedule">,
   now: DateTime.DateTime,
   taskId: ScheduledTaskId,
 ) {
-  return task.enabled && task.schedule.type === "once" && nextRunAt(task, now) === null
-    ? taskError("The run time has passed. Pick a time in the future.", { taskId })
-    : Effect.void;
+  const message = passedOnceMessage(task, now);
+  return message === undefined ? Effect.void : taskError(message, { taskId });
 }
 
 function errorMessage(error: unknown): string {
@@ -680,6 +704,8 @@ const decodeRow = Effect.fnUntraced(
                           },
                   },
           }),
+      ...(row.group_label === undefined ? {} : { group: row.group_label }),
+      ...(row.paused_with_group === 1 && row.enabled !== 1 ? { pausedWithGroup: true } : {}),
     });
   },
   (effect, row, _origin?) =>
@@ -873,6 +899,20 @@ export const layer = Layer.effect(
         enabled INTEGER NOT NULL
       )
     `;
+    // A row names the task's group. paused_with_group marks a task its group's pause turned off,
+    // so resuming the group turns back on only those.
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS scheduled_task_group (
+        task_id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        paused_with_group INTEGER NOT NULL DEFAULT 0
+      )
+    `;
+    // Stats read every task's runs in a time window, and history keeps 90 days of them.
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_started
+      ON scheduled_task_runs(started_at)
+    `;
     // Machines that pulled shared tasks from here: copies reach them though no link from here does.
     yield* sql`
       CREATE TABLE IF NOT EXISTS scheduled_task_shared_pullers (
@@ -996,7 +1036,11 @@ export const layer = Layer.effect(
         (SELECT ref FROM scheduled_task_prompt_files pf
           WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_ref,
         (SELECT commit_sha FROM scheduled_task_prompt_files pf
-          WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_commit
+          WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_commit,
+        (SELECT label FROM scheduled_task_group g
+          WHERE g.task_id = scheduled_tasks.task_id) AS group_label,
+        (SELECT paused_with_group FROM scheduled_task_group g
+          WHERE g.task_id = scheduled_tasks.task_id) AS paused_with_group
       FROM scheduled_tasks
       -- Not updated_at: toggles, runs and edits rewrite it, and clients render
       -- this order as-is, so rows would move under the pointer.
@@ -1088,7 +1132,11 @@ export const layer = Layer.effect(
         (SELECT ref FROM scheduled_task_prompt_files pf
           WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_ref,
         (SELECT commit_sha FROM scheduled_task_prompt_files pf
-          WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_commit
+          WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_commit,
+        (SELECT label FROM scheduled_task_group g
+          WHERE g.task_id = scheduled_tasks.task_id) AS group_label,
+        (SELECT paused_with_group FROM scheduled_task_group g
+          WHERE g.task_id = scheduled_tasks.task_id) AS paused_with_group
       FROM scheduled_tasks
       WHERE task_id = ${id}
     `.pipe(NodeSqliteClient.readOnly);
@@ -1362,6 +1410,7 @@ export const layer = Layer.effect(
         Effect.andThen(sql`DELETE FROM scheduled_task_catch_up WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_run_conditions WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_prompt_files WHERE task_id = ${id}`),
+        Effect.andThen(sql`DELETE FROM scheduled_task_group WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_runs WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_tasks WHERE task_id = ${id}`),
       );
@@ -1488,11 +1537,13 @@ export const layer = Layer.effect(
               WHERE task_id = ${record.taskId} AND skip_reason = 'no_work'
               ORDER BY started_at DESC, run_id DESC LIMIT ${NO_WORK_SKIP_RETENTION}
             ))
-            OR (skip_reason IS NOT 'no_work' AND run_id NOT IN (
-              SELECT run_id FROM scheduled_task_runs
-              WHERE task_id = ${record.taskId} AND skip_reason IS NOT 'no_work'
-              ORDER BY started_at DESC, run_id DESC LIMIT ${RUN_HISTORY_RETENTION}
-            ))
+            OR (skip_reason IS NOT 'no_work'
+              AND (outcome = 'skipped' OR started_at < ${runHistoryCutoff(record.startedAt)})
+              AND run_id NOT IN (
+                SELECT run_id FROM scheduled_task_runs
+                WHERE task_id = ${record.taskId} AND skip_reason IS NOT 'no_work'
+                ORDER BY started_at DESC, run_id DESC LIMIT ${RUN_HISTORY_RETENTION}
+              ))
           )
         `),
       );
@@ -2295,6 +2346,29 @@ export const layer = Layer.effect(
         Effect.map((rows) => rows[0]?.prompt),
       );
 
+    /** A label of undefined keeps the stored one, null removes the group with its mark. */
+    const writeGroup = (
+      id: ScheduledTaskId,
+      label: string | null | undefined,
+      mark: boolean | "keep",
+    ) =>
+      label === null
+        ? sql`DELETE FROM scheduled_task_group WHERE task_id = ${id}`
+        : label === undefined
+          ? mark === "keep"
+            ? Effect.void
+            : sql`UPDATE scheduled_task_group SET paused_with_group = ${mark ? 1 : 0}
+                  WHERE task_id = ${id}`
+          : sql`
+              INSERT INTO scheduled_task_group (task_id, label, paused_with_group)
+              VALUES (${id}, ${label}, ${mark === true ? 1 : 0})
+              ON CONFLICT (task_id) DO UPDATE SET
+                label = excluded.label,
+                paused_with_group = CASE WHEN ${mark === "keep" ? 1 : 0} = 1
+                  THEN scheduled_task_group.paused_with_group
+                  ELSE excluded.paused_with_group END
+            `;
+
     const recordOneMachineDecision = (
       taskId: ScheduledTaskId,
       decision: ScheduledTaskOneMachineDecision,
@@ -2778,6 +2852,8 @@ export const layer = Layer.effect(
                   creationSource: task.creationSource,
                   createdAt: task.createdAt,
                   shared: task.shared,
+                  group: task.group ?? null,
+                  pausedWithGroup: task.pausedWithGroup === true,
                 },
               ],
         );
@@ -3200,6 +3276,8 @@ export const layer = Layer.effect(
               promptFilePath,
               promptRead === null ? "keep" : { ...promptRead, at: iso(now) },
             );
+            // Turning a task on by saving it ends its group's hold on it.
+            yield* writeGroup(id, input.group, input.enabled ? false : "keep");
             if (sharedExclusions !== undefined && sharedProject !== null) {
               yield* writeSharing(id, {
                 revision: yield* stampRevision(id),
@@ -3466,37 +3544,53 @@ export const layer = Layer.effect(
           yield* writeCatchUp(id, task.catchUpMissedRun);
           yield* writeRunCondition(id, task.runCondition);
           yield* writePromptFile(id, promptFilePath, keepsOwnRead ? "keep" : null);
+          // A copy from a machine without groups leaves this machine's group as it is.
+          yield* task.group === undefined
+            ? writeGroup(id, undefined, task.enabled ? false : "keep")
+            : writeGroup(id, task.group, task.pausedWithGroup === true && !task.enabled);
           yield* writeSharing(id, task.shared);
         }),
         "applied",
       );
     });
 
+    // Why a task may not be turned on, whether by hand or by resuming its group.
+    const enableRefusal = (task: ScheduledTask, now: DateTime.DateTime): string | undefined => {
+      if (task.schedule.type === "webhook" && webhookPolicyBlock !== undefined) {
+        return webhookPolicyBlock;
+      }
+      const modeDenial =
+        task.threadId === null
+          ? managedRuntimeModeDenial(managedPolicy.summary, task.runtimeMode)
+          : undefined;
+      return modeDenial ?? passedOnceMessage({ enabled: true, schedule: task.schedule }, now);
+    };
+
     const setEnabled: ScheduledTaskService["Service"]["setEnabled"] = Effect.fn(
       "ScheduledTaskService.setEnabled",
     )(function* (input) {
       const existing = yield* loadTask(input.id);
-      if (existing.enabled === input.enabled) return { task: existing };
-      if (
-        input.enabled &&
-        existing.schedule.type === "webhook" &&
-        webhookPolicyBlock !== undefined
-      ) {
-        return yield* taskError(webhookPolicyBlock, { taskId: input.id });
-      }
-      const modeDenial =
-        input.enabled && existing.threadId === null
-          ? managedRuntimeModeDenial(managedPolicy.summary, existing.runtimeMode)
-          : undefined;
-      if (modeDenial !== undefined) {
-        return yield* taskError(modeDenial, { taskId: input.id });
+      if (existing.enabled === input.enabled) {
+        if (existing.pausedWithGroup !== true) return { task: existing };
+        // Still a choice made by hand: its group's resume must leave the task alone.
+        yield* sql
+          .withTransaction(
+            writeGroup(input.id, undefined, false).pipe(
+              Effect.andThen(bumpSharedRevision(input.id)),
+            ),
+          )
+          .pipe(
+            Effect.mapError((cause) =>
+              taskError("Could not update schedule task.", { taskId: input.id, cause }),
+            ),
+          );
+        yield* notifyChanged;
+        const { pausedWithGroup: _cleared, ...task } = existing;
+        return { task };
       }
       const now = yield* localNow;
-      yield* requireFutureOnce(
-        { enabled: input.enabled, schedule: existing.schedule },
-        now,
-        input.id,
-      );
+      const refusal = input.enabled ? enableRefusal(existing, now) : undefined;
+      if (refusal !== undefined) return yield* taskError(refusal, { taskId: input.id });
       const next = nextRunAt({ ...existing, enabled: input.enabled }, now);
       // RETURNING so a task deleted between the load and this UPDATE is a
       // visible not-found error, not a false success.
@@ -3514,6 +3608,8 @@ export const layer = Layer.effect(
             if (updated.length === 0) {
               return yield* taskError("Schedule task not found.", { taskId: input.id });
             }
+            // A task switched by hand is no longer its group pause's to resume.
+            yield* writeGroup(input.id, undefined, false);
             yield* bumpSharedRevision(input.id);
           }),
         )
@@ -3525,9 +3621,91 @@ export const layer = Layer.effect(
           ),
         );
       yield* notifyChanged;
+      const { pausedWithGroup: _cleared, ...task } = existing;
       return {
-        task: { ...existing, enabled: input.enabled, nextRunAt: next, updatedAt: iso(now) },
+        task: { ...task, enabled: input.enabled, nextRunAt: next, updatedAt: iso(now) },
       };
+    });
+
+    const setGroupPaused: ScheduledTaskService["Service"]["setGroupPaused"] = Effect.fn(
+      "ScheduledTaskService.setGroupPaused",
+    )(function* (input) {
+      const ids = [...new Set(input.ids)];
+      const now = yield* localNow;
+      // Read before the write, which checks the task is still off, marked and unedited.
+      const marked: Array<{ readonly task: ScheduledTask; readonly updatedAt: string }> = [];
+      if (!input.paused) {
+        for (const id of ids) {
+          const [row] = yield* getRows(id).pipe(
+            Effect.mapError((cause) =>
+              taskError("Could not load schedule task.", { taskId: id, cause }),
+            ),
+          );
+          if (row === undefined || row.enabled === 1 || row.paused_with_group !== 1) continue;
+          marked.push({ task: yield* decodeRow(row), updatedAt: row.updated_at });
+        }
+      }
+      const result = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const changed: ScheduledTaskId[] = [];
+            const refused: Array<{ readonly id: ScheduledTaskId; readonly message: string }> = [];
+            // Only a task in a group can carry the mark that lets a resume turn it back on.
+            for (const id of input.paused ? ids : []) {
+              const [paused] = yield* sql<{ task_id: ScheduledTaskId }>`
+                UPDATE scheduled_tasks
+                SET enabled = 0, next_run_at = NULL, updated_at = ${iso(now)}
+                WHERE task_id = ${id} AND enabled = 1
+                  AND EXISTS (SELECT 1 FROM scheduled_task_group g WHERE g.task_id = ${id})
+                RETURNING task_id
+              `;
+              if (paused === undefined) continue;
+              yield* writeGroup(id, undefined, true);
+              yield* bumpSharedRevision(id);
+              changed.push(paused.task_id);
+            }
+            for (const { task, updatedAt } of marked) {
+              const refusal = enableRefusal(task, now);
+              const [settled] =
+                refusal === undefined
+                  ? yield* sql<{ task_id: ScheduledTaskId }>`
+                      UPDATE scheduled_tasks
+                      SET enabled = 1,
+                          next_run_at = ${nextRunAt({ ...task, enabled: true }, now)},
+                          updated_at = ${iso(now)}
+                      WHERE task_id = ${task.id} AND enabled = 0 AND updated_at = ${updatedAt}
+                        AND EXISTS (SELECT 1 FROM scheduled_task_group g
+                          WHERE g.task_id = ${task.id} AND g.paused_with_group = 1)
+                      RETURNING task_id
+                    `
+                  : yield* sql<{ task_id: ScheduledTaskId }>`
+                      UPDATE scheduled_task_group SET paused_with_group = 0
+                      WHERE task_id = ${task.id} AND paused_with_group = 1
+                        AND EXISTS (SELECT 1 FROM scheduled_tasks t WHERE t.task_id = ${task.id}
+                          AND t.enabled = 0 AND t.updated_at = ${updatedAt})
+                      RETURNING task_id
+                    `;
+              if (settled === undefined) continue;
+              if (refusal === undefined) {
+                yield* writeGroup(task.id, undefined, false);
+                changed.push(settled.task_id);
+              } else {
+                refused.push({ id: settled.task_id, message: refusal });
+              }
+              yield* bumpSharedRevision(task.id);
+            }
+            return { ids: changed, refused };
+          }),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            isScheduledTaskError(cause)
+              ? cause
+              : taskError("Could not update schedule tasks.", { cause }),
+          ),
+        );
+      if (result.ids.length > 0 || result.refused.length > 0) yield* notifyChanged;
+      return result;
     });
 
     const setPlacement: ScheduledTaskService["Service"]["setPlacement"] = Effect.fn(
@@ -3667,6 +3845,10 @@ export const layer = Layer.effect(
           `;
             yield* sql`
             DELETE FROM scheduled_task_run_conditions
+            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
+          `;
+            yield* sql`
+            DELETE FROM scheduled_task_group
             WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
           `;
             yield* sql`
@@ -4675,6 +4857,7 @@ export const layer = Layer.effect(
       upsert,
       setEnabled,
       setPlacement,
+      setGroupPaused,
       reorderPinned,
       setFollowsDefaultModel,
       delete: deleteTask,

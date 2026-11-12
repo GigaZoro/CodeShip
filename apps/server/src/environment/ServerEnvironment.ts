@@ -260,6 +260,7 @@ export const make = Effect.gen(function* () {
       scheduledTaskRunHistory: true,
       scheduledTaskRunConditions: true,
       scheduledTaskPromptFiles: true,
+      scheduledTaskGroups: true,
       linkedScheduledTasks: true,
       delegatedTaskModels: true,
       finalReview: true,

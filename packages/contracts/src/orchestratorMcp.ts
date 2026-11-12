@@ -22,6 +22,7 @@ import {
   TurnItemId,
 } from "./baseSchemas.ts";
 import {
+  ScheduledTaskGroupLabel,
   ScheduledTaskNoWorkSkip,
   ScheduledTaskPlacement,
   ScheduledTaskPromptFile,
@@ -761,6 +762,10 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   }),
   ...scheduledTaskRunConditionField,
   catchUpMissedRun: Schema.optional(OrchestratorMcpCatchUpMissedRun),
+  group: Schema.optional(Schema.NullOr(ScheduledTaskGroupLabel)).annotate({
+    description:
+      'Group label the user\'s task list sorts it under, e.g. "Machine care". Reuse an existing label (list_scheduled_tasks). Null clears; omit to keep.',
+  }),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
@@ -803,6 +808,7 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
     description: "Present when an administrator's policy stops this task from running.",
   }),
   placement: Schema.optional(ScheduledTaskPlacement),
+  group: Schema.optional(Schema.String),
   shared: Schema.optional(Schema.Boolean),
   oneMachine: Schema.optional(Schema.Boolean),
   excludedMachines: Schema.optional(Schema.Array(EnvironmentId)),
@@ -906,6 +912,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   placement: Schema.optional(ScheduledTaskPlacement),
   ...scheduledTaskRunConditionField,
   catchUpMissedRun: Schema.optional(Schema.Boolean),
+  group: OrchestratorMcpScheduleTaskInput.fields.group,
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;

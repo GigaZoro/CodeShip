@@ -64,6 +64,17 @@ saved totals first, then updates them when Cursor's API responds.
 If recent work is missing or a new model shows no cost, refresh to rescan session history and
 update model pricing.
 
+## Scheduled task groups
+
+On web and desktop, **Scheduled task groups** lists each group of scheduled tasks (see
+[Group scheduled tasks](thread-sidebar.md#group-scheduled-tasks)) with its runs, failed runs,
+usage-limited runs and estimated cost for the selected period and environments. A failed run is
+one that could not start, or whose chat failed or stopped for a reason other than a usage limit
+or your **Stop**. The cost counts the tokens of each run's own turns at the same model prices as
+the rest of **Usage**; work a run hands to other chats counts there instead. Runs with a turn that
+has no token counts or no known price are listed as unpriced. Environments running an older
+T3.CodeShip are named and left out.
+
 ## Set custom model prices
 
 On web or desktop, open the environment dropdown on **Usage**, then choose **Model prices** to add,

@@ -3581,6 +3581,46 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
     );
 
+    it.effect("saves a group, keeps it when an update leaves it out, and clears it on null", () =>
+      Effect.gen(function* () {
+        const stored = yield* Ref.make(existing);
+        const groups = yield* Ref.make<ReadonlyArray<string | null | undefined>>([]);
+        const tasks: Partial<ScheduledTaskService.ScheduledTaskService["Service"]> = {
+          list: () => Ref.get(stored).pipe(Effect.map((task) => ({ tasks: [task] }))),
+          upsert: (input) =>
+            Ref.update(groups, (saved) => [...saved, input.group]).pipe(
+              Effect.andThen(
+                Ref.updateAndGet(stored, (task) =>
+                  input.group === undefined ? task : { ...task, group: input.group },
+                ),
+              ),
+              Effect.map((task) => ({ task })),
+            ),
+        };
+        const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+          Effect.provide(service(masterRepository, saved, [], {}, tasks)),
+        );
+        const created = yield* mcp.scheduleTask(client, {
+          projectId,
+          prompt: "Check the build",
+          schedule,
+          group: "Machine care",
+        });
+        const id = created.scheduledTaskId;
+        const renamed = yield* mcp.updateScheduledTask(client, { scheduledTaskId: id, title: "R" });
+        const cleared = yield* mcp.updateScheduledTask(client, {
+          scheduledTaskId: id,
+          group: null,
+        });
+        assert.deepEqual(
+          [created.group, renamed.group, "group" in cleared],
+          ["Machine care", "Machine care", false],
+        );
+        assert.deepEqual(yield* Ref.get(groups), ["Machine care", undefined, null]);
+      }),
+    );
+
     it.effect.each([
       { name: "never run", task: {}, runStatus: undefined, outcome: null },
       {

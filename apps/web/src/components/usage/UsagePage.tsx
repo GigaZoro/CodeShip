@@ -40,6 +40,7 @@ import { usePrimarySettings } from "../../hooks/useSettings";
 import { resolveHour12 } from "../../timestampFormat";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { environmentPresentations } from "../../state/presentation";
+import { supportsScheduledTaskGroups } from "../../state/scheduledTaskStats";
 import { primaryServerKeybindingsAtom, serverEnvironment } from "../../state/server";
 import { isCommandPaletteOpen } from "../../commandPaletteBus";
 import { isModelPickerOpen } from "../../modelPickerVisibility";
@@ -89,6 +90,10 @@ import { UsageGapsNotice } from "./UsageGapsNotice";
 import { UsageLimitsSection } from "./UsageLimits";
 import { UsagePriceOverrides } from "./UsagePriceOverrides";
 import { UsageProviderChart } from "./UsageProviderChart";
+import {
+  refreshScheduledTaskGroupUsage,
+  UsageScheduledTaskGroups,
+} from "./UsageScheduledTaskGroups";
 import { SpeedPremium, UsageModelDialog } from "./UsageModelDialog";
 import { UsageShareBar } from "./UsageShareBar";
 import {
@@ -388,9 +393,17 @@ export function UsagePage() {
     ) {
       setWindowSelection({ days: windowDays, window: nextWindow });
     }
+    const statsEnvironmentIds = selectedEnvironments
+      .filter(
+        (environment) =>
+          environment.isConnected &&
+          supportsScheduledTaskGroups(presentations.get(environment.environmentId)),
+      )
+      .map((environment) => environment.environmentId);
     refreshingRef.current = true;
     setIsRefreshing(true);
     void refresh(nextWindow).finally(() => {
+      refreshScheduledTaskGroupUsage(appAtomRegistry, statsEnvironmentIds, nextWindow);
       refreshingRef.current = false;
       setIsRefreshing(false);
     });
@@ -1264,6 +1277,8 @@ function UsageOverview({
           </div>
         )}
       </section>
+
+      <UsageScheduledTaskGroups period={shownWindow} environments={selectedEnvironments} />
     </div>
   );
 }

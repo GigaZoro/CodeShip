@@ -117,6 +117,8 @@ export interface Preferences {
   readonly crashReportsEnabled?: boolean;
   readonly connectOnboardingOptOutAccounts?: ReadonlyArray<string>;
   readonly collapsedProjectGroups?: readonly string[];
+  /** Scheduled-task groups the user closed, by `scheduledTaskGroupKey`; absent ones start open. */
+  readonly collapsedScheduledTaskGroups?: readonly string[];
   readonly dismissedDatabaseStorageNotices?: readonly string[];
   /** Hardware Return behavior is iOS-only. */
   readonly composerEnterBehavior?: ComposerEnterBehavior;
@@ -209,6 +211,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     crashReportsEnabled?: boolean;
     connectOnboardingOptOutAccounts?: ReadonlyArray<string>;
     collapsedProjectGroups?: readonly string[];
+    collapsedScheduledTaskGroups?: readonly string[];
     dismissedDatabaseStorageNotices?: readonly string[];
     composerEnterBehavior?: ComposerEnterBehavior;
     followUpBehavior?: FollowUpBehavior;
@@ -318,6 +321,11 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (Array.isArray(parsed.collapsedProjectGroups)) {
     preferences.collapsedProjectGroups = parsed.collapsedProjectGroups.filter(
+      (key): key is string => typeof key === "string",
+    );
+  }
+  if (Array.isArray(parsed.collapsedScheduledTaskGroups)) {
+    preferences.collapsedScheduledTaskGroups = parsed.collapsedScheduledTaskGroups.filter(
       (key): key is string => typeof key === "string",
     );
   }

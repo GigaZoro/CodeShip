@@ -107,6 +107,10 @@ function sharedCopyOf(task: ScheduledTask): ScheduledTaskSharedCopy | null {
     shared: task.shared,
     // Absent from a server without prompt files, so the receiving machine keeps its own.
     ...(task.promptFile === undefined ? {} : { promptFile: task.promptFile?.path ?? null }),
+    // Omitted for a server without groups, so the receiving machine keeps its own.
+    ...(task.group === undefined
+      ? {}
+      : { group: task.group, pausedWithGroup: task.pausedWithGroup === true }),
   };
 }
 

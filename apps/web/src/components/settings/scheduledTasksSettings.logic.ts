@@ -99,6 +99,10 @@ export interface DraftState extends PromptFileDraft {
   readonly title: string;
   readonly prompt: string;
   readonly enabled: boolean;
+  /** Free text; empty means no group. */
+  readonly group: string;
+  /** The group the task had when the form opened, so clearing it can be told from never setting one. */
+  readonly savedGroup: string;
   readonly scheduleMode: ScheduleMode;
   readonly intervalMinutes: string;
   readonly timeOfDay: string;
@@ -312,6 +316,8 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     prompt: task.prompt,
     ...promptFileDraft(task),
     enabled: task.enabled,
+    group: task.group ?? "",
+    savedGroup: task.group ?? "",
     scheduleMode: schedule.type === "fixed_time" ? "fixed" : schedule.type,
     intervalMinutes:
       schedule.type === "interval" ? String(Math.max(1, schedule.everyMs / 60_000)) : "15",
@@ -375,6 +381,7 @@ export function copyTaskDraft(task: ScheduledTask, title: string): DraftState {
     savedFilters: [],
     savedPromptFile: null,
     promptLastRead: null,
+    savedGroup: "",
   };
 }
 

@@ -130,6 +130,7 @@ import * as DocumentText from "./provider/DocumentText.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as LinkedScheduledTasks from "./scheduledTasks/LinkedScheduledTasks.ts";
+import * as ScheduledTaskStats from "./scheduledTasks/ScheduledTaskStats.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as GuestShareService from "./guest/GuestShareService.ts";
 import {
@@ -1337,6 +1338,7 @@ export const layerWsRpc = (
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const linkedScheduledTasks = yield* LinkedScheduledTasks.LinkedScheduledTasks;
+      const scheduledTaskStats = yield* ScheduledTaskStats.ScheduledTaskStats;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -2232,12 +2234,14 @@ export const layerWsRpc = (
         [WS_METHODS.scheduledTasksSubscribe]: (_input) =>
           scheduledTasks.subscribeList().pipe(Stream.map(withVisibleWebhookUrls)),
         [WS_METHODS.scheduledTasksSubscribeLinked]: (_input) => linkedScheduledTasks.subscribe(),
+        [WS_METHODS.scheduledTasksStats]: (input) => scheduledTaskStats.stats(input),
         [WS_METHODS.scheduledTasksUpsert]: (input) => scheduledTasks.upsert(input),
         [WS_METHODS.scheduledTasksSetEnabled]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
             Effect.andThen(scheduledTasks.setEnabled(input)),
           ),
         [WS_METHODS.scheduledTasksSetPlacement]: (input) => scheduledTasks.setPlacement(input),
+        [WS_METHODS.scheduledTasksSetGroupPaused]: (input) => scheduledTasks.setGroupPaused(input),
         [WS_METHODS.scheduledTasksReorderPinned]: (input) => scheduledTasks.reorderPinned(input),
         [WS_METHODS.scheduledTasksSetFollowsDefaultModel]: (input) =>
           scheduledTasks.setFollowsDefaultModel(input),
@@ -3467,6 +3471,7 @@ export const layer = Layer.unwrap(
     const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
     const sharedSettings = yield* SharedSettings.SharedSettings;
     const linkedScheduledTasks = yield* LinkedScheduledTasks.LinkedScheduledTasks;
+    const scheduledTaskStats = yield* ScheduledTaskStats.ScheduledTaskStats;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3559,6 +3564,9 @@ export const layer = Layer.unwrap(
               // Server-lifetime: its background refresh and stored lists serve every client.
               Layer.provide(
                 Layer.succeed(LinkedScheduledTasks.LinkedScheduledTasks, linkedScheduledTasks),
+              ),
+              Layer.provide(
+                Layer.succeed(ScheduledTaskStats.ScheduledTaskStats, scheduledTaskStats),
               ),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(

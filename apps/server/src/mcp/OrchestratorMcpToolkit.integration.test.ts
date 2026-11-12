@@ -183,6 +183,7 @@ const layerUnusedScheduledTaskStub = Layer.succeed(
     upsert: () => Effect.die("ScheduledTaskService.upsert is unused in this test"),
     setEnabled: () => Effect.die("ScheduledTaskService.setEnabled is unused in this test"),
     setPlacement: () => Effect.die("unused in this test"),
+    setGroupPaused: () => Effect.die("unused in this test"),
     reorderPinned: () => Effect.die("unused in this test"),
     setFollowsDefaultModel: () => Effect.die("unused in this test"),
     delete: () => Effect.die("ScheduledTaskService.delete is unused in this test"),

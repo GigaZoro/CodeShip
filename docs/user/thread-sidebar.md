@@ -125,6 +125,24 @@ machines**, with the tasks each one last reported, even while it is offline. The
 there and refresh every few minutes. To change them, add the machine under
 **Settings → Machines & access**.
 
+### Group scheduled tasks
+
+Give related tasks the same **Group** in the task editor, such as "Machine care" or "PolyBot
+delivery"; labels match regardless of case. Agents can set it with `schedule_task` too. Once a
+task has a group, the **Scheduled tasks** page lists tasks under a header per group, with tasks
+without one under **No group** at the end. Each header shows how many tasks the group has, its
+next run, and its runs, failures and usage-limited runs in the last 24 hours. Click a header to
+collapse it; each device remembers which groups you collapsed. The machine and project filter
+still applies inside groups.
+
+**Pause group** turns off every task of the group that is on, and **Resume group** turns back on
+only those, so a task you had already paused stays paused. Switching a task on or off yourself
+takes it out of that resume. A shared task's group and pause reach every machine, so the page asks
+first when the group has shared tasks. The mobile **Tasks** tab groups tasks the same way.
+
+**Usage** shows what each group cost and how its runs went over the selected period, under
+**Scheduled task groups**. See [Usage and limits](usage.md#scheduled-task-groups).
+
 **Show new scheduled tasks in** in **Settings → General** sets the place for tasks created from
 then on. Scheduled section is the default. Changing it leaves existing tasks where they are, and
 editing or running a task does not move it.

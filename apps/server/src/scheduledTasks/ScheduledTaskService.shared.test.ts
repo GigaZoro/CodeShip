@@ -1163,3 +1163,54 @@ it.effect("a linked machine gets this machine's stored copies, minus those that 
     { settings: { scheduledTaskModelSelection: { instanceId: "codex", model: "gpt-5.5" } } },
   ),
 );
+
+it.effect("a shared task's group and its group pause travel with its copies", () =>
+  withService((service) =>
+    Effect.gen(function* () {
+      const id = (yield* service.upsert(upsertInput({ group: "Machine care" }))).task.id;
+      expect(yield* service.setGroupPaused({ ids: [id], paused: true })).toEqual({
+        ids: [id],
+        refused: [],
+      });
+      expect((yield* taskOf(service))?.shared?.revision.at).toBe("2026-09-09T12:00:00.001Z");
+      const [pulled] = (yield* service.sharedCopies(OTHER as never, { recordPuller: false })).tasks;
+      expect(pulled).toMatchObject({
+        enabled: false,
+        group: "Machine care",
+        pausedWithGroup: true,
+      });
+
+      const applied = (at: string, overrides: Record<string, unknown>) =>
+        service.applyShared(copy(at, overrides)).pipe(
+          Effect.andThen(taskOf(service)),
+          Effect.map((task) => [task?.enabled, task?.group, task?.pausedWithGroup === true]),
+        );
+      expect(
+        yield* applied("2026-09-10T00:00:00.000Z", { enabled: false, group: "Nightly" }),
+      ).toEqual([false, "Nightly", false]);
+      expect(
+        yield* applied("2026-09-10T00:00:01.000Z", {
+          enabled: false,
+          group: "Nightly",
+          pausedWithGroup: true,
+        }),
+      ).toEqual([false, "Nightly", true]);
+      // A copy from a machine without groups keeps the group and pause here.
+      expect(yield* applied("2026-09-10T00:00:02.000Z", { enabled: false })).toEqual([
+        false,
+        "Nightly",
+        true,
+      ]);
+      expect(yield* applied("2026-09-10T00:00:03.000Z", { enabled: true })).toEqual([
+        true,
+        "Nightly",
+        false,
+      ]);
+      expect(yield* applied("2026-09-10T00:00:04.000Z", { group: null })).toEqual([
+        true,
+        null,
+        false,
+      ]);
+    }),
+  ),
+);

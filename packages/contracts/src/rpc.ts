@@ -436,6 +436,10 @@ import {
   ScheduledTaskSetFollowsDefaultModelResult,
   ScheduledTaskSetPlacementInput,
   ScheduledTaskSetPlacementResult,
+  ScheduledTaskSetGroupPausedInput,
+  ScheduledTaskSetGroupPausedResult,
+  ScheduledTaskStatsInput,
+  ScheduledTaskStatsResult,
   ScheduledTaskReorderPinnedInput,
   ScheduledTaskReorderPinnedResult,
   ScheduledTaskUpsertInput,
@@ -636,6 +640,8 @@ export const WS_METHODS = {
   scheduledTasksUpsert: "scheduledTasks.upsert",
   scheduledTasksSetEnabled: "scheduledTasks.setEnabled",
   scheduledTasksSetPlacement: "scheduledTasks.setPlacement",
+  scheduledTasksSetGroupPaused: "scheduledTasks.setGroupPaused",
+  scheduledTasksStats: "scheduledTasks.stats",
   scheduledTasksReorderPinned: "scheduledTasks.reorderPinned",
   scheduledTasksSetFollowsDefaultModel: "scheduledTasks.setFollowsDefaultModel",
   scheduledTasksDelete: "scheduledTasks.delete",
@@ -2235,6 +2241,18 @@ const WsScheduledTasksSetPlacementRpc = Rpc.make(WS_METHODS.scheduledTasksSetPla
   error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
 });
 
+const WsScheduledTasksSetGroupPausedRpc = Rpc.make(WS_METHODS.scheduledTasksSetGroupPaused, {
+  payload: ScheduledTaskSetGroupPausedInput,
+  success: ScheduledTaskSetGroupPausedResult,
+  error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
+});
+
+const WsScheduledTasksStatsRpc = Rpc.make(WS_METHODS.scheduledTasksStats, {
+  payload: ScheduledTaskStatsInput,
+  success: ScheduledTaskStatsResult,
+  error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksReorderPinnedRpc = Rpc.make(WS_METHODS.scheduledTasksReorderPinned, {
   payload: ScheduledTaskReorderPinnedInput,
   success: ScheduledTaskReorderPinnedResult,
@@ -2419,6 +2437,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksUpsertRpc,
   WsScheduledTasksSetEnabledRpc,
   WsScheduledTasksSetPlacementRpc,
+  WsScheduledTasksSetGroupPausedRpc,
+  WsScheduledTasksStatsRpc,
   WsScheduledTasksReorderPinnedRpc,
   WsScheduledTasksSetFollowsDefaultModelRpc,
   WsScheduledTasksDeleteRpc,

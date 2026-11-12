@@ -363,6 +363,7 @@ function scheduledTaskSummary(
       : { webhookSignature: task.webhook.hasSecret ? "set" : "none" }),
     ...(task.blockedByPolicy === undefined ? {} : { blockedByPolicy: task.blockedByPolicy }),
     ...(task.placement === undefined ? {} : { placement: task.placement }),
+    ...(task.group == null ? {} : { group: task.group }),
     shared: task.shared != null,
     ...(task.shared?.runOn === "one" ? { oneMachine: true } : {}),
     ...(task.shared == null || task.shared.excludedEnvironmentIds.length === 0
@@ -2518,6 +2519,7 @@ const make = Effect.gen(function* () {
         ...(input.catchUpMissedRun === undefined
           ? {}
           : { catchUpMissedRun: input.catchUpMissedRun }),
+        ...(input.group === undefined ? {} : { group: input.group }),
         // A replay saves over the task it created: what it does not mention stays.
         ...(input.shared === true ? { shared: sharedChoice(input, replayed?.shared) } : {}),
         ...(input.runCondition === undefined ? {} : { runCondition: input.runCondition }),
@@ -2690,6 +2692,7 @@ const make = Effect.gen(function* () {
           ...(input.catchUpMissedRun === undefined
             ? {}
             : { catchUpMissedRun: input.catchUpMissedRun }),
+          ...(input.group === undefined ? {} : { group: input.group }),
           // Omitted keeps the stored choice.
           ...(input.shared === false
             ? { shared: null }

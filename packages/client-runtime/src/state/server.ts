@@ -1627,6 +1627,11 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:scheduled-task:runs",
       tag: WS_METHODS.scheduledTasksListRuns,
     }),
+    scheduledTaskStats: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:scheduled-task:stats",
+      tag: WS_METHODS.scheduledTasksStats,
+      staleTimeMs: 60_000,
+    }),
     scheduledTaskWebhookDeliveries: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:scheduled-task:webhook-deliveries",
       tag: WS_METHODS.scheduledTasksListWebhookDeliveries,
@@ -1893,6 +1898,12 @@ export function createServerEnvironmentAtoms<R, E>(
     setScheduledTaskPlacement: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:set-placement",
       tag: WS_METHODS.scheduledTasksSetPlacement,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    setScheduledTaskGroupPaused: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:scheduled-task:set-group-paused",
+      tag: WS_METHODS.scheduledTasksSetGroupPaused,
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),

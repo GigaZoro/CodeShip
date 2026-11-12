@@ -59,6 +59,7 @@ import {
 import {
   defaultCatchUpMissedRun,
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
+  MAX_SCHEDULED_TASK_GROUP_LENGTH,
   MAX_WEBHOOK_FILTERS,
   MIN_SCHEDULED_TASK_INTERVAL_MS,
   ProviderInstanceId,
@@ -95,12 +96,18 @@ import {
   type EnvironmentPresentation,
 } from "../../state/environments";
 import { useProjects, useThreadShell } from "../../state/entities";
+import { supportsScheduledTaskGroups } from "../../state/scheduledTaskStats";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   pinnedTaskRunThreadId,
   resolveScheduledTaskPlacement,
   scheduledTaskPlacementOptions,
 } from "@t3tools/client-runtime/scheduled-task-pins";
+import {
+  scheduledTaskGroupLabels,
+  scheduledTaskGroupUpsertField,
+  type ScheduledTaskListItem,
+} from "@t3tools/client-runtime/scheduled-task-groups";
 import {
   describeOneMachineLinkWarning,
   effectiveOneMachineOrder,
@@ -178,7 +185,15 @@ import {
   type PromptSource,
 } from "@t3tools/client-runtime/scheduled-task-prompt-file";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
+import {
+  Autocomplete,
+  AutocompleteInput,
+  AutocompleteItem,
+  AutocompleteList,
+  AutocompletePopup,
+} from "../ui/autocomplete";
 import { Label } from "../ui/label";
+import { hasScheduledTaskGroups, ScheduledTaskGroupSections } from "./ScheduledTaskGroups";
 import { ScheduledTaskPlacementRadioGroup } from "./ScheduledTaskPlacementRadioGroup";
 import { ScheduledTaskRunsDialog } from "./ScheduledTaskRunsDialog";
 import {
@@ -260,6 +275,8 @@ const EMPTY_DRAFT: DraftState = {
   savedPromptFile: null,
   promptLastRead: null,
   enabled: true,
+  group: "",
+  savedGroup: "",
   scheduleMode: "fixed",
   intervalMinutes: "15",
   timeOfDay: "09:00",
@@ -965,9 +982,37 @@ function ScheduledTaskEnvironmentList({
     }
   }
 
+  const listItems: ReadonlyArray<ScheduledTaskListItem> = [
+    ...sharedGroups.map((group) => ({ kind: "shared" as const, group })),
+    ...populated.flatMap(({ environment }) =>
+      localTasksOn(environment.environmentId).map((task) => ({
+        kind: "local" as const,
+        environmentId: environment.environmentId,
+        task,
+      })),
+    ),
+  ];
+  const grouped = hasScheduledTaskGroups(listItems);
+
   return (
     <SettingsGroup>
-      {sharedGroups.length > 0 ? (
+      {grouped ? (
+        <ScheduledTaskGroupSections
+          items={listItems}
+          renderItem={(item) =>
+            item.kind === "shared" ? (
+              <SharedScheduledTaskRow group={item.group} actions={actions} />
+            ) : (
+              <ScheduledTaskRow
+                environmentId={item.environmentId}
+                task={item.task}
+                actions={actions}
+              />
+            )
+          }
+        />
+      ) : null}
+      {!grouped && sharedGroups.length > 0 ? (
         <div className="divide-y divide-border/50">
           <p className="px-3 py-2.5 text-sm font-medium text-foreground sm:px-4">
             {t("On more than one machine")}
@@ -977,7 +1022,7 @@ function ScheduledTaskEnvironmentList({
           ))}
         </div>
       ) : null}
-      {populated.map(({ environment }) => {
+      {(grouped ? [] : populated).map(({ environment }) => {
         const { primary, secondary } = settingsScopeEnvironmentLabels(environment, environments);
         return (
           <div key={environment.environmentId} className="divide-y divide-border/50">
@@ -1396,6 +1441,8 @@ function ScheduledTaskEnvironmentSection({
     matchesScheduledTaskScope(scope, environment.environmentId, task.projectId),
   );
   const linkedTask = tasks?.find((task) => task.id === taskId);
+  const listItems = (list: ReadonlyArray<ScheduledTask>): ReadonlyArray<ScheduledTaskListItem> =>
+    list.map((task) => ({ kind: "local", environmentId: environment.environmentId, task }));
   return (
     <SettingsSection
       title={environment.label}
@@ -1447,6 +1494,19 @@ function ScheduledTaskEnvironmentSection({
           ) : null}
           {tasks.length === 0 ? (
             <ScheduledTasksEmptyRow onCreate={onCreate} everyMachineAnswered />
+          ) : hasScheduledTaskGroups(listItems(tasks)) ? (
+            <ScheduledTaskGroupSections
+              items={listItems(tasks)}
+              renderItem={(item) =>
+                item.kind === "local" ? (
+                  <ScheduledTaskRow
+                    environmentId={item.environmentId}
+                    task={item.task}
+                    actions={actions}
+                  />
+                ) : null
+              }
+            />
           ) : (
             tasks.map((task) => (
               <ScheduledTaskRow
@@ -2708,6 +2768,17 @@ function ScheduledTaskEditorForm({
     draft,
   });
   const promptFileRead = promptFileReadFor(draft);
+  const offersGroups = supportsScheduledTaskGroups(environment);
+  const groupQueries = useAtomValue(
+    scheduledTasksListAtom(
+      environmentIdsKey(connectedEnvironments.map((entry) => entry.environmentId)),
+    ),
+  );
+  const groupSuggestions = scheduledTaskGroupLabels(
+    groupQueries.flatMap(
+      (query) => AsyncResult.getOrElse(query, () => null)?.tasks.map((entry) => entry.group) ?? [],
+    ),
+  );
   const catchUpMissedRun =
     draft.catchUpMissedRun ??
     defaultCatchUpMissedRun({
@@ -2892,6 +2963,11 @@ function ScheduledTaskEditorForm({
       title: draft.title.trim(),
       ...promptUpsertFields({ supportsPromptFiles, draft }),
       enabled: draft.enabled,
+      ...scheduledTaskGroupUpsertField({
+        supported: offersGroups,
+        group: draft.group,
+        hadGroup: draft.savedGroup.trim() !== "",
+      }),
       schedule,
       projectId: selectedProjectId as ProjectId,
       threadId: draft.threadId && !sharing ? (draft.threadId as ThreadId) : null,
@@ -3227,6 +3303,43 @@ function ScheduledTaskEditorForm({
               }
             />
           </Field>
+
+          {offersGroups ? (
+            <Field label={t("Group")} htmlFor="scheduled-task-group">
+              <Autocomplete
+                items={groupSuggestions}
+                value={draft.group}
+                onValueChange={(group) => setDraft((current) => ({ ...current, group }))}
+              >
+                <AutocompleteInput
+                  id="scheduled-task-group"
+                  aria-describedby="scheduled-task-group-description"
+                  maxLength={MAX_SCHEDULED_TASK_GROUP_LENGTH}
+                  placeholder={t("No group")}
+                  spellCheck={false}
+                />
+                {groupSuggestions.length > 0 ? (
+                  <AutocompletePopup>
+                    <AutocompleteList>
+                      {(label: string) => (
+                        <AutocompleteItem key={label} value={label}>
+                          {label}
+                        </AutocompleteItem>
+                      )}
+                    </AutocompleteList>
+                  </AutocompletePopup>
+                ) : null}
+              </Autocomplete>
+              <div className="flex items-start justify-between gap-3 text-xs text-muted-foreground">
+                <p id="scheduled-task-group-description">
+                  {t("Tasks with the same group are listed and paused together.")}
+                </p>
+                <span className="shrink-0 tabular-nums">
+                  {`${draft.group.length} / ${MAX_SCHEDULED_TASK_GROUP_LENGTH}`}
+                </span>
+              </div>
+            </Field>
+          ) : null}
 
           {sharing ? null : (
             <ScheduledTaskDestination

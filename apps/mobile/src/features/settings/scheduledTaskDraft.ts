@@ -204,6 +204,8 @@ export type ScheduledTaskDraft = PromptFileDraft & {
   readonly task: ScheduledTask | null;
   readonly title: string;
   readonly prompt: string;
+  /** The label tasks are listed and paused under; empty for none. */
+  readonly group: string;
   readonly projectId: ProjectId | null;
   readonly modelSelection: ModelSelection | null;
   readonly modelSelectionIsExplicit: boolean;
@@ -231,6 +233,7 @@ function draftSignature(draft: ScheduledTaskDraft): string {
     draft.prompt,
     draft.promptSource,
     draft.promptFile.trim(),
+    draft.group,
     draft.projectId,
     draft.modelSelection?.instanceId,
     draft.modelSelection?.model,
@@ -291,6 +294,7 @@ export function createDraft(
     title: "",
     prompt: "",
     ...promptFileDraft(null),
+    group: "",
     projectId,
     modelSelection,
     modelSelectionIsExplicit: false,
@@ -329,6 +333,7 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     title: task.title,
     prompt: task.prompt,
     ...promptFileDraft(task),
+    group: task.group ?? "",
     projectId: task.projectId,
     modelSelection: task.modelSelection,
     modelSelectionIsExplicit: true,

@@ -1,6 +1,6 @@
-import { t, tn } from "../../lib/i18n";
+import { t, tn, tx } from "../../lib/i18n";
 import * as Dialog from "../../components/ui/Dialog";
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import {
   AuthOrchestrationOperateScope,
   clampManagedRuntimeMode,
@@ -16,6 +16,7 @@ import type {
   ScheduledTask,
   ScheduledTaskId,
   ScheduledTaskPlacement,
+  ScheduledTaskRunStats,
   ScheduledTaskUpsertInput,
 } from "@t3tools/contracts";
 import {
@@ -31,6 +32,7 @@ import {
   runConditionInvalidText,
 } from "@t3tools/client-runtime/scheduled-task-run-condition";
 import {
+  MAX_SCHEDULED_TASK_GROUP_LENGTH,
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
   MAX_WEBHOOK_FILTERS,
   resolveEnvironmentMachineKind,
@@ -97,6 +99,19 @@ import {
   type SharedScheduledTaskGroup,
 } from "@t3tools/client-runtime/scheduled-task-sharing";
 import {
+  scheduledTaskGroupAction,
+  scheduledTaskGroupKey,
+  scheduledTaskGroupLabels,
+  scheduledTaskGroupPausePlan,
+  scheduledTaskGroupUpsertField,
+  scheduledTaskLastDayStatsInput,
+  scheduledTaskListItemCopies,
+  scheduledTaskListItemGroupCopy,
+  groupScheduledTaskItems,
+  summarizeScheduledTaskGroup,
+  type ScheduledTaskListItem,
+} from "@t3tools/client-runtime/scheduled-task-groups";
+import {
   linkedProjectName,
   pickLinkedMachineTasks,
 } from "@t3tools/client-runtime/linked-scheduled-tasks";
@@ -113,6 +128,8 @@ import {
   resolveInheritedDefaultModelSelection,
 } from "@t3tools/shared/serverSettings";
 import { useEnvironmentQuery } from "../../state/query";
+import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
+import { ListSection } from "../../components/ui/ListSection";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
@@ -176,6 +193,37 @@ const scheduledTaskListsAtom = Atom.family((key: string) =>
     }),
   ).pipe(Atom.withLabel(`mobile-scheduled-task-lists:${key}`)),
 );
+
+/** Keyed by a window start, then environment ids; a machine that has not answered is left out. */
+const scheduledTaskStatsListsAtom = Atom.family((key: string) =>
+  Atom.make((get) => {
+    const [since, ...ids] = key.split("\n");
+    return ids.flatMap((environmentId) => {
+      const stats = AsyncResult.getOrElse(
+        get(
+          serverEnvironment.scheduledTaskStats({
+            environmentId: environmentId as EnvironmentId,
+            input: { since: since! },
+          }),
+        ),
+        () => null,
+      );
+      return stats === null ? [] : [{ environmentId: environmentId as EnvironmentId, ...stats }];
+    });
+  }).pipe(Atom.withLabel(`mobile-scheduled-task-stats:${key}`)),
+);
+
+/** Keyed by environment ids: whether the account may operate on every one of them. */
+const canOperateAllAtom = Atom.family((key: string) =>
+  Atom.make((get) =>
+    (key === "" ? [] : (key.split("\n") as EnvironmentId[])).every((environmentId) =>
+      get(serverEnvironment.upsertScheduledTask.permissionAtom(environmentId)),
+    ),
+  ).pipe(Atom.withLabel(`mobile-scheduled-task-can-operate:${key}`)),
+);
+
+/** The collapsed-groups preference stores this for the tasks without a group. */
+const NO_GROUP_PREFERENCE_KEY = "\u0000no-group";
 
 /** Keyed by environment ids: the task lists each one stored for the machines it links to. */
 const linkedScheduledTaskListsAtom = Atom.family((key: string) =>
@@ -271,6 +319,58 @@ function FormField(props: {
         placeholderTextColorClassName="accent-foreground-muted"
         className="min-h-8 font-sans text-base text-foreground"
       />
+    </View>
+  );
+}
+
+function GroupField(props: {
+  readonly value: string;
+  readonly suggestions: ReadonlyArray<string>;
+  readonly disabled: boolean;
+  readonly onChange: (value: string) => void;
+}) {
+  const chosen = scheduledTaskGroupKey(props.value);
+  const suggestions = props.suggestions.filter((label) => scheduledTaskGroupKey(label) !== chosen);
+  return (
+    <View className="gap-2 border-t border-border-subtle px-4 py-3">
+      <View className="flex-row items-center justify-between gap-3">
+        <Text className="text-sm text-foreground-muted">{t("Group")}</Text>
+        <Text className="text-sm text-foreground-muted">
+          {`${props.value.length} / ${MAX_SCHEDULED_TASK_GROUP_LENGTH}`}
+        </Text>
+      </View>
+      <RNTextInput
+        accessibilityLabel={t("Group")}
+        value={props.value}
+        readOnly={props.disabled}
+        maxLength={MAX_SCHEDULED_TASK_GROUP_LENGTH}
+        onChangeText={props.onChange}
+        textAlignVertical="center"
+        placeholder={t("No group")}
+        placeholderTextColorClassName="accent-foreground-muted"
+        className="min-h-8 font-sans text-base text-foreground"
+      />
+      {suggestions.length > 0 ? (
+        <View className="flex-row flex-wrap gap-2">
+          {suggestions.map((label) => (
+            <Pressable
+              key={label}
+              accessibilityRole="button"
+              accessibilityLabel={t("Use group {group}", { group: label })}
+              disabled={props.disabled}
+              onPress={() => props.onChange(label)}
+              className="min-h-11 justify-center rounded-full bg-subtle px-4 active:opacity-70 disabled:opacity-50"
+            >
+              <Text className="text-sm text-foreground" numberOfLines={1}>
+                {label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
+      <Text className="text-sm text-foreground-muted">
+        {t("Tasks with the same group are listed and paused together.")}
+      </Text>
     </View>
   );
 }
@@ -525,6 +625,33 @@ function ScheduledTasksContent(props: { readonly workspace?: boolean }) {
   const labelOf = (environmentId: EnvironmentId) =>
     availableTargets.find((target) => target.environmentId === environmentId)?.label ??
     environmentId;
+  const listedTasks: ScheduledTaskListItem[] = [
+    ...sharedGroups.map((group): ScheduledTaskListItem => ({ kind: "shared", group })),
+    ...lists.flatMap(({ environmentId, tasks }) => {
+      const projectIds = projectIdsFor(environmentId);
+      return tasks
+        .filter(
+          (task) => !task.shared && (projectIds === null || projectIds.includes(task.projectId)),
+        )
+        .map((task): ScheduledTaskListItem => ({ kind: "local", environmentId, task }));
+    }),
+  ];
+  const taskGroupSections = groupScheduledTaskItems(
+    listedTasks,
+    (item) => scheduledTaskListItemGroupCopy(item).task.group,
+  );
+  const grouped = taskGroupSections.some((section) => section.key !== null);
+  const statsEnvironmentIds = visibleEnvironments
+    .filter((entry) => entry.serverConfig.environment.capabilities.scheduledTaskGroups === true)
+    .map((entry) => entry.environmentId);
+  const statsLists = useAtomValue(
+    scheduledTaskStatsListsAtom(
+      grouped && statsEnvironmentIds.length > 0
+        ? [scheduledTaskLastDayStatsInput(now).since, ...statsEnvironmentIds].join("\n")
+        : "",
+    ),
+  );
+  const collapsedKeys = useCollapsedScheduledTaskGroups();
   const projectNameOf = (environmentId: EnvironmentId, projectId: ProjectId) => {
     for (const group of projectGroups) {
       const member = group.members.find(
@@ -619,7 +746,34 @@ function ScheduledTasksContent(props: { readonly workspace?: boolean }) {
           contentContainerClassName="gap-5 px-5 pt-4"
           contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
         >
-          {sharedGroups.length > 0 ? (
+          {grouped
+            ? taskGroupSections.map((section) => (
+                <ScheduledTaskGroupSection
+                  key={section.key ?? NO_GROUP_PREFERENCE_KEY}
+                  label={section.label}
+                  groupKey={section.key}
+                  items={section.items}
+                  environments={visibleEnvironments}
+                  statsLists={statsLists}
+                  collapsed={collapsedKeys.isCollapsed(section.key ?? NO_GROUP_PREFERENCE_KEY)}
+                  onToggle={() => collapsedKeys.toggle(section.key ?? NO_GROUP_PREFERENCE_KEY)}
+                  now={now}
+                  labelOf={labelOf}
+                  projectIdsFor={projectIdsFor}
+                  projectNameOf={projectNameOf}
+                  onEdit={editTask}
+                  onDuplicate={duplicateTask}
+                  onOpenRuns={(environmentId, task) =>
+                    navigation.navigate("SettingsScheduledTaskRuns", {
+                      environmentId,
+                      taskId: task.id,
+                      title: task.title,
+                    })
+                  }
+                />
+              ))
+            : null}
+          {!grouped && sharedGroups.length > 0 ? (
             <SettingsSection title={t("On more than one machine")}>
               {sharedGroups.map((group, index) => (
                 <SharedTaskRow
@@ -639,6 +793,7 @@ function ScheduledTasksContent(props: { readonly workspace?: boolean }) {
               <EnvironmentTasks
                 key={environment.environmentId}
                 environment={environment}
+                grouping={grouped ? { kind: "status" } : undefined}
                 now={now}
                 projectIds={projectIdsFor(environment.environmentId)}
                 projectNameOf={(projectId) => projectNameOf(environment.environmentId, projectId)}
@@ -827,6 +982,7 @@ function SettingsScheduledTaskEditorScreen({ title }: { readonly title: string }
                 draft: {
                   ...draftForEnvironment(target.environmentId),
                   title: editor.draft.title,
+                  group: editor.draft.group,
                   prompt: editor.draft.prompt,
                   promptSource: editor.draft.promptSource,
                   promptFile: editor.draft.promptFile,
@@ -925,6 +1081,17 @@ function TaskForm({
     (sharing || !draft.task?.threadId);
   const followsDefaultModel = offersDefaultModel && draft.followsDefaultModel;
   const offersCatchUp = config?.environment.capabilities.scheduledTaskRunHistory === true;
+  const offersGroups = config?.environment.capabilities.scheduledTaskGroups === true;
+  const groupSuggestions = scheduledTaskGroupLabels(
+    useAtomValue(
+      scheduledTaskListsAtom(
+        availableTargets
+          .filter((target) => target.serverConfig.environment.capabilities.scheduledTaskGroups)
+          .map((target) => target.environmentId)
+          .join("\n"),
+      ),
+    ).flatMap(({ tasks }) => tasks.map((task) => task.group)),
+  );
   const catchUpMissedRun =
     draft.catchUpMissedRun ??
     defaultCatchUpMissedRun({
@@ -1112,6 +1279,11 @@ function TaskForm({
       ...(offersCatchUp && draft.schedule.mode === "fixed_time" && draft.catchUpMissedRun !== null
         ? { catchUpMissedRun: draft.catchUpMissedRun }
         : {}),
+      ...scheduledTaskGroupUpsertField({
+        supported: offersGroups,
+        group: draft.group,
+        hadGroup: (liveTask ?? draft.task)?.group != null,
+      }),
       schedule,
       ...(offersRunCondition ? { runCondition } : {}),
       enabled: draft.enabled,
@@ -1271,6 +1443,14 @@ function TaskForm({
             placeholder={t("Check for issues")}
             onChange={(title) => setDraft({ ...draft, title })}
           />
+          {offersGroups ? (
+            <GroupField
+              value={draft.group}
+              suggestions={groupSuggestions}
+              disabled={saving}
+              onChange={(group) => setDraft({ ...draft, group })}
+            />
+          ) : null}
           {supportsPromptFiles ? (
             <View className="gap-2 border-t border-border-subtle px-4 py-3">
               <Text className="text-sm text-foreground-muted">{t("Prompt")}</Text>
@@ -1950,6 +2130,270 @@ function WebhookScheduleDetails({
   );
 }
 
+function useCollapsedScheduledTaskGroups() {
+  const preferences = useAtomValue(mobilePreferencesAtom);
+  const save = useAtomSet(updateMobilePreferencesAtom);
+  const collapsed = AsyncResult.isSuccess(preferences)
+    ? (preferences.value.collapsedScheduledTaskGroups ?? [])
+    : [];
+  return {
+    isCollapsed: (key: string) => collapsed.includes(key),
+    toggle: (key: string) =>
+      save({
+        transform: (current) => {
+          const keys = current.collapsedScheduledTaskGroups ?? [];
+          return {
+            collapsedScheduledTaskGroups: keys.includes(key)
+              ? keys.filter((candidate) => candidate !== key)
+              : [...keys, key],
+          };
+        },
+      }),
+  };
+}
+
+/**
+ * One group of tasks across the visible machines: a header with its numbers and Pause group, then
+ * the shared tasks, then each machine's own tasks (their rows name the machine).
+ */
+function ScheduledTaskGroupSection({
+  label,
+  groupKey,
+  items,
+  environments,
+  statsLists,
+  collapsed,
+  onToggle,
+  now,
+  labelOf,
+  projectIdsFor,
+  projectNameOf,
+  onEdit,
+  onDuplicate,
+  onOpenRuns,
+}: {
+  readonly label: string | null;
+  readonly groupKey: string | null;
+  readonly items: ReadonlyArray<ScheduledTaskListItem>;
+  readonly environments: ReadonlyArray<SettingsTarget>;
+  readonly statsLists: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly tasks: ReadonlyArray<ScheduledTaskRunStats>;
+  }>;
+  readonly collapsed: boolean;
+  readonly onToggle: () => void;
+  readonly now: number;
+  readonly labelOf: (environmentId: EnvironmentId) => string;
+  readonly projectIdsFor: (environmentId: EnvironmentId) => readonly ProjectId[] | null;
+  readonly projectNameOf: (environmentId: EnvironmentId, projectId: ProjectId) => string | null;
+  readonly onEdit: (environmentId: EnvironmentId, task: ScheduledTask) => void;
+  readonly onDuplicate: (environmentId: EnvironmentId, task: ScheduledTask) => void;
+  readonly onOpenRuns: (environmentId: EnvironmentId, task: ScheduledTask) => void;
+}) {
+  const title = label ?? t("No group");
+  const sharedGroups = items.flatMap((item) => (item.kind === "shared" ? [item.group] : []));
+  const ownEnvironmentIds = new Set(
+    items.flatMap((item) => (item.kind === "local" ? [item.environmentId] : [])),
+  );
+  // A shared task changes through one copy only; sync carries it to the others.
+  const changeable = items.map(scheduledTaskListItemGroupCopy);
+  const summary = summarizeScheduledTaskGroup(
+    items.flatMap(scheduledTaskListItemCopies),
+    (environmentId, taskId) =>
+      statsLists
+        .find((list) => list.environmentId === environmentId)
+        ?.tasks.find((stats) => stats.id === taskId),
+  );
+  const action =
+    groupKey === null ? null : scheduledTaskGroupAction(changeable.map(({ task }) => task));
+  const paused = action === "pause";
+  const plan = action === null ? [] : scheduledTaskGroupPausePlan(changeable, paused);
+  const sharedIds = new Set(sharedGroups.map((group) => group.primary.task.id));
+  const sharedChanging = plan.reduce(
+    (count, entry) => count + entry.ids.filter((id) => sharedIds.has(id)).length,
+    0,
+  );
+  const canOperate = useAtomValue(
+    canOperateAllAtom(plan.map((entry) => entry.environmentId).join("\n")),
+  );
+  const setGroupPaused = useAtomCommand(serverEnvironment.setScheduledTaskGroupPaused, {
+    label: "scheduled task group paused",
+    reportFailure: false,
+  });
+  const [running, setRunning] = useState(false);
+  const run = async () => {
+    setRunning(true);
+    const problems: string[] = [];
+    await Promise.all(
+      plan.map(async ({ environmentId, ids }) => {
+        if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
+        const result = await setGroupPaused({ environmentId, input: { ids, paused } });
+        if (result._tag === "Failure") {
+          if (!isAtomCommandInterrupted(result)) {
+            problems.push(`${labelOf(environmentId)}: ${String(squashAtomCommandFailure(result))}`);
+          }
+          return;
+        }
+        for (const refused of result.value.refused) {
+          problems.push(`${labelOf(environmentId)}: ${refused.message}`);
+        }
+      }),
+    );
+    if (problems.length > 0) {
+      Dialog.alert(
+        paused ? t("Could not pause group") : t("Could not resume group"),
+        problems.join("\n"),
+      );
+    }
+    setRunning(false);
+  };
+  const confirmAndRun = () => {
+    if (sharedChanging === 0) {
+      void run();
+      return;
+    }
+    Dialog.alert(
+      paused
+        ? t("Pause group “{group}”?", { group: title })
+        : t("Resume group “{group}”?", { group: title }),
+      tn(
+        sharedChanging,
+        "{count} shared task in this group changes on every machine.",
+        "{count} shared tasks in this group change on every machine.",
+      ),
+      [
+        { text: t("Cancel"), style: "cancel" },
+        { text: paused ? t("Pause") : t("Resume"), onPress: () => void run() },
+      ],
+    );
+  };
+  const hasEnabled = changeable.some(({ task }) => task.enabled);
+  const nextRun = !hasEnabled
+    ? t("Paused")
+    : summary.nextRunAt !== null
+      ? formatNextScheduledTaskRun(summary.nextRunAt, now)
+      : null;
+  const health = summary.health;
+  const healthParts =
+    health === null
+      ? null
+      : {
+          runs: tn(health.runs, "{count} run", "{count} runs"),
+          failed: t("{count} failed", { count: health.failed }),
+          limited: t("{count} limited", { count: health.usageLimited }),
+        };
+  const healthText =
+    healthParts === null ? null : t("24h: {runs} · {failed} · {limited}", healthParts);
+  const summaryText = [tn(summary.count, "{count} task", "{count} tasks"), nextRun]
+    .filter((part) => part !== null)
+    .join(" · ");
+
+  return (
+    <ListSection>
+      <View className="flex-row items-center gap-1 pr-2">
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={[title, summaryText, healthText]
+            .filter((part) => part !== null)
+            .join(". ")}
+          accessibilityState={{ expanded: !collapsed }}
+          onPress={onToggle}
+          className="min-h-14 min-w-0 flex-1 flex-row items-center gap-3 px-4 py-3 active:opacity-70"
+        >
+          <SymbolView
+            name={collapsed ? "chevron.right" : "chevron.down"}
+            size={14}
+            tintColorClassName="accent-chevron"
+            type="monochrome"
+          />
+          <View className="min-w-0 flex-1 gap-0.5">
+            <Text textRole="body" className="font-t3-medium text-foreground" numberOfLines={1}>
+              {title}
+            </Text>
+            <Text className="text-sm text-foreground-muted">{summaryText}</Text>
+            {health === null || healthParts === null ? null : (
+              <Text className="text-sm text-foreground-muted">
+                {tx("24h: {runs} · {failed} · {limited}", {
+                  runs: healthParts.runs,
+                  failed: (
+                    <Text
+                      className={
+                        health.failed > 0 ? "text-warning-foreground" : "text-foreground-muted"
+                      }
+                    >
+                      {healthParts.failed}
+                    </Text>
+                  ),
+                  limited: (
+                    <Text
+                      className={
+                        health.usageLimited > 0
+                          ? "text-warning-foreground"
+                          : "text-foreground-muted"
+                      }
+                    >
+                      {healthParts.limited}
+                    </Text>
+                  ),
+                })}
+              </Text>
+            )}
+          </View>
+        </Pressable>
+        {action === null ? null : (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={
+              paused
+                ? t("Pause group {group}", { group: title })
+                : t("Resume group {group}", { group: title })
+            }
+            accessibilityState={{ disabled: running || !canOperate || plan.length === 0 }}
+            disabled={running || !canOperate || plan.length === 0}
+            onPress={confirmAndRun}
+            className="min-h-11 justify-center rounded-full px-3 active:opacity-70 disabled:opacity-50"
+          >
+            <Text className="text-sm text-primary">
+              {paused ? t("Pause group") : t("Resume group")}
+            </Text>
+          </Pressable>
+        )}
+      </View>
+      {collapsed ? null : (
+        <>
+          {sharedGroups.map((group) => (
+            <SharedTaskRow
+              key={group.primary.task.id}
+              group={group}
+              first={false}
+              now={now}
+              labelOf={labelOf}
+              onEdit={onEdit}
+              onDuplicate={onDuplicate}
+            />
+          ))}
+          {environments
+            .filter((environment) => ownEnvironmentIds.has(environment.environmentId))
+            .map((environment) => (
+              <EnvironmentTasks
+                key={environment.environmentId}
+                environment={environment}
+                grouping={{ kind: "group", key: groupKey }}
+                now={now}
+                projectIds={projectIdsFor(environment.environmentId)}
+                projectNameOf={(projectId) => projectNameOf(environment.environmentId, projectId)}
+                sharedCopies={0}
+                onEdit={(task) => onEdit(environment.environmentId, task)}
+                onDuplicate={(task) => onDuplicate(environment.environmentId, task)}
+                onOpenRuns={(task) => onOpenRuns(environment.environmentId, task)}
+              />
+            ))}
+        </>
+      )}
+    </ListSection>
+  );
+}
+
 /**
  * A shared task once, with a line for each machine's copy. Edits, pausing and deleting go to the
  * newest copy and reach the others by sync; running and the last run's thread are per machine.
@@ -2291,6 +2735,7 @@ function EnvironmentTasks({
   projectIds,
   projectNameOf,
   sharedCopies,
+  grouping,
   onEdit,
   onOpenRuns,
   onDuplicate,
@@ -2301,6 +2746,14 @@ function EnvironmentTasks({
   readonly projectNameOf: (projectId: ProjectId) => string | null;
   /** Shared tasks this machine holds, listed once above every machine. */
   readonly sharedCopies: number;
+  /**
+   * Set while the screen lists tasks by group. "group" renders only this machine's tasks in that
+   * group as bare rows that name the machine; "status" renders only the machine's loading or
+   * error state.
+   */
+  readonly grouping?:
+    | { readonly kind: "group"; readonly key: string | null }
+    | { readonly kind: "status" };
   readonly onEdit: (task: ScheduledTask) => void;
   readonly onOpenRuns: (task: ScheduledTask) => void;
   readonly onDuplicate: (task: ScheduledTask) => void;
@@ -2311,8 +2764,13 @@ function EnvironmentTasks({
     serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
   );
   const visibleTasks = tasks.data?.tasks.filter(
-    (task) => !task.shared && (projectIds === null || projectIds.includes(task.projectId)),
+    (task) =>
+      !task.shared &&
+      (projectIds === null || projectIds.includes(task.projectId)) &&
+      (grouping?.kind !== "group" ||
+        (task.group?.trim() ? scheduledTaskGroupKey(task.group) : null) === grouping.key),
   );
+  const inGroup = grouping?.kind === "group";
   const canOperate = useAtomValue(
     serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
   );
@@ -2405,6 +2863,164 @@ function EnvironmentTasks({
     );
   };
 
+  const renderTask = (task: ScheduledTask, index: number) => {
+    const runThreadId = lastRunThreadId(task);
+    const project = projectNameOf(task.projectId);
+    const noWorkSkip = formatNoWorkSkip(task, now);
+    return (
+      <View
+        key={task.id}
+        className={
+          index === 0 && !inGroup
+            ? "flex-row items-start gap-1 px-4 py-3"
+            : "flex-row items-start gap-1 border-t border-border-subtle px-4 py-3"
+        }
+      >
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${task.title}${inGroup ? t(", on {machine}", { machine: environment.label }) : ""}${project === null ? "" : t(", in {project}", { project })}${task.shared ? (task.shared.runOn === "one" ? t(", runs on one machine") : t(", runs on every machine")) : ""}${task.modelUnavailableHere ? t(", runs the default model here") : ""}${noWorkSkip === null ? "" : `, ${noWorkSkip}`}`}
+          accessibilityHint={
+            runThreadId === null ? t("Opens the task editor.") : t("Opens the task's last run.")
+          }
+          onPress={() => {
+            if (runThreadId === null) onEdit(task);
+            else openThread(environmentId, runThreadId);
+          }}
+          className="min-w-0 flex-1 gap-1 active:opacity-70"
+        >
+          <Text textRole="body" className="text-foreground" numberOfLines={1}>
+            {task.title}
+          </Text>
+          <Text className="text-sm text-foreground-muted" numberOfLines={2}>
+            {inGroup ? `${environment.label} · ` : ""}
+            {project === null ? "" : `${project} · `}
+            {describeSchedule(task)}
+            {!task.enabled
+              ? ` · ${t("Paused")}`
+              : task.nextRunAt
+                ? ` · ${formatNextScheduledTaskRun(task.nextRunAt, now)}`
+                : ""}
+            {task.modelUnavailableHere ? ` · ${t("Runs the default model here")}` : ""}
+            {task.shared
+              ? task.shared.runOn === "one"
+                ? ` · ${t("One machine")}`
+                : ` · ${t("Every machine")}`
+              : ""}
+            {lastRunText(task, now) ? ` · ${lastRunText(task, now)}` : ""}
+          </Text>
+          {noWorkSkip === null ? null : (
+            <Text className="text-sm text-foreground-muted" numberOfLines={1}>
+              {noWorkSkip}
+            </Text>
+          )}
+          {task.blockedByPolicy ? (
+            <Text className="text-sm text-foreground-muted" numberOfLines={2}>
+              {task.blockedByPolicy}
+            </Text>
+          ) : null}
+          {task.lastRunError ? (
+            <Text className="text-sm text-danger-foreground" numberOfLines={2}>
+              {t("Last run failed: {error}", { error: task.lastRunError })}
+            </Text>
+          ) : null}
+        </Pressable>
+        <Menu
+          actions={[
+            ...(runThreadId === null
+              ? []
+              : [{ id: "open-run", title: t("Open last run"), image: "text.bubble" }]),
+            { id: "edit", title: t("Edit"), image: "square.and.pencil" },
+            ...(canDuplicateOnMobile(task)
+              ? [{ id: "duplicate", title: t("Duplicate"), image: "plus.square.on.square" }]
+              : []),
+            { id: "runs", title: t("Run history"), image: "list.number" },
+            {
+              id: "toggle",
+              title: task.enabled ? t("Pause") : t("Resume"),
+              attributes: { disabled: !canOperate },
+            },
+            ...(task.schedule.type === "webhook"
+              ? []
+              : [{ id: "run", title: t("Run now"), attributes: { disabled: !canOperate } }]),
+            // Servers without placements leave placement out of the task.
+            ...(task.placement === undefined
+              ? []
+              : [
+                  {
+                    id: "show-in",
+                    title: t("Show in"),
+                    attributes: { disabled: !canOperate },
+                    subactions: scheduledTaskPlacementOptions().map((option) => ({
+                      id: `placement:${option.value}`,
+                      title: option.label,
+                      state:
+                        option.value === resolveScheduledTaskPlacement(task)
+                          ? ("on" as const)
+                          : ("off" as const),
+                    })),
+                  },
+                ]),
+            {
+              id: "delete",
+              title: t("Delete"),
+              attributes: { destructive: true, disabled: !canOperate },
+            },
+          ]}
+          onPressAction={({ nativeEvent }) => {
+            const action = nativeEvent.event;
+            if (action === "open-run") {
+              if (runThreadId !== null) openThread(environmentId, runThreadId);
+            } else if (action === "edit") {
+              onEdit(task);
+            } else if (action === "duplicate") {
+              onDuplicate(task);
+            } else if (action === "runs") {
+              onOpenRuns(task);
+            } else if (action === "delete") {
+              Dialog.alert(t("Delete task?"), task.title, [
+                { text: t("Cancel"), style: "cancel" },
+                {
+                  text: t("Delete"),
+                  style: "destructive",
+                  onPress: () => void act(task, "delete"),
+                },
+              ]);
+            } else if (action === "run") {
+              void runTaskNow(task);
+            } else if (action === "toggle") {
+              void act(task, action);
+            } else if (action.startsWith("placement:")) {
+              const placement = scheduledTaskPlacementOptions().find(
+                (option) => `placement:${option.value}` === action,
+              )?.value;
+              if (placement !== undefined) void act(task, placement);
+            }
+          }}
+        >
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t("Actions for {title}", { title: task.title })}
+            className="h-11 w-11 items-center justify-center"
+          >
+            <SymbolView
+              name="ellipsis"
+              size={18}
+              tintColorClassName="accent-icon"
+              type="monochrome"
+            />
+          </Pressable>
+        </Menu>
+      </View>
+    );
+  };
+
+  if (grouping?.kind === "group") {
+    return visibleTasks === undefined || visibleTasks.length === 0 ? null : (
+      <>{visibleTasks.map(renderTask)}</>
+    );
+  }
+  if (grouping?.kind === "status" && !tasks.error && tasks.data) return null;
+
   return (
     <SettingsSection
       title={environment.label}
@@ -2432,159 +3048,7 @@ function EnvironmentTasks({
         </Text>
       ) : (
         <>
-          {visibleTasks?.map((task, index) => {
-            const runThreadId = lastRunThreadId(task);
-            const project = projectNameOf(task.projectId);
-            const noWorkSkip = formatNoWorkSkip(task, now);
-            return (
-              <View
-                key={task.id}
-                className={
-                  index === 0
-                    ? "flex-row items-start gap-1 px-4 py-3"
-                    : "flex-row items-start gap-1 border-t border-border-subtle px-4 py-3"
-                }
-              >
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`${task.title}${project === null ? "" : t(", in {project}", { project })}${task.shared ? (task.shared.runOn === "one" ? t(", runs on one machine") : t(", runs on every machine")) : ""}${task.modelUnavailableHere ? t(", runs the default model here") : ""}${noWorkSkip === null ? "" : `, ${noWorkSkip}`}`}
-                  accessibilityHint={
-                    runThreadId === null
-                      ? t("Opens the task editor.")
-                      : t("Opens the task's last run.")
-                  }
-                  onPress={() => {
-                    if (runThreadId === null) onEdit(task);
-                    else openThread(environmentId, runThreadId);
-                  }}
-                  className="min-w-0 flex-1 gap-1 active:opacity-70"
-                >
-                  <Text textRole="body" className="text-foreground" numberOfLines={1}>
-                    {task.title}
-                  </Text>
-                  <Text className="text-sm text-foreground-muted" numberOfLines={2}>
-                    {project === null ? "" : `${project} · `}
-                    {describeSchedule(task)}
-                    {!task.enabled
-                      ? ` · ${t("Paused")}`
-                      : task.nextRunAt
-                        ? ` · ${formatNextScheduledTaskRun(task.nextRunAt, now)}`
-                        : ""}
-                    {task.modelUnavailableHere ? ` · ${t("Runs the default model here")}` : ""}
-                    {task.shared
-                      ? task.shared.runOn === "one"
-                        ? ` · ${t("One machine")}`
-                        : ` · ${t("Every machine")}`
-                      : ""}
-                    {lastRunText(task, now) ? ` · ${lastRunText(task, now)}` : ""}
-                  </Text>
-                  {noWorkSkip === null ? null : (
-                    <Text className="text-sm text-foreground-muted" numberOfLines={1}>
-                      {noWorkSkip}
-                    </Text>
-                  )}
-                  {task.blockedByPolicy ? (
-                    <Text className="text-sm text-foreground-muted" numberOfLines={2}>
-                      {task.blockedByPolicy}
-                    </Text>
-                  ) : null}
-                  {task.lastRunError ? (
-                    <Text className="text-sm text-danger-foreground" numberOfLines={2}>
-                      {t("Last run failed: {error}", { error: task.lastRunError })}
-                    </Text>
-                  ) : null}
-                </Pressable>
-                <Menu
-                  actions={[
-                    ...(runThreadId === null
-                      ? []
-                      : [{ id: "open-run", title: t("Open last run"), image: "text.bubble" }]),
-                    { id: "edit", title: t("Edit"), image: "square.and.pencil" },
-                    ...(canDuplicateOnMobile(task)
-                      ? [{ id: "duplicate", title: t("Duplicate"), image: "plus.square.on.square" }]
-                      : []),
-                    { id: "runs", title: t("Run history"), image: "list.number" },
-                    {
-                      id: "toggle",
-                      title: task.enabled ? t("Pause") : t("Resume"),
-                      attributes: { disabled: !canOperate },
-                    },
-                    ...(task.schedule.type === "webhook"
-                      ? []
-                      : [
-                          { id: "run", title: t("Run now"), attributes: { disabled: !canOperate } },
-                        ]),
-                    // Servers without placements leave placement out of the task.
-                    ...(task.placement === undefined
-                      ? []
-                      : [
-                          {
-                            id: "show-in",
-                            title: t("Show in"),
-                            attributes: { disabled: !canOperate },
-                            subactions: scheduledTaskPlacementOptions().map((option) => ({
-                              id: `placement:${option.value}`,
-                              title: option.label,
-                              state:
-                                option.value === resolveScheduledTaskPlacement(task)
-                                  ? ("on" as const)
-                                  : ("off" as const),
-                            })),
-                          },
-                        ]),
-                    {
-                      id: "delete",
-                      title: t("Delete"),
-                      attributes: { destructive: true, disabled: !canOperate },
-                    },
-                  ]}
-                  onPressAction={({ nativeEvent }) => {
-                    const action = nativeEvent.event;
-                    if (action === "open-run") {
-                      if (runThreadId !== null) openThread(environmentId, runThreadId);
-                    } else if (action === "edit") {
-                      onEdit(task);
-                    } else if (action === "duplicate") {
-                      onDuplicate(task);
-                    } else if (action === "runs") {
-                      onOpenRuns(task);
-                    } else if (action === "delete") {
-                      Dialog.alert(t("Delete task?"), task.title, [
-                        { text: t("Cancel"), style: "cancel" },
-                        {
-                          text: t("Delete"),
-                          style: "destructive",
-                          onPress: () => void act(task, "delete"),
-                        },
-                      ]);
-                    } else if (action === "run") {
-                      void runTaskNow(task);
-                    } else if (action === "toggle") {
-                      void act(task, action);
-                    } else if (action.startsWith("placement:")) {
-                      const placement = scheduledTaskPlacementOptions().find(
-                        (option) => `placement:${option.value}` === action,
-                      )?.value;
-                      if (placement !== undefined) void act(task, placement);
-                    }
-                  }}
-                >
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={t("Actions for {title}", { title: task.title })}
-                    className="h-11 w-11 items-center justify-center"
-                  >
-                    <SymbolView
-                      name="ellipsis"
-                      size={18}
-                      tintColorClassName="accent-icon"
-                      type="monochrome"
-                    />
-                  </Pressable>
-                </Menu>
-              </View>
-            );
-          })}
+          {visibleTasks?.map(renderTask)}
           <Menu
             actions={scheduledTaskPlacementOptions().map((option) => ({
               id: option.value,

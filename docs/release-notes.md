@@ -1,3 +1,11 @@
+## 2026-11-12 — Scheduled tasks can be grouped, paused by group and counted per group
+
+- A scheduled task can have a **Group**, such as "Machine care" or "PolyBot delivery", set in its editor on web, desktop and mobile, or by an agent with `schedule_task` (`list_scheduled_tasks` returns it). A shared task's group reaches every machine.
+- Once a task has a group, the **Scheduled tasks** page and the mobile **Tasks** tab list tasks under collapsible group headers, with tasks without one under **No group** last. Each header shows the task count, the next run, and the last 24 hours' runs, failures and usage-limited runs. Collapsed groups are remembered per device.
+- **Pause group** turns off the group's running tasks, and **Resume group** turns back on only those, so tasks you had paused yourself stay paused. A group with shared tasks asks first, since they change on every machine.
+- **Usage** has a **Scheduled task groups** section with each group's runs, failures, usage-limited runs and estimated cost for the selected period.
+- Run history now keeps every run from the last 90 days, not only each task's last 50, so a frequent task's runs count in full over a long Usage period. Skipped runs are still trimmed as before.
+
 ## 2026-11-12 — An agent in a No-project chat can delegate to another machine
 
 - `delegate_task` to a linked machine now starts the task in that machine's own **No project** when the chat it comes from is in No project. Before, it was refused with `target_required`, because a chat with no repository had nothing to match a project there.

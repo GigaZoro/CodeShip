@@ -1436,3 +1436,129 @@ it.effect("no-work skips keep their own history, so they never push real runs ou
       }),
   ),
 );
+
+it.effect("a group pause turns off the group's running tasks and resume turns on only those", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse("2026-11-10T12:00:00.000Z"));
+    const layer = ScheduledTaskService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          ManagedPolicy.layerTest(),
+          ServerSettings.layerTest(),
+          Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+          layerSharedTaskDependencies(),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+            namedProjectsRoot: "/projects",
+            isScratchProject: () => Effect.succeed(false),
+          }),
+          NodeCrypto.layer,
+          Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void }),
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const save = (
+        id: string,
+        options: {
+          readonly enabled?: boolean;
+          readonly group?: string | null;
+          readonly runAt?: string;
+        } = {},
+      ) =>
+        service.upsert({
+          id: ScheduledTaskId.make(id),
+          title: id,
+          prompt: "Check progress",
+          enabled: options.enabled ?? true,
+          schedule:
+            options.runAt === undefined
+              ? { type: "interval", everyMs: 300_000 }
+              : { type: "once", runAt: options.runAt },
+          projectId: ProjectId.make("project:test"),
+          workspaceStrategy: { type: "root" },
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          ...(options.group === undefined ? {} : { group: options.group }),
+        });
+      const listed = service
+        .list()
+        .pipe(
+          Effect.map(({ tasks }) =>
+            Object.fromEntries(
+              tasks.map((task) => [
+                task.id,
+                { enabled: task.enabled, marked: task.pausedWithGroup === true },
+              ]),
+            ),
+          ),
+        );
+      const group = "Machine care";
+      assert.equal((yield* save("task:on", { group })).task.group, group);
+      // A save that leaves the group out keeps it.
+      assert.equal((yield* save("task:on")).task.group, group);
+      yield* save("task:off", { group, enabled: false });
+      yield* save("task:once", { group, runAt: "2026-11-10T13:00:00.000Z" });
+      yield* save("task:toggled", { group });
+      assert.isNull((yield* save("task:ungrouped")).task.group);
+      yield* save("task:paused-again", { group });
+      const ids = [
+        "task:on",
+        "task:off",
+        "task:once",
+        "task:toggled",
+        "task:ungrouped",
+        "task:paused-again",
+      ].map((id) => ScheduledTaskId.make(id));
+
+      const paused = yield* service.setGroupPaused({ ids, paused: true });
+      assert.deepEqual(paused, { ids: [ids[0]!, ids[2]!, ids[3]!, ids[5]!], refused: [] });
+      assert.deepEqual(yield* listed, {
+        "task:on": { enabled: false, marked: true },
+        "task:off": { enabled: false, marked: false },
+        "task:once": { enabled: false, marked: true },
+        "task:toggled": { enabled: false, marked: true },
+        "task:ungrouped": { enabled: true, marked: false },
+        "task:paused-again": { enabled: false, marked: true },
+      });
+      // Saving a paused task with enabled:false keeps the mark; switching one by hand clears it,
+      // even a pause sent by a client that still showed the task on.
+      yield* save("task:on", { enabled: false });
+      yield* service.setEnabled({ id: ids[3]!, enabled: true });
+      yield* service.setEnabled({ id: ids[3]!, enabled: false });
+      yield* service.setEnabled({ id: ids[5]!, enabled: false });
+
+      yield* TestClock.adjust("2 hours");
+      const resumed = yield* service.setGroupPaused({ ids, paused: false });
+      assert.deepEqual(resumed, {
+        ids: [ids[0]!],
+        refused: [{ id: ids[2]!, message: "The run time has passed. Pick a time in the future." }],
+      });
+      assert.deepEqual(yield* listed, {
+        "task:on": { enabled: true, marked: false },
+        "task:off": { enabled: false, marked: false },
+        "task:once": { enabled: false, marked: false },
+        "task:toggled": { enabled: false, marked: false },
+        "task:ungrouped": { enabled: true, marked: false },
+        "task:paused-again": { enabled: false, marked: false },
+      });
+      assert.isNotNull((yield* service.list()).tasks.find(({ id }) => id === ids[0])?.nextRunAt);
+      assert.deepEqual(yield* service.setGroupPaused({ ids, paused: false }), {
+        ids: [],
+        refused: [],
+      });
+
+      assert.isNull((yield* save("task:on", { group: null })).task.group);
+      yield* service.delete({ id: ids[1]! });
+      assert.deepEqual(yield* sql`SELECT task_id FROM scheduled_task_group ORDER BY task_id`, [
+        { task_id: "task:once" },
+        { task_id: "task:paused-again" },
+        { task_id: "task:toggled" },
+      ]);
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);

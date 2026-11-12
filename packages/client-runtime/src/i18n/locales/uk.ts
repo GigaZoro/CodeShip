@@ -16,6 +16,7 @@ const catalog: MessageCatalog = {
   "_No description provided._": "_Опису немає._",
   ", before the latest commits": ", до останніх комітів",
   ", in {project}": ", у проєкті {project}",
+  ", on {machine}": ", на {machine}",
   ", runs on every machine": ", запускається на кожному комп’ютері",
   ", runs on one machine": ", запускається на одному комп’ютері",
   ", runs the default model here": ", тут використовує модель за замовчуванням",
@@ -459,6 +460,7 @@ const catalog: MessageCatalog = {
     many: "{count} елементів не вдалося видалити.",
     other: "{count} елемента не вдалося видалити.",
   },
+  "{count} limited": "{count} через ліміт",
   "{count} lines": {
     one: "{count} рядок",
     few: "{count} рядки",
@@ -595,6 +597,12 @@ const catalog: MessageCatalog = {
   "{count} of {total} failing": "Не пройдено: {count} із {total}",
   "{count} of {total} passing": "Пройдено: {count} із {total}",
   "{count} of {total} running": "Виконується {count} із {total}",
+  "{count} of them are shared, so they change on every machine.": {
+    one: "{count} з них спільне, тож воно зміниться на кожному комп’ютері.",
+    few: "{count} з них спільні, тож вони зміняться на кожному комп’ютері.",
+    many: "{count} з них спільні, тож вони зміняться на кожному комп’ютері.",
+    other: "{count} з них спільні, тож вони зміняться на кожному комп’ютері.",
+  },
   "{count} older releases on GitHub": {
     one: "{count} старіший випуск на GitHub",
     few: "{count} старіші випуски на GitHub",
@@ -809,6 +817,12 @@ const catalog: MessageCatalog = {
     many: "{count} запущених чатів буде призупинено й відновлено після перезапуску.",
     other: "{count} запущеного чату буде призупинено й відновлено після перезапуску.",
   },
+  "{count} runs": {
+    one: "{count} запуск",
+    few: "{count} запуски",
+    many: "{count} запусків",
+    other: "{count} запуску",
+  },
   "{count} scheduled task runs": {
     one: "{count} запуск запланованого завдання",
     few: "{count} запуски запланованих завдань",
@@ -857,6 +871,12 @@ const catalog: MessageCatalog = {
     few: "{count} завершені чати",
     many: "{count} завершених чатів",
     other: "{count} завершеного чату",
+  },
+  "{count} shared tasks in this group change on every machine.": {
+    one: "{count} спільне завдання в цій групі зміниться на кожному комп’ютері.",
+    few: "{count} спільні завдання в цій групі зміняться на кожному комп’ютері.",
+    many: "{count} спільних завдань у цій групі зміняться на кожному комп’ютері.",
+    other: "{count} спільного завдання в цій групі зміниться на кожному комп’ютері.",
   },
   "{count} sheets": {
     one: "{count} аркуш",
@@ -1742,6 +1762,12 @@ const catalog: MessageCatalog = {
     many: "+ {count} файлів",
     other: "+ {count} файлу",
   },
+  "+{count} runs unpriced": {
+    one: "+{count} запуск без ціни",
+    few: "+{count} запуски без ціни",
+    many: "+{count} запусків без ціни",
+    other: "+{count} запуску без ціни",
+  },
   "+{percent}% back {when}": "+{percent}% повернеться {when}",
   "+{percent}% of pool": "+{percent}% від пулу",
   "+15s": "+15 с",
@@ -1757,6 +1783,7 @@ const catalog: MessageCatalog = {
   "1h": "1 год",
   "24-hour": "24-годинний",
   "24h": "24 год",
+  "24h: {runs} · {failed} · {limited}": "24 год: {runs} · {failed} · {limited}",
   "30 days": "30 днів",
   "30d": "30 д",
   "30m": "30 хв",
@@ -4158,6 +4185,8 @@ const catalog: MessageCatalog = {
     "Не вдалося завантажити запуски з {machine}: {error}",
   "Could not load saved model preferences. Try again.":
     "Не вдалося завантажити збережені налаштування моделей. Спробуйте ще раз.",
+  "Could not load scheduled task runs: {label}: {error}":
+    "Не вдалося завантажити запуски запланованих завдань: {label}: {error}",
   "Could not load scheduled tasks": "Не вдалося завантажити заплановані завдання",
   "Could not load scheduled tasks: {label}: {error}":
     "Не вдалося завантажити заплановані завдання: {label}: {error}",
@@ -4237,6 +4266,7 @@ const catalog: MessageCatalog = {
   "Could not paste context": "Не вдалося вставити контекст",
   "Could not paste image": "Не вдалося вставити зображення",
   "Could not paste images": "Не вдалося вставити зображення",
+  "Could not pause group": "Не вдалося призупинити групу",
   "Could not pause task": "Не вдалося призупинити завдання",
   "Could not pin thread": "Не вдалося закріпити чат",
   "Could not post the comment": "Не вдалося опублікувати коментар",
@@ -4314,6 +4344,8 @@ const catalog: MessageCatalog = {
   "Could not restore review drafts. Reopen this screen to retry.":
     "Не вдалося відновити чернетки рев’ю. Відкрийте цей екран знову, щоб повторити.",
   "Could not restore snooze": "Не вдалося відновити відкладення",
+  "Could not resume {name}": "Не вдалося відновити: {name}",
+  "Could not resume group": "Не вдалося відновити групу",
   "Could not resume task": "Не вдалося відновити завдання",
   "Could not resume thread": "Не вдалося відновити чат",
   "Could not resume thread.": "Не вдалося відновити чат.",
@@ -5375,6 +5407,8 @@ const catalog: MessageCatalog = {
   "Error report": "Звіт про помилку",
   "Error text": "Текст помилки",
   "error-message": "error-message",
+  "Estimated API-equivalent cost of the turns scheduled task runs started.":
+    "Орієнтовна вартість за цінами API для ходів, які почали запуски запланованих завдань.",
   "Even pace": "Рівномірний темп",
   "Even pace: {percent}% left by now": "Рівномірний темп: до цього часу залишилось би {percent}%",
   "Event log": "Журнал подій",
@@ -7440,6 +7474,7 @@ const catalog: MessageCatalog = {
   "Next retry": "Наступна спроба",
   "Next rows": "Наступні рядки",
   "Next run {date} at {time}": "Наступний запуск {date} о {time}",
+  "Next run {when}": "Наступний запуск {when}",
   "Next run {when} ({time})": "Наступний запуск {when} ({time})",
   "Next run due": "Наступний запуск зараз",
   "Next run in {count} hours": {
@@ -7571,6 +7606,7 @@ const catalog: MessageCatalog = {
   "No finished threads are waiting for you to read them.":
     "Немає завершених чатів, які чекають на ваш перегляд.",
   "No fonts found.": "Шрифтів не знайдено.",
+  "No group": "Без групи",
   'No hosts match "{query}".': "Немає хостів за запитом «{query}».",
   "No hubs configured.": "Хаби не налаштовано.",
   "No icons found.": "Значків не знайдено.",
@@ -7703,6 +7739,8 @@ const catalog: MessageCatalog = {
   "No run was started for this request.": "Для цього запиту запуск не розпочато.",
   "No runs yet.": "Запусків ще немає.",
   "No saved remote environments": "Немає збережених віддалених середовищ",
+  "No scheduled task runs in this period.":
+    "У цьому періоді не було запусків запланованих завдань.",
   "No scheduled tasks": "Немає запланованих завдань",
   "No scheduled tasks found": "Запланованих завдань не знайдено",
   "No scheduled tasks on {name}": "Немає запланованих завдань на {name}",
@@ -7781,6 +7819,8 @@ const catalog: MessageCatalog = {
   "Not authenticated": "Не автентифіковано",
   "Not authenticated · {authLabel}": "Не автентифіковано · {authLabel}",
   "Not available": "Недоступно",
+  "Not available on {environments}: they run an older T3.CodeShip.":
+    "Недоступно на {environments}: там працює старіша версія T3.CodeShip.",
   "Not available on this device": "Недоступно на цьому пристрої",
   "Not available on this server: {hint}": "Недоступно на цьому сервері: {hint}",
   "Not back after {minutes} minutes": "Не повернувся після {minutes} хв",
@@ -8458,9 +8498,18 @@ const catalog: MessageCatalog = {
   "Path unavailable": "Шлях недоступний",
   "Path: {path}": "Шлях: {path}",
   Pause: "Пауза",
+  'Pause {count} tasks in "{group}"?': {
+    one: "Призупинити {count} завдання в групі «{group}»?",
+    few: "Призупинити {count} завдання в групі «{group}»?",
+    many: "Призупинити {count} завдань у групі «{group}»?",
+    other: "Призупинити {count} завдання в групі «{group}»?",
+  },
   "Pause {name}": "Призупинити {name}",
   "Pause {title}": "Призупинити {title}",
   "Pause audio": "Призупинити аудіо",
+  "Pause group": "Призупинити групу",
+  "Pause group “{group}”?": "Призупинити групу «{group}»?",
+  "Pause group {group}": "Призупинити групу {group}",
   "Pause on battery": "Призупиняти при роботі від батареї",
   "Pause on client low power": "Призупиняти при низькому енергоспоживанні клієнта",
   "Pause on every machine": "Призупинити на всіх комп’ютерах",
@@ -9634,11 +9683,20 @@ const catalog: MessageCatalog = {
   "Restoring your threads…": "Відновлення ваших чатів…",
   "Restoring...": "Відновлення...",
   Resume: "Відновити",
+  'Resume {count} tasks in "{group}"?': {
+    one: "Відновити {count} завдання в групі «{group}»?",
+    few: "Відновити {count} завдання в групі «{group}»?",
+    many: "Відновити {count} завдань у групі «{group}»?",
+    other: "Відновити {count} завдання в групі «{group}»?",
+  },
   "Resume {title}": "Відновити {title}",
   "Resume after the restart": "Відновляться після перезапуску",
   "Resume agent-owned conversations as T3.CodeShip threads.":
     "Відновіть розмови агента як чати T3.CodeShip.",
   "Resume at reset": "Відновити після скидання",
+  "Resume group": "Відновити групу",
+  "Resume group “{group}”?": "Відновити групу «{group}»?",
+  "Resume group {group}": "Відновити групу {group}",
   "Resume interrupted threads after an update or restart.":
     "Відновлювати перервані чати після оновлення чи перезапуску.",
   "Resume on every machine": "Відновити на всіх комп’ютерах",
@@ -10046,6 +10104,7 @@ const catalog: MessageCatalog = {
   "Scheduled section": "Розділ «Заплановано»",
   "scheduled task": "заплановане завдання",
   "Scheduled task": "Заплановане завдання",
+  "Scheduled task groups": "Групи запланованих завдань",
   "Scheduled task is incomplete": "Заплановане завдання неповне",
   "Scheduled tasks": "Заплановані завдання",
   "scheduled tasks {times}": "заплановані завдання {times}",
@@ -11362,6 +11421,8 @@ const catalog: MessageCatalog = {
   Tasks: "Завдання",
   "Tasks {done}/{total}": "Завдання {done}/{total}",
   "Tasks {done}/{total} · {current}": "Завдання {done}/{total} · {current}",
+  "Tasks with the same group are listed and paused together.":
+    "Завдання з однаковою групою показуються й призупиняються разом.",
   "Tasks with their own model": "Завдання з власною моделлю",
   Teal: "Бірюзовий",
   team: "команда",
@@ -13466,6 +13527,7 @@ const catalog: MessageCatalog = {
   "Use for both light and dark": "Для світлого й темного режимів",
   "Use for dark mode only": "Лише для темного режиму",
   "Use for light mode only": "Лише для світлого режиму",
+  "Use group {group}": "Вибрати групу {group}",
   "Use julius/ followed by the issue ID and a short description.":
     "Використовуйте julius/, а далі ID задачі та короткий опис.",
   "Use last picked model": "Використовувати останню вибрану модель",

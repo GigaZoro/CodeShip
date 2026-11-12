@@ -5,6 +5,7 @@ import {
   EnvironmentId,
   ForwardCompatibleArray,
   IsoDateTime,
+  NonNegativeInt,
   ProjectId,
   ScheduledTaskId,
   SecretRef,
@@ -26,6 +27,13 @@ const TimeOfDay = TrimmedNonEmptyString.check(
 
 export const ScheduledTaskPlacement = Schema.Literals(["none", "chat", "pinned"]);
 export type ScheduledTaskPlacement = typeof ScheduledTaskPlacement.Type;
+
+export const MAX_SCHEDULED_TASK_GROUP_LENGTH = 60;
+
+/** Free text such as "Machine care"; tasks whose labels match, ignoring case, form one group. */
+export const ScheduledTaskGroupLabel = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(MAX_SCHEDULED_TASK_GROUP_LENGTH),
+);
 
 export const MIN_SCHEDULED_TASK_INTERVAL_MS = 60_000;
 
@@ -552,6 +560,10 @@ export const ScheduledTask = Schema.Struct({
   runCheckStartedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** Each run reads its prompt from this file. Null: `prompt` is the text. Absent from servers without prompt files. */
   promptFile: Schema.optional(Schema.NullOr(ScheduledTaskPromptFile)),
+  /** Null when ungrouped. Absent from servers without groups. */
+  group: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  /** Paused by pausing its group, so resuming the group turns it back on. */
+  pausedWithGroup: Schema.optional(Schema.Boolean),
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
 
@@ -653,6 +665,9 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
   creationSource: Schema.optional(OrchestrationV2CreationSource),
+  group: Schema.optional(Schema.NullOr(ScheduledTaskGroupLabel)).annotate({
+    description: "Group label, such as Machine care. Null clears it. Omitted keeps the stored one.",
+  }),
   shared: Schema.optional(
     Schema.NullOr(
       Schema.Struct({
@@ -693,6 +708,9 @@ export const ScheduledTaskSharedCopy = Schema.Struct({
   creationSource: OrchestrationV2CreationSource,
   createdAt: IsoDateTime,
   shared: ScheduledTaskSharing,
+  /** Absent from machines without groups; the receiving machine keeps its own group and pause. */
+  group: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  pausedWithGroup: Schema.optional(Schema.Boolean),
 });
 export type ScheduledTaskSharedCopy = typeof ScheduledTaskSharedCopy.Type;
 
@@ -722,6 +740,50 @@ export const ScheduledTaskSetEnabledInput = Schema.Struct({
   enabled: Schema.Boolean,
 });
 export type ScheduledTaskSetEnabledInput = typeof ScheduledTaskSetEnabledInput.Type;
+
+/** Pauses a group's tasks, or turns back on those its pause turned off. */
+export const ScheduledTaskSetGroupPausedInput = Schema.Struct({
+  ids: Schema.Array(ScheduledTaskId).check(Schema.isMinLength(1)),
+  paused: Schema.Boolean,
+});
+export type ScheduledTaskSetGroupPausedInput = typeof ScheduledTaskSetGroupPausedInput.Type;
+
+export const ScheduledTaskSetGroupPausedResult = Schema.Struct({
+  /** The tasks that changed. */
+  ids: Schema.Array(ScheduledTaskId),
+  /** Tasks a resume left off, and why, such as a one-time run whose time has passed. */
+  refused: Schema.Array(Schema.Struct({ id: ScheduledTaskId, message: Schema.String })),
+});
+export type ScheduledTaskSetGroupPausedResult = typeof ScheduledTaskSetGroupPausedResult.Type;
+
+/** Runs started from `since` until `until` (default now). */
+export const ScheduledTaskStatsInput = Schema.Struct({
+  since: IsoDateTime,
+  until: Schema.optional(IsoDateTime),
+});
+export type ScheduledTaskStatsInput = typeof ScheduledTaskStatsInput.Type;
+
+export const ScheduledTaskRunStats = Schema.Struct({
+  id: ScheduledTaskId,
+  title: Schema.String,
+  group: Schema.NullOr(Schema.String),
+  /** Runs started in the window; skipped occurrences are left out. */
+  runs: NonNegativeInt,
+  /** Runs that could not start, or whose thread failed or stopped, other than by a usage limit or a Stop. */
+  failed: NonNegativeInt,
+  /** Runs a usage limit stopped, even if they finished after it lifted. */
+  usageLimited: NonNegativeInt,
+  /** Estimated API-equivalent cost of the runs' own turns, at Usage's model prices. */
+  costUsd: Schema.Number,
+  /** Runs with a turn that has no token counts or no known price; that turn's cost is left out. */
+  unpricedRuns: NonNegativeInt,
+});
+export type ScheduledTaskRunStats = typeof ScheduledTaskRunStats.Type;
+
+export const ScheduledTaskStatsResult = Schema.Struct({
+  tasks: ForwardCompatibleArray(ScheduledTaskRunStats),
+});
+export type ScheduledTaskStatsResult = typeof ScheduledTaskStatsResult.Type;
 
 export const ScheduledTaskSetPlacementInput = Schema.Struct({
   ids: Schema.Array(ScheduledTaskId).check(Schema.isMinLength(1)),
