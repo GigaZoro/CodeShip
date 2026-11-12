@@ -1,3 +1,7 @@
+## 2026-11-12 — A turn whose checkpoint can't be saved no longer blocks the chat
+
+- When a turn finished but T3.CodeShip could not save its checkpoint after every retry, the chat kept showing the agent as working and held every queued message until the server restarted, and the restart then marked the finished turn as cut. The turn now completes without a checkpoint and the next queued message starts. Going back to that turn is not offered, since it has no checkpoint.
+
 ## 2026-11-12 — Weekly and weekday scheduled tasks catch up a run missed while the machine was off
 
 - A fixed-time task that runs on chosen weekdays, such as every Monday or Monday to Friday, now catches up a run it missed while the machine was off or asleep, as daily tasks already did: it runs once when the machine is back, unless its next run comes sooner. Before, such a task skipped the missed run, so a weekly task waited a whole week. Tasks where you turned **Catch up a missed run** off keep that choice.

@@ -56,7 +56,7 @@ it.effect("completes finalization when the post-checkpoint workspace refresh fai
   );
   return Effect.gen(function* () {
     const service = yield* RunFinalization.RunFinalizationService;
-    yield* service.finalize({ threadId, runId, scopeId });
+    yield* service.finalize({ threadId, runId, scopeId, willRetry: true });
     assert.deepEqual(captured, ["checkpoint", "refresh"]);
   }).pipe(Effect.provide(layer));
 });
@@ -221,7 +221,7 @@ it.effect.each(
   );
   return Effect.gen(function* () {
     const service = yield* RunFinalization.RunFinalizationService;
-    yield* service.finalize({ threadId, runId, scopeId });
+    yield* service.finalize({ threadId, runId, scopeId, willRetry: true });
     assert.deepEqual(
       dispatched.map((command) =>
         command.type === "thread.metadata.update" ? [command.threadId, command.branch] : null,

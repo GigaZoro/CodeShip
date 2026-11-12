@@ -49,6 +49,7 @@ export class RunFinalizationService extends Context.Service<
       readonly threadId: ThreadId;
       readonly runId: RunId;
       readonly scopeId: CheckpointScopeId;
+      readonly willRetry: boolean;
     }) => Effect.Effect<void, RunFinalizationError>;
   }
 >()("t3/orchestration-v2/RunFinalizationService") {}
@@ -113,9 +114,9 @@ const make = Effect.gen(function* () {
 
   const finalize: RunFinalizationService["Service"]["finalize"] = Effect.fn(
     "RunFinalizationService.finalize",
-  )(function* (input) {
+  )(function* ({ willRetry, ...input }) {
     yield* checkpointCapture
-      .execute(input)
+      .execute({ ...input, willRetry })
       .pipe(
         Effect.mapError(
           (cause) => new RunFinalizationError({ ...input, operation: "capture-checkpoint", cause }),

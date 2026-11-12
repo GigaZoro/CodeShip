@@ -318,10 +318,15 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
         yield* Effect.gen(function* () {
           const service = yield* CheckpointCaptureService.CheckpointCaptureServiceV2;
           const incomplete = yield* service
-            .execute({ threadId, runId, scopeId: CheckpointScopeId.make("missing-scope") })
+            .execute({
+              threadId,
+              runId,
+              scopeId: CheckpointScopeId.make("missing-scope"),
+              willRetry: true,
+            })
             .pipe(Effect.flip);
           assert.instanceOf(incomplete, CheckpointCaptureService.CheckpointCaptureExecutionError);
-          yield* service.execute({ threadId, runId, scopeId });
+          yield* service.execute({ threadId, runId, scopeId, willRetry: true });
 
           const events = yield* Ref.get(committed);
           const runUpdated = events.find((event) => event.type === "run.updated");
@@ -371,7 +376,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
           assert.equal(projectedRun?.delegatedCompletion?.delivery?.messageId, deliveryMessageId);
           assert.deepEqual(projectedRun?.delegatedCompletion?.delivery?.taskIds, [taskId]);
           yield* Ref.set(committed, []);
-          yield* service.execute({ threadId, runId, scopeId });
+          yield* service.execute({ threadId, runId, scopeId, willRetry: true });
           assert.deepEqual(yield* Ref.get(committed), []);
         }).pipe(Effect.provide(layerCapture));
       }),
@@ -462,7 +467,12 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
 
       yield* CheckpointCaptureService.CheckpointCaptureServiceV2.pipe(
         Effect.flatMap((service) =>
-          service.execute({ threadId: stoppedThreadId, runId: stoppedRunId, scopeId }),
+          service.execute({
+            threadId: stoppedThreadId,
+            runId: stoppedRunId,
+            scopeId,
+            willRetry: true,
+          }),
         ),
         Effect.provide(layerCapture),
       );
@@ -695,11 +705,13 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
           threadId: cancelledThreadId,
           runId: cancelledRunId,
           scopeId: cancelledScopeId,
+          willRetry: true,
         });
         yield* service.execute({
           threadId: cancelledThreadId,
           runId: cancelledRunId,
           scopeId: cancelledScopeId,
+          willRetry: true,
         });
       }).pipe(Effect.provide(layerCapture));
 
@@ -893,6 +905,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
           threadId: sideChatThreadId,
           runId: sideChatRunId,
           scopeId: sideChatScopeId,
+          willRetry: true,
         }),
       ).pipe(Effect.provide(layerCapture));
 

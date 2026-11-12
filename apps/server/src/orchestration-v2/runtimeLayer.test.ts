@@ -14,6 +14,7 @@ import {
   type ApplicationStoredEvent,
   CheckpointId,
   CheckpointRef,
+  CheckpointScopeId,
   CommandId,
   ContextTransferId,
   DEFAULT_SERVER_SETTINGS,
@@ -5786,6 +5787,69 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       assert.equal(yield* Queue.take(startedRunIds), (yield* runFor("after-stop")).id);
       yield* releasedAfter("after-stop", "probe");
     }),
+  );
+
+  it.effect(
+    "completes a run whose checkpoint capture fails every attempt and starts the queue",
+    () =>
+      Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const threadId = ThreadId.make("runtime-layer-capture-failure-queue");
+        const { send, runFor, startedRunIds } = yield* queueTestThread(threadId);
+        yield* send("finished", "user", true);
+        yield* outbox.cancelUnsettled({
+          threadId,
+          effectTypes: ["provider-turn.start"],
+          reason: "not under test",
+        });
+        const finished = yield* runFor("finished");
+        assert.isNotNull(finished.rootNodeId);
+        const now = yield* DateTime.now;
+        // The provider turn ended: the run waits for its checkpoint, as RunExecutionService leaves it.
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make(`${threadId}:finished:waiting`),
+              type: "run.updated",
+              threadId,
+              runId: finished.id,
+              nodeId: finished.rootNodeId,
+              providerInstanceId: finished.providerInstanceId,
+              occurredAt: now,
+              payload: { ...finished, status: "waiting", startedAt: now },
+            },
+          ],
+        });
+        yield* send("queued", "user", false);
+        assert.equal((yield* runFor("queued")).status, "queued");
+        const captureCommandId = CommandId.make(`command:effect:checkpoint.capture:${finished.id}`);
+        // No such scope: every attempt fails the capture target check.
+        yield* outbox.enqueue([
+          {
+            id: `effect:checkpoint.capture:${finished.id}`,
+            commandId: captureCommandId,
+            threadId,
+            request: {
+              type: "checkpoint.capture",
+              runId: finished.id,
+              scopeId: CheckpointScopeId.make(`${threadId}:missing-scope`),
+            },
+          },
+        ]);
+        for (let attempt = 0; attempt < 5; attempt++) {
+          yield* worker.drain();
+          yield* TestClock.adjust("30 seconds");
+        }
+
+        const [capture] = yield* outbox.listByCommandId(captureCommandId);
+        assert.equal(capture?.status, "failed");
+        const settled = yield* runFor("finished");
+        assert.equal(settled.status, "completed");
+        assert.isNull(settled.checkpointId);
+        assert.equal(yield* Queue.take(startedRunIds), (yield* runFor("queued")).id);
+      }),
   );
 
   it.effect.each(["listener", "startup", "stop"] as const)(
