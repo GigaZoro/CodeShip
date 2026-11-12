@@ -1,3 +1,7 @@
+## 2026-11-12 — One rule decides which turn records stopped background work
+
+- For contributors: a session that closes and a restarted turn now use the same rule to pick the turn that records the background work they stopped. Nothing changes in the app.
+
 ## 2026-11-12 — The updating guide says when a restarted turn hears about stopped work
 
 - The [updating guide](user/updating.md) no longer says that **Stop and send** in a chat's first turn tells the agent about stopped background work only with your next message. The restarted turn is told in every chat.

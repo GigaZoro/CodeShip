@@ -47,8 +47,9 @@ import {
   cancelledRosterTaskWork,
   isAwaitedWork,
   isSettledRun,
-  latestStartedRun,
+  isStarting,
   lostBackgroundWorkRecord,
+  lostWorkRecordRun,
 } from "./RestartBackgroundNote.ts";
 
 export class ProviderEventNormalizeError extends Schema.TaggedError<ProviderEventNormalizeError>()(
@@ -543,14 +544,7 @@ export const layer: Layer.Layer<
       const { runs } = yield* projections.getThreadRecords(threadId, ["runs"]);
       const reporting = runs.find((run) => run.id === input.runId);
       if (reporting === undefined || reporting.providerThreadId !== providerThreadId) return [];
-      const startedAgain = reporting.status === "preparing" || reporting.status === "starting";
-      const run =
-        latestStartedRun(
-          runs.filter(
-            (candidate) => candidate.status !== "preparing" && candidate.status !== "starting",
-          ),
-          providerThreadId,
-        ) ?? reporting;
+      const run = lostWorkRecordRun(runs, providerThreadId) ?? reporting;
       // A session release may have recorded the same work first.
       const recorded = new Set(
         runs.flatMap((candidate) =>
@@ -564,7 +558,7 @@ export const layer: Layer.Layer<
       const cause = input.event.lostBackgroundTasksCause ?? "process-ended";
       return yield* lostBackgroundWorkEvents(input, {
         run,
-        cause: startedAgain && cause === "stopped" ? "turn-restarted" : cause,
+        cause: isStarting(reporting) && cause === "stopped" ? "turn-restarted" : cause,
         work,
       });
     });

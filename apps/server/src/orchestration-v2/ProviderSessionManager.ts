@@ -62,8 +62,8 @@ import {
   cancelledRosterTaskWork,
   isAwaitedWork,
   isSettledRun,
-  latestStartedRun,
   lostBackgroundWorkRecord,
+  lostWorkRecordRun,
 } from "./RestartBackgroundNote.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
@@ -831,9 +831,8 @@ export const layerWithOptions = (
         ReturnType<typeof readReleasedBackgroundTasks>
       >[number];
 
-      // The run that last ran on a released thread records what the release stopped. A run
-      // started again has not rebuilt its prompt, so the run before it takes the record and that
-      // prompt carries the note. Work this release recorded itself still decides the wake.
+      // The run that last ran on a released thread records what the release stopped. Work this
+      // release recorded itself still decides the wake.
       const releasedWorkRecord = Effect.fnUntraced(function* (input: {
         readonly reason: keyof typeof RELEASED_BACKGROUND_WORK;
         readonly threadId: ThreadId;
@@ -862,13 +861,7 @@ export const layerWithOptions = (
           ) ??
           (input.providerThread.ownerNodeId !== null
             ? undefined
-            : latestStartedRun(
-                input.runs.filter(
-                  (candidate) =>
-                    candidate.status !== "preparing" && candidate.status !== "starting",
-                ),
-                input.providerThread.id,
-              ));
+            : lostWorkRecordRun(input.runs, input.providerThread.id));
         if (run === undefined || work.length === 0) {
           return { events: [], effects: [], recorded: [] };
         }

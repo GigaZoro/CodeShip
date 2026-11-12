@@ -319,6 +319,23 @@ export function latestStartedRun(
   );
 }
 
+export const isStarting = (run: Pick<OrchestrationV2Run, "status">) =>
+  run.status === "preparing" || run.status === "starting";
+
+/**
+ * The run that records work a provider thread loses now. A run started again has not rebuilt its
+ * prompt, so the run before it takes the record and that prompt carries the note.
+ */
+export function lostWorkRecordRun(
+  runs: ReadonlyArray<OrchestrationV2Run>,
+  providerThreadId: NonNullable<OrchestrationV2Run["providerThreadId"]>,
+): OrchestrationV2Run | undefined {
+  return latestStartedRun(
+    runs.filter((run) => !isStarting(run)),
+    providerThreadId,
+  );
+}
+
 type ProviderTurnState = Pick<
   OrchestrationV2ProviderTurn,
   "runAttemptId" | "providerThreadId" | "status"
