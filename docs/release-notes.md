@@ -1,3 +1,9 @@
+## 2026-11-13 — An account that works again stops being marked limited, and its stopped chats continue
+
+- A Claude or Codex account stayed marked as usage-limited, and new threads, delegates and Auto avoided it, while runs on it were working again. Only a run that had finished cleared the hold, so a long run that started fine after the limit kept it until it ended or the five-hour hold ran out. A run on that account that started after the refusal now clears the hold as soon as it gets an answer. A refusal that is still true keeps holding the account.
+- A chat stopped by the limit and set to **Resume at reset** now continues where it stopped, within a minute, once its account takes that model again before the reset: a later run there gets an answer, or you press **Try again**. No other account is needed. Before, it waited for the reset, or moved only when another model or account had room. A chat that already moved on since the stop is not resumed again.
+- Agents that resume stopped chats with `t3_thread_send` can pass `continuationOfRunId`. The send then fails when the chat was already resumed from that run, so a chat is never continued twice.
+
 ## 2026-11-13 — A chat sent again after a restart starts, or fails with the reason
 
 - After a restart, a chat whose message was sent again could stay in **Starting** for good, most often a delegated task. Every chat the restart cut starts at the same time, and a few agents that were slow to start held every worker, so the rest never reached their agent. The server now runs more starts at once and keeps workers free for other work while agents start.

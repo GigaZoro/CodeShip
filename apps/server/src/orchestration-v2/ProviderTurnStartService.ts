@@ -1,5 +1,5 @@
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
-import { completedRunLiftsScope } from "./AccountRouting.ts";
+import { runLiftsScope } from "./AccountRouting.ts";
 import { autoCoordinatorBriefInput } from "./autoCoordinatorAccount.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -1796,7 +1796,7 @@ export const layer: Layer.Layer<
                 providers,
                 settings: yield* serverSettings.getSettings,
                 recordedLimits: yield* projectionStore
-                  .getUsageLimitedProviderInstances(now, completedRunLiftsScope(providers))
+                  .getUsageLimitedProviderInstances(now, runLiftsScope(providers))
                   .pipe(
                     Effect.catchCause((cause) =>
                       Effect.logWarning("orchestration-v2.auto-brief.limits-unavailable", {

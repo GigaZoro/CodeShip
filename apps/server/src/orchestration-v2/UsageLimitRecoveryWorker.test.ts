@@ -31,7 +31,7 @@ import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import {
   limitFailoverCommand,
   limitRecoveryCommand,
-  limitRecoveryElsewhere,
+  limitRecoveryTarget,
   signedOutFailoverCommand,
 } from "./UsageLimitRecoveryWorker.ts";
 
@@ -250,7 +250,7 @@ describe("limitFailoverCommand", () => {
   });
 });
 
-describe("limitRecoveryElsewhere", () => {
+describe("limitRecoveryTarget", () => {
   const claudeAgent = ProviderInstanceId.make("claudeAgent");
   const model = (slug: string, name: string) => ({
     slug,
@@ -266,8 +266,12 @@ describe("limitRecoveryElsewhere", () => {
     limitRecovery: { runId, resetAt, autoResume: true },
   };
   const fableHold = { resetAt, refusedAt: "2026-10-29T11:00:00Z", modelScope: "fable" };
-  const elsewhere = (overrides: Partial<Parameters<typeof limitRecoveryElsewhere>[0]> = {}) =>
-    limitRecoveryElsewhere({
+  const named: ProjectionStore.ProjectionLimitRecoveryCandidate = {
+    ...stopped,
+    modelSelection: { instanceId: claudeAgent, model: "claude-fable-5-2" },
+  };
+  const recoveryTarget = (overrides: Partial<Parameters<typeof limitRecoveryTarget>[0]> = {}) =>
+    limitRecoveryTarget({
       thread: stopped,
       settings: {
         ...DEFAULT_SERVER_SETTINGS,
@@ -288,7 +292,7 @@ describe("limitRecoveryElsewhere", () => {
     });
 
   it("resumes an Auto thread now on the Auto model the limit does not hold", () => {
-    const target = elsewhere();
+    const target = recoveryTarget();
     assert.include(target?.selection, { instanceId: claudeAgent, model: "claude-opus-5-5" });
     assert.equal(target?.roomAtMs, now);
     assert.deepInclude(limitRecoveryCommand(stopped, true, now, false, target), {
@@ -304,7 +308,7 @@ describe("limitRecoveryElsewhere", () => {
 
   it("resumes when the Auto model's own limit ends, before the stop's reset", () => {
     const opusFreeAt = now + 60 * 60_000;
-    const target = elsewhere({
+    const target = recoveryTarget({
       recordedLimits: new Map([
         [
           claudeAgent,
@@ -338,23 +342,47 @@ describe("limitRecoveryElsewhere", () => {
         },
       },
     ],
+    ["the thread names the held model", { thread: named }],
     [
-      "the thread names the held model",
+      // Claude gave no reset, so the five-hour hold since 06:00 was a guess that has passed.
+      "a hold with a guessed end",
       {
-        thread: {
-          ...stopped,
-          modelSelection: { instanceId: claudeAgent, model: "claude-fable-5-2" },
-        },
+        thread: named,
+        recordedLimits: new Map([
+          [claudeAgent, [{ resetAt: null, refusedAt: "2026-10-29T06:00:00Z" }]],
+        ]),
       },
     ],
-  ] as const)("waits for the reset when %s", (_, overrides) => {
-    assert.isNull(elsewhere(overrides));
+  ] as const)("waits for a lift where it stopped when %s", (_, overrides) => {
+    const target = recoveryTarget(overrides);
+    assert.equal(target?.roomAtMs, Infinity);
+    assert.isNull(
+      limitRecoveryCommand("thread" in overrides ? named : stopped, true, now, false, target),
+    );
+  });
+
+  it.each([
+    ["its hold lifted", new Map()],
+    [
+      "only another model is held",
+      new Map([[claudeAgent, [{ ...fableHold, modelScope: "opus" }]]]),
+    ],
+  ] as const)("resumes where it stopped before the reset when %s", (_, recordedLimits) => {
+    const target = recoveryTarget({ thread: named, recordedLimits });
+    assert.deepInclude(limitRecoveryCommand(named, true, now, false, target), {
+      type: "message.dispatch",
+      commandId: CommandId.make(
+        "limit-resume:thread:failover:run:failover:1793361600000:legacy:claudeAgent:claude-fable-5-2",
+      ),
+      modelSelection: named.modelSelection,
+      usageLimitContinuationOfRunId: runId,
+    });
   });
 
   it("moves to another account only when the reset is more than minutes away", () => {
     const models = [model("claude-opus-5-5", "Claude Opus 5.5")];
     const accountWide = (resetIso: string) =>
-      elsewhere({
+      recoveryTarget({
         thread: {
           ...stopped,
           modelSelection: { instanceId: claudeAgent, model: "claude-opus-5-5", autoAccount: true },
@@ -380,49 +408,70 @@ describe("limitRecoveryElsewhere", () => {
     );
   });
 
+  const sweepLayer = (input: {
+    readonly candidate: ProjectionStore.ProjectionLimitRecoveryCandidate;
+    readonly limits: () => ReadonlyMap<
+      ProviderInstanceId,
+      ReadonlyArray<ProjectionStore.RecordedUsageLimit>
+    >;
+    readonly dispatched: Queue.Queue<OrchestrationV2ServerCommand>;
+    readonly sweeps?: Queue.Queue<number>;
+  }) =>
+    UsageLimitRecoveryWorker.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Scheduler.layer,
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getSignedOutFailoverCandidates: () => Effect.succeed([]),
+            getLimitRecoveryCandidates: () =>
+              Clock.currentTimeMillis.pipe(
+                Effect.flatMap((nowMs) =>
+                  input.sweeps === undefined ? Effect.void : Queue.offer(input.sweeps, nowMs - now),
+                ),
+                Effect.as([input.candidate]),
+              ),
+            getUsageLimitedProviderInstances: () => Effect.sync(input.limits),
+            getLimitRecoveryWakeAt: () => Effect.succeed(Date.parse(resetAt)),
+          }),
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            dispatch: (command) =>
+              Queue.offer(input.dispatched, command).pipe(Effect.as({} as never)),
+          }),
+          Layer.mock(Orchestrator.OrchestratorV2)({ streamDomainEvents: Stream.never }),
+          Layer.mock(ServerSettings.ServerSettingsService)({
+            getSettings: Effect.succeed({
+              ...DEFAULT_SERVER_SETTINGS,
+              autoModeProvider: claude,
+              autoModeModels: { [claude]: { model: "claude-opus-5-5" } },
+              autoResumeLimitedThreads: true,
+              failoverLimitedThreads: false,
+            }),
+            streamChanges: Stream.never,
+          }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.succeed([
+              provider("claudeAgent", {
+                models: [
+                  model("claude-fable-5-2", "Claude Fable 5.2"),
+                  model("claude-opus-5-5", "Claude Opus 5.5"),
+                ],
+              }),
+            ]),
+            streamChanges: Stream.never,
+          }),
+        ),
+      ),
+    );
+
   it.effect("a sweep resumes it early with account switching off", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(now);
       const dispatched = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
-      const layer = UsageLimitRecoveryWorker.layer.pipe(
-        Layer.provide(
-          Layer.mergeAll(
-            Scheduler.layer,
-            Layer.mock(ProjectionStore.ProjectionStoreV2)({
-              getSignedOutFailoverCandidates: () => Effect.succeed([]),
-              getLimitRecoveryCandidates: () => Effect.succeed([stopped]),
-              getUsageLimitedProviderInstances: () =>
-                Effect.succeed(new Map([[claudeAgent, [fableHold]]])),
-              getLimitRecoveryWakeAt: () => Effect.succeed(Date.parse(resetAt)),
-            }),
-            Layer.mock(ThreadManagement.ThreadManagementService)({
-              dispatch: (command) => Queue.offer(dispatched, command).pipe(Effect.as({} as never)),
-            }),
-            Layer.mock(Orchestrator.OrchestratorV2)({ streamDomainEvents: Stream.never }),
-            Layer.mock(ServerSettings.ServerSettingsService)({
-              getSettings: Effect.succeed({
-                ...DEFAULT_SERVER_SETTINGS,
-                autoModeProvider: claude,
-                autoModeModels: { [claude]: { model: "claude-opus-5-5" } },
-                autoResumeLimitedThreads: true,
-                failoverLimitedThreads: false,
-              }),
-              streamChanges: Stream.never,
-            }),
-            Layer.mock(ProviderRegistry.ProviderRegistry)({
-              getProviders: Effect.succeed([
-                provider("claudeAgent", {
-                  models: [
-                    model("claude-fable-5-2", "Claude Fable 5.2"),
-                    model("claude-opus-5-5", "Claude Opus 5.5"),
-                  ],
-                }),
-              ]),
-              streamChanges: Stream.never,
-            }),
-          ),
-        ),
-      );
+      const layer = sweepLayer({
+        candidate: stopped,
+        limits: () => new Map([[claudeAgent, [fableHold]]]),
+        dispatched,
+      });
       yield* Effect.gen(function* () {
         const command = yield* Queue.take(dispatched);
         assert(command.type === "message.dispatch");
@@ -432,9 +481,32 @@ describe("limitRecoveryElsewhere", () => {
     }),
   );
 
+  it.effect("a sweep resumes it where it stopped within a minute of its hold lifting", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(now);
+      const dispatched = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
+      const sweeps = yield* Queue.unbounded<number>();
+      let limits: ReadonlyMap<
+        ProviderInstanceId,
+        ReadonlyArray<ProjectionStore.RecordedUsageLimit>
+      > = new Map([[claudeAgent, [fableHold]]]);
+      const layer = sweepLayer({ candidate: named, limits: () => limits, dispatched, sweeps });
+      yield* Effect.gen(function* () {
+        assert.equal(yield* Queue.take(sweeps), 0);
+        // A run on the account got an answer: the hold is gone, but no event says so.
+        limits = new Map();
+        yield* TestClock.adjust("1 minute");
+        const command = yield* Queue.take(dispatched);
+        assert(command.type === "message.dispatch");
+        assert.equal(command.usageLimitContinuationOfRunId, runId);
+        assert.deepEqual(command.modelSelection, named.modelSelection);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
   it("never resumes a thread moved to another account since its stop", () => {
     const moved = { ...stopped, providerInstanceId: ProviderInstanceId.make("claude_first") };
-    assert.isNull(limitRecoveryCommand(moved, true, now, false, elsewhere()));
+    assert.isNull(limitRecoveryCommand(moved, true, now, false, recoveryTarget()));
     assert.isNull(limitRecoveryCommand(moved, true, Date.parse(resetAt)));
   });
 });

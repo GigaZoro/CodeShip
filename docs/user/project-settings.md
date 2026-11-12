@@ -110,9 +110,9 @@ whichever of its accounts has usage left.
 Auto adds a compact model brief to every top-level Auto message. It lists native Claude
 models by their supported family aliases. A usage refusal with no reset holds an
 account for five hours, or its shortest reported usage window when that is shorter,
-even for named launches. Fresh usage checks do not lift the hold early; a completed
-run on that account started after the refusal does. A limit Claude attributes to one
-model family holds only that family, until its reset or a completed run of that family.
+even for named launches. Fresh usage checks do not lift the hold early; a run on that account started after the
+refusal that got an answer does. A limit Claude attributes to one model family holds only
+that family, until its reset or until a run of that family gets an answer.
 A used-up usage window without a reset holds for at most the same time, counted from when
 it was first seen used up, and so does the switch to the fallback model.
 

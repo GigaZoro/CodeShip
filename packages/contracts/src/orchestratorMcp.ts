@@ -521,6 +521,12 @@ export const OrchestratorMcpThreadSendInput = Schema.Struct({
   message: OrchestratorMcpPrompt,
   mode: Schema.optional(Schema.Literals(["auto", "queue", "steer", "restart"])),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
+  continuationOfRunId: Schema.optional(
+    RunId.annotate({
+      description:
+        "To resume a stopped run: the send fails unless that run is still the thread's latest and it stopped on a usage limit, a network error or an interrupt.",
+    }),
+  ),
 });
 export type OrchestratorMcpThreadSendInput = typeof OrchestratorMcpThreadSendInput.Type;
 

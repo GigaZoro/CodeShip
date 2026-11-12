@@ -614,10 +614,7 @@ describe("model-scoped refusals", () => {
     ["a later run in its scope lifts it", "claude-opus-4-8", true],
     ["a later run by alias lifts it", "primary", true],
   ] as const)("%s", (_, model, lifts) => {
-    assert.equal(
-      AccountRouting.completedRunLiftsScope([scopedProvider()])(primary, "opus", model),
-      lifts,
-    );
+    assert.equal(AccountRouting.runLiftsScope([scopedProvider()])(primary, "opus", model), lifts);
   });
 
   it.each([

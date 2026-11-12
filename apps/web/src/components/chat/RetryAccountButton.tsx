@@ -8,9 +8,12 @@ import { t } from "~/i18n";
 export function RetryAccountButton({
   onRetry,
   variant = "ghost",
+  resumes = false,
 }: {
   readonly onRetry: () => Promise<void>;
   readonly variant?: "ghost" | "outline";
+  /** The chat is set to resume, so the server continues it once the account has room. */
+  readonly resumes?: boolean;
 }) {
   const [pending, setPending] = useState(false);
   return (
@@ -25,7 +28,9 @@ export function RetryAccountButton({
             toastManager.add({
               type: "success",
               title: t("Account released"),
-              description: t("Send a message to try the account again."),
+              description: resumes
+                ? t("The chat continues on it within a minute.")
+                : t("Send a message to try the account again."),
             }),
           )
           .catch((cause: unknown) =>

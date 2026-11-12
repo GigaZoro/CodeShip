@@ -35,7 +35,7 @@ import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
-import { completedRunLiftsScope } from "./AccountRouting.ts";
+import { runLiftsScope } from "./AccountRouting.ts";
 import {
   backgroundWorkStoppedNoticeId,
   cancelledRosterTaskWork,
@@ -1289,7 +1289,7 @@ it.live("moves a turn its provider holds for a usage limit to an account with ro
         assert.equal(candidate?.status, "running");
         const limitedInstanceIds = yield* projections.getUsageLimitedProviderInstances(
           now,
-          completedRunLiftsScope(providers),
+          runLiftsScope(providers),
         );
         assert.isTrue(limitedInstanceIds.has(providerInstanceId));
         const failover =
@@ -1304,7 +1304,7 @@ it.live("moves a turn its provider holds for a usage limit to an account with ro
                 providers,
                 recordedLimits: yield* projections.getUsageLimitedProviderInstances(
                   now,
-                  completedRunLiftsScope(providers),
+                  runLiftsScope(providers),
                 ),
                 nowMs: DateTime.toEpochMillis(now),
               });
@@ -1332,7 +1332,7 @@ it.live("moves a turn its provider holds for a usage limit to an account with ro
         assert.isUndefined(yield* candidates(true));
         const stillLimited = yield* projections.getUsageLimitedProviderInstances(
           now,
-          completedRunLiftsScope(providers),
+          runLiftsScope(providers),
         );
         assert.isTrue(stillLimited.has(providerInstanceId));
         assert.isFalse(stillLimited.has(targetId));

@@ -5721,6 +5721,107 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       });
       assert.deepEqual([...(yield* store.getUsageLimitedProviderInstances(now, coversScope))], []);
       yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${afterRefusalRunId}`;
+      // A run still working ends the hold once the account answers it: a turn of an attempt
+      // started after the refusal reports token usage.
+      const answeringRunId = RunId.make("run:limit-shell:answering");
+      const answeringNodeId = NodeId.make("node:limit-shell:answering");
+      const answeringAttempt = {
+        id: RunAttemptId.make("attempt:limit-shell:answering"),
+        runId: answeringRunId,
+        attemptOrdinal: 1,
+        rootNodeId: answeringNodeId,
+        providerInstanceId,
+        providerThreadId: ProviderThreadId.make("provider-thread:limit-shell:answering"),
+        providerTurnId: null,
+        reason: "initial" as const,
+        status: "running" as const,
+        startedAt: DateTime.add(now, { minutes: 1 }),
+        completedAt: null,
+      };
+      const answeringTurn = {
+        id: ProviderTurnId.make("provider-turn:limit-shell:answering"),
+        providerThreadId: answeringAttempt.providerThreadId,
+        nodeId: answeringNodeId,
+        runAttemptId: answeringAttempt.id,
+        nativeTurnRef: null,
+        ordinal: 1,
+        status: "running" as const,
+        startedAt: answeringAttempt.startedAt,
+        completedAt: null,
+      };
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:answering"),
+        type: "run.created",
+        threadId,
+        runId: answeringRunId,
+        nodeId: answeringNodeId,
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...original,
+          id: answeringRunId,
+          ordinal: original.ordinal + 4,
+          rootNodeId: answeringNodeId,
+          userMessageId: MessageId.make("message:limit-shell:answering"),
+          activeAttemptId: answeringAttempt.id,
+          status: "running",
+          startedAt: answeringAttempt.startedAt,
+          completedAt: null,
+        },
+      });
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:answering:attempt"),
+        type: "run-attempt.created",
+        threadId,
+        runId: answeringRunId,
+        nodeId: answeringNodeId,
+        driver,
+        occurredAt: now,
+        payload: answeringAttempt,
+      });
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:answering:turn"),
+        type: "provider-turn.updated",
+        threadId,
+        runId: answeringRunId,
+        nodeId: answeringNodeId,
+        driver,
+        occurredAt: now,
+        payload: answeringTurn,
+      });
+      assert.isTrue(
+        (yield* store.getUsageLimitedProviderInstances(now, coversScope)).has(providerInstanceId),
+      );
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:answering:usage"),
+        type: "provider-turn.updated",
+        threadId,
+        runId: answeringRunId,
+        nodeId: answeringNodeId,
+        driver,
+        occurredAt: now,
+        payload: {
+          ...answeringTurn,
+          tokenUsage: {
+            usedTokens: 1_200,
+            inputTokens: 1_000,
+            outputTokens: 200,
+            updatedAt: DateTime.formatIso(answeringAttempt.startedAt),
+          },
+        },
+      });
+      assert.deepEqual([...(yield* store.getUsageLimitedProviderInstances(now, coversScope))], []);
+      // An attempt that started before the refusal shows nothing about it, answered or not.
+      yield* sql`UPDATE orchestration_v2_projection_run_attempts
+        SET payload_json = json_set(payload_json, '$.startedAt', ${DateTime.formatIso(DateTime.subtract(now, { minutes: 1 }))})
+        WHERE attempt_id = ${answeringAttempt.id}`;
+      assert.isTrue(
+        (yield* store.getUsageLimitedProviderInstances(now, coversScope)).has(providerInstanceId),
+      );
+      yield* sql`DELETE FROM orchestration_v2_projection_provider_turns WHERE provider_turn_id = ${answeringTurn.id}`;
+      yield* sql`DELETE FROM orchestration_v2_projection_run_attempts WHERE attempt_id = ${answeringAttempt.id}`;
+      yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${answeringRunId}`;
       yield* store.apply({
         id: EventId.make("event:limit-shell:restore-after-success"),
         type: "turn-item.updated",
@@ -5889,7 +5990,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       const opus = "claude-opus-5-5";
       const addRun = Effect.fnUntraced(function* (
         name: string,
-        status: "failed" | "completed",
+        status: "failed" | "completed" | "running",
         startedMinutes: number,
         model = opus,
       ) {
@@ -5914,10 +6015,64 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             modelSelection: { instanceId: scopedInstanceId, model },
             status,
             startedAt: DateTime.add(now, { minutes: startedMinutes }),
-            completedAt: DateTime.add(now, { minutes: startedMinutes + 1 }),
+            completedAt:
+              status === "running" ? null : DateTime.add(now, { minutes: startedMinutes + 1 }),
           },
         });
         return { runId, rootNodeId };
+      });
+      const answer = Effect.fnUntraced(function* (
+        run: { readonly runId: RunId; readonly rootNodeId: NodeId },
+        startedMinutes: number,
+      ) {
+        const attemptId = RunAttemptId.make(`attempt:scoped-refusals:${run.runId}`);
+        const providerThreadId = ProviderThreadId.make(
+          `provider-thread:scoped-refusals:${run.runId}`,
+        );
+        const startedAt = DateTime.add(now, { minutes: startedMinutes });
+        yield* store.apply({
+          id: EventId.make(`event:scoped-refusals:${run.runId}:attempt`),
+          type: "run-attempt.created",
+          threadId,
+          runId: run.runId,
+          nodeId: run.rootNodeId,
+          driver,
+          occurredAt: startedAt,
+          payload: {
+            id: attemptId,
+            runId: run.runId,
+            attemptOrdinal: 1,
+            rootNodeId: run.rootNodeId,
+            providerInstanceId: scopedInstanceId,
+            providerThreadId,
+            providerTurnId: null,
+            reason: "initial",
+            status: "running",
+            startedAt,
+            completedAt: null,
+          },
+        });
+        yield* store.apply({
+          id: EventId.make(`event:scoped-refusals:${run.runId}:answer`),
+          type: "provider-turn.updated",
+          threadId,
+          runId: run.runId,
+          nodeId: run.rootNodeId,
+          driver,
+          occurredAt: startedAt,
+          payload: {
+            id: ProviderTurnId.make(`provider-turn:scoped-refusals:${run.runId}`),
+            providerThreadId,
+            nodeId: run.rootNodeId,
+            runAttemptId: attemptId,
+            nativeTurnRef: null,
+            ordinal: 1,
+            status: "running",
+            startedAt,
+            completedAt: null,
+            tokenUsage: { usedTokens: 900, updatedAt: DateTime.formatIso(startedAt) },
+          },
+        });
       });
       const refuse = Effect.fnUntraced(function* (
         run: { readonly runId: RunId; readonly rootNodeId: NodeId },
@@ -6007,6 +6162,26 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         }
       }
       assert.lengthOf(laterReads, 3);
+      // Answers come from the account's attempts since the refusal, each probed for a turn with
+      // usage, not from a walk over every attempt or turn.
+      const answeredReads = statements.filter((statement) =>
+        statement.includes("orchestration_v2_projection_run_attempts answered_attempt"),
+      );
+      assert.lengthOf(answeredReads, 3);
+      for (const statement of answeredReads) {
+        const lookups = (yield* sql.unsafe<{ readonly detail: string }>(
+          `EXPLAIN QUERY PLAN ${statement}`,
+        ))
+          .map((row) => row.detail)
+          .filter((detail) => /^(?:SCAN|SEARCH) answered(?:_attempt)?\b/.test(detail));
+        assert.deepEqual(
+          new Set(lookups),
+          new Set([
+            "SEARCH answered_attempt USING INDEX orchestration_v2_projection_run_attempts_account_started_idx (provider_instance_id=? AND <expr>>?)",
+            "SEARCH answered EXISTS USING INDEX orchestration_v2_projection_provider_turns_answered_attempt_idx (run_attempt_id=?)",
+          ]),
+        );
+      }
       // Refusals come from the hold-end index range, not a walk over every failed item.
       const refusalRead = statements.find((statement) => statement.includes("WITH refusals AS"));
       assert.isDefined(refusalRead);
@@ -6018,10 +6193,33 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       assert.deepEqual(refusalLookups, [
         "SEARCH failure USING INDEX orchestration_v2_projection_turn_items_usage_limit_hold_end_idx (<expr>>?)",
       ]);
-      const laterCoveredRun = yield* addRun("later-covered", "completed", 40);
+      // A run still working lifts it once the account answers it, and only in scope.
+      const answeredOtherRun = yield* addRun("answered-other", "running", 40, "claude-haiku-4-5");
+      yield* answer(answeredOtherRun, 40);
+      // A restart onto Opus keeps the run and supersedes the Haiku attempt that answered.
+      yield* sql`UPDATE orchestration_v2_projection_runs
+        SET payload_json = json_set(payload_json, '$.modelSelection.model', ${opus})
+        WHERE run_id = ${answeredOtherRun.runId}`;
+      yield* sql`UPDATE orchestration_v2_projection_run_attempts
+        SET status = 'superseded', payload_json = json_set(payload_json, '$.status', 'superseded')
+        WHERE run_id = ${answeredOtherRun.runId}`;
+      const laterCoveredRun = yield* addRun("later-covered", "running", 41);
+      assert.deepEqual(yield* scoped(), [
+        { resetAt: "2099-01-01T00:00:00.000Z", refusedAt: later, modelScope: "opus" },
+      ]);
+      yield* answer(laterCoveredRun, 41);
       assert.isUndefined(yield* scoped());
-      for (const run of [earlierRun, coveredRun, laterRun, ...otherRuns, laterCoveredRun]) {
+      for (const run of [
+        earlierRun,
+        coveredRun,
+        laterRun,
+        ...otherRuns,
+        answeredOtherRun,
+        laterCoveredRun,
+      ]) {
         yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${run.runId}`;
+        yield* sql`DELETE FROM orchestration_v2_projection_run_attempts WHERE run_id = ${run.runId}`;
+        yield* sql`DELETE FROM orchestration_v2_projection_provider_turns WHERE node_id = ${run.rootNodeId}`;
       }
     }),
   );

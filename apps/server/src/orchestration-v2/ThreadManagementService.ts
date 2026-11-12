@@ -148,6 +148,8 @@ export interface ThreadManagementSendInput {
   readonly attachments: ReadonlyArray<ChatAttachment>;
   readonly modelSelection?: ModelSelection;
   readonly mode: ThreadManagementSendMode;
+  /** Starts only while this stopped run is still the thread's latest (see the Orchestrator). */
+  readonly manualContinuationOfRunId?: RunId;
   readonly createdBy: OrchestrationV2Actor;
   readonly creationSource: OrchestrationV2CreationSource;
 }
@@ -930,6 +932,9 @@ const make = Effect.gen(function* () {
       text: input.text,
       attachments: input.attachments,
       ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
+      ...(input.manualContinuationOfRunId === undefined
+        ? {}
+        : { manualContinuationOfRunId: input.manualContinuationOfRunId }),
       dispatchMode,
       createdBy: input.createdBy,
       creationSource: input.creationSource,

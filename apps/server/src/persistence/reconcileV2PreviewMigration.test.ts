@@ -66,6 +66,7 @@ describe("V2 preview upgrade", () => {
         [84, "SharedSettingVersionDriver"],
         [85, "UsageLimitHoldLifts"],
         [86, "ScheduledTaskRunConditions"],
+        [87, "UsageLimitAnsweredAttempts"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -175,6 +176,7 @@ describe("V2 preview upgrade", () => {
         [84, "SharedSettingVersionDriver"],
         [85, "UsageLimitHoldLifts"],
         [86, "ScheduledTaskRunConditions"],
+        [87, "UsageLimitAnsweredAttempts"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

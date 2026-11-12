@@ -16,9 +16,12 @@ type Outcome = { readonly ok: true } | { readonly ok: false; readonly message: s
 export function RetryAccountButton({
   environmentId,
   instanceId,
+  resumes = false,
 }: {
   readonly environmentId: EnvironmentId;
   readonly instanceId: ProviderInstanceId;
+  /** The chat is set to resume, so the server continues it once the account has room. */
+  readonly resumes?: boolean;
 }) {
   const retryUsageLimit = useAtomCommand(serverEnvironment.retryUsageLimit, {
     reportFailure: false,
@@ -68,7 +71,11 @@ export function RetryAccountButton({
           <Text
             className={outcome.ok ? "text-sm text-foreground-muted" : "text-sm text-destructive"}
           >
-            {outcome.ok ? t("Send a message to try the account again.") : outcome.message}
+            {outcome.ok
+              ? resumes
+                ? t("The chat continues on it within a minute.")
+                : t("Send a message to try the account again.")
+              : outcome.message}
           </Text>
         </View>
       ) : null}

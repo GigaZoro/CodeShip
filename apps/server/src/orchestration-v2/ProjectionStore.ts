@@ -595,8 +595,9 @@ export interface ProjectionStoreV2Shape {
   }) => Effect.Effect<ReadonlyArray<ProjectionSignedOutCandidate>, ProjectionStoreV2Error>;
   /**
    * Usage refusals that can still hold an account: a reset still ahead, or an unknown reset within
-   * the longest hold (five hours). A completed run on the account started after the refusal drops
-   * it; for a model-scoped one, only a run whose model `coversScope`.
+   * the longest hold (five hours). Work on the account started after the refusal drops it, once it
+   * completed or the provider answered it with token usage; for a model-scoped refusal, only work
+   * whose model `coversScope`.
    */
   readonly getUsageLimitedProviderInstances: (
     now: DateTime.Utc,
@@ -817,7 +818,7 @@ export interface RecordedUsageLimit {
   readonly modelScope?: string;
 }
 
-/** Whether a completed run of `model` on the account shows a refusal limited to `scope` has room again. */
+/** Whether work on `model` that the account finished or answered shows a `scope` refusal has room. */
 export type UsageScopeMatcher = (
   instanceId: ProviderInstanceId,
   scope: string,
@@ -1173,7 +1174,7 @@ const encodeTimelineSources = Schema.encodeEffect(
 );
 const encodeIdList = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
 // One page of the later models an account's model-scoped refusals are checked against.
-const LATER_COMPLETED_MODELS_PAGE = 32;
+const LATER_MODELS_PAGE = 32;
 
 // Empty filters still scan SQLite rows; short-circuit them, including turnItemTypes: [].
 const matchesNothing = (...filters: ReadonlyArray<ReadonlyArray<unknown> | undefined>) =>
@@ -4311,8 +4312,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
 
-    // The model-scoped refusals on one account that a completed run in their scope, started after
-    // them, lifts. Reads each later model once with its latest start, from the earliest refusal.
+    // The model-scoped refusals on one account that later work in their scope lifts: a completed
+    // run or an answered attempt, started after them. Reads each later model once with its latest
+    // start, from the earliest refusal.
     const liftedScopedRefusals = Effect.fn("ProjectionStore.liftedScopedRefusals")(function* <
       Refusal extends { readonly refused_at: string; readonly model_scope: string },
     >(
@@ -4327,19 +4329,38 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       let after = "";
       while (held.size > 0) {
         // A run started after the refusal also completed after it, so completed_at only narrows
-        // the index range; the start decides.
+        // the index range; the start decides. An answered attempt counts with its run's model only
+        // until a restart supersedes it: the restart can move the run to another model or account.
         const models = yield* sql<{ readonly model: string; readonly started_at: string }>`
-          SELECT json_extract(later.payload_json, '$.modelSelection.model') AS model,
-            MAX(json_extract(later.payload_json, '$.startedAt')) AS started_at
-          FROM orchestration_v2_projection_runs later
-          WHERE later.provider_instance_id = ${instanceId}
-            AND later.status = 'completed'
-            AND later.completed_at > ${since}
-            AND julianday(json_extract(later.payload_json, '$.startedAt')) > julianday(${since})
-            AND json_extract(later.payload_json, '$.modelSelection.model') > ${after}
+          SELECT model, MAX(started_at) AS started_at FROM (
+            SELECT json_extract(later.payload_json, '$.modelSelection.model') AS model,
+              json_extract(later.payload_json, '$.startedAt') AS started_at
+            FROM orchestration_v2_projection_runs later
+            WHERE later.provider_instance_id = ${instanceId}
+              AND later.status = 'completed'
+              AND later.completed_at > ${since}
+              AND julianday(json_extract(later.payload_json, '$.startedAt')) > julianday(${since})
+            UNION ALL
+            SELECT json_extract(answered_run.payload_json, '$.modelSelection.model'),
+              json_extract(answered_attempt.payload_json, '$.startedAt')
+            FROM orchestration_v2_projection_run_attempts answered_attempt
+            INNER JOIN orchestration_v2_projection_runs answered_run
+              ON answered_run.run_id = answered_attempt.run_id
+            WHERE answered_attempt.provider_instance_id = ${instanceId}
+              AND answered_attempt.status <> 'superseded'
+              AND json_extract(answered_attempt.payload_json, '$.startedAt') > ${since}
+              AND julianday(json_extract(answered_attempt.payload_json, '$.startedAt'))
+                > julianday(${since})
+              AND EXISTS (
+                SELECT 1 FROM orchestration_v2_projection_provider_turns answered
+                WHERE answered.run_attempt_id = answered_attempt.attempt_id
+                  AND json_extract(answered.payload_json, '$.tokenUsage') IS NOT NULL
+              )
+          )
+          WHERE model > ${after}
           GROUP BY model
           ORDER BY model
-          LIMIT ${LATER_COMPLETED_MODELS_PAGE}
+          LIMIT ${LATER_MODELS_PAGE}
         `;
         for (const refusal of held) {
           const refusedMs = Date.parse(refusal.refused_at);
@@ -4352,7 +4373,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           )
             held.delete(refusal);
         }
-        if (models.length < LATER_COMPLETED_MODELS_PAGE) break;
+        if (models.length < LATER_MODELS_PAGE) break;
         after = models.at(-1)!.model;
       }
       return refusals.filter((refusal) => !held.has(refusal));
@@ -4374,8 +4395,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     )(
       function* (now: DateTime.Utc, coversScope: UsageScopeMatcher) {
         // Every failure counts, so an account that refused one thread is skipped for all of them.
-        // A run on that account started after the refusal and completed lifts it early, as when
-        // the account's sign-in changed; for a model-scoped refusal only a run in its scope does.
+        // Work on that account started after the refusal lifts it early, as when the account's
+        // sign-in changed or its plan reset: a completed run, or an attempt the provider answered
+        // with token usage while it still runs. For a model-scoped refusal only work in its scope.
         const nowIso = DateTime.formatIso(now);
         const rows = yield* sql<{
           readonly provider_instance_id: string;
@@ -4436,14 +4458,25 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 WHERE lift.provider_instance_id = limited.provider_instance_id
                   AND julianday(lift.lifted_at) >= julianday(limited.refused_at)
               )
-              AND (model_scope IS NOT NULL OR NOT EXISTS (
+              AND (model_scope IS NOT NULL OR (NOT EXISTS (
                 SELECT 1 FROM orchestration_v2_projection_runs later
                 WHERE later.provider_instance_id = limited.provider_instance_id
                   AND later.status = 'completed'
                   AND later.completed_at > limited.refused_at
                   AND julianday(json_extract(later.payload_json, '$.startedAt'))
                     > julianday(limited.refused_at)
-              ))
+              ) AND NOT EXISTS (
+                SELECT 1 FROM orchestration_v2_projection_run_attempts answered_attempt
+                WHERE answered_attempt.provider_instance_id = limited.provider_instance_id
+                  AND json_extract(answered_attempt.payload_json, '$.startedAt') > limited.refused_at
+                  AND julianday(json_extract(answered_attempt.payload_json, '$.startedAt'))
+                    > julianday(limited.refused_at)
+                  AND EXISTS (
+                    SELECT 1 FROM orchestration_v2_projection_provider_turns answered
+                    WHERE answered.run_attempt_id = answered_attempt.attempt_id
+                      AND json_extract(answered.payload_json, '$.tokenUsage') IS NOT NULL
+                  )
+              )))
           )
           SELECT provider_instance_id, reset_at, refused_at, code, model_scope
           FROM held WHERE priority = 1

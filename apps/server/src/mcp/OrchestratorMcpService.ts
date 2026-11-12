@@ -3960,6 +3960,9 @@ const make = Effect.gen(function* () {
           text: input.message,
           attachments: [],
           mode,
+          ...(input.continuationOfRunId === undefined
+            ? {}
+            : { manualContinuationOfRunId: input.continuationOfRunId }),
           createdBy: "agent",
           creationSource: "mcp",
         })

@@ -63,11 +63,11 @@ const canonicalModel = (provider: ServerProvider, slug: string) =>
   resolveSelectableModel(provider.driver, slug, provider.models) ?? slug;
 
 /**
- * Whether a later completed run lifts a model-scoped refusal: its model, aliases resolved, is in
- * the scope. No snapshot lifts one: partial updates refresh `checkedAt` without the window they
- * omit, so a stale bar under 100% could end the hold early.
+ * Whether later work, completed or answered, lifts a model-scoped refusal: its model, aliases
+ * resolved, is in the scope. No snapshot lifts one: partial updates refresh `checkedAt` without the
+ * window they omit, so a stale bar under 100% could end the hold early.
  */
-export function completedRunLiftsScope(
+export function runLiftsScope(
   providers: ReadonlyArray<ServerProvider>,
 ): ProjectionStore.UsageScopeMatcher {
   return (instanceId, scope, model) => {
@@ -273,11 +273,12 @@ export function modelWithRoom(
 }
 
 /**
- * When a turn on `selection` can start, when it would run on another account or model than the
- * stopped run: now if that account has room for it, else when the last limit holding it ends.
- * Null when it would run where the run stopped, or that account cannot run it.
+ * When a stopped run's next turn on `selection` can start: now if that account has room for it,
+ * else when the last limit holding it ends. Where the run stopped, Infinity while any refusal
+ * recorded there holds it, whatever its end: only a lift shows room there, since resuming when a
+ * guessed end passes would refuse again every hour. Null when that account cannot run it.
  */
-export function roomElsewhereAt(
+export function recoveryRoomAt(
   input: AccountRoutingContext & {
     readonly selection: ModelSelection;
     readonly projectId: ProjectId;
@@ -289,12 +290,16 @@ export function roomElsewhereAt(
   );
   if (provider === undefined) return null;
   const model = usableModel(provider, { ...input, model: input.selection.model });
+  if (model === null) return null;
   if (
-    model === null ||
-    (provider.instanceId === input.stopped.instanceId &&
-      model === canonicalModel(provider, input.stopped.model))
+    provider.instanceId === input.stopped.instanceId &&
+    model === canonicalModel(provider, input.stopped.model) &&
+    (input.recordedLimits.get(provider.instanceId) ?? []).some(
+      (refusal) =>
+        refusal.modelScope === undefined || usageScopeCoversModel(refusal.modelScope, model),
+    )
   )
-    return null;
+    return Infinity;
   return accountLimitEnd(provider, input.recordedLimits, input.nowMs, model) ?? input.nowMs;
 }
 
@@ -679,7 +684,7 @@ export const layer = Layer.effect(
     );
     // Limits only steer and warn; a failed read leaves every account usable.
     const readLimits = (now: DateTime.Utc, providers: ReadonlyArray<ServerProvider>) =>
-      projections.getUsageLimitedProviderInstances(now, completedRunLiftsScope(providers)).pipe(
+      projections.getUsageLimitedProviderInstances(now, runLiftsScope(providers)).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("orchestration-v2.account-routing.limits-unavailable", {
             cause,
@@ -853,7 +858,7 @@ export const layer = Layer.effect(
         const now = yield* DateTime.now;
         const providers = yield* providerRegistry.getProviders;
         const recorded = yield* projections
-          .getUsageLimitedProviderInstances(now, completedRunLiftsScope(providers))
+          .getUsageLimitedProviderInstances(now, runLiftsScope(providers))
           .pipe(Effect.orDie);
         return usageHolds(providers, recorded, DateTime.toEpochMillis(now));
       }).pipe(Effect.withSpan("AccountRouting.holds")),

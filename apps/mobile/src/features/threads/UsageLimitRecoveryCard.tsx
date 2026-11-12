@@ -90,7 +90,11 @@ export function UsageLimitRecoveryCard({
           </Text>
           {instanceId ? (
             <View className="flex-row flex-wrap gap-2">
-              <RetryAccountButton environmentId={environmentId} instanceId={instanceId} />
+              <RetryAccountButton
+                environmentId={environmentId}
+                instanceId={instanceId}
+                resumes={Boolean(scheduled) && !snoozed}
+              />
               <Button
                 label={t("Switch sign-in")}
                 tone="secondary"

@@ -74,7 +74,12 @@ export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBann
       ),
       actions: (
         <>
-          {props.onRetryAccount ? <RetryAccountButton onRetry={props.onRetryAccount} /> : null}
+          {props.onRetryAccount ? (
+            <RetryAccountButton
+              onRetry={props.onRetryAccount}
+              resumes={resumeScheduled(props) && !snoozedUntilReset(props)}
+            />
+          ) : null}
           {props.signInSettings ? (
             <Button
               size="xs"
@@ -113,22 +118,31 @@ export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBann
   };
 }
 
-function RecoveryActions({ runId, resetAt, recovery, snoozedUntil, onChange }: RecoveryProps) {
-  const [pending, setPending] = useState(false);
+function resumeScheduled({ runId, resetAt, recovery }: RecoveryProps): boolean {
+  return recovery?.runId === runId && recovery.resetAt === resetAt && recovery.autoResume;
+}
 
-  const scheduled =
-    recovery?.runId === runId && recovery.resetAt === resetAt && recovery.autoResume;
-  // The server leaves snoozedUntil in place after the timer wakes the thread,
-  // so a snooze whose reset has passed is no longer active.
-  const resetPassed = useDeadlinePassed(resetAt === null ? null : Date.parse(resetAt));
-  const snoozed =
+/** A snooze holds the chat until the reset, even when its account has room sooner. */
+function snoozedUntilReset({ runId, resetAt, recovery, snoozedUntil }: RecoveryProps): boolean {
+  return (
     recovery?.snooze === true &&
     recovery.runId === runId &&
     recovery.resetAt === resetAt &&
     resetAt !== null &&
     snoozedUntil !== null &&
-    Date.parse(snoozedUntil) === Date.parse(resetAt) &&
-    !resetPassed;
+    Date.parse(snoozedUntil) === Date.parse(resetAt)
+  );
+}
+
+function RecoveryActions(props: RecoveryProps) {
+  const { runId, resetAt, onChange } = props;
+  const [pending, setPending] = useState(false);
+
+  const scheduled = resumeScheduled(props);
+  // The server leaves snoozedUntil in place after the timer wakes the thread,
+  // so a snooze whose reset has passed is no longer active.
+  const resetPassed = useDeadlinePassed(resetAt === null ? null : Date.parse(resetAt));
+  const snoozed = snoozedUntilReset(props) && !resetPassed;
   async function toggle(action: "resume" | "snooze") {
     if (resetAt === null) return;
     if (action === "snooze" && !snoozed && Date.parse(resetAt) <= Date.now()) {

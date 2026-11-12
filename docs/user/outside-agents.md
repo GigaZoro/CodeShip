@@ -62,7 +62,7 @@ Then choose what the agent may do:
   or CodeShip's hold end when no reset was reported. That hold lasts five hours from
   the refusal, or the account's shortest reported usage window when that is shorter.
   It expires even when usage reporting is unavailable. A newer usage check does not
-  clear it early; a completed run on that account started after the refusal does.
+  clear it early; a run on that account started after the refusal that got an answer does.
   A used-up usage window with no reset holds the same way, for at most that hold from
   when CodeShip first saw it used up.
   Named targets, including targets supplied in Auto's brief, obey the same hold as
@@ -70,7 +70,7 @@ Then choose what the agent may do:
   Provider-only targets keep the parent's account and effort while it can run the
   model, then use the saved account order. A provider-attributed limit on
   one model family is marked with `usageLimited: true` on that family's models alone.
-  It lifts at its reset, or early after a completed run of one of them. Project-disabled
+  It lifts at its reset, or early once a run of one of them gets an answer. Project-disabled
   accounts cannot run child tasks; API-key accounts remain available for explicit tasks.
 
 ## Claude Code

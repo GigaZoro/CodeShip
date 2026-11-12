@@ -11656,6 +11656,7 @@ const catalog: MessageCatalog = {
     "Не вдалося зберегти захоплене вікно в чернетку.",
   "The captured window is too large to attach.": "Захоплене вікно завелике для додавання.",
   "The car’s microphone": "Мікрофон автомобіля",
+  "The chat continues on it within a minute.": "Чат продовжиться на ньому протягом хвилини.",
   "The chat could not be started. Try again.": "Не вдалося запустити чат. Спробуйте ще раз.",
   "The chat goes back to before this message, and the message returns to the message box for you to change. Your files can stay as they are now, or go back to how they were before this message. Going back also undoes any changes you made to them yourself since then.":
     "Чат повернеться до стану перед цим повідомленням, а саме повідомлення повернеться в поле повідомлення, щоб ви могли його змінити. Файли можуть залишитися такими, як зараз, або повернутися до стану перед цим повідомленням. Повернення також скасує зміни, які ви внесли в них самі відтоді.",

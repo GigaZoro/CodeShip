@@ -458,7 +458,9 @@ the continuation finishes.
 When the provider reports a reset time, choose **Resume at reset** to schedule a
 continuation. You can cancel it from the thread. When the limit holds only one model,
 such as Claude's weekly Fable window, the thread continues sooner if its next turn runs
-another model with room: Auto's model for an Auto thread, or a model you picked since. In **Settings → Threads →
+another model with room: Auto's model for an Auto thread, or a model you picked since. It
+also continues where it stopped, within a minute, once that account takes its model again
+before the reset: a later run there gets an answer, or you press **Try again**. In **Settings → Threads →
 When a thread hits a usage limit**, choose **Resume when the limit resets** to
 schedule limit stops by default.
 The environment must be running when the reset arrives; it resumes overdue
@@ -491,10 +493,10 @@ until it resets. When the provider gives no reset, CodeShip holds the account fo
 hours from the refusal, or for its shortest reported usage window when that is shorter.
 Five hours is the session window for Claude and ChatGPT subscriptions. A newer usage
 check showing room does not shorten this hold; a run on that account that started
-after the refusal and completed does. When Claude attributes the limit to one model
-family's weekly window, such as Opus, only that family is held. A completed run of a
-model in that family lifts it early; a run of another model, or a newer usage check, does
-not. Agent launches (`t3_thread_launch`,
+after the refusal and got an answer does, even while it is still working. When Claude
+attributes the limit to one model family's weekly window, such as Opus, only that family
+is held. A run of a model in that family that got an answer lifts it early; a run of
+another model, or a newer usage check, does not. Agent launches (`t3_thread_launch`,
 `delegate_task`, `create_threads`), Auto and named, respect the hold; a thread you create
 in the app is not refused. Used-up usage windows still block until the last of them
 resets. A used-up window that reports no reset blocks for at most the same hold, counted
