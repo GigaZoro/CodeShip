@@ -1,3 +1,7 @@
+## 2026-11-12 — The updating guide says when a restarted turn hears about stopped work
+
+- The [updating guide](user/updating.md) no longer says that **Stop and send** in a chat's first turn tells the agent about stopped background work only with your next message. The restarted turn is told in every chat.
+
 ## 2026-11-12 — A chat is told about stopped background work even when a turn starts at that moment
 
 - An agent could miss the note about background work that stopped with its session when a new turn started while that session was still closing, or when the server had to retry saving what stopped. The note counted as told once any later turn finished, although no message had carried it. The server now records which message told the agent about each piece of stopped work, and keeps the note until a turn that carried it has finished.

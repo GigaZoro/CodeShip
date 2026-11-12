@@ -151,7 +151,7 @@ such as a dev server and its watchdog, do not wake it either. In those cases the
 learns what stopped with your next message. After **Edit from here** or **Retry** that
 leaves out work started by the messages you removed. **Stop and send**, and a turn moved
 to another account during a usage limit, restart the running turn and end its process too:
-the restarted turn is told, or in a chat's first turn, your next message.
+the restarted turn is told.
 An interrupted `/compact` compacts again. An approval or secret the restart
 cancelled is asked for again when the thread resumes. A question the agent asked
 stays open for your answer, which continues the thread. A thread is not resumed
