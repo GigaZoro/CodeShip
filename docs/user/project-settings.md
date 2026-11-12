@@ -306,24 +306,33 @@ A task's **Runs** choice keeps a copy of it on each of your machines:
 - **Every machine** runs it on each machine, on its own schedule, in its own
   time zone. Uncheck a machine to keep the task off it; a machine you connect
   later gets the task too.
-- **One machine** runs each occurrence once, on the first machine in the
-  project's machine order that is online and finishes it. Each later machine
-  waits a few minutes per place in the order, then asks the machines ahead of
-  it. It runs the task only when none of them ran it, or their run failed, for
-  example when a machine is offline or out of usage. While a machine ahead is
-  still running it, the later machine keeps asking every few minutes and runs
-  the task itself if that run fails or the machine stops answering, until the
-  next run is due. A run you or an agent stop stays stopped. The order belongs
-  to the project, so changing it in one task changes it for every one-machine
-  task in that project. Agents read it from `list_scheduled_tasks`
-  (`machineOrder`) and set it with `schedule_task` (`machineOrder`).
+- **One machine** runs each occurrence at most once, on the first machine in
+  the project's machine order that is online. Each machine waits a few minutes
+  per place in the order, asks the other machines whether one has the time, and
+  claims it on every machine it reaches. It runs the task only when none of them
+  has it, or their run failed (for example when a machine is offline or out of
+  usage), and more than half of the machines recorded its claim. While another
+  machine is still running it, the machine keeps asking every few minutes and
+  runs the task itself if that run fails, until the next run is due. A run you
+  or an agent stop stays stopped. A fixed time is the same time on machines in
+  different time zones, each at its own local hour, so it still runs once. The
+  order belongs to the project, so changing it in one task changes it for every
+  one-machine task in that project. A machine missing from the order adds
+  itself and its linked machines, sorted by their ids. Until a change to the
+  order has reached every machine, which takes a few minutes, two machines may
+  both run one time, so change it away from a run's time. Agents read the order
+  from `list_scheduled_tasks` (`machineOrder`) and set it with `schedule_task`
+  (`machineOrder`).
 
-For **One machine**, each machine needs a link to every machine ahead of it in
-the order, made in **Settings → Machines & access → Linked environments** on
-that machine (see [Linked environments](remote-access.md)). The editor and the
-task's badge warn about a missing, expired, or turned-off link. A machine that
-can't reach one runs the task anyway, so you may get an extra run but never a
-missed one.
+For **One machine**, link each machine to every other machine in the order, in
+**Settings → Machines & access → Linked environments** on that machine (see
+[Linked environments](remote-access.md)), with more than read-only access. The
+editor and the task's badge warn about a missing, expired, or turned-off link.
+When too few machines answer, the time runs nowhere rather than twice, and
+**Run history** says so: with three or more machines, more than half must
+reach each other; with two, the first runs alone and the second runs nothing
+while the first is off. Remove a machine you no longer use from the order, or
+it still counts.
 
 Copies sync while T3.CodeShip on web, desktop, or mobile is connected to both
 machines. A machine that links to another also fetches newer copies from it

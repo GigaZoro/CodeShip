@@ -1,6 +1,7 @@
 import {
   type EnvironmentId,
   type PeerLinkError,
+  OrchestratorMcpClaimScheduledTaskOccurrenceResult,
   OrchestratorMcpListScheduledTasksResult,
   type ScheduledTaskId,
 } from "@t3tools/contracts";
@@ -28,6 +29,19 @@ export interface PeerCheckResult {
   readonly working: boolean;
   /** `ranOn` skipped it because its run condition found no work, and why. */
   readonly noWork: { readonly reason: string | null } | null;
+  /** Machines that could not be asked, and why. */
+  readonly unchecked: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly reason: string;
+  }>;
+}
+
+export interface PeerClaimResult {
+  /** The machines that answered, in the order asked, with the holder each one records after the call. */
+  readonly answered: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly holder: EnvironmentId;
+  }>;
   /** Machines that could not be asked, and why. */
   readonly unchecked: ReadonlyArray<{
     readonly environmentId: EnvironmentId;
@@ -63,6 +77,18 @@ export class SharedTaskPeerCheck extends Context.Service<
       readonly peers: ReadonlyArray<EnvironmentId>;
       readonly since: string;
     }) => Effect.Effect<PeerCheckResult>;
+    /**
+     * Records on each peer's copy that `holder` holds an occurrence of a one-machine task, when it
+     * is free there or held by `replaces`.
+     */
+    readonly claim: (input: {
+      readonly taskId: ScheduledTaskId;
+      /** When the occurrence was due. */
+      readonly occurrence: string;
+      readonly holder: EnvironmentId;
+      readonly replaces: EnvironmentId | null;
+      readonly peers: ReadonlyArray<EnvironmentId>;
+    }) => Effect.Effect<PeerClaimResult>;
   }
 >()("t3/scheduledTasks/SharedTaskPeerCheck") {}
 
@@ -91,26 +117,27 @@ const make = Effect.gen(function* () {
     Effect.map(({ links: stored }) => stored.map((link) => link.environmentId)),
   );
 
+  // Why a machine cannot be asked, from the stored link rather than `list`, which first probes
+  // every linked machine; null when it can.
+  const linkProblem = Effect.fnUntraced(function* (environmentId: EnvironmentId) {
+    if (!(yield* links.enabled)) return "Linked environments is turned off here.";
+    const link = yield* links.get(environmentId).pipe(Effect.orElseSucceed(Option.none));
+    if (Option.isNone(link)) return "This machine is not linked.";
+    if (DateTime.isLessThanOrEqualTo(link.value.expiresAt, yield* DateTime.now)) {
+      return "The link has expired.";
+    }
+    return null;
+  });
+
   const check: SharedTaskPeerCheck["Service"]["check"] = Effect.fn("SharedTaskPeerCheck.check")(
     function* (input) {
       if (input.peers.length === 0) {
         return { ranOn: null, working: false, noWork: null, unchecked: [] };
       }
-      const unreachable = (reason: string) => (environmentId: EnvironmentId) =>
-        Effect.succeed<PeerAnswer>({ environmentId, reason, has: null, noWork: null });
-      const enabled = yield* links.enabled;
-      const now = yield* DateTime.now;
-      // The stored link, not `list`, which first probes every linked machine.
       const askOne = Effect.fnUntraced(function* (environmentId: EnvironmentId) {
-        if (!enabled) {
-          return yield* unreachable("Linked environments is turned off here.")(environmentId);
-        }
-        const link = yield* links.get(environmentId).pipe(Effect.orElseSucceed(Option.none));
-        if (Option.isNone(link)) {
-          return yield* unreachable("This machine is not linked.")(environmentId);
-        }
-        if (DateTime.isLessThanOrEqualTo(link.value.expiresAt, now)) {
-          return yield* unreachable("The link has expired.")(environmentId);
+        const problem = yield* linkProblem(environmentId);
+        if (problem !== null) {
+          return { environmentId, reason: problem, has: null, noWork: null } satisfies PeerAnswer;
         }
         return yield* client
           .call({
@@ -188,7 +215,49 @@ const make = Effect.gen(function* () {
     },
   );
 
-  return SharedTaskPeerCheck.of({ linkedEnvironmentIds, linkStatus, check });
+  const claim: SharedTaskPeerCheck["Service"]["claim"] = Effect.fn("SharedTaskPeerCheck.claim")(
+    function* (input) {
+      const askOne = Effect.fnUntraced(function* (
+        environmentId: EnvironmentId,
+      ): Effect.fn.Return<
+        PeerClaimResult["answered"][number] | PeerClaimResult["unchecked"][number]
+      > {
+        const problem = yield* linkProblem(environmentId);
+        if (problem !== null) return { environmentId, reason: problem };
+        return yield* client
+          .callIfAvailable({
+            environmentId,
+            tool: "t3_claim_scheduled_task_occurrence",
+            arguments: {
+              scheduledTaskId: input.taskId,
+              occurrence: input.occurrence,
+              holder: input.holder,
+              replaces: input.replaces,
+            },
+            limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
+            success: OrchestratorMcpClaimScheduledTaskOccurrenceResult,
+          })
+          .pipe(
+            Effect.timeoutOption(PeerMcpClient.PEER_READ_TIMEOUT),
+            Effect.map((answer) =>
+              Option.isNone(answer)
+                ? { environmentId, reason: "It did not answer in time." }
+                : Option.isNone(answer.value)
+                  ? { environmentId, reason: "It runs an older version of T3.CodeShip." }
+                  : { environmentId, holder: answer.value.value.holder },
+            ),
+            Effect.catch((error) => Effect.succeed({ environmentId, reason: error.message })),
+          );
+      });
+      const answers = yield* Effect.forEach(input.peers, askOne, { concurrency: "unbounded" });
+      return {
+        answered: answers.flatMap((answer) => ("holder" in answer ? [answer] : [])),
+        unchecked: answers.flatMap((answer) => ("reason" in answer ? [answer] : [])),
+      };
+    },
+  );
+
+  return SharedTaskPeerCheck.of({ linkedEnvironmentIds, linkStatus, check, claim });
 });
 
 export const layer = Layer.effect(SharedTaskPeerCheck, make);

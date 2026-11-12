@@ -122,6 +122,7 @@ const codexAdditionalContext = () =>
 // Only another environment's peer link sees these, never an agent.
 const PEER_LINK_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "t3_shared_scheduled_tasks",
+  "t3_claim_scheduled_task_occurrence",
   "t3_shared_settings",
   "t3_link_back",
 ]);

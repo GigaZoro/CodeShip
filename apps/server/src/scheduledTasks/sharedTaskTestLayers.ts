@@ -25,6 +25,7 @@ const layerNoPeersRan = Layer.mock(SharedTaskPeerCheck.SharedTaskPeerCheck)({
   linkedEnvironmentIds: Effect.succeed([]),
   linkStatus: Effect.succeed({ enabled: false, links: [] }),
   check: () => Effect.succeed({ ranOn: null, working: false, noWork: null, unchecked: [] }),
+  claim: () => Effect.succeed({ answered: [], unchecked: [] }),
 });
 
 /** A run condition that always finds work, so a task with one runs as it would without. */

@@ -4344,6 +4344,68 @@ describe("OrchestratorMcpService provider resolution", () => {
         }),
       );
 
+      it.effect(
+        "lets a linked machine claim a shared task run only for itself or from itself",
+        () =>
+          Effect.gen(function* () {
+            const claims = yield* Ref.make<ReadonlyArray<unknown>>([]);
+            const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+              Effect.provide(
+                service(
+                  masterRepository,
+                  yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]),
+                  [{ ...existing, lastRunAt: "2026-11-12T07:35:01.000Z", lastRunStatus: "failed" }],
+                  {},
+                  {
+                    claimOccurrence: (input) =>
+                      Ref.update(claims, (all) => [...all, input]).pipe(Effect.as(input.holder)),
+                  },
+                ),
+              ),
+            );
+            const peer = (linkedFrom: EnvironmentId): McpInvocationScope => ({
+              ...client,
+              client: { ...client.client!, linked: true, linkedFrom },
+            });
+            const claim = (
+              scope: McpInvocationScope,
+              holder: EnvironmentId,
+              replaces: EnvironmentId | null,
+            ) =>
+              mcp.claimScheduledTaskOccurrence(scope, {
+                scheduledTaskId: existing.id,
+                occurrence: "2026-11-12T07:35:00.000Z",
+                holder,
+                replaces,
+              });
+            const refused = yield* Effect.all([
+              claim(client, work, null).pipe(Effect.flip),
+              claim(peer(cpc), work, null).pipe(Effect.flip),
+              claim(peer(cpc), work, client.environmentId).pipe(Effect.flip),
+            ]);
+            assert.deepEqual(
+              refused.map((error) => error.code),
+              ["capability_denied", "capability_denied", "capability_denied"],
+            );
+            assert.deepEqual(yield* claim(peer(cpc), cpc, null), { holder: cpc });
+            assert.deepEqual(yield* claim(peer(cpc), work, cpc), { holder: work });
+            // Taking over from another machine tells the service whether this one's last run failed.
+            assert.deepEqual(yield* claim(peer(cpc), cpc, work), { holder: cpc });
+            const asked = (holder: EnvironmentId, replaces: EnvironmentId | null) => ({
+              taskId: existing.id,
+              occurrence: "2026-11-12T07:35:00.000Z",
+              holder,
+              replaces,
+              by: cpc,
+            });
+            assert.deepEqual(yield* Ref.get(claims), [
+              { ...asked(cpc, null), lastRunFailed: false },
+              { ...asked(work, cpc), lastRunFailed: false },
+              { ...asked(cpc, work), lastRunFailed: true },
+            ]);
+          }),
+      );
+
       it.effect("excludes a machine this one does not link to but whose copies it serves", () =>
         run([sharedTask(sharing([]))], (mcp, saves) =>
           Effect.gen(function* () {

@@ -102,6 +102,11 @@ function skipReasonText(
       return run.ranOn === null
         ? t("Another machine ran it.")
         : t("{machine} ran it.", { machine: machineLabel(run.ranOn) });
+    case "unconfirmed":
+      return t(
+        "{machine} couldn't reach enough of the other machines to make sure no other machine would run it, so it didn't run it.",
+        { machine },
+      );
     default:
       return run.skipReason;
   }

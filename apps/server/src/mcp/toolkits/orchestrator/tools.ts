@@ -3,6 +3,8 @@ import {
   OrchestratorMcpAskUserResult,
   OrchestratorMcpCapabilitiesInput,
   OrchestratorMcpCapabilitiesResult,
+  OrchestratorMcpClaimScheduledTaskOccurrenceInput,
+  OrchestratorMcpClaimScheduledTaskOccurrenceResult,
   OrchestrationV2StopWorkflowInput,
   OrchestratorMcpEnvironmentLinkInput,
   OrchestratorMcpEnvironmentLinkResult,
@@ -207,6 +209,21 @@ const SharedScheduledTasksTool = Tool.make("t3_shared_scheduled_tasks", {
 })
   .annotate(Tool.Title, "Read shared scheduled tasks")
   .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.visibleToPeerLinks);
+
+const ClaimScheduledTaskOccurrenceTool = Tool.make("t3_claim_scheduled_task_occurrence", {
+  description:
+    "For a linked machine: record which machine runs one occurrence of a shared task that runs on one machine.",
+  parameters: OrchestratorMcpClaimScheduledTaskOccurrenceInput,
+  success: OrchestratorMcpClaimScheduledTaskOccurrenceResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Claim a shared task occurrence")
+  .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
   .annotate(McpSchema.EnabledWhen, McpInvocationContext.visibleToPeerLinks);
@@ -426,6 +443,7 @@ export const OrchestratorToolkit = Toolkit.make(
   ScheduleTaskTool,
   ListScheduledTasksTool,
   SharedScheduledTasksTool,
+  ClaimScheduledTaskOccurrenceTool,
   SharedSettingsTool,
   DeleteScheduledTaskTool,
   RequestSecretTool,

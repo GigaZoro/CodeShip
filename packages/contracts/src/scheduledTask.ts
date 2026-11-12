@@ -255,17 +255,17 @@ export const ScheduledTaskRunOutcome = Schema.Literals([
 ]);
 export type ScheduledTaskRunOutcome = typeof ScheduledTaskRunOutcome.Type;
 
-/**
- * `missed`: the app was off or asleep at the time and catching up is off.
- * `next_run_sooner`: it was missed, and the next run is nearer than the missed one.
- * `ran_elsewhere`: a one-machine task another machine ran.
- * `no_work`: the task's run condition found nothing to do.
- */
 export const ScheduledTaskRunSkipReason = Schema.Literals([
+  /** The app was off or asleep at the time and catching up is off. */
   "missed",
+  /** It was missed, and the next run is nearer than the missed one. */
   "next_run_sooner",
+  /** Another machine ran this one-machine task. */
   "ran_elsewhere",
+  /** The task's run condition found nothing to do. */
   "no_work",
+  /** Too few of the machines answered to confirm this one-machine task was free to run here. */
+  "unconfirmed",
 ]);
 export type ScheduledTaskRunSkipReason = typeof ScheduledTaskRunSkipReason.Type;
 
@@ -407,6 +407,16 @@ export function scheduledTaskSharedProjectKey(project: ScheduledTaskSharedProjec
   return project.type === "none" ? "none" : `repository:${project.canonicalKey}`;
 }
 
+/**
+ * The machine order a project starts from. A machine missing from the saved order stores it with
+ * itself and its linked machines appended in this order, so every machine counts the same members.
+ */
+export function defaultScheduledTaskMachineOrder(
+  environmentIds: ReadonlyArray<EnvironmentId>,
+): ReadonlyArray<EnvironmentId> {
+  return [...new Set(environmentIds)].sort();
+}
+
 /** `every`: each machine runs every occurrence. `one`: one machine runs each, in the project's machine order. */
 export const ScheduledTaskSharedRunOn = Schema.Literals(["every", "one"]);
 export type ScheduledTaskSharedRunOn = typeof ScheduledTaskSharedRunOn.Type;
@@ -438,8 +448,10 @@ export const ScheduledTaskOneMachineDecision = Schema.Struct({
   at: IsoDateTime,
   /** The machine that already ran or is running it, when this one skipped; null when this one ran it. */
   ranOn: Schema.NullOr(EnvironmentId),
-  /** Machines this one could not ask, and why. It ran the task anyway. */
+  /** Machines this one could not ask, and why. */
   unchecked: Schema.Array(Schema.Struct({ environmentId: EnvironmentId, reason: Schema.String })),
+  /** This one skipped it: too few of the machines answered to confirm it was free to run here. */
+  unconfirmed: Schema.optional(Schema.Boolean),
 });
 export type ScheduledTaskOneMachineDecision = typeof ScheduledTaskOneMachineDecision.Type;
 

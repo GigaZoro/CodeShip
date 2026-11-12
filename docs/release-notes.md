@@ -1,3 +1,11 @@
+## 2026-11-13 — A shared task that runs on one machine no longer runs on several at once
+
+- A shared task set to **One machine** could run on every machine for the same time. When a project had no saved machine order, each machine counted itself first, so they all started together. A machine that could not reach the machines ahead of it also ran the task anyway, and so did one whose link only timed out while the machine ahead was still running it.
+- A machine missing from the order now saves it with itself and its linked machines added, sorted by their ids, so every machine counts the same machines once the order has reached them all, within minutes. Each time is claimed on every machine a machine can reach, and a machine runs the task only when more than half of the machines recorded its claim (of two machines, the first alone is enough). When too few answer, the time runs nowhere instead of twice, and **Run history** says too few machines answered. A fixed time is claimed by its local hour, so machines in different time zones, which reach it at different moments, claim the same time, and every machine, the first included, also asks the others whether they already ran it.
+- A machine takes over a time from another only when that machine's own claim agrees: once that machine gave the time up, or its run of it failed after its chat started. A machine that is slow to start the run, or stops answering while it runs it, keeps it, and a claim stays in place after a later time is claimed. Links between these machines need more than read-only access, since a claim is written there.
+- The task editor now shows the machine order the machines actually use when the project has none saved.
+- See [Shared scheduled tasks](user/project-settings.md#shared-scheduled-tasks).
+
 ## 2026-11-12 — An agent is told when its background subagents end with its process
 
 - A Claude chat that waits on a background subagent is now told when the agent process running it ends: on its own, with **Stop**, **Stop and send**, **Edit from here** or **Retry**, or when its session is closed. Before, these closes recorded only the chat's background commands and monitors, so the chat could keep waiting for a subagent that would never report back, until the next server restart.

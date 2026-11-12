@@ -21,6 +21,7 @@ import {
   oneMachineLinkWarnings,
   mergeMachineOrder,
   moveMachine,
+  seedMachineOrder,
   visibleMachineOrder,
   toggleSharedExclusion,
   type SharedScheduledTaskOp,
@@ -274,6 +275,16 @@ describe("shared editor helpers", () => {
 describe("machine order helpers", () => {
   it("lists machines in order, then those the order lacks", () => {
     expect(visibleMachineOrder([C, A], [A, B, C])).toEqual([C, A, B]);
+  });
+
+  it("seeds the order the servers run in: the stored order, then the rest sorted", () => {
+    const stored = (order: ReadonlyArray<EnvironmentId>): ScheduledTaskProjectMachineOrder => ({
+      project: { type: "none" },
+      order,
+      revision: rev("1"),
+    });
+    expect(seedMachineOrder(null, [C, A], B)).toEqual([A, B, C]);
+    expect(seedMachineOrder(stored([C]), [A, B], B)).toEqual([C, A, B]);
   });
 
   it("moves a machine and stops at the ends", () => {

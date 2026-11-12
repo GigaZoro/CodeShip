@@ -162,6 +162,15 @@ const handlers = {
       return yield* service.sharedScheduledTasks(scope, input);
     }),
   ),
+  t3_claim_scheduled_task_occurrence: McpToolAccess.writes(
+    (input) =>
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        return yield* service.claimScheduledTaskOccurrence(scope, input);
+      }),
+    { linkedCallers: "allowed" },
+  ),
   t3_shared_settings: McpToolAccess.reads(() =>
     Effect.gen(function* () {
       const shared = yield* SharedSettings.SharedSettings;

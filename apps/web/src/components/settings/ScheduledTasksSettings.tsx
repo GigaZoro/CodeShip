@@ -1612,6 +1612,9 @@ function lastOneMachineDecisionLabel(
   const decision = view.oneMachine ? task.lastOneMachineDecision : null;
   if (!decision) return null;
   const time = new Date(decision.at).toLocaleString(getFormattingLocale());
+  if (decision.unconfirmed === true) {
+    return t("Skipped {time}: too few machines answered to confirm it", { time });
+  }
   return decision.ranOn === null
     ? t("{machine} ran it last, at {time}", { machine: view.labelOf(environmentId), time })
     : t("Skipped {time}: {machine} ran it", { time, machine: view.labelOf(decision.ranOn) });

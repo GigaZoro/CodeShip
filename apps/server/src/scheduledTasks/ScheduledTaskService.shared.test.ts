@@ -533,10 +533,11 @@ it.effect("a machine that stops pulling for 30 days is no longer one copies reac
 
 const HOUR_MS = 3_600_000;
 const MINUTE_MS = 60_000;
-const oneMachineShared = (machineOrder: string[]) => ({
+/** A null order stores none for the project. */
+const oneMachineShared = (machineOrder: string[] | null) => ({
   excludedEnvironmentIds: [],
   runOn: "one",
-  machineOrder,
+  ...(machineOrder === null ? {} : { machineOrder }),
 });
 
 const FINISHED_THERE: SharedTaskPeerCheck.PeerCheckResult = {
@@ -550,7 +551,8 @@ const NO_WORK_THERE: SharedTaskPeerCheck.PeerCheckResult = {
   noWork: { reason: "No open pull requests" },
 };
 const WORKING_THERE: SharedTaskPeerCheck.PeerCheckResult = { ...FINISHED_THERE, working: true };
-const FAILED_THERE: SharedTaskPeerCheck.PeerCheckResult = {
+/** The asked machines have no run of the occurrence; a failed one counts as none. */
+const NO_RUN_THERE: SharedTaskPeerCheck.PeerCheckResult = {
   ranOn: null,
   working: false,
   noWork: null,
@@ -563,17 +565,27 @@ const SILENT_THERE: SharedTaskPeerCheck.PeerCheckResult = {
   unchecked: [{ environmentId: OTHER as never, reason: "It did not answer in time." }],
 };
 
+const UNREACHABLE = "unreachable";
+/** A peer's copy of the occurrence claims, by peer: who holds it there, or that it can't be reached. */
+type PeerCopies = ReadonlyMap<string, string | typeof UNREACHABLE>;
+
 // The task is due one hour after NOW. Each tick fires at `atMs`, and `settled` waits for the
 // change the tick published, so nothing polls. A list of answers is given out in turn, the last
-// one repeating.
+// one repeating. Peers record claims as a real copy would: one gives its own claim away only
+// when it is in `failed`, its run of the occurrence having failed.
 const runScenario = <A, E>(
-  machineOrder: string[],
+  machineOrder: string[] | null,
   peers: SharedTaskPeerCheck.PeerCheckResult | ReadonlyArray<SharedTaskPeerCheck.PeerCheckResult>,
   body: (scenario: {
     readonly service: ScheduledTaskService.ScheduledTaskService["Service"];
     readonly sql: SqlClient.SqlClient;
     readonly launches: Queue.Queue<unknown>;
     readonly peerCalls: Ref.Ref<ReadonlyArray<{ peers: ReadonlyArray<string>; since: string }>>;
+    readonly peerCopies: Ref.Ref<PeerCopies>;
+    readonly failed: Ref.Ref<ReadonlySet<string>>;
+    /** The occurrence each claim sent to peers named. */
+    readonly peerClaims: Ref.Ref<ReadonlyArray<string>>;
+    readonly linked: Ref.Ref<ReadonlyArray<string>>;
     readonly tick: (atMs: number) => Effect.Effect<void>;
     readonly settled: Effect.Effect<void>;
   }) => Effect.Effect<A, E>,
@@ -587,8 +599,12 @@ const runScenario = <A, E>(
     const peerCalls = yield* Ref.make<
       ReadonlyArray<{ peers: ReadonlyArray<string>; since: string }>
     >([]);
+    const peerCopies = yield* Ref.make<PeerCopies>(new Map());
+    const failed = yield* Ref.make<ReadonlySet<string>>(new Set());
+    const peerClaims = yield* Ref.make<ReadonlyArray<string>>([]);
+    const linked = yield* Ref.make<ReadonlyArray<string>>([]);
     const peerCheck = Layer.mock(SharedTaskPeerCheck.SharedTaskPeerCheck)({
-      linkedEnvironmentIds: Effect.succeed([]),
+      linkedEnvironmentIds: Ref.get(linked) as Effect.Effect<ReadonlyArray<never>>,
       linkStatus: Effect.succeed({ enabled: false, links: [] }),
       check: (input) =>
         Ref.updateAndGet(peerCalls, (calls) => [
@@ -597,6 +613,33 @@ const runScenario = <A, E>(
         ]).pipe(
           Effect.map((calls) =>
             "ranOn" in peers ? peers : peers[Math.min(calls.length, peers.length) - 1]!,
+          ),
+        ),
+      claim: (input) =>
+        Ref.update(peerClaims, (claims) => [...claims, input.occurrence]).pipe(
+          Effect.andThen(Ref.get(failed)),
+          Effect.flatMap((failedThere) =>
+            Ref.modify(peerCopies, (copies) => {
+              const next = new Map(copies);
+              const answer: {
+                answered: SharedTaskPeerCheck.PeerClaimResult["answered"][number][];
+                unchecked: SharedTaskPeerCheck.PeerClaimResult["unchecked"][number][];
+              } = { answered: [], unchecked: [] };
+              for (const environmentId of input.peers) {
+                const held = copies.get(environmentId);
+                if (held === UNREACHABLE) {
+                  answer.unchecked.push({ environmentId, reason: "It did not answer in time." });
+                  continue;
+                }
+                const takesOver =
+                  held === input.replaces &&
+                  (held !== environmentId || failedThere.has(environmentId));
+                const holder = held === undefined || takesOver ? input.holder : held;
+                next.set(environmentId, holder);
+                answer.answered.push({ environmentId, holder: holder as never });
+              }
+              return [answer, next];
+            }),
           ),
         ),
     });
@@ -624,6 +667,10 @@ const runScenario = <A, E>(
             sql,
             launches,
             peerCalls,
+            peerCopies,
+            failed,
+            peerClaims,
+            linked,
             tick: (atMs) =>
               TestClock.setTime(atMs).pipe(Effect.andThen(TestClock.adjust("6 seconds"))),
             settled: Queue.take(changes),
@@ -674,32 +721,6 @@ it.effect("a later machine waits its turn, then skips an occurrence an earlier m
   ),
 );
 
-it.effect(
-  "a later machine runs the occurrence when no earlier machine has it, noting who it could not ask",
-  () =>
-    runScenario(
-      [OTHER, HERE_ENVIRONMENT_ID],
-      {
-        ranOn: null,
-        working: false,
-        noWork: null,
-        unchecked: [{ environmentId: OTHER as never, reason: "This machine is not linked." }],
-      },
-      (scenario) =>
-        Effect.gen(function* () {
-          yield* scenario.tick(DUE + 1_000);
-          yield* scenario.settled;
-          yield* scenario.tick(DUE + 5 * MINUTE_MS + 1_000);
-          yield* Queue.take(scenario.launches);
-          const decision = (yield* taskOf(scenario.service))?.lastOneMachineDecision;
-          expect(decision?.ranOn).toBeNull();
-          expect(decision?.unchecked).toEqual([
-            { environmentId: OTHER, reason: "This machine is not linked." },
-          ]);
-        }),
-    ),
-);
-
 it.effect.each([
   { name: "has it", peers: FINISHED_THERE, checks: 0, check: null },
   {
@@ -708,7 +729,7 @@ it.effect.each([
     checks: 0,
     check: { outcome: "skip", failure: null, exitCode: null, detail: "No open pull requests" },
   },
-  { name: "does not have it", peers: FAILED_THERE, checks: 1, check: null },
+  { name: "does not have it", peers: NO_RUN_THERE, checks: 1, check: null },
 ])(
   "a later machine runs its own check only when an earlier machine $name",
   ({ peers, checks, check }) =>
@@ -748,7 +769,7 @@ it.effect("the first machine's own no-work skip moves the task to its next align
     const ran = yield* Ref.make(0);
     yield* runScenario(
       [HERE_ENVIRONMENT_ID, OTHER],
-      FINISHED_THERE,
+      NO_RUN_THERE,
       (scenario) =>
         Effect.gen(function* () {
           const skipped = yield* scenario.service.subscribeList().pipe(
@@ -771,17 +792,55 @@ it.effect("the first machine's own no-work skip moves the task to its next align
   }),
 );
 
-it.effect("the first machine in the order runs on time without asking anyone", () =>
-  runScenario([HERE_ENVIRONMENT_ID, OTHER], FINISHED_THERE, (scenario) =>
-    Effect.gen(function* () {
-      yield* scenario.tick(DUE + 1_000);
-      yield* Queue.take(scenario.launches);
-      expect(yield* Ref.get(scenario.peerCalls)).toEqual([]);
-    }),
-  ),
+it.effect(
+  "the first machine in the order runs on time once no other machine ran it and the copies agree",
+  () =>
+    runScenario([HERE_ENVIRONMENT_ID, OTHER], NO_RUN_THERE, (scenario) =>
+      Effect.gen(function* () {
+        yield* scenario.tick(DUE + 1_000);
+        yield* Queue.take(scenario.launches);
+        expect(yield* Ref.get(scenario.peerCalls)).toEqual([
+          { peers: [OTHER], since: iso(DUE - 30 * MINUTE_MS) },
+        ]);
+        expect((yield* Ref.get(scenario.peerCopies)).get(OTHER)).toBe(HERE_ENVIRONMENT_ID);
+      }),
+    ),
 );
 
-it.effect("the first machine asks first when it is late", () =>
+const dueLocal = DateTime.toParts(
+  DateTime.makeZonedUnsafe(DUE, { timeZone: DateTime.zoneMakeLocal() }),
+);
+const two = (value: number) => String(value).padStart(2, "0");
+
+// Each machine reaches a fixed time at its own local hour, so a claim names the hour, not the instant.
+it.effect(
+  "a fixed time is claimed from peers by its local wall-clock time, which names the same occurrence here",
+  () =>
+    runScenario(
+      [HERE_ENVIRONMENT_ID, OTHER, MIDDLE],
+      NO_RUN_THERE,
+      (scenario) =>
+        Effect.gen(function* () {
+          yield* scenario.tick(DUE + 1_000);
+          yield* Queue.take(scenario.launches);
+          const slot = `${dueLocal.year}-${two(dueLocal.month)}-${two(dueLocal.day)}T${two(dueLocal.hour)}:${two(dueLocal.minute)}`;
+          expect(yield* Ref.get(scenario.peerClaims)).toEqual([slot]);
+          expect(
+            yield* scenario.service.claimOccurrence({
+              taskId: "scheduled-task:shared" as ScheduledTaskId,
+              occurrence: slot,
+              holder: OTHER as never,
+              replaces: null,
+              by: OTHER as never,
+            }),
+          ).toBe(HERE_ENVIRONMENT_ID);
+        }),
+      { type: "fixed_time", timeOfDay: `${two(dueLocal.hour)}:${two(dueLocal.minute)}` },
+    ),
+);
+
+// A machine in another time zone reaches a fixed time first, so being first proves nothing.
+it.effect("the first machine skips an occurrence another machine already ran", () =>
   runScenario([HERE_ENVIRONMENT_ID, OTHER], FINISHED_THERE, (scenario) =>
     Effect.gen(function* () {
       // The scheduler ticks every 5 seconds, so lateness needs a due time already in the past.
@@ -862,14 +921,264 @@ const fireWhenDue = (scenario: {
     Effect.andThen(scenario.settled),
   );
 
+const MIDDLE = "environment-middle";
+const unreachable = (...environmentIds: string[]): SharedTaskPeerCheck.PeerCheckResult => ({
+  ranOn: null,
+  working: false,
+  noWork: null,
+  unchecked: environmentIds.map((environmentId) => ({
+    environmentId: environmentId as never,
+    reason: "It did not answer in time.",
+  })),
+});
+const claimsOf = (sql: SqlClient.SqlClient) =>
+  sql<{ occurrence_at: string; holder_environment_id: string }>`
+    SELECT occurrence_at, holder_environment_id FROM scheduled_task_occurrence_claims`;
+
+// Each machine of three sees only its own copy, so none holds a majority: no one runs it rather
+// than all three. Of two, the first machine's copy is the deciding half.
 it.effect.each([
-  { name: "fails", answers: [WORKING_THERE, FAILED_THERE], runsHere: true },
+  { name: "first of three", order: [HERE_ENVIRONMENT_ID, OTHER, MIDDLE], runs: false },
+  { name: "second of three", order: [OTHER, HERE_ENVIRONMENT_ID, MIDDLE], runs: false },
+  { name: "third of three", order: [OTHER, MIDDLE, HERE_ENVIRONMENT_ID], runs: false },
+  { name: "first of two", order: [HERE_ENVIRONMENT_ID, OTHER], runs: true },
+  { name: "second of two", order: [OTHER, HERE_ENVIRONMENT_ID], runs: false },
+])(
+  "with every link down, the machine $name in the order runs the occurrence only if it is first of two",
+  ({ order, runs }) =>
+    runScenario(order, unreachable(OTHER, MIDDLE), (scenario) =>
+      Effect.gen(function* () {
+        yield* Ref.set(
+          scenario.peerCopies,
+          new Map([
+            [OTHER, UNREACHABLE],
+            [MIDDLE, UNREACHABLE],
+          ]),
+        );
+        if (runs) {
+          yield* scenario.tick(DUE + 1_000);
+          yield* Queue.take(scenario.launches);
+          expect(yield* claimsOf(scenario.sql)).toEqual([
+            { occurrence_at: iso(DUE), holder_environment_id: HERE_ENVIRONMENT_ID },
+          ]);
+          return;
+        }
+        // Wait its turn, then find no machine to confirm the occurrence is free.
+        if (order[0] !== HERE_ENVIRONMENT_ID) yield* fireWhenDue(scenario);
+        yield* fireWhenDue(scenario);
+        expect(yield* Queue.size(scenario.launches)).toBe(0);
+        expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(DUE + HOUR_MS));
+        expect(yield* claimsOf(scenario.sql)).toEqual([]);
+        const runRecords = (yield* scenario.service.listRuns({
+          id: "scheduled-task:shared" as ScheduledTaskId,
+        })).runs;
+        expect(runRecords).toMatchObject([
+          { outcome: "skipped", skipReason: "unconfirmed", ranOn: null, scheduledFor: iso(DUE) },
+        ]);
+        const decision = (yield* taskOf(scenario.service))?.lastOneMachineDecision;
+        expect(decision).toMatchObject({ ranOn: null, unconfirmed: true });
+      }),
+    ),
+);
+
+// The other side of a split that cuts off the first machine, which runs nothing on its own.
+it.effect(
+  "with the first machine down, the next one runs once the third machine's copy makes a majority",
+  () =>
+    runScenario([OTHER, HERE_ENVIRONMENT_ID, MIDDLE], unreachable(OTHER), (scenario) =>
+      Effect.gen(function* () {
+        yield* Ref.set(scenario.peerCopies, new Map([[OTHER, UNREACHABLE]]));
+        yield* fireWhenDue(scenario);
+        yield* scenario.tick(Date.parse((yield* nextRunAtOf(scenario.sql))!) + 1_000);
+        yield* Queue.take(scenario.launches);
+        expect((yield* Ref.get(scenario.peerCopies)).get(MIDDLE)).toBe(HERE_ENVIRONMENT_ID);
+        const decision = (yield* taskOf(scenario.service))?.lastOneMachineDecision;
+        expect(decision).toMatchObject({
+          ranOn: null,
+          unchecked: [{ environmentId: OTHER, reason: "It did not answer in time." }],
+        });
+      }),
+    ),
+);
+
+// Handing on only toward the front keeps two machines from handing their copies to each other.
+it.effect.each([
+  { name: "ahead of it", order: [OTHER, MIDDLE, HERE_ENVIRONMENT_ID], kept: MIDDLE },
+  { name: "behind it", order: [HERE_ENVIRONMENT_ID, OTHER, MIDDLE], kept: HERE_ENVIRONMENT_ID },
+])(
+  "a machine without a majority hands its copy only to a holder $name, and watches that one",
+  ({ order, kept }) =>
+    runScenario(order, NO_RUN_THERE, (scenario) =>
+      Effect.gen(function* () {
+        // The middle machine claimed two copies, but its run is not in its list yet.
+        yield* Ref.set(
+          scenario.peerCopies,
+          new Map([
+            [OTHER, MIDDLE],
+            [MIDDLE, MIDDLE],
+          ]),
+        );
+        if (order[0] !== HERE_ENVIRONMENT_ID) yield* fireWhenDue(scenario);
+        const askedAt = Date.parse((yield* nextRunAtOf(scenario.sql))!);
+        yield* fireWhenDue(scenario);
+        expect(yield* Queue.size(scenario.launches)).toBe(0);
+        expect(yield* claimsOf(scenario.sql)).toEqual([
+          { occurrence_at: iso(DUE), holder_environment_id: kept },
+        ]);
+        expect((yield* taskOf(scenario.service))?.lastOneMachineDecision?.ranOn).toBe(MIDDLE);
+        // It asks the holder again a grace later.
+        expect(Date.parse((yield* nextRunAtOf(scenario.sql))!)).toBeGreaterThanOrEqual(
+          askedAt + 5 * MINUTE_MS,
+        );
+      }),
+    ),
+);
+
+it.effect(
+  "a claim recorded here keeps a later machine off the occurrence when it reaches no one",
+  () =>
+    runScenario([OTHER, HERE_ENVIRONMENT_ID, MIDDLE], unreachable(OTHER, MIDDLE), (scenario) =>
+      Effect.gen(function* () {
+        yield* Ref.set(
+          scenario.peerCopies,
+          new Map([
+            [OTHER, UNREACHABLE],
+            [MIDDLE, UNREACHABLE],
+          ]),
+        );
+        // The first machine's claim reached this one before the links failed.
+        yield* scenario.service.claimOccurrence({
+          taskId: "scheduled-task:shared" as ScheduledTaskId,
+          occurrence: iso(DUE),
+          holder: OTHER as never,
+          replaces: null,
+          by: OTHER as never,
+        });
+        yield* fireWhenDue(scenario);
+        yield* fireWhenDue(scenario);
+        expect(yield* Queue.size(scenario.launches)).toBe(0);
+        expect((yield* taskOf(scenario.service))?.lastOneMachineDecision?.ranOn).toBe(OTHER);
+      }),
+    ),
+);
+
+// Every machine must count the same members, so the order is stored and shared like an edit.
+it.effect.each([
+  { name: "first", linked: ["environment-zulu"], runs: true },
+  { name: "second", linked: ["environment-alpha"], runs: false },
+])(
+  "with no machine order stored, a machine stores the sorted one and takes its place ($name here)",
+  ({ linked, runs }) =>
+    runScenario(null, NO_RUN_THERE, (scenario) =>
+      Effect.gen(function* () {
+        yield* Ref.set(scenario.linked, linked);
+        yield* scenario.tick(DUE + 1_000);
+        if (runs) {
+          yield* Queue.take(scenario.launches);
+        } else {
+          yield* scenario.settled;
+          expect(yield* Queue.size(scenario.launches)).toBe(0);
+          expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(DUE + 5 * MINUTE_MS));
+        }
+        const [stored] = yield* scenario.sql<{ order_json: string }>`
+          SELECT order_json FROM scheduled_task_project_machine_orders`;
+        expect(JSON.parse(stored!.order_json)).toEqual([HERE_ENVIRONMENT_ID, ...linked].toSorted());
+      }),
+    ),
+);
+
+// Age never frees a claim: a run still being claimed or started looks idle to the machines
+// watching it, and only the holder's own copy knows that it gave the occurrence up or its run failed.
+it.effect(
+  "a claim takes a free occurrence, and this machine's own claim goes only once it gave the occurrence up or its run of it failed in a chat",
+  () =>
+    withService(
+      (service, sql) =>
+        Effect.gen(function* () {
+          const taskId = "scheduled-task:shared" as ScheduledTaskId;
+          yield* service.upsert(
+            upsertInput({
+              shared: oneMachineShared([OTHER, MIDDLE, HERE_ENVIRONMENT_ID]),
+              schedule: { type: "interval", everyMs: HOUR_MS },
+            }),
+          );
+          const claimAt =
+            (occurrence: number) =>
+            (holder: string, replaces: string | null, by: string, lastRunFailed?: boolean) =>
+              service.claimOccurrence({
+                taskId,
+                occurrence: iso(occurrence),
+                holder: holder as never,
+                replaces: replaces as never,
+                by: by as never,
+                ...(lastRunFailed === undefined ? {} : { lastRunFailed }),
+              });
+          const claim = claimAt(DUE);
+          const claimNext = claimAt(DUE + HOUR_MS);
+          const recordRun = (
+            scheduledFor: number,
+            startedAt: number,
+            outcome: "failed" | "skipped",
+            threadId: string | null,
+            skipReason: string | null = null,
+          ) =>
+            sql`
+              INSERT INTO scheduled_task_runs
+                (run_id, task_id, trigger, scheduled_for, started_at, completed_at, outcome,
+                  thread_id, skip_reason)
+              VALUES (${`run-${startedAt}`}, ${taskId}, 'scheduled', ${iso(scheduledFor)},
+                ${iso(startedAt)}, ${iso(startedAt)}, ${outcome}, ${threadId}, ${skipReason})
+            `;
+          expect(yield* claim(OTHER, null, OTHER)).toBe(OTHER);
+          expect(yield* claim(MIDDLE, null, MIDDLE)).toBe(OTHER);
+          // Another machine's copy agreed first; two machines taking it over can't both win.
+          expect(yield* claim(MIDDLE, OTHER, MIDDLE)).toBe(MIDDLE);
+          expect(yield* claim(HERE_ENVIRONMENT_ID, OTHER, HERE_ENVIRONMENT_ID)).toBe(MIDDLE);
+          // A holder hands it on, but nothing it doesn't hold: a free occurrence stays free.
+          expect(yield* claim(HERE_ENVIRONMENT_ID, MIDDLE, MIDDLE)).toBe(HERE_ENVIRONMENT_ID);
+          const claimLater = claimAt(DUE + 2 * HOUR_MS);
+          yield* claimLater(MIDDLE, OTHER, OTHER).pipe(Effect.flip);
+          yield* claimLater(MIDDLE, HERE_ENVIRONMENT_ID, OTHER).pipe(Effect.flip);
+          expect(yield* claimLater(HERE_ENVIRONMENT_ID, null, HERE_ENVIRONMENT_ID)).toBe(
+            HERE_ENVIRONMENT_ID,
+          );
+          yield* TestClock.adjust("1 day");
+          expect(yield* claim(OTHER, HERE_ENVIRONMENT_ID, OTHER)).toBe(HERE_ENVIRONMENT_ID);
+          // A failed run of an earlier occurrence doesn't free this one.
+          yield* recordRun(DUE - HOUR_MS, DUE - HOUR_MS, "failed", "thread-0");
+          expect(yield* claim(OTHER, HERE_ENVIRONMENT_ID, OTHER, true)).toBe(HERE_ENVIRONMENT_ID);
+          // A run cut off before its chat was recorded may have started one.
+          yield* recordRun(DUE, DUE, "failed", null);
+          expect(yield* claim(OTHER, HERE_ENVIRONMENT_ID, OTHER, true)).toBe(HERE_ENVIRONMENT_ID);
+          yield* recordRun(DUE, DUE + MINUTE_MS, "failed", "thread-1");
+          expect(yield* claim(OTHER, HERE_ENVIRONMENT_ID, OTHER, false)).toBe(HERE_ENVIRONMENT_ID);
+          expect(yield* claim(OTHER, HERE_ENVIRONMENT_ID, OTHER, true)).toBe(OTHER);
+
+          // A newer occurrence's claim leaves this one's in place for a machine still asking.
+          expect(yield* claimNext(HERE_ENVIRONMENT_ID, null, HERE_ENVIRONMENT_ID)).toBe(
+            HERE_ENVIRONMENT_ID,
+          );
+          expect(yield* claim(MIDDLE, null, MIDDLE)).toBe(OTHER);
+          // Skipping it for no work settled it; skipping it unconfirmed gave it up.
+          yield* recordRun(DUE + HOUR_MS, DUE + HOUR_MS, "skipped", null, "no_work");
+          expect(yield* claimNext(OTHER, HERE_ENVIRONMENT_ID, OTHER)).toBe(HERE_ENVIRONMENT_ID);
+          yield* recordRun(
+            DUE + HOUR_MS,
+            DUE + HOUR_MS + MINUTE_MS,
+            "skipped",
+            null,
+            "unconfirmed",
+          );
+          expect(yield* claimNext(OTHER, HERE_ENVIRONMENT_ID, OTHER)).toBe(OTHER);
+        }),
+      [repoProject, plainProject],
+      { idleScheduler: true },
+    ),
+);
+
+it.effect.each([
+  { name: "fails", answers: [WORKING_THERE, NO_RUN_THERE], runsHere: true },
   { name: "finishes", answers: [WORKING_THERE, FINISHED_THERE], runsHere: false },
-  {
-    name: "stops answering twice",
-    answers: [WORKING_THERE, SILENT_THERE, SILENT_THERE],
-    runsHere: true,
-  },
   {
     name: "misses one check, then finishes",
     answers: [WORKING_THERE, SILENT_THERE, FINISHED_THERE],
@@ -880,6 +1189,8 @@ it.effect.each([
   ({ answers, runsHere }) =>
     runScenario([OTHER, HERE_ENVIRONMENT_ID], answers, (scenario) =>
       Effect.gen(function* () {
+        yield* Ref.set(scenario.peerCopies, new Map([[OTHER, OTHER]]));
+        if (runsHere) yield* Ref.set(scenario.failed, new Set([OTHER]));
         // Wait its turn, then ask once per answer, five minutes apart.
         yield* fireWhenDue(scenario);
         for (const _ of answers.slice(0, -1)) {
@@ -901,12 +1212,41 @@ it.effect.each([
     ),
 );
 
+// A holder still claiming or starting its run has none in its list yet, like one whose run failed.
 it.effect(
-  "a later machine leaves a run still going when the next occurrence is due, and judges that one on its own",
+  "a later machine takes over a run that ended only once the holder's own copy agrees",
   () =>
+    runScenario([OTHER, HERE_ENVIRONMENT_ID], [WORKING_THERE, NO_RUN_THERE], (scenario) =>
+      Effect.gen(function* () {
+        yield* Ref.set(scenario.peerCopies, new Map([[OTHER, OTHER]]));
+        // Wait its turn, see the run going, then see it gone while the holder keeps its claim.
+        for (let step = 0; step < 3; step++) yield* fireWhenDue(scenario);
+        expect(yield* Queue.size(scenario.launches)).toBe(0);
+        expect((yield* Ref.get(scenario.peerCopies)).get(OTHER)).toBe(OTHER);
+        expect(yield* claimsOf(scenario.sql)).toEqual([]);
+        expect((yield* taskOf(scenario.service))?.lastOneMachineDecision?.ranOn).toBe(OTHER);
+
+        yield* Ref.set(scenario.failed, new Set([OTHER]));
+        yield* scenario.tick(Date.parse((yield* nextRunAtOf(scenario.sql))!) + 1_000);
+        yield* Queue.take(scenario.launches);
+        expect((yield* Ref.get(scenario.peerCopies)).get(OTHER)).toBe(HERE_ENVIRONMENT_ID);
+        expect(yield* claimsOf(scenario.sql)).toEqual([
+          { occurrence_at: iso(DUE), holder_environment_id: HERE_ENVIRONMENT_ID },
+        ]);
+      }),
+    ),
+);
+
+// Silence is not an ended run: a busy machine misses calls, so taking over then would run it twice.
+it.effect.each([
+  { name: "still going", answers: [WORKING_THERE] },
+  { name: "that stopped answering", answers: [WORKING_THERE, SILENT_THERE] },
+])(
+  "a later machine leaves a run $name when the next occurrence is due, and judges that one on its own",
+  ({ answers }) =>
     runScenario(
       [OTHER, HERE_ENVIRONMENT_ID],
-      WORKING_THERE,
+      answers,
       (scenario) =>
         Effect.gen(function* () {
           const due = NOW + 10 * MINUTE_MS;
@@ -937,22 +1277,43 @@ it.effect(
     ),
 );
 
-it.effect(
-  "machines further back let the nearest one take over a run that ended, then ask again",
-  () =>
+it.effect.each([
+  { name: "takes over itself when it did not", middleTookIt: false },
+  { name: "watches it when it did", middleTookIt: true },
+])(
+  "a machine further back lets the nearest one take over a run that failed, then $name",
+  ({ middleTookIt }) =>
     runScenario(
-      [OTHER, "environment-middle", HERE_ENVIRONMENT_ID],
-      [WORKING_THERE, FAILED_THERE, FAILED_THERE],
+      [OTHER, MIDDLE, HERE_ENVIRONMENT_ID],
+      [WORKING_THERE, NO_RUN_THERE, NO_RUN_THERE],
       (scenario) =>
         Effect.gen(function* () {
+          yield* Ref.set(
+            scenario.peerCopies,
+            new Map(
+              middleTookIt
+                ? [
+                    [OTHER, MIDDLE],
+                    [MIDDLE, MIDDLE],
+                  ]
+                : [[OTHER, OTHER]],
+            ),
+          );
+          yield* Ref.set(scenario.failed, new Set([OTHER]));
           // Two places back: wait its turn, then watch the first machine's run.
           yield* fireWhenDue(scenario);
           yield* fireWhenDue(scenario);
-          // That run failed. The middle machine takes over; this one waits a place, then asks.
+          // That run failed. The middle machine may take over; this one waits a place, then asks.
           yield* fireWhenDue(scenario);
           expect(yield* Queue.size(scenario.launches)).toBe(0);
-          yield* scenario.tick(Date.parse((yield* nextRunAtOf(scenario.sql))!) + 1_000);
-          yield* Queue.take(scenario.launches);
+          if (middleTookIt) {
+            yield* fireWhenDue(scenario);
+            expect(yield* Queue.size(scenario.launches)).toBe(0);
+            expect((yield* taskOf(scenario.service))?.lastOneMachineDecision?.ranOn).toBe(MIDDLE);
+          } else {
+            yield* scenario.tick(Date.parse((yield* nextRunAtOf(scenario.sql))!) + 1_000);
+            yield* Queue.take(scenario.launches);
+          }
           expect(yield* Ref.get(scenario.peerCalls)).toHaveLength(3);
         }),
     ),
@@ -963,7 +1324,7 @@ it.effect(
   () =>
     runScenario(
       [OTHER, "environment-middle", HERE_ENVIRONMENT_ID],
-      [WORKING_THERE, FAILED_THERE],
+      [WORKING_THERE, NO_RUN_THERE],
       (scenario) =>
         Effect.gen(function* () {
           const due = NOW + 10 * MINUTE_MS;

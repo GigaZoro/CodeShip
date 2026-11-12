@@ -9,6 +9,7 @@ import {
   ScheduledTaskOneMachineDecision,
   ScheduledTaskProjectMachineOrder,
   compareScheduledTaskSharedRevisions,
+  defaultScheduledTaskMachineOrder,
   scheduledTaskSharedProjectKey,
   type OrchestratorMcpSharedScheduledTasksResult,
   type ScheduledTaskApplySharedInput,
@@ -128,8 +129,8 @@ const MINUTE_MS = 60_000;
 // long before the occurrence was due.
 const ONE_MACHINE_WINDOW_CAP_MS = 12 * 60 * MINUTE_MS;
 const ONE_MACHINE_GRACE_CAP_MS = 5 * MINUTE_MS;
-// The first machine in the order runs on time without asking; later than this it asks first.
-const ONE_MACHINE_ON_TIME_MS = MINUTE_MS;
+// Occurrence claims outlive every watch of their occurrence: a slow machine may still ask about one.
+const ONE_MACHINE_CLAIM_RETENTION_MS = 30 * 24 * 60 * MINUTE_MS;
 const WEBHOOK_DELIVERY_RETENTION = 50;
 // A machine that has not pulled shared tasks for this long no longer counts as one they reach.
 const SHARED_PULLER_RETENTION_MS = 30 * 24 * 60 * MINUTE_MS;
@@ -320,6 +321,7 @@ interface ScheduledTaskRow {
   readonly decision_at?: string | null;
   readonly decision_ran_on?: string | null;
   readonly decision_unchecked_json?: string | null;
+  readonly decision_unconfirmed?: number | null;
   /** From scheduled_task_catch_up: null when the task keeps the default. */
   readonly catch_up_missed_run?: number | null;
   /** From scheduled_task_run_conditions: null when the task has none. */
@@ -436,6 +438,23 @@ export class ScheduledTaskService extends Context.Service<
     readonly knownMachineIds: (
       projectId: ProjectId,
     ) => Effect.Effect<ReadonlyArray<EnvironmentId>, ScheduledTaskError>;
+    /**
+     * This machine's record of which machine holds one occurrence of a one-machine task. `by`
+     * claims it for itself when free, or from `replaces` when that is another machine whose own
+     * copy agreed first, or this machine that gave the occurrence up or whose run of it failed in
+     * a chat. `by` hands on only a claim it holds here. Returns the holder after the call.
+     */
+    readonly claimOccurrence: (input: {
+      readonly taskId: ScheduledTaskId;
+      /** An ISO time; a fixed time's has no offset and is read in this machine's zone. */
+      readonly occurrence: string;
+      readonly holder: EnvironmentId;
+      readonly replaces: EnvironmentId | null;
+      /** The machine asking. */
+      readonly by: EnvironmentId;
+      /** This machine's last run failed and nobody stopped it. */
+      readonly lastRunFailed?: boolean;
+    }) => Effect.Effect<EnvironmentId, ScheduledTaskError>;
     /** Brings this machine's copy of a shared task up to a newer revision; an older one changes nothing. */
     readonly applyShared: (
       input: ScheduledTaskApplySharedInput,
@@ -491,13 +510,40 @@ function iso(value: DateTime.DateTime): string {
 
 const localNow = DateTime.withCurrentZoneLocal(DateTime.nowInCurrentZone);
 
+// A fixed time comes due at each machine's own local hour, so its claims name the wall-clock time
+// with no offset, which every copy reads in its own zone (`Date.parse`): one slot, one claim.
+function occurrenceSlot(schedule: ScheduledTask["schedule"], due: DateTime.DateTime): string {
+  if (schedule.type !== "fixed_time") return iso(due);
+  const { year, month, day, hour, minute } = DateTime.toParts(
+    DateTime.setZone(due, DateTime.zoneMakeLocal()),
+  );
+  const two = (value: number) => String(value).padStart(2, "0");
+  return `${year}-${two(month)}-${two(day)}T${two(hour)}:${two(minute)}`;
+}
+
 interface OneMachineWatch {
+  /** The machine that holds the occurrence. */
   readonly environmentId: EnvironmentId;
-  /** Checks in a row it did not answer. */
-  readonly silentChecks: number;
   /** Its run ended unfinished, and this machine waits for nearer machines to take over. */
   readonly ended: boolean;
 }
+
+interface OneMachinePlan {
+  /** Every machine with a copy this one knows of: the stored order, then the rest. */
+  readonly order: ReadonlyArray<EnvironmentId>;
+  /** The stored order's machines that keep a copy, alike on every machine; they hold the claims. */
+  readonly members: ReadonlyArray<EnvironmentId>;
+  readonly rank: number;
+}
+
+/**
+ * Whether the claim copies `held` are a quorum of the members. Any two quorums share a member,
+ * and each copy names one holder, so no two machines both hold an occurrence.
+ */
+const holdsQuorum = (members: ReadonlyArray<EnvironmentId>, held: ReadonlySet<EnvironmentId>) => {
+  const count = members.filter((id) => held.has(id)).length;
+  return count * 2 > members.length || (count * 2 === members.length && held.has(members[0]!));
+};
 
 type NextRunTask = Pick<ScheduledTask, "enabled" | "schedule"> &
   Partial<Pick<ScheduledTask, "createdAt" | "shared">>;
@@ -630,6 +676,7 @@ const decodeRow = Effect.fnUntraced(
               at: row.decision_at,
               ranOn: row.decision_ran_on,
               unchecked: yield* decodeUncheckedJson(row.decision_unchecked_json),
+              ...(row.decision_unconfirmed === 1 ? { unconfirmed: true } : {}),
             };
     return yield* decodeTask({
       id: row.task_id,
@@ -892,6 +939,26 @@ export const layer = Layer.effect(
         unchecked_json TEXT NOT NULL
       )
     `;
+    if (
+      !(yield* sql<{
+        name: string;
+      }>`PRAGMA table_info(scheduled_task_one_machine_decision)`).some(
+        (column) => column.name === "unconfirmed",
+      )
+    ) {
+      yield* sql`ALTER TABLE scheduled_task_one_machine_decision ADD COLUMN unconfirmed INTEGER NOT NULL DEFAULT 0`;
+    }
+    // Which machine holds an occurrence of a one-machine task. Every machine keeps a copy, so one
+    // that cannot reach the holder still learns of it from the others.
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS scheduled_task_occurrence_claims (
+        task_id TEXT NOT NULL,
+        occurrence_at TEXT NOT NULL,
+        holder_environment_id TEXT NOT NULL,
+        claimed_at TEXT NOT NULL,
+        PRIMARY KEY (task_id, occurrence_at)
+      )
+    `;
     // A row means the task's own catch-up choice; without one it follows its schedule's default.
     yield* sql`
       CREATE TABLE IF NOT EXISTS scheduled_task_catch_up (
@@ -1019,6 +1086,8 @@ export const layer = Layer.effect(
           WHERE od.task_id = scheduled_tasks.task_id) AS decision_ran_on,
         (SELECT unchecked_json FROM scheduled_task_one_machine_decision od
           WHERE od.task_id = scheduled_tasks.task_id) AS decision_unchecked_json,
+        (SELECT unconfirmed FROM scheduled_task_one_machine_decision od
+          WHERE od.task_id = scheduled_tasks.task_id) AS decision_unconfirmed,
         (SELECT enabled FROM scheduled_task_catch_up c
           WHERE c.task_id = scheduled_tasks.task_id) AS catch_up_missed_run,
         (SELECT json_object('command', rc.command, 'timeoutSeconds', rc.timeout_seconds)
@@ -1115,6 +1184,8 @@ export const layer = Layer.effect(
           WHERE od.task_id = scheduled_tasks.task_id) AS decision_ran_on,
         (SELECT unchecked_json FROM scheduled_task_one_machine_decision od
           WHERE od.task_id = scheduled_tasks.task_id) AS decision_unchecked_json,
+        (SELECT unconfirmed FROM scheduled_task_one_machine_decision od
+          WHERE od.task_id = scheduled_tasks.task_id) AS decision_unconfirmed,
         (SELECT enabled FROM scheduled_task_catch_up c
           WHERE c.task_id = scheduled_tasks.task_id) AS catch_up_missed_run,
         (SELECT json_object('command', rc.command, 'timeoutSeconds', rc.timeout_seconds)
@@ -1407,6 +1478,7 @@ export const layer = Layer.effect(
         Effect.andThen(sql`DELETE FROM scheduled_task_default_model WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_shared WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_one_machine_decision WHERE task_id = ${id}`),
+        Effect.andThen(sql`DELETE FROM scheduled_task_occurrence_claims WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_catch_up WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_run_conditions WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_prompt_files WHERE task_id = ${id}`),
@@ -2241,43 +2313,50 @@ export const layer = Layer.effect(
         ? Math.min(schedule.everyMs / 2, ONE_MACHINE_WINDOW_CAP_MS)
         : ONE_MACHINE_WINDOW_CAP_MS;
 
-    // Where this machine stands in the project's order, and the machines to ask.
-    const oneMachinePlan = Effect.fn("ScheduledTaskService.oneMachinePlan")(
-      function* (sharing: ScheduledTaskSharing) {
-        const excluded = new Set<string>(sharing.excludedEnvironmentIds);
-        const [stored] = yield* sql<MachineOrderRow>`
-          SELECT project_json, order_json, revision_at, revision_environment_id
-          FROM scheduled_task_project_machine_orders
-          WHERE project_key = ${scheduledTaskSharedProjectKey(sharing.project)}
-        `.pipe(NodeSqliteClient.readOnly);
-        if (stored === undefined) {
-          const linked = (yield* peerCheck.linkedEnvironmentIds).filter(
-            (id) => !excluded.has(id) && id !== hereEnvironmentId,
-          );
-          return { rank: linked.length === 0 ? 0 : 1, peers: linked };
-        }
-        const { order } = yield* decodeMachineOrderRow({
-          project: stored.project_json,
-          order: stored.order_json,
-          revision: { at: stored.revision_at, environmentId: stored.revision_environment_id },
-        });
-        const effective = order.filter((id) => !excluded.has(id));
-        const index = effective.indexOf(hereEnvironmentId);
-        return {
-          rank: index === -1 ? effective.length : index,
-          peers: effective.filter((id) => id !== hereEnvironmentId),
-        };
-      },
-      (effect, sharing) =>
-        effect.pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning("Could not read the machine order; running without waiting", {
-              cause,
-              project: sharing.project,
-            }).pipe(Effect.as({ rank: 0, peers: [] as ReadonlyArray<EnvironmentId> })),
-          ),
-        ),
-    );
+    // Where this machine stands in the project's order. Every machine must count the same members,
+    // so one missing from the stored order stores it with itself and its linked machines added,
+    // in the order every machine derives alike; the change reaches the others like any order edit.
+    const oneMachinePlan = Effect.fn("ScheduledTaskService.oneMachinePlan")(function* (
+      sharing: ScheduledTaskSharing,
+    ) {
+      const key = scheduledTaskSharedProjectKey(sharing.project);
+      const known = defaultScheduledTaskMachineOrder([
+        hereEnvironmentId,
+        ...(yield* peerCheck.linkedEnvironmentIds),
+      ]);
+      const { stored, order } = yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const [row] = yield* sql<MachineOrderRow>`
+            SELECT project_json, order_json, revision_at, revision_environment_id
+            FROM scheduled_task_project_machine_orders WHERE project_key = ${key}
+          `;
+          const storedOrder =
+            row === undefined
+              ? []
+              : (yield* decodeMachineOrderRow({
+                  project: row.project_json,
+                  order: row.order_json,
+                  revision: { at: row.revision_at, environmentId: row.revision_environment_id },
+                })).order;
+          const order = [...storedOrder, ...known.filter((id) => !storedOrder.includes(id))];
+          if (storedOrder.includes(hereEnvironmentId)) return { stored: storedOrder, order };
+          yield* writeMachineOrder({
+            project: sharing.project,
+            order,
+            revision: yield* stampOrderRevision(key),
+          });
+          return { stored: order, order };
+        }),
+      );
+      const excluded = new Set<string>(sharing.excludedEnvironmentIds);
+      const effective = order.filter((id) => !excluded.has(id));
+      const index = effective.indexOf(hereEnvironmentId);
+      return {
+        order: effective,
+        members: stored.filter((id) => !excluded.has(id)),
+        rank: index === -1 ? effective.length : index,
+      } satisfies OneMachinePlan;
+    });
 
     // Undefined keeps the stored condition; null removes it.
     const writeRunCondition = (
@@ -2374,16 +2453,199 @@ export const layer = Layer.effect(
       decision: ScheduledTaskOneMachineDecision,
     ) =>
       sql`
-        INSERT INTO scheduled_task_one_machine_decision (task_id, decided_at, ran_on, unchecked_json)
-        VALUES (${taskId}, ${decision.at}, ${decision.ranOn}, ${JSON.stringify(decision.unchecked)})
+        INSERT INTO scheduled_task_one_machine_decision
+          (task_id, decided_at, ran_on, unchecked_json, unconfirmed)
+        VALUES (${taskId}, ${decision.at}, ${decision.ranOn},
+          ${JSON.stringify(decision.unchecked)}, ${decision.unconfirmed === true ? 1 : 0})
         ON CONFLICT (task_id) DO UPDATE SET
           decided_at = excluded.decided_at,
           ran_on = excluded.ran_on,
-          unchecked_json = excluded.unchecked_json
+          unchecked_json = excluded.unchecked_json,
+          unconfirmed = excluded.unconfirmed
       `;
 
-    // One occurrence of a task that runs on one machine: wait for this machine's turn, then run
-    // unless a machine ahead already has it.
+    // A takeover changes the holder's own copy first, so every other copy may trust it; the
+    // holder's copy agrees only once this machine gave the occurrence up, or its run of it failed
+    // after reaching a chat. Age never counts: a run still being claimed or started looks idle to
+    // the machines watching it, and a run cut off while starting may have started its chat.
+    const claimOccurrence: ScheduledTaskService["Service"]["claimOccurrence"] = Effect.fn(
+      "ScheduledTaskService.claimOccurrence",
+    )(function* (input) {
+      const occurrenceMs = Date.parse(input.occurrence);
+      if (!Number.isFinite(occurrenceMs)) {
+        return yield* taskError("The occurrence is not a valid time.", { taskId: input.taskId });
+      }
+      const handingOn = input.holder !== input.by;
+      if (handingOn && input.replaces !== input.by) {
+        return yield* taskError("A machine may only claim a run for itself or hand on its own.", {
+          taskId: input.taskId,
+        });
+      }
+      const occurrence = iso(DateTime.makeUnsafe(occurrenceMs));
+      const now = yield* DateTime.now;
+      const nowMs = DateTime.toEpochMillis(now);
+      const takenFromHere = input.replaces === hereEnvironmentId && input.by !== hereEnvironmentId;
+      const agrees = !takenFromHere
+        ? Effect.succeed(true)
+        : sql<{ readonly gave_up: number; readonly failed_in_chat: number }>`
+            SELECT
+              EXISTS (
+                SELECT 1 FROM scheduled_task_runs
+                WHERE task_id = ${input.taskId} AND scheduled_for = ${occurrence}
+                  AND outcome = 'skipped' AND skip_reason IN ('unconfirmed', 'ran_elsewhere')
+              ) AS gave_up,
+              COALESCE((
+                SELECT scheduled_for = ${occurrence} AND thread_id IS NOT NULL
+                FROM scheduled_task_runs
+                WHERE task_id = ${input.taskId} AND outcome <> 'skipped'
+                ORDER BY started_at DESC, run_id DESC LIMIT 1
+              ), 0) AS failed_in_chat
+          `.pipe(
+            Effect.map(
+              ([row]) =>
+                row !== undefined &&
+                (row.gave_up === 1 || (input.lastRunFailed === true && row.failed_in_chat === 1)),
+            ),
+          );
+      const [row] = yield* sql
+        .withTransaction(
+          agrees.pipe(
+            Effect.flatMap((agreed) =>
+              handingOn
+                ? sql`
+                UPDATE scheduled_task_occurrence_claims
+                SET holder_environment_id = ${input.holder}, claimed_at = ${iso(now)}
+                WHERE task_id = ${input.taskId} AND occurrence_at = ${occurrence}
+                  AND holder_environment_id = ${input.by}
+              `
+                : sql`
+                INSERT INTO scheduled_task_occurrence_claims
+                  (task_id, occurrence_at, holder_environment_id, claimed_at)
+                VALUES (${input.taskId}, ${occurrence}, ${input.holder}, ${iso(now)})
+                ON CONFLICT (task_id, occurrence_at) DO UPDATE SET
+                  holder_environment_id = excluded.holder_environment_id,
+                  claimed_at = excluded.claimed_at
+                WHERE holder_environment_id <> excluded.holder_environment_id
+                  AND holder_environment_id = ${input.replaces}
+                  AND ${agreed ? 1 : 0} = 1
+              `,
+            ),
+            Effect.andThen(sql`
+              DELETE FROM scheduled_task_occurrence_claims
+              WHERE claimed_at < ${iso(DateTime.makeUnsafe(nowMs - ONE_MACHINE_CLAIM_RETENTION_MS))}
+            `),
+            Effect.andThen(sql<{ readonly holder_environment_id: EnvironmentId }>`
+              SELECT holder_environment_id FROM scheduled_task_occurrence_claims
+              WHERE task_id = ${input.taskId} AND occurrence_at = ${occurrence}
+            `),
+          ),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not record who holds the scheduled task run.", {
+              taskId: input.taskId,
+              cause,
+            }),
+          ),
+        );
+      if (row === undefined) {
+        return yield* taskError(
+          handingOn
+            ? "This machine holds no claim on that run to hand on."
+            : "That run is too old to claim.",
+          { taskId: input.taskId },
+        );
+      }
+      return row.holder_environment_id;
+    });
+
+    // Gives up this machine's own claim, so a machine that reaches a quorum may take it.
+    const releaseOccurrence = (taskId: ScheduledTaskId, occurrence: string) =>
+      sql`
+        DELETE FROM scheduled_task_occurrence_claims
+        WHERE task_id = ${taskId} AND occurrence_at = ${iso(DateTime.makeUnsafe(Date.parse(occurrence)))}
+          AND holder_environment_id = ${hereEnvironmentId}
+      `.pipe(
+        Effect.mapError((cause) =>
+          taskError("Could not release the scheduled task run.", { taskId, cause }),
+        ),
+      );
+
+    // Claims an occurrence on this machine's copy and the members', taking it from `replaces` only
+    // once that machine's own copy agreed. `holder` is this machine only with a quorum of copies;
+    // otherwise the machine to watch, or null when it saw none. Without a quorum it hands what it
+    // took to a holder ahead of it, never behind, so two machines never hand to each other.
+    const claimOneMachineOccurrence = Effect.fn("ScheduledTaskService.claimOneMachineOccurrence")(
+      function* (
+        taskId: ScheduledTaskId,
+        occurrence: string,
+        plan: OneMachinePlan,
+        replaces: EnvironmentId | null,
+      ) {
+        const here = hereEnvironmentId;
+        const unchecked: Array<ScheduledTaskOneMachineDecision["unchecked"][number]> = [];
+        const held = new Set<EnvironmentId>();
+        const others: Array<EnvironmentId> = [];
+        if (replaces !== null) {
+          const consent = yield* peerCheck.claim({
+            taskId,
+            occurrence,
+            holder: here,
+            replaces,
+            peers: [replaces],
+          });
+          unchecked.push(...consent.unchecked);
+          const agreed = consent.answered[0]?.holder;
+          if (agreed !== here) return { holder: agreed ?? replaces, unchecked };
+          held.add(replaces);
+        }
+        const local = yield* claimOccurrence({
+          taskId,
+          occurrence,
+          holder: here,
+          replaces,
+          by: here,
+        });
+        if (local === here) held.add(here);
+        else others.push(local);
+        const answer = yield* peerCheck.claim({
+          taskId,
+          occurrence,
+          holder: here,
+          replaces,
+          peers: plan.members.filter((id) => id !== here && id !== replaces),
+        });
+        unchecked.push(...answer.unchecked);
+        for (const peer of answer.answered) {
+          if (peer.holder === here) held.add(peer.environmentId);
+          else others.push(peer.holder);
+        }
+        if (holdsQuorum(plan.members, held)) return { holder: here, unchecked };
+        const placeOf = (id: EnvironmentId) => {
+          const index = plan.order.indexOf(id);
+          return index === -1 ? plan.order.length : index;
+        };
+        const holder = others.toSorted((a, b) => placeOf(a) - placeOf(b))[0];
+        if (holder === undefined) {
+          yield* releaseOccurrence(taskId, occurrence);
+          return { holder: null, unchecked };
+        }
+        if (placeOf(holder) < plan.rank) {
+          if (held.has(here)) {
+            yield* claimOccurrence({ taskId, occurrence, holder, replaces: here, by: here });
+          }
+          const gaveTo = [...held].filter((id) => id !== here);
+          if (gaveTo.length > 0) {
+            yield* peerCheck.claim({ taskId, occurrence, holder, replaces: here, peers: gaveTo });
+          }
+        }
+        return { holder, unchecked };
+      },
+    );
+
+    // One occurrence of a task that runs on one machine: wait for this machine's turn, then claim
+    // it unless a machine ahead already has it. A machine runs it only with a quorum of the
+    // members' claim copies, so machines that can't reach each other never both run it.
     const settleOneMachineOccurrence = Effect.fn("ScheduledTaskService.settleOneMachineOccurrence")(
       function* (
         task: ScheduledTask,
@@ -2431,20 +2693,13 @@ export const layer = Layer.effect(
           );
           yield* notifyChanged;
         });
-        if (!resumed) {
-          if (plan.rank > 0) {
-            // Machines ahead may be catching up too, so a catch-up waits its turn from now.
-            return yield* deferTo((catchUp ? nowMs : dueMs) + plan.rank * graceMs, null, null);
-          }
-          if (nowMs - occurrenceDueMs <= ONE_MACHINE_ON_TIME_MS) {
-            return yield* startScheduledRun(task, {
-              scheduledFor: iso(DateTime.makeUnsafe(occurrenceDueMs)),
-              catchUp,
-            });
-          }
+        if (!resumed && plan.rank > 0) {
+          // Machines ahead may be catching up too, so a catch-up waits its turn from now.
+          return yield* deferTo((catchUp ? nowMs : dueMs) + plan.rank * graceMs, null, null);
         }
         // In the local zone of `now`, so a fixed time's next run keeps its local hour.
         const occurrenceDue = DateTime.subtract(now, { milliseconds: nowMs - occurrenceDueMs });
+        const occurrence = iso(occurrenceDue);
         const following = nextRunAt(shared, occurrenceDue);
         // Watching a run ends when the next occurrence is due, which is judged on its own.
         const watchUntilMs =
@@ -2455,8 +2710,9 @@ export const layer = Layer.effect(
           next.delete(task.id);
           return next;
         });
+        // `ranOn` null: no other machine confirmed the occurrence was free, so it went to none.
         const skipOccurrence = Effect.fnUntraced(function* (
-          ranOn: EnvironmentId,
+          ranOn: EnvironmentId | null,
           next: string | null,
           decision: ScheduledTaskOneMachineDecision | null,
           noWork: SharedTaskPeerCheck.PeerCheckResult["noWork"] = null,
@@ -2477,20 +2733,26 @@ export const layer = Layer.effect(
                 taskError("Could not skip the schedule task run.", { taskId: task.id, cause }),
               ),
             );
-          yield* Effect.logInfo("Skipping a one-machine task run another machine has", {
-            taskId: task.id,
-            ranOn,
-          });
+          yield* ranOn === null
+            ? Effect.logWarning(
+                "Skipping a one-machine task run no other machine confirmed was free",
+                { taskId: task.id },
+              )
+            : Effect.logInfo("Skipping a one-machine task run another machine has", {
+                taskId: task.id,
+                ranOn,
+              });
           yield* insertRunRecord({
-            id: `${task.id}:${iso(occurrenceDue)}:skipped`,
+            id: `${task.id}:${occurrence}:skipped`,
             taskId: task.id,
             trigger: catchingUp ? "catch_up" : "scheduled",
-            scheduledFor: iso(occurrenceDue),
+            scheduledFor: occurrence,
             startedAt: iso(now),
             completedAt: iso(now),
             outcome: "skipped",
-            skipReason: "ran_elsewhere",
-            ranOn,
+            ...(ranOn === null
+              ? { skipReason: "unconfirmed" }
+              : { skipReason: "ran_elsewhere", ranOn }),
             failover: null,
             // That machine's own check found no work, so the occurrence ran nowhere.
             ...(noWork === null
@@ -2510,47 +2772,95 @@ export const layer = Layer.effect(
         if (watched !== null && nowMs >= watchUntilMs) {
           return yield* skipOccurrence(watched.environmentId, following, null);
         }
+        const next =
+          following !== null && Date.parse(following) <= nowMs ? nextRunAt(shared, now) : following;
+        const logUnchecked = (unchecked: ScheduledTaskOneMachineDecision["unchecked"]) =>
+          Effect.forEach(
+            unchecked,
+            (peer) =>
+              Effect.logWarning("Could not ask a machine about a one-machine task", {
+                taskId: task.id,
+                environmentId: peer.environmentId,
+                reason: peer.reason,
+              }),
+            { discard: true },
+          );
+        const watch = (holder: OneMachineWatch, decision: ScheduledTaskOneMachineDecision) =>
+          deferTo(Math.min(nowMs + graceMs, watchUntilMs), holder, decision);
+        // Claims the occurrence, taking it from `replaces`, and runs it only when this machine may.
+        const takeOccurrence = Effect.fnUntraced(function* (replaces: EnvironmentId | null) {
+          const claim = yield* claimOneMachineOccurrence(
+            task.id,
+            occurrenceSlot(task.schedule, occurrenceDue),
+            plan,
+            replaces,
+          );
+          yield* logUnchecked(claim.unchecked);
+          if (claim.holder !== null && claim.holder !== hereEnvironmentId) {
+            // A machine already judged ended needs no second wait for the machines before this one.
+            return yield* watch(
+              { environmentId: claim.holder, ended: claim.holder === replaces },
+              { at: iso(now), ranOn: claim.holder, unchecked: claim.unchecked },
+            );
+          }
+          const decision: ScheduledTaskOneMachineDecision = {
+            at: iso(now),
+            ranOn: null,
+            unchecked: claim.unchecked,
+          };
+          if (claim.holder === null) {
+            return yield* skipOccurrence(null, next, { ...decision, unconfirmed: true });
+          }
+          yield* recordOneMachineDecision(task.id, decision).pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Could not record the one-machine decision", {
+                taskId: task.id,
+                cause,
+              }),
+            ),
+          );
+          return yield* startScheduledRun(task, { scheduledFor: occurrence, catchUp: catchingUp });
+        });
+        const since = iso(DateTime.makeUnsafe(occurrenceDueMs - windowMs));
+        if (watched === null) {
+          // Also finds a run a machine started outside the claims, such as one on an older version.
+          const answer = yield* peerCheck.check({
+            taskId: task.id,
+            peers: plan.order.filter((id) => id !== hereEnvironmentId),
+            since,
+          });
+          yield* logUnchecked(answer.unchecked);
+          const decision = { at: iso(now), ranOn: answer.ranOn, unchecked: answer.unchecked };
+          if (answer.ranOn === null) return yield* takeOccurrence(null);
+          return answer.working
+            ? yield* watch({ environmentId: answer.ranOn, ended: false }, decision)
+            : yield* skipOccurrence(answer.ranOn, next, decision, answer.noWork);
+        }
         const answer = yield* peerCheck.check({
           taskId: task.id,
-          peers: plan.peers,
-          since: iso(DateTime.makeUnsafe(occurrenceDueMs - windowMs)),
+          peers: [watched.environmentId],
+          since,
         });
-        yield* Effect.forEach(
-          answer.unchecked,
-          (peer) =>
-            Effect.logWarning("Could not ask a machine about a one-machine task", {
-              taskId: task.id,
-              environmentId: peer.environmentId,
-              reason: peer.reason,
-            }),
-          { discard: true },
-        );
-        const decision: ScheduledTaskOneMachineDecision = {
+        yield* logUnchecked(answer.unchecked);
+        const decision = {
           at: iso(now),
-          ranOn: answer.ranOn,
+          ranOn: watched.environmentId,
           unchecked: answer.unchecked,
         };
-        // A run still going may yet fail or stop, so keep asking until it ends. A machine that
-        // was running it gets one unanswered check before this one takes over, so one dropped
-        // call doesn't start a second run.
-        const watchNext: OneMachineWatch | null =
-          answer.ranOn !== null && answer.working
-            ? { environmentId: answer.ranOn, silentChecks: 0, ended: false }
-            : watched !== null &&
-                !watched.ended &&
-                watched.silentChecks === 0 &&
-                answer.ranOn === null &&
-                answer.unchecked.some((peer) => peer.environmentId === watched.environmentId)
-              ? { ...watched, silentChecks: 1 }
-              : null;
-        if (watchNext !== null) {
-          return yield* deferTo(Math.min(nowMs + graceMs, watchUntilMs), watchNext, decision);
+        if (answer.ranOn !== null) {
+          // A run still going may yet fail or stop, so keep asking until it ends.
+          return answer.working
+            ? yield* watch({ environmentId: answer.ranOn, ended: false }, decision)
+            : yield* skipOccurrence(answer.ranOn, next, decision, answer.noWork);
         }
+        // Silence is not an ended run: a busy machine misses calls, and taking over then runs
+        // the occurrence twice.
+        if (answer.unchecked.length > 0) return yield* watch(watched, decision);
         // The machines between the one whose run ended and this one were watching it too. The
         // nearest takes over at once; each one after it waits its place and asks again, still
         // giving the occurrence up when the next one is due.
-        if (watched !== null && !watched.ended && answer.ranOn === null) {
-          const watchedAt = plan.peers.indexOf(watched.environmentId);
+        if (!watched.ended) {
+          const watchedAt = plan.order.indexOf(watched.environmentId);
           const between = plan.rank - watchedAt - 1;
           if (watchedAt !== -1 && between > 0) {
             return yield* deferTo(
@@ -2560,23 +2870,7 @@ export const layer = Layer.effect(
             );
           }
         }
-        if (answer.ranOn === null) {
-          yield* recordOneMachineDecision(task.id, decision).pipe(
-            Effect.catch((cause) =>
-              Effect.logWarning("Could not record the one-machine decision", {
-                taskId: task.id,
-                cause,
-              }),
-            ),
-          );
-          return yield* startScheduledRun(task, {
-            scheduledFor: iso(DateTime.makeUnsafe(occurrenceDueMs)),
-            catchUp: catchingUp,
-          });
-        }
-        const next =
-          following !== null && Date.parse(following) <= nowMs ? nextRunAt(shared, now) : following;
-        yield* skipOccurrence(answer.ranOn, next, decision, answer.noWork);
+        return yield* takeOccurrence(watched.environmentId);
       },
     );
 
@@ -3840,6 +4134,14 @@ export const layer = Layer.effect(
             WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
           `;
             yield* sql`
+            DELETE FROM scheduled_task_one_machine_decision
+            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
+          `;
+            yield* sql`
+            DELETE FROM scheduled_task_occurrence_claims
+            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
+          `;
+            yield* sql`
             DELETE FROM scheduled_task_catch_up
             WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
           `;
@@ -4864,6 +5166,7 @@ export const layer = Layer.effect(
       applyShared,
       sharedCopies,
       knownMachineIds,
+      claimOccurrence,
       deleteForThread,
       moveThreadTasks,
       runNow,

@@ -37,6 +37,8 @@ import {
   type OrchestratorMcpListScheduledTasksResult,
   type OrchestratorMcpSharedScheduledTasksInput,
   type OrchestratorMcpSharedScheduledTasksResult,
+  type OrchestratorMcpClaimScheduledTaskOccurrenceInput,
+  type OrchestratorMcpClaimScheduledTaskOccurrenceResult,
   type OrchestratorMcpScheduledTask,
   type OrchestratorMcpScheduleTaskInput,
   type OrchestratorMcpScheduleTaskResult,
@@ -206,6 +208,10 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpSharedScheduledTasksInput,
   ) => Effect.Effect<OrchestratorMcpSharedScheduledTasksResult, OrchestratorMcpFailure>;
+  readonly claimScheduledTaskOccurrence: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpClaimScheduledTaskOccurrenceInput,
+  ) => Effect.Effect<OrchestratorMcpClaimScheduledTaskOccurrenceResult, OrchestratorMcpFailure>;
   readonly updateScheduledTask: (
     scope: McpInvocationScope,
     input: OrchestratorMcpUpdateScheduledTaskInput,
@@ -2579,6 +2585,48 @@ const make = Effect.gen(function* () {
               failure("orchestration_error", `Could not read shared tasks: ${error.message}`),
             ),
           );
+      },
+    ),
+    claimScheduledTaskOccurrence: Effect.fn("OrchestratorMcpService.claimScheduledTaskOccurrence")(
+      function* (scope, input) {
+        // A machine may take an occurrence only for itself, or hand on one it holds.
+        const caller = scope.client?.linked === true ? scope.client.linkedFrom : undefined;
+        if (caller === undefined || (input.holder !== caller && input.replaces !== caller)) {
+          return yield* failure(
+            "capability_denied",
+            "Only a linked machine can claim a shared task run, for itself or from itself.",
+          );
+        }
+        // A takeover needs the holder's own copy to agree: once the holder gave it up or its run failed.
+        const task =
+          input.replaces === null || input.replaces === caller
+            ? undefined
+            : (yield* scheduledTasks
+                .list({ resolveModels: false })
+                .pipe(
+                  Effect.mapError((error) =>
+                    failure("orchestration_error", `Could not read the task: ${error.message}`),
+                  ),
+                )).tasks.find((candidate) => candidate.id === input.scheduledTaskId);
+        const lastRun = task === undefined ? null : yield* lastRunOf(task);
+        const holder = yield* scheduledTasks
+          .claimOccurrence({
+            taskId: input.scheduledTaskId,
+            occurrence: input.occurrence,
+            holder: input.holder,
+            replaces: input.replaces,
+            by: caller,
+            lastRunFailed: lastRun?.outcome === "failed" && lastRun.stopped !== true,
+          })
+          .pipe(
+            Effect.mapError((error) =>
+              failure(
+                "orchestration_error",
+                `Could not claim the shared task run: ${error.message}`,
+              ),
+            ),
+          );
+        return { holder };
       },
     ),
     updateScheduledTask: Effect.fn("OrchestratorMcpService.updateScheduledTask")(

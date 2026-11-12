@@ -195,32 +195,69 @@ it asks for is recorded; otherwise anyone could add a machine that a task may th
 - **Projects travel as references:** No project, or a repository's canonical
   key that each machine resolves to its own project.
 
-A **one-machine** task runs each occurrence once. Its project's machine order
-is a synced record of its own. Interval occurrences count from the task's
-creation, not each machine's last run, so every machine agrees on when one is
-due. A machine late in the order waits its rank times
-a grace period, then asks the machines in the order through its peer links
-(`list_scheduled_tasks`, a read, which links below full access allow) whether
-one is working on or finished that occurrence. A machine that can't ask one
-runs the task and records it, so a missing or expired link causes a duplicate
-run, not a missed one. A late first machine asks the same way before it runs.
-An answer of "still working" is not final: the asking machine keeps the
-occurrence and asks again each grace period until the run ends or the next
-occurrence is due (12 hours for a one-time task), and runs it if that run
-fails. A run a restart cut off reports working while its continuation is
-pending, and a machine that was working must miss two checks in a row before
-another takes over, so neither starts a second copy of a long run. Every
-machine behind a run watches it, so when it ends only the nearest takes over at
-once; the others wait their place and ask again, which finds that machine's new
-run. A Stop from the user or an agent leaves an interrupt request on the run, so
-its `lastRun` says `stopped` and other machines treat it as settled. A
-usage-limit stop that auto-resume later continues still counts as not
-finishing. Waits and watches live in memory.
-After a restart, `next_run_at` may hold a check time, so the occurrence is
-recovered from the schedule (the latest aligned slot or fixed time at or before
-it) before asking. The restarted machine does lose the watch, so its first
-check is an ordinary one: an unanswered call then runs the task, as any
-machine that can't ask does.
+A **one-machine** task runs each occurrence at most once: when the machines
+can't settle who has it, none runs it. Its project's machine order is a synced
+record of its own. A machine missing from it stores the order with itself and
+its linked machines appended, sorted by id (`defaultScheduledTaskMachineOrder`),
+and the change syncs like any order edit, so every machine counts the same
+members: the stored order minus the machines the task leaves out. Interval
+occurrences count from the task's creation, not each machine's last run, so
+every machine agrees on when one is due.
+
+Who holds an occurrence is a claim in `scheduled_task_occurrence_claims`, keyed
+by task and occurrence time, of which every machine keeps a copy. Each machine
+reaches a fixed time at its own local hour, so a fixed time's claims name its
+wall-clock time without an offset, which each copy reads in its own zone. A
+machine claims on its own copy, then on each member's through the link-only
+`t3_claim_scheduled_task_occurrence` tool, and runs only while it holds a
+majority of the members' copies, or exactly half including the first member's,
+so of two machines the first runs alone. Two groups that can't reach each other
+can't both hold that, so the occurrence runs once while a majority reach each
+other and on no machine otherwise: with every link down among three or more
+members, or with two members and the first down, each machine records it
+skipped, `unconfirmed`. The tool writes, so a read-only link can't record a
+claim.
+
+A claim is a compare-and-set. A machine takes a free copy for itself, or one
+held by the machine it names in `replaces`: a third machine's copy once the
+holder's own copy agreed, and the holder's own copy once the holder gave that
+occurrence up (recorded it skipped, `unconfirmed` or `ran_elsewhere`) or its
+run of it failed after reaching a chat and nobody stopped it. It hands on only
+a copy it holds. Age never frees a claim: a holder still claiming or starting
+its run looks idle to the machines watching it, and only its own copy knows. A
+run cut off before its chat was recorded may have started one, so its failure
+frees nothing. A machine without a majority hands what it took to a holder
+ahead of it in the order, never behind, so two machines never hand copies to
+each other, then watches that holder; seeing no other holder, it releases its
+own copy.
+
+Every machine waits its rank times a grace period, asks the machines in the
+order (`list_scheduled_tasks`, which also finds a run started without a claim,
+such as one on an older version), then claims. A machine that finds the
+occurrence held or running watches that machine, asking again each grace
+period until the run ends or the next occurrence is due (12 hours for a
+one-time task), and takes over once the holder's copy agrees. Silence is not an ended run: a busy or restarting machine
+misses calls, so a holder that dies mid-run or before it starts costs that
+occurrence. A run a restart cut off reports working while its continuation is
+pending. Every machine behind a run watches it, so when it ends only the
+nearest takes over at once; the others wait their place and ask again, which
+finds that machine's new claim. A Stop from the user or an agent leaves an
+interrupt request on the run, so its `lastRun` says `stopped` and other machines
+treat it as settled. A usage-limit stop that auto-resume later continues still
+counts as not finishing.
+
+The majority holds only among members every machine counts. Machines that
+count different members can each hold a majority of their own count, and both
+run the occurrence. That window lasts until an order change has reached every
+machine: a few minutes, and longer when it passes through a machine between
+two that don't link to each other. A retired machine left in the order still
+counts, so remove it from the order. Waits and watches live in memory; claims
+are kept for 30 days, past every watch of their occurrence, since a slow
+machine may still ask about an older one after a newer one is claimed. After a
+restart, `next_run_at` may hold a check time, so the occurrence is recovered
+from the schedule (the latest aligned slot or fixed time at or before it)
+before asking. The restarted machine loses the watch, so it asks and claims
+again.
 
 A [run condition](../user/project-settings.md#check-before-running) answers
 beside `lastRun`, never through it: `lastRun` stays the last real run, because

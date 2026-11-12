@@ -884,6 +884,32 @@ export const OrchestratorMcpSharedScheduledTasksResult = Schema.Struct({
 export type OrchestratorMcpSharedScheduledTasksResult =
   typeof OrchestratorMcpSharedScheduledTasksResult.Type;
 
+/**
+ * For a linked machine: records which machine holds one occurrence of a one-machine task, so a
+ * machine that cannot reach the holder still learns of it from the others. `holder` takes the
+ * occurrence when it is free or held by `replaces`; the caller may only take it for itself or hand
+ * on what it holds.
+ */
+export const OrchestratorMcpClaimScheduledTaskOccurrenceInput = Schema.Struct({
+  scheduledTaskId: ScheduledTaskId,
+  /**
+   * When the occurrence was due. A fixed-time task's has no offset: each machine reads it in its
+   * own zone, where that fixed time comes due.
+   */
+  occurrence: IsoDateTime,
+  holder: EnvironmentId,
+  replaces: Schema.NullOr(EnvironmentId),
+});
+export type OrchestratorMcpClaimScheduledTaskOccurrenceInput =
+  typeof OrchestratorMcpClaimScheduledTaskOccurrenceInput.Type;
+
+/** The machine that holds the occurrence after the call. */
+export const OrchestratorMcpClaimScheduledTaskOccurrenceResult = Schema.Struct({
+  holder: EnvironmentId,
+});
+export type OrchestratorMcpClaimScheduledTaskOccurrenceResult =
+  typeof OrchestratorMcpClaimScheduledTaskOccurrenceResult.Type;
+
 /** For a linked machine: the shared settings this machine knows, so it can catch up with no client open. */
 export const OrchestratorMcpSharedSettingsResult = Schema.Struct({
   versions: Schema.Array(SharedSettingVersion),

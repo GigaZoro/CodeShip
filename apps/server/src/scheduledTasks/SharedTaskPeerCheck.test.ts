@@ -13,46 +13,68 @@ import * as SharedTaskPeerCheck from "./SharedTaskPeerCheck.ts";
 
 const TASK = ScheduledTaskId.make("scheduled-task:shared");
 const PEER = EnvironmentId.make("environment-peer");
+const HERE = EnvironmentId.make("environment-here");
 const SINCE = "2026-09-09T11:30:00.000Z";
 
 type PeerAnswer = (call: {
   readonly environmentId: EnvironmentId;
 }) => Effect.Effect<unknown, OrchestratorMcpFailure>;
 
-const check = (input: {
+interface PeerSetup {
   readonly linked?: "reachable" | "expired" | "none";
   readonly enabled?: boolean;
   readonly peers?: ReadonlyArray<EnvironmentId>;
-  readonly answer: PeerAnswer;
-}) =>
-  Effect.gen(function* () {
-    const service = yield* SharedTaskPeerCheck.SharedTaskPeerCheck;
-    return yield* service.check({ taskId: TASK, peers: input.peers ?? [PEER], since: SINCE });
-  }).pipe(
-    Effect.provide(
-      SharedTaskPeerCheck.layer.pipe(
-        Layer.provide(
-          Layer.mergeAll(
-            Layer.mock(PeerLinks.PeerLinks)({
-              enabled: Effect.succeed(input.enabled ?? true),
-              get: () =>
-                Effect.succeed(
-                  input.linked === "none"
-                    ? Option.none()
-                    : Option.some({
-                        environmentId: PEER,
-                        expiresAt: DateTime.makeUnsafe(
-                          input.linked === "expired" ? 0 : "2100-01-01T00:00:00Z",
-                        ),
-                      } as never),
-                ),
-            }),
-            Layer.mock(PeerMcpClient.PeerMcpClient)({ call: input.answer as never }),
-          ),
-        ),
+}
+
+const peerCheckLayer = (
+  input: PeerSetup,
+  client: Partial<PeerMcpClient.PeerMcpClient["Service"]>,
+) =>
+  SharedTaskPeerCheck.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(PeerLinks.PeerLinks)({
+          enabled: Effect.succeed(input.enabled ?? true),
+          get: () =>
+            Effect.succeed(
+              input.linked === "none"
+                ? Option.none()
+                : Option.some({
+                    environmentId: PEER,
+                    expiresAt: DateTime.makeUnsafe(
+                      input.linked === "expired" ? 0 : "2100-01-01T00:00:00Z",
+                    ),
+                  } as never),
+            ),
+        }),
+        Layer.mock(PeerMcpClient.PeerMcpClient)(client),
       ),
     ),
   );
+
+const check = (input: PeerSetup & { readonly answer: PeerAnswer }) =>
+  Effect.gen(function* () {
+    const service = yield* SharedTaskPeerCheck.SharedTaskPeerCheck;
+    return yield* service.check({ taskId: TASK, peers: input.peers ?? [PEER], since: SINCE });
+  }).pipe(Effect.provide(peerCheckLayer(input, { call: input.answer as never })));
+
+const claim = (
+  input: PeerSetup & {
+    readonly answer: (call: {
+      readonly arguments: unknown;
+    }) => Effect.Effect<Option.Option<unknown>, OrchestratorMcpFailure>;
+  },
+) =>
+  Effect.gen(function* () {
+    const service = yield* SharedTaskPeerCheck.SharedTaskPeerCheck;
+    return yield* service.claim({
+      taskId: TASK,
+      occurrence: SINCE,
+      holder: HERE,
+      replaces: null,
+      peers: input.peers ?? [PEER],
+    });
+  }).pipe(Effect.provide(peerCheckLayer(input, { callIfAvailable: input.answer as never })));
 
 const peerTask =
   (lastRun: unknown, fields: Record<string, unknown> = {}) =>
@@ -210,13 +232,61 @@ it.effect.each([
   ),
 );
 
-it.effect("a peer that does not answer within 20 seconds is unchecked", () =>
+it.effect.each([
+  { name: "check", ask: () => check({ answer: () => Effect.never }) },
+  { name: "claim", ask: () => claim({ answer: () => Effect.never }) },
+])("a peer that does not answer a $name within 20 seconds is unchecked", ({ ask }) =>
   Effect.gen(function* () {
-    const fiber = yield* Effect.forkChild(check({ answer: () => Effect.never }));
+    const fiber = yield* Effect.forkChild(ask());
     yield* TestClock.adjust("20 seconds");
     const result = yield* Fiber.join(fiber);
     expect(result.unchecked).toEqual([
       { environmentId: PEER, reason: "It did not answer in time." },
     ]);
   }),
+);
+
+it.effect("a claim records the holder the peer answers with", () =>
+  Effect.gen(function* () {
+    const asked: Array<unknown> = [];
+    const result = yield* claim({
+      answer: (call) => {
+        asked.push(call.arguments);
+        return Effect.succeedSome({ holder: PEER });
+      },
+    });
+    expect(asked).toEqual([
+      { scheduledTaskId: TASK, occurrence: SINCE, holder: HERE, replaces: null },
+    ]);
+    expect(result).toEqual({ answered: [{ environmentId: PEER, holder: PEER }], unchecked: [] });
+  }),
+);
+
+it.effect.each([
+  {
+    name: "the link expired",
+    input: { linked: "expired" as const, answer: () => Effect.succeedNone },
+    reason: "The link has expired.",
+  },
+  {
+    name: "it predates claims",
+    input: { answer: () => Effect.succeedNone },
+    reason: "It runs an older version of T3.CodeShip.",
+  },
+  {
+    name: "the call fails",
+    input: {
+      answer: () =>
+        Effect.fail(
+          new OrchestratorMcpFailure({ code: "capability_denied", message: "Read-only link." }),
+        ),
+    },
+    reason: "Read-only link.",
+  },
+])("a peer does not confirm a claim when $name", ({ input, reason }) =>
+  claim(input).pipe(
+    Effect.map((result) => {
+      expect(result).toEqual({ answered: [], unchecked: [{ environmentId: PEER, reason }] });
+    }),
+  ),
 );

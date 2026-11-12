@@ -1347,6 +1347,8 @@ const catalog: MessageCatalog = {
   "{machine} could not save this change first, so it was not sent here.":
     "{machine} не вдалося першим зберегти цю зміну, тому її сюди не надіслано.",
   "{machine} couldn't check {other}: {reason}": "{machine} не вдалося перевірити {other}: {reason}",
+  "{machine} couldn't reach enough of the other machines to make sure no other machine would run it, so it didn't run it.":
+    "{machine} не зміг зв’язатися з достатньою кількістю інших комп’ютерів, щоб переконатися, що жоден інший його не запустить, тож не запустив його.",
   "{machine} found no work: {detail}": "На {machine} перевірка не виявила роботи: {detail}",
   "{machine} found no work.": "На {machine} перевірка не виявила роботи.",
   "{machine} is not connected. Changes sync when it is back.":
@@ -10851,6 +10853,8 @@ const catalog: MessageCatalog = {
   Skipped: "Пропущено",
   "Skipped {cookies}": "Пропущено: {cookies}",
   "Skipped {time}: {machine} ran it": "Пропущено {time}: запустив {machine}",
+  "Skipped {time}: too few machines answered to confirm it":
+    "Пропущено {time}: відповіло замало комп’ютерів, щоб це підтвердити",
   "Skipped {when}": "Пропущено {when}",
   "Skipped {when}: {reason}": "Пропущено {when}: {reason}",
   "Skipped: the account is not signed in": "Пропущено: у обліковий запис не ввійшли",
@@ -12549,6 +12553,8 @@ const catalog: MessageCatalog = {
     "Цей комп’ютер не може клонувати за посиланням. Оновіть на ньому T3.CodeShip або клонуйте репозиторій із палітри команд.",
   "This machine cannot start threads without a project.":
     "Цей комп’ютер не може починати чати без проєкту.",
+  "This machine couldn't reach enough of the other machines to make sure no other machine would run it, so it didn't run it.":
+    "Цей комп’ютер не зміг зв’язатися з достатньою кількістю інших комп’ютерів, щоб переконатися, що жоден інший його не запустить, тож не запустив його.",
   "This machine is offline. Refs load when it reconnects.":
     "Цей комп’ютер офлайн. Посилання завантажаться, коли він знову підключиться.",
   "This machine is offline. Showing the last known refs.":

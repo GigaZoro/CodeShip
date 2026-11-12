@@ -2,6 +2,7 @@
 
 import {
   compareScheduledTaskSharedRevisions,
+  defaultScheduledTaskMachineOrder,
   scheduledTaskSharedProjectKey,
   type EnvironmentId,
   type ScheduledTask,
@@ -409,16 +410,18 @@ export function newestProjectMachineOrder(
   return best;
 }
 
-/** The stored order, else the sharing machines with the selected one first. */
+/** The order the servers run in: the stored order, then the machines it leaves out, as the servers place them. */
 export function seedMachineOrder(
   stored: ScheduledTaskProjectMachineOrder | null,
   sharingEnvironmentIds: ReadonlyArray<EnvironmentId>,
   selectedEnvironmentId: EnvironmentId,
 ): ReadonlyArray<EnvironmentId> {
-  if (stored) return stored.order;
+  const order = stored?.order ?? [];
   return [
-    selectedEnvironmentId,
-    ...sharingEnvironmentIds.filter((id) => id !== selectedEnvironmentId),
+    ...order,
+    ...defaultScheduledTaskMachineOrder([selectedEnvironmentId, ...sharingEnvironmentIds]).filter(
+      (id) => !order.includes(id),
+    ),
   ];
 }
 
