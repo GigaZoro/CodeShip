@@ -46,7 +46,10 @@ import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { startScheduledTaskEditor } from "../settings/scheduled-task-editor-state";
 import { editDraft } from "../settings/scheduledTaskDraft";
-import { shownNoWorkSkip } from "@t3tools/client-runtime/scheduled-task-run-condition";
+import {
+  noWorkSkipLabel,
+  shownNoWorkSkip,
+} from "@t3tools/client-runtime/scheduled-task-run-condition";
 import { describeSchedule, formatNoWorkSkip } from "../settings/scheduledTaskPresentation";
 import { useOpenScheduledTasks } from "../workspace/useOpenScheduledTasks";
 import {
@@ -180,6 +183,7 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
         },
   );
   const display = status === "idle" ? null : STATUS_DISPLAY[status];
+  const noWorkSkip = shownNoWorkSkip(task);
   const canOperate = useAtomValue(
     serverEnvironment.setScheduledTaskPlacement.permissionAtom(environmentId),
   );
@@ -328,7 +332,12 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
       >
         <RowPressable
           accessibilityRole="button"
-          accessibilityLabel={[task.title, display ? t(display.label) : null, props.machineLabel]
+          accessibilityLabel={[
+            task.title,
+            display ? t(display.label) : null,
+            noWorkSkip === null ? null : noWorkSkipLabel(noWorkSkip),
+            props.machineLabel,
+          ]
             .filter(Boolean)
             .join(", ")}
           accessibilityHint={

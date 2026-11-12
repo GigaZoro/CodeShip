@@ -79,6 +79,7 @@ import {
 } from "react";
 
 import {
+  noWorkSkipLabel,
   noWorkSkipText,
   shownNoWorkSkip,
 } from "@t3tools/client-runtime/scheduled-task-run-condition";
@@ -274,9 +275,13 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
   );
   const display = status === "idle" ? null : pinnedTaskStatusDisplay(status);
   const isActive = runThreadRef !== null && scopedThreadKey(runThreadRef) === props.routeThreadKey;
+  const noWorkSkip = shownNoWorkSkip(task);
   const accessibility = resolveSidebarRowAccessibility({
     title: task.title,
-    statusLabel: display ? t(display.label) : null,
+    statusLabel:
+      [display ? t(display.label) : null, noWorkSkip === null ? null : noWorkSkipLabel(noWorkSkip)]
+        .filter(Boolean)
+        .join(", ") || null,
     projectDisplayName:
       [props.projectDisplayName, props.machineLabel].filter(Boolean).join(", ") || null,
     isActive,
@@ -409,7 +414,6 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
     void setPlacement(environmentId, [task], "chat");
   };
 
-  const noWorkSkip = shownNoWorkSkip(task);
   const StatusIcon = display?.icon;
   const runTiming =
     display !== null && StatusIcon !== undefined ? (

@@ -63,6 +63,12 @@ export function noWorkSkipText(skip: ScheduledTaskNoWorkSkip, when: string): str
     : t("Skipped {when}: {reason}", { when, reason });
 }
 
+/** A row's screen-reader words for a skipped occurrence. It names no time, so the label never goes stale. */
+export function noWorkSkipLabel(skip: ScheduledTaskNoWorkSkip): string {
+  const reason = skip.reason?.trim() ?? "";
+  return reason === "" ? t("Last run skipped") : t("Last run skipped: {reason}", { reason });
+}
+
 /** Run history's line for a one-machine occurrence that another machine's check skipped. */
 export function peerNoWorkText(machine: string | null, detail: string | null): string {
   const reason = detail?.trim() ?? "";

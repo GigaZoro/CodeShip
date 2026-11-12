@@ -1,3 +1,7 @@
+## 2026-11-12 — Screen readers hear when a pinned task's run was skipped
+
+- A scheduled task pinned to the sidebar or the mobile thread list now tells a screen reader when its check found no work and skipped the last run, with the check's reason. Before, only the row's visible line and hover card said so.
+
 ## 2026-11-12 — Checks before landing run the tests that exercise a change
 
 - Before T3.CodeShip work lands on main, its checks now also run the tests that reach a changed file through test helpers, such as an agent's recorded replay tests when that agent's adapter changes. Before, only the tests next to a changed file ran, so a replay test that no longer matched the adapter reached main unseen and failed on every later run.
