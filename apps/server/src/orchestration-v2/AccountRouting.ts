@@ -1,9 +1,13 @@
 import {
+  CodexSettings,
   isProviderAvailable,
   type ModelSelection,
   type ProjectId,
-  type ProviderDriverKind,
-  type ProviderInstanceId,
+  type ProviderInstanceConfig,
+  type ProviderInstanceConfigMap,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ProviderUsageHold,
   resolveProjectProviderInstanceEnabled,
   type ServerProvider,
   type ServerSettings as ServerSettingsValue,
@@ -25,8 +29,12 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { forkParked } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
@@ -161,6 +169,42 @@ function accountLimit(
         instanceId: provider.instanceId,
         limitedUntil: DateTime.formatIso(DateTime.makeUnsafe(end)),
       };
+}
+
+/**
+ * Subscription accounts an account-wide refusal holds, or that ChatGPT's app cap stopped with no
+ * turn run since. A used-up usage window limits an account by itself, so Try again cannot help it.
+ */
+function usageHolds(
+  providers: ReadonlyArray<ServerProvider>,
+  recorded: AccountRoutingContext["recordedLimits"],
+  nowMs: number,
+): Array<ProviderUsageHold> {
+  return providers.flatMap((provider) => {
+    if (!isSubscriptionAccount(provider) || windowLimitEnd(provider, nowMs, null) !== null)
+      return [];
+    const refusals = (recorded.get(provider.instanceId) ?? []).filter(
+      (refusal) => refusal.modelScope === undefined,
+    );
+    const appCap = refusals.some((refusal) => refusal.appCap === true);
+    const last = refusalEnds(provider, refusals, nowMs, null).reduce<LimitEnd | null>(
+      (latest, end) => (latest === null || end.end > latest.end ? end : latest),
+      null,
+    );
+    if (last === null && !appCap) return [];
+    return [
+      {
+        instanceId: provider.instanceId,
+        ...(last === null
+          ? {}
+          : {
+              heldUntil: DateTime.formatIso(DateTime.makeUnsafe(last.end)),
+              ...(last.estimated ? { estimated: true as const } : {}),
+            }),
+        ...(appCap ? { appCap: true as const } : {}),
+      },
+    ];
+  });
 }
 
 /** Whether a model-scoped refusal still holds `model` on this subscription account. */
@@ -395,6 +439,11 @@ export interface LaunchLimit {
   readonly limitedUntil: string;
 }
 
+export class UnknownAccountError extends Schema.TaggedError<UnknownAccountError>()(
+  "UnknownAccountError",
+  { instanceId: ProviderInstanceId },
+) {}
+
 export class AccountRouting extends Context.Service<
   AccountRouting,
   {
@@ -424,7 +473,11 @@ export class AccountRouting extends Context.Service<
      * Ends the recorded holds of an account, so its next turn tries it again. A refusal after this
      * holds it again.
      */
-    readonly retryAccount: (instanceId: ProviderInstanceId) => Effect.Effect<void>;
+    readonly retryAccount: (
+      instanceId: ProviderInstanceId,
+    ) => Effect.Effect<void, UnknownAccountError>;
+    /** The accounts `retryAccount` can release, and the ones ChatGPT's app cap stopped. */
+    readonly holds: Effect.Effect<ReadonlyArray<ProviderUsageHold>>;
     /** The usage-limited account a new thread on `selection` would start on, or null if it has room. */
     readonly launchLimit: (input: {
       readonly selection: ModelSelection;
@@ -438,12 +491,65 @@ export class AccountRouting extends Context.Service<
   }
 >()("t3/orchestration-v2/AccountRouting") {}
 
+const CODEX_DRIVER = ProviderDriverKind.make("codex");
+const decodeCodexSettings = Schema.decodeUnknownOption(CodexSettings);
+
+// The instance's own CODEX_HOME is the login home when no home path is set.
+const codexSignIn = (instance: ProviderInstanceConfig | undefined) =>
+  Option.match(decodeCodexSettings(instance?.config ?? {}), {
+    onNone: () => "",
+    onSome: (codex) =>
+      JSON.stringify([
+        codex.setupMode === "managed",
+        codex.privateLogin === true,
+        codex.homePath,
+        codex.shadowHomePath,
+        instance?.environment?.find((variable) => variable.name === "CODEX_HOME")?.value ?? null,
+      ]),
+  });
+
+/** Codex accounts whose settings moved them to another login, which no refusal of the old one binds. */
+export function codexSignInChanges(
+  previous: ProviderInstanceConfigMap,
+  current: ProviderInstanceConfigMap,
+): Array<ProviderInstanceId> {
+  return [...new Set([...Object.keys(previous), ...Object.keys(current)])].flatMap((key) => {
+    const id = ProviderInstanceId.make(key);
+    const before = Object.hasOwn(previous, id) ? previous[id] : undefined;
+    const after = Object.hasOwn(current, id) ? current[id] : undefined;
+    if (before?.driver !== CODEX_DRIVER && after?.driver !== CODEX_DRIVER) return [];
+    return codexSignIn(before) === codexSignIn(after) ? [] : [id];
+  });
+}
+
 export const layer = Layer.effect(
   AccountRouting,
   Effect.gen(function* () {
     const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const settingsChanges = yield* serverSettings.subscribeChanges;
+    let instances = (yield* serverSettings.getSettings.pipe(Effect.orDie)).providerInstances;
+    yield* forkParked(
+      Stream.runForEach(settingsChanges, (settings) => {
+        const changed = codexSignInChanges(instances, settings.providerInstances);
+        instances = settings.providerInstances;
+        return Effect.forEach(
+          changed,
+          (instanceId) =>
+            DateTime.now.pipe(
+              Effect.flatMap((now) => projections.liftUsageLimitHolds(instanceId, now)),
+              Effect.catchCause((cause) =>
+                Effect.logWarning("orchestration-v2.account-routing.sign-in-lift-failed", {
+                  instanceId,
+                  cause,
+                }),
+              ),
+            ),
+          { discard: true },
+        );
+      }),
+    );
     // Limits only steer and warn; a failed read leaves every account usable.
     const readLimits = (now: DateTime.Utc, providers: ReadonlyArray<ServerProvider>) =>
       projections.getUsageLimitedProviderInstances(now, completedRunLiftsScope(providers)).pipe(
@@ -512,8 +618,21 @@ export const layer = Layer.effect(
         return { accounts: limited, estimated, models };
       }),
       retryAccount: Effect.fn("AccountRouting.retryAccount")(function* (instanceId) {
+        const providers = yield* providerRegistry.getProviders;
+        if (!providers.some((provider) => provider.instanceId === instanceId)) {
+          return yield* new UnknownAccountError({ instanceId });
+        }
         yield* projections.liftUsageLimitHolds(instanceId, yield* DateTime.now).pipe(Effect.orDie);
       }),
+      // Unlike routing, a list the user reads fails loudly rather than showing no holds.
+      holds: Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const providers = yield* providerRegistry.getProviders;
+        const recorded = yield* projections
+          .getUsageLimitedProviderInstances(now, completedRunLiftsScope(providers))
+          .pipe(Effect.orDie);
+        return usageHolds(providers, recorded, DateTime.toEpochMillis(now));
+      }).pipe(Effect.withSpan("AccountRouting.holds")),
       launchLimit: Effect.fn("AccountRouting.launchLimit")(
         function* (input) {
           const now = yield* DateTime.now;

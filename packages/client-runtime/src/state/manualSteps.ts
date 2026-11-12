@@ -287,8 +287,9 @@ const byUrgency = (left: ManualStep, right: ManualStep) =>
 const DETECTED_KIND_ORDER: Record<DetectedManualStep["kind"], number> = {
   "login-expired": 0,
   "signed-out": 1,
-  "login-expiring": 2,
-  "mcp-needs-auth": 3,
+  "connected-app-cap": 2,
+  "login-expiring": 3,
+  "mcp-needs-auth": 4,
 };
 
 export const byDetectedUrgency = (left: DetectedManualStepEntry, right: DetectedManualStepEntry) =>
@@ -709,6 +710,11 @@ export function detectedManualStepText(
       };
     case "login-expired":
       return { step: t("Sign in to {account} again", { account }), detail: t("Login expired") };
+    case "connected-app-cap":
+      return {
+        step: t("Sign {account} in with Codex's own login", { account }),
+        detail: t("ChatGPT's app limit stopped it"),
+      };
     case "mcp-needs-auth":
       return {
         step: t("Sign in to {server} for {account}", {

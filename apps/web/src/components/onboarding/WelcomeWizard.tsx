@@ -62,11 +62,8 @@ import { newProjectId, randomUUID } from "../../lib/utils";
 import { agentSessionImport } from "../../state/agentSessions";
 import { readProjects, waitForProject } from "../../state/entities";
 import { useEnvironments, usePrimaryEnvironment } from "../../state/environments";
-import {
-  managedInstanceLocks,
-  managedTelemetryOffMessage,
-  usePrimaryManagedPolicy,
-} from "../../state/managedPolicy";
+import { managedInstanceLocks } from "@t3tools/shared/managedPolicyMessages";
+import { managedTelemetryOffMessage, usePrimaryManagedPolicy } from "../../state/managedPolicy";
 import {
   isOnboardingRelayEnvironment,
   resolveOnboardingSetup,
@@ -86,7 +83,7 @@ import { getProviderSummary } from "../settings/providerStatus";
 import { providerClients } from "../settings/providerDriverMeta";
 import { ChatGptWelcomeCoordinator } from "../settings/ChatGptWelcomeCoordinator";
 import { AddManagedCodexAccountDialog, CodexSetupSection } from "../settings/CodexSetupSection";
-import { readCodexSetupMode } from "../settings/CodexSetupSection.logic";
+import { readCodexSignInMode } from "@t3tools/client-runtime/codex-sign-in";
 import { buildProviderInstanceUpdatePatch } from "../settings/SettingsPanels.logic";
 import { TerminalViewport } from "../ThreadTerminalDrawer";
 import { CloudEnvironmentConnectRows } from "../cloud/CloudEnvironmentConnectList";
@@ -931,7 +928,7 @@ function OnboardingCodexSetup({
     driver: ProviderDriverKind.make("codex"),
     config: createdAccount ? { enabled: true, setupMode: "managed" } : {},
   };
-  const mode = readCodexSetupMode(instance.config);
+  const mode = readCodexSignInMode(instance.config);
   const existingChosen =
     mode === "existing" &&
     instance.config !== null &&

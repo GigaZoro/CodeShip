@@ -1,3 +1,11 @@
+## 2026-11-12 — Switch a Codex account's sign-in when ChatGPT's app limit stops it
+
+- **Settings → Providers & models** now has a **Sign-in** choice for each Codex account: **ChatGPT sign-in** or **Codex's own login**, which ChatGPT's app limit does not stop. It works on any linked machine, from web, desktop and mobile. The first Codex account on a machine can turn on **Private login** to sign in apart from the Codex CLI's login there. Changing an account's sign-in releases its hold.
+- **Usage → Limits** lists each held account under its provider with when the hold ends, **Try again**, and, for ChatGPT's app limit, **Switch sign-in**. The thread banner on web and the thread card on mobile show **Switch sign-in** too.
+- **Manual steps** shows a Codex account the app limit stopped, with **Switch sign-in**, until a turn runs on it again.
+- Agents can try a held account again with the new `t3_provider_retry_usage_limit` tool, on this machine or a linked one.
+- See [ChatGPT's app limit](user/providers-codex.md#chatgpts-app-limit).
+
 ## 2026-11-12 — Agents can set a provider account's shared settings
 
 - `t3_environment_preferences_update` takes `providerAccounts`, so an agent with full access can set the settings a provider account shares, such as a Claude account's **Auto-compact after**, without a manual step. It accepts only those fields (for Claude: **Auto-compact after**, **Compact idle threads** and custom models; for Codex, Cursor and Antigravity: custom models), checks each value the way the account's settings form does, and refuses a path, binary, home, launch argument or credential, an unknown account or an invalid value with a message that says why. A field's default value, such as an empty **Auto-compact after**, restores the default. Account settings and other preferences in one call are saved together or not at all.

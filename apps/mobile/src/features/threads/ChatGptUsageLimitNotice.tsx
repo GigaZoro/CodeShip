@@ -1,5 +1,6 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
+  CHATGPT_APP_CAP_CODE,
   isChatGptUsageLimitCode,
   CHATGPT_USAGE_URL,
   CHATGPT_WORKSPACE_ADMIN_REQUEST,
@@ -17,7 +18,12 @@ export function ChatGptUsageLimitNotice({ thread }: { thread: EnvironmentThreadS
   const [status, setStatus] = useState<"copied" | "copy-failed" | "open-failed" | null>(null);
   const code = thread.runtime?.lastErrorCode;
   const workspaceLimit = code === CHATGPT_WORKSPACE_USAGE_LIMIT_CODE;
-  if (thread.runtime?.status !== "failed" || (!workspaceLimit && !isChatGptUsageLimitCode(code)))
+  // The app cap has its own card: no ChatGPT setting lifts it.
+  if (
+    thread.runtime?.status !== "failed" ||
+    code === CHATGPT_APP_CAP_CODE ||
+    (!workspaceLimit && !isChatGptUsageLimitCode(code))
+  )
     return null;
   return (
     <View

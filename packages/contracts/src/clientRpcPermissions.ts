@@ -39,6 +39,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.providerMcpRead]: AuthProvidersManageScope,
   [WS_METHODS.providerMcpEdit]: AuthProvidersManageScope,
   [WS_METHODS.providerMcpSetEnabled]: AuthProvidersManageScope,
+  // Releasing a held account sends the next turns of every thread on it back to that account.
+  [WS_METHODS.providerRetryUsageLimit]: AuthProvidersManageScope,
   [WS_METHODS.pullRequestsRunAction]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsUpdate]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsComment]: AuthSourceControlWriteScope,

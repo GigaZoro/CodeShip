@@ -8,6 +8,7 @@ import {
   type ManualStepsState,
   type ManualStepsView,
 } from "@t3tools/client-runtime/state/manualSteps";
+import { signInWalkEntries } from "@t3tools/client-runtime/state/manualStepsSignIn.logic";
 import { settlePromise } from "@t3tools/client-runtime/state/runtime";
 import type { ContextMenuItem, EnvironmentId, ManualStep } from "@t3tools/contracts";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
@@ -216,7 +217,7 @@ function DetectedStepRow(props: {
           </Tooltip>
           <span className="shrink-0" onClick={stopRowActivation}>
             <Button size="xs" variant="outline" onClick={() => props.onOpen(entry)}>
-              {t("Sign in")}
+              {entry.step.kind === "connected-app-cap" ? t("Switch sign-in") : t("Sign in")}
             </Button>
           </span>
         </div>
@@ -286,7 +287,7 @@ function SignInAllRow(props: {
   );
 }
 
-const hasSeveralSignIns = (group: ManualStepGroup) => group.detected.length >= 2;
+const hasSeveralSignIns = (group: ManualStepGroup) => signInWalkEntries(group.detected).length >= 2;
 
 function ManualStepsSkeleton() {
   return (
@@ -368,7 +369,10 @@ function ManualStepsBody(props: {
             ) : null}
             <ul role="group" aria-label={group.machine} className="flex flex-col gap-px">
               {hasSeveralSignIns(group) ? (
-                <SignInAllRow entries={group.detected} showMachine={!props.groupHeadings} />
+                <SignInAllRow
+                  entries={signInWalkEntries(group.detected)}
+                  showMachine={!props.groupHeadings}
+                />
               ) : null}
               {group.detected.map((entry) => (
                 <DetectedStepRow
@@ -533,7 +537,7 @@ export function ManualStepsSidebarSection() {
               ? [
                   <SignInAllRow
                     key={`sign-in-all:${group.machine}`}
-                    entries={group.detected}
+                    entries={signInWalkEntries(group.detected)}
                     parentRowId={MANUAL_STEPS_ROW_ID}
                   />,
                 ]

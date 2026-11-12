@@ -1,4 +1,6 @@
 import {
+  type EnvironmentId,
+  type ProviderInstanceId,
   type OrchestrationV2LimitRecovery,
   type OrchestrationV2LimitRecoveryUpdate,
   type RunId,
@@ -10,6 +12,7 @@ import {
   CHATGPT_USAGE_LIMIT_CODE,
   CHATGPT_WORKSPACE_USAGE_LIMIT_CODE,
 } from "@t3tools/shared/usageLimits";
+import { Link } from "@tanstack/react-router";
 import { GaugeIcon } from "lucide-react";
 import { useState } from "react";
 import { useDeadlinePassed } from "../../hooks/useDeadline";
@@ -19,6 +22,7 @@ import { Button } from "../ui/button";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
 import { toastManager } from "../ui/toast";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
+import { RetryAccountButton } from "./RetryAccountButton";
 import { copyAdminRequest } from "./ThreadErrorBanner";
 import { t } from "~/i18n";
 
@@ -33,6 +37,8 @@ type RecoveryProps = {
   onChange: (recovery: OrchestrationV2LimitRecoveryUpdate) => Promise<void>;
   /** Ends the account's hold so its next turn tries it again; absent when the account is unknown. */
   onRetryAccount?: () => Promise<void>;
+  /** The account's provider settings, where its sign-in can be switched. */
+  signInSettings?: { environmentId: EnvironmentId; instanceId: ProviderInstanceId };
 };
 
 export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBannerStackItem {
@@ -69,6 +75,15 @@ export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBann
       actions: (
         <>
           {props.onRetryAccount ? <RetryAccountButton onRetry={props.onRetryAccount} /> : null}
+          {props.signInSettings ? (
+            <Button
+              size="xs"
+              variant="ghost"
+              render={<Link to="/settings/providers" search={props.signInSettings} />}
+            >
+              {t("Switch sign-in")}
+            </Button>
+          ) : null}
           {recoveryActions}
         </>
       ),
@@ -96,38 +111,6 @@ export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBann
       </>
     ),
   };
-}
-
-function RetryAccountButton({ onRetry }: { readonly onRetry: () => Promise<void> }) {
-  const [pending, setPending] = useState(false);
-  return (
-    <Button
-      size="xs"
-      variant="ghost"
-      disabled={pending}
-      onClick={() => {
-        setPending(true);
-        onRetry()
-          .then(() =>
-            toastManager.add({
-              type: "success",
-              title: t("Account released"),
-              description: t("Send a message to try the account again."),
-            }),
-          )
-          .catch((cause: unknown) =>
-            toastManager.add({
-              type: "error",
-              title: t("Could not release the account"),
-              description: cause instanceof Error ? cause.message : t("An error occurred."),
-            }),
-          )
-          .finally(() => setPending(false));
-      }}
-    >
-      {pending ? t("Saving...") : t("Try again")}
-    </Button>
-  );
 }
 
 function RecoveryActions({ runId, resetAt, recovery, snoozedUntil, onChange }: RecoveryProps) {

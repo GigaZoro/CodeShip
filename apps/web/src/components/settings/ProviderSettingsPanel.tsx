@@ -92,7 +92,13 @@ import {
   CodexManagedRuntimeFields,
   CodexRuntimeInstallRow,
 } from "./CodexSetupSection";
-import { readCodexSetupMode } from "./CodexSetupSection.logic";
+import {
+  readCodexSignInMode,
+  withCodexPrivateLogin,
+  withCodexSignInMode,
+  type CodexSignInMode,
+} from "@t3tools/client-runtime/codex-sign-in";
+import { CodexSignInRows } from "./CodexSignInRows";
 import { providerClients } from "./providerDriverMeta";
 import { searchableSetting } from "./settingsSearch";
 import { buildProviderInstanceUpdatePatch } from "./SettingsPanels.logic";
@@ -1198,7 +1204,101 @@ function ProviderInstanceRow({
         onReset: () => actions.writeProjectOverride(instanceId, undefined),
       }
     : undefined;
-  const codexSetupMode = driver === "codex" ? readCodexSetupMode(instance.config) : null;
+  const codexSetupMode = driver === "codex" ? readCodexSignInMode(instance.config) : null;
+  const changeSignInMode = (mode: CodexSignInMode) =>
+    actions.enableInstance(instanceId, {
+      ...instance,
+      enabled: true,
+      config: withCodexSignInMode(instance.config, mode),
+    });
+  const codexSignInRows =
+    mode === "editor" && driver === "codex" ? (
+      <CodexSignInRows
+        environmentId={environmentId}
+        instanceId={instanceId}
+        config={instance.config}
+        readOnly={readOnly || !canWriteSettings}
+        onModeChange={changeSignInMode}
+        onPrivateLoginChange={(on) =>
+          actions.updateInstance(instanceId, instance, {
+            ...instance,
+            config: withCodexPrivateLogin(instance.config, on),
+          })
+        }
+      />
+    ) : null;
+  const providerSetup =
+    mode === "editor" && driver === "antigravity" ? (
+      <ProviderSetupSection
+        environmentId={environmentId}
+        environmentLabel={environmentLabel}
+        instanceId={instanceId}
+        provider={liveProvider}
+        binaryPath={configuredBinaryPath(instance.config)}
+        authMethod={readAntigravityAuthMethod(instance.config)}
+        enabled={resolveProviderInstanceEnabled(instance)}
+        readOnly={readOnly}
+        onEnable={() => actions.enableInstance(instanceId, { ...instance, enabled: true })}
+      />
+    ) : mode === "editor" && codexSetupMode === "managed" ? (
+      <CodexSetupSection
+        environmentId={environmentId}
+        instanceId={instanceId}
+        provider={liveProvider}
+        mode={codexSetupMode}
+        enabled={resolveProviderInstanceEnabled(instance)}
+        readOnly={readOnly}
+        onModeChange={changeSignInMode}
+      />
+    ) : mode === "editor" &&
+      !readOnly &&
+      liveProvider &&
+      (liveProvider.setup?.canAuthenticate ||
+        (liveProvider.driver === "acpRegistry" && liveProvider.installed)) ? (
+      <>
+        {codexSetupMode === "existing" &&
+        !liveProvider.installed &&
+        liveProvider.setup?.canInstall ? (
+          <CodexRuntimeInstallRow environmentId={environmentId} instanceId={instanceId} />
+        ) : null}
+        <ProviderAuthenticationSection
+          key={`${environmentId}:${instanceId}`}
+          environmentId={environmentId}
+          environmentLabel={environmentLabel}
+          instanceId={instanceId}
+          provider={liveProvider}
+          readOnly={readOnly}
+        />
+      </>
+    ) : mode === "editor" &&
+      !readOnly &&
+      driver === "cursor" &&
+      liveProvider?.setup?.canAuthenticate === false ? (
+      <SettingsRow
+        title={t("Cursor account")}
+        description={t(
+          "Using CURSOR_API_KEY. Remove it from this provider's environment to use browser sign-in.",
+        )}
+      />
+    ) : mode === "editor" &&
+      !readOnly &&
+      driver === "claudeAgent" &&
+      liveProvider?.setup?.canAuthenticate === false &&
+      liveProvider.auth.type === "oauthToken" ? (
+      <ClaudeTokenAccountRow
+        instance={instance}
+        isDefault={isDefault}
+        onChange={(next) => actions.updateInstance(instanceId, instance, next)}
+      />
+    ) : null;
+  const setup = codexSignInRows ? (
+    <>
+      {codexSignInRows}
+      {providerSetup}
+    </>
+  ) : (
+    providerSetup
+  );
   const recommendedVersion = liveProvider?.compatibilityAdvisory?.recommendedVersion;
   const canInstallRecommended =
     !readOnly &&
@@ -1235,83 +1335,7 @@ function ProviderInstanceRow({
         ) : undefined
       }
       canWriteSettings={canWriteSettings}
-      setup={
-        mode === "editor" && driver === "antigravity" ? (
-          <ProviderSetupSection
-            environmentId={environmentId}
-            environmentLabel={environmentLabel}
-            instanceId={instanceId}
-            provider={liveProvider}
-            binaryPath={configuredBinaryPath(instance.config)}
-            authMethod={readAntigravityAuthMethod(instance.config)}
-            enabled={resolveProviderInstanceEnabled(instance)}
-            readOnly={readOnly}
-            onEnable={() => actions.enableInstance(instanceId, { ...instance, enabled: true })}
-          />
-        ) : mode === "editor" && codexSetupMode === "managed" ? (
-          <CodexSetupSection
-            environmentId={environmentId}
-            instanceId={instanceId}
-            provider={liveProvider}
-            mode={codexSetupMode}
-            enabled={resolveProviderInstanceEnabled(instance)}
-            readOnly={readOnly}
-            onModeChange={(setupMode) =>
-              actions.enableInstance(instanceId, {
-                ...instance,
-                enabled: true,
-                config: {
-                  ...(instance.config !== null && typeof instance.config === "object"
-                    ? instance.config
-                    : {}),
-                  enabled: true,
-                  setupMode,
-                },
-              })
-            }
-          />
-        ) : mode === "editor" &&
-          !readOnly &&
-          liveProvider &&
-          (liveProvider.setup?.canAuthenticate ||
-            (liveProvider.driver === "acpRegistry" && liveProvider.installed)) ? (
-          <>
-            {codexSetupMode === "existing" &&
-            !liveProvider.installed &&
-            liveProvider.setup?.canInstall ? (
-              <CodexRuntimeInstallRow environmentId={environmentId} instanceId={instanceId} />
-            ) : null}
-            <ProviderAuthenticationSection
-              key={`${environmentId}:${instanceId}`}
-              environmentId={environmentId}
-              environmentLabel={environmentLabel}
-              instanceId={instanceId}
-              provider={liveProvider}
-              readOnly={readOnly}
-            />
-          </>
-        ) : mode === "editor" &&
-          !readOnly &&
-          driver === "cursor" &&
-          liveProvider?.setup?.canAuthenticate === false ? (
-          <SettingsRow
-            title={t("Cursor account")}
-            description={t(
-              "Using CURSOR_API_KEY. Remove it from this provider's environment to use browser sign-in.",
-            )}
-          />
-        ) : mode === "editor" &&
-          !readOnly &&
-          driver === "claudeAgent" &&
-          liveProvider?.setup?.canAuthenticate === false &&
-          liveProvider.auth.type === "oauthToken" ? (
-          <ClaudeTokenAccountRow
-            instance={instance}
-            isDefault={isDefault}
-            onChange={(next) => actions.updateInstance(instanceId, instance, next)}
-          />
-        ) : null
-      }
+      setup={setup}
       onUpdate={(next) => actions.updateInstance(instanceId, instance, next)}
       onDelete={
         mode === "editor" && !isDefault

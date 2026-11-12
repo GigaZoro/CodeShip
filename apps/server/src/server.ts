@@ -440,6 +440,8 @@ const layerPlatformServices = DocumentText.layer.pipe(Layer.provideMerge(NodeSer
 
 const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
 
+const layerAccountRouting = AccountRouting.layer.pipe(Layer.provide(ProjectionStoreV2.layer));
+
 const layerVcsDriverRegistry = VcsDriverRegistry.layer.pipe(Layer.provide(VcsProjectConfig.layer));
 
 const layerSourceControlProviderRegistry = SourceControlProviderRegistry.layer.pipe(
@@ -769,10 +771,10 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
       Keybindings.layer,
       EnvironmentTheme.layer,
       UsageLimitSources.layer,
-      AccountRouting.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
+      layerAccountRouting,
       ThreadPageManualSteps.layer,
       ThreadPageCheckAccess.layer,
-      DetectedManualSteps.layer,
+      DetectedManualSteps.layer.pipe(Layer.provide(layerAccountRouting)),
     ),
   ),
   Layer.provideMerge(ProviderPlugins.layer),
@@ -900,7 +902,7 @@ const layerMakeRoutes = Layer.mergeAll(
   // delegate_task to a linked environment, from /mcp and the follower above.
   Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
   // Agents see which accounts a usage limit stopped, and launches onto one fail before they start.
-  Layer.provide(AccountRouting.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
+  Layer.provide(layerAccountRouting),
   // Links agents ask for: shown in a thread from /mcp, answered over WebSocket.
   Layer.provide(PeerLinkRequests.layer),
   // Linking both ways: asked over WebSocket, and answered when a linked machine asks this one over /mcp.

@@ -2982,6 +2982,7 @@ const catalog: MessageCatalog = {
   "ChatGPT shares an account's limits only with that account's Codex CLI login. Add the login as a Codex provider on a connected machine to see its limits here, or open ChatGPT signed in as the account.":
     "ChatGPT передає ліміти облікового запису лише входу цього облікового запису в Codex CLI. Додайте такий вхід як провайдера Codex на підключеній машині, щоб бачити тут його ліміти, або відкрийте ChatGPT, увійшовши в цей обліковий запис.",
   "ChatGPT sharing is on": "Спільне використання ChatGPT увімкнено",
+  "ChatGPT sign-in": "Вхід через ChatGPT",
   "ChatGPT sign-in could not finish. Try again.":
     "Не вдалося завершити вхід у ChatGPT. Спробуйте ще раз.",
   "ChatGPT sign-in couldn't finish": "Не вдалося завершити вхід у ChatGPT",
@@ -2990,6 +2991,7 @@ const catalog: MessageCatalog = {
   "ChatGPT sign-in redirect URL": "URL перенаправлення входу в ChatGPT",
   "ChatGPT token sharing is active": "Спільне використання токенів ChatGPT активне",
   "ChatGPT usage limit reached": "Досягнуто ліміту використання ChatGPT",
+  "ChatGPT's app limit stopped it": "Його зупинив ліміт застосунків ChatGPT",
   "ChatGPT's app limit stopped this account":
     "Ліміт застосунків ChatGPT зупинив цей обліковий запис",
   check: "перевірити",
@@ -3493,6 +3495,8 @@ const catalog: MessageCatalog = {
   "Code language: {language}": "Мова коду: {language}",
   "Code surface": "Поверхня коду",
   "Code with your ChatGPT subscription.": "Пишіть код за підпискою ChatGPT.",
+  "CodeShip signs this account in with ChatGPT.":
+    "CodeShip входить у цей обліковий запис через ChatGPT.",
   codex: "codex",
   "Codex binary path": "Шлях до виконуваного файлу Codex",
   "Codex feedback thread ID": "ID чату відгуку Codex",
@@ -3503,6 +3507,7 @@ const catalog: MessageCatalog = {
   "Codex setup failed. Try again.": "Не вдалося налаштувати Codex. Спробуйте ще раз.",
   "Codex shadow home path": "Шлях до тіньової домашньої папки Codex",
   "CODEX_HOME path": "Шлях CODEX_HOME",
+  "Codex's own login": "Власний вхід Codex",
   "Collapse {file}": "Згорнути {file}",
   "Collapse {label}": "Згорнути {label}",
   "Collapse {name}": "Згорнути {name}",
@@ -6047,6 +6052,9 @@ const catalog: MessageCatalog = {
   heart: "серце",
   "Held for up to 24 hours while this environment is offline.":
     "Зберігається до 24 годин, поки це середовище офлайн.",
+  "Held until {time}": "Призупинено до {time}",
+  "Held until about {time}": "Призупинено приблизно до {time}",
+  "Held until its next turn": "Призупинено до наступного ходу",
   "Helper ready. Hyprland may ask for screen-sharing permission on your first capture.":
     "Помічник готовий. Hyprland може запитати дозвіл на спільний доступ до екрана під час першого захоплення.",
   "Helper setup requires a Hyprland Wayland session outside a sandbox.":
@@ -8307,6 +8315,8 @@ const catalog: MessageCatalog = {
     "Відкривається через SSH. Потрібен ваш ключ на {machine}",
   "Opens Providers, where the account signs in.":
     "Відкриває «Провайдери», де обліковий запис входить у систему.",
+  "Opens Providers, where the account's sign-in can be switched.":
+    "Відкриває «Провайдери», де можна змінити вхід облікового запису.",
   "Opens queued messages to send now, edit, or remove":
     "Відкриває повідомлення в черзі, щоб надіслати зараз, змінити чи видалити",
   "Opens scheduled task settings.": "Відкриває налаштування запланованих завдань.",
@@ -8749,6 +8759,7 @@ const catalog: MessageCatalog = {
   "privacy policy": "політику конфіденційності",
   "Privacy policy": "Політика конфіденційності",
   Private: "Приватний",
+  "Private login": "Окремий вхід",
   "Pro · up to {count} tunnels.": {
     one: "Pro · до {count} тунеля.",
     few: "Pro · до {count} тунелів.",
@@ -10722,6 +10733,7 @@ const catalog: MessageCatalog = {
   "Sidebar threads with no activity for this long settle automatically.":
     "Чати на бічній панелі без активності протягом цього часу завершуються автоматично.",
   Sidecar: "Sidecar",
+  "Sign {account} in with Codex's own login": "Увійти в {account} через власний вхід Codex",
   "sign in": "увійти",
   "Sign in": "Увійти",
   "Sign in again": "Увійти знову",
@@ -10764,8 +10776,10 @@ const catalog: MessageCatalog = {
   "Sign out of {server}": "Вийти з {server}",
   "Sign out of T3 Connect and sign in again.": "Вийдіть із T3 Connect і увійдіть ще раз.",
   "Sign out?": "Вийти?",
+  "Sign-in": "Вхід",
   "sign-in code": "код входу",
   "Sign-in did not finish": "Вхід не завершено",
+  "Sign-in for {account}": "Вхід для {account}",
   "Sign-in method": "Спосіб входу",
   "Sign-ins finished": "Входи завершено",
   "Sign-ins on {machine}": "Входи на {machine}",
@@ -10795,6 +10809,8 @@ const catalog: MessageCatalog = {
   "Signing in...": "Вхід...",
   "Signing secret is required": "Потрібен секрет підпису",
   "Signs in with `claude auth login`.": "Вхід за допомогою `claude auth login`.",
+  "Signs this account in apart from the Codex CLI on this machine.":
+    "Входить у цей обліковий запис окремо від Codex CLI на цій машині.",
   "Simlock device hosts": "Хости пристроїв Simlock",
   "Simlock device hosts (alpha)": "Хости пристроїв Simlock (альфа)",
   "Simlock host not removed everywhere": "Хост Simlock видалено не скрізь",
@@ -11226,6 +11242,8 @@ const catalog: MessageCatalog = {
   "Switch on": "Увімкнути",
   "Switch on {machine}": "Увімкнути {machine}",
   "Switch response model for this thread": "Змінити модель відповідей для цього чату",
+  "Switch sign-in": "Змінити вхід",
+  "Switch sign-in for {name}": "Змінити вхід для {name}",
   "switch the Mac app on that Mac": "перемкніть застосунок для Mac на тому Mac",
   "Switch to {branch}?": "Перейти на {branch}?",
   "Switch to {channel}": "Перейти на {channel}",
@@ -12160,6 +12178,8 @@ const catalog: MessageCatalog = {
   "This account is no longer reporting limits on the selected environments.":
     "Цей обліковий запис більше не повідомляє про ліміти на вибраних середовищах.",
   "This account is not available any more.": "Цей обліковий запис більше недоступний.",
+  "This account uses the login Codex keeps for itself.":
+    "Цей обліковий запис використовує вхід, який Codex зберігає для себе.",
   "This action cannot be undone.": "Цю дію не можна скасувати.",
   "This action is currently unavailable.": "Ця дія зараз недоступна.",
   "This action is unavailable.": "Ця дія недоступна.",

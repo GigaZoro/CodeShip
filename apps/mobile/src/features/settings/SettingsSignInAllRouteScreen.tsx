@@ -21,6 +21,7 @@ import {
   providerSignInProgress,
   providerSignInUnsupportedOnPhone,
   recordSignInOutcome,
+  signInWalkEntries,
   startSignInSession,
   summarizeSignIns,
   type ProviderSignInBaseline,
@@ -310,7 +311,7 @@ export function SettingsSignInAllRouteScreen({ route }: Props) {
     state?.view.status === "listed"
       ? state.view.groups.find((candidate) => candidate.machine === machine)
       : undefined;
-  if (session === null && group !== undefined && group.detected.length > 0) {
+  if (session === null && group !== undefined && signInWalkEntries(group.detected).length > 0) {
     setSession(startSignInSession(group.detected));
   }
   const current = session ? currentSignIn(session) : null;

@@ -15,7 +15,8 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
-import { useRef, useState } from "react";
+import type { StaticScreenProps } from "@react-navigation/native";
+import { Fragment, useRef, useState } from "react";
 import { Linking, Pressable, ScrollView, TextInput, useWindowDimensions, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -42,10 +43,28 @@ import { SettingsRow } from "./components/SettingsRow";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
 import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
+import {
+  isCapabilitiesFocused,
+  matchesCapabilitiesFocus,
+  type CapabilitiesFocus,
+} from "./capabilities-focus";
+import { CodexSignInRows } from "./CodexSignInRows";
 
-export function SettingsProviderAccountsRouteScreen() {
-  const { selectedTargets } = useSettingsEnvironmentFilter();
-  const permittedEnvironments = useEnvironmentsWithScope(selectedTargets, AuthProvidersManageScope);
+type Props = StaticScreenProps<CapabilitiesFocus | undefined>;
+
+/**
+ * A stopped account opens this page narrowed to itself, whatever the environment filter says,
+ * until "Show all providers".
+ */
+export function SettingsProviderAccountsRouteScreen({ route }: Props) {
+  const { selectedTargets, availableTargets } = useSettingsEnvironmentFilter();
+  const [showAll, setShowAll] = useState(false);
+  const focus = showAll ? undefined : route.params;
+  const focused = isCapabilitiesFocused(focus);
+  const targets = focused
+    ? availableTargets.filter((entry) => matchesCapabilitiesFocus(focus, entry))
+    : selectedTargets;
+  const permittedEnvironments = useEnvironmentsWithScope(targets, AuthProvidersManageScope);
   const providersByEnvironment = useAtomValue(environmentPresentations.providersByEnvironmentAtom);
   const { environments } = useEnvironments();
   const insets = useSafeAreaInsets();
@@ -56,6 +75,16 @@ export function SettingsProviderAccountsRouteScreen() {
       ? undefined
       : (environments.find((environment) => environment.environmentId === origin)?.label ?? null);
   };
+  // Codex accounts show their sign-in choice even when the app cannot sign them in itself.
+  const accounts = (environment: SettingsTarget) =>
+    managedProviders(environment, providersByEnvironment).filter(
+      (provider) =>
+        (canManageProvider(provider) || provider.driver === "codex") &&
+        matchesCapabilitiesFocus(focus, {
+          environmentId: environment.environmentId,
+          instanceId: provider.instanceId,
+        }),
+    );
   return (
     <>
       <SettingsEnvironmentFilterHeader />
@@ -66,10 +95,10 @@ export function SettingsProviderAccountsRouteScreen() {
           contentContainerClassName="gap-6 px-5 pt-4"
           contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
         >
-          {selectedTargets.length === 0 ? (
+          {targets.length === 0 ? (
             <Text className="text-foreground-muted">{t("Select a connected environment.")}</Text>
           ) : (
-            selectedTargets.map((environment) => (
+            targets.map((environment) => (
               <SettingsSection key={environment.environmentId} title={environment.label}>
                 {!permittedEnvironments.has(environment.environmentId) ? (
                   <View className="gap-1 p-4">
@@ -83,20 +112,31 @@ export function SettingsProviderAccountsRouteScreen() {
                   </View>
                 ) : (
                   <>
-                    {managedProviders(environment, providersByEnvironment)
-                      .filter(canManageProvider)
-                      .map((provider, index) => (
-                        <ProviderAccount
-                          key={provider.instanceId}
-                          environment={environment}
-                          provider={provider}
-                          sharedFrom={sharedFrom(environment, provider)}
-                          divider={index > 0}
-                        />
-                      ))}
-                    {!managedProviders(environment, providersByEnvironment).some(
-                      canManageProvider,
-                    ) ? (
+                    {accounts(environment).map((provider, index) => (
+                      <Fragment key={provider.instanceId}>
+                        {canManageProvider(provider) ? (
+                          <ProviderAccount
+                            environment={environment}
+                            provider={provider}
+                            sharedFrom={sharedFrom(environment, provider)}
+                            divider={index > 0}
+                          />
+                        ) : null}
+                        {provider.driver === "codex" ? (
+                          <CodexSignInRows
+                            environmentId={environment.environmentId}
+                            provider={provider}
+                            instance={
+                              environment.serverConfig.settings.providerInstances[
+                                provider.instanceId
+                              ]
+                            }
+                            managedPolicy={environment.serverConfig.managedPolicy}
+                          />
+                        ) : null}
+                      </Fragment>
+                    ))}
+                    {accounts(environment).length === 0 ? (
                       <Text className="p-4 text-foreground-muted">
                         {t("Configure a provider with in-app sign-in in web or desktop Settings.")}
                       </Text>
@@ -106,7 +146,12 @@ export function SettingsProviderAccountsRouteScreen() {
               </SettingsSection>
             ))
           )}
-          {selectedTargets.length > 0 ? (
+          {focused ? (
+            <SettingsSection>
+              <SettingsActionRow label={t("Show all providers")} onPress={() => setShowAll(true)} />
+            </SettingsSection>
+          ) : null}
+          {targets.length > 0 ? (
             <SettingsSection>
               <SettingsRow
                 icon="sparkles"

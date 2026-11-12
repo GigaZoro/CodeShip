@@ -40,7 +40,9 @@ That works when the app is connected to the machine the chat runs on.
 
 Each machine also adds the sign-ins it notices itself, with or without a ThreadPage token: an
 enabled provider account that is signed out, a Claude login that ends within 7 days or already
-ended, and an MCP server that needs signing in. Each names the machine and the account, comes
+ended, a Codex account that [ChatGPT's app limit](./providers-codex.md#chatgpts-app-limit) stopped
+(with **Switch sign-in** instead of **Sign in**, and left out of **Sign in to all**), and an MCP
+server that needs signing in. Each names the machine and the account, comes
 before the ThreadPage steps, and has **Sign in**, which opens that account in **Settings →
 Providers** or that server on the **Extensions** MCP tab (on mobile, the Providers page, or
 Capabilities narrowed to that server, whose row has **Sign in**). The step disappears by itself

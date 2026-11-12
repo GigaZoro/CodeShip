@@ -534,6 +534,7 @@ it.effect("starts a new thread on another account when the task's account is out
           models: new Map(),
         }),
         retryAccount: () => Effect.void,
+        holds: Effect.succeed([]),
         launchLimit: () => Effect.succeed(null),
       }),
     );

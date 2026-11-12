@@ -623,37 +623,45 @@ it.layer(layerTest)("CodexDriver", (it) => {
     }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn), Effect.scoped),
   );
 
-  it.effect("gives an added existing-CLI account its own auth folder unless a home is set", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const { stateDir } = yield* ServerConfig.ServerConfig;
-      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-driver-" });
-      const create = (
-        id: string,
-        config: Partial<ReturnType<typeof CodexDriver.defaultConfig>> = {},
-        environment: ReadonlyArray<{ name: string; value: string; sensitive: false }> = [],
-      ) =>
-        CodexDriver.create({
-          instanceId: ProviderInstanceId.make(id),
-          displayName: id,
-          enabled: false,
-          environment: [...environment],
-          config: { ...CodexDriver.defaultConfig(), ...config },
-        });
-      const shadow = (id: string) => NodePath.join(stateDir, "providers", "codex", id, "shadow");
+  it.effect(
+    "gives an added or private-login account its own auth folder unless a home is set",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-driver-" });
+        const create = (
+          id: string,
+          config: Partial<ReturnType<typeof CodexDriver.defaultConfig>> = {},
+          environment: ReadonlyArray<{ name: string; value: string; sensitive: false }> = [],
+        ) =>
+          CodexDriver.create({
+            instanceId: ProviderInstanceId.make(id),
+            displayName: id,
+            enabled: false,
+            environment: [...environment],
+            config: { ...CodexDriver.defaultConfig(), ...config },
+          });
+        const shadow = (id: string) => NodePath.join(stateDir, "providers", "codex", id, "shadow");
 
-      yield* create("codex-added");
-      yield* create("codex");
-      yield* create("codex-own-home", { homePath: NodePath.join(tempDir, "own") });
-      yield* create("codex-env-home", {}, [
-        { name: "CODEX_HOME", value: NodePath.join(tempDir, "env"), sensitive: false },
-      ]);
+        yield* create("codex-added");
+        yield* create("codex");
+        yield* create("codex-own-home", { homePath: NodePath.join(tempDir, "own") });
+        yield* create("codex-env-home", {}, [
+          { name: "CODEX_HOME", value: NodePath.join(tempDir, "env"), sensitive: false },
+        ]);
 
-      expect(yield* fs.exists(shadow("codex-added"))).toBe(true);
-      for (const id of ["codex", "codex-own-home", "codex-env-home"]) {
-        expect(yield* fs.exists(shadow(id))).toBe(false);
-      }
-    }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn), Effect.scoped),
+        expect(yield* fs.exists(shadow("codex-added"))).toBe(true);
+        for (const id of ["codex", "codex-own-home", "codex-env-home"]) {
+          expect(yield* fs.exists(shadow(id))).toBe(false);
+        }
+
+        yield* create("codex", { privateLogin: true });
+        expect(yield* fs.exists(shadow("codex"))).toBe(true);
+      }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn),
+        Effect.scoped,
+      ),
   );
 
   for (const fixture of [

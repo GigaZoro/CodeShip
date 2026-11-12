@@ -30,7 +30,8 @@ import {
 
 import { ensureLocalApi } from "../../localApi";
 import { t, tx } from "~/i18n";
-import { managedInstanceLocks, useManagedPolicy } from "../../state/managedPolicy";
+import { managedInstanceLocks } from "@t3tools/shared/managedPolicyMessages";
+import { useManagedPolicy } from "../../state/managedPolicy";
 import { ManagedControl } from "../ManagedPolicy";
 import { useEnvironmentHttpBaseUrl } from "../../state/environments";
 import { environmentPresentations } from "../../state/presentation";

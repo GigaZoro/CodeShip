@@ -1,4 +1,4 @@
-import type { ProviderDriverKind } from "@t3tools/contracts";
+import type { EnvironmentId, ProviderDriverKind } from "@t3tools/contracts";
 import {
   type AccountFailoverEntry,
   CHATGPT_USAGE_URL,
@@ -62,6 +62,7 @@ import {
 } from "./UsageLimits";
 import { AccountFailoverNotice, LimitsFreshness, useCheckedAgo } from "./UsageLimitsStatus";
 import { CodexLimitsSignIn } from "./CodexLimitsSignIn";
+import { ProviderHolds } from "./UsageHolds";
 import { t, tn } from "~/i18n";
 
 function accountInitials(email: string): string {
@@ -796,7 +797,9 @@ function ProviderSection({
   now,
   failover,
   showEnvironment,
+  environments,
 }: {
+  readonly environments: ReadonlyMap<EnvironmentId, string>;
   readonly driver: ProviderDriverKind;
   readonly pool: LimitPool | null;
   readonly external: readonly ExternalUsageLink[];
@@ -827,6 +830,7 @@ function ProviderSection({
           now={now}
           showEnvironment={showEnvironment}
         />
+        <ProviderHolds driver={driver} environments={environments} now={now} />
       </div>
       {pool
         ? displayLimitWindows(pool).map((window) => {
@@ -870,6 +874,9 @@ export function UsageLimitsPooled({
   const pools = collectLimitPools(collectLimitAccounts(presentations), now);
   const notices = collectLimitNotices(presentations);
   const externalLinks = collectExternalUsageLinks(presentations);
+  const environments = new Map(
+    [...presentations].map(([id, presentation]) => [id, presentation.entry.target.label]),
+  );
   const sections = [
     ...pools.map((pool) => ({ driver: pool.driver, pool })),
     ...[...new Set(externalLinks.map((link) => link.driver))]
@@ -899,6 +906,7 @@ export function UsageLimitsPooled({
               now={now}
               failover={failover}
               showEnvironment={presentations.size > 1}
+              environments={environments}
             />
           </Fragment>
         ))}

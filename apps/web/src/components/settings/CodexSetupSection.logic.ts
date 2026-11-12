@@ -4,15 +4,6 @@ import type {
   ProviderInstallState,
 } from "@t3tools/contracts";
 
-export function readCodexSetupMode(config: unknown): "managed" | "existing" {
-  return config !== null &&
-    typeof config === "object" &&
-    "setupMode" in config &&
-    config.setupMode === "managed"
-    ? "managed"
-    : "existing";
-}
-
 const RUNNING_INSTALL_PHASES = new Set(["downloading", "extracting", "verifying"]);
 
 /**

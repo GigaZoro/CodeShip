@@ -15,6 +15,7 @@ import {
 } from "@t3tools/contracts";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import * as DetectedManualSteps from "./DetectedManualSteps.ts";
 import { selectDetectedManualSteps } from "./DetectedManualSteps.ts";
 import * as ProviderMcp from "./ProviderMcp.ts";
@@ -49,6 +50,7 @@ const server = (name: string, overrides: Partial<ProviderMcpServer> = {}): Provi
 const select = (
   providers: ReadonlyArray<ServerProvider>,
   mcp: Record<string, ReadonlyArray<ProviderMcpServer>> = {},
+  appCapped: ReadonlyArray<string> = [],
 ) =>
   selectDetectedManualSteps({
     machine: "Mac",
@@ -56,6 +58,7 @@ const select = (
     mcpServers: new Map(
       Object.entries(mcp).map(([id, servers]) => [ProviderInstanceId.make(id), servers]),
     ),
+    appCapped: new Set(appCapped.map((id) => ProviderInstanceId.make(id))),
     nowMs: NOW,
   });
 
@@ -79,6 +82,26 @@ describe("selectDetectedManualSteps", () => {
         provider("codex_2", { availability: "unavailable", auth: { status: "unauthenticated" } }),
       ]),
       [],
+    );
+  });
+
+  it("reports a signed-in account ChatGPT's connected-app limit stopped", () => {
+    const steps = select(
+      [
+        provider("codex", { auth: { status: "authenticated" } }),
+        provider("codex_out", { auth: { status: "unauthenticated" } }),
+        provider("codex_off", { enabled: false, auth: { status: "authenticated" } }),
+        provider("codex_free", { auth: { status: "authenticated" } }),
+      ],
+      {},
+      ["codex", "codex_out", "codex_off"],
+    );
+    assert.deepEqual(
+      steps.map(({ id, kind }) => ({ id, kind })),
+      [
+        { id: "connected-app-cap:codex:", kind: "connected-app-cap" },
+        { id: "signed-out:codex_out:", kind: "signed-out" },
+      ],
     );
   });
 
@@ -173,6 +196,7 @@ describe("DetectedManualSteps discovery", () => {
             Layer.mock(ServerEnvironment.ServerEnvironment)({
               getDescriptor: Effect.succeed({ label: "Mac" } as never),
             }),
+            Layer.mock(AccountRouting.AccountRouting)({ holds: Effect.succeed([]) }),
           ),
         ),
       );

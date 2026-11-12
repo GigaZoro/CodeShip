@@ -39,6 +39,7 @@ import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { environmentPresentations } from "../../state/presentation";
 import { relativeTime } from "../../lib/time";
 import { CodexLimitsSignIn } from "./CodexLimitsSignIn";
+import { ProviderHolds } from "./ProviderHolds";
 import { ResetCredits } from "./UsageLimitsSection";
 import { usageProviderKind, useProviderColors } from "./usageProviders";
 import { t, tn, msg, getFormattingLocale } from "../../lib/i18n";
@@ -630,6 +631,12 @@ export function UsageLimitsSection({
   const notices = collectLimitNotices(selected);
   const externalLinks = collectExternalUsageLinks(selected);
   const colors = useProviderColors();
+  const heldEnvironments = new Map(
+    [...selected].map(([id, presentation]) => [
+      id,
+      { label: presentation.entry.target.label, serverConfig: presentation.serverConfig },
+    ]),
+  );
   const sections = [
     ...pools.map((pool) => ({ driver: pool.driver, pool })),
     ...[...new Set(externalLinks.map((link) => link.driver))]
@@ -680,6 +687,7 @@ export function UsageLimitsSection({
                   </Text>
                 ))}
             </View>
+            <ProviderHolds driver={driver} environments={heldEnvironments} />
             {pool
               ? displayLimitWindows(pool).map((window) => {
                   const details =

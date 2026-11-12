@@ -19,6 +19,14 @@
       "types": "./src/workspaceBasenameLookup.ts",
       "default": "./src/workspaceBasenameLookup.ts"
     },
+    "./codex-sign-in": {
+      "types": "./src/codexSignIn.ts",
+      "default": "./src/codexSignIn.ts"
+    },
+    "./usage-holds": {
+      "types": "./src/usageHolds.ts",
+      "default": "./src/usageHolds.ts"
+    },
     "./composerThreadItems": {
       "types": "./src/composerThreadItems.ts",
       "default": "./src/composerThreadItems.ts"

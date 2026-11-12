@@ -92,6 +92,10 @@ describe("planSignIns", () => {
     expect(planSignIns([entry("mcp-needs-auth", "claude", "minions")])[0]?.accountKey).toBeNull();
   });
 
+  it("leaves out an account ChatGPT's app limit stopped: its settings switch the login", () => {
+    expect(planSignIns([entry("connected-app-cap", "codex"), ...sixSteps])).toHaveLength(6);
+  });
+
   it("lists a step once", () => {
     expect(planSignIns([sixSteps[0]!, sixSteps[0]!])).toHaveLength(1);
   });

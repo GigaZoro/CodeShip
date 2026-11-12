@@ -6,6 +6,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import * as AccountRouting from "../../../orchestration-v2/AccountRouting.ts";
 import * as ProviderMcp from "../../../provider/ProviderMcp.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { readCaller } from "../../threadAccess.ts";
@@ -82,5 +83,18 @@ export const layer = McpToolAccess.toLayer(ProviderMcpToolkit, {
         Effect.catchTags({ ProviderMcpError: (error) => Effect.fail(providerFailure(error)) }),
       ),
     ),
+  ),
+  t3_provider_retry_usage_limit: McpToolAccess.writesEnvironment(({ instanceId }) =>
+    Effect.gen(function* () {
+      const routing = yield* AccountRouting.AccountRouting;
+      yield* routing
+        .retryAccount(instanceId)
+        .pipe(
+          Effect.mapError(() =>
+            invalid(`No provider account ${instanceId} on this machine; list accounts first.`),
+          ),
+        );
+      return { message: `Released ${instanceId}; its next turn tries it again.` };
+    }),
   ),
 });

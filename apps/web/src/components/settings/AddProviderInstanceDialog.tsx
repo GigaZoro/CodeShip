@@ -24,7 +24,8 @@ import {
 
 import { cn } from "../../lib/utils";
 import { normalizeProviderAccentColor } from "../../providerInstances";
-import { managedInstanceLocks, useManagedPolicy } from "../../state/managedPolicy";
+import { managedInstanceLocks } from "@t3tools/shared/managedPolicyMessages";
+import { useManagedPolicy } from "../../state/managedPolicy";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { Button } from "../ui/button";
 import { ChatGptConnectionButton } from "./ChatGptConnectionButton";

@@ -2572,7 +2572,20 @@ export const layerWsRpc = (
             return { outcome };
           }),
         [WS_METHODS.providerRetryUsageLimit]: (input) =>
-          accountRouting.retryAccount(input.instanceId).pipe(Effect.as({})),
+          accountRouting.retryAccount(input.instanceId).pipe(
+            Effect.as({}),
+            Effect.mapError(
+              (error) =>
+                new ProviderSetupError({
+                  instanceId: error.instanceId,
+                  operation: "retry-usage-limit",
+                  detail: "Provider instance not found.",
+                  cause: error,
+                }),
+            ),
+          ),
+        [WS_METHODS.providerUsageHolds]: () =>
+          accountRouting.holds.pipe(Effect.map((holds) => ({ holds }))),
         [WS_METHODS.providerAuthStart]: (input) => providerAuth.start(input, currentSessionId),
         [WS_METHODS.providerAuthRespond]: (input) =>
           Effect.annotateCurrentSpan({ instanceId: input.instanceId }).pipe(

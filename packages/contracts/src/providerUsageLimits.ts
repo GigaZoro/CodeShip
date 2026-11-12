@@ -121,6 +121,23 @@ export const ProviderConsumeResetCreditResult = Schema.Struct({
 });
 export type ProviderConsumeResetCreditResult = typeof ProviderConsumeResetCreditResult.Type;
 
+/** An account CodeShip skips after a usage refusal until the hold ends or Try again lifts it. */
+export const ProviderUsageHold = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  /** When the hold ends by itself; absent when only the next turn shows whether the cap is gone. */
+  heldUntil: Schema.optional(IsoDateTime),
+  /** `heldUntil` is CodeShip's guess, not a reset the provider reported. */
+  estimated: Schema.optional(Schema.Literal(true)),
+  /** ChatGPT's connected-app limit refused it while the plan still had room. */
+  appCap: Schema.optional(Schema.Literal(true)),
+});
+export type ProviderUsageHold = typeof ProviderUsageHold.Type;
+
+export const ProviderUsageHoldsResult = Schema.Struct({
+  holds: ForwardCompatibleArray(ProviderUsageHold),
+});
+export type ProviderUsageHoldsResult = typeof ProviderUsageHoldsResult.Type;
+
 export const UsageLimitsReport = Schema.Struct({
   createdAt: IsoDateTime,
   accounts: Schema.Array(

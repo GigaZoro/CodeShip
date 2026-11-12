@@ -116,6 +116,22 @@ that reads the account's limits, so choose **Read limits** for the account under
 When a thread hits a usage limit**. A stopped thread moves to an account with room or resumes
 at the reset.
 
+### ChatGPT's app limit
+
+ChatGPT can also stop an account you connected with ChatGPT while its plan still has room: a
+limit on apps that use the plan, which no ChatGPT setting raises. The thread then says
+**ChatGPT's app limit stopped this account**, and **Usage → Limits** lists the account as held.
+The next turn tries a held account again after an hour; choose **Try again** in the thread or
+under **Usage → Limits** to release it at once. An agent can do the same through T3.CodeShip's
+tools.
+
+The limit does not apply to Codex's own login. To keep working on the account, choose **Switch
+sign-in**, or set the account's **Sign-in** to **Codex's own login** in **Settings → Providers &
+models** on the machine that runs its threads, then sign in there as that account. The first
+Codex account on a machine shares the Codex CLI's login unless you turn on **Private login**, which
+signs it in on its own. Changing an account's sign-in releases its hold. Until a turn runs on the
+account again, **Manual steps** lists it too.
+
 ## Send feedback to OpenAI
 
 In an existing Codex thread, send `/feedback` with an optional description, for

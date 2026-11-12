@@ -17,6 +17,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import * as ProviderMcp from "./ProviderMcp.ts";
 import * as ProviderRegistry from "./ProviderRegistry.ts";
 
@@ -48,6 +49,8 @@ export function selectDetectedManualSteps(input: {
   readonly providers: ReadonlyArray<ServerProvider>;
   /** MCP servers per provider instance, for the instances that could be listed. */
   readonly mcpServers: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ProviderMcpServer>>;
+  /** Accounts ChatGPT's connected-app cap stopped, with no turn run on them since. */
+  readonly appCapped: ReadonlySet<ProviderInstanceId>;
   readonly nowMs: number;
 }): ReadonlyArray<DetectedManualStep> {
   const steps = new Map<string, DetectedManualStep>();
@@ -73,6 +76,8 @@ export function selectDetectedManualSteps(input: {
       });
     } else if (provider.auth.status === "unauthenticated") {
       add({ ...account, kind: "signed-out" });
+    } else if (input.appCapped.has(provider.instanceId)) {
+      add({ ...account, kind: "connected-app-cap" });
     }
     for (const server of input.mcpServers.get(provider.instanceId) ?? []) {
       if (!needsMcpSignIn(server)) continue;
@@ -99,6 +104,7 @@ const make = Effect.gen(function* () {
   const registry = yield* ProviderRegistry.ProviderRegistry;
   const mcp = yield* ProviderMcp.ProviderMcp;
   const environment = yield* ServerEnvironment.ServerEnvironment;
+  const routing = yield* AccountRouting.AccountRouting;
 
   const scope = yield* Effect.scope;
 
@@ -187,8 +193,20 @@ const make = Effect.gen(function* () {
         { concurrency: MCP_LIST_CONCURRENCY },
       ),
     );
+    // The thread that hit the cap already says so; without the holds only this step is missing.
+    const appCapped = yield* routing.holds.pipe(
+      Effect.map(
+        (holds) =>
+          new Set(holds.filter((hold) => hold.appCap === true).map((hold) => hold.instanceId)),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Usage holds for manual steps unavailable", { cause }).pipe(
+          Effect.as(new Set<ProviderInstanceId>()),
+        ),
+      ),
+    );
     return {
-      steps: selectDetectedManualSteps({ machine, providers, mcpServers, nowMs }),
+      steps: selectDetectedManualSteps({ machine, providers, mcpServers, appCapped, nowMs }),
       checkedAt: DateTime.formatIso(yield* DateTime.now),
     } satisfies DetectedManualStepsResult;
   }).pipe(Effect.withSpan("DetectedManualSteps.detect"));

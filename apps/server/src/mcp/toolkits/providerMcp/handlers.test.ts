@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
+import * as AccountRouting from "../../../orchestration-v2/AccountRouting.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderMcp from "../../../provider/ProviderMcp.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -83,5 +84,41 @@ it.effect("a read-only client lists provider MCP servers but cannot turn one off
       message: "Turned off docs; its settings are kept. New sessions leave it out.",
     });
     expect(yield* Ref.get(switched)).toEqual([{ instanceId, name: "docs", enabled: false }]);
+  }),
+);
+
+it.effect("only a full-access client releases a usage-limited account", () =>
+  Effect.gen(function* () {
+    const released = yield* Ref.make<ReadonlyArray<ProviderInstanceId>>([]);
+    const retry = (access: McpInvocationContext.McpClientCaller["access"]) =>
+      Effect.gen(function* () {
+        const toolkit = yield* ProviderMcpToolkit;
+        const results = yield* toolkit
+          .handle("t3_provider_retry_usage_limit", { instanceId })
+          .pipe(Stream.unwrap, Stream.runCollect);
+        return results.at(-1)?.result;
+      }).pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, clientScope(access)),
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProviderMcpHandlers.layer).pipe(
+            Layer.provideMerge(
+              Layer.mergeAll(
+                Layer.mock(ThreadManagement.ThreadManagementService)({}),
+                Layer.mock(ProviderMcp.ProviderMcp)({}),
+                Layer.mock(AccountRouting.AccountRouting)({
+                  retryAccount: (id) => Ref.update(released, (all) => [...all, id]),
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+
+    expect(yield* retry("read-only")).toMatchObject({ code: "capability_denied" });
+    expect(yield* Ref.get(released)).toEqual([]);
+    expect(yield* retry("full-access")).toEqual({
+      message: "Released codex; its next turn tries it again.",
+    });
+    expect(yield* Ref.get(released)).toEqual([instanceId]);
   }),
 );

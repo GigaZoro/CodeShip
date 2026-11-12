@@ -9,6 +9,7 @@ import {
   type ManualStepsState,
 } from "@t3tools/client-runtime/state/manualSteps";
 import { providerClients } from "@t3tools/client-runtime/provider-clients";
+import { signInWalkEntries } from "@t3tools/client-runtime/state/manualStepsSignIn.logic";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentId, ManualStep } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
@@ -211,7 +212,9 @@ const DetectedStepRow = memo(function DetectedStepRow(props: {
         accessibilityHint={
           entry.step.kind === "mcp-needs-auth"
             ? t("Opens Capabilities, where the MCP server signs in.")
-            : t("Opens Providers, where the account signs in.")
+            : entry.step.kind === "connected-app-cap"
+              ? t("Opens Providers, where the account's sign-in can be switched.")
+              : t("Opens Providers, where the account signs in.")
         }
         className={appearance.className}
         interactionClassName={appearance.interactionClassName}
@@ -223,7 +226,12 @@ const DetectedStepRow = memo(function DetectedStepRow(props: {
                 instanceId: entry.step.instanceId,
                 ...(entry.step.serverName !== undefined ? { server: entry.step.serverName } : {}),
               })
-            : openSettings(navigation, "SettingsProviderAccounts")
+            : entry.step.kind === "connected-app-cap"
+              ? openSettings(navigation, "SettingsProviderAccounts", {
+                  environmentId: entry.environmentId,
+                  instanceId: entry.step.instanceId,
+                })
+              : openSettings(navigation, "SettingsProviderAccounts")
         }
         style={appearance.cardStyle}
       >
@@ -350,12 +358,12 @@ export function ThreadListManualSteps(props: {
       />
       {expanded && state.view.status === "listed"
         ? state.view.groups.flatMap((group) => [
-            ...(group.detected.length >= 2
+            ...(signInWalkEntries(group.detected).length >= 2
               ? [
                   <SignInAllRow
                     key={`sign-in-all:${group.machine}`}
                     machine={group.machine}
-                    count={group.detected.length}
+                    count={signInWalkEntries(group.detected).length}
                     pane={props.pane}
                   />,
                 ]

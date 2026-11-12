@@ -11,6 +11,10 @@ type StepKind = DetectedManualStep["kind"];
 /** The kinds that are an account's own sign-in; the MCP servers of that account come after. */
 const isAccountKind = (kind: StepKind) => kind !== "mcp-needs-auth";
 
+/** The steps a guided sign-in walk takes; switching an account's login is done in its settings. */
+export const signInWalkEntries = (entries: ReadonlyArray<DetectedManualStepEntry>) =>
+  entries.filter((entry) => entry.step.kind !== "connected-app-cap");
+
 /** An account in these states cannot sign an MCP server in, whatever it was asked to do. */
 const accountCannotWork = (kind: StepKind) => kind === "signed-out" || kind === "login-expired";
 
@@ -56,7 +60,9 @@ const sameAccount = (left: DetectedManualStepEntry, right: DetectedManualStepEnt
 export function planSignIns(
   entries: ReadonlyArray<DetectedManualStepEntry>,
 ): ReadonlyArray<SignInStep> {
-  const unique = new Map(entries.map((entry) => [detectedManualStepKey(entry), entry] as const));
+  const unique = new Map(
+    signInWalkEntries(entries).map((entry) => [detectedManualStepKey(entry), entry] as const),
+  );
   const ordered = [...unique.values()].sort(byDetectedUrgency);
   return ordered.map((entry) => {
     const key = detectedManualStepKey(entry);

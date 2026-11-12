@@ -9,6 +9,7 @@ import {
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 
+import * as AccountRouting from "../../../orchestration-v2/AccountRouting.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderMcp from "../../../provider/ProviderMcp.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -38,4 +39,21 @@ const ProviderMcpServersTool = Tool.make("t3_provider_mcp_servers", {
   }),
 }).annotate(Tool.Destructive, true);
 
-export const ProviderMcpToolkit = Toolkit.make(ProviderMcpServersTool);
+const ProviderRetryUsageLimitTool = Tool.make("t3_provider_retry_usage_limit", {
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    AccountRouting.AccountRouting,
+  ],
+  description:
+    "Releases T3's hold on a usage-limited account (`usageLimited` in `orchestrator_capabilities`), so its next turn tries it; a new refusal holds it again. For a limit lifted early, such as ChatGPT's app cap. Needs a full-access caller.",
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    instanceId: ProviderInstanceId,
+  }),
+  success: Schema.Struct({ message: Schema.String }),
+});
+
+export const ProviderMcpToolkit = Toolkit.make(ProviderMcpServersTool, ProviderRetryUsageLimitTool);

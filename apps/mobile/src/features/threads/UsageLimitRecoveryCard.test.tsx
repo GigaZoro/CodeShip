@@ -22,6 +22,12 @@ vi.mock("../../components/ui/Button", () => ({
 }));
 vi.mock("../../state/threads", () => ({ threadEnvironment: { updateMetadata: {} } }));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => vi.fn() }));
+vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({}) }));
+vi.mock("../usage/RetryAccountButton", () => ({
+  RetryAccountButton: () => <button type="button">Try again</button>,
+}));
+const openSettings = vi.hoisted(() => vi.fn());
+vi.mock("../settings/settings-navigation", () => ({ openSettings }));
 
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
 
@@ -62,5 +68,34 @@ describe("UsageLimitRecoveryCard", () => {
     act(() => vi.advanceTimersByTime(30 * DAY_MS));
 
     expect(snooze()?.disabled).toBe(true);
+  });
+
+  it("offers Try again and Switch sign-in for an app-cap stop, which no ChatGPT setting lifts", () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    using _root = { [Symbol.dispose]: () => act(() => root.unmount()) };
+    const thread = failedThread(new Date(DAY_MS).toISOString());
+    const capped = {
+      ...thread,
+      runtime: {
+        ...thread.runtime,
+        lastErrorCode: "chatgpt_app_cap",
+        providerInstanceId: "codex",
+      },
+    } as unknown as EnvironmentThreadShell;
+    act(() =>
+      root.render(
+        <UsageLimitRecoveryCard thread={capped} environmentId={"env-1" as EnvironmentId} />,
+      ),
+    );
+    const buttons = [...container.querySelectorAll("button")];
+
+    act(() => buttons.find((button) => button.textContent === "Switch sign-in")?.click());
+
+    expect(openSettings).toHaveBeenCalledWith({}, "SettingsProviderAccounts", {
+      environmentId: "env-1",
+      instanceId: "codex",
+    });
+    expect(buttons.map((button) => button.textContent)).toContain("Try again");
   });
 });

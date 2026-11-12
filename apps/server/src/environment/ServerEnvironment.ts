@@ -274,6 +274,7 @@ export const make = Effect.gen(function* () {
       threadLater: true,
       manualSteps: true,
       detectedManualSteps: true,
+      usageHolds: true,
       manualStepReviews: true,
       manualStepChats: true,
       threadProjectFromScratch: true,

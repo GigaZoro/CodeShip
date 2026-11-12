@@ -79,12 +79,14 @@ export const DetectedManualStepKind = Schema.Literals([
   "login-expired",
   /** An MCP server of a provider account needs signing in. */
   "mcp-needs-auth",
+  /** ChatGPT's connected-app limit stopped a Codex account; its own Codex login runs it. */
+  "connected-app-cap",
 ]);
 export type DetectedManualStepKind = typeof DetectedManualStepKind.Type;
 
 /**
  * A sign-in a server noticed on its own machine. The fix opens in that machine's settings: the
- * account's card for the first three kinds, the server's row on the MCP page for the last.
+ * server's row on the MCP page for `mcp-needs-auth`, the account's card for the rest.
  */
 export const DetectedManualStep = Schema.Struct({
   /** Unique on its machine: one per provider instance, kind and MCP server. */

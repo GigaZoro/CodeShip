@@ -2,6 +2,8 @@ import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
 import * as AccountRouting from "./AccountRouting.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -14,6 +16,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
+  type ServerSettings as ServerSettingsValue,
 } from "@t3tools/contracts";
 
 import { failoverLimitedLaunch, routeAutoAccount } from "./AccountRouting.ts";
@@ -398,6 +401,11 @@ it.effect.each([
     at: "2026-11-08T00:30:00Z",
     until: "2026-11-08T01:00:00.000Z",
     estimated: true,
+    hold: {
+      heldUntil: "2026-11-08T01:00:00.000Z",
+      estimated: true as const,
+      appCap: true as const,
+    },
   },
   {
     name: "ChatGPT's app cap holds no longer than the hour once the hour has passed",
@@ -405,6 +413,7 @@ it.effect.each([
     at: "2026-11-08T01:30:00Z",
     until: undefined,
     estimated: false,
+    hold: { appCap: true as const },
   },
   {
     name: "a plan limit with a read reset holds until it",
@@ -412,6 +421,7 @@ it.effect.each([
     at: "2026-11-08T01:30:00Z",
     until: "2026-11-08T03:00:00.000Z",
     estimated: false,
+    hold: { heldUntil: "2026-11-08T03:00:00.000Z" },
   },
   {
     name: "a plan limit with no reset holds on T3's guess",
@@ -419,14 +429,28 @@ it.effect.each([
     at: "2026-11-08T01:30:00Z",
     until: "2026-11-08T05:00:00.000Z",
     estimated: true,
+    hold: { heldUntil: "2026-11-08T05:00:00.000Z", estimated: true as const },
   },
-])("limits marks the end of a held account as read or estimated: $name", (row) =>
+  {
+    name: "a used-up usage window holds the account by itself, so it lists no hold",
+    refusal: { resetAt: null },
+    at: "2026-11-08T01:30:00Z",
+    usedPercent: 100,
+    until: "2026-11-18T08:00:00.000Z",
+    estimated: false,
+    hold: undefined,
+  },
+])("limits and holds mark the end of a held account as read or estimated: $name", (row) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(Date.parse(row.at));
     const routing = yield* AccountRouting.AccountRouting;
     const limits = yield* routing.limits;
     assert.deepEqual([...limits.accounts], row.until === undefined ? [] : [[primary, row.until]]);
     assert.deepEqual([...limits.estimated], row.estimated ? [primary] : []);
+    assert.deepEqual(
+      yield* routing.holds,
+      row.hold === undefined ? [] : [{ instanceId: primary, ...row.hold }],
+    );
   }).pipe(
     Effect.provide(
       AccountRouting.layer.pipe(
@@ -449,7 +473,7 @@ it.effect.each([
                         id: "secondary",
                         kind: "weekly",
                         label: "Weekly",
-                        usedPercent: 27,
+                        usedPercent: "usedPercent" in row ? row.usedPercent : 27,
                         resetsAt: "2026-11-18T08:00:00.000Z",
                         windowDurationMins: 10080,
                       },
@@ -693,4 +717,121 @@ describe("failoverLimitedLaunch with a signed-out account", () => {
       third,
     );
   });
+});
+
+describe("codexSignInChanges", () => {
+  const codexAccount = (config: Record<string, unknown>, codexHome?: string) => ({
+    driver: ProviderDriverKind.make("codex"),
+    config,
+    ...(codexHome === undefined
+      ? {}
+      : { environment: [{ name: "CODEX_HOME", value: codexHome, sensitive: false }] }),
+  });
+
+  it.each([
+    {
+      name: "a move from CodeShip's ChatGPT sign-in to Codex's own login",
+      before: { codex_work: codexAccount({ setupMode: "managed" }) },
+      after: { codex_work: codexAccount({ setupMode: "existing" }) },
+      changed: ["codex_work"],
+    },
+    {
+      name: "the built-in account taking a private login it had no settings for",
+      before: {},
+      after: { codex: codexAccount({ privateLogin: true }) },
+      changed: ["codex"],
+    },
+    {
+      name: "another login home",
+      before: { codex: codexAccount({ homePath: "/a" }) },
+      after: { codex: codexAccount({ homePath: " /b " }) },
+      changed: ["codex"],
+    },
+    {
+      name: "another CODEX_HOME in the account's environment",
+      before: { codex: codexAccount({}, "/a") },
+      after: { codex: codexAccount({}, "/b") },
+      changed: ["codex"],
+    },
+    {
+      name: "no setting that keeps the login, even on its first save",
+      before: {},
+      after: { codex: codexAccount({ launchArgs: "--verbose", setupMode: "existing" }) },
+      changed: [],
+    },
+    {
+      name: "no other provider's home",
+      before: {
+        claudeAgent: { driver: ProviderDriverKind.make("claudeAgent"), config: { homePath: "/a" } },
+      },
+      after: {
+        claudeAgent: { driver: ProviderDriverKind.make("claudeAgent"), config: { homePath: "/b" } },
+      },
+      changed: [],
+    },
+  ])("lists $name", ({ before, after, changed }) => {
+    assert.deepEqual(AccountRouting.codexSignInChanges(before, after), changed);
+  });
+});
+
+describe("releasing a held account", () => {
+  const codex = ProviderInstanceId.make("codex");
+  const settingsWith = (config: Record<string, unknown>): ServerSettingsValue => ({
+    ...DEFAULT_SERVER_SETTINGS,
+    providerInstances: { [codex]: { driver: ProviderDriverKind.make("codex"), config } },
+  });
+  const routingLayer = (
+    changes: Queue.Queue<ServerSettingsValue>,
+    lifted: Queue.Queue<ProviderInstanceId>,
+  ) =>
+    AccountRouting.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(ServerSettings.ServerSettingsService)({
+            getSettings: Effect.succeed(settingsWith({ setupMode: "managed" })),
+            subscribeChanges: Effect.succeed(Stream.fromQueue(changes)),
+          }),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            liftUsageLimitHolds: (instanceId) =>
+              Queue.offer(lifted, instanceId).pipe(Effect.asVoid),
+          }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.succeed([
+              provider(codex, { driver: ProviderDriverKind.make("codex") }),
+            ]),
+          }),
+        ),
+      ),
+    );
+
+  it.effect("only when this machine has the account", () =>
+    Effect.gen(function* () {
+      const changes = yield* Queue.unbounded<ServerSettingsValue>();
+      const lifted = yield* Queue.unbounded<ProviderInstanceId>();
+      yield* Effect.gen(function* () {
+        const routing = yield* AccountRouting.AccountRouting;
+        const missing = yield* routing
+          .retryAccount(ProviderInstanceId.make("codex_gone"))
+          .pipe(Effect.flip);
+        assert.instanceOf(missing, AccountRouting.UnknownAccountError);
+        yield* routing.retryAccount(codex);
+        assert.equal(yield* Queue.take(lifted), codex);
+      }).pipe(Effect.provide(routingLayer(changes, lifted)));
+    }),
+  );
+
+  it.effect("each time its sign-in moves to another login, and back", () =>
+    Effect.gen(function* () {
+      const changes = yield* Queue.unbounded<ServerSettingsValue>();
+      const lifted = yield* Queue.unbounded<ProviderInstanceId>();
+      yield* Effect.gen(function* () {
+        yield* AccountRouting.AccountRouting;
+        yield* Queue.offerAll(changes, [
+          settingsWith({ setupMode: "existing" }),
+          settingsWith({ setupMode: "managed" }),
+        ]);
+        assert.deepEqual([yield* Queue.take(lifted), yield* Queue.take(lifted)], [codex, codex]);
+      }).pipe(Effect.provide(routingLayer(changes, lifted)));
+    }),
+  );
 });

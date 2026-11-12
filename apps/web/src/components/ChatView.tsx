@@ -473,6 +473,9 @@ export default function ChatView(props: ChatViewProps) {
   const retryUsageLimit = useAtomCommand(serverEnvironment.retryUsageLimit, {
     reportFailure: false,
   });
+  const canRetryAccount = useAtomValue(
+    serverEnvironment.retryUsageLimit.permissionAtom(environmentId),
+  );
   const loadEarlierThreadHistory = useAtomCommand(threadEnvironment.loadEarlierHistory, {
     label: "load earlier thread history",
     reportFailure: false,
@@ -2575,6 +2578,14 @@ export default function ChatView(props: ChatViewProps) {
           snoozedUntil: activeThreadShell.snoozedUntil,
           timestampFormat,
           ...(activeRuntime?.providerInstanceId
+            ? {
+                signInSettings: {
+                  environmentId,
+                  instanceId: activeRuntime.providerInstanceId,
+                },
+              }
+            : {}),
+          ...(activeRuntime?.providerInstanceId && canRetryAccount
             ? {
                 onRetryAccount: async () => {
                   const result = await retryUsageLimit({

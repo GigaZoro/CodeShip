@@ -1,4 +1,8 @@
+import { useNavigation } from "@react-navigation/native";
+import { CHATGPT_APP_CAP_CODE } from "@t3tools/shared/usageLimits";
 import { Button } from "../../components/ui/Button";
+import { RetryAccountButton } from "../usage/RetryAccountButton";
+import { openSettings } from "../settings/settings-navigation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult } from "effect/reactivity";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
@@ -19,6 +23,8 @@ export function UsageLimitRecoveryCard({
   thread: EnvironmentThreadShell;
   environmentId: EnvironmentId;
 }) {
+  const navigation = useNavigation();
+  const appCap = thread.runtime?.lastErrorCode === CHATGPT_APP_CAP_CODE;
   const updateMetadata = useAtomCommand(threadEnvironment.updateMetadata);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -69,19 +75,48 @@ export function UsageLimitRecoveryCard({
       setError(cause instanceof Error ? cause.message : t("Could not change limit recovery."));
     }
   }
+  const instanceId = thread.runtime.providerInstanceId;
   return (
     <View className="mx-3 mb-2 gap-2 rounded-xl border border-warning-foreground/25 bg-screen p-3">
-      <Text className="text-sm text-warning-foreground">
-        {resetAt
-          ? t("Usage limit resets {date}.", {
-              date: DateTime.toDateUtc(DateTime.makeUnsafe(resetAt)).toLocaleString(
-                getFormattingLocale(),
-              ),
-            })
-          : t(
-              "The provider did not report a reset time. Retry manually when your limit is available.",
+      {appCap ? (
+        <>
+          <Text accessibilityRole="header" className="text-sm font-t3-medium text-foreground">
+            {t("ChatGPT's app limit stopped this account")}
+          </Text>
+          <Text className="text-sm text-warning-foreground">
+            {t(
+              "The plan still has room, and no ChatGPT setting lifts this limit. Try again, or sign the account in with Codex's own login. CodeShip tries it again by itself every hour.",
             )}
-      </Text>
+          </Text>
+          {instanceId ? (
+            <View className="flex-row flex-wrap gap-2">
+              <RetryAccountButton environmentId={environmentId} instanceId={instanceId} />
+              <Button
+                label={t("Switch sign-in")}
+                tone="secondary"
+                onPress={() =>
+                  openSettings(navigation, "SettingsProviderAccounts", {
+                    environmentId,
+                    instanceId,
+                  })
+                }
+              />
+            </View>
+          ) : null}
+        </>
+      ) : (
+        <Text className="text-sm text-warning-foreground">
+          {resetAt
+            ? t("Usage limit resets {date}.", {
+                date: DateTime.toDateUtc(DateTime.makeUnsafe(resetAt)).toLocaleString(
+                  getFormattingLocale(),
+                ),
+              })
+            : t(
+                "The provider did not report a reset time. Retry manually when your limit is available.",
+              )}
+        </Text>
+      )}
       {canSchedule ? (
         <View className="flex-row flex-wrap gap-2">
           <Button

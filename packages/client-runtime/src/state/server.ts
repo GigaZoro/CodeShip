@@ -1324,6 +1324,13 @@ export function createServerEnvironmentAtoms<R, E>(
         : AsyncResult.success(result.value, result);
     }).pipe(Atom.withLabel(`environment-data:server:welcome:${environmentId}`)),
   );
+  // The server lifts a hold when a sign-in changes, so a switch shows here within the minute.
+  const usageHolds = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:provider:usage-holds",
+    tag: WS_METHODS.providerUsageHolds,
+    staleTimeMs: 30_000,
+    refreshIntervalMs: 60_000,
+  });
   const databaseStorage = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
     label: "environment-data:server:database-storage",
     tag: WS_METHODS.serverGetDatabaseStorage,
@@ -1714,6 +1721,7 @@ export function createServerEnvironmentAtoms<R, E>(
         key: ({ environmentId, input }) => JSON.stringify([environmentId, input]),
       },
     }),
+    usageHolds,
     retryUsageLimit: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:retry-usage-limit",
       tag: WS_METHODS.providerRetryUsageLimit,
@@ -1721,6 +1729,8 @@ export function createServerEnvironmentAtoms<R, E>(
         mode: "singleFlight",
         key: ({ environmentId, input }) => JSON.stringify([environmentId, input.instanceId]),
       },
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => registry.refresh(usageHolds({ environmentId, input: {} }))),
     }),
     refreshProviders: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:refresh-providers",
