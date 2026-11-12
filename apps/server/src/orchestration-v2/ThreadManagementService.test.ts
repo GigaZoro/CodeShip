@@ -26,6 +26,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -604,6 +605,10 @@ it.effect("waitForThread returns the cut run once its continuation is declined",
   }),
 );
 
+class RosterWriteRefused extends Schema.TaggedError<RosterWriteRefused>()("RosterWriteRefused", {
+  message: Schema.String,
+}) {}
+
 it.effect.each(["live", "no-session", "unsupported-runtime", "write-fails"] as const)(
   "marks background work awaited on the thread's active provider thread with state %s",
   (state) =>
@@ -646,7 +651,7 @@ it.effect.each(["live", "no-session", "unsupported-runtime", "write-fails"] as c
                 readonly awaited: boolean;
               }) =>
                 state === "write-fails"
-                  ? Effect.fail(new Error("roster write refused"))
+                  ? Effect.fail(new RosterWriteRefused({ message: "roster write refused" }))
                   : Effect.sync(() => {
                       calls.push({
                         providerThreadId: input.providerThread.id,
