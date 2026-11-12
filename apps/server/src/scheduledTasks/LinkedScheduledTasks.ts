@@ -78,7 +78,7 @@ const make = Effect.gen(function* () {
       .call({
         environmentId,
         tool: "list_scheduled_tasks",
-        arguments: {},
+        arguments: { includePrompt: true },
         limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
         success: OrchestratorMcpListScheduledTasksResult,
       })
@@ -169,7 +169,7 @@ const make = Effect.gen(function* () {
       tasks.map((task): LinkedScheduledTask => ({
         id: task.scheduledTaskId,
         title: task.title,
-        prompt: task.prompt,
+        prompt: task.prompt ?? task.promptPreview ?? "",
         enabled: task.enabled,
         projectId: task.projectId,
         projectTitle: titles.get(task.projectId) ?? null,

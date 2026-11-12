@@ -1,3 +1,9 @@
+## 2026-11-12 — Agents' thread and task lists use far fewer tokens
+
+- `list_scheduled_tasks` now returns a short prompt preview and a hash for each task. Pass `includePrompt`, or a `scheduledTaskId` to read one task, for the full prompt. `schedule_task` no longer repeats the prompt you just sent.
+- `t3_thread_list` returns a compact row per thread (id, title, link, status, model, last update, parent). Pass `fields: "full"` for every field.
+- `t3_thread_read` returns `recentRuns` only on a thread's first page, or when `runLimit` is passed.
+
 ## 2026-11-12 — A scheduled task can read its prompt from a file in its project
 
 - Under **Prompt** in a task's editor, **Read from a file** takes a path from the root of the project's git repository, such as `automations/daily.md`. Each run fetches the default branch of the project's remote and reads the file there, so a change pushed to that branch reaches the next run on every machine without editing the task. Saving reads the file once and shows the text it found and the commit it came from.

@@ -3091,6 +3091,20 @@ describe("OrchestratorMcpService provider resolution", () => {
         );
         const listed = yield* mcp.listScheduledTasks(supervisedClient, { projectId });
         assert.equal(listed.tasks[0]?.webhookUrl, undefined);
+        assert.equal(listed.tasks[0]?.prompt, undefined);
+        assert.equal(listed.tasks[0]?.promptHash?.length, 12);
+        const withPrompt = yield* mcp.listScheduledTasks(supervisedClient, {
+          projectId,
+          includePrompt: true,
+        });
+        assert.equal(typeof withPrompt.tasks[0]?.prompt, "string");
+        const one = yield* mcp.listScheduledTasks(supervisedClient, {
+          scheduledTaskId: bound.id,
+        });
+        assert.deepStrictEqual(
+          one.tasks.map((task) => [task.scheduledTaskId, task.prompt]),
+          [[bound.id, bound.prompt]],
+        );
         const error = yield* mcp
           .updateScheduledTask(supervisedClient, {
             scheduledTaskId: bound.id,
@@ -5235,6 +5249,29 @@ describe("OrchestratorMcpService thread list", () => {
     ),
   );
 
+  it.effect("lists a compact row by default and every field with fields: full", () =>
+    Effect.gen(function* () {
+      const mcp = yield* OrchestratorMcpService.OrchestratorMcpService;
+      const compact = yield* mcp.listThreads(client, {
+        projectId: ProjectId.make("project:a"),
+      });
+      const full = yield* mcp.listThreads(client, {
+        projectId: ProjectId.make("project:a"),
+        fields: "full",
+      });
+      assert.deepStrictEqual(Object.keys(compact.threads[0] ?? {}).toSorted(), [
+        "link",
+        "model",
+        "parentThreadId",
+        "status",
+        "threadId",
+        "title",
+        "updatedAt",
+      ]);
+      assert.equal(full.threads[0]?.settled, false);
+    }).pipe(Effect.provide(service)),
+  );
+
   it.effect("lists snoozed threads across every project with allProjects", () =>
     Effect.gen(function* () {
       const mcp = yield* OrchestratorMcpService.OrchestratorMcpService;
@@ -5245,7 +5282,7 @@ describe("OrchestratorMcpService thread list", () => {
       });
       assert.equal(listed.projectId, null);
       assert.deepStrictEqual(
-        listed.threads.map((thread) => [thread.threadId, thread.projectId]),
+        listed.threads.map((thread) => [String(thread.threadId), String(thread.projectId)]),
         [
           ["thread:a-snoozed", "project:a"],
           ["thread:b-snoozed", "project:b"],

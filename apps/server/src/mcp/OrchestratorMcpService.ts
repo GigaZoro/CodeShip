@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off -- a short synchronous digest of a prompt; Effect Crypto is async and the summary is built synchronously.
+import * as NodeCrypto from "node:crypto";
 import { derive } from "@t3tools/provider-core/server/IdAllocator";
 import { providerConstraints } from "../provider/providerConstraints.ts";
 import {
@@ -320,11 +322,19 @@ function sharedChoice(
   };
 }
 
+const PROMPT_PREVIEW_CHARS = 80;
+
+function promptPreview(prompt: string): string {
+  const flat = prompt.replace(/\s+/g, " ").trim();
+  return flat.length > PROMPT_PREVIEW_CHARS ? `${flat.slice(0, PROMPT_PREVIEW_CHARS - 1)}…` : flat;
+}
+
 function scheduledTaskSummary(
   task: ScheduledTask,
   mayRun: boolean,
   lastRun: OrchestratorMcpScheduledTask["lastRun"],
   machineOrders: ReadonlyArray<ScheduledTaskProjectMachineOrder>,
+  includePrompt: boolean,
 ): OrchestratorMcpScheduledTask {
   const projectKey =
     task.shared == null ? null : scheduledTaskSharedProjectKey(task.shared.project);
@@ -333,8 +343,10 @@ function scheduledTaskSummary(
     followsDefaultModel: task.followsDefaultModel ?? false,
     scheduledTaskId: task.id,
     title: task.title,
-    prompt: task.prompt,
+    ...(includePrompt ? { prompt: task.prompt } : {}),
     ...(task.promptFile == null ? {} : { promptFile: task.promptFile }),
+    promptPreview: promptPreview(task.prompt),
+    promptHash: NodeCrypto.createHash("sha256").update(task.prompt).digest("hex").slice(0, 12),
     enabled: task.enabled,
     projectId: task.projectId,
     boundThreadId: task.threadId,
@@ -941,7 +953,7 @@ function threadTitle(input: {
 
 function threadSettlement(
   thread: Pick<OrchestrationV2ThreadShell, "settledOverride" | "settledAt">,
-): Pick<OrchestratorMcpThreadListItem, "settled" | "settledAt"> {
+): Pick<OrchestratorMcpThreadDetail, "settled" | "settledAt"> {
   const settled = thread.settledOverride === "settled";
   return {
     settled,
@@ -952,7 +964,7 @@ function threadSettlement(
 function threadSnooze(
   thread: Parameters<typeof isSnoozed>[0],
   nowMs: number,
-): Pick<OrchestratorMcpThreadListItem, "snoozed" | "snoozedUntil"> {
+): Pick<OrchestratorMcpThreadDetail, "snoozed" | "snoozedUntil"> {
   const snoozed = isSnoozed(thread, nowMs);
   return {
     snoozed,
@@ -978,29 +990,34 @@ function listItemFromShell(
   scope: McpInvocationScope,
   shell: OrchestrationV2ThreadShell,
   nowMs: number,
+  shape: { readonly full: boolean; readonly withProject: boolean },
 ): OrchestratorMcpThreadListItem {
-  return {
+  const compact = {
     threadId: shell.id,
-    projectId: shell.projectId,
     title: shell.title,
     link: threadLinkFor(scope, shell.id),
+    status: shell.activityRunStatus ?? shell.status,
+    model: shell.modelSelection.model,
+    updatedAt: DateTime.formatIso(shell.updatedAt),
+    parentThreadId: shell.lineage.parentThreadId,
+    ...(shape.full || shape.withProject ? { projectId: shell.projectId } : {}),
+  } satisfies OrchestratorMcpThreadListItem;
+  if (!shape.full) return compact;
+  return {
+    ...compact,
     createdBy: shell.createdBy,
     creationSource: shell.creationSource,
-    status: shell.activityRunStatus ?? shell.status,
     latestRunId: shell.latestRunId,
     providerInstanceId: shell.modelSelection.instanceId,
-    model: shell.modelSelection.model,
     runtimeMode: shell.runtimeMode,
     interactionMode: shell.interactionMode,
     linkedPullRequest: shell.linkedPullRequest ?? null,
     pullRequests: threadPullRequests(shell.pullRequests),
     ...threadSettlement(shell),
     ...threadSnooze(shell, nowMs),
-    parentThreadId: shell.lineage.parentThreadId,
     relationshipToParent: shell.lineage.relationshipToParent,
     itemCount: shell.visibleItemCount,
     createdAt: DateTime.formatIso(shell.createdAt),
-    updatedAt: DateTime.formatIso(shell.updatedAt),
   };
 }
 
@@ -2233,6 +2250,8 @@ const make = Effect.gen(function* () {
         };
         /** The list's machine orders; read here when absent and the task needs them. */
         readonly machineOrders?: ReadonlyArray<ScheduledTaskProjectMachineOrder>;
+        /** Only a list that asked for prompts returns them; a write result never echoes the prompt. */
+        readonly includePrompt?: boolean;
       },
       task: ScheduledTask,
     ) {
@@ -2258,6 +2277,7 @@ const make = Effect.gen(function* () {
           modes.value.every((mode) => withinLimits(caller.limits, mode)),
         yield* lastRunOf(task),
         machineOrders,
+        caller.includePrompt === true,
       );
     },
   );
@@ -2504,7 +2524,11 @@ const make = Effect.gen(function* () {
     listScheduledTasks: Effect.fn("OrchestratorMcpService.listScheduledTasks")(
       function* (scope, input) {
         const { parent, limits } = yield* loadCaller(scope);
-        const projectId = input.projectId ?? parent?.thread.projectId;
+        const projectId =
+          input.scheduledTaskId === undefined
+            ? (input.projectId ?? parent?.thread.projectId)
+            : undefined;
+        const includePrompt = input.includePrompt === true || input.scheduledTaskId !== undefined;
         const { tasks, projectMachineOrders } = yield* scheduledTasks
           .list()
           .pipe(
@@ -2514,11 +2538,15 @@ const make = Effect.gen(function* () {
           );
         return {
           tasks: yield* Effect.forEach(
-            tasks.filter((task) => projectId === undefined || task.projectId === projectId),
+            tasks
+              .filter((task) => projectId === undefined || task.projectId === projectId)
+              .filter(
+                (task) => input.scheduledTaskId === undefined || task.id === input.scheduledTaskId,
+              ),
             (task) =>
               summarizeScheduledTask(
                 scope,
-                { parent, limits, machineOrders: projectMachineOrders ?? [] },
+                { parent, limits, machineOrders: projectMachineOrders ?? [], includePrompt },
                 task,
               ),
           ),
@@ -3699,7 +3727,12 @@ const make = Effect.gen(function* () {
       return {
         projectId,
         currentThreadId: parent?.thread.id ?? null,
-        threads: page.map((shell) => listItemFromShell(scope, shell, nowMs)),
+        threads: page.map((shell) =>
+          listItemFromShell(scope, shell, nowMs, {
+            full: input.fields === "full",
+            withProject: input.allProjects === true,
+          }),
+        ),
         nextCursor,
         total: filtered.length,
       } satisfies OrchestratorMcpThreadListResult;
@@ -3798,10 +3831,16 @@ const make = Effect.gen(function* () {
           shell,
           yield* Clock.currentTimeMillis,
         ),
-        recentRuns: target.runs
-          .toSorted((left, right) => right.ordinal - left.ordinal)
-          .slice(0, input.runLimit ?? DEFAULT_THREAD_RUN_LIMIT)
-          .map(threadRun),
+        // Later pages of the same thread would repeat the first page's runs.
+        ...(input.runLimit === undefined &&
+        (input.afterPosition !== undefined || input.itemId !== undefined)
+          ? {}
+          : {
+              recentRuns: target.runs
+                .toSorted((left, right) => right.ordinal - left.ordinal)
+                .slice(0, input.runLimit ?? DEFAULT_THREAD_RUN_LIMIT)
+                .map(threadRun),
+            }),
         items: page.map((row) =>
           timelineItem({
             row,

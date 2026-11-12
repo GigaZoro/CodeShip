@@ -352,6 +352,7 @@ export const OrchestratorMcpThreadListInput = Schema.Struct({
   archived: Schema.optional(Schema.Boolean),
   cursor: Schema.optional(NonNegativeInt),
   limit: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(100))),
+  fields: Schema.optional(Schema.Literals(["compact", "full"])),
 });
 export type OrchestratorMcpThreadListInput = typeof OrchestratorMcpThreadListInput.Type;
 
@@ -366,28 +367,30 @@ export type OrchestratorMcpThreadPullRequest = typeof OrchestratorMcpThreadPullR
 
 export const OrchestratorMcpThreadListItem = Schema.Struct({
   threadId: ThreadId,
-  projectId: ProjectId,
   title: Schema.String,
   link: Schema.optional(Schema.String),
-  createdBy: OrchestrationV2Actor,
-  creationSource: OrchestrationV2CreationSource,
   status: OrchestratorMcpThreadStatus,
-  latestRunId: Schema.NullOr(RunId),
-  providerInstanceId: ProviderInstanceId,
   model: Schema.String,
-  runtimeMode: RuntimeMode,
-  interactionMode: ProviderInteractionMode,
-  linkedPullRequest: Schema.NullOr(ThreadLinkedPullRequest),
-  pullRequests: Schema.optional(Schema.Array(OrchestratorMcpThreadPullRequest)),
-  settled: Schema.Boolean,
-  settledAt: Schema.NullOr(IsoDateTime),
-  snoozed: Schema.Boolean,
-  snoozedUntil: Schema.NullOr(IsoDateTime),
-  parentThreadId: Schema.NullOr(ThreadId),
-  relationshipToParent: Schema.NullOr(Schema.Literals(["fork", "subagent"])),
-  itemCount: NonNegativeInt,
-  createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
+  parentThreadId: Schema.NullOr(ThreadId),
+  /** With `allProjects` or `fields: "full"`. */
+  projectId: Schema.optional(ProjectId),
+  // The rest comes with `fields: "full"`.
+  createdBy: Schema.optional(OrchestrationV2Actor),
+  creationSource: Schema.optional(OrchestrationV2CreationSource),
+  latestRunId: Schema.optional(Schema.NullOr(RunId)),
+  providerInstanceId: Schema.optional(ProviderInstanceId),
+  runtimeMode: Schema.optional(RuntimeMode),
+  interactionMode: Schema.optional(ProviderInteractionMode),
+  linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
+  pullRequests: Schema.optional(Schema.Array(OrchestratorMcpThreadPullRequest)),
+  settled: Schema.optional(Schema.Boolean),
+  settledAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  snoozed: Schema.optional(Schema.Boolean),
+  snoozedUntil: Schema.optional(Schema.NullOr(IsoDateTime)),
+  relationshipToParent: Schema.optional(Schema.NullOr(Schema.Literals(["fork", "subagent"]))),
+  itemCount: Schema.optional(NonNegativeInt),
+  createdAt: Schema.optional(IsoDateTime),
 });
 export type OrchestratorMcpThreadListItem = typeof OrchestratorMcpThreadListItem.Type;
 
@@ -503,7 +506,7 @@ export type OrchestratorMcpThreadTimelineItem = typeof OrchestratorMcpThreadTime
 
 export const OrchestratorMcpThreadReadResult = Schema.Struct({
   thread: OrchestratorMcpThreadDetail,
-  recentRuns: Schema.Array(OrchestratorMcpThreadRun),
+  recentRuns: Schema.optional(Schema.Array(OrchestratorMcpThreadRun)),
   items: Schema.Array(OrchestratorMcpThreadTimelineItem),
   nextPosition: Schema.NullOr(NonNegativeInt),
   hasMore: Schema.Boolean,
@@ -771,11 +774,14 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   followsDefaultModel: Schema.optional(Schema.Boolean),
   scheduledTaskId: ScheduledTaskId,
   title: Schema.String,
-  prompt: Schema.String,
+  prompt: Schema.optional(Schema.String),
   promptFile: Schema.optional(ScheduledTaskPromptFile).annotate({
     description:
       "Each run reads its prompt from this file. `prompt` is the text this machine's `lastRead` found.",
   }),
+  // Absent from servers that always sent the full prompt.
+  promptPreview: Schema.optional(Schema.String),
+  promptHash: Schema.optional(Schema.String),
   enabled: Schema.Boolean,
   projectId: ProjectId,
   boundThreadId: Schema.NullOr(ThreadId),
@@ -836,6 +842,8 @@ export const OrchestratorMcpListScheduledTasksInput = Schema.Struct({
       description: "Default: your thread's project, or all outside a thread.",
     }),
   ),
+  scheduledTaskId: Schema.optional(ScheduledTaskId),
+  includePrompt: Schema.optional(Schema.Boolean),
 });
 export type OrchestratorMcpListScheduledTasksInput =
   typeof OrchestratorMcpListScheduledTasksInput.Type;

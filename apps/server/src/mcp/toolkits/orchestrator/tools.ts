@@ -111,7 +111,7 @@ const DelegateTaskTool = Tool.make("delegate_task", {
 
 const TaskStatusTool = Tool.make("task_status", {
   description:
-    "Read one delegated task you started. Do not call it on a running task before its completion wakes you. `workState`: working, waiting_for_children, result_available. A finished turn with live child work is not done. `summary`: final result. Reading it marks it delivered.",
+    "Read one delegated task you started. Do not call it on a running task before its completion wakes you. `workState`: working, waiting_for_children, result_available. `summary`: final result. Reading it marks it delivered.",
   parameters: OrchestratorMcpTaskStatusInput,
   success: OrchestratorMcpDelegateTaskResult,
   failure: OrchestratorMcpFailure,
@@ -185,7 +185,7 @@ const ScheduleTaskTool = Tool.make("schedule_task", {
 const ListScheduledTasksTool = Tool.make("list_scheduled_tasks", {
   parameters: OrchestratorMcpListScheduledTasksInput,
   description:
-    "List scheduled tasks. Omit `projectId` for this thread's project. Pass a `scheduledTaskId` to `schedule_task` or `delete_scheduled_task`. In a scheduled run, do not call this to find your task. Do the prompt.",
+    "List scheduled tasks (previews; `includePrompt`: full). Omit `projectId` for this project. Pass a `scheduledTaskId` to `schedule_task` or `delete_scheduled_task`. In a scheduled run, do not call this to find your task.",
   success: OrchestratorMcpListScheduledTasksResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
@@ -239,7 +239,7 @@ const DeleteScheduledTaskTool = Tool.make("delete_scheduled_task", {
 
 const RequestSecretTool = Tool.make("request_secret", {
   description:
-    'Ask the user to enter a secret in a private card and wait. You never see the value. Returns a one-use `secretRef` for a tool that accepts it, or with `delivery: "file"` a private file path to read inside a shell command. Asked how to provide a secret: call this now, do not explain instead.',
+    'Ask the user to enter a secret in a private card and wait. You never see the value. Returns a one-use `secretRef` for a tool that accepts it, or with `delivery: "file"` a private file path to read inside a shell command. Asked how to provide a secret: call this, do not explain.',
   parameters: OrchestratorMcpRequestSecretInput,
   success: OrchestratorMcpRequestSecretResult,
   failure: OrchestratorMcpFailure,
@@ -251,7 +251,7 @@ const RequestSecretTool = Tool.make("request_secret", {
 
 const AskUserTool = Tool.make("ask_user", {
   description:
-    "Ask the user about money only: spending it, real funds, or money being lost now. Decide anything else yourself and say what you chose. The question stays in this thread and in their Needs you list after your turn ends. Give `options` for one-tap answers. Their answer arrives as your next message, so end your turn after asking.",
+    "Ask the user about money only: spending it, real funds, or money being lost now. Decide anything else yourself and say what you chose. The question stays in this thread and in their Needs you list after your turn ends. Give `options` for one-tap answers. The answer arrives as your next message; end your turn after asking.",
   parameters: OrchestratorMcpAskUserInput,
   success: OrchestratorMcpAskUserResult,
   failure: OrchestratorMcpFailure,
@@ -291,7 +291,7 @@ const ThreadListTool = Tool.make("t3_thread_list", {
 
 const ThreadReadTool = Tool.make("t3_thread_read", {
   description:
-    "Read any thread by id. `messages` (default): user and assistant messages and plans. `activity`: all timeline items. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `afterPosition=nextPosition`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Reading a child's final result marks it delivered. In your reply, name it as its `link` verbatim.",
+    "Read any thread by id. `messages` (default): messages and plans. `activity`: all timeline items. Keep `limit` and `maxCharsPerItem` low. Page with `afterPosition=nextPosition`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Reading a child's final result marks it delivered. In your reply, name it as its `link` verbatim.",
   parameters: OrchestratorMcpThreadReadInput,
   success: OrchestratorMcpThreadReadResult,
   failure: OrchestratorMcpFailure,
@@ -376,7 +376,7 @@ const EnvironmentLinksTool = Tool.make("t3_environment_links", {
 
 const EnvironmentLinkTool = Tool.make("t3_environment_link", {
   description:
-    "Ask the user to link another machine, in a card. For a machine the user names that is not linked. Pass `hint` from their words, `environmentId` when one names it (already linked: returns `linked`), `url` only when the user gave an address. Returns `pending`; the outcome arrives as a message in this thread. Do not wait, poll, or call it again to check. Never ask for a pairing code in chat.",
+    "Ask the user to link another machine, in a card. For a machine the user names. Pass `hint` from their words, `environmentId` when one names it (already linked: returns `linked`), `url` only when the user gave an address. Returns `pending`; the outcome arrives as a message in this thread. Do not poll or call it again. Never ask for a pairing code in chat.",
   parameters: OrchestratorMcpEnvironmentLinkInput,
   success: OrchestratorMcpEnvironmentLinkResult,
   failure: OrchestratorMcpFailure,

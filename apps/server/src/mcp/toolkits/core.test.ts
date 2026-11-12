@@ -1050,6 +1050,29 @@ it.effect("discovers workflow stop targets and requires orchestration capability
     expect(read.isError).toBe(false);
     const result = yield* decodeThreadReadResult(read.structuredContent);
     expect(result.items[0]?.subagentId).toBe(subagentId);
+    expect(result.recentRuns).toBeDefined();
+    const nextPage = yield* server
+      .callTool({
+        name: "t3_thread_read",
+        arguments: { threadId, view: "activity", afterPosition: 0 },
+      })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+    expect((yield* decodeThreadReadResult(nextPage.structuredContent)).recentRuns).toBeUndefined();
+    const withRunLimit = yield* server
+      .callTool({
+        name: "t3_thread_read",
+        arguments: { threadId, view: "activity", afterPosition: 0, runLimit: 1 },
+      })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+    expect(
+      (yield* decodeThreadReadResult(withRunLimit.structuredContent)).recentRuns,
+    ).toBeDefined();
     const call = (invocation: McpInvocationContext.McpInvocationScope) =>
       server
         .callTool({
@@ -1172,7 +1195,12 @@ it.effect(
       const result = yield* server
         .callTool({
           name: "t3_thread_list",
-          arguments: { projectId: unsettled.projectId, settled: false, statuses: [] },
+          arguments: {
+            projectId: unsettled.projectId,
+            settled: false,
+            statuses: [],
+            fields: "full",
+          },
         })
         .pipe(
           Effect.provideService(
