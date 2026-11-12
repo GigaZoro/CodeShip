@@ -20,10 +20,13 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 
+import { shownNoWorkSkip } from "@t3tools/client-runtime/scheduled-task-run-condition";
+
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { cn } from "../../lib/utils";
 import {
   ScheduledRelativeLabel,
+  NoWorkSkipSentence,
   ScheduledTaskScheduleLine,
 } from "../settings/ScheduledTasksSettings";
 import { threadScheduledTasks } from "../settings/scheduledTasksSettings.logic";
@@ -115,6 +118,7 @@ function ThreadAutomationRow(props: {
   readonly onSetPlacement: (placement: ScheduledTaskPlacement) => void;
 }) {
   const { task } = props;
+  const noWorkSkip = shownNoWorkSkip(task);
   const descriptionId = useId();
   const movable = supportsScheduledTaskPlacement(task);
   // Webhook tasks need a request from their URL.
@@ -176,6 +180,11 @@ function ThreadAutomationRow(props: {
                 </>
               ) : null}
             </p>
+            {noWorkSkip !== null ? (
+              <p className="text-muted-foreground">
+                <NoWorkSkipSentence skip={noWorkSkip} />
+              </p>
+            ) : null}
             <p className="text-muted-foreground">{taskThreadRelation(task, props.threadId)}</p>
           </TooltipPopup>
         </Tooltip>

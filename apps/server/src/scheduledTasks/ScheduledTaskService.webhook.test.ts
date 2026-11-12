@@ -18,6 +18,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
 import * as EffectScheduler from "effect/Scheduler";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -32,6 +33,7 @@ import { layerSharedTaskDependencies } from "./sharedTaskTestLayers.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as RunConditionCheck from "./RunConditionCheck.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
 import { renderWebhookPrompt } from "./webhookTemplate.ts";
 
@@ -178,6 +180,7 @@ const withService = <A, E>(
     readonly sql?: SqlClient.SqlClient;
     readonly workers?: Map<string, Effect.Effect<void>>;
     readonly policy?: ManagedPolicyDocument;
+    readonly runConditionCheck?: Layer.Layer<RunConditionCheck.RunConditionCheck>;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -241,7 +244,7 @@ const withService = <A, E>(
         isScratchProject: () => Effect.succeed(false),
       }),
       Layer.mock(ThreadManagementService.ThreadManagementService)({}),
-      layerSharedTaskDependencies(),
+      layerSharedTaskDependencies([], undefined, options.runConditionCheck),
       Layer.mock(SecretRequests.SecretRequests)({
         consume: ({ ref }) => {
           const value = secretsByRef.get(ref);
@@ -274,6 +277,31 @@ const withService = <A, E>(
         : Layer.succeed(SqlClient.SqlClient, options.sql),
     ),
   );
+
+it.effect("a delivery runs without a run condition, even one stored for the task", () =>
+  Effect.gen(function* () {
+    const checks = yield* Ref.make(0);
+    yield* withService(
+      ({ service, launches, sql }) =>
+        Effect.gen(function* () {
+          const { task } = yield* service.upsert(yield* webhookTaskInput());
+          yield* sql`INSERT INTO scheduled_task_run_conditions (task_id, command, timeout_seconds)
+            VALUES (${task.id}, 'node check.mjs', 30)`;
+          yield* service.triggerWebhook(requestFor(task));
+          yield* Queue.take(launches);
+          assert.equal(yield* Ref.get(checks), 0);
+        }),
+      {
+        runConditionCheck: Layer.mock(RunConditionCheck.RunConditionCheck)({
+          run: () =>
+            Ref.update(checks, (n) => n + 1).pipe(
+              Effect.as({ outcome: "skip", failure: null, exitCode: 10, detail: null } as const),
+            ),
+        }),
+      },
+    );
+  }),
+);
 
 it.effect("dispatches exactly the rendered prompt and logs the delivery", () =>
   withService(({ service, launches }) =>

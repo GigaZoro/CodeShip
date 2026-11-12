@@ -54,8 +54,12 @@ const check = (input: {
     ),
   );
 
-const peerTask = (lastRun: unknown) => () =>
-  Effect.succeed({ tasks: [{ scheduledTaskId: TASK, lastRun }] });
+const peerTask =
+  (lastRun: unknown, fields: Record<string, unknown> = {}) =>
+  () =>
+    Effect.succeed({ tasks: [{ scheduledTaskId: TASK, lastRun, ...fields }] });
+
+const EARLIER_RUN = { at: "2026-09-09T10:00:00.000Z", outcome: "completed" };
 
 it.effect.each([
   {
@@ -88,29 +92,72 @@ it.effect.each([
     ranOn: PEER,
     working: false,
   },
+  {
+    name: "skipped for no work in the window",
+    lastRun: EARLIER_RUN,
+    fields: {
+      lastSkipped: { at: SINCE, scheduledFor: SINCE, reason: "No open pull requests" },
+    },
+    ranOn: PEER,
+    working: false,
+    noWork: { reason: "No open pull requests" },
+  },
+  {
+    name: "skipped for no work before the window",
+    lastRun: EARLIER_RUN,
+    fields: {
+      lastSkipped: {
+        at: "2026-09-09T11:29:59.999Z",
+        scheduledFor: null,
+        reason: "No open pull requests",
+      },
+    },
+    ranOn: null,
+    working: false,
+  },
+  {
+    name: "checking whether there is work",
+    lastRun: EARLIER_RUN,
+    fields: { checkingSince: "2026-09-09T12:00:00.000Z" },
+    ranOn: PEER,
+    working: true,
+  },
   { name: "never run", lastRun: null, ranOn: null, working: false },
-])("a peer's last run $name", ({ lastRun, ranOn, working }) =>
-  check({ answer: peerTask(lastRun) }).pipe(
+])("a peer's last run $name", ({ lastRun, fields, ranOn, working, noWork }) =>
+  check({ answer: peerTask(lastRun, fields) }).pipe(
     Effect.map((result) => {
       expect(result.ranOn).toBe(ranOn);
       expect(result.working).toBe(working);
+      expect(result.noWork).toEqual(noWork ?? null);
       expect(result.unchecked).toEqual([]);
     }),
   ),
 );
 
-it.effect("a peer that finished wins over one still working", () =>
+it.effect.each([
+  { name: "ran it", fields: {}, noWork: null },
+  {
+    name: "skipped it for no work",
+    fields: { lastSkipped: { at: SINCE, scheduledFor: SINCE, reason: null } },
+    noWork: { reason: null },
+  },
+])("a peer that $name wins over one still working", ({ fields, noWork }) =>
   check({
     peers: [EnvironmentId.make("environment-working"), PEER],
     answer: ({ environmentId }) =>
-      peerTask({
-        at: "2026-09-09T12:00:00.000Z",
-        outcome: environmentId === PEER ? "completed" : "working",
-      })(),
+      environmentId === PEER
+        ? peerTask(
+            noWork === null
+              ? { at: "2026-09-09T12:00:00.000Z", outcome: "completed" }
+              : EARLIER_RUN,
+            fields,
+          )()
+        : peerTask({ at: "2026-09-09T12:00:00.000Z", outcome: "working" })(),
   }).pipe(
     Effect.map((result) => {
       expect(result.ranOn).toBe(PEER);
       expect(result.working).toBe(false);
+      expect(result.noWork).toEqual(noWork);
     }),
   ),
 );

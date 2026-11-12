@@ -222,6 +222,17 @@ it) before asking. The restarted machine does lose the watch, so its first
 check is an ordinary one: an unanswered call then runs the task, as any
 machine that can't ask does.
 
+A [run condition](../user/project-settings.md#check-before-running) answers
+beside `lastRun`, never through it: `lastRun` stays the last real run, because
+a linked machine's task list shows it as "Last run". While the command runs, the
+task lists `checkingSince`, which a later machine reads as still working. An
+occurrence the check skipped is in `lastSkipped`, which counts as finished when
+it falls in the occurrence's window; the later machine records `ran_elsewhere`
+with that check, so its history says the machine found no work. A machine on an
+older version reads only `lastRun`, so it runs an occurrence a newer machine
+ahead of it skipped: an extra run, never a missed one. The skip and its run
+record are one write, since the record is the evidence other machines read.
+
 Clients otherwise read a machine only through their own connection to it. The
 exception is a linked machine's task list, which its owner wants to see while that
 machine is offline and which no client can fetch then. Each machine stores the last

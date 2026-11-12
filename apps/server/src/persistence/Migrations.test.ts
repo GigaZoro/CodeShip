@@ -38,9 +38,11 @@ describe("runMigrations", () => {
       yield* sql`INSERT INTO scheduled_task_runs (run_id, task_id, trigger, scheduled_for, started_at, outcome)
         VALUES ('old-run', 'inbox', 'scheduled', '2026-11-08T01:00:00.000Z', '2026-11-08T01:05:00.000Z', 'succeeded')`;
       yield* runMigrations();
-      assert.deepEqual(yield* sql`SELECT run_id, scheduled_for FROM scheduled_task_runs`, [
-        { run_id: "old-run", scheduled_for: "2026-11-08T01:00:00.000Z" },
-      ]);
+      assert.deepEqual(
+        yield* sql`SELECT run_id, scheduled_for, check_json FROM scheduled_task_runs`,
+        [{ run_id: "old-run", scheduled_for: "2026-11-08T01:00:00.000Z", check_json: null }],
+      );
+      assert.deepEqual(yield* sql`SELECT * FROM scheduled_task_run_conditions`, []);
       assert.deepEqual(yield* runMigrations(), []);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

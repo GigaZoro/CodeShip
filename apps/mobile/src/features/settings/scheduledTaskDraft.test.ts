@@ -7,8 +7,13 @@ import {
   ProjectId,
   type ScheduledTask,
 } from "@t3tools/contracts";
+import { runConditionInput } from "@t3tools/client-runtime/scheduled-task-run-condition";
 import {
+  createDraft,
   duplicateDraft,
+  editDraft,
+  hasScheduledTaskDraftChanges,
+  runConditionLostOnTarget,
   scheduledTaskDefaultModel,
   DEFAULT_SCHEDULE,
   scheduleDraftForTask,
@@ -221,4 +226,65 @@ it("rejects dedupe keys without valid request placeholders", () => {
   expect(
     scheduleFromDraft({ ...DEFAULT_SCHEDULE, mode: "webhook", coalesceKey: "{{body.bad" }),
   ).toBeNull();
+});
+
+describe("run condition draft", () => {
+  const task = {
+    title: "Poll",
+    prompt: "p",
+    schedule: { type: "interval", everyMs: 60_000 },
+    workspaceStrategy: { type: "root" },
+    runCondition: { command: "node check.mjs", timeoutSeconds: 120 },
+  } as unknown as ScheduledTask;
+
+  it("round-trips a stored condition, carries it into a duplicate and notices edits", () => {
+    const draft = editDraft(task);
+    expect(runConditionInput(draft.runCondition)).toEqual({
+      command: "node check.mjs",
+      timeoutSeconds: 120,
+    });
+    expect(duplicateDraft(task, "Copy").runCondition).toEqual(draft.runCondition);
+    const edited = { ...draft, runCondition: { ...draft.runCondition, command: "node other.mjs" } };
+    expect(hasScheduledTaskDraftChanges(draft, edited)).toBe(true);
+    expect(hasScheduledTaskDraftChanges(draft, { ...draft })).toBe(false);
+  });
+
+  it("clears with an empty command and ignores the timeout of a task without one", () => {
+    const cleared = { ...editDraft(task).runCondition, command: "" };
+    expect(runConditionInput(cleared)).toBeNull();
+    const blank = createDraft(null, null);
+    expect(
+      hasScheduledTaskDraftChanges(blank, {
+        ...blank,
+        runCondition: { ...blank.runCondition, timeoutSeconds: "300" },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("a check the target machine cannot keep", () => {
+  const checked = {
+    ...createDraft(null, null),
+    runCondition: { command: "node check.mjs", timeoutSeconds: "120" },
+  };
+
+  it.each([
+    ["target supports checks", true, checked, false],
+    ["target lacks checks and the draft has a command", false, checked, true],
+    ["target lacks checks and the command is empty", false, createDraft(null, null), false],
+    [
+      "target lacks checks and the command is blank",
+      false,
+      { ...checked, runCondition: { ...checked.runCondition, command: "  " } },
+      false,
+    ],
+    [
+      "target lacks checks and the trigger is a webhook",
+      false,
+      { ...checked, schedule: { ...checked.schedule, mode: "webhook" as const } },
+      false,
+    ],
+  ])("%s", (_name, targetSupportsRunConditions, draft, lost) => {
+    expect(runConditionLostOnTarget({ targetSupportsRunConditions, draft })).toBe(lost);
+  });
 });

@@ -128,6 +128,29 @@ describe("planSharedScheduledTaskSync", () => {
     const [op] = planSharedScheduledTaskSync([snap(A, [shared("1")]), snap(B)]);
     expect(op?.key).toBe(`env-b:task-1:${rev("1").at}:env-a`);
   });
+
+  it.each([
+    {
+      name: "a source that lists them sends its run condition and catch-up choice, cleared ones too",
+      fields: { runCondition: null, catchUpMissedRun: false },
+      expected: { runCondition: null, catchUpMissedRun: false },
+    },
+    {
+      name: "a source on an older version sends neither, so the receiver keeps its own",
+      fields: {},
+      expected: {},
+    },
+  ])("$name", ({ fields, expected }) => {
+    const [op] = planSharedScheduledTaskSync([
+      snap(A, [{ ...shared("1"), ...fields } as ScheduledTask]),
+      snap(B),
+    ]);
+    const copy = op?.input.type === "upsert" ? op.input.task : null;
+    expect({
+      ...("runCondition" in (copy ?? {}) ? { runCondition: copy?.runCondition } : {}),
+      ...("catchUpMissedRun" in (copy ?? {}) ? { catchUpMissedRun: copy?.catchUpMissedRun } : {}),
+    }).toEqual(expected);
+  });
 });
 
 const order = (
@@ -428,14 +451,25 @@ describe("mergeScheduledTaskRuns", () => {
   it("orders every machine's runs newest first and drops skips another machine's run covers", () => {
     const nine = "2026-11-07T09:00:00.000Z";
     const ten = "2026-11-07T10:00:00.000Z";
+    const eleven = "2026-11-07T11:00:00.000Z";
     const merged = mergeScheduledTaskRuns([
       {
         environmentId: A,
-        runs: [run("a-10", "10:00", { scheduledFor: ten }), run("a-manual", "08:30")],
+        runs: [
+          run("a-11", "11:00", { scheduledFor: eleven, outcome: "skipped", skipReason: "no_work" }),
+          run("a-10", "10:00", { scheduledFor: ten }),
+          run("a-manual", "08:30"),
+        ],
       },
       {
         environmentId: B,
         runs: [
+          run("b-11", "11:05", {
+            scheduledFor: eleven,
+            outcome: "skipped",
+            skipReason: "ran_elsewhere",
+            ranOn: A,
+          }),
           run("b-10", "10:00", {
             scheduledFor: ten,
             outcome: "skipped",
@@ -458,6 +492,7 @@ describe("mergeScheduledTaskRuns", () => {
     ]);
 
     expect(merged.map(({ environmentId, run }) => `${environmentId}:${run.id}`)).toEqual([
+      "env-a:a-11",
       "env-a:a-10",
       "env-b:b-missed",
       "env-b:b-9",

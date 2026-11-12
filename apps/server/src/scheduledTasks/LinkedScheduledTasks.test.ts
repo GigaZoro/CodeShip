@@ -33,6 +33,12 @@ const peerTask = {
   nextRunAt: "2026-11-07T15:30:00.000Z",
   lastRunStatus: "succeeded",
   lastRun: { at: "2026-11-07T15:00:00.000Z", outcome: "completed" },
+  // A later skip is not a run, so it leaves "last run" alone.
+  lastSkipped: {
+    at: "2026-11-07T15:30:00.000Z",
+    scheduledFor: "2026-11-07T15:30:00.000Z",
+    reason: "No open pull requests",
+  },
 };
 
 /** One linked machine, stored as a real link row, that answers while `online` holds. */
@@ -104,6 +110,7 @@ it.effect("keeps a linked machine's tasks while it is offline, until its link is
               title: "PR Reviewer",
               projectTitle: "PolyBot",
               lastRunAt: "2026-11-07T15:00:00.000Z",
+              lastNoWorkSkip: peerTask.lastSkipped,
               shared: false,
             },
           ],

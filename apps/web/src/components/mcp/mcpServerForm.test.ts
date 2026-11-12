@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  joinCommandLine,
   mcpServerFormFromSettings,
   readMcpServerEditForm,
   readMcpServerForm,
-  splitCommandLine,
   type McpServerForm,
 } from "./mcpServerForm";
 
@@ -20,20 +18,6 @@ const form = (overrides: Partial<McpServerForm>): McpServerForm => ({
 });
 
 describe("mcpServerForm", () => {
-  it("splits pasted command lines on spaces outside quotes", () => {
-    expect(splitCommandLine(`npx -y "@scope/server name" --root 'C:\\My Files' ""`)).toEqual([
-      "npx",
-      "-y",
-      "@scope/server name",
-      "--root",
-      "C:\\My Files",
-      "",
-    ]);
-    expect(splitCommandLine(`node "unfinished`)).toBeUndefined();
-    const words = ["npx", "@scope/server name", "C:\\dir\\", `say "hi"`, "it's", ""];
-    expect(splitCommandLine(joinCommandLine(words))).toEqual(words);
-  });
-
   it("opens an edit with names only and keeps the values left empty", () => {
     const stored = {
       transport: "http" as const,

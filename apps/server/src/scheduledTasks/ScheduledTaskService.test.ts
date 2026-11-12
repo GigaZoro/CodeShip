@@ -11,6 +11,9 @@ import {
   ScheduledTaskError,
   ScheduledTaskId,
   type ScheduledTaskPlacement,
+  type ScheduledTask,
+  type ScheduledTaskRunCheck,
+  type ScheduledTaskUpsertInput,
   type ServerSettings as ServerSettingsValue,
   ThreadId,
 } from "@t3tools/contracts";
@@ -27,6 +30,7 @@ import * as Deferred from "effect/Deferred";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
@@ -35,6 +39,7 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import { layerSharedTaskDependencies } from "./sharedTaskTestLayers.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as RunConditionCheck from "./RunConditionCheck.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -895,4 +900,539 @@ it.effect("a run interrupted right after it reserves the task does not block the
       assert.equal(yield* Ref.get(launches), 1);
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+// Run conditions. The poll is captured, so each test runs it when it wants; nothing sleeps.
+const PROJECT_ROOT = "/work/test";
+const FOUND_WORK: ScheduledTaskRunCheck = {
+  outcome: "run",
+  failure: null,
+  exitCode: 0,
+  detail: null,
+};
+const NO_WORK: ScheduledTaskRunCheck = {
+  outcome: "skip",
+  failure: null,
+  exitCode: 10,
+  detail: "No open pull requests",
+};
+const RUN_CONDITION = { command: "node ~/check.mjs needs-run", timeoutSeconds: 30 };
+
+const conditionTask = (
+  overrides: Partial<ScheduledTaskUpsertInput> = {},
+): ScheduledTaskUpsertInput => ({
+  id: ScheduledTaskId.make("task:checked"),
+  title: "Review pull requests",
+  prompt: "Review the open pull requests",
+  enabled: true,
+  schedule: { type: "interval", everyMs: 60_000 },
+  projectId: ProjectId.make("project:test"),
+  workspaceStrategy: { type: "worktree", baseRef: "main" },
+  modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+  runtimeMode: "full-access",
+  interactionMode: "default",
+  runCondition: RUN_CONDITION,
+  ...overrides,
+});
+
+type CheckCall = Parameters<RunConditionCheck.RunConditionCheck["Service"]["run"]>[0];
+type LaunchInput = Parameters<ThreadLaunchService.ThreadLaunchService["Service"]["launch"]>[0];
+
+const withRunConditions = <A, E>(
+  answer: (call: CheckCall) => Effect.Effect<ScheduledTaskRunCheck>,
+  body: (harness: {
+    readonly service: ScheduledTaskService.ScheduledTaskService["Service"];
+    readonly sql: SqlClient.SqlClient;
+    readonly poll: Effect.Effect<void>;
+    readonly launches: Queue.Queue<LaunchInput>;
+    readonly checks: Ref.Ref<ReadonlyArray<CheckCall>>;
+    /**
+     * Watches the list from now on; the effect it returns waits until the checked task matches.
+     * Changes coalesce, so tests wait for a state, not a number of changes.
+     */
+    readonly whenTask: (
+      matches: (task: ScheduledTask) => boolean,
+    ) => Effect.Effect<Effect.Effect<void>, never, Scope.Scope>;
+  }) => Effect.Effect<A, E, Scope.Scope>,
+  policy?: Parameters<typeof ManagedPolicy.layerTest>[0],
+) =>
+  Effect.gen(function* () {
+    const launches = yield* Queue.unbounded<LaunchInput>();
+    const checks = yield* Ref.make<ReadonlyArray<CheckCall>>([]);
+    const workers = new Map<string, Effect.Effect<void>>();
+    const layer = ScheduledTaskService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          ManagedPolicy.layerTest(policy),
+          ServerSettings.layerTest(),
+          Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+            launch: (input) =>
+              Queue.offer(launches, input).pipe(
+                Effect.as({ threadId: ThreadId.make("thread:launched"), resumed: false } as never),
+              ),
+          }),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+          layerSharedTaskDependencies(
+            [
+              {
+                id: "project:test",
+                title: "Test",
+                workspaceRoot: PROJECT_ROOT,
+                canonicalKey: null,
+              },
+            ],
+            undefined,
+            Layer.mock(RunConditionCheck.RunConditionCheck)({
+              run: (call) =>
+                Ref.update(checks, (all) => [...all, call]).pipe(Effect.andThen(answer(call))),
+            }),
+          ),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+            namedProjectsRoot: "/projects",
+            isScratchProject: () => Effect.succeed(false),
+          }),
+          NodeCrypto.layer,
+          Layer.succeed(Scheduler.Scheduler, {
+            register: <E2, R>(name: string, work: Effect.Effect<void, E2, R>) =>
+              Effect.gen(function* () {
+                const context = yield* Effect.context<R>();
+                workers.set(name, work.pipe(Effect.provideContext(context), Effect.orDie));
+              }),
+          }),
+        ),
+      ),
+    );
+    return yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const whenTask = (matches: (task: ScheduledTask) => boolean) =>
+        service.subscribeList().pipe(
+          Stream.filter(({ tasks }) =>
+            tasks.some((task) => task.id === "task:checked" && matches(task)),
+          ),
+          Stream.runHead,
+          Effect.orDie,
+          Effect.forkScoped,
+          Effect.map((fiber) => Fiber.join(fiber).pipe(Effect.asVoid)),
+        );
+      return yield* body({
+        service,
+        sql: yield* SqlClient.SqlClient,
+        poll: Effect.suspend(() => workers.get("scheduled-tasks")!),
+        launches,
+        checks,
+        whenTask,
+      });
+    }).pipe(Effect.scoped, Effect.provide(layer));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory));
+
+const runsOf = (service: ScheduledTaskService.ScheduledTaskService["Service"]) =>
+  service.listRuns({ id: ScheduledTaskId.make("task:checked") }).pipe(Effect.map((r) => r.runs));
+
+it.effect("a check that finds no work starts no chat and records the occurrence as skipped", () =>
+  withRunConditions(
+    () => Effect.succeed(NO_WORK),
+    ({ service, poll, launches, checks, whenTask }) =>
+      Effect.gen(function* () {
+        const { task } = yield* service.upsert(conditionTask());
+        yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
+        const skipped = yield* whenTask(
+          (t) => t.lastNoWorkSkip != null && t.runCheckStartedAt == null,
+        );
+        yield* poll;
+        yield* skipped;
+
+        assert.equal(yield* Queue.size(launches), 0);
+        assert.deepEqual(yield* Ref.get(checks), [
+          { command: RUN_CONDITION.command, timeoutSeconds: 30, cwd: PROJECT_ROOT },
+        ]);
+        const [run] = yield* runsOf(service);
+        assert.deepInclude(run, {
+          outcome: "skipped",
+          skipReason: "no_work",
+          scheduledFor: task.nextRunAt,
+          threadId: null,
+          check: NO_WORK,
+        });
+        const after = (yield* service.list()).tasks[0]!;
+        assert.deepEqual(after.lastNoWorkSkip, {
+          at: run!.startedAt,
+          scheduledFor: task.nextRunAt,
+          reason: "No open pull requests",
+        });
+        assert.isTrue(Date.parse(after.nextRunAt!) > Date.parse(task.nextRunAt!));
+        assert.deepEqual(
+          [after.lastRunAt, after.lastRunStatus, after.runCount, after.runCheckStartedAt],
+          [null, "never", 0, null],
+        );
+
+        // The skip stays history once the condition is cleared: other machines still read it.
+        yield* service.upsert(conditionTask({ runCondition: null }));
+        const cleared = (yield* service.list()).tasks[0]!;
+        assert.deepEqual(
+          [cleared.runCondition, cleared.lastNoWorkSkip],
+          [null, after.lastNoWorkSkip],
+        );
+      }),
+  ),
+);
+
+it.effect.each([
+  { name: "found work", check: FOUND_WORK },
+  {
+    name: "failed with an exit code",
+    check: { outcome: "failed", failure: "exit_code", exitCode: 2, detail: "auth failed" },
+  },
+  {
+    name: "timed out",
+    check: { outcome: "failed", failure: "timeout", exitCode: null, detail: null },
+  },
+  {
+    name: "could not start",
+    check: { outcome: "failed", failure: "not_started", exitCode: null, detail: "spawn ENOENT" },
+  },
+] satisfies ReadonlyArray<{ name: string; check: ScheduledTaskRunCheck }>)(
+  "a check that $name starts the chat as a task without one would",
+  ({ check }) =>
+    withRunConditions(
+      () => Effect.succeed(check),
+      ({ service, poll, launches }) =>
+        Effect.gen(function* () {
+          const { task } = yield* service.upsert(conditionTask());
+          yield* service.upsert(
+            conditionTask({ id: ScheduledTaskId.make("task:plain"), runCondition: null }),
+          );
+          yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
+          yield* poll;
+          const launched = [yield* Queue.take(launches), yield* Queue.take(launches)];
+          const comparable = (input: LaunchInput) => ({
+            ...input,
+            commandId: null,
+            initialMessage: { ...input.initialMessage, messageId: null, scheduledTaskId: null },
+          });
+          const byTask = (id: string) =>
+            launched.find((input) => input.initialMessage?.scheduledTaskId === id)!;
+          assert.deepEqual(comparable(byTask("task:checked")), comparable(byTask("task:plain")));
+          const [run] = yield* runsOf(service);
+          assert.deepEqual(run?.check, check);
+        }),
+    ),
+);
+
+it.effect("a slow check holds up no other task, and the next poll starts no second check", () =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<ScheduledTaskRunCheck>();
+    yield* withRunConditions(
+      () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      ({ service, poll, launches, checks, whenTask }) =>
+        Effect.gen(function* () {
+          const { task } = yield* service.upsert(conditionTask());
+          yield* service.upsert(
+            conditionTask({ id: ScheduledTaskId.make("task:plain"), runCondition: null }),
+          );
+          yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
+          yield* poll;
+          const plain = yield* Queue.take(launches);
+          assert.equal(plain.initialMessage?.scheduledTaskId, "task:plain");
+          yield* Deferred.await(started);
+
+          yield* poll;
+          assert.lengthOf(yield* Ref.get(checks), 1);
+          const checking = (yield* service.list()).tasks.find((t) => t.id === task.id)!;
+          assert.equal(checking.runCheckStartedAt, DateTime.formatIso(yield* DateTime.now));
+
+          const ended = yield* whenTask((t) => t.runCheckStartedAt == null);
+          yield* Deferred.succeed(release, NO_WORK);
+          yield* ended;
+          assert.equal(yield* Queue.size(launches), 0);
+          assert.isNull(
+            (yield* service.list()).tasks.find((t) => t.id === task.id)!.runCheckStartedAt,
+          );
+        }),
+    );
+  }),
+);
+
+it.effect("run now starts the chat without running the check", () =>
+  withRunConditions(
+    () => Effect.succeed(NO_WORK),
+    ({ service, launches, checks }) =>
+      Effect.gen(function* () {
+        const { task } = yield* service.upsert(conditionTask());
+        const ran = yield* service.runNow({ id: task.id });
+        assert.equal(ran.threadId, ThreadId.make("thread:launched"));
+        assert.equal(yield* Queue.size(launches), 1);
+        assert.deepEqual(yield* Ref.get(checks), []);
+        assert.isNull((yield* runsOf(service))[0]?.check);
+      }),
+  ),
+);
+
+it.effect("saving keeps, clears and sets a run condition, and refuses one it can't run", () =>
+  withRunConditions(
+    () => Effect.succeed(FOUND_WORK),
+    ({ service, sql }) =>
+      Effect.gen(function* () {
+        const conditionOf = (id = "task:checked") =>
+          service
+            .list()
+            .pipe(Effect.map(({ tasks }) => tasks.find((task) => task.id === id)?.runCondition));
+        yield* service.upsert(conditionTask({ runCondition: { command: "node ~/check.mjs" } }));
+        assert.deepEqual(yield* conditionOf(), { command: "node ~/check.mjs", timeoutSeconds: 60 });
+        const { runCondition: _omitted, ...withoutCondition } = conditionTask();
+        yield* service.upsert({ ...withoutCondition, title: "Renamed" });
+        assert.deepEqual(yield* conditionOf(), { command: "node ~/check.mjs", timeoutSeconds: 60 });
+        yield* service.upsert(conditionTask());
+        assert.deepEqual(yield* conditionOf(), RUN_CONDITION);
+        yield* service.upsert(conditionTask({ runCondition: null }));
+        assert.isNull(yield* conditionOf());
+
+        const webhook = { type: "webhook", signature: null, maxDeliveryAgeMinutes: null } as const;
+        for (const [input, message] of [
+          [
+            conditionTask({ runCondition: { command: `node "open` } }),
+            "The check has a quote that is never closed.",
+          ],
+          [
+            conditionTask({ runCondition: { command: "gh pr list | grep open" } }),
+            "The check is one program with its arguments, without a shell. Put pipes, redirects and && in a script and run that.",
+          ],
+          [
+            conditionTask({ schedule: webhook }),
+            "A webhook task runs on each request, so it can't have a check.",
+          ],
+        ] as const) {
+          assert.equal((yield* service.upsert(input).pipe(Effect.flip)).message, message);
+        }
+        assert.isNull(yield* conditionOf());
+
+        // Saved as a webhook task, it loses the stored condition.
+        yield* service.upsert(conditionTask());
+        yield* service.upsert({ ...withoutCondition, schedule: webhook });
+        assert.isNull(yield* conditionOf());
+
+        yield* service.upsert(conditionTask());
+        yield* service.delete({ id: ScheduledTaskId.make("task:checked") });
+        assert.lengthOf(yield* sql`SELECT task_id FROM scheduled_task_run_conditions`, 0);
+      }),
+  ),
+);
+
+it.effect("a policy that forbids full access refuses saving a run condition", () =>
+  withRunConditions(
+    () => Effect.succeed(FOUND_WORK),
+    ({ service }) =>
+      Effect.gen(function* () {
+        const refused = yield* service
+          .upsert(conditionTask({ runtimeMode: "auto-accept-edits" }))
+          .pipe(Effect.flip);
+        assert.equal(refused.message, "Example Corp limits threads to Auto-accept edits.");
+      }),
+    {
+      schemaVersion: 1,
+      organization: "Example Corp",
+      limits: { maxRuntimeMode: "auto-accept-edits" },
+    },
+  ),
+);
+
+const clearCondition = (service: ScheduledTaskService.ScheduledTaskService["Service"]) =>
+  service.upsert(conditionTask({ runCondition: null }));
+const pause = (service: ScheduledTaskService.ScheduledTaskService["Service"]) =>
+  service.setEnabled({ id: ScheduledTaskId.make("task:checked"), enabled: false });
+
+it.effect.each([
+  { name: "its condition is cleared", answer: NO_WORK, change: clearCondition, launchesAfter: 1 },
+  {
+    name: "its condition is cleared",
+    answer: FOUND_WORK,
+    change: clearCondition,
+    launchesAfter: 1,
+  },
+  { name: "it is paused", answer: NO_WORK, change: pause, launchesAfter: 0 },
+  { name: "it is paused", answer: FOUND_WORK, change: pause, launchesAfter: 0 },
+  {
+    name: "it is run by hand",
+    answer: NO_WORK,
+    change: (service: ScheduledTaskService.ScheduledTaskService["Service"]) =>
+      service.runNow({ id: ScheduledTaskId.make("task:checked") }),
+    launchesAfter: 1,
+  },
+])(
+  "a check that answers $answer.outcome acts on nothing when $name meanwhile",
+  ({ answer, change, launchesAfter }) =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<ScheduledTaskRunCheck>();
+      yield* withRunConditions(
+        () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release))),
+        ({ service, poll, launches, checks, whenTask }) =>
+          Effect.gen(function* () {
+            const { task } = yield* service.upsert(conditionTask());
+            yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
+            yield* poll;
+            yield* Deferred.await(started);
+            yield* change(service);
+            const launchedByChange = yield* Queue.size(launches);
+
+            const ended = yield* whenTask((t) => t.runCheckStartedAt == null);
+            yield* Deferred.succeed(release, answer);
+            yield* ended;
+            assert.equal(yield* Queue.size(launches), launchedByChange);
+            assert.isFalse((yield* runsOf(service)).some((run) => run.skipReason === "no_work"));
+            assert.isNull((yield* service.list()).tasks[0]!.lastNoWorkSkip ?? null);
+
+            // A cleared condition leaves the occurrence due, so the next poll starts the chat
+            // directly, without a check.
+            yield* poll;
+            assert.equal(yield* Queue.size(launches), launchesAfter);
+            assert.lengthOf(yield* Ref.get(checks), 1);
+            assert.isTrue((yield* runsOf(service)).every((run) => run.check === null));
+          }),
+      );
+    }),
+);
+
+it.effect(
+  "an answer that comes after a hand run starts no chat; the next occurrence checks again",
+  () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<ScheduledTaskRunCheck>();
+      yield* withRunConditions(
+        () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release))),
+        ({ service, poll, launches, checks, whenTask }) =>
+          Effect.gen(function* () {
+            const { task } = yield* service.upsert(
+              conditionTask({ schedule: { type: "interval", everyMs: 5 * 60_000 } }),
+            );
+            yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
+            yield* poll;
+            yield* Deferred.await(started);
+            yield* TestClock.adjust("1 minute");
+            yield* service.runNow({ id: task.id });
+            const nextDue = (yield* service.list()).tasks[0]!.nextRunAt!;
+            // Due again while the first check still runs: the poll leaves the task to that check.
+            yield* TestClock.setTime(Date.parse(nextDue) + 1_000);
+            yield* poll;
+            assert.lengthOf(yield* Ref.get(checks), 1);
+
+            const ended = yield* whenTask((t) => t.runCheckStartedAt == null);
+            yield* Deferred.succeed(release, FOUND_WORK);
+            yield* ended;
+            assert.equal(yield* Queue.size(launches), 1);
+
+            yield* poll;
+            yield* Queue.take(launches);
+            yield* Queue.take(launches);
+            assert.lengthOf(yield* Ref.get(checks), 2);
+            assert.deepEqual(
+              (yield* runsOf(service)).map((run) => [run.trigger, run.scheduledFor, run.check]),
+              [
+                ["scheduled", nextDue, FOUND_WORK],
+                ["manual", null, null],
+              ],
+            );
+          }),
+      );
+    }),
+);
+
+it.effect("a one-time task whose check finds no work is used up", () =>
+  withRunConditions(
+    () => Effect.succeed(NO_WORK),
+    ({ service, poll, launches, checks, whenTask }) =>
+      Effect.gen(function* () {
+        const runAt = DateTime.formatIso(DateTime.add(yield* DateTime.now, { minutes: 5 }));
+        yield* service.upsert(conditionTask({ schedule: { type: "once", runAt } }));
+        yield* TestClock.setTime(Date.parse(runAt) + 1_000);
+        const usedUp = yield* whenTask((t) => t.nextRunAt === null && t.runCheckStartedAt == null);
+        yield* poll;
+        yield* usedUp;
+
+        yield* TestClock.adjust("1 day");
+        yield* poll;
+        assert.equal(yield* Queue.size(launches), 0);
+        assert.lengthOf(yield* Ref.get(checks), 1);
+        assert.deepEqual(
+          (yield* runsOf(service)).map((run) => [run.skipReason, run.scheduledFor]),
+          [["no_work", runAt]],
+        );
+      }),
+  ),
+);
+
+it.effect("a check that skips a caught-up missed run records it as a catch-up", () =>
+  withRunConditions(
+    () => Effect.succeed(NO_WORK),
+    ({ service, poll, launches, whenTask }) =>
+      Effect.gen(function* () {
+        const at = (day: number, hour: number) =>
+          DateTime.makeZonedUnsafe(
+            { year: 2026, month: 11, day, hour, minute: 0, second: 0, millisecond: 0 },
+            { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+          );
+        const isoAt = (day: number, hour: number) =>
+          DateTime.formatIso(DateTime.toUtc(at(day, hour)));
+        yield* TestClock.setTime(DateTime.toEpochMillis(at(10, 12)));
+        yield* service.upsert(
+          conditionTask({ schedule: { type: "fixed_time", timeOfDay: "07:00" } }),
+        );
+        // The app was off over three daily times.
+        yield* TestClock.setTime(DateTime.toEpochMillis(at(13, 9)));
+        const skipped = yield* whenTask(
+          (t) => t.lastNoWorkSkip != null && t.runCheckStartedAt == null,
+        );
+        yield* poll;
+        yield* skipped;
+        assert.equal(yield* Queue.size(launches), 0);
+        const [run] = yield* runsOf(service);
+        assert.deepInclude(run, {
+          trigger: "catch_up",
+          skipReason: "no_work",
+          scheduledFor: isoAt(13, 7),
+        });
+        assert.equal((yield* service.list()).tasks[0]!.nextRunAt, isoAt(14, 7));
+      }),
+  ),
+);
+
+it.effect("no-work skips keep their own history, so they never push real runs out", () =>
+  withRunConditions(
+    () => Effect.succeed(NO_WORK),
+    ({ service, sql, poll, whenTask }) =>
+      Effect.gen(function* () {
+        const { task } = yield* service.upsert(conditionTask());
+        yield* service.runNow({ id: task.id });
+        const ranAt = Date.parse((yield* runsOf(service))[0]!.startedAt);
+        // More skips than the whole history keeps, all after the run.
+        for (let index = 1; index <= 60; index += 1) {
+          const at = DateTime.formatIso(DateTime.makeUnsafe(ranAt + index * 1_000));
+          yield* sql`
+            INSERT INTO scheduled_task_runs (run_id, task_id, trigger, scheduled_for, started_at,
+              completed_at, outcome, skip_reason, check_json)
+            VALUES (${`skip-${index}`}, ${task.id}, 'scheduled', ${at}, ${at}, ${at}, 'skipped',
+              'no_work', ${JSON.stringify(NO_WORK)})
+          `;
+        }
+        const next = (yield* service.list()).tasks[0]!.nextRunAt!;
+        yield* TestClock.setTime(Math.max(Date.parse(next), ranAt + 61_000) + 1_000);
+        const skipped = yield* whenTask((t) => t.nextRunAt !== next && t.runCheckStartedAt == null);
+        yield* poll;
+        yield* skipped;
+
+        const runs = yield* runsOf(service);
+        const skips = runs.filter((run) => run.skipReason === "no_work");
+        assert.lengthOf(skips, 10);
+        assert.deepEqual(
+          skips.slice(1).map((run) => run.id),
+          Array.from({ length: 9 }, (_, index) => `skip-${60 - index}`),
+        );
+        assert.deepEqual(
+          runs.filter((run) => run.skipReason !== "no_work").map((run) => run.trigger),
+          ["manual"],
+        );
+      }),
+  ),
 );

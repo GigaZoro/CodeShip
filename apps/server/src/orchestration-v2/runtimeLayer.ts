@@ -59,6 +59,8 @@ import * as RestartContinuation from "./RestartContinuation.ts";
 import * as ThreadLaunchService from "./ThreadLaunchService.ts";
 import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import * as RunConditionCheck from "../scheduledTasks/RunConditionCheck.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 
@@ -301,6 +303,7 @@ const layerSecretRequestsProvided = SecretRequests.layer.pipe(
 const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      RunConditionCheck.layer.pipe(Layer.provide(ProcessRunner.layer)),
       layerProjectService,
       layerThreadLaunchProvided,
       layerThreadManagementProvided,

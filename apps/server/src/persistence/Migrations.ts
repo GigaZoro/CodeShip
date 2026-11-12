@@ -88,6 +88,7 @@ import Migration0082 from "./Migrations/082_SharedSettingVersions.ts";
 import Migration0083 from "./Migrations/083_ManualStepReviews.ts";
 import Migration0084 from "./Migrations/084_SharedSettingVersionDriver.ts";
 import Migration0085 from "./Migrations/085_UsageLimitHoldLifts.ts";
+import Migration0086 from "./Migrations/086_ScheduledTaskRunConditions.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -176,6 +177,7 @@ const migrationEntries = [
   [83, "ManualStepReviews", Migration0083],
   [84, "SharedSettingVersionDriver", Migration0084],
   [85, "UsageLimitHoldLifts", Migration0085],
+  [86, "ScheduledTaskRunConditions", Migration0086],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

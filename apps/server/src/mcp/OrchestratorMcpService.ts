@@ -68,12 +68,14 @@ import {
   type RuntimeMode,
   type ScheduledTask,
   ScheduledTaskId,
+  type ScheduledTaskProjectMachineOrder,
   type ScheduledTaskUpsertInput,
   type ServerProvider,
   type ServerProviderModel,
   ThreadId,
   isOrchestrationV2WorkActive,
   resolveProjectProviderInstanceEnabled,
+  scheduledTaskSharedProjectKey,
 } from "@t3tools/contracts";
 import {
   getProviderOptionCurrentValue,
@@ -316,7 +318,10 @@ function scheduledTaskSummary(
   task: ScheduledTask,
   mayRun: boolean,
   lastRun: OrchestratorMcpScheduledTask["lastRun"],
+  machineOrders: ReadonlyArray<ScheduledTaskProjectMachineOrder>,
 ): OrchestratorMcpScheduledTask {
+  const projectKey =
+    task.shared == null ? null : scheduledTaskSharedProjectKey(task.shared.project);
   return {
     modelSelection: task.modelSelection,
     followsDefaultModel: task.followsDefaultModel ?? false,
@@ -342,9 +347,26 @@ function scheduledTaskSummary(
     ...(task.shared == null || task.shared.excludedEnvironmentIds.length === 0
       ? {}
       : { excludedMachines: task.shared.excludedEnvironmentIds }),
+    ...(task.shared?.runOn === "one"
+      ? {
+          machineOrder:
+            machineOrders.find(
+              (order) => scheduledTaskSharedProjectKey(order.project) === projectKey,
+            )?.order ?? [],
+        }
+      : {}),
+    ...(task.shared == null
+      ? {}
+      : { definedOn: task.shared.revision.environmentId, definedAt: task.shared.revision.at }),
+    ...(task.runCondition == null ? {} : { runCondition: task.runCondition }),
+    ...(task.runCheckStartedAt == null ? {} : { checkingSince: task.runCheckStartedAt }),
+    ...(task.lastNoWorkSkip == null ? {} : { lastSkipped: task.lastNoWorkSkip }),
     lastRun,
   };
 }
+
+const RUN_CONDITION_NEEDS_FULL_ACCESS =
+  "A run condition runs a command without approval, so only a caller with full access can set one.";
 
 /**
  * Large catalogs (OpenCode, Cursor, Pi) can list hundreds of models, so agents
@@ -2115,13 +2137,25 @@ const make = Effect.gen(function* () {
 
   const scheduledTaskRunModes = Effect.fn("OrchestratorMcpService.scheduledTaskRunModes")(
     function* (task: ScheduledTask) {
-      const modes = [
+      const modes: Array<{
+        readonly runtimeMode: RuntimeMode;
+        readonly interactionMode: ProviderInteractionMode;
+        readonly modelSelection: ModelSelection;
+      }> = [
         {
           runtimeMode: task.runtimeMode,
           interactionMode: task.interactionMode,
           modelSelection: task.modelSelection,
         },
       ];
+      // Its check runs a command without approval, whatever modes its chat runs at.
+      if (task.runCondition != null) {
+        modes.push({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          modelSelection: task.modelSelection,
+        });
+      }
       if (task.threadId === null) return modes;
       const bound = yield* threadManagement
         .getThreadShell(task.threadId)
@@ -2190,9 +2224,19 @@ const make = Effect.gen(function* () {
           readonly runtimeMode: RuntimeMode;
           readonly interactionMode: ProviderInteractionMode;
         };
+        /** The list's machine orders; read here when absent and the task needs them. */
+        readonly machineOrders?: ReadonlyArray<ScheduledTaskProjectMachineOrder>;
       },
       task: ScheduledTask,
     ) {
+      const machineOrders =
+        caller.machineOrders ??
+        (task.shared?.runOn === "one"
+          ? yield* scheduledTasks.list({ resolveModels: false }).pipe(
+              Effect.map((listed) => listed.projectMachineOrders ?? []),
+              Effect.orElseSucceed((): ReadonlyArray<ScheduledTaskProjectMachineOrder> => []),
+            )
+          : []);
       const live =
         caller.parent === undefined
           ? scope.client?.access !== "read-only"
@@ -2206,6 +2250,7 @@ const make = Effect.gen(function* () {
           Option.isSome(modes) &&
           modes.value.every((mode) => withinLimits(caller.limits, mode)),
         yield* lastRunOf(task),
+        machineOrders,
       );
     },
   );
@@ -2306,6 +2351,12 @@ const make = Effect.gen(function* () {
       }
 
       const { parent, limits } = yield* loadCaller(scope);
+      if (
+        input.runCondition != null &&
+        !withinLimits(limits, { runtimeMode: "full-access", interactionMode: "default" })
+      ) {
+        return yield* failure("runtime_mode_escalation_denied", RUN_CONDITION_NEEDS_FULL_ACCESS);
+      }
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
       yield* assertLiveCallerForOtherProject(scope, parent, projectId);
       const project = yield* requireProject(projectId);
@@ -2390,6 +2441,7 @@ const make = Effect.gen(function* () {
         ...(input.placement === undefined ? {} : { placement: input.placement }),
         // A replay saves over the task it created: what it does not mention stays.
         ...(input.shared === true ? { shared: sharedChoice(input, replayed?.shared) } : {}),
+        ...(input.runCondition === undefined ? {} : { runCondition: input.runCondition }),
         ...replay,
       };
       const { task } = yield* scheduledTasks
@@ -2405,7 +2457,7 @@ const make = Effect.gen(function* () {
       function* (scope, input) {
         const { parent, limits } = yield* loadCaller(scope);
         const projectId = input.projectId ?? parent?.thread.projectId;
-        const { tasks } = yield* scheduledTasks
+        const { tasks, projectMachineOrders } = yield* scheduledTasks
           .list()
           .pipe(
             Effect.mapError((error) =>
@@ -2415,7 +2467,12 @@ const make = Effect.gen(function* () {
         return {
           tasks: yield* Effect.forEach(
             tasks.filter((task) => projectId === undefined || task.projectId === projectId),
-            (task) => summarizeScheduledTask(scope, { parent, limits }, task),
+            (task) =>
+              summarizeScheduledTask(
+                scope,
+                { parent, limits, machineOrders: projectMachineOrders ?? [] },
+                task,
+              ),
           ),
         };
       },
@@ -2445,6 +2502,12 @@ const make = Effect.gen(function* () {
         }
 
         const { parent, limits } = yield* loadCaller(scope);
+        if (
+          input.runCondition != null &&
+          !withinLimits(limits, { runtimeMode: "full-access", interactionMode: "default" })
+        ) {
+          return yield* failure("runtime_mode_escalation_denied", RUN_CONDITION_NEEDS_FULL_ACCESS);
+        }
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
         const sharedAfter = input.shared ?? existing.shared != null;
@@ -2508,6 +2571,7 @@ const make = Effect.gen(function* () {
           createdBy: existing.createdBy,
           creationSource: existing.creationSource,
           ...(input.placement === undefined ? {} : { placement: input.placement }),
+          ...(input.runCondition === undefined ? {} : { runCondition: input.runCondition }),
           // Omitted keeps the stored choice.
           ...(input.shared === false
             ? { shared: null }

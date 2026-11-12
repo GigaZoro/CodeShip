@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { peerNoWorkText, runCheckText } from "@t3tools/client-runtime/scheduled-task-run-condition";
 import { resolveProviderInstanceDisplayName } from "@t3tools/client-runtime/state/provider-instance-display";
 import type {
   EnvironmentId,
@@ -83,7 +84,15 @@ function skipReasonText(
       return t("This machine was off or asleep at that time, and catching up is off.");
     case "next_run_sooner":
       return t("This machine was off or asleep at that time, and the next run comes sooner.");
+    case "no_work":
+      return runCheckText(run.check) ?? t("The check found no work.");
     case "ran_elsewhere":
+      if (run.check?.outcome === "skip") {
+        return peerNoWorkText(
+          run.ranOn === null ? null : machineLabel(run.ranOn),
+          run.check.detail,
+        );
+      }
       return run.ranOn === null
         ? t("Another machine ran it.")
         : t("{machine} ran it.", { machine: machineLabel(run.ranOn) });
@@ -144,6 +153,7 @@ export function ScheduledTaskRunsRouteScreen({
               const outcome = outcomePresentation(run.outcome);
               const skipReason =
                 run.outcome === "skipped" ? skipReasonText(run, machineLabel) : null;
+              const checkText = runCheckText(run.check);
               const threadId = run.threadId;
               const when = [
                 formatScheduledTaskRunTime(run.startedAt),
@@ -174,6 +184,13 @@ export function ScheduledTaskRunsRouteScreen({
                     {skipReason ? (
                       <Text textRole="footnote" className="text-foreground-muted">
                         {skipReason}
+                      </Text>
+                    ) : null}
+                    {run.skipReason !== "no_work" &&
+                    !(run.skipReason === "ran_elsewhere" && run.check?.outcome === "skip") &&
+                    checkText ? (
+                      <Text textRole="footnote" className="text-foreground-muted">
+                        {checkText}
                       </Text>
                     ) : null}
                     {run.failover !== null ? (

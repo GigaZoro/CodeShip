@@ -46,7 +46,8 @@ import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { startScheduledTaskEditor } from "../settings/scheduled-task-editor-state";
 import { editDraft } from "../settings/scheduledTaskDraft";
-import { describeSchedule } from "../settings/scheduledTaskPresentation";
+import { shownNoWorkSkip } from "@t3tools/client-runtime/scheduled-task-run-condition";
+import { describeSchedule, formatNoWorkSkip } from "../settings/scheduledTaskPresentation";
 import { useOpenScheduledTasks } from "../workspace/useOpenScheduledTasks";
 import {
   THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME,
@@ -115,6 +116,24 @@ function NextRunCountdown(props: { readonly nextRunAt: string }) {
 
 function LastRunAgo(props: { readonly lastRunAt: string }) {
   return formatLastRunAgo(props.lastRunAt, useVisibleSecondClock(true));
+}
+
+function NoWorkSkipLine(props: { readonly task: ScheduledTask; readonly className: string }) {
+  if (shownNoWorkSkip(props.task) === null) return null;
+  return <TickingNoWorkSkipLine {...props} />;
+}
+
+function TickingNoWorkSkipLine(props: {
+  readonly task: ScheduledTask;
+  readonly className: string;
+}) {
+  const text = formatNoWorkSkip(props.task, useVisibleSecondClock(true));
+  if (text === null) return null;
+  return (
+    <Text className={cn("mt-0.5 text-xs", props.className)} numberOfLines={1}>
+      {text}
+    </Text>
+  );
 }
 
 function IntervalWaitBar(props: { readonly task: ScheduledTask }) {
@@ -295,6 +314,7 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
           </Text>
         ) : null}
       </View>
+      <NoWorkSkipLine task={task} className={appearance.mutedForegroundClassName} />
       {status === "idle" || status === "failed" ? <IntervalWaitBar task={task} /> : null}
     </>
   );

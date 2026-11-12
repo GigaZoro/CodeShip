@@ -21,6 +21,10 @@ import {
   webhookFilterDraftsChanged,
   type WebhookFilterDraft,
 } from "@t3tools/client-runtime/scheduled-task-webhook";
+import {
+  runConditionDraft,
+  type RunConditionDraft,
+} from "@t3tools/client-runtime/scheduled-task-run-condition";
 
 import {
   resolveScheduledTaskDefaultModelSelection,
@@ -114,6 +118,8 @@ export interface DraftState {
   readonly followsDefaultModel: boolean;
   /** Null follows the schedule's default until the user picks. */
   readonly catchUpMissedRun: boolean | null;
+  /** An empty command means the task has no run condition. */
+  readonly runCondition: RunConditionDraft;
   /** Kept on every machine and synced. Exclusions of machines not connected right now stay stored. */
   readonly shared: boolean;
   readonly sharedExcludedEnvironmentIds: ReadonlyArray<EnvironmentId>;
@@ -133,6 +139,18 @@ export interface DraftState {
   readonly filters: ReadonlyArray<WebhookFilterDraft>;
   /** The filter rows the form opened with. */
   readonly savedFilters: ReadonlyArray<WebhookFilterDraft>;
+}
+
+/** The target cannot store a check this draft carries, so saving there would silently drop it. */
+export function runConditionLostOnTarget(input: {
+  readonly targetSupportsRunConditions: boolean;
+  readonly draft: Pick<DraftState, "scheduleMode" | "runCondition">;
+}): boolean {
+  return (
+    !input.targetSupportsRunConditions &&
+    input.draft.scheduleMode !== "webhook" &&
+    input.draft.runCondition.command.trim() !== ""
+  );
 }
 
 export const WEBHOOK_SIGNATURE_DEFAULTS = {
@@ -314,6 +332,7 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     baseModelSelection: task.modelSelection,
     followsDefaultModel: task.followsDefaultModel === true,
     catchUpMissedRun: task.catchUpMissedRun ?? null,
+    runCondition: runConditionDraft(task),
     shared: task.shared != null,
     sharedExcludedEnvironmentIds: task.shared?.excludedEnvironmentIds ?? [],
     sharedRunOn: task.shared?.runOn ?? "every",

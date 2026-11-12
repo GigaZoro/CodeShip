@@ -1320,9 +1320,13 @@ const catalog: MessageCatalog = {
   "{left}% left": "Залишилось {left}%",
   "{login} · Team": "{login} · Команда",
   "{machine} · {status}": "{machine} · {status}",
+  "{machine} cannot run checks. Remove the check or pick another machine.":
+    "{machine} не може виконувати перевірки. Видаліть перевірку або виберіть інший комп’ютер.",
   "{machine} could not save this change first, so it was not sent here.":
     "{machine} не вдалося першим зберегти цю зміну, тому її сюди не надіслано.",
   "{machine} couldn't check {other}: {reason}": "{machine} не вдалося перевірити {other}: {reason}",
+  "{machine} found no work: {detail}": "На {machine} перевірка не виявила роботи: {detail}",
+  "{machine} found no work.": "На {machine} перевірка не виявила роботи.",
   "{machine} is not connected. Changes sync when it is back.":
     "{machine} не підключено. Зміни синхронізуються, коли воно повернеться.",
   "{machine} is offline. Its MCP servers show up once it reconnects.":
@@ -1332,6 +1336,8 @@ const catalog: MessageCatalog = {
   "{machine} pull request routing": "Маршрутизація пул-реквестів для {machine}",
   "{machine} ran it last, at {time}": "Востаннє запущено на {machine} о {time}",
   "{machine} ran it.": "Його виконав {machine}.",
+  "{machine} runs an older T3.CodeShip that cannot run checks. Saving there would drop this task's check.":
+    "На {machine} встановлено старішу версію T3.CodeShip, яка не може виконувати перевірки. Збереження там видалить перевірку цього завдання.",
   "{machine} server": "Сервер {machine}",
   "{machine} was off or asleep at that time, and catching up is off.":
     "{machine} був вимкнений або в режимі сну в цей час, а надолуження вимкнено.",
@@ -2269,6 +2275,9 @@ const catalog: MessageCatalog = {
     "Інший запис робочого стола використовує ім’я помічника захоплення. Перейменуйте його, перш ніж продовжити.",
   "Another device saved newer shared appearance and layout settings before the changes made here were saved, so its version replaced them.":
     "Інший пристрій зберіг новіші спільні налаштування вигляду й розташування раніше, ніж збереглися зміни, зроблені тут, тому його версія їх замінила.",
+  "Another machine found no work: {detail}":
+    "На іншому комп’ютері перевірка не виявила роботи: {detail}",
+  "Another machine found no work.": "На іншому комп’ютері перевірка не виявила роботи.",
   "Another machine ran it.": "Його виконав інший комп’ютер.",
   "Another t3 at {path} runs first in a new terminal. Remove it to use T3.CodeShip's.":
     "Інший t3 у {path} запускається першим у новому терміналі. Видаліть його, щоб використовувати t3 з T3.CodeShip.",
@@ -2952,8 +2961,10 @@ const catalog: MessageCatalog = {
   "Check access before saving": "Перевірте доступ перед збереженням",
   "Check account": "Перевірити обліковий запис",
   "Check again": "Перевірити знову",
+  "Check before running": "Перевірка перед запуском",
   "Check capture access": "Перевірити доступ до захоплення",
   "Check capture access in setup": "Перевірте доступ до захоплення в налаштуванні",
+  "Check command": "Команда перевірки",
   "Check details are out of date.": "Подробиці перевірок застаріли.",
   "Check details are out of date. Refresh the pull request to update them.":
     "Подробиці перевірок застаріли. Оновіть пул-реквест, щоб їх оновити.",
@@ -2990,7 +3001,9 @@ const catalog: MessageCatalog = {
   "Check the review guide model in Settings → Source control.":
     "Перевірте модель посібника рев’ю в розділі Налаштування → Керування кодом.",
   "Check this device's internet connection.": "Перевірте підключення цього пристрою до інтернету.",
+  "Check timeout (seconds)": "Тайм-аут перевірки (секунди)",
   "Check versions": "Перевірити версії",
+  "Check would be dropped": "Перевірку буде видалено",
   "Check your connection and reload.": "Перевірте з’єднання та перезавантажте.",
   Checked: "Перевірено",
   "Checked {time}": "Перевірено {time}",
@@ -5253,6 +5266,8 @@ const catalog: MessageCatalog = {
   "Enter a backend host and pairing code.": "Введіть хост бекенду та код сполучення.",
   "Enter a backend host.": "Введіть хост бекенду.",
   "Enter a backend URL.": "Введіть URL бекенда.",
+  "Enter a command up to {max} characters and a time limit of 1 to {maxSeconds} seconds.":
+    "Введіть команду до {max} символів і ліміт часу від 1 до {maxSeconds} секунд.",
   "Enter a Git clone URL and press Enter to continue.":
     "Введіть URL для клонування Git і натисніть Enter, щоб продовжити.",
   "Enter a GitHub repository, a git URL, or a folder path.":
@@ -6412,6 +6427,7 @@ const catalog: MessageCatalog = {
   Into: "У",
   "Invalid age limit": "Недійсне обмеження віку",
   "Invalid ChatGPT sign-in request.": "Недійсний запит на вхід у ChatGPT.",
+  "Invalid check": "Недійсна перевірка",
   "Invalid filter": "Недійсний фільтр",
   "Invalid interval": "Недійсний інтервал",
   "Invalid keybinding.": "Недійсне скорочення клавіш.",
@@ -9304,6 +9320,7 @@ const catalog: MessageCatalog = {
   "Remove attachments until there are at most {max}.":
     "Видаліть вкладення, щоб лишилося не більше {max}.",
   "Remove capture helper": "Видалити помічник захоплення",
+  "Remove check": "Видалити перевірку",
   "Remove checkout": "Видалити робочу копію",
   'Remove checkout "{label}" and delete its {count} threads?': {
     one: "Видалити checkout «{label}» і його {count} чат?",
@@ -9880,6 +9897,8 @@ const catalog: MessageCatalog = {
   "Runs {model}. Set Auto mode in Settings › Providers on web or desktop.":
     "Запускає {model}. Налаштуйте автоматичний режим у Налаштування › Провайдери у вебверсії чи на десктопі.",
   "runs a preview build": "використовує попередню збірку",
+  "Runs before each scheduled run, in the project folder, as one program with its arguments (no shell; ~/ is your home folder). Exit code 0 starts the chat, 10 skips the run, anything else starts the chat anyway. Run now skips the check.":
+    "Виконується перед кожним запланованим запуском у теці проєкту як одна програма з аргументами (без оболонки; ~/ це ваша домашня тека). Код завершення 0 запускає чат, 10 пропускає запуск, будь-який інший усе одно запускає чат. «Запустити зараз» пропускає перевірку.",
   "Runs in this thread": "Запускається в цьому чаті",
   "Runs on": "Виконується на",
   "Runs on {label}. Connect to it to open the thread there.":
@@ -10739,6 +10758,8 @@ const catalog: MessageCatalog = {
   Skipped: "Пропущено",
   "Skipped {cookies}": "Пропущено: {cookies}",
   "Skipped {time}: {machine} ran it": "Пропущено {time}: запустив {machine}",
+  "Skipped {when}": "Пропущено {when}",
+  "Skipped {when}: {reason}": "Пропущено {when}: {reason}",
   "Skipped: the account is not signed in": "Пропущено: у обліковий запис не ввійшли",
   "Skipped: the account's sign-in failed": "Пропущено: вхід в обліковий запис не вдався",
   "Skipped: this device cannot run that sign-in":
@@ -11532,6 +11553,19 @@ const catalog: MessageCatalog = {
   "The chat goes back to before this response, and your message is sent again. Your files can stay as they are now, or go back to how they were before this response. Going back also undoes any changes you made to them yourself since then.":
     "Чат повернеться до стану перед цією відповіддю, і ваше повідомлення буде надіслано знову. Файли можуть залишитися такими, як зараз, або повернутися до стану перед цією відповіддю. Повернення також скасує зміни, які ви внесли в них самі відтоді.",
   "The chat isn't ready to accept input right now.": "Чат зараз не готовий приймати введення.",
+  "The check command could not be read, so the chat started anyway.":
+    "Команду перевірки не вдалося прочитати, тому чат усе одно запущено.",
+  "The check could not start, so the chat started anyway.":
+    "Перевірку не вдалося запустити, тому чат усе одно запущено.",
+  "The check did not answer in time, so the chat started anyway.":
+    "Перевірка не відповіла вчасно, тому чат усе одно запущено.",
+  "The check failed with exit code {code}, so the chat started anyway.":
+    "Перевірка завершилася з кодом {code}, тому чат усе одно запущено.",
+  "The check failed, so the chat started anyway.":
+    "Перевірка не вдалася, тому чат усе одно запущено.",
+  "The check found no work: {detail}": "Перевірка не виявила роботи: {detail}",
+  "The check found no work.": "Перевірка не виявила роботи.",
+  "The check found work: {detail}": "Перевірка виявила роботу: {detail}",
   "The checkout is ready on `{branch}`. Point a thread at it from the branch picker, then ask again.":
     "Чекаут готовий на `{branch}`. Вкажіть чату цю гілку в списку гілок і запитайте знову.",
   "The chosen login is no longer signed in, so the active {cli} login is used.":
@@ -12732,6 +12766,7 @@ const catalog: MessageCatalog = {
   Time: "Час",
   "time format": "формат часу",
   "Time format": "Формат часу",
+  "Time limit": "Ліміт часу",
   "Time uses the environment's time zone, which may differ from your phone's.":
     "Час вказано за часовим поясом середовища, який може відрізнятися від поясу вашого телефона.",
   "Time, {time}": "Час, {time}",
@@ -14026,6 +14061,8 @@ const catalog: MessageCatalog = {
     "Вашу новішу чернетку не змінено. Відновіть невдалий запит, коли це поле повідомлення буде порожнім.",
   "Your next message starts a fresh session.": "Ваше наступне повідомлення почне новий сеанс.",
   "Your organization's policy adds this server.": "Цей сервер додає політика вашої організації.",
+  "Your organization's policy blocked the check, so the chat started anyway.":
+    "Політика вашої організації заблокувала перевірку, тому чат усе одно запущено.",
   "Your organization's policy does not allow the {label} provider.":
     "Політика вашої організації не дозволяє провайдера {label}.",
   "Your other machines that follow shared settings remove it too. One where it has its own key, variables or folder paths turns it off and keeps them instead. Each keeps its sign-in.":

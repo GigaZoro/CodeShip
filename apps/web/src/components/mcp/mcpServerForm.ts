@@ -7,6 +7,7 @@ import {
   type ProviderMcpServerEdit,
   type ProviderMcpServerSettings,
 } from "@t3tools/contracts";
+import { joinCommandLine, splitCommandLine } from "@t3tools/shared/commandLine";
 import { t } from "~/i18n";
 
 export type McpServerKind = "remote" | "local";
@@ -36,42 +37,6 @@ const URL_MAX_LENGTH = 2_048;
 const COMMAND_MAX_LENGTH = 1_024;
 const MAX_ARGS = 64;
 const MAX_ENTRIES = 64;
-
-/**
- * Splits a pasted command line the way a shell would for plain words and quoted arguments.
- * Undefined means a quote was left open.
- */
-export function splitCommandLine(line: string): ReadonlyArray<string> | undefined {
-  const words: Array<string> = [];
-  let word = "";
-  let started = false;
-  let quote: '"' | "'" | null = null;
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index]!;
-    if (quote) {
-      if (char === quote) quote = null;
-      else if (char === "\\" && quote === '"' && line[index + 1] === '"') {
-        word += '"';
-        index += 1;
-      } else word += char;
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      quote = char;
-      started = true;
-    } else if (/\s/u.test(char)) {
-      if (started) words.push(word);
-      word = "";
-      started = false;
-    } else {
-      word += char;
-      started = true;
-    }
-  }
-  if (quote) return undefined;
-  if (started) words.push(word);
-  return words;
-}
 
 /** Reads one `name<separator>value` pair per line, skipping blank lines. */
 function parseKeyValueLines(
@@ -107,17 +72,6 @@ function parseKeyValueLines(
     return { error: t("Use at most {max} lines.", { max: MAX_ENTRIES }) };
   }
   return { values };
-}
-
-/** Joins words back into a line `splitCommandLine` reads the same way. */
-export function joinCommandLine(words: ReadonlyArray<string>): string {
-  return words
-    .map((word) => {
-      if (word !== "" && !/[\s"']/u.test(word)) return word;
-      if (!word.includes("'")) return `'${word}'`;
-      return `"${word.replaceAll('"', '\\"')}"`;
-    })
-    .join(" ");
 }
 
 /**

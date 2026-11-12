@@ -22,7 +22,10 @@ import {
   TurnItemId,
 } from "./baseSchemas.ts";
 import {
+  ScheduledTaskNoWorkSkip,
   ScheduledTaskPlacement,
+  ScheduledTaskRunCondition,
+  ScheduledTaskRunConditionInput,
   ScheduledTaskRunStatus,
   ScheduledTaskProjectMachineOrder,
   ScheduledTaskSchedule,
@@ -675,6 +678,13 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
 });
 export type OrchestratorMcpCapabilitiesResult = typeof OrchestratorMcpCapabilitiesResult.Type;
 
+const scheduledTaskRunConditionField = {
+  runCondition: Schema.optional(Schema.NullOr(ScheduledTaskRunConditionInput)).annotate({
+    description:
+      "Command run before each scheduled occurrence, in the project folder, no shell: exit 0 starts the chat, 10 skips it and records the last output line or its JSON `reason`, anything else starts the chat. `~/` is the home folder. Run now ignores it. Needs full access. Null clears.",
+  }),
+};
+
 const scheduledTaskModelFields = {
   modelSelection: Schema.optional(CanonicalModelSelection).annotate({
     description:
@@ -721,6 +731,7 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
     description:
       "Where it shows in the user's thread list: none (hidden), chat (runs as normal chats), pinned (a task row). Omit to keep the current one, or for new tasks the user's default.",
   }),
+  ...scheduledTaskRunConditionField,
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
@@ -759,6 +770,23 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   shared: Schema.optional(Schema.Boolean),
   oneMachine: Schema.optional(Schema.Boolean),
   excludedMachines: Schema.optional(Schema.Array(EnvironmentId)),
+  machineOrder: Schema.optional(Schema.Array(EnvironmentId)).annotate({
+    description: "One-machine task: the project's machines, first to try first. Empty: none set.",
+  }),
+  definedOn: Schema.optional(EnvironmentId).annotate({
+    description: "Shared task: the machine whose save is its current definition.",
+  }),
+  definedAt: Schema.optional(IsoDateTime).annotate({
+    description: "Shared task: when that save happened.",
+  }),
+  runCondition: Schema.optional(ScheduledTaskRunCondition),
+  checkingSince: Schema.optional(IsoDateTime).annotate({
+    description:
+      "Its run condition is running now, for the occurrence that is due, and started at this time.",
+  }),
+  lastSkipped: Schema.optional(ScheduledTaskNoWorkSkip).annotate({
+    description: "The last occurrence its run condition skipped for no work, and why.",
+  }),
   lastRun: Schema.optional(
     Schema.NullOr(
       Schema.Struct({
@@ -833,6 +861,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
       "With shared: machines (t3_environment_links ids) that keep no copy. Replaces the list; omit to keep it.",
   }),
   placement: Schema.optional(ScheduledTaskPlacement),
+  ...scheduledTaskRunConditionField,
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;

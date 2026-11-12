@@ -4,10 +4,12 @@ import {
   ProjectId,
   ScheduledTaskApplySharedInput,
   type ScheduledTaskId,
+  type ScheduledTaskRunCheck,
   ScheduledTaskUpsertInput,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -24,6 +26,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as RunConditionCheck from "./RunConditionCheck.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
 import * as SharedTaskPeerCheck from "./SharedTaskPeerCheck.ts";
 import {
@@ -109,6 +112,9 @@ const withService = <A, E>(
     readonly peerCheck?: Layer.Layer<SharedTaskPeerCheck.SharedTaskPeerCheck>;
     readonly launch?: ThreadLaunchService.ThreadLaunchService["Service"]["launch"];
     readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
+    readonly runConditionCheck?: Layer.Layer<RunConditionCheck.RunConditionCheck>;
+    /** Registers no work, so moving the clock days ahead does not tick the poll every 5 seconds. */
+    readonly idleScheduler?: boolean;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -118,10 +124,12 @@ const withService = <A, E>(
       Layer.provide(
         Layer.mergeAll(
           NodeCrypto.layer,
-          Scheduler.layer,
+          extras.idleScheduler === true
+            ? Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void })
+            : Scheduler.layer,
           ServerSettings.layerTest(extras.settings),
           ManagedPolicy.layerTest(),
-          layerSharedTaskDependencies(projects, extras.peerCheck),
+          layerSharedTaskDependencies(projects, extras.peerCheck, extras.runConditionCheck),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)(
             extras.launch === undefined ? {} : { launch: extras.launch },
           ),
@@ -264,6 +272,15 @@ it.effect(
         expect(task?.lastRunStatus).toBe("succeeded");
         expect(task?.shared?.revision).toEqual({ at, environmentId: OTHER });
         expect(task?.id).toBe(id);
+
+        // A copy without the field keeps this machine's run condition; null clears it.
+        const condition = { command: "node ~/check.mjs", timeoutSeconds: 30 };
+        yield* service.applyShared(copy("2026-09-11T00:00:00.000Z", { runCondition: condition }));
+        expect((yield* taskOf(service))?.runCondition).toEqual(condition);
+        yield* service.applyShared(copy("2026-09-12T00:00:00.000Z"));
+        expect((yield* taskOf(service))?.runCondition).toEqual(condition);
+        yield* service.applyShared(copy("2026-09-13T00:00:00.000Z", { runCondition: null }));
+        expect((yield* taskOf(service))?.runCondition).toBeNull();
       }),
     ),
 );
@@ -287,6 +304,33 @@ it.effect("applying an older or equal revision changes nothing", () =>
       expect((yield* taskOf(service))?.title).toBe("From elsewhere");
     }),
   ),
+);
+
+it.effect(
+  "a copy at the same revision fills in the run condition an older app's copy left out",
+  () =>
+    withService((service) =>
+      Effect.gen(function* () {
+        const condition = { command: "node ~/check.mjs", timeoutSeconds: 30 };
+        yield* service.applyShared(copy("2026-09-10T00:00:00.000Z", { runCondition: condition }));
+        // An app without run conditions saves the next revision: this machine keeps its own.
+        const at = "2026-09-11T00:00:00.000Z";
+        expect(yield* service.applyShared(copy(at, { title: "From an older app" }))).toEqual({
+          outcome: "applied",
+        });
+        expect((yield* taskOf(service))?.runCondition).toEqual(condition);
+        // The fuller copy of that revision, from the link pull, completes it.
+        const full = copy(at, { title: "From an older app", runCondition: null });
+        expect(yield* service.applyShared(full)).toEqual({ outcome: "applied" });
+        expect((yield* taskOf(service))?.runCondition).toBeNull();
+        expect(yield* service.applyShared(full)).toEqual({ outcome: "stale" });
+        expect(
+          yield* service.applyShared(copy("2026-09-10T12:00:00.000Z", { runCondition: condition })),
+        ).toEqual({ outcome: "stale" });
+        const task = yield* taskOf(service);
+        expect([task?.runCondition, task?.shared?.revision.at]).toEqual([null, at]);
+      }),
+    ),
 );
 
 it.effect("a machine in the exclusion list drops its copy without leaving a deletion", () =>
@@ -461,26 +505,29 @@ it.effect(
 );
 
 it.effect("a machine that stops pulling for 30 days is no longer one copies reach", () =>
-  withService((service, sql) =>
-    Effect.gen(function* () {
-      const repo = ProjectId.make(repoProject.id);
-      yield* service.sharedCopies("environment-gone" as never, { recordPuller: true });
-      yield* TestClock.adjust("29 days");
-      yield* service.sharedCopies("environment-active" as never, { recordPuller: true });
-      expect(yield* service.knownMachineIds(repo)).toEqual([
-        "environment-active",
-        "environment-gone",
-      ]);
+  withService(
+    (service, sql) =>
+      Effect.gen(function* () {
+        const repo = ProjectId.make(repoProject.id);
+        yield* service.sharedCopies("environment-gone" as never, { recordPuller: true });
+        yield* TestClock.adjust("29 days");
+        yield* service.sharedCopies("environment-active" as never, { recordPuller: true });
+        expect(yield* service.knownMachineIds(repo)).toEqual([
+          "environment-active",
+          "environment-gone",
+        ]);
 
-      yield* TestClock.adjust("2 days");
-      expect(yield* service.knownMachineIds(repo)).toEqual(["environment-active"]);
-      // The next pull drops the stale row.
-      yield* service.sharedCopies("environment-active" as never, { recordPuller: true });
-      const rows = yield* sql<{ readonly environment_id: string }>`
+        yield* TestClock.adjust("2 days");
+        expect(yield* service.knownMachineIds(repo)).toEqual(["environment-active"]);
+        // The next pull drops the stale row.
+        yield* service.sharedCopies("environment-active" as never, { recordPuller: true });
+        const rows = yield* sql<{ readonly environment_id: string }>`
         SELECT environment_id FROM scheduled_task_shared_pullers ORDER BY environment_id
       `;
-      expect(rows.map((row) => row.environment_id)).toEqual(["environment-active"]);
-    }),
+        expect(rows.map((row) => row.environment_id)).toEqual(["environment-active"]);
+      }),
+    [repoProject, plainProject],
+    { idleScheduler: true },
   ),
 );
 
@@ -495,17 +542,24 @@ const oneMachineShared = (machineOrder: string[]) => ({
 const FINISHED_THERE: SharedTaskPeerCheck.PeerCheckResult = {
   ranOn: OTHER as never,
   working: false,
+  noWork: null,
   unchecked: [],
+};
+const NO_WORK_THERE: SharedTaskPeerCheck.PeerCheckResult = {
+  ...FINISHED_THERE,
+  noWork: { reason: "No open pull requests" },
 };
 const WORKING_THERE: SharedTaskPeerCheck.PeerCheckResult = { ...FINISHED_THERE, working: true };
 const FAILED_THERE: SharedTaskPeerCheck.PeerCheckResult = {
   ranOn: null,
   working: false,
+  noWork: null,
   unchecked: [],
 };
 const SILENT_THERE: SharedTaskPeerCheck.PeerCheckResult = {
   ranOn: null,
   working: false,
+  noWork: null,
   unchecked: [{ environmentId: OTHER as never, reason: "It did not answer in time." }],
 };
 
@@ -524,6 +578,9 @@ const runScenario = <A, E>(
     readonly settled: Effect.Effect<void>;
   }) => Effect.Effect<A, E>,
   schedule: Record<string, unknown> = { type: "interval", everyMs: HOUR_MS },
+  /** Gives the task a run condition, counting the checks run here. */
+  checks?: Ref.Ref<number>,
+  checkAnswer: ScheduledTaskRunCheck = { outcome: "run", failure: null, exitCode: 0, detail: null },
 ) =>
   Effect.gen(function* () {
     const launches = yield* Queue.unbounded<unknown>();
@@ -546,7 +603,15 @@ const runScenario = <A, E>(
     return yield* withService(
       (service, sql) =>
         Effect.gen(function* () {
-          yield* service.upsert(upsertInput({ shared: oneMachineShared(machineOrder), schedule }));
+          yield* service.upsert(
+            upsertInput({
+              shared: oneMachineShared(machineOrder),
+              schedule,
+              ...(checks === undefined
+                ? {}
+                : { projectId: repoProject.id, runCondition: { command: "node ~/check.mjs" } }),
+            }),
+          );
           const changes = yield* Queue.unbounded<void>();
           yield* Effect.forkScoped(
             service.subscribeList().pipe(
@@ -569,6 +634,13 @@ const runScenario = <A, E>(
         peerCheck,
         launch: (input) =>
           Queue.offer(launches, input).pipe(Effect.as({ threadId: "thread-1" } as never)),
+        ...(checks === undefined
+          ? {}
+          : {
+              runConditionCheck: Layer.mock(RunConditionCheck.RunConditionCheck)({
+                run: () => Ref.update(checks, (n) => n + 1).pipe(Effect.as(checkAnswer)),
+              }),
+            }),
       },
     );
   });
@@ -610,6 +682,7 @@ it.effect(
       {
         ranOn: null,
         working: false,
+        noWork: null,
         unchecked: [{ environmentId: OTHER as never, reason: "This machine is not linked." }],
       },
       (scenario) =>
@@ -625,6 +698,77 @@ it.effect(
           ]);
         }),
     ),
+);
+
+it.effect.each([
+  { name: "has it", peers: FINISHED_THERE, checks: 0, check: null },
+  {
+    name: "skipped it for no work",
+    peers: NO_WORK_THERE,
+    checks: 0,
+    check: { outcome: "skip", failure: null, exitCode: null, detail: "No open pull requests" },
+  },
+  { name: "does not have it", peers: FAILED_THERE, checks: 1, check: null },
+])(
+  "a later machine runs its own check only when an earlier machine $name",
+  ({ peers, checks, check }) =>
+    Effect.gen(function* () {
+      const ran = yield* Ref.make(0);
+      yield* runScenario(
+        [OTHER, HERE_ENVIRONMENT_ID],
+        peers,
+        (scenario) =>
+          Effect.gen(function* () {
+            yield* scenario.tick(DUE + 1_000);
+            yield* scenario.settled;
+            yield* scenario.tick(DUE + 5 * MINUTE_MS + 1_000);
+            if (checks === 0) {
+              yield* scenario.settled;
+              const runs = yield* scenario.service.listRuns({
+                id: "scheduled-task:shared" as ScheduledTaskId,
+              });
+              expect(runs.runs[0]).toMatchObject({
+                skipReason: "ran_elsewhere",
+                ranOn: OTHER,
+                check,
+              });
+            } else {
+              yield* Queue.take(scenario.launches);
+            }
+            expect(yield* Ref.get(ran)).toBe(checks);
+          }),
+        { type: "interval", everyMs: HOUR_MS },
+        ran,
+      );
+    }),
+);
+
+it.effect("the first machine's own no-work skip moves the task to its next aligned slot", () =>
+  Effect.gen(function* () {
+    const ran = yield* Ref.make(0);
+    yield* runScenario(
+      [HERE_ENVIRONMENT_ID, OTHER],
+      FINISHED_THERE,
+      (scenario) =>
+        Effect.gen(function* () {
+          const skipped = yield* scenario.service.subscribeList().pipe(
+            Stream.filter(({ tasks }) =>
+              tasks.some((task) => task.lastNoWorkSkip != null && task.runCheckStartedAt == null),
+            ),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+          yield* scenario.tick(DUE + 1_000);
+          yield* Fiber.join(skipped);
+          expect(yield* Ref.get(ran)).toBe(1);
+          expect(yield* Queue.size(scenario.launches)).toBe(0);
+          expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(DUE + HOUR_MS));
+        }),
+      { type: "interval", everyMs: HOUR_MS },
+      ran,
+      { outcome: "skip", failure: null, exitCode: 10, detail: null },
+    );
+  }),
 );
 
 it.effect("the first machine in the order runs on time without asking anyone", () =>
@@ -990,6 +1134,7 @@ it.effect("a linked machine gets this machine's stored copies, minus those that 
             modelSelection: own,
             followsDefaultModel: true,
             shared: { excludedEnvironmentIds: [], machineOrder: [OTHER] },
+            runCondition: { command: "node ~/check.mjs" },
           }),
         );
         yield* service.upsert(
@@ -1007,6 +1152,10 @@ it.effect("a linked machine gets this machine's stored copies, minus those that 
         expect(pulled.tasks.map((task) => task.id)).toEqual(["scheduled-task:kept"]);
         // The copy's own model, not the scheduled tasks default shown here.
         expect(pulled.tasks[0]?.modelSelection).toEqual(own);
+        expect(pulled.tasks[0]?.runCondition).toEqual({
+          command: "node ~/check.mjs",
+          timeoutSeconds: 60,
+        });
         expect(pulled.deletions.map((deletion) => deletion.id)).toEqual(["scheduled-task:gone"]);
         expect(pulled.projectMachineOrders.map((order) => order.project.type)).toEqual(["none"]);
       }),

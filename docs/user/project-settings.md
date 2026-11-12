@@ -181,6 +181,53 @@ Webhook tasks only run when their URL is called, so they can't be run
 immediately.
 Leaving an edited form asks before discarding unsaved changes.
 
+## Check before running
+
+A task that polls for work, such as "review open pull requests", starts a full
+chat on every run even when there is nothing to do. **Check before running** in
+the task's editor takes a command that T3.CodeShip runs first, on the machine
+that would run the task, in the project's folder:
+
+| The command exits with                         | What happens                                                                                    |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| 0                                              | The chat starts as usual.                                                                       |
+| 10                                             | Nothing starts. **Run history** lists the time as skipped, and the task's row shows the reason. |
+| Anything else, no answer in time, cannot start | The chat starts anyway, and **Run history** says the check failed.                              |
+
+The reason is the last line the command prints. If that line is JSON with a
+`reason` field, such as `{"needsRun": false, "reason": "No open pull requests"}`,
+the field is used.
+
+The command is one program with its arguments, for example
+`node ~/scripts/has-work.mjs --project app`. It does not run in a shell, so the
+same text works on Windows, macOS and Linux: quotes group words, a word that
+starts with `~/` is under your home folder, and pipes, redirects, `&&` and
+variables are not available. Put those in a script and run the script. The
+command gets the environment an agent's shell gets on that machine and must
+answer within the time limit, 60 seconds unless you change it (600 at most).
+
+Things to know:
+
+- The check runs without asking for approval, whatever the task's permission
+  mode. Only an agent in a chat with Full access (not in Plan mode) can set one,
+  or change or delete a task that has one, and a managed policy that forbids
+  Full access turns checks off.
+- Anyone who can change the files the command runs can change what it does.
+  Keep a check script outside the project folder when agents with less than
+  Full access work in that project.
+- **Run now** starts the chat without running the check.
+- Webhook tasks have no check; their filters decide which requests run.
+- On a shared task the same command runs on each machine. For **One machine**,
+  a time one machine skipped for no work counts as done, so the next machine
+  does not run it, and its **Run history** says that machine found no work. A
+  machine on an older T3.CodeShip has no checks and always starts the chat.
+- Moving or duplicating a task to a machine on an older T3.CodeShip would drop
+  its check, so the editor asks you to remove it or pick another machine.
+- **Run history** keeps the last 10 skipped times apart from the last 50 runs,
+  so a task that skips often does not push its real runs out.
+- Agents set it with `schedule_task` (`runCondition`) and read it, with the last
+  skipped time and its reason, from `list_scheduled_tasks`.
+
 ## Shared scheduled tasks
 
 A task's **Runs** choice keeps a copy of it on each of your machines:

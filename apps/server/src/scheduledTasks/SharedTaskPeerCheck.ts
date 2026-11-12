@@ -26,11 +26,21 @@ export interface PeerCheckResult {
   readonly ranOn: EnvironmentId | null;
   /** `ranOn` is still running it, so its run may yet fail. */
   readonly working: boolean;
+  /** `ranOn` skipped it because its run condition found no work, and why. */
+  readonly noWork: { readonly reason: string | null } | null;
   /** Machines that could not be asked, and why. */
   readonly unchecked: ReadonlyArray<{
     readonly environmentId: EnvironmentId;
     readonly reason: string;
   }>;
+}
+
+interface PeerAnswer {
+  readonly environmentId: EnvironmentId;
+  /** Why it could not be asked; null when it answered. */
+  readonly reason: string | null;
+  readonly has: "working" | "completed" | null;
+  readonly noWork: PeerCheckResult["noWork"];
 }
 
 /** Asks linked machines whether they already ran an occurrence of a one-machine task. */
@@ -83,9 +93,11 @@ const make = Effect.gen(function* () {
 
   const check: SharedTaskPeerCheck["Service"]["check"] = Effect.fn("SharedTaskPeerCheck.check")(
     function* (input) {
-      if (input.peers.length === 0) return { ranOn: null, working: false, unchecked: [] };
+      if (input.peers.length === 0) {
+        return { ranOn: null, working: false, noWork: null, unchecked: [] };
+      }
       const unreachable = (reason: string) => (environmentId: EnvironmentId) =>
-        Effect.succeed({ environmentId, reason, has: null });
+        Effect.succeed<PeerAnswer>({ environmentId, reason, has: null, noWork: null });
       const enabled = yield* links.enabled;
       const now = yield* DateTime.now;
       // The stored link, not `list`, which first probes every linked machine.
@@ -110,36 +122,52 @@ const make = Effect.gen(function* () {
           })
           .pipe(
             Effect.timeoutOption(PeerMcpClient.PEER_READ_TIMEOUT),
-            Effect.map((answer) => {
-              if (Option.isNone(answer)) {
-                return { environmentId, reason: "It did not answer in time.", has: null };
-              }
+            Effect.map((answer): PeerAnswer => {
+              const unchecked = (reason: string): PeerAnswer => ({
+                environmentId,
+                reason,
+                has: null,
+                noWork: null,
+              });
+              if (Option.isNone(answer)) return unchecked("It did not answer in time.");
               const task = answer.value.tasks.find(
                 (candidate) => candidate.scheduledTaskId === input.taskId,
               );
-              if (task === undefined) {
-                return { environmentId, reason: "It does not have this task yet.", has: null };
-              }
+              if (task === undefined) return unchecked("It does not have this task yet.");
               if (task.lastRun === undefined) {
-                return {
-                  environmentId,
-                  reason: "It runs an older version of T3.CodeShip.",
-                  has: null,
-                };
+                return unchecked("It runs an older version of T3.CodeShip.");
+              }
+              const answered = (has: PeerAnswer["has"], noWork: PeerAnswer["noWork"] = null) => ({
+                environmentId,
+                reason: null,
+                has,
+                noWork,
+              });
+              if (task.checkingSince !== undefined) return answered("working");
+              if (
+                task.lastSkipped !== undefined &&
+                Date.parse(task.lastSkipped.at) >= Date.parse(input.since)
+              ) {
+                return answered("completed", { reason: task.lastSkipped.reason });
               }
               // A run someone stopped on purpose is settled, so it counts as finished.
-              const has =
+              return answered(
                 task.lastRun === null ||
-                Date.parse(task.lastRun.at) < Date.parse(input.since) ||
-                (task.lastRun.outcome === "failed" && task.lastRun.stopped !== true)
+                  Date.parse(task.lastRun.at) < Date.parse(input.since) ||
+                  (task.lastRun.outcome === "failed" && task.lastRun.stopped !== true)
                   ? null
                   : task.lastRun.outcome === "working"
                     ? "working"
-                    : "completed";
-              return { environmentId, reason: null, has };
+                    : "completed",
+              );
             }),
             Effect.catch((error) =>
-              Effect.succeed({ environmentId, reason: error.message, has: null }),
+              Effect.succeed<PeerAnswer>({
+                environmentId,
+                reason: error.message,
+                has: null,
+                noWork: null,
+              }),
             ),
           );
       });
@@ -150,6 +178,7 @@ const make = Effect.gen(function* () {
       return {
         ranOn: holder?.environmentId ?? null,
         working: holder?.has === "working",
+        noWork: holder?.noWork ?? null,
         unchecked: answers.flatMap((answer) =>
           answer.reason === null
             ? []

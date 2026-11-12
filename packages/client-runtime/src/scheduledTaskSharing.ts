@@ -96,6 +96,9 @@ function sharedCopyOf(task: ScheduledTask): ScheduledTaskSharedCopy | null {
     workspaceStrategy: task.workspaceStrategy,
     modelSelection: task.modelSelection,
     followsDefaultModel: task.followsDefaultModel === true,
+    // Sent whenever the source lists them: a copy without one makes the receiver keep its own.
+    ...(task.catchUpMissedRun === undefined ? {} : { catchUpMissedRun: task.catchUpMissedRun }),
+    ...(task.runCondition === undefined ? {} : { runCondition: task.runCondition }),
     runtimeMode: task.runtimeMode,
     interactionMode: task.interactionMode,
     createdBy: task.createdBy,
@@ -594,10 +597,11 @@ export function mergeScheduledTaskRuns(
 ): ReadonlyArray<ScheduledTaskRunOnMachine> {
   const occurrenceKey = (environmentId: EnvironmentId, scheduledFor: string) =>
     `${environmentId}|${Date.parse(scheduledFor)}`;
+  // A machine that ran the occurrence, or whose check found no work for it, settled it.
   const ran = new Set(
     lists.flatMap(({ environmentId, runs }) =>
       runs.flatMap((run) =>
-        run.outcome !== "skipped" && run.scheduledFor !== null
+        (run.outcome !== "skipped" || run.skipReason === "no_work") && run.scheduledFor !== null
           ? [occurrenceKey(environmentId, run.scheduledFor)]
           : [],
       ),

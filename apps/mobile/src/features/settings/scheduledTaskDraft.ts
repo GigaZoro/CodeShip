@@ -20,6 +20,10 @@ import {
   type WebhookFilterDraft,
 } from "@t3tools/client-runtime/scheduled-task-webhook";
 import {
+  runConditionDraft,
+  type RunConditionDraft,
+} from "@t3tools/client-runtime/scheduled-task-run-condition";
+import {
   resolveScheduledTaskDefaultModelSelection,
   type LegacyProjectSettingsFields,
 } from "@t3tools/shared/projectSettings";
@@ -208,6 +212,7 @@ export type ScheduledTaskDraft = {
   readonly sharedExcludedEnvironmentIds: ReadonlyArray<EnvironmentId>;
   readonly sharedRunOn: ScheduledTaskSharedRunOn;
   readonly schedule: ScheduleDraft;
+  readonly runCondition: RunConditionDraft;
   readonly workspace: Workspace;
   readonly baseRef: string;
   readonly checkoutPath: string;
@@ -241,6 +246,8 @@ function draftSignature(draft: ScheduledTaskDraft): string {
     draft.schedule.coalesceKey,
     draft.schedule.coalesceWindowSeconds,
     draft.schedule.filters.map(({ path, op, value }) => [path, op, value]),
+    draft.runCondition.command.trim(),
+    draft.runCondition.command.trim() === "" ? null : draft.runCondition.timeoutSeconds.trim(),
     draft.workspace,
     draft.baseRef,
     draft.checkoutPath,
@@ -248,6 +255,18 @@ function draftSignature(draft: ScheduledTaskDraft): string {
     draft.startFromOrigin,
     draft.runtimeMode,
   ]);
+}
+
+/** The target cannot store a check this draft carries, so saving there would silently drop it. */
+export function runConditionLostOnTarget(input: {
+  readonly targetSupportsRunConditions: boolean;
+  readonly draft: Pick<ScheduledTaskDraft, "schedule" | "runCondition">;
+}): boolean {
+  return (
+    !input.targetSupportsRunConditions &&
+    input.draft.schedule.mode !== "webhook" &&
+    input.draft.runCondition.command.trim() !== ""
+  );
 }
 
 export function hasScheduledTaskDraftChanges(
@@ -274,6 +293,7 @@ export function createDraft(
     sharedExcludedEnvironmentIds: [],
     sharedRunOn: "every",
     schedule: DEFAULT_SCHEDULE,
+    runCondition: runConditionDraft(null),
     workspace: "worktree",
     baseRef: "main",
     checkoutPath: "",
@@ -303,6 +323,7 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     sharedExcludedEnvironmentIds: task.shared?.excludedEnvironmentIds ?? [],
     sharedRunOn: task.shared?.runOn ?? "every",
     schedule: scheduleDraftForTask(task),
+    runCondition: runConditionDraft(task),
     workspace: task.workspaceStrategy.type,
     baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "main",
     checkoutPath:

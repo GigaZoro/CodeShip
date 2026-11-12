@@ -178,6 +178,7 @@ const make = Effect.gen(function* () {
         lastRunStatus: task.lastRunStatus,
         lastRunAt: task.lastRun?.at ?? null,
         shared: task.shared === true,
+        lastNoWorkSkip: task.lastSkipped ?? null,
       })),
       at,
     );

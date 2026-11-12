@@ -50,6 +50,7 @@ import type {
   EnvironmentId,
   EnvironmentMachineKind,
   ScheduledTask,
+  ScheduledTaskNoWorkSkip,
   ScheduledTaskPlacement,
   ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -77,6 +78,10 @@ import {
   type ReactNode,
 } from "react";
 
+import {
+  noWorkSkipText,
+  shownNoWorkSkip,
+} from "@t3tools/client-runtime/scheduled-task-run-condition";
 import { useNowSecond } from "../../hooks/useNowSecond";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import {
@@ -188,6 +193,10 @@ function LastRunAgo(props: { lastRunAt: string }) {
 
 function TimeAgo(props: { at: string }) {
   return <>{formatTimeAgo(props.at, useNowSecond())}</>;
+}
+
+function NoWorkSkipAgo(props: { skip: ScheduledTaskNoWorkSkip }) {
+  return <>{noWorkSkipText(props.skip, formatTimeAgo(props.skip.at, useNowSecond()))}</>;
 }
 
 function PinnedTaskDetail(props: { icon: typeof CalendarClockIcon; children: ReactNode }) {
@@ -400,6 +409,7 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
     void setPlacement(environmentId, [task], "chat");
   };
 
+  const noWorkSkip = shownNoWorkSkip(task);
   const StatusIcon = display?.icon;
   const runTiming =
     display !== null && StatusIcon !== undefined ? (
@@ -505,6 +515,11 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
             {task.lastRunAt !== null ? (
               <PinnedTaskDetail icon={HistoryIcon}>
                 <LastRunAgo lastRunAt={task.lastRunAt} />
+              </PinnedTaskDetail>
+            ) : null}
+            {noWorkSkip !== null ? (
+              <PinnedTaskDetail icon={HistoryIcon}>
+                <NoWorkSkipAgo skip={noWorkSkip} />
               </PinnedTaskDetail>
             ) : null}
             {props.projectDisplayName !== null ? (

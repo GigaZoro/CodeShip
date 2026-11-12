@@ -6,6 +6,7 @@ import * as Option from "effect/Option";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import * as RunConditionCheck from "./RunConditionCheck.ts";
 import * as SharedTaskPeerCheck from "./SharedTaskPeerCheck.ts";
 
 export const HERE_ENVIRONMENT_ID = EnvironmentId.make("environment-here");
@@ -22,16 +23,23 @@ export interface TestSharedProject {
 const layerNoPeersRan = Layer.mock(SharedTaskPeerCheck.SharedTaskPeerCheck)({
   linkedEnvironmentIds: Effect.succeed([]),
   linkStatus: Effect.succeed({ enabled: false, links: [] }),
-  check: () => Effect.succeed({ ranOn: null, working: false, unchecked: [] }),
+  check: () => Effect.succeed({ ranOn: null, working: false, noWork: null, unchecked: [] }),
+});
+
+/** A run condition that always finds work, so a task with one runs as it would without. */
+const layerRunConditionFindsWork = Layer.mock(RunConditionCheck.RunConditionCheck)({
+  run: () => Effect.succeed({ outcome: "run", failure: null, exitCode: 0, detail: null }),
 });
 
 /** This machine's id and its projects, for services that only need to identify a repository. */
 export const layerSharedTaskIdentities = (
   projects: ReadonlyArray<TestSharedProject> = [],
   peerCheck: Layer.Layer<SharedTaskPeerCheck.SharedTaskPeerCheck> = layerNoPeersRan,
+  runConditionCheck: Layer.Layer<RunConditionCheck.RunConditionCheck> = layerRunConditionFindsWork,
 ) =>
   Layer.mergeAll(
     peerCheck,
+    runConditionCheck,
     Layer.mock(ServerEnvironment.ServerEnvironmentIdentity)({
       getEnvironmentId: Effect.succeed(HERE_ENVIRONMENT_ID),
     }),
@@ -48,9 +56,10 @@ export const layerSharedTaskIdentities = (
 export const layerSharedTaskDependencies = (
   projects: ReadonlyArray<TestSharedProject> = [],
   peerCheck?: Layer.Layer<SharedTaskPeerCheck.SharedTaskPeerCheck>,
+  runConditionCheck?: Layer.Layer<RunConditionCheck.RunConditionCheck>,
 ) =>
   Layer.mergeAll(
-    layerSharedTaskIdentities(projects, peerCheck),
+    layerSharedTaskIdentities(projects, peerCheck, runConditionCheck),
     Layer.mock(ProjectService.ProjectService)({
       getById: (projectId) =>
         Effect.succeed(

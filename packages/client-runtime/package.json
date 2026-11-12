@@ -79,6 +79,10 @@
       "types": "./src/scheduledTaskWebhook.ts",
       "default": "./src/scheduledTaskWebhook.ts"
     },
+    "./scheduled-task-run-condition": {
+      "types": "./src/scheduledTaskRunCondition.ts",
+      "default": "./src/scheduledTaskRunCondition.ts"
+    },
     "./scheduled-task-pins": {
       "types": "./src/scheduledTaskPins.ts",
       "default": "./src/scheduledTaskPins.ts"

@@ -33,12 +33,14 @@ import type {
   ProjectId,
   ScheduledTask,
   ScheduledTaskId,
+  ScheduledTaskNoWorkSkip,
   ScheduledTaskPlacement,
   ScheduledTaskSchedule,
   ScheduledTaskUpsertInput,
   ScheduledTaskWebhookDeliverySummary,
   ThreadId,
 } from "@t3tools/contracts";
+import { MAX_RUN_CONDITION_TIMEOUT_SECONDS } from "@t3tools/contracts";
 import {
   DEFAULT_WEBHOOK_PROMPT,
   emptyWebhookFilterDraft,
@@ -47,6 +49,13 @@ import {
   WEBHOOK_FILTER_OPS,
   type WebhookFilterDraft,
 } from "@t3tools/client-runtime/scheduled-task-webhook";
+import {
+  runConditionDraft,
+  runConditionHelpText,
+  runConditionInput,
+  runConditionInvalidText,
+  shownNoWorkSkip,
+} from "@t3tools/client-runtime/scheduled-task-run-condition";
 import {
   defaultCatchUpMissedRun,
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
@@ -152,6 +161,7 @@ import {
   webhookDeliveryLabel,
   defaultScheduledTaskProjectId,
   matchesScheduledTaskScope,
+  runConditionLostOnTarget,
   scheduleFromDraft,
   scheduledTaskDefaultModel,
   taskToDraft,
@@ -159,6 +169,7 @@ import {
   type ScheduleMode,
   type WorkspaceMode,
 } from "./scheduledTasksSettings.logic";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Label } from "../ui/label";
 import { ScheduledTaskPlacementRadioGroup } from "./ScheduledTaskPlacementRadioGroup";
 import { ScheduledTaskRunsDialog } from "./ScheduledTaskRunsDialog";
@@ -255,6 +266,7 @@ const EMPTY_DRAFT: DraftState = {
   baseModelSelection: null,
   followsDefaultModel: true,
   catchUpMissedRun: null,
+  runCondition: runConditionDraft(null),
   shared: false,
   sharedExcludedEnvironmentIds: [],
   sharedRunOn: "every",
@@ -493,6 +505,34 @@ function TaskLastRun({
     >
       {label}
     </Link>
+  );
+}
+
+/** The sentence for an occurrence a task's check skipped, without a tooltip of its own. */
+export function NoWorkSkipSentence({ skip }: { readonly skip: ScheduledTaskNoWorkSkip }) {
+  const reason = skip.reason?.trim() ?? "";
+  const when = <ScheduledRelativeLabel value={skip.at} />;
+  return reason === ""
+    ? tx("Skipped {when}", { when })
+    : tx("Skipped {when}: {reason}", { when, reason });
+}
+
+/** The occurrence a task's check skipped. There is no chat to open, so it is never a link. */
+function TaskNoWorkSkip({
+  task,
+  className = "min-w-0 max-w-full truncate",
+}: {
+  readonly task: Pick<ScheduledTask, "lastNoWorkSkip" | "lastRunAt">;
+  readonly className?: string;
+}) {
+  const skip = shownNoWorkSkip(task);
+  if (skip === null) return null;
+  const text = <NoWorkSkipSentence skip={skip} />;
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<span tabIndex={0} className={className} />}>{text}</TooltipTrigger>
+      <TooltipPopup side="top">{text}</TooltipPopup>
+    </Tooltip>
   );
 }
 
@@ -1214,6 +1254,7 @@ function LinkedScheduledTaskRow({
               {tx("Last run {when}", { when: <ScheduledRelativeLabel value={task.lastRunAt} /> })}
             </span>
           ) : null}
+          <TaskNoWorkSkip task={task} />
         </div>
       }
       control={
@@ -1760,6 +1801,7 @@ function ScheduledTaskRow({
           </span>
           <RunStatusBadge task={task} />
           <TaskLastRun environmentId={environmentId} task={task} />
+          <TaskNoWorkSkip task={task} />
           {task.shared ? <SharedTaskStatus environmentId={environmentId} task={task} /> : null}
           {task.lastRunError ? <RunError error={task.lastRunError} /> : null}
         </div>
@@ -1899,6 +1941,7 @@ function SharedTaskCopyLine({
       </span>
       <RunStatusBadge task={task} />
       <TaskLastRun environmentId={environmentId} task={task} />
+      <TaskNoWorkSkip task={task} />
       {decision ? <span>{decision}</span> : null}
       {task.lastRunError ? <RunError error={task.lastRunError} /> : null}
       <TaskWarnings
@@ -2640,6 +2683,10 @@ function ScheduledTaskEditorForm({
   const followsDefaultModel = offersDefaultModel && draft.followsDefaultModel;
   const offersCatchUp =
     environment?.serverConfig?.environment.capabilities.scheduledTaskRunHistory === true;
+  const targetSupportsRunConditions =
+    environment?.serverConfig?.environment.capabilities.scheduledTaskRunConditions === true;
+  const offersRunCondition = targetSupportsRunConditions && draft.scheduleMode !== "webhook";
+  const runConditionLost = runConditionLostOnTarget({ targetSupportsRunConditions, draft });
   const catchUpMissedRun =
     draft.catchUpMissedRun ??
     defaultCatchUpMissedRun({
@@ -2776,6 +2823,21 @@ function ScheduledTaskEditorForm({
               baseRef: draft.baseRef.trim() || "main",
               startFromOrigin: draft.startFromOrigin,
             };
+    if (runConditionLost) {
+      reportFailure(
+        t("Check would be dropped"),
+        t("{machine} cannot run checks. Remove the check or pick another machine.", {
+          machine: environment?.label ?? environmentId,
+        }),
+      );
+      return;
+    }
+    const runCondition = offersRunCondition ? runConditionInput(draft.runCondition) : undefined;
+    if (offersRunCondition && runCondition === undefined) {
+      reportFailure(t("Invalid check"), runConditionInvalidText());
+      document.getElementById("scheduled-task-check-command")?.focus();
+      return;
+    }
     const input: ScheduledTaskUpsertInput = {
       ...(draft.editingId ? { id: draft.editingId as ScheduledTaskId, requireExisting: true } : {}),
       title: draft.title.trim(),
@@ -2791,6 +2853,7 @@ function ScheduledTaskEditorForm({
       ...(offersCatchUp && draft.scheduleMode === "fixed" && draft.catchUpMissedRun !== null
         ? { catchUpMissedRun: draft.catchUpMissedRun }
         : {}),
+      ...(runCondition === undefined ? {} : { runCondition }),
       // Tasks have no mode picker; a mode above the administrator's ceiling would fail every run.
       runtimeMode:
         clampManagedRuntimeMode(environment?.serverConfig?.managedPolicy, draft.runtimeMode) ??
@@ -3642,6 +3705,78 @@ function ScheduledTaskEditorForm({
               </div>
             )}
           </div>
+
+          {offersRunCondition ? (
+            <Field label={t("Check before running")} htmlFor="scheduled-task-check-command">
+              <div className="space-y-2">
+                <Input
+                  id="scheduled-task-check-command"
+                  aria-describedby="scheduled-task-check-description"
+                  placeholder={"node ~/scripts/has-work.mjs"}
+                  value={draft.runCondition.command}
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      runCondition: { ...current.runCondition, command: event.target.value },
+                    }))
+                  }
+                />
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="scheduled-task-check-timeout">{t("Time limit")}</Label>
+                  <Input
+                    type="number"
+                    id="scheduled-task-check-timeout"
+                    nativeInput
+                    min={1}
+                    max={MAX_RUN_CONDITION_TIMEOUT_SECONDS}
+                    className="w-24"
+                    disabled={draft.runCondition.command.trim() === ""}
+                    value={draft.runCondition.timeoutSeconds}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        runCondition: {
+                          ...current.runCondition,
+                          timeoutSeconds: event.target.value,
+                        },
+                      }))
+                    }
+                  />
+                  <span className="text-xs text-muted-foreground">{t("seconds")}</span>
+                </div>
+                <p id="scheduled-task-check-description" className="text-xs text-muted-foreground">
+                  {runConditionHelpText()}
+                </p>
+              </div>
+            </Field>
+          ) : null}
+
+          {runConditionLost ? (
+            <Alert variant="warning">
+              <TriangleAlertIcon />
+              <AlertTitle>{t("Check before running")}</AlertTitle>
+              <AlertDescription>
+                {t(
+                  "{machine} runs an older T3.CodeShip that cannot run checks. Saving there would drop this task's check.",
+                  { machine: environment?.label ?? environmentId },
+                )}
+              </AlertDescription>
+              <AlertAction>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() =>
+                    setDraft((current) => ({
+                      ...current,
+                      runCondition: { ...current.runCondition, command: "" },
+                    }))
+                  }
+                >
+                  {t("Remove check")}
+                </Button>
+              </AlertAction>
+            </Alert>
+          ) : null}
 
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0 space-y-1">

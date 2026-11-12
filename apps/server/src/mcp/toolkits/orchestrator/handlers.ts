@@ -116,6 +116,7 @@ const handlers = {
         placement,
         modelSelection,
         followsDefaultModel,
+        runCondition,
       }) =>
         Effect.gen(function* () {
           if (scheduledTaskId === undefined) return yield* Effect.die("unreachable");
@@ -134,6 +135,7 @@ const handlers = {
             placement,
             modelSelection,
             followsDefaultModel,
+            runCondition,
           });
         }),
     ),

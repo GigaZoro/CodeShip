@@ -11,6 +11,7 @@ import {
   NodeId,
   ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
   OrchestratorMcpCapabilitiesResult,
+  type OrchestratorMcpFailure,
   OrchestratorMcpProviderCapability,
   OrchestratorMcpModelOption,
   OrchestratorMcpTarget,
@@ -3618,9 +3619,52 @@ describe("OrchestratorMcpService provider resolution", () => {
         runStatus: undefined,
         outcome: "completed",
       },
+      {
+        name: "completed, then its run condition is checking the next one",
+        task: {
+          lastRunAt: "2026-10-05T01:00:00.000Z",
+          lastRunStatus: "succeeded",
+          runCheckStartedAt: "2026-10-06T01:00:00.000Z",
+        },
+        runStatus: "completed",
+        checkingSince: "2026-10-06T01:00:00.000Z",
+        outcome: "completed",
+      },
+      {
+        name: "completed, then its run condition found no work and was cleared",
+        task: {
+          lastRunAt: "2026-10-05T01:00:00.000Z",
+          lastRunStatus: "succeeded",
+          runCondition: null,
+          lastNoWorkSkip: {
+            at: "2026-10-06T01:00:00.000Z",
+            scheduledFor: "2026-10-06T01:00:00.000Z",
+            reason: "No open pull requests",
+          },
+        },
+        runStatus: "completed",
+        outcome: "completed",
+      },
+      {
+        name: "never run, its run condition checking",
+        task: { runCheckStartedAt: "2026-10-05T01:00:00.000Z" },
+        runStatus: undefined,
+        checkingSince: "2026-10-05T01:00:00.000Z",
+        outcome: null,
+      },
+      {
+        name: "started after an earlier skip",
+        task: {
+          lastRunAt: "2026-10-05T01:00:00.000Z",
+          lastRunStatus: "succeeded",
+          lastNoWorkSkip: { at: "2026-10-04T01:00:00.000Z", scheduledFor: null, reason: null },
+        },
+        runStatus: "failed",
+        outcome: "failed",
+      },
     ])(
       "reports the last run as $outcome when it was $name",
-      ({ task, runStatus, outcome, ...row }) =>
+      ({ task, runStatus, outcome, checkingSince, ...row }) =>
         Effect.gen(function* () {
           const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
           const listed: ScheduledTask = {
@@ -3657,6 +3701,147 @@ describe("OrchestratorMcpService provider resolution", () => {
                   outcome,
                   ...("stopRequested" in row ? { stopped: true } : {}),
                 },
+          );
+          assert.equal(tasks[0]?.checkingSince, checkingSince);
+          assert.deepEqual(
+            tasks[0]?.lastSkipped,
+            "lastNoWorkSkip" in task ? task.lastNoWorkSkip : undefined,
+          );
+        }),
+    );
+
+    it.effect(
+      "sets and clears a run condition for a full-access caller only, and lists what it did",
+      () =>
+        Effect.gen(function* () {
+          const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
+          const saves = yield* Ref.make<ReadonlyArray<ScheduledTaskUpsertInput>>([]);
+          const here = EnvironmentId.make("environment:here");
+          const vps = EnvironmentId.make("environment:vps");
+          const runCondition = { command: "node ~/check.mjs", timeoutSeconds: 60 };
+          const lastNoWorkSkip = {
+            at: "2026-10-05T01:00:00.000Z",
+            scheduledFor: "2026-10-05T01:00:00.000Z",
+            reason: "No open pull requests",
+          };
+          const sharing = (runOn: "one" | "every"): NonNullable<ScheduledTask["shared"]> => ({
+            revision: { at: "2026-11-10T00:00:00.000Z", environmentId: here },
+            project: { type: "repository", canonicalKey: "github.com/acme/app", title: "App" },
+            excludedEnvironmentIds: [],
+            runOn,
+          });
+          const listed: ReadonlyArray<ScheduledTask> = [
+            { ...existing, runCondition, lastNoWorkSkip, shared: sharing("one") },
+            {
+              ...existing,
+              id: ScheduledTaskId.make("scheduled-task:every"),
+              shared: sharing("every"),
+            },
+            {
+              ...existing,
+              id: ScheduledTaskId.make("scheduled-task:unordered"),
+              shared: {
+                ...sharing("one"),
+                project: { type: "repository", canonicalKey: "github.com/acme/other", title: "O" },
+              },
+            },
+          ];
+          const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+            Effect.provide(
+              service(
+                masterRepository,
+                saved,
+                listed,
+                {},
+                {
+                  list: () =>
+                    Effect.succeed({
+                      tasks: listed,
+                      projectMachineOrders: [
+                        {
+                          project: sharing("one").project,
+                          order: [vps, here],
+                          revision: { at: "2026-11-10T00:00:00.000Z", environmentId: here },
+                        },
+                      ],
+                    }),
+                  upsert: (input) =>
+                    Ref.update(saves, (all) => [...all, input]).pipe(Effect.as({ task: existing })),
+                },
+              ),
+            ),
+          );
+          const fullAccess: McpInvocationScope = {
+            ...client,
+            client: { ...client.client!, access: "full-access" },
+          };
+          const fullAccessPlanning: McpInvocationScope = {
+            ...client,
+            client: {
+              ...client.client!,
+              access: "full-access",
+              narrowedTo: { runtimeMode: "full-access", interactionMode: "plan" },
+            },
+          };
+          const every = ScheduledTaskId.make("scheduled-task:every");
+          yield* mcp.scheduleTask(fullAccess, {
+            projectId,
+            prompt: "Review PRs",
+            schedule,
+            runCondition,
+          });
+          yield* mcp.updateScheduledTask(fullAccess, {
+            scheduledTaskId: existing.id,
+            title: "Kept",
+          });
+          yield* mcp.updateScheduledTask(fullAccess, {
+            scheduledTaskId: existing.id,
+            runCondition: null,
+          });
+          // A task without a condition stays editable below full access.
+          yield* mcp.updateScheduledTask(client, { scheduledTaskId: every, title: "Kept" });
+          assert.deepEqual(
+            (yield* Ref.get(saves)).map((input) =>
+              "runCondition" in input ? input.runCondition : "omitted",
+            ),
+            [runCondition, "omitted", null, "omitted"],
+          );
+          // Setting one needs full access in default mode; a task that has one, the same to edit.
+          const refusals: ReadonlyArray<Effect.Effect<object, OrchestratorMcpFailure>> = [
+            mcp.scheduleTask(client, { projectId, prompt: "Review PRs", schedule, runCondition }),
+            mcp.updateScheduledTask(client, { scheduledTaskId: every, runCondition }),
+            mcp.scheduleTask(fullAccessPlanning, {
+              projectId,
+              prompt: "Review PRs",
+              schedule,
+              runCondition,
+            }),
+            mcp.updateScheduledTask(fullAccessPlanning, { scheduledTaskId: every, runCondition }),
+            mcp.updateScheduledTask(client, { scheduledTaskId: existing.id, title: "Edited" }),
+            mcp.deleteScheduledTask(client, { scheduledTaskId: existing.id }),
+          ];
+          for (const refused of refusals) {
+            assert.include(
+              ["runtime_mode_escalation_denied", "interaction_mode_escalation_denied"],
+              (yield* refused.pipe(Effect.flip)).code,
+            );
+          }
+          assert.lengthOf(yield* Ref.get(saves), 4);
+
+          const { tasks } = yield* mcp.listScheduledTasks(client, { projectId });
+          assert.deepEqual(
+            tasks.map((task) => [
+              task.runCondition,
+              task.lastSkipped,
+              task.machineOrder,
+              task.definedOn,
+              task.definedAt,
+            ]),
+            [
+              [runCondition, lastNoWorkSkip, [vps, here], here, "2026-11-10T00:00:00.000Z"],
+              [undefined, undefined, undefined, here, "2026-11-10T00:00:00.000Z"],
+              [undefined, undefined, [], here, "2026-11-10T00:00:00.000Z"],
+            ],
           );
         }),
     );

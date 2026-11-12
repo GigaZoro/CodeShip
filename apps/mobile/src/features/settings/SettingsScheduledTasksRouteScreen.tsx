@@ -26,6 +26,11 @@ import {
   scheduledTaskPlacementOptions,
 } from "@t3tools/client-runtime/scheduled-task-pins";
 import {
+  runConditionHelpText,
+  runConditionInput,
+  runConditionInvalidText,
+} from "@t3tools/client-runtime/scheduled-task-run-condition";
+import {
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
   MAX_WEBHOOK_FILTERS,
   resolveEnvironmentMachineKind,
@@ -115,6 +120,7 @@ import {
   duplicateDraft,
   editDraft,
   parseIntervalMinutes,
+  runConditionLostOnTarget,
   scheduledTaskDefaultModel,
   scheduleFromDraft,
   type ScheduledTaskDraft as Draft,
@@ -131,6 +137,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import {
   SCHEDULED_TASK_WEEKDAYS as DAYS,
   describeSchedule,
+  formatNoWorkSkip,
   formatNextScheduledTaskRun,
   formatRunAtDate,
   formatRunAtTime,
@@ -227,6 +234,7 @@ function FormField(props: {
   readonly disabled?: boolean;
   readonly placeholder?: string;
   readonly borderTop?: boolean;
+  readonly technical?: boolean;
 }) {
   return (
     <View
@@ -242,6 +250,8 @@ function FormField(props: {
         onChangeText={props.onChange}
         textAlignVertical="center"
         keyboardType={props.keyboardType}
+        autoCorrect={props.technical ? false : undefined}
+        autoCapitalize={props.technical ? "none" : undefined}
         placeholder={props.placeholder}
         placeholderTextColorClassName="accent-foreground-muted"
         className="min-h-8 font-sans text-base text-foreground"
@@ -805,6 +815,7 @@ function SettingsScheduledTaskEditorScreen({ title }: { readonly title: string }
                   prompt: editor.draft.prompt,
                   schedule: editor.draft.schedule,
                   enabled: editor.draft.enabled,
+                  runCondition: editor.draft.runCondition,
                 },
               });
             }}
@@ -954,6 +965,10 @@ function TaskForm({
     }
   };
 
+  const targetSupportsRunConditions =
+    config?.environment.capabilities.scheduledTaskRunConditions === true;
+  const offersRunCondition = targetSupportsRunConditions && draft.schedule.mode !== "webhook";
+  const runConditionLost = runConditionLostOnTarget({ targetSupportsRunConditions, draft });
   const offersOnce =
     config?.environment.capabilities.oneTimeSchedules === true ||
     draft.task?.schedule.type === "once";
@@ -1027,6 +1042,20 @@ function TaskForm({
       Dialog.alert(t("Project unavailable"), t("Choose a project in this environment."));
       return;
     }
+    if (runConditionLost) {
+      Dialog.alert(
+        t("Check would be dropped"),
+        t("{machine} cannot run checks. Remove the check or pick another machine.", {
+          machine: environmentLabel,
+        }),
+      );
+      return;
+    }
+    const runCondition = offersRunCondition ? runConditionInput(draft.runCondition) : null;
+    if (runCondition === undefined) {
+      Dialog.alert(t("Invalid check"), runConditionInvalidText());
+      return;
+    }
     const input: ScheduledTaskUpsertInput = {
       ...(draft.task ? { id: draft.task.id, requireExisting: true } : {}),
       title: draft.title.trim(),
@@ -1039,6 +1068,7 @@ function TaskForm({
         ? { catchUpMissedRun: draft.catchUpMissedRun }
         : {}),
       schedule,
+      ...(offersRunCondition ? { runCondition } : {}),
       enabled: draft.enabled,
       threadId: sharing ? null : (draft.task?.threadId ?? null),
       workspaceStrategy:
@@ -1643,6 +1673,49 @@ function TaskForm({
             {t("Time uses the environment's time zone, which may differ from your phone's.")}
           </Text>
         ) : null}
+        {runConditionLost ? (
+          <SettingsSection title={t("Check before running")}>
+            <View className="gap-3 px-4 py-3">
+              <Text className="text-sm text-warning-foreground">
+                {t(
+                  "{machine} runs an older T3.CodeShip that cannot run checks. Saving there would drop this task's check.",
+                  { machine: environmentLabel },
+                )}
+              </Text>
+              <Button
+                label={t("Remove check")}
+                disabled={saving}
+                onPress={() =>
+                  setDraft({ ...draft, runCondition: { ...draft.runCondition, command: "" } })
+                }
+              />
+            </View>
+          </SettingsSection>
+        ) : null}
+        {offersRunCondition ? (
+          <SettingsSection title={t("Check before running")} footer={runConditionHelpText()}>
+            <FormField
+              label={t("Check command")}
+              value={draft.runCondition.command}
+              placeholder={"node ~/scripts/has-work.mjs"}
+              technical
+              disabled={saving}
+              onChange={(command) =>
+                setDraft({ ...draft, runCondition: { ...draft.runCondition, command } })
+              }
+            />
+            <FormField
+              label={t("Check timeout (seconds)")}
+              value={draft.runCondition.timeoutSeconds}
+              keyboardType="number-pad"
+              disabled={saving || draft.runCondition.command.trim() === ""}
+              borderTop
+              onChange={(timeoutSeconds) =>
+                setDraft({ ...draft, runCondition: { ...draft.runCondition, timeoutSeconds } })
+              }
+            />
+          </SettingsSection>
+        ) : null}
       </View>
       <Button
         tone="primary"
@@ -2050,6 +2123,7 @@ function LinkedMachineTasks({
         machine.tasks.map((task) => {
           const project = linkedProjectName(task.projectTitle);
           const lastRun = lastRunText(task, now);
+          const noWorkSkip = formatNoWorkSkip(task, now);
           return (
             <View
               key={task.id}
@@ -2074,6 +2148,11 @@ function LinkedMachineTasks({
                   .filter((part) => part !== null && part !== "")
                   .join(" · ")}
               </Text>
+              {noWorkSkip === null ? null : (
+                <Text className="text-sm text-foreground-muted" numberOfLines={1}>
+                  {noWorkSkip}
+                </Text>
+              )}
             </View>
           );
         })
@@ -2232,6 +2311,7 @@ function EnvironmentTasks({
           {visibleTasks?.map((task, index) => {
             const runThreadId = lastRunThreadId(task);
             const project = projectNameOf(task.projectId);
+            const noWorkSkip = formatNoWorkSkip(task, now);
             return (
               <View
                 key={task.id}
@@ -2243,7 +2323,7 @@ function EnvironmentTasks({
               >
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel={`${task.title}${project === null ? "" : t(", in {project}", { project })}${task.shared ? (task.shared.runOn === "one" ? t(", runs on one machine") : t(", runs on every machine")) : ""}${task.modelUnavailableHere ? t(", runs the default model here") : ""}`}
+                  accessibilityLabel={`${task.title}${project === null ? "" : t(", in {project}", { project })}${task.shared ? (task.shared.runOn === "one" ? t(", runs on one machine") : t(", runs on every machine")) : ""}${task.modelUnavailableHere ? t(", runs the default model here") : ""}${noWorkSkip === null ? "" : `, ${noWorkSkip}`}`}
                   accessibilityHint={
                     runThreadId === null
                       ? t("Opens the task editor.")
@@ -2274,6 +2354,11 @@ function EnvironmentTasks({
                       : ""}
                     {lastRunText(task, now) ? ` · ${lastRunText(task, now)}` : ""}
                   </Text>
+                  {noWorkSkip === null ? null : (
+                    <Text className="text-sm text-foreground-muted" numberOfLines={1}>
+                      {noWorkSkip}
+                    </Text>
+                  )}
                   {task.blockedByPolicy ? (
                     <Text className="text-sm text-foreground-muted" numberOfLines={2}>
                       {task.blockedByPolicy}

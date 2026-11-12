@@ -14,6 +14,7 @@ import type {
   SidebarProjectGroupMember,
   SidebarProjectSnapshot,
 } from "../../sidebarProjectGrouping";
+import { runConditionInput } from "@t3tools/client-runtime/scheduled-task-run-condition";
 import { resolveSettingsScope, type SettingsScopeSearch } from "./settingsScope";
 
 import { deriveProviderInstanceEntries } from "../../providerInstances";
@@ -23,6 +24,7 @@ import {
   defaultScheduledTaskProjectId,
   matchingProjectId,
   matchesScheduledTaskScope,
+  runConditionLostOnTarget,
   scheduleFromDraft,
   taskToDraft,
   threadScheduledTasks,
@@ -190,6 +192,52 @@ describe("editing scheduled task branch settings", () => {
     const draft = taskToDraft(legacyTask);
     expect(draft.baseRef).toBe("release");
     expect(draft.startFromOrigin).toBe(false);
+  });
+});
+
+describe("a task's run condition in the editor", () => {
+  const checked: ScheduledTask = {
+    ...legacyTask,
+    runCondition: { command: "node ~/has-work.mjs", timeoutSeconds: 90 },
+  };
+
+  it("round-trips through the draft, into a copy, and clears when emptied", () => {
+    const draft = taskToDraft(checked);
+    expect(runConditionInput(draft.runCondition)).toEqual({
+      command: "node ~/has-work.mjs",
+      timeoutSeconds: 90,
+    });
+    expect(copyTaskDraft(checked, "Copy").runCondition).toEqual(draft.runCondition);
+    expect(runConditionInput({ ...draft.runCondition, command: "  " })).toBeNull();
+    expect(runConditionInput(taskToDraft(legacyTask).runCondition)).toBeNull();
+  });
+});
+
+describe("a check the target machine cannot keep", () => {
+  const checked = taskToDraft({
+    ...legacyTask,
+    runCondition: { command: "node ~/has-work.mjs", timeoutSeconds: 90 },
+  });
+  const unchecked = taskToDraft(legacyTask);
+
+  it.each([
+    ["target supports checks", true, checked, false],
+    ["target lacks checks and the draft has a command", false, checked, true],
+    ["target lacks checks and the command is empty", false, unchecked, false],
+    [
+      "target lacks checks and the command is blank",
+      false,
+      { ...checked, runCondition: { ...checked.runCondition, command: "  " } },
+      false,
+    ],
+    [
+      "target lacks checks and the trigger is a webhook",
+      false,
+      { ...checked, scheduleMode: "webhook" },
+      false,
+    ],
+  ] as const)("%s", (_name, targetSupportsRunConditions, draft, lost) => {
+    expect(runConditionLostOnTarget({ targetSupportsRunConditions, draft })).toBe(lost);
   });
 });
 

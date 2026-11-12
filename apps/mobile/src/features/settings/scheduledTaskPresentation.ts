@@ -1,4 +1,9 @@
 import type { ScheduledTask } from "@t3tools/contracts";
+import { formatTimeAgo } from "@t3tools/client-runtime/scheduled-task-pins";
+import {
+  noWorkSkipText,
+  shownNoWorkSkip,
+} from "@t3tools/client-runtime/scheduled-task-run-condition";
 
 import { getFormattingLocale, msg, t, tn } from "../../lib/i18n";
 
@@ -183,4 +188,16 @@ export function repeatLabel(weekdays: ReadonlyArray<number>): string {
       .map((day) => t(day.label))
       .join(", ") || t("Choose days")
   );
+}
+
+/** The quiet line a task row shows for an occurrence its run condition skipped; null when none is shown. */
+export function formatNoWorkSkip(
+  task: Pick<ScheduledTask, "lastNoWorkSkip" | "lastRunAt">,
+  now: number,
+): string | null {
+  const skip = shownNoWorkSkip(task);
+  if (skip === null) return null;
+  const ago = formatTimeAgo(skip.at, now);
+  if (ago === "") return null;
+  return noWorkSkipText(skip, ago);
 }

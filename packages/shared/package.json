@@ -231,6 +231,10 @@
       "types": "./src/qrCode.ts",
       "import": "./src/qrCode.ts"
     },
+    "./commandLine": {
+      "types": "./src/commandLine.ts",
+      "import": "./src/commandLine.ts"
+    },
     "./cliArgs": {
       "types": "./src/cliArgs.ts",
       "import": "./src/cliArgs.ts"

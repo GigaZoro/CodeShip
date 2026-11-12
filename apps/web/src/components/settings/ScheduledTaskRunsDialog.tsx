@@ -1,6 +1,7 @@
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import { useNavigate } from "@tanstack/react-router";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { peerNoWorkText, runCheckText } from "@t3tools/client-runtime/scheduled-task-run-condition";
 import { mergeScheduledTaskRuns } from "@t3tools/client-runtime/scheduled-task-sharing";
 import { resolveProviderInstanceDisplayName } from "@t3tools/client-runtime/state/provider-instance-display";
 import type {
@@ -89,7 +90,15 @@ function skipReasonText(
       return t("{machine} was off or asleep at that time, and the next run comes sooner.", {
         machine,
       });
+    case "no_work":
+      return runCheckText(run.check) ?? t("The check found no work.");
     case "ran_elsewhere":
+      if (run.check?.outcome === "skip") {
+        return peerNoWorkText(
+          run.ranOn === null ? null : machineLabel(run.ranOn),
+          run.check.detail,
+        );
+      }
       return run.ranOn === null
         ? t("Another machine ran it.")
         : t("{machine} ran it.", { machine: machineLabel(run.ranOn) });
@@ -203,6 +212,7 @@ export function ScheduledTaskRunsDialog({
               {runs.map(({ environmentId: ranOn, run }) => {
                 const badge = outcomeBadge(run.outcome);
                 const threadId = run.threadId;
+                const checkText = runCheckText(run.check);
                 return (
                   <li key={`${ranOn}:${run.id}`} className="space-y-1 py-2 text-sm">
                     <div className="flex flex-wrap items-center gap-2">
@@ -239,6 +249,11 @@ export function ScheduledTaskRunsDialog({
                       <p className="text-muted-foreground">
                         {skipReasonText(run, machineLabel(ranOn), machineLabel)}
                       </p>
+                    ) : null}
+                    {run.skipReason !== "no_work" &&
+                    !(run.skipReason === "ran_elsewhere" && run.check?.outcome === "skip") &&
+                    checkText !== null ? (
+                      <p className="text-muted-foreground">{checkText}</p>
                     ) : null}
                     {run.failover !== null ? (
                       <FailoverNote environmentId={ranOn} failover={run.failover} />

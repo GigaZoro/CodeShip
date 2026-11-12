@@ -249,13 +249,75 @@ export type ScheduledTaskRunOutcome = typeof ScheduledTaskRunOutcome.Type;
  * `missed`: the app was off or asleep at the time and catching up is off.
  * `next_run_sooner`: it was missed, and the next run is nearer than the missed one.
  * `ran_elsewhere`: a one-machine task another machine ran.
+ * `no_work`: the task's run condition found nothing to do.
  */
 export const ScheduledTaskRunSkipReason = Schema.Literals([
   "missed",
   "next_run_sooner",
   "ran_elsewhere",
+  "no_work",
 ]);
 export type ScheduledTaskRunSkipReason = typeof ScheduledTaskRunSkipReason.Type;
+
+export const DEFAULT_RUN_CONDITION_TIMEOUT_SECONDS = 60;
+export const MAX_RUN_CONDITION_TIMEOUT_SECONDS = 600;
+export const MAX_RUN_CONDITION_COMMAND_LENGTH = 2000;
+/** The exit code of a run condition that found nothing to do. Zero starts the chat. */
+export const RUN_CONDITION_SKIP_EXIT_CODE = 10;
+
+const RunConditionCommand = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(MAX_RUN_CONDITION_COMMAND_LENGTH),
+);
+const RunConditionTimeoutSeconds = Schema.Int.check(
+  Schema.isBetween({ minimum: 1, maximum: MAX_RUN_CONDITION_TIMEOUT_SECONDS }),
+);
+
+/**
+ * A command the server runs before a scheduled occurrence starts a chat, in the project's folder
+ * on the machine that would run it. It is one program with arguments and no shell, so the same
+ * text works on every system; a word that starts with `~/` is under the home folder.
+ */
+export const ScheduledTaskRunCondition = Schema.Struct({
+  command: RunConditionCommand,
+  timeoutSeconds: RunConditionTimeoutSeconds,
+});
+export type ScheduledTaskRunCondition = typeof ScheduledTaskRunCondition.Type;
+
+/** A run condition as a save sends it: the timeout defaults to 60 seconds. */
+export const ScheduledTaskRunConditionInput = Schema.Struct({
+  command: RunConditionCommand,
+  timeoutSeconds: Schema.optional(RunConditionTimeoutSeconds),
+});
+export type ScheduledTaskRunConditionInput = typeof ScheduledTaskRunConditionInput.Type;
+
+/** `run`: it found work. `skip`: it found none, so nothing started. `failed`: it broke, so the chat started anyway. */
+export const ScheduledTaskRunCheckOutcome = Schema.Literals(["run", "skip", "failed"]);
+export type ScheduledTaskRunCheckOutcome = typeof ScheduledTaskRunCheckOutcome.Type;
+
+/**
+ * `exit_code`: neither 0 nor 10. `timeout`: no answer in time. `not_started`: the program could
+ * not start. `invalid_command`: the text could not be read as a command. `policy`: a managed
+ * policy forbids running commands without approval.
+ */
+export const ScheduledTaskRunCheckFailure = Schema.Literals([
+  "exit_code",
+  "timeout",
+  "not_started",
+  "invalid_command",
+  "policy",
+]);
+export type ScheduledTaskRunCheckFailure = typeof ScheduledTaskRunCheckFailure.Type;
+
+/** What a task's run condition answered for one occurrence. */
+export const ScheduledTaskRunCheck = Schema.Struct({
+  // Any string, so a value added later doesn't break a client's whole list.
+  outcome: Schema.Union([ScheduledTaskRunCheckOutcome, Schema.String]),
+  failure: Schema.NullOr(Schema.Union([ScheduledTaskRunCheckFailure, Schema.String])),
+  exitCode: Schema.NullOr(Schema.Int),
+  /** From the command's output: its JSON `reason`, else its last line. Why, for one that could not start. */
+  detail: Schema.NullOr(Schema.String),
+});
+export type ScheduledTaskRunCheck = typeof ScheduledTaskRunCheck.Type;
 
 /** One time a task fired, including fires that failed before a thread existed or were skipped. */
 export const ScheduledTaskRunRecord = Schema.Struct({
@@ -274,8 +336,20 @@ export const ScheduledTaskRunRecord = Schema.Struct({
   ranOn: Schema.NullOr(EnvironmentId),
   /** Set when the run started on another account because the task's own was out of usage. */
   failover: Schema.NullOr(Schema.Struct({ from: ProviderInstanceId, to: ProviderInstanceId })),
+  /** Null when the task had no run condition, or the run ignored it. Absent from servers without run conditions. */
+  check: Schema.optional(Schema.NullOr(ScheduledTaskRunCheck)),
 });
 export type ScheduledTaskRunRecord = typeof ScheduledTaskRunRecord.Type;
+
+/** The latest occurrence a task's run condition skipped. */
+export const ScheduledTaskNoWorkSkip = Schema.Struct({
+  at: IsoDateTime,
+  /** The scheduled time it skipped. */
+  scheduledFor: Schema.NullOr(IsoDateTime),
+  /** From the command's output: its JSON `reason`, else its last line. */
+  reason: Schema.NullOr(Schema.String),
+});
+export type ScheduledTaskNoWorkSkip = typeof ScheduledTaskNoWorkSkip.Type;
 
 export const ScheduledTaskWebhookEndpoint = Schema.Struct({
   path: TrimmedNonEmptyString,
@@ -410,6 +484,12 @@ export const ScheduledTask = Schema.Struct({
    * nearer the missed time than the next run. Absent from servers without catch-up.
    */
   catchUpMissedRun: Schema.optional(Schema.Boolean),
+  /** Null when the task has none. Absent from servers without run conditions. */
+  runCondition: Schema.optional(Schema.NullOr(ScheduledTaskRunCondition)),
+  /** Null until a run condition first skips an occurrence. Kept after the condition is cleared: it is history. */
+  lastNoWorkSkip: Schema.optional(Schema.NullOr(ScheduledTaskNoWorkSkip)),
+  /** When the run condition of the occurrence due now started; null while none is running. */
+  runCheckStartedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
 
@@ -445,6 +525,8 @@ export const LinkedScheduledTask = Schema.Struct({
   lastRunStatus: ScheduledTaskRunStatus,
   lastRunAt: Schema.NullOr(IsoDateTime),
   shared: Schema.Boolean,
+  /** Absent from servers without run conditions. */
+  lastNoWorkSkip: Schema.optional(Schema.NullOr(ScheduledTaskNoWorkSkip)),
 });
 export type LinkedScheduledTask = typeof LinkedScheduledTask.Type;
 
@@ -495,6 +577,10 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
     description:
       "Run a fixed-time run missed while the app was off once it is back. Omitted keeps the stored choice, or for a new task the default: on for daily tasks.",
   }),
+  runCondition: Schema.optional(Schema.NullOr(ScheduledTaskRunConditionInput)).annotate({
+    description:
+      "A command to run before each scheduled occurrence: exit code 0 starts the chat, 10 skips the occurrence. Null clears it. Omitted keeps the stored one.",
+  }),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
@@ -529,6 +615,8 @@ export const ScheduledTaskSharedCopy = Schema.Struct({
   followsDefaultModel: Schema.Boolean,
   /** Absent from machines without catch-up; the receiving machine keeps its own choice. */
   catchUpMissedRun: Schema.optional(Schema.Boolean),
+  /** Null: the task has none. Absent from machines without run conditions; the receiving machine keeps its own. */
+  runCondition: Schema.optional(Schema.NullOr(ScheduledTaskRunCondition)),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdBy: OrchestrationV2Actor,

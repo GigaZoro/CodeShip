@@ -258,6 +258,7 @@ export const make = Effect.gen(function* () {
       shareSettings: true,
       deviceSettingsProfile: true,
       scheduledTaskRunHistory: true,
+      scheduledTaskRunConditions: true,
       linkedScheduledTasks: true,
       delegatedTaskModels: true,
       finalReview: true,
