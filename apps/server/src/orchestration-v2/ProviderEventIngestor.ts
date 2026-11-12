@@ -47,6 +47,7 @@ import {
   cancelledRosterTaskWork,
   isAwaitedWork,
   isSettledRun,
+  latestStartedRun,
   lostBackgroundWorkRecord,
 } from "./RestartBackgroundNote.ts";
 
@@ -464,6 +465,39 @@ export const layer: Layer.Layer<
       return events;
     });
 
+    const lostBackgroundWorkEvents = Effect.fnUntraced(function* (
+      input: ProviderEventIngestInput,
+      lost: Omit<Parameters<typeof lostBackgroundWorkRecord>[0], "now">,
+    ) {
+      const now = yield* DateTime.now;
+      const record = lostBackgroundWorkRecord({ ...lost, now });
+      return [
+        yield* makeDomainEvent(input, {
+          type: "run.background-work-cancelled",
+          threadId: lost.run.threadId,
+          runId: lost.run.id,
+          nodeId: lost.run.rootNodeId,
+          occurredAt: now,
+          payload: {
+            runId: lost.run.id,
+            restartCancelledBackgroundWork: record.restartCancelledBackgroundWork,
+          },
+        }),
+        ...(record.notice === undefined
+          ? []
+          : [
+              yield* makeDomainEvent(input, {
+                type: "turn-item.updated",
+                threadId: lost.run.threadId,
+                runId: lost.run.id,
+                nodeId: lost.run.rootNodeId,
+                occurredAt: now,
+                payload: record.notice,
+              }),
+            ]),
+      ];
+    });
+
     /** Records on the reporting run what its process lost, like a restart does, in the roster's own write. */
     const recordLostBackgroundWork = Effect.fn("ProviderEventIngestor.recordLostBackgroundWork")(
       function* (
@@ -481,39 +515,59 @@ export const layer: Layer.Layer<
         });
         const run = runs[0];
         if (run === undefined || run.providerThreadId !== lost.providerThreadId) return [];
-        const now = yield* DateTime.now;
-        const record = lostBackgroundWorkRecord({
+        return yield* lostBackgroundWorkEvents(input, {
           run,
           cause: lost.cause,
           work: lost.tasks.map(cancelledRosterTaskWork),
-          now,
         });
-        return [
-          yield* makeDomainEvent(input, {
-            type: "run.background-work-cancelled",
-            threadId: lost.threadId,
-            runId: run.id,
-            occurredAt: now,
-            payload: {
-              runId: run.id,
-              restartCancelledBackgroundWork: record.restartCancelledBackgroundWork,
-            },
-          }),
-          ...(record.notice === undefined
-            ? []
-            : [
-                yield* makeDomainEvent(input, {
-                  type: "turn-item.updated",
-                  threadId: lost.threadId,
-                  runId: run.id,
-                  nodeId: run.rootNodeId,
-                  occurredAt: now,
-                  payload: record.notice,
-                }),
-              ]),
-        ];
       },
     );
+
+    /**
+     * A restart moves its run to the next attempt before closing the old one's process, so the
+     * gate refuses that attempt's last roster with the work the process lost. Record it alone, as
+     * a session release would: on the latest run not being started again, whose record the next
+     * prompt carries, or on the restarted run when no earlier run shares its provider thread.
+     */
+    const recordLostBackgroundWorkOfMovedOnRun = Effect.fn(
+      "ProviderEventIngestor.recordLostBackgroundWorkOfMovedOnRun",
+    )(function* (input: ProviderEventIngestInput) {
+      if (
+        input.event.type !== "provider_thread.updated" ||
+        input.runId === undefined ||
+        (input.event.lostBackgroundTasks?.length ?? 0) === 0
+      )
+        return [];
+      const providerThreadId = input.event.providerThread.id;
+      const threadId = input.event.providerThread.appThreadId ?? input.threadId;
+      const { runs } = yield* projections.getThreadRecords(threadId, ["runs"]);
+      const reporting = runs.find((run) => run.id === input.runId);
+      if (reporting === undefined || reporting.providerThreadId !== providerThreadId) return [];
+      const startedAgain = reporting.status === "preparing" || reporting.status === "starting";
+      const run =
+        latestStartedRun(
+          runs.filter(
+            (candidate) => candidate.status !== "preparing" && candidate.status !== "starting",
+          ),
+          providerThreadId,
+        ) ?? reporting;
+      // A session release may have recorded the same work first.
+      const recorded = new Set(
+        runs.flatMap((candidate) =>
+          (candidate.restartCancelledBackgroundWork ?? []).map((entry) => entry.id),
+        ),
+      );
+      const work = (input.event.lostBackgroundTasks ?? [])
+        .map(cancelledRosterTaskWork)
+        .filter((entry) => !recorded.has(entry.id));
+      if (work.length === 0) return [];
+      const cause = input.event.lostBackgroundTasksCause ?? "process-ended";
+      return yield* lostBackgroundWorkEvents(input, {
+        run,
+        cause: startedAgain && cause === "stopped" ? "turn-restarted" : cause,
+        work,
+      });
+    });
 
     /**
      * Wakes the chat now; restart recovery wakes it too if the server stops before this commits.
@@ -828,6 +882,24 @@ export const layer: Layer.Layer<
                 events,
               })
               .pipe(retryLockTimeout, Effect.mapError(mapWriteError));
+            if (!result.committed) {
+              const lost = yield* recordLostBackgroundWorkOfMovedOnRun(input).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderEventNormalizeError({
+                      providerSessionId: input.providerSessionId,
+                      threadId: input.threadId,
+                      providerEvent: input.event,
+                      cause,
+                    }),
+                ),
+              );
+              if (lost.length > 0) {
+                yield* eventSink
+                  .write({ events: lost })
+                  .pipe(retryLockTimeout, Effect.mapError(mapWriteError));
+              }
+            }
             return result.storedEvents;
           },
           (effect, input) =>

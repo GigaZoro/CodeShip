@@ -27,6 +27,7 @@ import {
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -585,6 +586,12 @@ export interface RunExecutionServiceV2Shape {
   readonly startRootRun: (
     input: RunExecutionServiceV2StartRootRunInput,
   ) => Effect.Effect<void, RunExecutionServiceV2Error>;
+  /**
+   * Waits until the event stream of an attempt started here has ingested that attempt's root
+   * terminal, and so everything its provider reported before it, or has ended. Returns at once
+   * for an attempt with no stream in this server.
+   */
+  readonly awaitRootTerminalIngested: (attemptId: RunAttemptId) => Effect.Effect<void>;
 }
 
 export class RunExecutionServiceV2 extends Context.Service<
@@ -617,6 +624,7 @@ export const layer: Layer.Layer<
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
     const finalizationObserver = yield* RunFinalizationService.RunFinalizationObserver;
     const turnAnalytics = yield* ProviderUsageAnalytics.ProviderTurnAnalytics;
+    const pendingRootTerminals = new Map<RunAttemptId, Deferred.Deferred<void>>();
 
     const writeFinalRunEvents = Effect.fn("RunExecutionService.writeFinalRunEvents")(
       function* (input: {
@@ -1331,6 +1339,14 @@ export const layer: Layer.Layer<
         // Ends once the root turn and the children it drives settle. Background commands such
         // as a dev server keep this consumer alive afterwards and must not pin preview focus.
         const endPreviewActivity = yield* previewAgentActivity.begin(input.run.threadId);
+        const rootTerminalIngested = yield* Deferred.make<void>();
+        pendingRootTerminals.set(input.attempt.id, rootTerminalIngested);
+        const settleRootTerminal = Effect.suspend(() => {
+          if (pendingRootTerminals.get(input.attempt.id) === rootTerminalIngested) {
+            pendingRootTerminals.delete(input.attempt.id);
+          }
+          return Deferred.succeed(rootTerminalIngested, undefined);
+        });
         const providerEventFiber = yield* eventSubscription.events.pipe(
           Stream.mapEffect((event) =>
             Effect.gen(function* () {
@@ -1517,6 +1533,7 @@ export const layer: Layer.Layer<
                 yield* Ref.set(terminalEvent, event);
                 yield* Ref.set(rootTerminalSeen, true);
                 yield* finalizeRootRun(event);
+                yield* settleRootTerminal;
               }
               if (event.type === "background_work.updated") {
                 if (event.pending) {
@@ -1673,6 +1690,7 @@ export const layer: Layer.Layer<
           ),
           Effect.ensuring(endPreviewActivity),
           Effect.ensuring(eventSubscription.close),
+          Effect.ensuring(settleRootTerminal),
           Effect.forkDetach,
         );
 
@@ -1808,6 +1826,11 @@ export const layer: Layer.Layer<
           ),
         );
       }),
+      awaitRootTerminalIngested: (attemptId) =>
+        Effect.suspend(() => {
+          const pending = pendingRootTerminals.get(attemptId);
+          return pending === undefined ? Effect.void : Deferred.await(pending);
+        }),
     } satisfies RunExecutionServiceV2Shape);
   }),
 );

@@ -162,6 +162,15 @@ released, so the release asks the runtime it closes whose background work it sti
 instead of trusting the session id on the row. The record goes to the latest run that is
 not being started again, so the prompt that run is about to build includes it.
 
+A restart of a running turn moves its run to the next attempt before it interrupts the
+process the old attempt ran, so the run gate refuses that attempt's last roster, the update
+that reports what the closed process lost. Ingestion still records the loss, without the
+stale roster, on the same run a release would. When no earlier run shares the provider
+thread it stays on the restarted run, and the next message carries it, because a run's own
+record is told only to later runs. The provider reports the loss after the turn's own status
+and before its terminal, so the restart waits until the interrupted attempt's stream has
+ingested that terminal before it detaches a session or builds the next prompt.
+
 A rollback closes the process as well and writes the provider thread itself, so the
 adapter returns the tasks it stopped with the rolled-back thread instead of reporting them
 on a run's stream, which that write would race and whose stale roster it would put back.

@@ -18,8 +18,10 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -30,6 +32,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
+import * as RunExecutionService from "./RunExecutionService.ts";
 
 const driver = ProviderDriverKind.make("codex");
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -303,10 +306,20 @@ it.effect(
           releaseUnlessBusy: () => Effect.succeed(true),
         }),
       );
+      const terminalAwaited = yield* Deferred.make<RunAttemptId>();
+      const terminalIngested = yield* Deferred.make<void>();
       const layerControl = ProviderTurnControlService.layer.pipe(
         Layer.provide(ProviderSkillsTestkit.layer),
         Layer.provide(ServerSettings.layerTest()),
         Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
+        Layer.provide(
+          Layer.mock(RunExecutionService.RunExecutionServiceV2)({
+            awaitRootTerminalIngested: (awaited) =>
+              Deferred.succeed(terminalAwaited, awaited).pipe(
+                Effect.andThen(Deferred.await(terminalIngested)),
+              ),
+          }),
+        ),
         Layer.provide(Layer.merge(layerProjection, layerSessionManager)),
       );
 
@@ -337,7 +350,7 @@ it.effect(
       assert.isTrue(Exit.isFailure(unrelatedRestart));
       assert.isNull(yield* Ref.get(interruptedThread));
 
-      yield* Effect.gen(function* () {
+      const restart = yield* Effect.gen(function* () {
         const control = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
         yield* control.interruptAndAwaitTerminal({
           threadId,
@@ -347,7 +360,13 @@ it.effect(
           providerTurnId,
           interruptedAttemptId: attemptId,
         });
-      }).pipe(Effect.provide(layerControl));
+      }).pipe(Effect.provide(layerControl), Effect.forkChild);
+      // The interrupted turn's last report, such as the work its process lost, is stored before
+      // the restart builds the next prompt.
+      assert.equal(yield* Deferred.await(terminalAwaited), attemptId);
+      assert.isUndefined(restart.pollUnsafe());
+      yield* Deferred.succeed(terminalIngested, undefined);
+      yield* Fiber.join(restart);
 
       const interrupted = yield* Ref.get(interruptedThread);
       assert.isNotNull(interrupted);

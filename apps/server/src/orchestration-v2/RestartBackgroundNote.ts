@@ -165,7 +165,7 @@ export function restartCancelledBackgroundWorkNote(work: ReadonlyArray<Work>): s
 
 /**
  * What ended background work without a report: its server, its agent process, that process's
- * session, or a Stop or a rollback that closed the process.
+ * session, or a Stop, a turn restart or a rollback that closed the process.
  */
 export type BackgroundWorkStop =
   | "server-restarted"
@@ -175,6 +175,7 @@ export type BackgroundWorkStop =
   | "session-failed"
   | "session-closed"
   | "stopped"
+  | "turn-restarted"
   | "rolled-back";
 
 const BACKGROUND_WORK_STOP_TEXT: Record<
@@ -191,6 +192,10 @@ const BACKGROUND_WORK_STOP_TEXT: Record<
   "session-failed": { title: "Agent session failed", lead: "The agent's session failed" },
   "session-closed": { title: "Agent session closed", lead: "The agent's session was closed" },
   stopped: { title: "Chat stopped", lead: "Stopping the chat ended the agent process" },
+  "turn-restarted": {
+    title: "Turn restarted",
+    lead: "Restarting the turn ended the agent process",
+  },
   "rolled-back": {
     title: "Conversation rewound",
     lead: "Rewinding the conversation ended the agent process",

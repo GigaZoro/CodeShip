@@ -1,3 +1,8 @@
+## 2026-11-12 — A restarted turn is told what background work its agent process lost
+
+- **Stop and send** on a running Claude turn, and a turn moved to another account because of a usage limit, close the agent process with the chat's background commands and monitors. The restarted turn is now told which of them stopped. Before, that was recorded nowhere, and the agent could wait for a command that no longer existed. In a chat's first turn the agent is told with your next message instead.
+- The thread shows it as a **Turn restarted** notice that lists the stopped work.
+
 ## 2026-11-12 — Going back in a chat never leaves a later turn behind
 
 - **Edit from here** and **Retry** now go back past every later turn whose agent has finished, including a turn that has just ended and whose file snapshot is not saved yet. Before, such a turn could stay in the chat after the conversation and files went back past it, and going back to just before it said "The thread has changed. Select a message to rewind again."

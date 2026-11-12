@@ -2600,6 +2600,40 @@ it.effect("emits run_interrupt_result when superseded attempt still has a hard-s
   }),
 );
 
+it.effect("waits for an attempt until its stream has ingested the root terminal", () =>
+  Effect.gen(function* () {
+    const key = "await-root-terminal";
+    const ids = backgroundScenarioIds(key);
+    const ingested = yield* Ref.make<ReadonlyArray<string>>([]);
+    const terminalSent = yield* Deferred.make<void>();
+    yield* captureRootRunTermination({
+      key,
+      shouldFinalizeRun: () => Effect.succeed(false),
+      ingestNormalized: ({ event }) =>
+        Ref.update(ingested, (types) => [...types, event.type]).pipe(Effect.as([])),
+      events: () =>
+        Stream.concat(
+          Stream.make({
+            type: "provider_thread.updated",
+            driver,
+            providerThread: { id: ids.providerThreadId, driver },
+          } as ProviderAdapter.ProviderAdapterV2Event),
+          Stream.fromEffect(
+            Deferred.await(terminalSent).pipe(Effect.as(rootTerminalEvent(ids, "interrupted"))),
+          ),
+        ),
+      afterStart: () =>
+        Effect.gen(function* () {
+          const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
+          yield* runExecution.awaitRootTerminalIngested(RunAttemptId.make(`attempt:${key}:other`));
+          yield* Deferred.succeed(terminalSent, undefined);
+          yield* runExecution.awaitRootTerminalIngested(ids.attemptId);
+          assert.deepEqual(yield* Ref.get(ingested), ["provider_thread.updated", "turn.terminal"]);
+        }),
+    });
+  }),
+);
+
 it.effect("does not overwrite Stop when ownership changes after the finalization read", () =>
   Effect.gen(function* () {
     const { written, observed, submittedEffects, committedEffects } =
@@ -3157,7 +3191,11 @@ function captureRootRunTermination(input: {
   ) => Effect.Effect<boolean, EventSink.EventSinkV2Error>;
   readonly afterStart?: (
     closed: Deferred.Deferred<void>,
-  ) => Effect.Effect<void, never, PreviewAgentActivity.PreviewAgentActivity>;
+  ) => Effect.Effect<
+    void,
+    never,
+    PreviewAgentActivity.PreviewAgentActivity | RunExecutionService.RunExecutionServiceV2
+  >;
 }) {
   return Effect.gen(function* () {
     const ids = backgroundScenarioIds(input.key);

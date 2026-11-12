@@ -21,9 +21,14 @@ import * as Schema from "effect/Schema";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import * as RunExecutionService from "./RunExecutionService.ts";
 import * as ProviderSkills from "../provider/ProviderSkills.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+
+// The terminal follows the turn's stopped status in the same burst of events; this only bounds a
+// stream that never delivers it.
+const INTERRUPTED_TERMINAL_INGEST_TIMEOUT = "10 seconds";
 
 const yieldToRuntime = Effect.yieldNow.pipe(
   Effect.andThen(
@@ -97,11 +102,13 @@ export const layer: Layer.Layer<
   | ProviderSkills.ProviderSkills
   | ServerSettings.ServerSettingsService
   | ProjectService.ProjectService
+  | RunExecutionService.RunExecutionServiceV2
 > = Layer.effect(
   ProviderTurnControlServiceV2,
   Effect.gen(function* () {
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const skills = yield* ProviderSkills.ProviderSkills;
     const settings = yield* ServerSettings.ServerSettingsService;
     const projects = yield* ProjectService.ProjectService;
@@ -323,6 +330,25 @@ export const layer: Layer.Layer<
               attempt !== undefined &&
               attempt.status !== "running"
             ) {
+              // The provider reports what the interrupted turn's process lost, such as its
+              // background work, after the turn's own status and before its terminal. The next
+              // prompt is built from that record, so let the stream store it first.
+              const ingested = yield* runExecution
+                .awaitRootTerminalIngested(input.interruptedAttemptId)
+                .pipe(
+                  Effect.timeoutOption(INTERRUPTED_TERMINAL_INGEST_TIMEOUT),
+                  Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()),
+                );
+              if (Option.isNone(ingested)) {
+                yield* Effect.logWarning(
+                  "Provider restart continued before the interrupted turn's terminal was stored",
+                  {
+                    threadId: input.threadId,
+                    providerTurnId: input.providerTurnId,
+                    interruptedAttemptId: input.interruptedAttemptId,
+                  },
+                );
+              }
               return;
             }
             // Yield through Node's event loop; detached ingestion cannot advance a deterministic Effect clock.

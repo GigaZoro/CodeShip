@@ -7,6 +7,7 @@ import {
   type ModelSelection,
   type OrchestrationV2ProviderCapabilities,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2PendingBackgroundTask,
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
   ProjectId,
@@ -35,6 +36,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import { completedRunLiftsScope } from "./AccountRouting.ts";
 import {
+  backgroundWorkStoppedNoticeId,
   cancelledRosterTaskWork,
   restartCancelledBackgroundWorkNote,
 } from "./RestartBackgroundNote.ts";
@@ -101,6 +103,8 @@ function makeRestartAdapter(
   providerInstanceId = initialSelection.instanceId,
   // Running turns report a 429 retry held until this reset, as Claude's retry watchdog does.
   heldUntil?: DateTime.Utc,
+  // An interrupt closes the process with this work, which is reported as Claude reports it.
+  lostOnInterrupt?: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
 ): ProviderAdapter.ProviderAdapterV2["Service"] {
   return {
     instanceId: providerInstanceId,
@@ -162,7 +166,11 @@ function makeRestartAdapter(
           })),
         );
 
-        const publishTerminal = (active: ActiveTurn, status: "completed" | "interrupted") =>
+        const publishTerminal = (
+          active: ActiveTurn,
+          status: "completed" | "interrupted",
+          beforeTerminal?: ProviderAdapter.ProviderAdapterV2Event,
+        ) =>
           Effect.gen(function* () {
             const occurredAt = yield* DateTime.now;
             yield* Queue.offer(events, {
@@ -184,6 +192,7 @@ function makeRestartAdapter(
                 completedAt: occurredAt,
               },
             });
+            if (beforeTerminal !== undefined) yield* Queue.offer(events, beforeTerminal);
             yield* Queue.offer(events, {
               type: "turn.terminal",
               driver,
@@ -303,16 +312,28 @@ function makeRestartAdapter(
               const active = (yield* Ref.get(state)).activeTurn;
               if (active !== null) {
                 const updatedAt = yield* DateTime.now;
-                yield* Queue.offer(events, {
-                  type: "provider_thread.updated",
-                  driver,
-                  providerThread: {
-                    ...active.input.providerThread,
-                    status: "idle",
-                    updatedAt,
-                  },
-                });
-                yield* publishTerminal(active, "interrupted");
+                const providerThread = {
+                  ...active.input.providerThread,
+                  status: "idle" as const,
+                  updatedAt,
+                };
+                if (lostOnInterrupt === undefined) {
+                  yield* Queue.offer(events, {
+                    type: "provider_thread.updated",
+                    driver,
+                    providerThread,
+                  });
+                  yield* publishTerminal(active, "interrupted");
+                } else {
+                  // After the turn's own status, before its terminal.
+                  yield* publishTerminal(active, "interrupted", {
+                    type: "provider_thread.updated",
+                    driver,
+                    providerThread: { ...providerThread, pendingBackgroundTasks: [] },
+                    lostBackgroundTasks: lostOnInterrupt,
+                    lostBackgroundTasksCause: "stopped",
+                  });
+                }
                 yield* Ref.update(state, (current) => ({ ...current, activeTurn: null }));
               }
             }),
@@ -981,6 +1002,154 @@ it.live.each([
       }).pipe(Effect.provide(ProviderReplayHarness.layerWithRegistry({ name }, layerRegistry)));
     }),
   ),
+);
+
+// A restart closes the interrupted turn's process with its background work, and the provider
+// reports that work only after the turn's own status, as Claude does.
+it.live.each(["earlier-run", "first-run"] as const)(
+  "records the background work a restarted turn's process lost and tells it once (%s)",
+  (mode) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const name = `restart-lost-work-${mode}`;
+        const cwd = yield* checkpointWorkspace(name);
+        const threadId = ThreadId.make(`thread:${name}`);
+        const state = yield* Ref.make<RestartAdapterState>({
+          activeTurn: null,
+          opened: [],
+          started: [],
+          closedSessionCount: 0,
+          failedReplacementOpen: true,
+        });
+        const lostWork = [
+          { taskId: "build", kind: "command", description: "vp run build", awaited: true },
+        ] as const;
+        const messages: string[] = [];
+        const base = makeRestartAdapter(
+          state,
+          pooledCapabilities,
+          providerInstanceId,
+          undefined,
+          lostWork,
+        );
+        const adapter = {
+          ...base,
+          openSession: (input) =>
+            base.openSession(input).pipe(
+              Effect.map((session) => ({
+                ...session,
+                startTurn: (turn) =>
+                  Effect.sync(() => messages.push(turn.message.text)).pipe(
+                    Effect.andThen(session.startTurn(turn)),
+                  ),
+              })),
+            ),
+        } satisfies ProviderAdapter.ProviderAdapterV2["Service"];
+        const completing = { ...initialSelection, model: "complete" };
+        const projection = yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`${name}:create`),
+            threadId,
+            projectId: ProjectId.make(`project:${name}`),
+            title: name,
+            modelSelection: completing,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: cwd,
+            createdBy: "user",
+            creationSource: "web",
+          });
+          const dispatch = (step: string, modelSelection: ModelSelection, targetRunId?: RunId) =>
+            Effect.gen(function* () {
+              const settled = yield* orchestrator.streamDomainEvents.pipe(
+                Stream.filter((event) =>
+                  modelSelection.model === initialSelection.model
+                    ? event.type === "provider-turn.updated" && event.payload.status === "running"
+                    : event.type === "run.updated" &&
+                      event.payload.status === "completed" &&
+                      (targetRunId === undefined
+                        ? event.payload.userMessageId === MessageId.make(`${name}:${step}`)
+                        : event.payload.id === targetRunId),
+                ),
+                Stream.take(1),
+                Stream.runDrain,
+                Effect.forkScoped,
+              );
+              yield* orchestrator.dispatch({
+                type: "message.dispatch",
+                commandId: CommandId.make(`${name}:${step}`),
+                threadId,
+                messageId: MessageId.make(`${name}:${step}`),
+                text: step,
+                attachments: [],
+                modelSelection,
+                dispatchMode:
+                  targetRunId === undefined
+                    ? { type: "start_immediately" }
+                    : { type: "restart_active", targetRunId },
+                createdBy: "user",
+                creationSource: "web",
+              });
+              yield* worker.drain();
+              yield* Fiber.join(settled);
+              yield* worker.drain();
+              return yield* orchestrator.getThreadProjection(threadId);
+            });
+          if (mode === "earlier-run") yield* dispatch("earlier", completing);
+          const working = yield* dispatch("working", initialSelection);
+          const workingRun = working.runs.at(-1)!;
+          const restarted = yield* dispatch("restart", completing, workingRun.id);
+          yield* dispatch("after", completing);
+          yield* dispatch("again", completing);
+          return restarted;
+        }).pipe(
+          Effect.provide(
+            ProviderReplayHarness.layerWithRegistry(
+              { name },
+              ProviderAdapterRegistry.layerSingle(adapter),
+            ),
+          ),
+        );
+
+        const note = restartCancelledBackgroundWorkNote(lostWork.map(cancelledRosterTaskWork));
+        // The run before the one started again carries the loss, so the restart's prompt tells
+        // it. A chat's first run has none before it, so its next message tells it instead.
+        const recordRun = projection.runs[0]!;
+        assert.deepEqual(
+          projection.runs.map((run) => [run.status, run.restartCancelledBackgroundWork]),
+          mode === "earlier-run"
+            ? [
+                ["completed", lostWork.map(cancelledRosterTaskWork)],
+                ["completed", undefined],
+              ]
+            : [["completed", lostWork.map(cancelledRosterTaskWork)]],
+        );
+        assert.deepInclude(
+          projection.turnItems.find(
+            (item) => item.id === backgroundWorkStoppedNoticeId(recordRun.id),
+          ),
+          {
+            type: "system_notice",
+            title: "Turn restarted",
+            message: [
+              "Restarting the turn ended the agent process and stopped background work before it finished:",
+              "- shell: vp run build (id build)",
+              "This chat was waiting on it.",
+            ].join("\n"),
+          },
+        );
+        assert.deepEqual(
+          messages,
+          mode === "earlier-run"
+            ? ["earlier", "working", `${note}\n\nUser message:\nrestart`, "after", "again"]
+            : ["working", "restart", `${note}\n\nUser message:\nafter`, "again"],
+        );
+      }),
+    ),
 );
 
 it.live("moves a turn its provider holds for a usage limit to an account with room", () =>
