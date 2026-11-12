@@ -36,6 +36,10 @@ export interface AccountSharingDriver {
   readonly sharedFields: ReadonlyArray<string>;
   /** Its default config as stored, so a field left at its default is not this machine's own. */
   readonly defaults: Readonly<Record<string, unknown>>;
+  /** A config checked by the schema its settings form uses, as that form would store it. */
+  readonly checkConfig: (
+    config: Readonly<Record<string, unknown>>,
+  ) => Effect.Effect<Record<string, unknown>, Schema.SchemaError>;
 }
 
 /** The drivers whose accounts this build shares: those with `privateAccountHomes`. */
@@ -52,12 +56,17 @@ export const accountSharingDrivers = Effect.fn("sharedProviderInstances.accountS
     for (const { driverKind, metadata, configSchema, defaultConfig } of drivers) {
       if (metadata.privateAccountHomes !== true) continue;
       // Once per driver as the service starts; each driver has its own schema.
-      const defaults = yield* Schema.encodeUnknownEffect(configSchema)(defaultConfig()).pipe(
-        Effect.orDie,
-      );
+      const decode = Schema.decodeUnknownEffect(configSchema);
+      const encode = Schema.encodeUnknownEffect(configSchema);
+      const defaults = yield* encode(defaultConfig()).pipe(Effect.orDie);
       sharing.set(driverKind, {
         sharedFields: SHARED_CONFIG_FIELDS[driverKind] ?? [],
         defaults: configRecord(defaults),
+        checkConfig: (config) =>
+          decode(config).pipe(
+            Effect.flatMap((decoded) => encode(decoded).pipe(Effect.orDie)),
+            Effect.map(configRecord),
+          ),
       });
     }
     return sharing as AccountSharingDrivers;
@@ -86,7 +95,7 @@ function sharedConfig(driver: AccountSharingDriver, config: unknown): Record<str
  * What a machine shares of one provider instance, or nothing for a driver it does not share. A
  * missing built-in instance still runs with its defaults; a missing added account is a removal.
  */
-function sharedProviderInstanceValue(
+export function sharedProviderInstanceValue(
   sharing: AccountSharingDrivers,
   instanceId: ProviderInstanceId,
   instance: ProviderInstanceConfig | undefined,
@@ -258,6 +267,131 @@ export function sharedProviderInstanceMutation(
 const withoutLegacyEnabled = (instance: ProviderInstanceConfig | undefined) =>
   withoutFields(configRecord(instance?.config), ["enabled"]);
 
+/** Why an account's shared fields could not be set as asked; the message says what to change. */
+export class AccountConfigError extends Schema.TaggedError<AccountConfigError>()(
+  "AccountConfigError",
+  { message: Schema.String },
+) {}
+
+/** An account here, with the fields it shares at their stored values or defaults. */
+export interface AccountSharedConfig {
+  readonly driver: ProviderDriverKind;
+  readonly displayName?: string;
+  /** Whether a change here reaches the machines that follow; never for a built-in account. */
+  readonly sharedWithMachines: boolean;
+  readonly config: Readonly<Record<string, unknown>>;
+}
+
+interface AccountHere {
+  readonly instance: ProviderInstanceConfig;
+  readonly driver: AccountSharingDriver;
+}
+
+/** The accounts here with fields to share, and built-in ones that run on their defaults. */
+function accountsHere(
+  sharing: AccountSharingDrivers,
+  instances: ProviderInstances,
+): ReadonlyMap<ProviderInstanceId, AccountHere> {
+  const accounts = new Map<ProviderInstanceId, AccountHere>();
+  const add = (instanceId: ProviderInstanceId, instance: ProviderInstanceConfig) => {
+    const driver = sharing.get(instance.driver);
+    if (driver !== undefined && driver.sharedFields.length > 0) {
+      accounts.set(instanceId, { instance, driver });
+    }
+  };
+  for (const [id, instance] of Object.entries(instances))
+    add(ProviderInstanceId.make(id), instance);
+  for (const driverKind of sharing.keys()) {
+    const instanceId = ProviderInstanceId.make(driverKind);
+    if (!Object.hasOwn(instances, instanceId)) {
+      add(instanceId, { driver: ProviderDriverKind.make(driverKind) });
+    }
+  }
+  return accounts;
+}
+
+export function accountSharedConfigs(
+  sharing: AccountSharingDrivers,
+  settings: ServerSettings,
+): Readonly<Record<string, AccountSharedConfig>> {
+  return Object.fromEntries(
+    [...accountsHere(sharing, settings.providerInstances)].map(
+      ([instanceId, { instance, driver }]) => [
+        instanceId,
+        {
+          driver: instance.driver,
+          ...(instance.displayName === undefined ? {} : { displayName: instance.displayName }),
+          sharedWithMachines:
+            settings.followSharedSettings &&
+            !isBuiltInProviderInstance(instanceId, instance.driver),
+          config: {
+            ...Object.fromEntries(
+              driver.sharedFields.map((field) => [field, driver.defaults[field]]),
+            ),
+            ...sharedConfig(driver, instance.config),
+          },
+        },
+      ],
+    ),
+  );
+}
+
+/** Fields to set on one account: each as its schema stores it, or `undefined` for its default. */
+export interface AccountConfigChange {
+  readonly instanceId: ProviderInstanceId;
+  readonly driver: ProviderDriverKind;
+  readonly fields: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Checks fields to set on an account here: only fields it shares, so never a path, binary, home,
+ * launch argument or credential, each valid by the schema its settings form uses. A change for all
+ * machines cannot name a built-in account, whose settings stay on each machine.
+ */
+export const accountConfigChange = Effect.fn("sharedProviderInstances.accountConfigChange")(
+  function* (
+    sharing: AccountSharingDrivers,
+    instances: ProviderInstances,
+    instanceId: ProviderInstanceId,
+    fields: Readonly<Record<string, unknown>>,
+    forAllMachines: boolean,
+  ) {
+    const accounts = accountsHere(sharing, instances);
+    const account = accounts.get(instanceId);
+    if (account === undefined) {
+      return yield* new AccountConfigError({
+        message: `No account ${instanceId} with settings to set. Accounts: ${[...accounts.keys()].join(", ")}.`,
+      });
+    }
+    const { instance, driver } = account;
+    if (forAllMachines && isBuiltInProviderInstance(instanceId, instance.driver)) {
+      return yield* new AccountConfigError({
+        message: `${instanceId} is a built-in account: its settings stay on each machine, so they cannot be set for all machines.`,
+      });
+    }
+    const refused = Object.keys(fields).filter((field) => !driver.sharedFields.includes(field));
+    if (refused.length > 0) {
+      return yield* new AccountConfigError({
+        message: `${instanceId} cannot set ${refused.join(", ")}: only ${driver.sharedFields.join(", ")}.`,
+      });
+    }
+    const set: Record<string, unknown> = {};
+    for (const [field, value] of Object.entries(fields)) {
+      // Against the defaults, so a bad value stored in another field cannot refuse this one.
+      const stored = (yield* driver.checkConfig({ ...driver.defaults, [field]: value }).pipe(
+        Effect.mapError(
+          (issue) =>
+            new AccountConfigError({
+              message: `${instanceId} ${field} ${JSON.stringify(value)} is invalid: ${issue.message}`,
+            }),
+        ),
+      ))[field];
+      set[field] = Equal.equals(stored, driver.defaults[field]) ? undefined : stored;
+    }
+    return { instanceId, driver: instance.driver, fields: set } satisfies AccountConfigChange;
+  },
+);
+
 type SharedAccountChange = readonly [ProviderInstanceId, SharedProviderInstanceValue];
 
 /**
@@ -290,4 +424,35 @@ export function changedSharedProviderInstances(
     if (previous === undefined || was === undefined) return [];
     return [[instanceId, { removed: true, driver: previous.driver }] as const];
   });
+}
+
+/**
+ * The writes that make `changes` to the accounts as they stand now, leaving out any that would
+ * change nothing; nothing at all when one of them is gone or runs another driver, so a batch is
+ * made whole or not at all. A field at its default is left out, as the settings form leaves it.
+ */
+export function accountConfigMutations(
+  instances: ProviderInstances,
+  changes: ReadonlyArray<AccountConfigChange>,
+): ReadonlyArray<ProviderInstanceMutation> | undefined {
+  const mutations: ProviderInstanceMutation[] = [];
+  for (const { instanceId, driver, fields } of changes) {
+    const local = Object.hasOwn(instances, instanceId) ? instances[instanceId] : undefined;
+    if (
+      local === undefined ? !isBuiltInProviderInstance(instanceId, driver) : local.driver !== driver
+    ) {
+      return undefined;
+    }
+    const config = Object.fromEntries(
+      Object.entries({ ...configRecord(local?.config), ...fields }).filter(
+        ([, value]) => value !== undefined,
+      ),
+    );
+    const keepsNoConfig = local?.config === undefined && Object.keys(config).length === 0;
+    const instance = { ...(local ?? { driver }), ...(keepsNoConfig ? {} : { config }) };
+    // A built-in account left on its defaults needs no settings of its own.
+    const changed = local === undefined ? !keepsNoConfig : !Equal.equals(local, instance);
+    if (changed) mutations.push({ operation: "upsert", instanceId, instance });
+  }
+  return mutations;
 }

@@ -1175,6 +1175,228 @@ it.effect("a built-in provider shares only its name and whether it is on", () =>
   }),
 );
 
+const CLAUDE_BUILT_IN = ProviderInstanceId.make("claudeAgent");
+
+it.effect(
+  "an agent sets the fields an account shares as its form would, and the group takes them",
+  () =>
+    Effect.gen(function* () {
+      const local = workAccount("a");
+      const { versions, accounts } = yield* run(
+        (shared, settings) =>
+          Effect.gen(function* () {
+            yield* shared.updateAccountConfigs({
+              [WORK]: { autoCompactWindow: " 400000 ", idleCompaction: "off" },
+              [CLAUDE_BUILT_IN]: { autoCompactWindow: "250000" },
+            });
+            const current = yield* settings.getSettings;
+            // Its paths, binary, launch arguments, token and environment stay as they were.
+            expect(current.providerInstances[WORK]).toEqual({
+              ...local,
+              config: { ...local.config, autoCompactWindow: "400000", idleCompaction: "off" },
+            });
+            // A built-in account gets settings of its own here, which it never shares.
+            expect(current.providerInstances[CLAUDE_BUILT_IN]).toEqual({
+              driver: CLAUDE,
+              config: { autoCompactWindow: "250000" },
+            });
+            return {
+              versions: yield* shared.servedVersions,
+              accounts: yield* shared.accountConfigs(current),
+            };
+          }),
+        { providerInstances: { [WORK]: local } },
+      );
+      expect(versions.map(({ key }) => key)).toEqual([WORK_KEY]);
+      expect(accounts).toEqual({
+        [WORK]: {
+          driver: CLAUDE,
+          displayName: "Claude - Work",
+          sharedWithMachines: true,
+          config: {
+            customModels: ["claude-opus-5-5"],
+            autoCompactWindow: "400000",
+            idleCompaction: "off",
+          },
+        },
+        [CLAUDE_BUILT_IN]: {
+          driver: CLAUDE,
+          sharedWithMachines: false,
+          config: { customModels: [], autoCompactWindow: "250000", idleCompaction: "default" },
+        },
+        codex: { driver: CODEX, sharedWithMachines: false, config: { customModels: [] } },
+        cursor: { driver: "cursor", sharedWithMachines: false, config: { customModels: [] } },
+        antigravity: {
+          driver: "antigravity",
+          sharedWithMachines: false,
+          config: { customModels: [] },
+        },
+      });
+      const elsewhere = yield* run(
+        (shared, settings) =>
+          Effect.gen(function* () {
+            yield* shared.applyPulled(HERE, versions);
+            const arrived = yield* instanceOf(settings, WORK);
+            // Back to Claude's default, which the form leaves out rather than storing empty.
+            yield* shared.updateAccountConfigs({ [WORK]: { autoCompactWindow: "" } });
+            return { arrived, reset: yield* instanceOf(settings, WORK) };
+          }),
+        { providerInstances: { [WORK]: workAccount("b") } },
+        undefined,
+        undefined,
+        PEER,
+      );
+      expect(elsewhere.arrived?.config).toEqual({
+        ...workAccount("b").config,
+        autoCompactWindow: "400000",
+        idleCompaction: "off",
+      });
+      expect(elsewhere.reset?.config).not.toHaveProperty("autoCompactWindow");
+    }),
+);
+
+it.effect.each([
+  {
+    name: "an account this machine does not have",
+    changes: { claudeAgent_missing: { autoCompactWindow: "300000" } },
+    says: "No account claudeAgent_missing",
+  },
+  { name: "a home path", changes: { [WORK]: { homePath: "/tmp/elsewhere" } }, says: "homePath" },
+  {
+    name: "launch arguments and a credential",
+    changes: { [WORK]: { launchArgs: "--chrome", oauthToken: { fingerprint: "x" } } },
+    says: "cannot set launchArgs, oauthToken",
+  },
+  {
+    name: "a window below the least",
+    changes: { [WORK]: { autoCompactWindow: "99999" } },
+    says: 'autoCompactWindow "99999" is invalid',
+  },
+  {
+    name: "a window given as a number",
+    changes: { [WORK]: { autoCompactWindow: 400000 } },
+    says: "autoCompactWindow 400000 is invalid",
+  },
+  {
+    name: "an idle mode Claude does not have",
+    changes: { [WORK]: { idleCompaction: "sometimes" } },
+    says: 'idleCompaction "sometimes" is invalid',
+  },
+  {
+    name: "a good account beside an unknown one",
+    changes: { [WORK]: { autoCompactWindow: "500000" }, opencode: { customModels: [] } },
+    says: "No account opencode",
+  },
+])("an agent cannot set $name, and nothing is saved", ({ changes, says }) =>
+  run(
+    (shared, settings) =>
+      Effect.gen(function* () {
+        const before = yield* settings.getSettings;
+        const error = yield* shared
+          .updateAccountConfigs(changes as Record<ProviderInstanceId, Record<string, unknown>>)
+          .pipe(Effect.flip);
+        expect(error._tag).toBe("AccountConfigError");
+        expect(error.message).toContain(says);
+        expect(yield* settings.getSettings).toEqual(before);
+        expect(yield* shared.servedVersions).toEqual([]);
+      }),
+    { providerInstances: { [WORK]: workAccount("a") } },
+  ),
+);
+
+it.effect("a change for all machines shares each account it names, even one already set here", () =>
+  run(
+    (shared, settings) =>
+      Effect.gen(function* () {
+        const asked = { [WORK]: { autoCompactWindow: "300000" } };
+        // The value is already this one here, so a change for this machine has nothing to share.
+        yield* shared.updateAccountConfigs(asked, { patch: { finalReviewByDefault: true } });
+        expect(yield* shared.servedVersions).toEqual([]);
+        expect(yield* finalReview(settings)).toBe(true);
+        // Settings saved with the accounts in the same write are shared as a change for all is.
+        yield* TestClock.adjust("1 minute");
+        yield* shared.updateAccountConfigs(asked, {
+          patch: { finalReviewByDefault: false },
+          forAllMachines: true,
+        });
+        expect(yield* served(shared)).toEqual({
+          finalReviewByDefault: version("finalReviewByDefault", false, SOON, HERE),
+          [WORK_KEY]: version(WORK_KEY, WORK_SHARED, SOON, HERE),
+        });
+      }),
+    { providerInstances: { [WORK]: workAccount("a") } },
+  ),
+);
+
+it.effect.each([
+  {
+    name: "on a machine that does not follow shared settings",
+    changes: { [WORK]: { autoCompactWindow: "500000" } },
+    follows: false,
+    error: { _tag: "ServerSettingsError", operation: "take-shared-setting-unfollowed" },
+  },
+  {
+    name: "for a built-in account",
+    changes: { claudeAgent: { autoCompactWindow: "500000" } },
+    follows: true,
+    error: {
+      _tag: "AccountConfigError",
+      message: expect.stringContaining("is a built-in account"),
+    },
+  },
+])(
+  "a change for all machines is refused $name, and nothing is saved",
+  ({ changes, follows, error }) =>
+    run(
+      (shared, settings) =>
+        Effect.gen(function* () {
+          const before = yield* settings.getSettings;
+          const refused = yield* shared
+            .updateAccountConfigs(changes as Record<ProviderInstanceId, Record<string, unknown>>, {
+              forAllMachines: true,
+            })
+            .pipe(Effect.flip);
+          expect(refused).toMatchObject(error);
+          expect(yield* settings.getSettings).toEqual(before);
+          expect(yield* shared.servedVersions).toEqual([]);
+        }),
+      { followSharedSettings: follows, providerInstances: { [WORK]: workAccount("a") } },
+    ),
+);
+
+/** Settings whose reads outside the write lock still list an account removed a moment before. */
+const removedBeforeTheLock =
+  (instanceId: ProviderInstanceId) =>
+  (real: SettingsService): SettingsService => ({
+    ...real,
+    getSettings: real.getSettings.pipe(
+      Effect.map((current) => ({
+        ...current,
+        providerInstances: { ...current.providerInstances, [instanceId]: workAccount("c") },
+      })),
+    ),
+  });
+
+it.effect("a batch saves nothing when an account it names is removed before the write", () => {
+  const home = ProviderInstanceId.make("claudeAgent_home");
+  return run(
+    (shared, settings) =>
+      Effect.gen(function* () {
+        const refused = yield* shared
+          .updateAccountConfigs({
+            [WORK]: { autoCompactWindow: "500000" },
+            [home]: { autoCompactWindow: "500000" },
+          })
+          .pipe(Effect.flip);
+        expect(refused._tag).toBe("ServerSettingsError");
+        expect(yield* instanceOf(settings, WORK)).toEqual(workAccount("a"));
+        expect(yield* shared.servedVersions).toEqual([]);
+      }),
+    { providerInstances: { [WORK]: workAccount("a") } },
+    removedBeforeTheLock(home),
+  );
+});
+
 it.effect("a removed account leaves every machine that follows, and can be added back", () =>
   Effect.gen(function* () {
     const removal = yield* run(

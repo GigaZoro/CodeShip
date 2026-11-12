@@ -447,7 +447,9 @@ separate, such as a work machine: it neither gives nor takes shared settings.
 - **Use everywhere** in **Differences between machines** shares that machine's value the same way.
   For settings that are not shared, such as project actions, it is a one-off edit of every
   connected machine.
-- Agents can share a preference change with `allMachines` on `t3_environment_preferences_update`.
+- Agents can share a preference change with `allMachines` on `t3_environment_preferences_update`,
+  and set the settings an account shares, such as Claude's **Auto-compact after**, with
+  `providerAccounts`.
 
 ## Manage or revoke access
 

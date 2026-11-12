@@ -85,7 +85,9 @@ other accounts.
 Set **Auto-compact after** in the Claude provider settings to an integer between
 `100000` and `1000000`. For example, `300000` asks Claude to summarize at about
 300,000 tokens. This changes when compaction happens, not the model's context
-window. Leave it empty for Claude Code's default.
+window. Leave it empty for Claude Code's default. An agent with full access can
+set it for you with `t3_environment_preferences_update`; on an added account, the
+value reaches the machines that follow shared settings.
 
 You can also send `/compact` in an existing conversation. Web and desktop offer
 **Compact context** from the context meter. The meter is off by default; see

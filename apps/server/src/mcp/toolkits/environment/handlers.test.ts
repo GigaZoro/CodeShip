@@ -6,6 +6,7 @@ import {
   EnvironmentId,
   ProviderInstanceId,
   ProviderDriverKind,
+  ServerSettingsError,
   type ServerProvider,
   ThreadId,
   type OrchestrationV2ThreadShell,
@@ -15,6 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as Environment from "../../../environment/ServerEnvironment.ts";
@@ -232,6 +234,7 @@ it.effect.each([
         }),
       }),
       Layer.mock(SharedSettings.SharedSettings)({
+        accountConfigs: () => Effect.succeed({}),
         update: (patch) =>
           Ref.updateAndGet(stored, (settings) => applyServerSettingsPatch(settings, patch)),
       }),
@@ -381,6 +384,7 @@ it.effect.each([
         }),
       }),
       Layer.mock(SharedSettings.SharedSettings)({
+        accountConfigs: () => Effect.succeed({}),
         update: (_patch, share) =>
           Ref.update(writes, (all) => [
             ...all,
@@ -423,5 +427,161 @@ it.effect.each([
     } else {
       expect(yield* Ref.get(writes)).toEqual([shared ? "all machines" : "this machine"]);
     }
+  }),
+);
+
+const WORK = ProviderInstanceId.make("claudeAgent_work");
+const workAccount = {
+  driver: ProviderDriverKind.make("claudeAgent"),
+  displayName: "Claude - Work",
+  config: { homePath: "/home/user/.claude-work" },
+};
+
+/** Settings in which an administrator's policy locks one preference, refusing writes that set it. */
+const lockingNewWorktrees = (
+  real: Settings.ServerSettingsService["Service"],
+): Settings.ServerSettingsService["Service"] => {
+  const locked = new ServerSettingsError({
+    settingsPath: "test settings",
+    operation: "write-managed-setting",
+    managedSetting: "newWorktreesStartFromOrigin",
+    managedBy: "Example Corp",
+  });
+  return {
+    ...real,
+    updateSettings: (patch, hooks) =>
+      patch.newWorktreesStartFromOrigin === undefined
+        ? real.updateSettings(patch, hooks)
+        : Effect.fail(locked),
+    updateProviderInstance: (mutation, patch = {}, hooks) =>
+      patch.newWorktreesStartFromOrigin === undefined
+        ? real.updateProviderInstance(mutation, patch, hooks)
+        : Effect.fail(locked),
+  };
+};
+
+it.effect.each([
+  { name: "an added account", accounts: { [WORK]: { autoCompactWindow: "300000" } } },
+  {
+    name: "an added account on every machine",
+    accounts: { [WORK]: { autoCompactWindow: "300000" } },
+    allMachines: true,
+  },
+  {
+    name: "a path",
+    accounts: { [WORK]: { binaryPath: "/tmp/claude" } },
+    refused: "cannot set binaryPath",
+  },
+  {
+    name: "a built-in account on every machine",
+    accounts: { claudeAgent: { autoCompactWindow: "300000" } },
+    allMachines: true,
+    refused: "is a built-in account",
+  },
+  {
+    name: "an account beside a preference a policy locks",
+    accounts: { [WORK]: { autoCompactWindow: "300000" } },
+    newWorktreesStartFromOrigin: false,
+    refused: "newWorktreesStartFromOrigin is managed by Example Corp",
+  },
+] as const)("providerAccounts sets $name, or says why not", ({ accounts, ...row }) =>
+  Effect.gen(function* () {
+    const dependencies = Layer.mergeAll(
+      ThreadCommandExecutor.layer,
+      Layer.succeed(McpInvocationContext.McpInvocationContext, {
+        environmentId,
+        requestNamespace: "client:accounts",
+        thread: undefined,
+        client: { sessionId: "accounts", label: "Peer", linked: false, access: "full-access" },
+        capabilities: new Set(["orchestration" as const]),
+        issuedAt: 0,
+      }),
+      Layer.mock(ThreadManagement.ThreadManagementService)({}),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+      Layer.mock(Environment.ServerEnvironment)({
+        getDescriptor: Effect.succeed({
+          environmentId,
+          label: "Test",
+          platform: { os: "linux", arch: "x64" },
+          serverVersion: "0.0.0",
+          capabilities: { repositoryIdentity: false },
+        }),
+      }),
+      SharedSettings.layerTest.pipe(
+        Layer.provideMerge(
+          Layer.effect(
+            Settings.ServerSettingsService,
+            Settings.ServerSettingsService.pipe(
+              Effect.map((real) =>
+                "newWorktreesStartFromOrigin" in row ? lockingNewWorktrees(real) : real,
+              ),
+            ),
+          ).pipe(
+            Layer.provide(
+              Settings.ServerSettingsService.layerTest({
+                followSharedSettings: true,
+                providerInstances: { [WORK]: workAccount },
+              }),
+            ),
+          ),
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const toolkit = yield* EnvironmentToolkit;
+      const settings = yield* Settings.ServerSettingsService;
+      const before = yield* settings.getSettings;
+      const result = yield* toolkit
+        .handle("t3_environment_preferences_update", {
+          providerAccounts: accounts,
+          ...("allMachines" in row ? { allMachines: row.allMachines } : {}),
+          ...("newWorktreesStartFromOrigin" in row
+            ? { newWorktreesStartFromOrigin: row.newWorktreesStartFromOrigin }
+            : {}),
+        })
+        .pipe(Stream.unwrap, Stream.runCollect);
+      if ("refused" in row) {
+        expect(result.at(-1)?.result).toMatchObject({
+          code: "invalid_request",
+          message: expect.stringContaining(row.refused),
+        });
+        expect(yield* settings.getSettings).toEqual(before);
+        return;
+      }
+      const shown = {
+        [WORK]: {
+          driver: "claudeAgent",
+          displayName: "Claude - Work",
+          sharedWithMachines: true,
+          config: { customModels: [], autoCompactWindow: "300000", idleCompaction: "default" },
+        },
+      };
+      expect(result.at(-1)?.result).toMatchObject({ providerAccounts: shown });
+      expect((yield* settings.getSettings).providerInstances[WORK]).toEqual({
+        ...workAccount,
+        config: { ...workAccount.config, autoCompactWindow: "300000" },
+      });
+      const read = yield* toolkit
+        .handle("t3_environment_read", {})
+        .pipe(Stream.unwrap, Stream.runCollect);
+      expect(read.at(-1)?.result).toMatchObject({ providerAccounts: shown });
+      // A linked machine on an older version answers both without providerAccounts.
+      for (const [tool, answer] of [
+        [EnvironmentToolkit.tools.t3_environment_read, read],
+        [EnvironmentToolkit.tools.t3_environment_preferences_update, result],
+      ] as const) {
+        const { providerAccounts: _shown, ...older } = (answer.at(-1)?.encodedResult ?? {}) as {
+          providerAccounts?: unknown;
+        };
+        const decodeAnswer = Schema.decodeUnknownEffect(tool.successSchema);
+        expect(yield* decodeAnswer(older)).not.toHaveProperty("providerAccounts");
+      }
+    }).pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(EnvironmentHandlers.layer).pipe(
+          Layer.provideMerge(dependencies),
+        ),
+      ),
+    );
   }),
 );

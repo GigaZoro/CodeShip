@@ -162,6 +162,21 @@ function withoutUnknownSecretProviderConfigs(
   ) as ServerSettings["secretProviders"];
 }
 
+type ProviderInstanceWrite =
+  | ProviderInstanceMutation
+  | ((
+      current: ServerSettings,
+    ) => ProviderInstanceMutation | ReadonlyArray<ProviderInstanceMutation> | undefined);
+
+export function providerInstanceMutations(
+  current: ServerSettings,
+  write: ProviderInstanceWrite,
+): ReadonlyArray<ProviderInstanceMutation> | undefined {
+  const resolved = typeof write === "function" ? write(current) : write;
+  if (resolved === undefined) return undefined;
+  return "operation" in resolved ? [resolved] : resolved;
+}
+
 export function applyProviderInstanceMutation(
   settings: ServerSettings,
   mutation: ProviderInstanceMutation,
@@ -246,10 +261,9 @@ export class ServerSettingsService extends Context.Service<
       hooks?: SettingsWriteHooks,
     ) => Effect.Effect<ServerSettings, ServerSettingsError>;
 
+    /** A function of the settings under the lock may return several mutations, made in one write. */
     readonly updateProviderInstance: (
-      mutation:
-        | ProviderInstanceMutation
-        | ((current: ServerSettings) => ProviderInstanceMutation | undefined),
+      mutation: ProviderInstanceWrite,
       patch?: ServerSettingsPatch,
       hooks?: SettingsWriteHooks,
     ) => Effect.Effect<ServerSettings, ServerSettingsError>;
@@ -389,20 +403,18 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
           Effect.gen(function* () {
             const plan = yield* planSettingsWrite(currentSettings, patch, hooks);
             if (plan === undefined) return undefined;
-            const resolved = typeof mutation === "function" ? mutation(currentSettings) : mutation;
+            const resolved = providerInstanceMutations(currentSettings, mutation);
             if (resolved === undefined)
               return yield* new ServerSettingsError({
                 settingsPath: "test settings",
                 operation: "write-file",
               });
-            yield* ensureProviderInstanceMutationAllowed(
-              currentSettings,
-              resolved,
-              "test settings",
-            );
-            return applyProviderInstanceMutation(
+            for (const each of resolved) {
+              yield* ensureProviderInstanceMutationAllowed(currentSettings, each, "test settings");
+            }
+            return resolved.reduce(
+              applyProviderInstanceMutation,
               applySettingsWritePlan(currentSettings, plan).settings,
-              resolved,
             );
           }),
         hooks,
@@ -1439,12 +1451,17 @@ const make = Effect.gen(function* () {
             const plan = yield* planSettingsWrite(current, patch, hooks);
             if (plan === undefined) return undefined;
             yield* ensureSecretProviderWritesAllowed(plan.patch, settingsPath);
-            const resolved = typeof mutation === "function" ? mutation(current) : mutation;
+            const resolved = providerInstanceMutations(current, mutation);
             if (resolved === undefined)
               return yield* new ServerSettingsError({ settingsPath, operation: "write-file" });
-            yield* ensureProviderInstanceMutationAllowed(current, resolved, settingsPath);
+            for (const each of resolved) {
+              yield* ensureProviderInstanceMutationAllowed(current, each, settingsPath);
+            }
             const write = applySettingsWritePlan(current, plan);
-            return { ...write, settings: applyProviderInstanceMutation(write.settings, resolved) };
+            return {
+              ...write,
+              settings: resolved.reduce(applyProviderInstanceMutation, write.settings),
+            };
           }),
         hooks,
       ),

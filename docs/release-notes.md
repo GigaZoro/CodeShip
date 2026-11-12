@@ -1,3 +1,9 @@
+## 2026-11-12 — Agents can set a provider account's shared settings
+
+- `t3_environment_preferences_update` takes `providerAccounts`, so an agent with full access can set the settings a provider account shares, such as a Claude account's **Auto-compact after**, without a manual step. It accepts only those fields (for Claude: **Auto-compact after**, **Compact idle threads** and custom models; for Codex, Cursor and Antigravity: custom models), checks each value the way the account's settings form does, and refuses a path, binary, home, launch argument or credential, an unknown account or an invalid value with a message that says why. A field's default value, such as an empty **Auto-compact after**, restores the default. Account settings and other preferences in one call are saved together or not at all.
+- An added account's change reaches the machines that follow shared settings, as a change in the settings form does. A built-in account's settings stay on each machine, so `allMachines` refuses them and the agent sets each machine with `environmentId`.
+- `t3_environment_read` lists each account with those settings and whether a change to it reaches the other machines.
+
 ## 2026-11-12 — Scheduled tasks can be grouped, paused by group and counted per group
 
 - A scheduled task can have a **Group**, such as "Machine care" or "PolyBot delivery", set in its editor on web, desktop and mobile, or by an agent with `schedule_task` (`list_scheduled_tasks` returns it). A shared task's group reaches every machine.

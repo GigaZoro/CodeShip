@@ -6,7 +6,7 @@ import {
   type MachineSharedSettingKey,
   MACHINE_SHARED_SETTING_KEYS,
   type ModelSelection,
-  type ProviderInstanceId,
+  ProviderInstanceId,
   type ProviderInstanceMutation,
   providerInstanceDriver,
   ServerSettings,
@@ -43,11 +43,17 @@ import { BUILT_IN_DRIVERS } from "../provider/builtInDrivers.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Settings from "../serverSettings.ts";
 import {
+  accountConfigChange,
+  type AccountConfigError,
+  accountConfigMutations,
+  type AccountSharedConfig,
+  accountSharedConfigs,
   type AccountSharingDrivers,
   accountSharingDrivers,
   canTakeSharedProviderInstance,
   changedSharedProviderInstances,
   sharedProviderInstanceMutation,
+  sharedProviderInstanceValue,
 } from "./sharedProviderInstances.ts";
 
 /**
@@ -397,6 +403,18 @@ export class SharedSettings extends Context.Service<
       },
       ServerSettingsError
     >;
+    /** Each account here and the fields it shares, so an agent can read them before it sets them. */
+    readonly accountConfigs: (
+      settings: ServerSettings,
+    ) => Effect.Effect<Readonly<Record<string, AccountSharedConfig>>>;
+    /**
+     * Sets account fields, checked as their settings form checks them, and `patch` in one write, so
+     * a refusal saves none of it. `forAllMachines` also shares each named account already set here.
+     */
+    readonly updateAccountConfigs: (
+      changes: Readonly<Record<ProviderInstanceId, Readonly<Record<string, unknown>>>>,
+      options?: { readonly patch?: ServerSettingsPatch; readonly forAllMachines?: boolean },
+    ) => Effect.Effect<ServerSettings, AccountConfigError | ServerSettingsError>;
     /** Takes what a peer knows that is newer than this machine's versions. */
     readonly applyPulled: (
       peer: EnvironmentId,
@@ -944,6 +962,55 @@ const make = Effect.gen(function* () {
     } satisfies Settings.SettingsWriteHooks;
   });
 
+  /**
+   * The hooks for one write of account fields with `patch`, made as `writeHooks` makes it. A change
+   * for all machines also shares each account it names as it now stands, even one the write left
+   * as it was, so its value reaches the other machines.
+   */
+  const accountWriteHooks = Effect.fn("SharedSettings.accountWriteHooks")(function* (
+    patch: ServerSettingsPatch,
+    forAllMachines: ReadonlyArray<ProviderInstanceId> | undefined,
+  ) {
+    const hooks = yield* writeHooks(
+      patch,
+      forAllMachines === undefined ? undefined : "fromThisMachine",
+      true,
+    );
+    let before: ServerSettings | undefined;
+    const shareNamed = (stored: ServerSettings) => {
+      const changed =
+        before === undefined ? [] : changedSharedProviderInstances(sharing, before, stored);
+      const named = (forAllMachines ?? []).flatMap((instanceId) => {
+        if (changed.some(([id]) => id === instanceId)) return [];
+        const value = sharedProviderInstanceValue(
+          sharing,
+          instanceId,
+          Object.hasOwn(stored.providerInstances, instanceId)
+            ? stored.providerInstances[instanceId]
+            : undefined,
+        );
+        return value === undefined ? [] : [[instanceId, value] as const];
+      });
+      if (named.length === 0) return Effect.void;
+      return recordAccounts([], named, stored).pipe(
+        Effect.catch((error) =>
+          Effect.logError("Could not record a settings change for the user's other machines", {
+            keys: named.map(([instanceId]) => sharedProviderInstanceKey(instanceId)),
+            cause: error,
+          }),
+        ),
+      );
+    };
+    return {
+      prepare: (current: ServerSettings) => {
+        before = current;
+        return hooks.prepare(current);
+      },
+      persisted: (stored: ServerSettings) =>
+        hooks.persisted(stored).pipe(Effect.andThen(Effect.suspend(() => shareNamed(stored)))),
+    } satisfies Settings.SettingsWriteHooks;
+  });
+
   // Runs once the value is stored, so a failed record is logged rather than failing the save.
   const recordTaken = (key: string, record: Effect.Effect<unknown, SharedSettingsError>) =>
     record.pipe(
@@ -1301,10 +1368,54 @@ const make = Effect.gen(function* () {
         return { settings: stored, share: { stamp: sink.stamp, values: sink.values } };
       },
     ),
+    accountConfigs: Effect.fn("SharedSettings.accountConfigs")((current) =>
+      Effect.succeed(accountSharedConfigs(sharing, current)),
+    ),
+    updateAccountConfigs: updateAccountConfigsWith(sharing, settings, accountWriteHooks),
     applyPulled,
     retryWaiting,
   });
 });
+
+/**
+ * `updateAccountConfigs` on a machine whose account writes take the hooks `hooksFor` gives for
+ * their patch and the accounts a change for all machines names, or none.
+ */
+const updateAccountConfigsWith = (
+  sharing: AccountSharingDrivers,
+  settings: Settings.ServerSettingsService["Service"],
+  hooksFor: (
+    patch: ServerSettingsPatch,
+    forAllMachines: ReadonlyArray<ProviderInstanceId> | undefined,
+  ) => Effect.Effect<Settings.SettingsWriteHooks, ServerSettingsError>,
+): SharedSettings["Service"]["updateAccountConfigs"] =>
+  Effect.fn("SharedSettings.updateAccountConfigs")(function* (changes, options) {
+    const forAllMachines = options?.forAllMachines === true;
+    const patch = options?.patch ?? {};
+    const current = yield* settings.getSettings;
+    const planned = yield* Effect.forEach(Object.entries(changes), ([instanceId, fields]) =>
+      accountConfigChange(
+        sharing,
+        current.providerInstances,
+        ProviderInstanceId.make(instanceId),
+        fields,
+        forAllMachines,
+      ),
+    );
+    const mutationsOf = (latest: ServerSettings) =>
+      accountConfigMutations(latest.providerInstances, planned);
+    if (!forAllMachines && Object.keys(patch).length === 0 && mutationsOf(current)?.length === 0) {
+      return current;
+    }
+    return yield* settings.updateProviderInstance(
+      mutationsOf,
+      patch,
+      yield* hooksFor(
+        patch,
+        forAllMachines ? planned.map((change) => change.instanceId) : undefined,
+      ),
+    );
+  });
 
 export const layer = Layer.effect(SharedSettings, make);
 
@@ -1313,8 +1424,13 @@ export const layerTest = Layer.effect(
   SharedSettings,
   Effect.gen(function* () {
     const settings = yield* Settings.ServerSettingsService;
+    const sharing = yield* accountSharingDrivers(BUILT_IN_DRIVERS);
     return SharedSettings.of({
       servedVersions: Effect.succeed([]),
+      accountConfigs: Effect.fn("SharedSettings.test.accountConfigs")((current) =>
+        Effect.succeed(accountSharedConfigs(sharing, current)),
+      ),
+      updateAccountConfigs: updateAccountConfigsWith(sharing, settings, () => Effect.succeed({})),
       update: Effect.fn("SharedSettings.test.update")((patch) => settings.updateSettings(patch)),
       updateProviderInstance: Effect.fn("SharedSettings.test.updateProviderInstance")(
         (mutation, patch) => settings.updateProviderInstance(mutation, patch),
